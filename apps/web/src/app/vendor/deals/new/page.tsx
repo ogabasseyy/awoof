@@ -6,7 +6,7 @@
 
 import { useState, useEffect } from 'react';
 import { useRouter } from 'next/navigation';
-import { useForm } from 'react-hook-form';
+import { useForm, Controller } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { z } from 'zod';
 import Image from 'next/image';
@@ -15,6 +15,7 @@ import ProtectedRoute from '@/components/ProtectedRoute';
 import { useAuth } from '@/contexts/AuthContext';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
+import { PriceInput } from '@/components/ui/PriceInput';
 import { Label } from '@/components/ui/label';
 import { DashboardLayout } from '@/components/dashboard';
 import type { User } from '@/lib/auth';
@@ -63,6 +64,7 @@ export default function NewProductPage() {
 
     const {
         register,
+        control,
         handleSubmit,
         formState: { errors },
     } = useForm<ProductFormData>({
@@ -218,13 +220,20 @@ export default function NewProductPage() {
                                     <div className="grid gap-4 sm:grid-cols-2">
                                         <div>
                                             <Label htmlFor="price">Regular Price (₦) *</Label>
-                                            <Input
-                                                id="price"
-                                                type="number"
-                                                step="0.01"
-                                                {...register('price', { valueAsNumber: true })}
-                                                placeholder="0.00"
-                                                className={errors.price ? 'border-rose-500' : ''}
+                                            <Controller
+                                                name="price"
+                                                control={control}
+                                                render={({ field }) => (
+                                                    <PriceInput
+                                                        id="price"
+                                                        placeholder="0.00"
+                                                        className={errors.price ? 'border-rose-500' : ''}
+                                                        value={field.value}
+                                                        onChange={field.onChange}
+                                                        onBlur={field.onBlur}
+                                                        ref={field.ref}
+                                                    />
+                                                )}
                                             />
                                             {errors.price && (
                                                 <p className="mt-1 text-sm text-rose-600">{errors.price.message}</p>
@@ -233,13 +242,20 @@ export default function NewProductPage() {
 
                                         <div>
                                             <Label htmlFor="studentPrice">Student Price (₦) *</Label>
-                                            <Input
-                                                id="studentPrice"
-                                                type="number"
-                                                step="0.01"
-                                                {...register('studentPrice', { valueAsNumber: true })}
-                                                placeholder="0.00"
-                                                className={errors.studentPrice ? 'border-rose-500' : ''}
+                                            <Controller
+                                                name="studentPrice"
+                                                control={control}
+                                                render={({ field }) => (
+                                                    <PriceInput
+                                                        id="studentPrice"
+                                                        placeholder="0.00"
+                                                        className={errors.studentPrice ? 'border-rose-500' : ''}
+                                                        value={field.value}
+                                                        onChange={field.onChange}
+                                                        onBlur={field.onBlur}
+                                                        ref={field.ref}
+                                                    />
+                                                )}
                                             />
                                             {errors.studentPrice && (
                                                 <p className="mt-1 text-sm text-rose-600">{errors.studentPrice.message}</p>
