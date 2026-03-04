@@ -40,7 +40,7 @@ export function Step3DocumentUpload({
         getError,
         files,
     } = useFileUpload({
-        maxSize: 5 * 1024 * 1024, // 5MB (matching backend limit)
+        maxSize: 2 * 1024 * 1024, // 2MB (matching backend limit)
     });
     const [logoError, setLogoError] = React.useState<string | null>(null);
 
@@ -83,46 +83,21 @@ export function Step3DocumentUpload({
             return;
         }
 
-        // Update ref with current file references
+        // Call parent with full current files so registrationData.files stays in sync
+        onFilesChangeRef.current({
+            documentFront: files.documentFront ?? undefined,
+            documentBack: files.documentBack ?? undefined,
+            logoImage: files.logoImage ?? undefined,
+            bannerImage: files.bannerImage ?? undefined,
+        });
+
+        // Update ref for next comparison
         prevFilesRef.current = {
             documentFront: files.documentFront,
             documentBack: files.documentBack,
             logoImage: files.logoImage,
             bannerImage: files.bannerImage,
         };
-
-        // Only send the files that actually changed to avoid clearing others
-        // Use a special marker to distinguish between "not provided" (undefined) and "cleared" (null)
-        const changedFiles: { documentFront?: File | null; documentBack?: File | null; logoImage?: File | null; bannerImage?: File | null } = {};
-        let hasChanges = false;
-
-        if (prevFilesRef.current.documentFront !== files.documentFront) {
-            changedFiles.documentFront = files.documentFront ?? null; // null means cleared, undefined means not provided
-            hasChanges = true;
-        }
-        if (prevFilesRef.current.documentBack !== files.documentBack) {
-            changedFiles.documentBack = files.documentBack ?? null;
-            hasChanges = true;
-        }
-        if (prevFilesRef.current.logoImage !== files.logoImage) {
-            changedFiles.logoImage = files.logoImage ?? null;
-            hasChanges = true;
-        }
-        if (prevFilesRef.current.bannerImage !== files.bannerImage) {
-            changedFiles.bannerImage = files.bannerImage ?? null;
-            hasChanges = true;
-        }
-
-        // Only call onFilesChange if something actually changed
-        // Convert null to undefined to match the expected type
-        if (hasChanges) {
-            onFilesChangeRef.current({
-                documentFront: changedFiles.documentFront === null ? undefined : changedFiles.documentFront,
-                documentBack: changedFiles.documentBack === null ? undefined : changedFiles.documentBack,
-                logoImage: changedFiles.logoImage === null ? undefined : changedFiles.logoImage,
-                bannerImage: changedFiles.bannerImage === null ? undefined : changedFiles.bannerImage,
-            });
-        }
     }, [files]);
 
     // Wrapper for setFile
@@ -172,8 +147,13 @@ export function Step3DocumentUpload({
         >
             <form onSubmit={handleSubmit} className="space-y-6">
                 {/* Document Upload */}
+                <p className="text-sm text-slate-500">
+                    Logo and documents are sent in a separate request after your account is created.
+                </p>
                 <div>
-                    <Label className="mb-2 block">Document Upload (Business Certificate or ID)</Label>
+                    <Label className="mb-2 block">
+                        Document Upload (Business Certificate or ID) <span className="text-gray-400 text-xs font-normal">(Optional)</span>
+                    </Label>
                     <div className="grid grid-cols-2 gap-4">
                         <FileUploadField
                             label="Front"
@@ -181,8 +161,9 @@ export function Step3DocumentUpload({
                             onChange={(file) => {
                                 handleFileChange('documentFront', file);
                             }}
+                            accept="image/*,.pdf,application/pdf"
                             error={getError('documentFront') || undefined}
-                            maxSize={5 * 1024 * 1024} // 5MB
+                            maxSize={2 * 1024 * 1024} // 2MB
                         />
                         <FileUploadField
                             label="Back"
@@ -190,8 +171,9 @@ export function Step3DocumentUpload({
                             onChange={(file) => {
                                 handleFileChange('documentBack', file);
                             }}
+                            accept="image/*,.pdf,application/pdf"
                             error={getError('documentBack') || undefined}
-                            maxSize={5 * 1024 * 1024} // 5MB
+                            maxSize={2 * 1024 * 1024} // 2MB
                         />
                     </div>
                     <p className="mt-2 text-sm text-red-600 flex items-center gap-1">
@@ -202,7 +184,7 @@ export function Step3DocumentUpload({
                                 clipRule="evenodd"
                             />
                         </svg>
-                        Max File size up to 5MB
+                        Max File size up to 2MB
                     </p>
                 </div>
 
@@ -222,7 +204,7 @@ export function Step3DocumentUpload({
                         }}
                         accept="image/*"
                         error={getError('logoImage') || logoError || undefined}
-                        maxSize={5 * 1024 * 1024} // 5MB
+                        maxSize={2 * 1024 * 1024} // 2MB
                         required
                     />
                     <p className="mt-2 text-sm text-red-600 flex items-center gap-1">
@@ -233,7 +215,7 @@ export function Step3DocumentUpload({
                                 clipRule="evenodd"
                             />
                         </svg>
-                        Max File size up to 5MB. Logo is required.
+                        Max File size up to 2MB. Logo is required.
                     </p>
                 </div>
 
@@ -247,7 +229,7 @@ export function Step3DocumentUpload({
                         }}
                         accept="image/*"
                         error={getError('bannerImage') || undefined}
-                        maxSize={5 * 1024 * 1024} // 5MB
+                        maxSize={2 * 1024 * 1024} // 2MB
                     />
                     <p className="mt-2 text-sm text-red-600 flex items-center gap-1">
                         <svg className="w-4 h-4" fill="currentColor" viewBox="0 0 20 20">
@@ -257,7 +239,7 @@ export function Step3DocumentUpload({
                                 clipRule="evenodd"
                             />
                         </svg>
-                        Max File size up to 5MB
+                        Max File size up to 2MB
                     </p>
                 </div>
 

@@ -24,6 +24,10 @@ services:
       dockerfile: Dockerfile.prod
     # Do not override user: image runs as nodejs (uid 1001) which owns uploads/vendors for product images
     working_dir: /usr/src/app
+    # Persist vendor/product uploads (logos, documents, product images). Without this volume,
+    # uploads are lost when the container is recreated. Entrypoint ensures dir is writable by app.
+    volumes:
+      - backend_uploads:/usr/src/app/uploads
     environment:
       NODE_ENV: production
       PORT: 5000
@@ -94,3 +98,4 @@ services:
 volumes:
   db_data:
   redis_data:
+  backend_uploads:

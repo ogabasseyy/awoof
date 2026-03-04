@@ -26,6 +26,7 @@ function VendorVerifyEmailContent() {
     const router = useRouter();
     const searchParams = useSearchParams();
     const emailFromQuery = searchParams.get('email') || '';
+    const profileError = searchParams.get('profileError') || null;
 
     const [error, setError] = useState<string | null>(null);
     const [isLoading, setIsLoading] = useState(false);
@@ -97,6 +98,12 @@ function VendorVerifyEmailContent() {
                     <p className="text-gray-600 mb-6 text-left">
                         We&apos;ve sent a 6-digit verification code to your email address. Please enter it below to verify your account.
                     </p>
+
+                    {profileError && (
+                        <div className="mb-4 p-3 bg-amber-50 border border-amber-200 text-amber-800 rounded-md text-sm">
+                            Your account was created and a verification code was sent to your email. We couldn&apos;t complete your profile: {profileError} You can verify below and complete your profile from the dashboard after logging in.
+                        </div>
+                    )}
 
                     {error && (
                         <div className="mb-4 p-3 bg-red-50 border border-red-200 text-red-700 rounded-md text-sm">

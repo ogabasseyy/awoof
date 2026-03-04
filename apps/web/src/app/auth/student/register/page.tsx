@@ -13,6 +13,7 @@ import { zodResolver } from '@hookform/resolvers/zod';
 import { z } from 'zod';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
+import { PasswordInput } from '@/components/ui/PasswordInput';
 import { Label } from '@/components/ui/label';
 import { UniversitySelect } from '@/components/forms/UniversitySelect';
 import apiClient from '@/lib/api-client';
@@ -206,13 +207,13 @@ export default function StudentRegisterPage() {
 
                             <div>
                                 <Label htmlFor="password" className="text-left block mb-2">Password</Label>
-                                <Input id="password" type="password" placeholder="At least 8 characters" {...register('password')} className="w-full" aria-invalid={!!errors.password} />
+                                <PasswordInput id="password" placeholder="At least 8 characters" {...register('password')} className="w-full" aria-invalid={!!errors.password} />
                                 {errors.password && <p className="mt-1 text-sm text-red-600 text-left">{errors.password.message}</p>}
                             </div>
 
                             <div>
                                 <Label htmlFor="confirmPassword" className="text-left block mb-2">Confirm Password</Label>
-                                <Input id="confirmPassword" type="password" placeholder="Re-enter your password" {...register('confirmPassword')} className="w-full" aria-invalid={!!errors.confirmPassword} />
+                                <PasswordInput id="confirmPassword" placeholder="Re-enter your password" {...register('confirmPassword')} className="w-full" aria-invalid={!!errors.confirmPassword} />
                                 {errors.confirmPassword && <p className="mt-1 text-sm text-red-600 text-left">{errors.confirmPassword.message}</p>}
                             </div>
 

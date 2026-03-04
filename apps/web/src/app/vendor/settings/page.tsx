@@ -81,7 +81,7 @@ export default function VendorSettingsPage() {
         getFile,
         getError,
     } = useFileUpload({
-        maxSize: 5 * 1024 * 1024, // 5MB
+        maxSize: 2 * 1024 * 1024, // 2MB
     });
 
     // Business categories (you can fetch these from backend if available)
@@ -292,8 +292,8 @@ export default function VendorSettingsPage() {
                             <button
                                 onClick={() => setActiveTab('profile')}
                                 className={`whitespace-nowrap border-b-2 px-1 py-4 text-sm font-medium ${activeTab === 'profile'
-                                        ? 'border-[#1D4ED8] text-[#1D4ED8]'
-                                        : 'border-transparent text-slate-500 hover:border-slate-300 hover:text-slate-700'
+                                    ? 'border-[#1D4ED8] text-[#1D4ED8]'
+                                    : 'border-transparent text-slate-500 hover:border-slate-300 hover:text-slate-700'
                                     }`}
                             >
                                 <FileEdit className="inline h-4 w-4 mr-2" />
@@ -302,8 +302,8 @@ export default function VendorSettingsPage() {
                             <button
                                 onClick={() => setActiveTab('files')}
                                 className={`whitespace-nowrap border-b-2 px-1 py-4 text-sm font-medium ${activeTab === 'files'
-                                        ? 'border-[#1D4ED8] text-[#1D4ED8]'
-                                        : 'border-transparent text-slate-500 hover:border-slate-300 hover:text-slate-700'
+                                    ? 'border-[#1D4ED8] text-[#1D4ED8]'
+                                    : 'border-transparent text-slate-500 hover:border-slate-300 hover:text-slate-700'
                                     }`}
                             >
                                 <Upload className="inline h-4 w-4 mr-2" />
@@ -474,10 +474,10 @@ export default function VendorSettingsPage() {
                                             onChange={(file) => setFile('logoImage', file)}
                                             accept="image/*"
                                             error={getError('logoImage') || undefined}
-                                            maxSize={5 * 1024 * 1024} // 5MB
+                                            maxSize={2 * 1024 * 1024} // 2MB
                                         />
                                         <p className="mt-2 text-sm text-slate-500">
-                                            Logo is required. Max file size: 5MB. Recommended: Square image (e.g., 512x512px)
+                                            Logo is required. Max file size: 2MB. Recommended: Square image (e.g., 512x512px)
                                         </p>
                                     </div>
 
@@ -507,10 +507,10 @@ export default function VendorSettingsPage() {
                                             onChange={(file) => setFile('bannerImage', file)}
                                             accept="image/*"
                                             error={getError('bannerImage') || undefined}
-                                            maxSize={5 * 1024 * 1024} // 5MB
+                                            maxSize={2 * 1024 * 1024} // 2MB
                                         />
                                         <p className="mt-2 text-sm text-slate-500">
-                                            Optional. Max file size: 5MB. Recommended: 1920x600px
+                                            Optional. Max file size: 2MB. Recommended: 1920x600px
                                         </p>
                                     </div>
 
@@ -541,7 +541,7 @@ export default function VendorSettingsPage() {
                                                     onChange={(file) => setFile('documentFront', file)}
                                                     accept="image/*,.pdf"
                                                     error={getError('documentFront') || undefined}
-                                                    maxSize={5 * 1024 * 1024} // 5MB
+                                                    maxSize={2 * 1024 * 1024} // 2MB
                                                 />
                                             </div>
                                             <div>
@@ -564,12 +564,12 @@ export default function VendorSettingsPage() {
                                                     onChange={(file) => setFile('documentBack', file)}
                                                     accept="image/*,.pdf"
                                                     error={getError('documentBack') || undefined}
-                                                    maxSize={5 * 1024 * 1024} // 5MB
+                                                    maxSize={2 * 1024 * 1024} // 2MB
                                                 />
                                             </div>
                                         </div>
                                         <p className="mt-2 text-sm text-slate-500">
-                                            Optional. Upload business certificate or ID. Max file size: 5MB per file.
+                                            Optional. Upload business certificate or ID. Max file size: 2MB per file.
                                         </p>
                                     </div>
 

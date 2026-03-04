@@ -55,6 +55,9 @@ export default function NewProductPage() {
     const [isSubmitting, setIsSubmitting] = useState(false);
     const [imageFile, setImageFile] = useState<File | null>(null);
     const [imagePreview, setImagePreview] = useState<string | null>(null);
+    const [imageError, setImageError] = useState<string | null>(null);
+
+    const MAX_IMAGE_SIZE = 2 * 1024 * 1024; // 2MB
     const [categories, setCategories] = useState<Array<{ id: string; name: string }>>([]);
 
     type VendorProfile = { companyName?: string | null; name?: string | null };
@@ -91,14 +94,21 @@ export default function NewProductPage() {
     // Handle image selection
     const handleImageChange = (e: React.ChangeEvent<HTMLInputElement>) => {
         const file = e.target.files?.[0];
-        if (file) {
-            setImageFile(file);
-            const reader = new FileReader();
-            reader.onloadend = () => {
-                setImagePreview(reader.result as string);
-            };
-            reader.readAsDataURL(file);
+        if (!file) return;
+        setImageError(null);
+        if (file.size > MAX_IMAGE_SIZE) {
+            setImageError('Image must be 2MB or smaller.');
+            setImageFile(null);
+            setImagePreview(null);
+            e.target.value = '';
+            return;
         }
+        setImageFile(file);
+        const reader = new FileReader();
+        reader.onloadend = () => {
+            setImagePreview(reader.result as string);
+        };
+        reader.readAsDataURL(file);
     };
 
     // Handle form submission
@@ -319,6 +329,7 @@ export default function NewProductPage() {
                                                 onClick={() => {
                                                     setImageFile(null);
                                                     setImagePreview(null);
+                                                    setImageError(null);
                                                 }}
                                                 className="absolute right-2 top-2 rounded-full bg-slate-900/50 p-1.5 text-white hover:bg-slate-900/70"
                                             >
@@ -342,6 +353,10 @@ export default function NewProductPage() {
                                             onChange={handleImageChange}
                                             className="cursor-pointer"
                                         />
+                                        <p className="mt-1 text-sm text-slate-500">Max file size: 2MB</p>
+                                        {imageError && (
+                                            <p className="mt-1 text-sm text-red-600">{imageError}</p>
+                                        )}
                                     </div>
                                 </div>
                             </div>

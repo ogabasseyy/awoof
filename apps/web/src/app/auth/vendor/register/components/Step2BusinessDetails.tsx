@@ -10,6 +10,7 @@ import { zodResolver } from '@hookform/resolvers/zod';
 import { z } from 'zod';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
+import { PasswordInput } from '@/components/ui/PasswordInput';
 import { Label } from '@/components/ui/label';
 import { StepWrapper } from './StepWrapper';
 import Link from 'next/link';
@@ -104,9 +105,8 @@ export function Step2BusinessDetails({ onNext, onPrevious, error, isLoading, pro
 
                 <div>
                     <Label htmlFor="password" className="text-left block mb-2">Password</Label>
-                    <Input
+                    <PasswordInput
                         id="password"
-                        type="password"
                         placeholder="Enter your Password"
                         {...form.register('password')}
                         aria-invalid={form.formState.errors.password ? 'true' : 'false'}
@@ -123,9 +123,8 @@ export function Step2BusinessDetails({ onNext, onPrevious, error, isLoading, pro
                     <Label htmlFor="confirmPassword" className="text-left block mb-2">
                         Confirm Password
                     </Label>
-                    <Input
+                    <PasswordInput
                         id="confirmPassword"
-                        type="password"
                         placeholder="Enter your password again"
                         {...form.register('confirmPassword')}
                         aria-invalid={form.formState.errors.confirmPassword ? 'true' : 'false'}

@@ -1,15 +1,14 @@
 /**
  * Vendor Register Page (Multi-step)
- * 
- * Refactored to follow SOLID principles:
- * - Single Responsibility: Only orchestrates steps
- * - Open/Closed: Easy to extend with new steps
- * - Dependency Inversion: Uses abstracted components and hooks
+ *
+ * Uses context so step components have stable identity and don't remount when
+ * only error/isLoading changes — this keeps the selected files visible in Step 3
+ * when the upload fails and we show "Logo image is required" (or other errors).
  */
 
 'use client';
 
-import React from 'react';
+import React, { createContext, useContext, useMemo } from 'react';
 import { MultiStepForm, type StepConfig } from '@/components/forms/MultiStepForm';
 import { useMultiStepForm } from '@/hooks/useMultiStepForm';
 import { useVendorRegistration } from './hooks/useVendorRegistration';
@@ -17,25 +16,20 @@ import { Step1CompanyInfo } from './components/Step1CompanyInfo';
 import { Step2BusinessDetails } from './components/Step2BusinessDetails';
 import { Step3DocumentUpload } from './components/Step3DocumentUpload';
 
-export default function VendorRegisterPage() {
-    const { currentStep, nextStep, previousStep, goToStep } = useMultiStepForm({
-        initialStep: 1,
-        totalSteps: 3,
-    });
+type RegistrationContextValue = ReturnType<typeof useVendorRegistration> & ReturnType<typeof useMultiStepForm>;
 
-    const {
-        registrationData,
-        error,
-        isLoading,
-        saveStep1Data,
-        saveStep2Data,
-        saveFiles,
-        submitRegistration,
-        clearError,
-    } = useVendorRegistration();
+const VendorRegisterContext = createContext<RegistrationContextValue | null>(null);
 
-    // Wrap step components with necessary props
-    const Step1Wrapper = ({ progressIndicator }: { progressIndicator?: React.ReactNode }) => (
+function useRegistrationContext() {
+    const ctx = useContext(VendorRegisterContext);
+    if (!ctx) throw new Error('VendorRegisterPage context missing');
+    return ctx;
+}
+
+// Stable step components (defined outside page so they don't remount when error state changes)
+function Step1Wrapper({ progressIndicator }: { progressIndicator?: React.ReactNode }) {
+    const { saveStep1Data, nextStep, error, isLoading } = useRegistrationContext();
+    return (
         <Step1CompanyInfo
             onNext={(data) => {
                 saveStep1Data(data);
@@ -46,8 +40,11 @@ export default function VendorRegisterPage() {
             progressIndicator={progressIndicator}
         />
     );
+}
 
-    const Step2Wrapper = ({ progressIndicator }: { progressIndicator?: React.ReactNode }) => (
+function Step2Wrapper({ progressIndicator }: { progressIndicator?: React.ReactNode }) {
+    const { previousStep, saveStep2Data, nextStep, error, isLoading } = useRegistrationContext();
+    return (
         <Step2BusinessDetails
             onNext={(data) => {
                 saveStep2Data(data);
@@ -59,12 +56,21 @@ export default function VendorRegisterPage() {
             progressIndicator={progressIndicator}
         />
     );
+}
 
-    const Step3Wrapper = ({ progressIndicator }: { progressIndicator?: React.ReactNode }) => (
+function Step3Wrapper({ progressIndicator }: { progressIndicator?: React.ReactNode }) {
+    const {
+        previousStep,
+        saveFiles,
+        submitRegistration,
+        clearError,
+        registrationData,
+        error,
+        isLoading,
+    } = useRegistrationContext();
+    return (
         <Step3DocumentUpload
-            onNext={() => {
-                // Registration complete, redirect handled by AuthContext
-            }}
+            onNext={() => {}}
             onPrevious={previousStep}
             onSubmit={async () => {
                 clearError();
@@ -77,19 +83,33 @@ export default function VendorRegisterPage() {
             progressIndicator={progressIndicator}
         />
     );
+}
 
-    const steps: StepConfig[] = [
-        { id: 1, component: Step1Wrapper },
-        { id: 2, component: Step2Wrapper },
-        { id: 3, component: Step3Wrapper },
-    ];
+const STEPS: StepConfig[] = [
+    { id: 1, component: Step1Wrapper },
+    { id: 2, component: Step2Wrapper },
+    { id: 3, component: Step3Wrapper },
+];
+
+export default function VendorRegisterPage() {
+    const form = useMultiStepForm({
+        initialStep: 1,
+        totalSteps: 3,
+    });
+    const registration = useVendorRegistration();
+    const contextValue = useMemo<RegistrationContextValue>(
+        () => ({ ...registration, ...form }),
+        [registration, form]
+    );
 
     return (
-        <MultiStepForm
-            steps={steps}
-            currentStep={currentStep}
-            onStepChange={goToStep}
-            showProgress={true}
-        />
+        <VendorRegisterContext.Provider value={contextValue}>
+            <MultiStepForm
+                steps={STEPS}
+                currentStep={form.currentStep}
+                onStepChange={form.goToStep}
+                showProgress={true}
+            />
+        </VendorRegisterContext.Provider>
     );
 }
