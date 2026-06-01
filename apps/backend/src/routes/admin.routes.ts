@@ -13,6 +13,7 @@ import { adminUniversityController } from '../controllers/admin-university.contr
 import { adminStudentController } from '../controllers/admin-student.controller.js';
 import { adminVendorController } from '../controllers/admin-vendor.controller.js';
 import { adminAnalyticsController } from '../controllers/admin-analytics.controller.js';
+import { getPlatformSettings, updatePlatformSettings } from '../controllers/admin-platform-settings.controller.js';
 import { csvUpload } from '../config/upload.js';
 
 const router = Router();
@@ -34,6 +35,20 @@ router.delete('/universities/:id', asyncHandler(adminUniversityController.delete
 router.get('/students', asyncHandler(adminStudentController.getStudents.bind(adminStudentController)));
 router.get('/vendors', asyncHandler(adminVendorController.getVendors.bind(adminVendorController)));
 router.get('/analytics', asyncHandler(adminAnalyticsController.getAnalytics.bind(adminAnalyticsController)));
+
+/**
+ * @route   GET /api/admin/settings/platform
+ * @desc    Get platform settings (e.g. platform fee %)
+ * @access  Admin
+ */
+router.get('/settings/platform', asyncHandler(getPlatformSettings));
+
+/**
+ * @route   PUT /api/admin/settings/platform
+ * @desc    Update platform settings
+ * @access  Admin
+ */
+router.put('/settings/platform', asyncHandler(updatePlatformSettings));
 
 /**
  * @route   GET /api/admin/categories

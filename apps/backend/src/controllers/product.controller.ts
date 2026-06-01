@@ -27,6 +27,7 @@ const createProductSchema = z.object({
     categoryId: z.string().uuid('Invalid category ID').optional().nullable(),
     stock: z.coerce.number().int().min(0, 'Stock cannot be negative').default(0),
     status: z.enum(['active', 'inactive', 'out_of_stock']).default('active'),
+    dealType: z.enum(['product', 'voucher']).optional().default('product'),
 });
 
 const updateProductSchema = createProductSchema.partial();
@@ -61,12 +62,13 @@ export class ProductController {
         const offset = (page - 1) * limit;
         const status = req.query.status as string | undefined;
         const search = req.query.search as string | undefined;
+        const dealType = req.query.deal_type as string | undefined;
 
         // Build query
         let query = `
             SELECT p.id, p.name, p.description, p.price, p.student_price, 
                    p.category_id, p.image_url, p.api_id, p.stock, p.status,
-                   p.created_at, p.updated_at,
+                   p.deal_type, p.created_at, p.updated_at,
                    c.name as category_name
             FROM products p
             LEFT JOIN categories c ON p.category_id = c.id
@@ -74,6 +76,12 @@ export class ProductController {
         `;
         const values: (string | number)[] = [vendorId];
         let paramCount = 2;
+
+        if (dealType === 'product' || dealType === 'voucher') {
+            query += ` AND p.deal_type = $${paramCount}`;
+            values.push(dealType);
+            paramCount++;
+        }
 
         if (status) {
             query += ` AND p.status = $${paramCount}`;
@@ -104,6 +112,12 @@ export class ProductController {
         if (status) {
             countQuery += ` AND p.status = $${countParamCount}`;
             countValues.push(status);
+            countParamCount++;
+        }
+
+        if (dealType === 'product' || dealType === 'voucher') {
+            countQuery += ` AND p.deal_type = $${countParamCount}`;
+            countValues.push(dealType);
             countParamCount++;
         }
 
@@ -158,7 +172,7 @@ export class ProductController {
         const result = await db.query(
             `SELECT p.id, p.name, p.description, p.price, p.student_price, 
                     p.category_id, p.image_url, p.api_id, p.stock, p.status,
-                    p.created_at, p.updated_at,
+                    p.deal_type, p.created_at, p.updated_at,
                     c.name as category_name
              FROM products p
              LEFT JOIN categories c ON p.category_id = c.id
@@ -220,10 +234,10 @@ export class ProductController {
         // Insert product
         const result = await db.query(
             `INSERT INTO products (vendor_id, name, description, price, student_price, 
-                                  category_id, image_url, stock, status)
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+                                  category_id, image_url, stock, status, deal_type)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
              RETURNING id, name, description, price, student_price, category_id, 
-                       image_url, api_id, stock, status, created_at, updated_at`,
+                       image_url, api_id, stock, status, deal_type, created_at, updated_at`,
             [
                 vendorId,
                 validated.name,
@@ -234,6 +248,7 @@ export class ProductController {
                 imageUrl,
                 validated.stock,
                 validated.status,
+                validated.dealType ?? 'product',
             ]
         );
 
@@ -346,6 +361,12 @@ export class ProductController {
             paramCount++;
         }
 
+        if (validated.dealType !== undefined) {
+            updates.push(`deal_type = $${paramCount}`);
+            values.push(validated.dealType);
+            paramCount++;
+        }
+
         if (imageUrl !== undefined) {
             updates.push(`image_url = $${paramCount}`);
             values.push(imageUrl);
@@ -362,7 +383,7 @@ export class ProductController {
              SET ${updates.join(', ')}, updated_at = CURRENT_TIMESTAMP
              WHERE id = $${paramCount} AND vendor_id = $${paramCount + 1} AND deleted_at IS NULL
              RETURNING id, name, description, price, student_price, category_id, 
-                       image_url, api_id, stock, status, created_at, updated_at`,
+                       image_url, api_id, stock, status, deal_type, created_at, updated_at`,
             values
         );
 

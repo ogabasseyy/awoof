@@ -18,6 +18,7 @@ import type { User } from '@/lib/auth';
 import apiClient, { getImageUrl } from '@/lib/api-client';
 import Link from 'next/link';
 import { formatCurrency } from '@/lib/format';
+import { useSearchParams } from 'next/navigation';
 
 const iconProps = { className: 'h-5 w-5', strokeWidth: 1.5, fill: 'currentColor' as const };
 
@@ -47,12 +48,17 @@ interface Product {
     api_id: string | null;
     stock: number;
     status: 'active' | 'inactive' | 'out_of_stock';
+    deal_type?: 'product' | 'voucher';
     created_at: string;
     updated_at: string;
 }
 
 export default function VendorDealsPage() {
+    const searchParams = useSearchParams();
     const { user, logout } = useAuth();
+    const [activeTab, setActiveTab] = useState<'products' | 'vouchers'>(() =>
+        searchParams.get('tab') === 'vouchers' ? 'vouchers' : 'products'
+    );
     const [products, setProducts] = useState<Product[]>([]);
     const [isLoading, setIsLoading] = useState(true);
     const [searchQuery, setSearchQuery] = useState('');
@@ -76,6 +82,7 @@ export default function VendorDealsPage() {
             });
             if (searchQuery) params.append('search', searchQuery);
             if (statusFilter !== 'all') params.append('status', statusFilter);
+            params.append('deal_type', activeTab === 'vouchers' ? 'voucher' : 'product');
 
             const response = await apiClient.get(`/vendors/products?${params.toString()}`);
             setProducts(response.data.data.products || []);
@@ -89,7 +96,7 @@ export default function VendorDealsPage() {
 
     useEffect(() => {
         fetchProducts();
-    }, [page, statusFilter]);
+    }, [page, statusFilter, activeTab]);
 
     // Debounced search
     useEffect(() => {
@@ -164,6 +171,32 @@ export default function VendorDealsPage() {
                     avatarUrl: null,
                 }}
             >
+                {/* Tabs: Products | Vouchers */}
+                <div className="mb-6 border-b border-slate-200">
+                    <nav className="-mb-px flex gap-6">
+                        <button
+                            type="button"
+                            onClick={() => setActiveTab('products')}
+                            className={`whitespace-nowrap border-b-2 px-1 py-3 text-sm font-medium ${activeTab === 'products'
+                                ? 'border-blue-600 text-blue-600'
+                                : 'border-transparent text-slate-500 hover:border-slate-300 hover:text-slate-700'
+                            }`}
+                        >
+                            Products
+                        </button>
+                        <button
+                            type="button"
+                            onClick={() => setActiveTab('vouchers')}
+                            className={`whitespace-nowrap border-b-2 px-1 py-3 text-sm font-medium ${activeTab === 'vouchers'
+                                ? 'border-blue-600 text-blue-600'
+                                : 'border-transparent text-slate-500 hover:border-slate-300 hover:text-slate-700'
+                            }`}
+                        >
+                            Vouchers
+                        </button>
+                    </nav>
+                </div>
+
                 {/* Header Actions */}
                 <div className="mb-6 flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
                     <div className="flex flex-1 items-center gap-4">
@@ -195,18 +228,28 @@ export default function VendorDealsPage() {
                         <Button
                             variant="outline"
                             onClick={handleSync}
-                            disabled={isSyncing}
+                            disabled={isSyncing || activeTab === 'vouchers'}
                             className="flex items-center gap-2"
+                            title={activeTab === 'vouchers' ? 'Sync applies to products only' : undefined}
                         >
                             <RefreshCw className={`h-4 w-4 ${isSyncing ? 'animate-spin' : ''}`} />
                             {isSyncing ? 'Syncing...' : 'Sync Products'}
                         </Button>
-                        <Button asChild className="flex items-center gap-2 bg-blue-600 hover:bg-blue-700">
-                            <Link href="/vendor/deals/new">
-                                <Plus className="h-4 w-4" />
-                                Add Product
-                            </Link>
-                        </Button>
+                        {activeTab === 'products' ? (
+                            <Button asChild className="flex items-center gap-2 bg-blue-600 hover:bg-blue-700">
+                                <Link href="/vendor/deals/new">
+                                    <Plus className="h-4 w-4" />
+                                    Add Product
+                                </Link>
+                            </Button>
+                        ) : (
+                            <Button asChild className="flex items-center gap-2 bg-blue-600 hover:bg-blue-700">
+                                <Link href="/vendor/deals/voucher/new">
+                                    <Plus className="h-4 w-4" />
+                                    Add Voucher
+                                </Link>
+                            </Button>
+                        )}
                     </div>
                 </div>
 
@@ -218,17 +261,21 @@ export default function VendorDealsPage() {
                 ) : products.length === 0 ? (
                     <div className="flex flex-col items-center justify-center rounded-2xl bg-white p-12 shadow-sm">
                         <Tag className="h-12 w-12 text-slate-300" />
-                        <p className="mt-4 text-lg font-semibold text-slate-700">No products found</p>
+                        <p className="mt-4 text-lg font-semibold text-slate-700">
+                            {activeTab === 'vouchers' ? 'No vouchers found' : 'No products found'}
+                        </p>
                         <p className="mt-2 text-sm text-slate-500">
                             {searchQuery || statusFilter !== 'all'
                                 ? 'Try adjusting your filters'
-                                : 'Get started by adding your first product'}
+                                : activeTab === 'vouchers'
+                                    ? 'Create a voucher to show in the students vouchers area'
+                                    : 'Get started by adding your first product'}
                         </p>
                         {!searchQuery && statusFilter === 'all' && (
                             <Button asChild className="mt-6 bg-blue-600 hover:bg-blue-700">
-                                <Link href="/vendor/deals/new">
+                                <Link href={activeTab === 'vouchers' ? '/vendor/deals/voucher/new' : '/vendor/deals/new'}>
                                     <Plus className="mr-2 h-4 w-4" />
-                                    Add Product
+                                    {activeTab === 'vouchers' ? 'Add Voucher' : 'Add Product'}
                                 </Link>
                             </Button>
                         )}

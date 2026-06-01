@@ -27,15 +27,17 @@ router.get(
         const search = req.query.search as string | undefined;
         const minPrice = req.query.minPrice ? parseFloat(req.query.minPrice as string) : undefined;
         const maxPrice = req.query.maxPrice ? parseFloat(req.query.maxPrice as string) : undefined;
+        const dealType = req.query.deal_type as string | undefined;
 
         // Build query
         let query = `
             SELECT 
                 p.id, p.name, p.description, p.price, p.student_price, 
-                p.category_id, p.image_url, p.stock, p.status,
+                p.category_id, p.image_url, p.stock, p.status, p.deal_type,
                 p.created_at, p.updated_at,
                 c.name as category_name,
-                v.id as vendor_id, v.name as vendor_name, v.logo_url as vendor_logo_url
+                v.id as vendor_id, v.name as vendor_name, v.logo_url as vendor_logo_url,
+                COALESCE(v.payment_method, 'awoof') as vendor_payment_method
             FROM products p
             LEFT JOIN categories c ON p.category_id = c.id
             LEFT JOIN vendors v ON p.vendor_id = v.id
@@ -44,6 +46,12 @@ router.get(
         const values: (string | number)[] = [];
         let paramCount = 1;
 
+        if (dealType === 'product' || dealType === 'voucher') {
+            query += ` AND p.deal_type = $${paramCount}`;
+            values.push(dealType);
+            paramCount++;
+        }
+
         if (categoryId) {
             query += ` AND p.category_id = $${paramCount}`;
             values.push(categoryId);
@@ -51,7 +59,7 @@ router.get(
         }
 
         if (search) {
-            query += ` AND (p.name ILIKE $${paramCount} OR p.description ILIKE $${paramCount})`;
+            query += ` AND (p.name ILIKE $${paramCount} OR p.description ILIKE $${paramCount} OR v.name ILIKE $${paramCount})`;
             values.push(`%${search}%`);
             paramCount++;
         }
@@ -131,11 +139,12 @@ router.get(
         const result = await db.query(
             `SELECT 
                 p.id, p.name, p.description, p.price, p.student_price, 
-                p.category_id, p.image_url, p.stock, p.status,
+                p.category_id, p.image_url, p.stock, p.status, p.deal_type,
                 p.created_at, p.updated_at,
                 c.id as category_id, c.name as category_name, c.slug as category_slug,
                 v.id as vendor_id, v.name as vendor_name, v.description as vendor_description,
-                v.logo_url as vendor_logo_url
+                v.logo_url as vendor_logo_url,
+                COALESCE(v.payment_method, 'awoof') as vendor_payment_method
             FROM products p
             LEFT JOIN categories c ON p.category_id = c.id
             LEFT JOIN vendors v ON p.vendor_id = v.id

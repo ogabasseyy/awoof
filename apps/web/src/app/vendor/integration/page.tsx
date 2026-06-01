@@ -50,6 +50,13 @@ interface PaymentSettings {
     paystackSubaccountCode: string | null;
 }
 
+interface WidgetConfig {
+    vendorId: string;
+    allowedDomains: string[];
+    apiKey: string;
+    status: string;
+}
+
 export default function VendorIntegrationPage() {
     const { user, logout } = useAuth();
     const [apiKey, setApiKey] = useState<string | null>(null);
@@ -59,6 +66,10 @@ export default function VendorIntegrationPage() {
     const [copiedText, setCopiedText] = useState<string | null>(null);
     const [paymentSettings, setPaymentSettings] = useState<PaymentSettings | null>(null);
     const [activeTab, setActiveTab] = useState<'overview' | 'widget' | 'api' | 'webhook'>('overview');
+    const [widgetConfig, setWidgetConfig] = useState<WidgetConfig | null>(null);
+    const [widgetConfigLoading, setWidgetConfigLoading] = useState(false);
+    const [newDomain, setNewDomain] = useState('');
+    const [savingWidgetConfig, setSavingWidgetConfig] = useState(false);
 
     type VendorProfile = { companyName?: string | null; name?: string | null };
     const extendedUser = user as (User & { profile?: VendorProfile }) | null;
@@ -73,6 +84,24 @@ export default function VendorIntegrationPage() {
     useEffect(() => {
         fetchIntegrationData();
     }, []);
+
+    useEffect(() => {
+        if (activeTab === 'widget') {
+            fetchWidgetConfig();
+        }
+    }, [activeTab]);
+
+    const fetchWidgetConfig = async () => {
+        try {
+            setWidgetConfigLoading(true);
+            const res = await apiClient.get('/vendors/widget-config');
+            setWidgetConfig(res.data?.data ?? null);
+        } catch {
+            setWidgetConfig(null);
+        } finally {
+            setWidgetConfigLoading(false);
+        }
+    };
 
     const fetchIntegrationData = async () => {
         try {
@@ -349,6 +378,100 @@ export default function VendorIntegrationPage() {
                     {/* Widget Integration Tab */}
                     {activeTab === 'widget' && (
                         <div className="space-y-6">
+                            {/* Widget config: allowed domains + API key */}
+                            <div className="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm">
+                                <h2 className="mb-2 text-lg font-semibold text-slate-900">Widget settings</h2>
+                                <p className="mb-4 text-sm text-slate-600">
+                                    Add the domains where your widget will run. Only these domains can use your widget API key.
+                                </p>
+                                {widgetConfigLoading ? (
+                                    <p className="text-slate-500 text-sm">Loading...</p>
+                                ) : widgetConfig ? (
+                                    <div className="space-y-4">
+                                        <div>
+                                            <Label className="mb-2 block">Widget API key</Label>
+                                            <div className="flex gap-2">
+                                                <Input
+                                                    value={widgetConfig.apiKey}
+                                                    readOnly
+                                                    className="flex-1 font-mono text-sm"
+                                                />
+                                                <Button type="button" variant="outline" size="sm" onClick={() => copyToClipboard(widgetConfig.apiKey, 'widget-api-key')}>
+                                                    {copiedText === 'widget-api-key' ? <Check className="h-4 w-4" /> : <Copy className="h-4 w-4" />}
+                                                </Button>
+                                            </div>
+                                            <p className="mt-1 text-xs text-slate-500">Use this in Awoof.init(&#123; apiKey: &quot;...&quot; &#125;). Keep it secret.</p>
+                                        </div>
+                                        <div>
+                                            <Label className="mb-2 block">Allowed domains</Label>
+                                            <ul className="mb-2 rounded-lg border border-slate-200 divide-y divide-slate-200">
+                                                {(widgetConfig.allowedDomains || []).map((d) => (
+                                                    <li key={d} className="flex items-center justify-between px-3 py-2 text-sm">
+                                                        <span className="font-mono">{d}</span>
+                                                        <Button
+                                                            type="button"
+                                                            variant="ghost"
+                                                            size="sm"
+                                                            className="text-red-600 hover:text-red-700"
+                                                            onClick={async () => {
+                                                                const next = (widgetConfig.allowedDomains || []).filter((x) => x !== d);
+                                                                if (next.length === 0) return;
+                                                                setSavingWidgetConfig(true);
+                                                                try {
+                                                                    await apiClient.put('/vendors/widget-config', { allowedDomains: next });
+                                                                    await fetchWidgetConfig();
+                                                                } finally {
+                                                                    setSavingWidgetConfig(false);
+                                                                }
+                                                            }}
+                                                            disabled={savingWidgetConfig || (widgetConfig.allowedDomains?.length ?? 0) <= 1}
+                                                        >
+                                                            Remove
+                                                        </Button>
+                                                    </li>
+                                                ))}
+                                            </ul>
+                                            <div className="flex gap-2">
+                                                <Input
+                                                    placeholder="example.com"
+                                                    value={newDomain}
+                                                    onChange={(e) => setNewDomain(e.target.value)}
+                                                    onKeyDown={(e) => e.key === 'Enter' && (e.preventDefault(), document.getElementById('add-domain-btn')?.click())}
+                                                    className="font-mono"
+                                                />
+                                                <Button
+                                                    id="add-domain-btn"
+                                                    type="button"
+                                                    variant="outline"
+                                                    disabled={savingWidgetConfig || !newDomain.trim()}
+                                                    onClick={async () => {
+                                                        const domain = newDomain.replace(/^https?:\/\//, '').split('/')[0].toLowerCase().trim();
+                                                        if (!domain) return;
+                                                        const current = widgetConfig.allowedDomains || [];
+                                                        if (current.includes(domain)) {
+                                                            setNewDomain('');
+                                                            return;
+                                                        }
+                                                        setSavingWidgetConfig(true);
+                                                        try {
+                                                            await apiClient.put('/vendors/widget-config', { allowedDomains: [...current, domain] });
+                                                            setNewDomain('');
+                                                            await fetchWidgetConfig();
+                                                        } finally {
+                                                            setSavingWidgetConfig(false);
+                                                        }
+                                                    }}
+                                                >
+                                                    Add domain
+                                                </Button>
+                                            </div>
+                                        </div>
+                                    </div>
+                                ) : (
+                                    <p className="text-slate-500 text-sm">Could not load widget config.</p>
+                                )}
+                            </div>
+
                             <div className="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm">
                                 <h2 className="mb-4 text-lg font-semibold text-slate-900">Widget Integration</h2>
                                 <p className="mb-6 text-sm text-slate-600">
@@ -386,28 +509,29 @@ export default function VendorIntegrationPage() {
                                     </div>
 
                                     <div>
-                                        <h3 className="mb-2 font-semibold text-slate-900">Step 2: Verify Student</h3>
+                                        <h3 className="mb-2 font-semibold text-slate-900">Step 2: Initialize and verify</h3>
                                         <p className="mb-3 text-sm text-slate-600">
-                                            Call the widget to verify a student before applying discount:
+                                            Initialize the widget with your API key and web app URL, then call verify to open the student verification flow:
                                         </p>
                                         <div className="relative">
                                             <pre className="overflow-x-auto rounded-lg bg-slate-900 p-4 text-xs text-slate-100">
-                                                {`Awoof.verify({
-  onSuccess: (token) => {
-    // Student verified successfully
-    // token: verification token (valid for 30 minutes)
-    // Apply student discount to cart
+                                                {`// After script loads, initialize once (e.g. on page load)
+Awoof.init({
+  apiKey: 'YOUR_WIDGET_API_KEY',  // From Widget settings above
+  apiBaseUrl: 'https://api.awoof.com',  // Your backend API URL
+  webAppUrl: 'https://app.awoof.com',   // Awoof web app (for verification iframe)
+  onSuccess: (token, data) => {
     applyStudentDiscount();
-    
-    // Store token for transaction reporting
     window.verificationToken = token;
   },
-  onError: (error) => {
-    // Verification failed
-    console.error('Verification error:', error);
-    alert('Student verification failed');
-  }
-});`}
+  onError: (err) => console.error('Verification error', err),
+  onCancel: () => console.log('User closed verification'),
+});
+
+// When user clicks "Verify student" (e.g. on checkout)
+function onVerifyStudentClick() {
+  Awoof.verify();
+}`}
                                             </pre>
                                             <Button
                                                 type="button"
@@ -415,22 +539,14 @@ export default function VendorIntegrationPage() {
                                                 size="sm"
                                                 className="absolute right-2 top-2"
                                                 onClick={() => copyToClipboard(
-                                                    `Awoof.verify({
-  onSuccess: (token) => {
-    // Student verified successfully
-    // token: verification token (valid for 30 minutes)
-    // Apply student discount to cart
-    applyStudentDiscount();
-    
-    // Store token for transaction reporting
-    window.verificationToken = token;
-  },
-  onError: (error) => {
-    // Verification failed
-    console.error('Verification error:', error);
-    alert('Student verification failed');
-  }
-});`,
+                                                    `Awoof.init({
+  apiKey: 'YOUR_WIDGET_API_KEY',
+  apiBaseUrl: 'https://api.awoof.com',
+  webAppUrl: 'https://app.awoof.com',
+  onSuccess: (token) => { applyStudentDiscount(); window.verificationToken = token; },
+  onError: (err) => console.error(err),
+});
+function onVerifyStudentClick() { Awoof.verify(); }`,
                                                     'widget-code'
                                                 )}
                                             >
@@ -441,6 +557,7 @@ export default function VendorIntegrationPage() {
                                                 )}
                                             </Button>
                                         </div>
+                                        <p className="mt-2 text-xs text-slate-500">Add your site&apos;s domain in &quot;Allowed domains&quot; above first, or the widget will show an error.</p>
                                     </div>
 
                                     <div>

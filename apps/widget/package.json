@@ -1,0 +1,20 @@
+{
+  "name": "@awoof/widget",
+  "version": "1.0.0",
+  "description": "Awoof student verification widget for third-party React/Next.js and vanilla sites",
+  "type": "module",
+  "main": "dist/awoof.js",
+  "scripts": {
+    "build": "rollup -c",
+    "build:dev": "rollup -c --environment BUILD:development",
+    "dev": "rollup -c -w"
+  },
+  "devDependencies": {
+    "rollup": "^4.28.1",
+    "@rollup/plugin-node-resolve": "^16.0.0",
+    "@rollup/plugin-terser": "^0.4.4"
+  },
+  "files": [
+    "dist"
+  ]
+}

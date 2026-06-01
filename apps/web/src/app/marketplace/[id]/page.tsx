@@ -30,6 +30,8 @@ interface Product {
     vendor_id: string;
     vendor_name: string;
     vendor_description: string | null;
+    vendor_payment_method?: 'awoof' | 'vendor_website';
+    deal_type?: 'product' | 'voucher';
     created_at: string;
 }
 
@@ -227,7 +229,9 @@ export default function ProductDetailPage() {
                                     ? 'Out of Stock'
                                     : isAddingToCart
                                         ? 'Processing...'
-                                        : 'Purchase Now'}
+                                        : (product.deal_type === 'voucher' || product.vendor_payment_method === 'vendor_website')
+                                            ? 'Visit website'
+                                            : 'Purchase Now'}
                             </Button>
                             {!user && (
                                 <p className="text-xs text-slate-500 mt-2 text-center">

@@ -27,6 +27,8 @@ interface Product {
     category_name: string | null;
     vendor_name: string | null;
     vendor_logo_url: string | null;
+    vendor_payment_method?: 'awoof' | 'vendor_website';
+    deal_type?: 'product' | 'voucher';
     stock: number;
 }
 
@@ -56,6 +58,7 @@ const categoryIconMap: Record<string, { icon: typeof Plane; color: string; textC
 export default function MarketplacePage() {
     const { user } = useAuth();
     const [products, setProducts] = useState<Product[]>([]);
+    const [voucherProducts, setVoucherProducts] = useState<Product[]>([]);
     const [categories, setCategories] = useState<Category[]>([]);
     const [featuredProducts, setFeaturedProducts] = useState<Product[]>([]);
     const [categoryProducts, setCategoryProducts] = useState<Product[]>([]);
@@ -66,7 +69,7 @@ export default function MarketplacePage() {
 
     const fetchCategoryProducts = useCallback(async (categoryId: string) => {
         try {
-            const response = await apiClient.get(`/products?categoryId=${categoryId}&limit=20`);
+            const response = await apiClient.get(`/products?categoryId=${categoryId}&limit=20&deal_type=product`);
             setCategoryProducts(response.data.data.products || []);
         } catch (error) {
             console.error('Error fetching category products:', error);
@@ -76,16 +79,19 @@ export default function MarketplacePage() {
     const fetchData = useCallback(async () => {
         try {
             setIsLoading(true);
-            const [productsRes, categoriesRes, savingsRes] = await Promise.all([
-                apiClient.get('/products?limit=20'),
+            const [productsRes, vouchersRes, categoriesRes, savingsRes] = await Promise.all([
+                apiClient.get('/products?limit=20&deal_type=product'),
+                apiClient.get('/products?limit=20&deal_type=voucher'),
                 apiClient.get('/products/categories'),
                 user ? apiClient.get('/students/savings').catch(() => null) : Promise.resolve(null),
             ]);
 
             const allProducts = productsRes.data.data.products || [];
+            const vouchers = vouchersRes.data.data.products || [];
             const fetchedCategories = categoriesRes.data.data || [];
 
             setProducts(allProducts);
+            setVoucherProducts(vouchers);
             setCategories(fetchedCategories);
             setFeaturedProducts(allProducts.slice(0, 6));
 
@@ -183,8 +189,18 @@ export default function MarketplacePage() {
                                     placeholder="Search for deals"
                                     value={searchQuery}
                                     onChange={(e) => setSearchQuery(e.target.value)}
-                                    className="pl-12 h-14 w-full rounded-full border border-[#1D4ED8]"
+                                    className="pl-12 h-14 w-full rounded-full border border-[#1D4ED8] pr-24"
                                 />
+                                {searchQuery.trim().length > 0 && (
+                                    <Button
+                                        type="submit"
+                                        size="sm"
+                                        className="absolute right-1.5 top-1/2 -translate-y-1/2 rounded-full h-10 px-4 font-medium"
+                                        style={{ backgroundColor: '#1D4ED8' }}
+                                    >
+                                        Search
+                                    </Button>
+                                )}
                             </div>
                         </form>
 
@@ -309,6 +325,185 @@ export default function MarketplacePage() {
                     })}
                 </div>
 
+                {/* Category Deals - Dynamic based on selected category (above Featured) */}
+                {selectedCategory && (
+                    <section className="mb-12">
+                        <div className="flex items-center justify-between mb-4">
+                            <h2 className="text-2xl font-bold text-slate-900">{getSelectedCategoryName()}</h2>
+                            <Link
+                                href={`/marketplace?categoryId=${selectedCategory}`}
+                                className="text-red-600 hover:underline font-medium"
+                            >
+                                See all
+                            </Link>
+                        </div>
+                        <div className="flex gap-4 overflow-x-auto pb-4 scrollbar-hide">
+                            {isLoading ? (
+                                <div className="flex items-center justify-center w-full py-12">
+                                    <p className="text-slate-500">Loading deals...</p>
+                                </div>
+                            ) : categoryProducts.length === 0 ? (
+                                <div className="flex items-center justify-center w-full py-12">
+                                    <p className="text-slate-500">No deals available in this category</p>
+                                </div>
+                            ) : (
+                                categoryProducts.slice(0, 6).map((product) => (
+                                    <Link
+                                        key={product.id}
+                                        href={`/marketplace/${product.id}`}
+                                        className="shrink-0 w-80 bg-white rounded-lg shadow-sm hover:shadow-md transition-shadow overflow-hidden"
+                                    >
+                                        <div className="relative h-48 bg-slate-100">
+                                            {product.image_url ? (
+                                                <Image
+                                                    src={getImageUrl(product.image_url) || ''}
+                                                    alt={product.name}
+                                                    fill
+                                                    className="object-cover"
+                                                    unoptimized
+                                                />
+                                            ) : (
+                                                <div className="w-full h-full flex items-center justify-center text-slate-400">
+                                                    No Image
+                                                </div>
+                                            )}
+                                            <div className="absolute top-2 right-2 bg-green-500 text-white text-xs font-semibold px-2 py-1 rounded">
+                                                {calculateDiscount(product.price, product.student_price)}% OFF
+                                            </div>
+                                        </div>
+                                        <div className="p-4">
+                                            <h3 className="font-semibold text-slate-900 mb-1 line-clamp-1">{product.name}</h3>
+                                            {product.category_name && (
+                                                <p className="text-xs text-slate-500 mb-2">{product.category_name}</p>
+                                            )}
+                                            <Link
+                                                href={`/marketplace/${product.id}`}
+                                                className="text-red-600 hover:underline text-sm font-medium"
+                                                onClick={(e) => e.stopPropagation()}
+                                            >
+                                                {product.deal_type === 'voucher' || product.vendor_payment_method === 'vendor_website' ? 'Visit Website' : 'Purchase'}
+                                            </Link>
+                                        </div>
+                                    </Link>
+                                ))
+                            )}
+                        </div>
+                    </section>
+                )}
+
+                {/* Vouchers - Coupon Style */}
+                <section className="mb-12">
+                    <div className="flex items-center justify-between mb-4">
+                        <h2 className="text-2xl font-bold text-slate-900">Vouchers</h2>
+                        <Link href="/marketplace" className="text-red-600 hover:underline font-medium">
+                            See all
+                        </Link>
+                    </div>
+                    <div className="flex gap-4 overflow-x-auto pb-4 scrollbar-hide">
+                        {voucherProducts.slice(0, 6).map((product) => {
+                            const discount = calculateDiscount(product.price, product.student_price);
+                            return (
+                                <Link
+                                    key={product.id}
+                                    href={`/marketplace/${product.id}`}
+                                    className="shrink-0 w-[420px] md:w-[480px] bg-white rounded-lg shadow-sm hover:shadow-md transition-shadow overflow-hidden flex"
+                                    style={{
+                                        border: '1px dotted #1D4ED8'
+                                    }}
+                                >
+                                    {/* Left Blue Section - Discount */}
+                                    <div
+                                        className="flex items-center justify-center px-2 md:px-3 py-6 relative"
+                                        style={{
+                                            backgroundColor: '#1D4ED8',
+                                            minWidth: '60px',
+                                            width: '60px'
+                                        }}
+                                    >
+                                        <div className="relative inline-block">
+                                            <div
+                                                className="absolute inset-0 border-2"
+                                                style={{
+                                                    borderStyle: 'dotted',
+                                                    borderColor: 'rgba(255, 255, 255, 0.5)',
+                                                    borderRadius: '0'
+                                                }}
+                                            />
+                                            <span
+                                                className="text-white font-light text-xs md:text-sm whitespace-nowrap relative z-10 px-4 py-2 block"
+                                                style={{
+                                                    writingMode: 'vertical-lr',
+                                                    textOrientation: 'mixed',
+                                                    transform: 'rotate(180deg)'
+                                                }}
+                                            >
+                                                Discount
+                                            </span>
+                                        </div>
+                                    </div>
+                                    <div className="flex-1 p-4 md:p-6 relative bg-white">
+                                        <div className="flex items-center justify-between mb-3 relative z-10">
+                                            <div className="flex items-center gap-3 flex-1 min-w-0">
+                                                {product.vendor_logo_url ? (
+                                                    <div className="w-10 h-10 md:w-12 md:h-12 rounded-lg overflow-hidden relative shrink-0">
+                                                        <Image
+                                                            src={getImageUrl(product.vendor_logo_url) || ''}
+                                                            alt={product.vendor_name || 'Vendor logo'}
+                                                            fill
+                                                            className="object-cover"
+                                                            unoptimized
+                                                        />
+                                                    </div>
+                                                ) : product.vendor_name ? (
+                                                    <div
+                                                        className="w-10 h-10 md:w-12 md:h-12 rounded-lg flex items-center justify-center font-bold text-white text-xs shrink-0"
+                                                        style={{ backgroundColor: '#1D4ED8' }}
+                                                    >
+                                                        {product.vendor_name.substring(0, 2).toUpperCase()}
+                                                    </div>
+                                                ) : (
+                                                    <div
+                                                        className="w-10 h-10 md:w-12 md:h-12 rounded-lg flex items-center justify-center shrink-0"
+                                                        style={{ backgroundColor: '#1D4ED8' }}
+                                                    >
+                                                        <ShoppingBag className="h-5 w-5 md:h-6 md:w-6 text-white" />
+                                                    </div>
+                                                )}
+                                                <div
+                                                    className="text-xl md:text-2xl font-bold whitespace-nowrap"
+                                                    style={{ color: '#1D4ED8' }}
+                                                >
+                                                    {discount}% OFF
+                                                </div>
+                                            </div>
+                                            <div className="flex items-center gap-3 shrink-0">
+                                                <div
+                                                    className="w-px h-8"
+                                                    style={{ borderLeft: '1px dashed #1D4ED8' }}
+                                                />
+                                                <Link
+                                                    href={`/marketplace/${product.id}`}
+                                                    className="text-red-600 underline text-xs font-medium whitespace-nowrap"
+                                                    onClick={(e) => e.stopPropagation()}
+                                                >
+                                                    {product.deal_type === 'voucher' || product.vendor_payment_method === 'vendor_website' ? 'Visit website' : 'Purchase'}
+                                                </Link>
+                                            </div>
+                                        </div>
+                                        <div className="w-full h-px mb-3" style={{ borderTop: '1px dashed #1D4ED8' }} />
+                                        <div className="mb-3 relative z-10">
+                                            <p className="text-xs whitespace-nowrap" style={{ color: '#1D4ED8' }}>
+                                                {discount}% discount on all products available for students
+                                            </p>
+                                        </div>
+                                        <div className="w-full h-px" style={{ borderTop: '1px dashed #1D4ED8' }} />
+                                    </div>
+                                </Link>
+                            );
+                        })}
+                    </div>
+                </section>
+
                 {/* Featured Deals */}
                 <section className="mb-12">
                     <div className="flex items-center justify-between mb-4">
@@ -397,19 +592,19 @@ export default function MarketplacePage() {
                                                 <h3 className="font-semibold text-slate-900 text-sm md:text-base line-clamp-2">{product.name}</h3>
                                             </div>
 
-                                            {/* Row 3: Category name and Visit website link */}
+                                            {/* Row 3: Category name and CTA link */}
                                             <div className="flex items-center justify-between mt-auto">
                                                 {/* Category name */}
                                                 {product.category_name && (
                                                     <p className="text-xs md:text-sm text-red-600 font-normal">{product.category_name}</p>
                                                 )}
-                                                {/* Visit website link at right */}
+                                                {/* CTA: Visit website (vendor_website) or Purchase (awoof) */}
                                                 <Link
                                                     href={`/marketplace/${product.id}`}
                                                     className="text-red-600 underline text-xs font-medium whitespace-nowrap"
                                                     onClick={(e) => e.stopPropagation()}
                                                 >
-                                                    Visit website
+                                                    {product.deal_type === 'voucher' || product.vendor_payment_method === 'vendor_website' ? 'Visit website' : 'Purchase'}
                                                 </Link>
                                             </div>
                                         </div>
@@ -419,217 +614,6 @@ export default function MarketplacePage() {
                         )}
                     </div>
                 </section>
-
-                {/* Find Deals - Coupon Style */}
-                <section className="mb-12">
-                    <div className="flex items-center justify-between mb-4">
-                        <h2 className="text-2xl font-bold text-slate-900">Find Deals</h2>
-                        <Link href="/marketplace" className="text-red-600 hover:underline font-medium">
-                            See all
-                        </Link>
-                    </div>
-                    <div className="flex gap-4 overflow-x-auto pb-4 scrollbar-hide">
-                        {products.slice(0, 6).map((product) => {
-                            const discount = calculateDiscount(product.price, product.student_price);
-                            return (
-                                <Link
-                                    key={product.id}
-                                    href={`/marketplace/${product.id}`}
-                                    className="shrink-0 w-[420px] md:w-[480px] bg-white rounded-lg shadow-sm hover:shadow-md transition-shadow overflow-hidden flex"
-                                    style={{
-                                        border: '1px dotted #1D4ED8'
-                                    }}
-                                >
-                                    {/* Left Blue Section - Discount */}
-                                    <div
-                                        className="flex items-center justify-center px-2 md:px-3 py-6 relative"
-                                        style={{
-                                            backgroundColor: '#1D4ED8',
-                                            minWidth: '60px',
-                                            width: '60px'
-                                        }}
-                                    >
-                                        <div className="relative inline-block">
-                                            {/* Dotted border around text */}
-                                            <div
-                                                className="absolute inset-0 border-2"
-                                                style={{
-                                                    borderStyle: 'dotted',
-                                                    borderColor: 'rgba(255, 255, 255, 0.5)',
-                                                    borderRadius: '0'
-                                                }}
-                                            />
-                                            <span
-                                                className="text-white font-light text-xs md:text-sm whitespace-nowrap relative z-10 px-4 py-2 block"
-                                                style={{
-                                                    writingMode: 'vertical-lr',
-                                                    textOrientation: 'mixed',
-                                                    transform: 'rotate(180deg)'
-                                                }}
-                                            >
-                                                Discount
-                                            </span>
-                                        </div>
-
-                                    </div>
-
-                                    {/* Right White Section - Content */}
-                                    <div className="flex-1 p-4 md:p-6 relative bg-white">
-                                        {/* First Row: Logo, Percentage, Blue dotted border, Visit website */}
-                                        <div className="flex items-center justify-between mb-3 relative z-10">
-                                            {/* Left side: Logo and Percentage */}
-                                            <div className="flex items-center gap-3 flex-1 min-w-0">
-                                                {/* Vendor Logo/Initials */}
-                                                {product.vendor_logo_url ? (
-                                                    <div className="w-10 h-10 md:w-12 md:h-12 rounded-lg overflow-hidden relative shrink-0">
-                                                        <Image
-                                                            src={getImageUrl(product.vendor_logo_url) || ''}
-                                                            alt={product.vendor_name || 'Vendor logo'}
-                                                            fill
-                                                            className="object-cover"
-                                                            unoptimized
-                                                        />
-                                                    </div>
-                                                ) : product.vendor_name ? (
-                                                    <div
-                                                        className="w-10 h-10 md:w-12 md:h-12 rounded-lg flex items-center justify-center font-bold text-white text-xs shrink-0"
-                                                        style={{ backgroundColor: '#1D4ED8' }}
-                                                    >
-                                                        {product.vendor_name.substring(0, 2).toUpperCase()}
-                                                    </div>
-                                                ) : (
-                                                    <div
-                                                        className="w-10 h-10 md:w-12 md:h-12 rounded-lg flex items-center justify-center shrink-0"
-                                                        style={{ backgroundColor: '#1D4ED8' }}
-                                                    >
-                                                        <ShoppingBag className="h-5 w-5 md:h-6 md:w-6 text-white" />
-                                                    </div>
-                                                )}
-                                                {/* Percentage Discount */}
-                                                <div
-                                                    className="text-xl md:text-2xl font-bold whitespace-nowrap"
-                                                    style={{ color: '#1D4ED8' }}
-                                                >
-                                                    {discount}% OFF
-                                                </div>
-                                            </div>
-                                            {/* Right side: Blue dotted border and Visit website link */}
-                                            <div className="flex items-center gap-3 shrink-0">
-                                                {/* Blue dotted vertical border */}
-                                                <div
-                                                    className="w-px h-8"
-                                                    style={{
-                                                        borderLeft: '1px dashed #1D4ED8'
-                                                    }}
-                                                />
-                                                {/* Visit Website Link */}
-                                                <Link
-                                                    href={`/marketplace/${product.id}`}
-                                                    className="text-red-600 underline text-xs font-medium whitespace-nowrap"
-                                                    onClick={(e) => e.stopPropagation()}
-                                                >
-                                                    Visit website
-                                                </Link>
-                                            </div>
-                                        </div>
-
-                                        {/* Blue dotted horizontal border */}
-                                        <div
-                                            className="w-full h-px mb-3"
-                                            style={{
-                                                borderTop: '1px dashed #1D4ED8'
-                                            }}
-                                        />
-
-                                        {/* Second Row: Discount description text */}
-                                        <div className="mb-3 relative z-10">
-                                            <p
-                                                className="text-xs whitespace-nowrap"
-                                                style={{ color: '#1D4ED8' }}
-                                            >
-                                                {discount}% discount on all products available for students
-                                            </p>
-                                        </div>
-
-                                        {/* Blue dotted horizontal border below text */}
-                                        <div
-                                            className="w-full h-px"
-                                            style={{
-                                                borderTop: '1px dashed #1D4ED8'
-                                            }}
-                                        />
-                                    </div>
-                                </Link>
-                            );
-                        })}
-                    </div>
-                </section>
-
-                {/* Category Deals - Dynamic based on selected category */}
-                {selectedCategory && (
-                    <section className="mb-12">
-                        <div className="flex items-center justify-between mb-4">
-                            <h2 className="text-2xl font-bold text-slate-900">{getSelectedCategoryName()}</h2>
-                            <Link
-                                href={`/marketplace?categoryId=${selectedCategory}`}
-                                className="text-red-600 hover:underline font-medium"
-                            >
-                                See all
-                            </Link>
-                        </div>
-                        <div className="flex gap-4 overflow-x-auto pb-4 scrollbar-hide">
-                            {isLoading ? (
-                                <div className="flex items-center justify-center w-full py-12">
-                                    <p className="text-slate-500">Loading deals...</p>
-                                </div>
-                            ) : categoryProducts.length === 0 ? (
-                                <div className="flex items-center justify-center w-full py-12">
-                                    <p className="text-slate-500">No deals available in this category</p>
-                                </div>
-                            ) : (
-                                categoryProducts.slice(0, 6).map((product) => (
-                                    <Link
-                                        key={product.id}
-                                        href={`/marketplace/${product.id}`}
-                                        className="shrink-0 w-80 bg-white rounded-lg shadow-sm hover:shadow-md transition-shadow overflow-hidden"
-                                    >
-                                        <div className="relative h-48 bg-slate-100">
-                                            {product.image_url ? (
-                                                <Image
-                                                    src={getImageUrl(product.image_url) || ''}
-                                                    alt={product.name}
-                                                    fill
-                                                    className="object-cover"
-                                                    unoptimized
-                                                />
-                                            ) : (
-                                                <div className="w-full h-full flex items-center justify-center text-slate-400">
-                                                    No Image
-                                                </div>
-                                            )}
-                                            <div className="absolute top-2 right-2 bg-green-500 text-white text-xs font-semibold px-2 py-1 rounded">
-                                                {calculateDiscount(product.price, product.student_price)}% OFF
-                                            </div>
-                                        </div>
-                                        <div className="p-4">
-                                            <h3 className="font-semibold text-slate-900 mb-1 line-clamp-1">{product.name}</h3>
-                                            {product.category_name && (
-                                                <p className="text-xs text-slate-500 mb-2">{product.category_name}</p>
-                                            )}
-                                            <Link
-                                                href={`/marketplace/${product.id}`}
-                                                className="text-red-600 hover:underline text-sm font-medium"
-                                                onClick={(e) => e.stopPropagation()}
-                                            >
-                                                Visit Website
-                                            </Link>
-                                        </div>
-                                    </Link>
-                                ))
-                            )}
-                        </div>
-                    </section>
-                )}
             </main>
 
             {/* Footer */}

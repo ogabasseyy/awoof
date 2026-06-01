@@ -172,6 +172,15 @@ class App {
     }
 
     try {
+      const widgetRoutes = await import('./routes/widget.routes.js');
+      this.app.use('/api/widget', widgetRoutes.default);
+      appLogger.info('Widget routes registered');
+    } catch (error) {
+      appLogger.error('Failed to register widget routes:', error);
+      throw error;
+    }
+
+    try {
       const vendorRoutes = await import('./routes/vendors.routes.js');
       this.app.use('/api/vendors', vendorRoutes.default);
       appLogger.info('Vendor routes registered');

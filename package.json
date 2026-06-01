@@ -3,6 +3,8 @@
   "scripts": {
     "dev:web": "cd apps/web && npm run dev",
     "build:web": "cd apps/web && npm run build",
-    "install:web": "cd apps/web && npm install"
+    "install:web": "cd apps/web && npm install",
+    "build:widget": "cd apps/widget && npm run build",
+    "install:widget": "cd apps/widget && npm install"
   }
 }

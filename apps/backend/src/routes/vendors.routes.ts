@@ -13,6 +13,7 @@ import { OrderController } from '../controllers/order.controller.js';
 import { PaymentController } from '../controllers/payment.controller.js';
 import { AnalyticsController } from '../controllers/analytics.controller.js';
 import { VendorSupportController } from '../controllers/vendor-support.controller.js';
+import { getWidgetConfig, updateWidgetConfig } from '../controllers/widget-config.controller.js';
 import { upload } from '../config/upload.js';
 
 const router = Router();
@@ -264,6 +265,28 @@ router.get(
     '/payment/api-key',
     authenticate,
     asyncHandler(paymentController.getApiKey.bind(paymentController))
+);
+
+/**
+ * @route   GET /api/vendors/widget-config
+ * @desc    Get widget config (allowed domains, API key)
+ * @access  Private (Vendor)
+ */
+router.get(
+    '/widget-config',
+    authenticate,
+    asyncHandler(getWidgetConfig)
+);
+
+/**
+ * @route   PUT /api/vendors/widget-config
+ * @desc    Update widget config (allowed domains; optional regenerate API key)
+ * @access  Private (Vendor)
+ */
+router.put(
+    '/widget-config',
+    authenticate,
+    asyncHandler(updateWidgetConfig)
 );
 
 /**

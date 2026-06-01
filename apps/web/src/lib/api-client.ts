@@ -7,7 +7,7 @@
 import axios from 'axios';
 import type { AxiosInstance, InternalAxiosRequestConfig } from 'axios';
 
-// Get API URL from environment or default to localhost
+// Get API URL from environment (e.g. http://localhost:5001 for local backend). Must match backend PORT.
 const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:5001';
 
 /**
