@@ -154,12 +154,16 @@ export class ProductController {
 
         // Get vendor ID
         const vendorResult = await db.query(
-            'SELECT id FROM vendors WHERE user_id = $1 AND deleted_at IS NULL',
+            'SELECT id, status FROM vendors WHERE user_id = $1 AND deleted_at IS NULL',
             [req.user.userId]
         );
 
         if (vendorResult.rows.length === 0) {
             throw new NotFoundError('Vendor profile not found');
+        }
+
+        if (vendorResult.rows[0].status !== 'active') {
+            throw new BadRequestError('Your vendor account must be approved before managing deals');
         }
 
         const vendorId = vendorResult.rows[0].id as string;
@@ -200,12 +204,16 @@ export class ProductController {
 
         // Get vendor ID
         const vendorResult = await db.query(
-            'SELECT id FROM vendors WHERE user_id = $1 AND deleted_at IS NULL',
+            'SELECT id, status FROM vendors WHERE user_id = $1 AND deleted_at IS NULL',
             [req.user.userId]
         );
 
         if (vendorResult.rows.length === 0) {
             throw new NotFoundError('Vendor profile not found');
+        }
+
+        if (vendorResult.rows[0].status !== 'active') {
+            throw new BadRequestError('Your vendor account must be approved before managing deals');
         }
 
         const vendorId = vendorResult.rows[0].id;
@@ -268,12 +276,16 @@ export class ProductController {
 
         // Get vendor ID
         const vendorResult = await db.query(
-            'SELECT id FROM vendors WHERE user_id = $1 AND deleted_at IS NULL',
+            'SELECT id, status FROM vendors WHERE user_id = $1 AND deleted_at IS NULL',
             [req.user.userId]
         );
 
         if (vendorResult.rows.length === 0) {
             throw new NotFoundError('Vendor profile not found');
+        }
+
+        if (vendorResult.rows[0].status !== 'active') {
+            throw new BadRequestError('Your vendor account must be approved before managing deals');
         }
 
         const vendorId = vendorResult.rows[0].id as string;
@@ -407,12 +419,16 @@ export class ProductController {
 
         // Get vendor ID
         const vendorResult = await db.query(
-            'SELECT id FROM vendors WHERE user_id = $1 AND deleted_at IS NULL',
+            'SELECT id, status FROM vendors WHERE user_id = $1 AND deleted_at IS NULL',
             [req.user.userId]
         );
 
         if (vendorResult.rows.length === 0) {
             throw new NotFoundError('Vendor profile not found');
+        }
+
+        if (vendorResult.rows[0].status !== 'active') {
+            throw new BadRequestError('Your vendor account must be approved before managing deals');
         }
 
         const vendorId = vendorResult.rows[0].id as string;

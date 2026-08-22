@@ -42,7 +42,7 @@ export default function ProductDetailPage() {
     const productId = params.id as string;
     const [product, setProduct] = useState<Product | null>(null);
     const [isLoading, setIsLoading] = useState(true);
-    const [isAddingToCart] = useState(false);
+    const [isPurchasing, setIsPurchasing] = useState(false);
 
     useEffect(() => {
         if (productId) {
@@ -62,7 +62,13 @@ export default function ProductDetailPage() {
         }
     };
 
-    const handlePurchase = () => {
+    const handlePurchase = async () => {
+        if (!product) return;
+
+        if (product.deal_type === 'voucher' || product.vendor_payment_method === 'vendor_website') {
+            return;
+        }
+
         if (!user) {
             router.push('/auth/student/login?redirect=/marketplace/' + productId);
             return;
@@ -74,8 +80,23 @@ export default function ProductDetailPage() {
             return;
         }
 
-        // TODO: Implement purchase flow
-        alert('Purchase flow coming soon!');
+        try {
+            setIsPurchasing(true);
+            const response = await apiClient.post('/checkout', { productId });
+            const authorizationUrl = response.data.data?.authorizationUrl;
+            if (authorizationUrl) {
+                window.location.href = authorizationUrl;
+            } else {
+                alert('Could not start checkout');
+            }
+        } catch (error: unknown) {
+            const message =
+                (error as { response?: { data?: { error?: { message?: string } } } })?.response?.data?.error
+                    ?.message || 'Checkout failed';
+            alert(message);
+        } finally {
+            setIsPurchasing(false);
+        }
     };
 
 
@@ -220,14 +241,14 @@ export default function ProductDetailPage() {
                         <div className="pt-4">
                             <Button
                                 onClick={handlePurchase}
-                                disabled={product.stock === 0 || isAddingToCart}
+                                disabled={product.stock === 0 || isPurchasing}
                                 className="w-full"
                                 size="lg"
                             >
                                 <ShoppingCart className="h-5 w-5 mr-2" />
                                 {product.stock === 0
                                     ? 'Out of Stock'
-                                    : isAddingToCart
+                                    : isPurchasing
                                         ? 'Processing...'
                                         : (product.deal_type === 'voucher' || product.vendor_payment_method === 'vendor_website')
                                             ? 'Visit website'

@@ -54,6 +54,7 @@ const envSchema = z.object({
     WHATSAPP_API_URL: z.string().url().optional().or(z.literal('')),
     PAYSTACK_SECRET_KEY: z.string().optional(),
     PAYSTACK_PUBLIC_KEY: z.string().optional(),
+    PAYSTACK_WEBHOOK_SECRET: z.string().optional(),
     // Brevo (Email Service)
     BREVO_API_KEY: z.string().optional(),
     BREVO_FROM_NAME: z.string().optional(),
@@ -150,6 +151,7 @@ export const config = {
     paystack: {
         secretKey: env.PAYSTACK_SECRET_KEY,
         publicKey: env.PAYSTACK_PUBLIC_KEY,
+        webhookSecret: env.PAYSTACK_WEBHOOK_SECRET,
     },
 
     aws: {

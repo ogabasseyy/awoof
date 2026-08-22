@@ -6,6 +6,7 @@
  */
 
 import axios from 'axios';
+import crypto from 'crypto';
 import { config } from '../../config/env.js';
 import { BadRequestError } from '../../common/errors/AppError.js';
 
@@ -87,5 +88,69 @@ export async function checkDuplicatePayment(
     // This will be checked in the database by the controller
     // This function is here for potential future use (e.g., caching)
     return false;
+}
+
+export function verifyPaystackWebhookSignature(
+    rawBody: Buffer,
+    signatureHeader: string | undefined
+): boolean {
+    const secret = config.paystack.webhookSecret || config.paystack.secretKey;
+    if (!secret || !signatureHeader) {
+        return false;
+    }
+    const hash = crypto.createHmac('sha512', secret).update(rawBody).digest('hex');
+    return hash === signatureHeader;
+}
+
+export function generatePaystackReference(): string {
+    return `awoof_${Date.now()}_${crypto.randomBytes(4).toString('hex')}`;
+}
+
+export async function initializePaystackTransaction(params: {
+    email: string;
+    amountKobo: number;
+    reference: string;
+    callbackUrl: string;
+    metadata: Record<string, unknown>;
+    subaccountCode?: string | null;
+    transactionChargeKobo?: number;
+}): Promise<{ authorizationUrl: string; accessCode: string }> {
+    if (!config.paystack.secretKey) {
+        throw new BadRequestError('Paystack secret key not configured');
+    }
+
+    const body: Record<string, unknown> = {
+        email: params.email,
+        amount: params.amountKobo,
+        reference: params.reference,
+        callback_url: params.callbackUrl,
+        metadata: params.metadata,
+    };
+
+    if (params.subaccountCode) {
+        body.subaccount = params.subaccountCode;
+        body.transaction_charge = params.transactionChargeKobo ?? 0;
+        body.bearer = 'subaccount';
+    }
+
+    const response = await axios.post(
+        'https://api.paystack.co/transaction/initialize',
+        body,
+        {
+            headers: {
+                Authorization: `Bearer ${config.paystack.secretKey}`,
+            },
+        }
+    );
+
+    const data = response.data?.data;
+    if (!data?.authorization_url) {
+        throw new BadRequestError('Paystack initialize failed');
+    }
+
+    return {
+        authorizationUrl: data.authorization_url,
+        accessCode: data.access_code,
+    };
 }
 

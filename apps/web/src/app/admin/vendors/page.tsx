@@ -48,7 +48,9 @@ export default function AdminVendorsPage() {
     const [page, setPage] = useState(1);
     const [limit] = useState(20);
     const [search, setSearch] = useState('');
+    const [statusFilter, setStatusFilter] = useState('');
     const [isLoading, setIsLoading] = useState(true);
+    const [updatingId, setUpdatingId] = useState<string | null>(null);
 
     const handleLogout = async () => {
         await logout();
@@ -59,6 +61,7 @@ export default function AdminVendorsPage() {
             setIsLoading(true);
             const params = new URLSearchParams({ page: String(page), limit: String(limit) });
             if (search.trim()) params.set('search', search.trim());
+            if (statusFilter) params.set('status', statusFilter);
             const res = await apiClient.get(`/admin/vendors?${params}`);
             setVendors(res.data.data?.vendors ?? []);
             setTotal(res.data.data?.total ?? 0);
@@ -68,7 +71,19 @@ export default function AdminVendorsPage() {
         } finally {
             setIsLoading(false);
         }
-    }, [page, limit, search]);
+    }, [page, limit, search, statusFilter]);
+
+    const updateVendorStatus = async (vendorId: string, status: 'active' | 'suspended' | 'rejected') => {
+        try {
+            setUpdatingId(vendorId);
+            await apiClient.patch(`/admin/vendors/${vendorId}/status`, { status });
+            await fetchVendors();
+        } catch {
+            alert('Failed to update vendor status');
+        } finally {
+            setUpdatingId(null);
+        }
+    };
 
     useEffect(() => {
         fetchVendors();
@@ -87,7 +102,7 @@ export default function AdminVendorsPage() {
                 logoutLabel="Logout"
             >
                 <div className="space-y-6">
-                    <div className="flex gap-3">
+                    <div className="flex flex-wrap gap-3">
                         <Input
                             placeholder="Search by name, email, company, category..."
                             value={search}
@@ -95,6 +110,20 @@ export default function AdminVendorsPage() {
                             onKeyDown={(e) => e.key === 'Enter' && fetchVendors()}
                             className="max-w-sm"
                         />
+                        <select
+                            value={statusFilter}
+                            onChange={(e) => {
+                                setStatusFilter(e.target.value);
+                                setPage(1);
+                            }}
+                            className="h-10 rounded-md border border-slate-300 bg-white px-3 text-sm text-slate-700"
+                        >
+                            <option value="">All statuses</option>
+                            <option value="pending">Pending</option>
+                            <option value="active">Active</option>
+                            <option value="suspended">Suspended</option>
+                            <option value="rejected">Rejected</option>
+                        </select>
                         <Button variant="outline" onClick={fetchVendors}>
                             Search
                         </Button>
@@ -124,6 +153,7 @@ export default function AdminVendorsPage() {
                                             <th className="px-6 py-3 text-right text-xs font-medium uppercase text-slate-700">Revenue</th>
                                             <th className="px-6 py-3 text-right text-xs font-medium uppercase text-slate-700">Commission</th>
                                             <th className="px-6 py-3 text-left text-xs font-medium uppercase text-slate-700">Joined</th>
+                                            <th className="px-6 py-3 text-right text-xs font-medium uppercase text-slate-700">Actions</th>
                                         </tr>
                                     </thead>
                                     <tbody className="divide-y divide-slate-200">
@@ -139,6 +169,40 @@ export default function AdminVendorsPage() {
                                                 <td className="px-6 py-4 text-sm text-right font-medium text-slate-900">{formatCurrency(v.totalRevenue)}</td>
                                                 <td className="px-6 py-4 text-sm text-right font-medium text-green-600">{formatCurrency(v.totalCommission)}</td>
                                                 <td className="px-6 py-4 text-sm text-slate-600">{formatDate(v.createdAt)}</td>
+                                                <td className="px-6 py-4 text-sm text-right">
+                                                    <div className="flex justify-end gap-2">
+                                                        {v.status !== 'active' && (
+                                                            <Button
+                                                                size="sm"
+                                                                variant="outline"
+                                                                disabled={updatingId === v.id}
+                                                                onClick={() => updateVendorStatus(v.id, 'active')}
+                                                            >
+                                                                Approve
+                                                            </Button>
+                                                        )}
+                                                        {v.status !== 'suspended' && (
+                                                            <Button
+                                                                size="sm"
+                                                                variant="outline"
+                                                                disabled={updatingId === v.id}
+                                                                onClick={() => updateVendorStatus(v.id, 'suspended')}
+                                                            >
+                                                                Suspend
+                                                            </Button>
+                                                        )}
+                                                        {v.status !== 'rejected' && (
+                                                            <Button
+                                                                size="sm"
+                                                                variant="outline"
+                                                                disabled={updatingId === v.id}
+                                                                onClick={() => updateVendorStatus(v.id, 'rejected')}
+                                                            >
+                                                                Reject
+                                                            </Button>
+                                                        )}
+                                                    </div>
+                                                </td>
                                             </tr>
                                         ))}
                                     </tbody>

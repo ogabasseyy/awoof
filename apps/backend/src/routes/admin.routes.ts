@@ -34,6 +34,10 @@ router.delete('/universities/:id', asyncHandler(adminUniversityController.delete
 
 router.get('/students', asyncHandler(adminStudentController.getStudents.bind(adminStudentController)));
 router.get('/vendors', asyncHandler(adminVendorController.getVendors.bind(adminVendorController)));
+router.patch(
+    '/vendors/:id/status',
+    asyncHandler(adminVendorController.updateVendorStatus.bind(adminVendorController))
+);
 router.get('/analytics', asyncHandler(adminAnalyticsController.getAnalytics.bind(adminAnalyticsController)));
 
 /**

@@ -89,7 +89,9 @@ export async function updateWidgetConfig(req: AuthRequest, res: Response): Promi
     const vendorId = vendorResult.rows[0].id;
 
     const validated = updateWidgetConfigSchema.parse(req.body);
-    const domains = validated.allowedDomains.map((d) => d.replace(/^https?:\/\//, '').split('/')[0].toLowerCase().trim()).filter(Boolean);
+    const domains = validated.allowedDomains
+        .map((d) => (d.replace(/^https?:\/\//, '').split('/')[0] ?? '').toLowerCase().trim())
+        .filter(Boolean);
     if (domains.length === 0) {
         throw new Error('At least one valid domain is required');
     }

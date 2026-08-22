@@ -5,7 +5,7 @@
  * Follows SOLID principles with clean architecture
  */
 
-import express, { type Express } from 'express';
+import express, { type Express, type Request, type Response, type NextFunction } from 'express';
 import cors from 'cors';
 import helmet from 'helmet';
 import rateLimit from 'express-rate-limit';
@@ -27,8 +27,27 @@ class App {
 
   constructor() {
     this.app = express();
+    this.initializeWebhookRoute();
     this.initializeMiddlewares();
     // Note: Error handling must be initialized AFTER routes
+  }
+
+  /**
+   * Paystack webhook must receive raw body for HMAC verification.
+   */
+  private initializeWebhookRoute(): void {
+    this.app.post(
+      '/api/webhooks/paystack',
+      express.raw({ type: 'application/json' }),
+      async (req: Request, res: Response, next: NextFunction) => {
+        try {
+          const { handlePaystackWebhook } = await import('./controllers/webhook.controller.js');
+          await handlePaystackWebhook(req, res);
+        } catch (error) {
+          next(error);
+        }
+      }
+    );
   }
 
   /**
@@ -193,6 +212,15 @@ class App {
       appLogger.info('Products routes registered');
     } catch (error) {
       appLogger.error('Failed to register products routes:', error);
+      throw error;
+    }
+
+    try {
+      const checkoutRoutes = await import('./routes/checkout.routes.js');
+      this.app.use('/api/checkout', checkoutRoutes.default);
+      appLogger.info('Checkout routes registered');
+    } catch (error) {
+      appLogger.error('Failed to register checkout routes:', error);
       throw error;
     }
 

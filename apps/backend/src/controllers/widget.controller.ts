@@ -33,7 +33,7 @@ export async function domainCheck(req: Request, res: Response): Promise<void> {
     const { domain, apiKey } = parsed.data;
 
     // Normalize domain: strip protocol and path, lowercase
-    const hostname = domain.replace(/^https?:\/\//, '').split('/')[0].toLowerCase().trim();
+    const hostname = (domain.replace(/^https?:\/\//, '').split('/')[0] ?? '').toLowerCase().trim();
     if (!hostname) {
         throw new BadRequestError('Invalid domain');
     }
