@@ -106,11 +106,11 @@ export const config = {
     // Database
     database: {
         url: env.DATABASE_URL,
-        host: env.DB_HOST || 'localhost',
+        host: env.DB_HOST,
         port: env.DB_PORT || 5432,
-        name: env.DB_NAME || 'awoofDB',
-        user: env.DB_USER || 'root',
-        password: env.DB_PASSWORD || 'root',
+        name: env.DB_NAME,
+        user: env.DB_USER,
+        password: env.DB_PASSWORD,
     },
 
     // Redis

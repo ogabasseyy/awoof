@@ -79,3 +79,57 @@ export function getFileUrl(filename: string): string {
     return `/uploads/vendors/${filename}`;
 }
 
+// Magic byte signatures for file type validation
+const MAGIC_BYTES: Record<string, Buffer[]> = {
+    'image/jpeg': [Buffer.from([0xFF, 0xD8, 0xFF])],
+    'image/jpg': [Buffer.from([0xFF, 0xD8, 0xFF])],
+    'image/png': [Buffer.from([0x89, 0x50, 0x4E, 0x47])],
+    'image/webp': [Buffer.from('RIFF')], // Also check for WEBP at offset 8
+    'application/pdf': [Buffer.from('%PDF')],
+};
+
+/**
+ * Middleware to validate uploaded file magic bytes.
+ * Use after multer middleware to verify actual file content matches claimed MIME type.
+ */
+export function validateFileMagicBytes(req: any, res: any, next: any) {
+    if (!req.file && !req.files) return next();
+
+    const files = req.file ? [req.file] : (Array.isArray(req.files) ? req.files : Object.values(req.files).flat());
+
+    for (const file of files as Express.Multer.File[]) {
+        if (!file.path) continue; // skip memory storage files
+
+        try {
+            const fd = fs.openSync(file.path, 'r');
+            const header = Buffer.alloc(12);
+            fs.readSync(fd, header, 0, 12, 0);
+            fs.closeSync(fd);
+
+            const expectedSigs = MAGIC_BYTES[file.mimetype];
+            if (expectedSigs) {
+                const valid = expectedSigs.some(sig => {
+                    if (file.mimetype === 'image/webp') {
+                        // RIFF at start + WEBP at offset 8
+                        return header.subarray(0, 4).equals(Buffer.from('RIFF')) &&
+                               header.subarray(8, 12).equals(Buffer.from('WEBP'));
+                    }
+                    return header.subarray(0, sig.length).equals(sig);
+                });
+
+                if (!valid) {
+                    // Delete the invalid file
+                    fs.unlinkSync(file.path);
+                    res.status(400).json({
+                        success: false,
+                        error: { message: 'File content does not match declared type', statusCode: 400 }
+                    });
+                    return;
+                }
+            }
+        } catch {
+            // If we can't read the file, let it through (multer already validated MIME)
+        }
+    }
+    next();
+}

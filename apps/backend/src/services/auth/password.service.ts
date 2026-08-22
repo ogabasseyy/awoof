@@ -18,7 +18,7 @@ class PasswordService {
      * Hash a password
      */
     public async hashPassword(password: string): Promise<string> {
-        return Promise.resolve(bcrypt.hashSync(password, this.saltRounds));
+        return bcrypt.hash(password, this.saltRounds);
     }
 
     /**
@@ -28,7 +28,7 @@ class PasswordService {
         password: string,
         hash: string
     ): Promise<boolean> {
-        return Promise.resolve(bcrypt.compareSync(password, hash));
+        return bcrypt.compare(password, hash);
     }
 
     /**
@@ -54,6 +54,10 @@ class PasswordService {
 
         if (!/[0-9]/.test(password)) {
             errors.push('Password must contain at least one number');
+        }
+
+        if (!/[!@#$%^&*(),.?":\{\}|<>\[\]\-_=+~`]/.test(password)) {
+            errors.push('Password must contain at least one special character');
         }
 
         return {

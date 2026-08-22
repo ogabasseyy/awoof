@@ -83,8 +83,6 @@ class App {
       res.json({
         status: 'ok',
         timestamp: new Date().toISOString(),
-        uptime: process.uptime(),
-        ...(config.isDevelopment && { environment: config.env }),
       });
     });
 
