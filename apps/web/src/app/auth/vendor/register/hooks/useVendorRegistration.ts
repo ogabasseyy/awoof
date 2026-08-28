@@ -145,11 +145,7 @@ export function useVendorRegistration() {
                         }
                     });
 
-                    await apiClient.post('/vendors/upload', formData, {
-                        headers: {
-                            'Content-Type': 'multipart/form-data',
-                        },
-                    });
+                    await apiClient.post('/vendors/upload', formData);
                 }
             } catch (stepErr: unknown) {
                 completeOrUploadFailed = true;

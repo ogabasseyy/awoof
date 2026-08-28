@@ -15,6 +15,8 @@ import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import apiClient from '@/lib/api-client';
 import { primaryNavItems, secondaryNavItems } from '../adminNav';
+import toast from 'react-hot-toast';
+import { useConfirm } from '@/components/ui/ConfirmDialog';
 
 interface Category {
     id: string;
@@ -28,6 +30,7 @@ interface Category {
 
 export default function AdminCategoriesPage() {
     const { user, logout } = useAuth();
+    const confirm = useConfirm();
     const [categories, setCategories] = useState<Category[]>([]);
     const [isLoading, setIsLoading] = useState(true);
     const [isModalOpen, setIsModalOpen] = useState(false);
@@ -49,7 +52,7 @@ export default function AdminCategoriesPage() {
             setCategories(response.data.data || []);
         } catch (error) {
             console.error('Error fetching categories:', error);
-            alert('Failed to fetch categories');
+            toast.error('Failed to fetch categories');
         } finally {
             setIsLoading(false);
         }
@@ -93,33 +96,37 @@ export default function AdminCategoriesPage() {
         try {
             if (editingCategory) {
                 await apiClient.put(`/admin/categories/${editingCategory.id}`, formData);
-                alert('Category updated successfully');
+                toast.success('Category updated successfully');
             } else {
                 await apiClient.post('/admin/categories', formData);
-                alert('Category created successfully');
+                toast.success('Category created successfully');
             }
             handleCloseModal();
             fetchCategories();
         } catch (error) {
             console.error('Error saving category:', error);
             const message = (error as { response?: { data?: { error?: { message?: string } } } }).response?.data?.error?.message || 'Failed to save category';
-            alert(message);
+            toast.error(message);
         }
     };
 
     const handleDelete = async (categoryId: string) => {
-        if (!confirm('Are you sure you want to delete this category? This action cannot be undone.')) {
-            return;
-        }
+        const ok = await confirm({
+            title: 'Delete category?',
+            description: 'This action cannot be undone.',
+            confirmLabel: 'Delete',
+            variant: 'destructive',
+        });
+        if (!ok) return;
 
         try {
             await apiClient.delete(`/admin/categories/${categoryId}`);
-            alert('Category deleted successfully');
+            toast.success('Category deleted successfully');
             fetchCategories();
         } catch (error) {
             console.error('Error deleting category:', error);
             const message = (error as { response?: { data?: { error?: { message?: string } } } }).response?.data?.error?.message || 'Failed to delete category';
-            alert(message);
+            toast.error(message);
         }
     };
 

@@ -20,6 +20,8 @@ import { Label } from '@/components/ui/label';
 import { DashboardLayout } from '@/components/dashboard';
 import type { User } from '@/lib/auth';
 import apiClient from '@/lib/api-client';
+import toast from 'react-hot-toast';
+import { getApiErrorMessage } from '@/lib/api-error';
 
 const iconProps = { className: 'h-5 w-5', strokeWidth: 1.5, fill: 'currentColor' as const };
 
@@ -126,17 +128,12 @@ export default function NewProductPage() {
             formData.append('status', data.status);
             if (imageFile) formData.append('productImage', imageFile);
 
-            await apiClient.post('/vendors/products', formData, {
-                headers: {
-                    'Content-Type': 'multipart/form-data',
-                },
-            });
+            await apiClient.post('/vendors/products', formData);
 
             router.push('/vendor/deals');
         } catch (error: unknown) {
             console.error('Error creating product:', error);
-            const errorMessage = (error as { response?: { data?: { message?: string } } })?.response?.data?.message;
-            alert(errorMessage || 'Failed to create product');
+            toast.error(getApiErrorMessage(error, 'Failed to create product'));
         } finally {
             setIsSubmitting(false);
         }

@@ -19,6 +19,9 @@ import apiClient, { getImageUrl } from '@/lib/api-client';
 import Link from 'next/link';
 import { formatCurrency } from '@/lib/format';
 import { useSearchParams } from 'next/navigation';
+import toast from 'react-hot-toast';
+import { useConfirm } from '@/components/ui/ConfirmDialog';
+import { getApiErrorMessage } from '@/lib/api-error';
 
 const iconProps = { className: 'h-5 w-5', strokeWidth: 1.5, fill: 'currentColor' as const };
 
@@ -56,6 +59,7 @@ interface Product {
 export default function VendorDealsPage() {
     const searchParams = useSearchParams();
     const { user, logout } = useAuth();
+    const confirm = useConfirm();
     const [activeTab, setActiveTab] = useState<'products' | 'vouchers'>(() =>
         searchParams.get('tab') === 'vouchers' ? 'vouchers' : 'products'
     );
@@ -96,10 +100,12 @@ export default function VendorDealsPage() {
 
     useEffect(() => {
         fetchProducts();
+        // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [page, statusFilter, activeTab]);
 
-    // Debounced search
+    // Debounced search — skip the initial empty query (mount already fetched)
     useEffect(() => {
+        if (searchQuery === '') return;
         const timer = setTimeout(() => {
             if (page === 1) {
                 fetchProducts();
@@ -109,6 +115,7 @@ export default function VendorDealsPage() {
         }, 500);
 
         return () => clearTimeout(timer);
+        // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [searchQuery]);
 
     // Handle product sync
@@ -118,10 +125,10 @@ export default function VendorDealsPage() {
             await apiClient.post('/vendors/products/sync');
             // Refresh products after sync
             await fetchProducts();
+            toast.success('Products synced');
         } catch (error: unknown) {
             console.error('Error syncing products:', error);
-            const errorMessage = (error as { response?: { data?: { message?: string } } })?.response?.data?.message;
-            alert(errorMessage || 'Failed to sync products');
+            toast.error(getApiErrorMessage(error, 'Failed to sync products'));
         } finally {
             setIsSyncing(false);
         }
@@ -129,15 +136,21 @@ export default function VendorDealsPage() {
 
     // Handle delete
     const handleDelete = async (productId: string) => {
-        if (!confirm('Are you sure you want to delete this product?')) return;
+        const ok = await confirm({
+            title: 'Delete product?',
+            description: 'This product will be removed from your deals.',
+            confirmLabel: 'Delete',
+            variant: 'destructive',
+        });
+        if (!ok) return;
 
         try {
             await apiClient.delete(`/vendors/products/${productId}`);
             await fetchProducts();
+            toast.success('Product deleted');
         } catch (error: unknown) {
             console.error('Error deleting product:', error);
-            const errorMessage = (error as { response?: { data?: { message?: string } } })?.response?.data?.message;
-            alert(errorMessage || 'Failed to delete product');
+            toast.error(getApiErrorMessage(error, 'Failed to delete product'));
         }
     };
 

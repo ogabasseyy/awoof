@@ -10,7 +10,6 @@ import { Label } from '@/components/ui/label';
 import { StepWrapper } from './StepWrapper';
 import { FileUploadField } from '@/components/forms/FileUploadField';
 import { useFileUpload } from '@/hooks/useFileUpload';
-import Link from 'next/link';
 
 interface Step3DocumentUploadProps {
     onNext: () => void;
@@ -131,20 +130,7 @@ export function Step3DocumentUpload({
     };
 
     return (
-        <StepWrapper
-            title="Create An Account"
-            subtitle="Please fill in your information below."
-            progressIndicator={progressIndicator}
-            error={error}
-            footer={
-                <p className="mt-6 text-center text-sm text-gray-600">
-                    Already have an account?{' '}
-                    <Link href="/auth/vendor/login" className="text-primary hover:underline font-medium">
-                        Login
-                    </Link>
-                </p>
-            }
-        >
+        <StepWrapper progressIndicator={progressIndicator} error={error}>
             <form onSubmit={handleSubmit} className="space-y-6">
                 {/* Document Upload */}
                 <p className="text-sm text-slate-500">
@@ -247,13 +233,13 @@ export function Step3DocumentUpload({
                     <Button
                         type="button"
                         variant="outline"
-                        className="flex-1"
+                        className="flex-1 rounded-full h-11 font-semibold"
                         onClick={onPrevious}
                         disabled={isLoading}
                     >
                         Back
                     </Button>
-                    <Button type="submit" className="flex-1" disabled={isLoading}>
+                    <Button type="submit" className="flex-1 rounded-full h-11 font-semibold" disabled={isLoading}>
                         {isLoading ? 'Processing...' : 'Continue'}
                     </Button>
                 </div>

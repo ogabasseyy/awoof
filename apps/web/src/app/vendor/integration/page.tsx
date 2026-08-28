@@ -16,6 +16,9 @@ import { Label } from '@/components/ui/label';
 import { DashboardLayout } from '@/components/dashboard';
 import type { User } from '@/lib/auth';
 import apiClient from '@/lib/api-client';
+import toast from 'react-hot-toast';
+import { useConfirm } from '@/components/ui/ConfirmDialog';
+import { getApiErrorMessage } from '@/lib/api-error';
 
 const iconProps = { className: 'h-5 w-5', strokeWidth: 1.5, fill: 'currentColor' as const };
 
@@ -59,6 +62,7 @@ interface WidgetConfig {
 
 export default function VendorIntegrationPage() {
     const { user, logout } = useAuth();
+    const confirm = useConfirm();
     const [apiKey, setApiKey] = useState<string | null>(null);
     const [apiKeyInfo, setApiKeyInfo] = useState<ApiKeyInfo | null>(null);
     const [isGeneratingApiKey, setIsGeneratingApiKey] = useState(false);
@@ -132,21 +136,24 @@ export default function VendorIntegrationPage() {
     };
 
     const handleGenerateApiKey = async () => {
-        if (!confirm('Generating a new API key will revoke your existing key. Continue?')) {
-            return;
-        }
+        const ok = await confirm({
+            title: 'Generate new API key?',
+            description: 'This will revoke your existing key. Copy the new key immediately — it will not be shown again.',
+            confirmLabel: 'Generate key',
+            variant: 'destructive',
+        });
+        if (!ok) return;
 
         try {
             setIsGeneratingApiKey(true);
             const response = await apiClient.post('/vendors/payment/api-key');
             const newApiKey = response.data.data.apiKey;
             setApiKey(newApiKey);
-            alert('API key generated successfully! Make sure to copy it now - it will not be shown again.');
+            toast.success('API key generated — copy it now');
             await fetchIntegrationData();
         } catch (error: unknown) {
             console.error('Error generating API key:', error);
-            const errorMessage = (error as { response?: { data?: { message?: string } } })?.response?.data?.message;
-            alert(errorMessage || 'Failed to generate API key');
+            toast.error(getApiErrorMessage(error, 'Failed to generate API key'));
         } finally {
             setIsGeneratingApiKey(false);
         }

@@ -12,7 +12,7 @@ import { ProductController } from '../controllers/product.controller.js';
 import { OrderController } from '../controllers/order.controller.js';
 import { PaymentController } from '../controllers/payment.controller.js';
 import { AnalyticsController } from '../controllers/analytics.controller.js';
-import { VendorSupportController } from '../controllers/vendor-support.controller.js';
+import { ticketController } from '../controllers/ticket.controller.js';
 import { getWidgetConfig, updateWidgetConfig } from '../controllers/widget-config.controller.js';
 import { upload } from '../config/upload.js';
 
@@ -22,7 +22,6 @@ const productController = new ProductController();
 const orderController = new OrderController();
 const paymentController = new PaymentController();
 const analyticsController = new AnalyticsController();
-const vendorSupportController = new VendorSupportController();
 
 /**
  * @route   POST /api/vendors/upload
@@ -191,8 +190,30 @@ router.get(
 );
 
 /**
+ * @route   GET /api/vendors/payment/banks
+ * @desc    List Nigerian banks (Paystack)
+ * @access  Private (Vendor)
+ */
+router.get(
+    '/payment/banks',
+    authenticate,
+    asyncHandler(paymentController.listBanks.bind(paymentController))
+);
+
+/**
+ * @route   GET /api/vendors/payment/resolve-account
+ * @desc    Resolve bank account name (Paystack)
+ * @access  Private (Vendor)
+ */
+router.get(
+    '/payment/resolve-account',
+    authenticate,
+    asyncHandler(paymentController.resolveAccount.bind(paymentController))
+);
+
+/**
  * @route   PUT /api/vendors/payment/payout-settings
- * @desc    Update payout settings
+ * @desc    Update payout settings (creates/updates Paystack subaccount)
  * @access  Private (Vendor)
  */
 router.put(
@@ -316,51 +337,36 @@ router.get(
 );
 
 /**
- * Support Ticket Routes
- */
-
-/**
- * @route   POST /api/vendors/support-tickets
- * @desc    Create a new support ticket
- * @access  Private (Vendor)
+ * Support Ticket Routes (unified tickets)
  */
 router.post(
     '/support-tickets',
     authenticate,
-    asyncHandler(vendorSupportController.createTicket.bind(vendorSupportController))
+    asyncHandler(ticketController.create.bind(ticketController))
 );
 
-/**
- * @route   GET /api/vendors/support-tickets
- * @desc    Get all support tickets for the vendor
- * @access  Private (Vendor)
- */
 router.get(
     '/support-tickets',
     authenticate,
-    asyncHandler(vendorSupportController.getTickets.bind(vendorSupportController))
+    asyncHandler(ticketController.listOwn.bind(ticketController))
 );
 
-/**
- * @route   GET /api/vendors/support-tickets/:id
- * @desc    Get a single support ticket with responses
- * @access  Private (Vendor)
- */
 router.get(
     '/support-tickets/:id',
     authenticate,
-    asyncHandler(vendorSupportController.getTicket.bind(vendorSupportController))
+    asyncHandler(ticketController.getOwn.bind(ticketController))
 );
 
-/**
- * @route   POST /api/vendors/support-tickets/:id/responses
- * @desc    Add a response to a support ticket
- * @access  Private (Vendor)
- */
 router.post(
     '/support-tickets/:id/responses',
     authenticate,
-    asyncHandler(vendorSupportController.addResponse.bind(vendorSupportController))
+    asyncHandler(ticketController.replyOwn.bind(ticketController))
+);
+
+router.post(
+    '/support-tickets/:id/messages',
+    authenticate,
+    asyncHandler(ticketController.replyOwn.bind(ticketController))
 );
 
 export default router;

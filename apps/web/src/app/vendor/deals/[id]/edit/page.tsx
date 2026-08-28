@@ -20,6 +20,8 @@ import { Label } from '@/components/ui/label';
 import { DashboardLayout } from '@/components/dashboard';
 import type { User } from '@/lib/auth';
 import apiClient, { getImageUrl } from '@/lib/api-client';
+import toast from 'react-hot-toast';
+import { getApiErrorMessage } from '@/lib/api-error';
 
 const iconProps = { className: 'h-5 w-5', strokeWidth: 1.5, fill: 'currentColor' as const };
 
@@ -111,8 +113,7 @@ export default function EditProductPage() {
                 }
             } catch (error: unknown) {
                 console.error('Error fetching product:', error);
-                const errorMessage = (error as { response?: { data?: { message?: string } } })?.response?.data?.message;
-                alert(errorMessage || 'Failed to load product');
+                toast.error(getApiErrorMessage(error, 'Failed to load product'));
                 router.push('/vendor/deals');
             } finally {
                 setIsLoading(false);
@@ -159,17 +160,12 @@ export default function EditProductPage() {
             formData.append('status', data.status);
             if (imageFile) formData.append('productImage', imageFile);
 
-            await apiClient.put(`/vendors/products/${productId}`, formData, {
-                headers: {
-                    'Content-Type': 'multipart/form-data',
-                },
-            });
+            await apiClient.put(`/vendors/products/${productId}`, formData);
 
             router.push('/vendor/deals');
         } catch (error: unknown) {
             console.error('Error updating product:', error);
-            const errorMessage = (error as { response?: { data?: { message?: string } } })?.response?.data?.message;
-            alert(errorMessage || 'Failed to update product');
+            toast.error(getApiErrorMessage(error, 'Failed to update product'));
         } finally {
             setIsSubmitting(false);
         }

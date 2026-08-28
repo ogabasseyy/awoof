@@ -16,6 +16,7 @@ import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import apiClient from '@/lib/api-client';
 import { primaryNavItems, secondaryNavItems } from '../adminNav';
+import toast from 'react-hot-toast';
 
 interface Vendor {
     id: string;
@@ -78,8 +79,15 @@ export default function AdminVendorsPage() {
             setUpdatingId(vendorId);
             await apiClient.patch(`/admin/vendors/${vendorId}/status`, { status });
             await fetchVendors();
+            toast.success(
+                status === 'active'
+                    ? 'Vendor approved'
+                    : status === 'suspended'
+                      ? 'Vendor suspended'
+                      : 'Vendor rejected'
+            );
         } catch {
-            alert('Failed to update vendor status');
+            toast.error('Failed to update vendor status');
         } finally {
             setUpdatingId(null);
         }

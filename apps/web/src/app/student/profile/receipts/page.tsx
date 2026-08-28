@@ -12,6 +12,7 @@ import Link from 'next/link';
 import { Button } from '@/components/ui/button';
 import apiClient from '@/lib/api-client';
 import { formatCurrency } from '@/lib/format';
+import toast from 'react-hot-toast';
 
 interface ReceiptItem {
     id: string;
@@ -114,14 +115,12 @@ export default function ReceiptsPage() {
         });
     };
 
-    const handleDownload = (receipt: ReceiptItem) => {
-        // In a real app, this would download a PDF receipt
-        alert(`Downloading receipt for ${receipt.productName}`);
+    const handleDownload = (_receipt: ReceiptItem) => {
+        toast('Receipt download will be available soon');
     };
 
-    const handleView = (receipt: ReceiptItem) => {
-        // In a real app, this would open a receipt detail modal or page
-        alert(`Viewing receipt for ${receipt.productName}`);
+    const handleView = (_receipt: ReceiptItem) => {
+        toast('Receipt details will be available soon');
     };
 
     return (

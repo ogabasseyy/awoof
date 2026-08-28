@@ -232,6 +232,15 @@ class App {
       appLogger.error('Failed to register admin routes:', error);
       throw error;
     }
+
+    try {
+      const supportRoutes = await import('./routes/support.routes.js');
+      this.app.use('/api/support', supportRoutes.default);
+      appLogger.info('Support routes registered');
+    } catch (error) {
+      appLogger.error('Failed to register support routes:', error);
+      throw error;
+    }
   }
 
   /**

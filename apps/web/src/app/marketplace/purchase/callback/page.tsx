@@ -1,10 +1,10 @@
 /**
- * Post-Paystack purchase callback — poll transaction status.
+ * Post-Paystack purchase callback — poll transaction status until terminal.
  */
 
 'use client';
 
-import { Suspense, useEffect, useState } from 'react';
+import { Suspense, useEffect, useRef, useState } from 'react';
 import { useSearchParams } from 'next/navigation';
 import Link from 'next/link';
 import apiClient from '@/lib/api-client';
@@ -14,22 +14,43 @@ function PurchaseCallbackContent() {
     const searchParams = useSearchParams();
     const tx = searchParams.get('tx');
     const [status, setStatus] = useState<string>('pending');
+    const terminalRef = useRef(false);
 
     useEffect(() => {
         if (!tx) return;
 
+        let cancelled = false;
+        let intervalId: ReturnType<typeof setInterval> | null = null;
+
         const poll = async () => {
+            if (terminalRef.current || cancelled) return;
             try {
                 const res = await apiClient.get(`/checkout/${tx}`);
-                setStatus(res.data.data?.transaction?.status ?? 'pending');
+                const next = res.data.data?.transaction?.status ?? 'pending';
+                if (cancelled) return;
+                setStatus(next);
+                if (next === 'completed' || next === 'failed' || next === 'refunded') {
+                    terminalRef.current = true;
+                    if (intervalId) clearInterval(intervalId);
+                }
             } catch {
-                // Keep polling while webhook processes
+                // Keep polling while webhook / verify processes
             }
         };
 
         poll();
-        const intervalId = setInterval(poll, 3000);
-        return () => clearInterval(intervalId);
+        intervalId = setInterval(poll, 3000);
+
+        // Safety stop after ~2 minutes
+        const timeoutId = setTimeout(() => {
+            if (intervalId) clearInterval(intervalId);
+        }, 120_000);
+
+        return () => {
+            cancelled = true;
+            if (intervalId) clearInterval(intervalId);
+            clearTimeout(timeoutId);
+        };
     }, [tx]);
 
     const title =

@@ -13,7 +13,6 @@ import { Input } from '@/components/ui/input';
 import { PasswordInput } from '@/components/ui/PasswordInput';
 import { Label } from '@/components/ui/label';
 import { StepWrapper } from './StepWrapper';
-import Link from 'next/link';
 import type { Step2Data } from '../hooks/useVendorRegistration';
 
 const step2Schema = z.object({
@@ -44,20 +43,7 @@ export function Step2BusinessDetails({ onNext, onPrevious, error, isLoading, pro
     };
 
     return (
-        <StepWrapper
-            title="Create An Account"
-            subtitle="Please fill in your information below."
-            progressIndicator={progressIndicator}
-            error={error}
-            footer={
-                <p className="mt-6 text-center text-sm text-gray-600">
-                    Already have an account?{' '}
-                    <Link href="/auth/vendor/login" className="text-primary hover:underline font-medium">
-                        Login
-                    </Link>
-                </p>
-            }
-        >
+        <StepWrapper progressIndicator={progressIndicator} error={error}>
             <form onSubmit={form.handleSubmit(onSubmit)} className="space-y-5">
                 <div>
                     <Label htmlFor="businessCategory" className="text-left block mb-2">
@@ -141,13 +127,13 @@ export function Step2BusinessDetails({ onNext, onPrevious, error, isLoading, pro
                     <Button
                         type="button"
                         variant="outline"
-                        className="flex-1"
+                        className="flex-1 rounded-full h-11 font-semibold"
                         onClick={onPrevious}
                         disabled={isLoading}
                     >
                         Back
                     </Button>
-                    <Button type="submit" className="flex-1" disabled={isLoading}>
+                    <Button type="submit" className="flex-1 rounded-full h-11 font-semibold" disabled={isLoading}>
                         {isLoading ? 'Creating...' : 'Continue'}
                     </Button>
                 </div>

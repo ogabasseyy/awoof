@@ -1,62 +1,75 @@
-import React from "react";
+'use client';
+
 import {
   Accordion,
   AccordionContent,
   AccordionItem,
   AccordionTrigger,
-} from "@/components/ui/accordion";
+} from '@/components/ui/accordion';
+import { ScrollReveal } from '@/components/motion/Reveal';
 
 function FAQ() {
   const questions = [
     {
-      question: "Is Awoof free to use?",
-      answer: "Yes, Awoof is completely free for students! You can sign up, verify your student status, and access exclusive discounts without any subscription fees or hidden costs.",
+      question: 'Is Awoof free to use?',
+      answer:
+        'Yes — free for students. Sign up, verify once, and access exclusive discounts with no subscription fees.',
     },
     {
-      question: "Where can I use awoof deals?",
-      answer: "You can use Awoof deals at any of our partner businesses including restaurants, tech stores, fashion outlets, travel agencies, and more. Each deal shows the specific locations and businesses where it can be redeemed.",
+      question: 'Where can I use Awoof deals?',
+      answer:
+        'At partner businesses — restaurants, tech, fashion, travel, and more. Each deal shows where it can be redeemed.',
     },
     {
-      question: "Can I access deals without verifying?",
-      answer: "No, verification is required to access deals. This ensures that only legitimate students benefit from the exclusive discounts and helps maintain the integrity of our platform for both students and businesses.",
+      question: 'Can I access deals without verifying?',
+      answer:
+        'No. Verification keeps savings for real students and protects partners who offer student-only pricing.',
     },
     {
-      question: "What kind of businesses can join Awoof?",
-      answer: "Any business interested in reaching student customers can join Awoof! We welcome restaurants, retail stores, tech companies, entertainment venues, travel services, and more. Businesses of all sizes can create an account and list their student deals.",
+      question: 'What kind of businesses can join Awoof?',
+      answer:
+        'Any business that wants verified student customers — from campus cafés to national brands. Create an account and list deals.',
     },
     {
-      question: "Is there a cost to list deals on Awoof?",
-      answer: "We offer flexible options for businesses. Basic listing is free, allowing you to reach our student community. Premium features and enhanced visibility options are available for businesses looking to maximize their reach.",
+      question: 'Is there a cost to list deals on Awoof?',
+      answer:
+        'Basic listing options are available to reach our student community. Premium visibility options help maximize reach when you need them.',
     },
   ];
 
   return (
-    <div id="faq" className="flex flex-col justify-center items-center px-4 scroll-mt-20">
-      <div className="pt-9">
-        <p className="inline-block bg-gradient-to-b from-[#CAD5F6] to-[#FFFFFF] bg-clip-text text-transparent font-black text-[10.85vw] leading-tight">
-          Frequently Asked
+    <section
+      id="faq"
+      className="flex flex-col justify-center items-center px-4 sm:px-6 scroll-mt-24 py-16 sm:py-20"
+    >
+      <ScrollReveal className="text-center max-w-2xl">
+        <h2 className="text-3xl sm:text-4xl lg:text-5xl font-extrabold tracking-tight text-slate-900">
+          Frequently asked
+        </h2>
+        <p className="mt-3 text-slate-600 text-base sm:text-lg">
+          Quick answers for students and partners.
         </p>
-      </div>
+      </ScrollReveal>
 
-      <div className="w-full max-w-3xl mt-8">
-        <Accordion type="single" collapsible className="w-full space-y-4" >
+      <ScrollReveal delay={0.08} className="w-full max-w-3xl mt-10">
+        <Accordion type="single" collapsible className="w-full space-y-3">
           {questions.map((item, index) => (
             <AccordionItem
               key={index}
               value={`item-${index}`}
-              className=""
+              className="rounded-2xl border border-[#1D4ED8]/10 bg-white px-5 data-[state=open]:shadow-sm"
             >
-              <AccordionTrigger className="text-left font-semibold hover:no-underline">
+              <AccordionTrigger className="text-left font-semibold text-slate-900 hover:no-underline py-4">
                 {item.question}
               </AccordionTrigger>
-              <AccordionContent className="text-gray-600">
+              <AccordionContent className="text-slate-600 pb-4 leading-relaxed">
                 {item.answer}
               </AccordionContent>
             </AccordionItem>
           ))}
         </Accordion>
-      </div>
-    </div>
+      </ScrollReveal>
+    </section>
   );
 }
 

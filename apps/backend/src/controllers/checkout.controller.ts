@@ -15,11 +15,13 @@ import { success } from '../common/utils/response.js';
 import type { AuthRequest } from '../middleware/auth.middleware.js';
 import {
     calculateMarketplaceCommission,
+    completeMarketplaceTransaction,
     getPlatformFeePercent,
 } from '../services/payment/checkout.service.js';
 import {
     generatePaystackReference,
     initializePaystackTransaction,
+    verifyPaystackPayment,
 } from '../services/payment/paystack.service.js';
 
 const createCheckoutSchema = z.object({
@@ -171,6 +173,27 @@ export class CheckoutController {
         }
 
         const tx = result.rows[0];
+
+        // If webhook hasn't arrived yet, confirm with Paystack and complete (local/tunnel gaps)
+        if (tx.status === 'pending' && tx.paystack_reference) {
+            const verified = await verifyPaystackPayment(tx.paystack_reference);
+            if (verified.verified && verified.amount != null) {
+                await completeMarketplaceTransaction(tx.paystack_reference, verified.amount);
+                const refreshed = await db.query(
+                    `SELECT t.id, t.amount, t.commission, t.status, t.paystack_reference,
+                            t.settlement_mode, t.created_at, t.updated_at,
+                            p.name AS product_name, p.image_url AS product_image
+                     FROM transactions t
+                     JOIN products p ON p.id = t.product_id
+                     JOIN students s ON s.id = t.student_id
+                     WHERE t.id = $1 AND s.user_id = $2`,
+                    [transactionId, req.user.userId]
+                );
+                if (refreshed.rows.length > 0) {
+                    Object.assign(tx, refreshed.rows[0]);
+                }
+            }
+        }
 
         success(res, {
             message: 'Checkout status retrieved',

@@ -7,8 +7,10 @@
 'use client';
 
 import { useState, useEffect } from 'react';
+import Link from 'next/link';
+import { useRouter } from 'next/navigation';
 import { Headphones, Send, MessageCircle, Mail, Phone } from 'lucide-react';
-import { BarChart3, CreditCard, LayoutDashboard, LifeBuoy, Puzzle, Settings, ShoppingBag, Tag } from 'lucide-react';
+import { BarChart3, Bell, CreditCard, LayoutDashboard, LifeBuoy, Puzzle, Settings, ShoppingBag, Tag } from 'lucide-react';
 import ProtectedRoute from '@/components/ProtectedRoute';
 import { useAuth } from '@/contexts/AuthContext';
 import { Button } from '@/components/ui/button';
@@ -32,6 +34,7 @@ const primaryNavItems = [
 
 const secondaryNavItems = [
     { id: 'support', label: 'Support', href: '/vendor/support', icon: <LifeBuoy {...iconProps} /> },
+    { id: 'notifications', label: 'Notifications', href: '/vendor/notifications', icon: <Bell {...iconProps} /> },
     { id: 'settings', label: 'Settings', href: '/vendor/settings', icon: <Settings {...iconProps} /> },
 ];
 
@@ -47,6 +50,7 @@ interface SupportTicket {
 
 export default function VendorSupportPage() {
     const { user, logout } = useAuth();
+    const router = useRouter();
     const [showForm, setShowForm] = useState(false);
     const [formData, setFormData] = useState({
         subject: '',
@@ -111,19 +115,10 @@ export default function VendorSupportPage() {
         try {
             const response = await apiClient.post('/vendors/support-tickets', formData);
             if (response?.data?.data?.ticket) {
-                const newTicket: SupportTicket = {
-                    id: response.data.data.ticket.id,
-                    subject: response.data.data.ticket.subject,
-                    message: response.data.data.ticket.message,
-                    category: formData.category,
-                    status: response.data.data.ticket.status as 'open' | 'in-progress' | 'resolved' | 'closed',
-                    createdAt: response.data.data.ticket.createdAt,
-                    updatedAt: response.data.data.ticket.createdAt,
-                };
-                setTickets([newTicket, ...tickets]);
                 setFormData({ subject: '', message: '', category: 'general' });
                 setShowForm(false);
                 setSuccessMessage('Support ticket submitted successfully!');
+                router.push(`/vendor/support/${response.data.data.ticket.id}`);
             }
         } catch (err) {
             const error = err as { response?: { data?: { error?: { message?: string } } } };
@@ -311,7 +306,11 @@ export default function VendorSupportPage() {
                                     <h2 className="font-semibold text-slate-900 mb-4">Your Support Tickets</h2>
                                     <div className="space-y-4">
                                         {tickets.map((ticket) => (
-                                            <div key={ticket.id} className="p-4 border border-slate-200 rounded-lg hover:bg-slate-50 transition-colors">
+                                            <Link
+                                                key={ticket.id}
+                                                href={`/vendor/support/${ticket.id}`}
+                                                className="block p-4 border border-slate-200 rounded-lg hover:bg-slate-50 transition-colors"
+                                            >
                                                 <div className="flex items-start justify-between mb-2">
                                                     <div className="flex-1">
                                                         <h3 className="font-semibold text-slate-900">{ticket.subject}</h3>
@@ -321,9 +320,8 @@ export default function VendorSupportPage() {
                                                         {ticket.status}
                                                     </span>
                                                 </div>
-                                                <p className="text-sm text-slate-600 mb-3 line-clamp-2">{ticket.message}</p>
                                                 <p className="text-xs text-slate-500">Created: {formatDate(ticket.createdAt)}</p>
-                                            </div>
+                                            </Link>
                                         ))}
                                     </div>
                                 </div>

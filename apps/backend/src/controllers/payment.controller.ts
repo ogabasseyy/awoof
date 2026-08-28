@@ -17,17 +17,27 @@ import type { AuthRequest } from '../middleware/auth.middleware.js';
 import { z } from 'zod';
 import crypto from 'crypto';
 import { validateAndConsumeToken } from '../services/verification/verification-token.service.js';
-import { verifyPaystackPayment } from '../services/payment/paystack.service.js';
+import {
+    createPaystackSubaccount,
+    listPaystackBanks,
+    resolvePaystackAccount,
+    updatePaystackSubaccount,
+    verifyPaystackPayment,
+} from '../services/payment/paystack.service.js';
+import { getPlatformFeePercent } from '../services/payment/checkout.service.js';
 import { NotificationService } from '../services/notification/notification.service.js';
 
 /**
  * Validation schemas
  */
 const updatePayoutSettingsSchema = z.object({
-    bankName: z.string().min(1, 'Bank name is required').optional(),
-    accountNumber: z.string().min(10, 'Account number must be at least 10 digits').optional(),
-    accountName: z.string().min(1, 'Account name is required').optional(),
-    bankCode: z.string().optional(),
+    bankName: z.string().min(1, 'Bank name is required'),
+    accountNumber: z
+        .string()
+        .min(10, 'Account number must be at least 10 digits')
+        .max(20, 'Account number is too long')
+        .regex(/^\d+$/, 'Account number must be digits only'),
+    bankCode: z.string().min(1, 'Bank code is required'),
 });
 
 const updatePaymentMethodSchema = z.object({
@@ -63,7 +73,8 @@ export class PaymentController {
         // Get vendor ID
         const vendorResult = await db.query(
             `SELECT id, commission_rate, paystack_subaccount_code,
-                    COALESCE(payment_method, 'awoof') as payment_method
+                    COALESCE(payment_method, 'awoof') as payment_method,
+                    bank_name, bank_code, account_number, account_name
              FROM vendors 
              WHERE user_id = $1 AND deleted_at IS NULL`,
             [req.user.userId]
@@ -75,6 +86,11 @@ export class PaymentController {
 
         const vendor = vendorResult.rows[0];
         const vendorId = vendor.id;
+
+        // Marketplace checkout uses platform_fee_percent; vendor.commission_rate may be unset (0)
+        const platformFeePercent = await getPlatformFeePercent();
+        const vendorRate = parseFloat(vendor.commission_rate || '0');
+        const commissionRate = vendorRate > 0 ? vendorRate : platformFeePercent;
 
         // Get payment statistics
         const statsResult = await db.query(
@@ -91,20 +107,18 @@ export class PaymentController {
 
         const stats = statsResult.rows[0];
 
-        // Get payout settings (if stored separately, otherwise use vendor table)
-        // For now, we'll return basic info. Payout settings can be extended later
         const payoutSettings = {
-            bankName: null,
-            accountNumber: null,
-            accountName: null,
-            bankCode: null,
+            bankName: vendor.bank_name || null,
+            accountNumber: vendor.account_number || null,
+            accountName: vendor.account_name || null,
+            bankCode: vendor.bank_code || null,
         };
 
         success(res, {
             message: 'Payment settings retrieved successfully',
             data: {
                 settings: {
-                    commissionRate: parseFloat(vendor.commission_rate || '0'),
+                    commissionRate,
                     paystackSubaccountCode: vendor.paystack_subaccount_code,
                     paymentMethod: vendor.payment_method as 'awoof' | 'vendor_website' | null,
                     payoutSettings,
@@ -121,16 +135,56 @@ export class PaymentController {
     }
 
     /**
-     * Update payout settings
+     * List Nigerian banks from Paystack (for payout bank picker)
+     */
+    public async listBanks(req: AuthRequest, res: Response): Promise<void> {
+        if (!req.user || req.user.role !== 'vendor') {
+            throw new UnauthorizedError('Only vendors can list banks');
+        }
+
+        const banks = await listPaystackBanks();
+        success(res, {
+            message: 'Banks retrieved successfully',
+            data: { banks },
+        });
+    }
+
+    /**
+     * Resolve bank account name via Paystack
+     */
+    public async resolveAccount(req: AuthRequest, res: Response): Promise<void> {
+        if (!req.user || req.user.role !== 'vendor') {
+            throw new UnauthorizedError('Only vendors can resolve accounts');
+        }
+
+        const bankCode = String(req.query.bankCode || '').trim();
+        const accountNumber = String(req.query.accountNumber || '').trim();
+
+        if (!bankCode || !accountNumber) {
+            throw new BadRequestError('bankCode and accountNumber are required');
+        }
+        if (!/^\d{10,20}$/.test(accountNumber)) {
+            throw new BadRequestError('Account number must be 10–20 digits');
+        }
+
+        const resolved = await resolvePaystackAccount(bankCode, accountNumber);
+        success(res, {
+            message: 'Account resolved successfully',
+            data: resolved,
+        });
+    }
+
+    /**
+     * Update payout settings — resolve account, create/update Paystack subaccount, persist
      */
     public async updatePayoutSettings(req: AuthRequest, res: Response): Promise<void> {
         if (!req.user || req.user.role !== 'vendor') {
             throw new UnauthorizedError('Only vendors can update payment settings');
         }
 
-        // Get vendor ID
         const vendorResult = await db.query(
-            'SELECT id FROM vendors WHERE user_id = $1 AND deleted_at IS NULL',
+            `SELECT id, name, company_name, paystack_subaccount_code
+             FROM vendors WHERE user_id = $1 AND deleted_at IS NULL`,
             [req.user.userId]
         );
 
@@ -138,20 +192,71 @@ export class PaymentController {
             throw new NotFoundError('Vendor profile not found');
         }
 
-        // Validate request body
+        const vendor = vendorResult.rows[0];
         const validated = updatePayoutSettingsSchema.parse(req.body);
 
-        // TODO: Store payout settings in a separate table or extend vendors table
-        // For now, we'll just return success
-        // In production, you'd want to:
-        // 1. Validate bank account with Paystack
-        // 2. Store securely in database
-        // 3. Handle bank account verification
+        const resolved = await resolvePaystackAccount(validated.bankCode, validated.accountNumber);
+        const percentageCharge = await getPlatformFeePercent();
+        // Paystack subaccount display name = bank account holder (resolved NUBAN name)
+        const businessName = (resolved.accountName || vendor.company_name || vendor.name || 'Vendor').slice(
+            0,
+            100
+        );
+
+        const subaccountParams = {
+            businessName,
+            bankCode: validated.bankCode,
+            accountNumber: validated.accountNumber,
+            percentageCharge,
+        };
+
+        let subaccountCode: string;
+        if (vendor.paystack_subaccount_code) {
+            const updated = await updatePaystackSubaccount(
+                vendor.paystack_subaccount_code,
+                subaccountParams
+            );
+            subaccountCode = updated.subaccountCode;
+        } else {
+            const created = await createPaystackSubaccount(subaccountParams);
+            subaccountCode = created.subaccountCode;
+        }
+
+        await db.query(
+            `UPDATE vendors
+             SET bank_name = $1,
+                 bank_code = $2,
+                 account_number = $3,
+                 account_name = $4,
+                 paystack_subaccount_code = $5,
+                 updated_at = CURRENT_TIMESTAMP
+             WHERE id = $6`,
+            [
+                validated.bankName,
+                validated.bankCode,
+                validated.accountNumber,
+                resolved.accountName,
+                subaccountCode,
+                vendor.id,
+            ]
+        );
+
+        try {
+            await NotificationService.notifyVendorPayoutEnabled(req.user.userId);
+        } catch (error) {
+            appLogger.error('Payout enabled notification failed', error);
+        }
 
         success(res, {
             message: 'Payout settings updated successfully',
             data: {
-                payoutSettings: validated,
+                payoutSettings: {
+                    bankName: validated.bankName,
+                    bankCode: validated.bankCode,
+                    accountNumber: validated.accountNumber,
+                    accountName: resolved.accountName,
+                },
+                paystackSubaccountCode: subaccountCode,
             },
         });
     }
@@ -275,7 +380,9 @@ export class PaymentController {
         }
 
         const vendorId = vendorResult.rows[0].id;
-        const commissionRate = parseFloat(vendorResult.rows[0].commission_rate || '0');
+        const vendorRate = parseFloat(vendorResult.rows[0].commission_rate || '0');
+        const platformFeePercent = await getPlatformFeePercent();
+        const commissionRate = vendorRate > 0 ? vendorRate : platformFeePercent;
 
         // Get commission breakdown by status
         const breakdownResult = await db.query(

@@ -9,7 +9,9 @@
 'use client';
 
 import React, { createContext, useContext, useMemo } from 'react';
-import { MultiStepForm, type StepConfig } from '@/components/forms/MultiStepForm';
+import Link from 'next/link';
+import { AuthShell } from '@/components/auth/AuthShell';
+import { type StepConfig } from '@/components/forms/MultiStepForm';
 import { useMultiStepForm } from '@/hooks/useMultiStepForm';
 import { useVendorRegistration } from './hooks/useVendorRegistration';
 import { Step1CompanyInfo } from './components/Step1CompanyInfo';
@@ -26,7 +28,39 @@ function useRegistrationContext() {
     return ctx;
 }
 
-// Stable step components (defined outside page so they don't remount when error state changes)
+const STEP_SUBTITLES: Record<number, string> = {
+    1: 'Tell us about your company.',
+    2: 'Add your business details and password.',
+    3: 'Upload verification documents and brand assets.',
+};
+
+function VendorRegisterProgress({ currentStep, totalSteps }: { currentStep: number; totalSteps: number }) {
+    return (
+        <div className="flex items-center justify-center">
+            <div className="flex items-center">
+                {Array.from({ length: totalSteps }, (_, i) => i + 1).map((stepNum) => (
+                    <React.Fragment key={stepNum}>
+                        <div
+                            className={`w-8 h-8 rounded-full flex items-center justify-center font-bold ${stepNum <= currentStep
+                                ? 'bg-primary text-white'
+                                : 'bg-gray-300 text-gray-600'
+                                }`}
+                        >
+                            {stepNum}
+                        </div>
+                        {stepNum < totalSteps && (
+                            <div
+                                className={`w-16 h-0.5 mx-2 ${stepNum < currentStep ? 'bg-primary' : 'bg-gray-300'
+                                    }`}
+                            />
+                        )}
+                    </React.Fragment>
+                ))}
+            </div>
+        </div>
+    );
+}
+
 function Step1Wrapper({ progressIndicator }: { progressIndicator?: React.ReactNode }) {
     const { saveStep1Data, nextStep, error, isLoading } = useRegistrationContext();
     return (
@@ -102,14 +136,36 @@ export default function VendorRegisterPage() {
         [registration, form]
     );
 
+    const currentStepConfig = STEPS.find((step) => step.id === form.currentStep);
+    const CurrentStepComponent = currentStepConfig?.component;
+
     return (
         <VendorRegisterContext.Provider value={contextValue}>
-            <MultiStepForm
-                steps={STEPS}
-                currentStep={form.currentStep}
-                onStepChange={form.goToStep}
-                showProgress={true}
-            />
+            <AuthShell
+                role="vendor"
+                title="Create vendor account"
+                subtitle={STEP_SUBTITLES[form.currentStep] ?? 'Please fill in your information below.'}
+                maxWidthClass="max-w-lg"
+                footer={
+                    <p className="text-center text-sm text-slate-600">
+                        Already have an account?{' '}
+                        <Link href="/auth/vendor/login" className="text-primary hover:underline font-medium">
+                            Login
+                        </Link>
+                    </p>
+                }
+            >
+                {CurrentStepComponent ? (
+                    <CurrentStepComponent
+                        progressIndicator={
+                            <VendorRegisterProgress
+                                currentStep={form.currentStep}
+                                totalSteps={STEPS.length}
+                            />
+                        }
+                    />
+                ) : null}
+            </AuthShell>
         </VendorRegisterContext.Provider>
     );
 }
