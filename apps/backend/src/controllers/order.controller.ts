@@ -68,8 +68,7 @@ export class OrderController {
                 p.image_url as product_image,
                 s.id as student_id,
                 s.name as student_name,
-                s.email as student_email,
-                u.email as user_email
+                u.email as student_email
             FROM transactions t
             JOIN products p ON t.product_id = p.id
             JOIN students s ON t.student_id = s.id
@@ -89,7 +88,7 @@ export class OrderController {
             query += ` AND (
                 p.name ILIKE $${paramCount} OR 
                 s.name ILIKE $${paramCount} OR 
-                s.email ILIKE $${paramCount} OR
+                u.email ILIKE $${paramCount} OR
                 t.paystack_reference ILIKE $${paramCount} OR
                 t.id::text ILIKE $${paramCount}
             )`;
@@ -121,10 +120,11 @@ export class OrderController {
             countQuery += ` AND EXISTS (
                 SELECT 1 FROM products p
                 JOIN students s ON t.student_id = s.id
+                JOIN users u ON s.user_id = u.id
                 WHERE t.product_id = p.id AND (
                     p.name ILIKE $${countParamCount} OR 
                     s.name ILIKE $${countParamCount} OR 
-                    s.email ILIKE $${countParamCount} OR
+                    u.email ILIKE $${countParamCount} OR
                     t.paystack_reference ILIKE $${countParamCount} OR
                     t.id::text ILIKE $${countParamCount}
                 )
@@ -153,7 +153,7 @@ export class OrderController {
             student: {
                 id: row.student_id,
                 name: row.student_name,
-                email: row.student_email || row.user_email,
+                email: row.student_email,
             },
         }));
 
@@ -213,9 +213,8 @@ export class OrderController {
                 p.student_price as product_student_price,
                 s.id as student_id,
                 s.name as student_name,
-                s.email as student_email,
                 s.phone_number as student_phone,
-                u.email as user_email
+                u.email as student_email
             FROM transactions t
             JOIN products p ON t.product_id = p.id
             JOIN students s ON t.student_id = s.id
@@ -249,7 +248,7 @@ export class OrderController {
             student: {
                 id: row.student_id,
                 name: row.student_name,
-                email: row.student_email || row.user_email,
+                email: row.student_email,
                 phoneNumber: row.student_phone,
             },
         };

@@ -7,7 +7,7 @@
 import { useState, useEffect } from 'react';
 import { useRouter, useParams } from 'next/navigation';
 import Image from 'next/image';
-import { useForm } from 'react-hook-form';
+import { useForm, Controller } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { z } from 'zod';
 import { BarChart3, CreditCard, LayoutDashboard, LifeBuoy, Puzzle, Settings, ShoppingBag, Tag, ArrowLeft, Upload } from 'lucide-react';
@@ -15,10 +15,13 @@ import ProtectedRoute from '@/components/ProtectedRoute';
 import { useAuth } from '@/contexts/AuthContext';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
+import { PriceInput } from '@/components/ui/PriceInput';
 import { Label } from '@/components/ui/label';
 import { DashboardLayout } from '@/components/dashboard';
 import type { User } from '@/lib/auth';
 import apiClient, { getImageUrl } from '@/lib/api-client';
+import toast from 'react-hot-toast';
+import { getApiErrorMessage } from '@/lib/api-error';
 
 const iconProps = { className: 'h-5 w-5', strokeWidth: 1.5, fill: 'currentColor' as const };
 
@@ -57,6 +60,9 @@ export default function EditProductPage() {
     const [isSubmitting, setIsSubmitting] = useState(false);
     const [imageFile, setImageFile] = useState<File | null>(null);
     const [imagePreview, setImagePreview] = useState<string | null>(null);
+    const [imageError, setImageError] = useState<string | null>(null);
+
+    const MAX_IMAGE_SIZE = 2 * 1024 * 1024; // 2MB
     const [categories, setCategories] = useState<Array<{ id: string; name: string }>>([]);
 
     type VendorProfile = { companyName?: string | null; name?: string | null };
@@ -66,6 +72,7 @@ export default function EditProductPage() {
 
     const {
         register,
+        control,
         handleSubmit,
         formState: { errors },
         reset,
@@ -106,8 +113,7 @@ export default function EditProductPage() {
                 }
             } catch (error: unknown) {
                 console.error('Error fetching product:', error);
-                const errorMessage = (error as { response?: { data?: { message?: string } } })?.response?.data?.message;
-                alert(errorMessage || 'Failed to load product');
+                toast.error(getApiErrorMessage(error, 'Failed to load product'));
                 router.push('/vendor/deals');
             } finally {
                 setIsLoading(false);
@@ -122,14 +128,21 @@ export default function EditProductPage() {
     // Handle image change
     const handleImageChange = (e: React.ChangeEvent<HTMLInputElement>) => {
         const file = e.target.files?.[0];
-        if (file) {
-            setImageFile(file);
-            const reader = new FileReader();
-            reader.onloadend = () => {
-                setImagePreview(reader.result as string);
-            };
-            reader.readAsDataURL(file);
+        if (!file) return;
+        setImageError(null);
+        if (file.size > MAX_IMAGE_SIZE) {
+            setImageError('Image must be 2MB or smaller.');
+            setImageFile(null);
+            setImagePreview(null);
+            e.target.value = '';
+            return;
         }
+        setImageFile(file);
+        const reader = new FileReader();
+        reader.onloadend = () => {
+            setImagePreview(reader.result as string);
+        };
+        reader.readAsDataURL(file);
     };
 
     // Handle form submission
@@ -147,17 +160,12 @@ export default function EditProductPage() {
             formData.append('status', data.status);
             if (imageFile) formData.append('productImage', imageFile);
 
-            await apiClient.put(`/vendors/products/${productId}`, formData, {
-                headers: {
-                    'Content-Type': 'multipart/form-data',
-                },
-            });
+            await apiClient.put(`/vendors/products/${productId}`, formData);
 
             router.push('/vendor/deals');
         } catch (error: unknown) {
             console.error('Error updating product:', error);
-            const errorMessage = (error as { response?: { data?: { message?: string } } })?.response?.data?.message;
-            alert(errorMessage || 'Failed to update product');
+            toast.error(getApiErrorMessage(error, 'Failed to update product'));
         } finally {
             setIsSubmitting(false);
         }
@@ -277,13 +285,20 @@ export default function EditProductPage() {
                                     <div className="grid gap-4 sm:grid-cols-2">
                                         <div>
                                             <Label htmlFor="price">Regular Price (₦) *</Label>
-                                            <Input
-                                                id="price"
-                                                type="number"
-                                                step="0.01"
-                                                {...register('price', { valueAsNumber: true })}
-                                                placeholder="0.00"
-                                                className={errors.price ? 'border-rose-500' : ''}
+                                            <Controller
+                                                name="price"
+                                                control={control}
+                                                render={({ field }) => (
+                                                    <PriceInput
+                                                        id="price"
+                                                        placeholder="0.00"
+                                                        className={errors.price ? 'border-rose-500' : ''}
+                                                        value={field.value}
+                                                        onChange={field.onChange}
+                                                        onBlur={field.onBlur}
+                                                        ref={field.ref}
+                                                    />
+                                                )}
                                             />
                                             {errors.price && (
                                                 <p className="mt-1 text-sm text-rose-600">{errors.price.message}</p>
@@ -292,13 +307,20 @@ export default function EditProductPage() {
 
                                         <div>
                                             <Label htmlFor="studentPrice">Student Price (₦) *</Label>
-                                            <Input
-                                                id="studentPrice"
-                                                type="number"
-                                                step="0.01"
-                                                {...register('studentPrice', { valueAsNumber: true })}
-                                                placeholder="0.00"
-                                                className={errors.studentPrice ? 'border-rose-500' : ''}
+                                            <Controller
+                                                name="studentPrice"
+                                                control={control}
+                                                render={({ field }) => (
+                                                    <PriceInput
+                                                        id="studentPrice"
+                                                        placeholder="0.00"
+                                                        className={errors.studentPrice ? 'border-rose-500' : ''}
+                                                        value={field.value}
+                                                        onChange={field.onChange}
+                                                        onBlur={field.onBlur}
+                                                        ref={field.ref}
+                                                    />
+                                                )}
                                             />
                                             {errors.studentPrice && (
                                                 <p className="mt-1 text-sm text-rose-600">{errors.studentPrice.message}</p>
@@ -362,6 +384,7 @@ export default function EditProductPage() {
                                                 onClick={() => {
                                                     setImageFile(null);
                                                     setImagePreview(null);
+                                                    setImageError(null);
                                                 }}
                                                 className="absolute right-2 top-2 rounded-full bg-slate-900/50 p-1.5 text-white hover:bg-slate-900/70"
                                             >
@@ -385,6 +408,10 @@ export default function EditProductPage() {
                                             onChange={handleImageChange}
                                             className="cursor-pointer"
                                         />
+                                        <p className="mt-1 text-sm text-slate-500">Max file size: 2MB</p>
+                                        {imageError && (
+                                            <p className="mt-1 text-sm text-red-600">{imageError}</p>
+                                        )}
                                     </div>
                                 </div>
                             </div>

@@ -29,7 +29,9 @@ const MIGRATIONS_DIR = resolve(dirname(fileURLToPath(import.meta.url)));
  */
 function getMigrationFiles(): string[] {
     const files = readdirSync(MIGRATIONS_DIR)
-        .filter((file): file is string => file.endsWith('.sql'))
+        .filter((file): file is string =>
+            file.endsWith('.sql') && !file.startsWith('clear_')
+        )
         .sort();
     // semgrep: files are from readdirSync (filesystem), not user input; path constrained to MIGRATIONS_DIR
     // nosemgrep: javascript.lang.security.audit.path-traversal.path-join-resolve-traversal.path-join-resolve-traversal
@@ -143,8 +145,10 @@ export async function runMigrations(): Promise<void> {
     }
 }
 
-// Run migrations if called directly
-if (import.meta.url === `file://${process.argv[1]}`) {
+// Run migrations if called directly (normalize paths so spaces / URL encoding match)
+const isDirectRun =
+    !!process.argv[1] && fileURLToPath(import.meta.url) === resolve(process.argv[1]);
+if (isDirectRun) {
     runMigrations()
         .then(() => {
             process.exit(0);

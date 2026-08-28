@@ -22,8 +22,12 @@ services:
     build:
       context: ./apps/backend
       dockerfile: Dockerfile.prod
-    user: "node"
+    # Do not override user: image runs as nodejs (uid 1001) which owns uploads/vendors for product images
     working_dir: /usr/src/app
+    # Persist vendor/product uploads (logos, documents, product images). Without this volume,
+    # uploads are lost when the container is recreated. Entrypoint ensures dir is writable by app.
+    volumes:
+      - backend_uploads:/usr/src/app/uploads
     environment:
       NODE_ENV: production
       PORT: 5000
@@ -46,7 +50,7 @@ services:
       db:
         condition: service_healthy
       redis:
-        condition: service_started
+        condition: service_healthy
     env_file:
       - .env
     restart: unless-stopped
@@ -80,12 +84,24 @@ services:
     # Do NOT publish Redis to the host. Docker bypasses UFW; exposing 0.0.0.0:6380 allowed
     # internet access with no auth and led to crypto-miner compromise. Backend connects via
     # internal network (redis:6379). For CLI debugging from host, use: docker exec -it awoof-redis redis-cli -a $REDIS_PASSWORD
-    environment:
-      REDIS_PASSWORD: ${REDIS_PASSWORD}
+    env_file:
+      - .env
     volumes:
       - redis_data:/data
-    command: ["sh", "-c", "redis-server --appendonly yes --requirepass \"$$REDIS_PASSWORD\""]
+    command:
+      [
+        "sh",
+        "-c",
+        'redis-server --appendonly yes --requirepass "$$REDIS_PASSWORD"',
+      ]
+    healthcheck:
+      test: ["CMD", "sh", "-c", 'redis-cli -a "$$REDIS_PASSWORD" ping']
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 5s
 
 volumes:
   db_data:
   redis_data:
+  backend_uploads:

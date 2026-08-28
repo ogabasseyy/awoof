@@ -1,47 +1,70 @@
 /**
  * Authentication Context
- * 
+ *
  * Provides authentication state and methods throughout the app
  */
 
 'use client';
 
-import { createContext, useContext, useState, useEffect, ReactNode } from 'react';
-import { User, storeTokens, clearTokens, getUserFromToken, isAuthenticated as checkAuth } from '@/lib/auth';
+import {
+    createContext,
+    useContext,
+    useState,
+    useEffect,
+    useCallback,
+    useMemo,
+    ReactNode,
+} from 'react';
+import {
+    User,
+    storeTokens,
+    clearTokens,
+    getUserFromToken,
+    isAuthenticated as checkAuth,
+} from '@/lib/auth';
 import apiClient from '@/lib/api-client';
 
 interface AuthContextType {
     user: User | null;
     isAuthenticated: boolean;
     isLoading: boolean;
-    login: (email: string, password: string, requiredRole?: 'admin' | 'vendor' | 'student', rememberMe?: boolean) => Promise<void>;
-    register: (email: string, password: string, name: string, role: 'student' | 'vendor') => Promise<void>;
+    login: (
+        email: string,
+        password: string,
+        requiredRole?: 'admin' | 'vendor' | 'student',
+        rememberMe?: boolean
+    ) => Promise<void>;
+    register: (
+        email: string,
+        password: string,
+        name: string,
+        role: 'student' | 'vendor'
+    ) => Promise<void>;
     logout: () => Promise<void>;
     refreshUser: () => Promise<void>;
 }
 
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
 
+function redirectAfterAuth(path: string) {
+    if (typeof window !== 'undefined') {
+        window.location.assign(path);
+    }
+}
+
 export function AuthProvider({ children }: { children: ReactNode }) {
     const [user, setUser] = useState<User | null>(null);
     const [isLoading, setIsLoading] = useState(true);
 
-    /**
-     * Initialize auth state on mount
-     */
     useEffect(() => {
         const initAuth = async () => {
             if (checkAuth()) {
-                // Try to get user from token
                 const userFromToken = getUserFromToken();
                 if (userFromToken) {
-                    // Try to fetch current user from API
                     try {
                         const response = await apiClient.get('/auth/me');
-                        // Response format: { id, email, role, verificationStatus, profile }
                         setUser(response.data.data);
                     } catch {
-                        // If API call fails, use token data
                         setUser(userFromToken);
                     }
                 }
@@ -52,69 +75,68 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         initAuth();
     }, []);
 
-    /**
-     * Login
-     */
-    const login = async (email: string, password: string, requiredRole?: 'admin' | 'vendor' | 'student', rememberMe: boolean = false) => {
-        const requestBody: { email: string; password: string; role?: string; rememberMe?: boolean } = { email, password, rememberMe };
-        if (requiredRole) {
-            requestBody.role = requiredRole;
-        }
-        const response = await apiClient.post('/auth/login', requestBody);
-        const { tokens, user: userData } = response.data.data;
-
-        storeTokens(tokens);
-        setUser(userData);
-
-        // Redirect based on role after login
-        if (typeof window !== 'undefined') {
-            if (userData.role === 'vendor') {
-                window.location.href = '/vendor/dashboard';
-            } else if (userData.role === 'student') {
-                window.location.href = '/marketplace';
-            } else if (userData.role === 'admin') {
-                window.location.href = '/admin/dashboard';
-            } else {
-                window.location.href = '/';
+    const login = useCallback(
+        async (
+            email: string,
+            password: string,
+            requiredRole?: 'admin' | 'vendor' | 'student',
+            rememberMe: boolean = false
+        ) => {
+            const requestBody: {
+                email: string;
+                password: string;
+                role?: string;
+                rememberMe?: boolean;
+            } = { email, password, rememberMe };
+            if (requiredRole) {
+                requestBody.role = requiredRole;
             }
-        }
-    };
+            const response = await apiClient.post('/auth/login', requestBody);
+            const { tokens, user: userData } = response.data.data;
 
-    /**
-     * Register
-     */
-    const register = async (email: string, password: string, name: string, role: 'student' | 'vendor') => {
-        const response = await apiClient.post('/auth/register', {
-            email,
-            password,
-            name,
-            role,
-        });
-        const { tokens, user: userData } = response.data.data;
+            storeTokens(tokens);
+            setUser(userData);
 
-        storeTokens(tokens);
-        setUser(userData);
+            if (userData.role === 'vendor') {
+                redirectAfterAuth('/vendor/dashboard');
+            } else if (userData.role === 'student') {
+                redirectAfterAuth('/marketplace');
+            } else if (userData.role === 'admin') {
+                redirectAfterAuth('/admin/dashboard');
+            } else {
+                redirectAfterAuth('/');
+            }
+        },
+        []
+    );
 
-        // Redirect based on role after registration
-        // Vendors need email verification, so redirect to verification page
-        if (typeof window !== 'undefined') {
+    const register = useCallback(
+        async (email: string, password: string, name: string, role: 'student' | 'vendor') => {
+            const response = await apiClient.post('/auth/register', {
+                email,
+                password,
+                name,
+                role,
+            });
+            const { tokens, user: userData } = response.data.data;
+
+            storeTokens(tokens);
+            setUser(userData);
+
             if (userData.role === 'vendor' && response.data.data.requiresEmailVerification) {
-                // Don't redirect - let the registration flow handle it
                 return;
             } else if (userData.role === 'vendor') {
-                window.location.href = '/vendor/dashboard';
+                redirectAfterAuth('/vendor/dashboard');
             } else if (userData.role === 'student') {
-                window.location.href = '/marketplace';
+                redirectAfterAuth('/marketplace');
             } else {
-                window.location.href = '/';
+                redirectAfterAuth('/');
             }
-        }
-    };
+        },
+        []
+    );
 
-    /**
-     * Logout
-     */
-    const logout = async () => {
+    const logout = useCallback(async () => {
         try {
             await apiClient.post('/auth/logout');
         } catch {
@@ -123,54 +145,48 @@ export function AuthProvider({ children }: { children: ReactNode }) {
             clearTokens();
             setUser(null);
 
-            // Redirect to appropriate login page based on current route
             if (typeof window !== 'undefined') {
                 const currentPath = window.location.pathname;
                 if (currentPath.startsWith('/admin')) {
-                    window.location.href = '/auth/admin/login';
+                    redirectAfterAuth('/auth/admin/login');
                 } else if (currentPath.startsWith('/vendor')) {
-                    window.location.href = '/auth/vendor/login';
+                    redirectAfterAuth('/auth/vendor/login');
                 } else if (currentPath.startsWith('/student')) {
-                    window.location.href = '/auth/student/login';
+                    redirectAfterAuth('/auth/student/login');
                 } else {
-                    window.location.href = '/';
+                    redirectAfterAuth('/');
                 }
             }
         }
-    };
+    }, []);
 
-    /**
-     * Refresh user data
-     */
-    const refreshUser = async () => {
-        if (checkAuth()) {
-            try {
-                const response = await apiClient.get('/auth/me');
-                setUser(response.data.data);
-            } catch {
-                // If refresh fails, clear auth
-                clearTokens();
-                setUser(null);
-            }
+    const refreshUser = useCallback(async () => {
+        if (!checkAuth()) return;
+        try {
+            const response = await apiClient.get('/auth/me');
+            setUser(response.data.data);
+        } catch {
+            clearTokens();
+            setUser(null);
         }
-    };
+    }, []);
 
-    const value: AuthContextType = {
-        user,
-        isAuthenticated: !!user,
-        isLoading,
-        login,
-        register,
-        logout,
-        refreshUser,
-    };
+    const value = useMemo<AuthContextType>(
+        () => ({
+            user,
+            isAuthenticated: !!user,
+            isLoading,
+            login,
+            register,
+            logout,
+            refreshUser,
+        }),
+        [user, isLoading, login, register, logout, refreshUser]
+    );
 
     return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
 }
 
-/**
- * Hook to use auth context
- */
 export function useAuth() {
     const context = useContext(AuthContext);
     if (context === undefined) {
@@ -178,4 +194,3 @@ export function useAuth() {
     }
     return context;
 }
-

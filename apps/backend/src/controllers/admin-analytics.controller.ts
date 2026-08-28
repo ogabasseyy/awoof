@@ -46,7 +46,7 @@ export class AdminAnalyticsController {
             `),
             db.query(`
                 SELECT COUNT(*)::int AS open_tickets
-                FROM support_tickets
+                FROM tickets
                 WHERE status IN ('open', 'in-progress')
             `),
             db.query(`

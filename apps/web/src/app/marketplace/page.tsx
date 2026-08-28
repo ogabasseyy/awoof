@@ -1,13 +1,21 @@
 /**
- * Marketplace - Student Dashboard Style
- * 
- * Homepage-style marketplace for logged-in students
+ * Marketplace — Student home
+ * Friendly empty states + expectancy when no deals yet.
  */
 
 'use client';
 
 import { useState, useEffect, useCallback } from 'react';
-import { Search, Plane, ShoppingBag, Monitor, Utensils, Sparkles, Smartphone } from 'lucide-react';
+import {
+    Search,
+    Plane,
+    ShoppingBag,
+    Monitor,
+    Utensils,
+    Sparkles,
+    Smartphone,
+    Zap,
+} from 'lucide-react';
 import { Input } from '@/components/ui/input';
 import { Button } from '@/components/ui/button';
 import apiClient, { getImageUrl } from '@/lib/api-client';
@@ -15,6 +23,8 @@ import Image from 'next/image';
 import Link from 'next/link';
 import { useAuth } from '@/contexts/AuthContext';
 import { formatCurrency } from '@/lib/format';
+import { DealSkeletonRail, ExpectancyEmpty, FadeIn } from './_components/ExpectancyUI';
+import { StudentHeaderActions } from '@/components/student/StudentHeaderActions';
 
 interface Product {
     id: string;
@@ -27,6 +37,8 @@ interface Product {
     category_name: string | null;
     vendor_name: string | null;
     vendor_logo_url: string | null;
+    vendor_payment_method?: 'awoof' | 'vendor_website';
+    deal_type?: 'product' | 'voucher';
     stock: number;
 }
 
@@ -42,20 +54,26 @@ interface SavingsStats {
     totalPurchases: number;
 }
 
-// Icon mapping for categories (fallback if category doesn't have icon in DB)
 const categoryIconMap: Record<string, { icon: typeof Plane; color: string; textColor?: string }> = {
-    'travel': { icon: Plane, color: 'rgba(29, 78, 216, 0.1)', textColor: '#1D4ED8' },
-    'food': { icon: Utensils, color: 'bg-amber-100 text-amber-600' },
-    'shopping': { icon: ShoppingBag, color: 'bg-green-100 text-green-600' },
-    'tech': { icon: Monitor, color: 'rgba(29, 78, 216, 0.1)', textColor: '#1D4ED8' },
-    'beauty & spa': { icon: Sparkles, color: 'bg-pink-100 text-pink-600' },
-    'beauty': { icon: Sparkles, color: 'bg-pink-100 text-pink-600' },
-    'spa': { icon: Sparkles, color: 'bg-pink-100 text-pink-600' },
+    travel: { icon: Plane, color: 'rgba(29, 78, 216, 0.12)', textColor: '#1D4ED8' },
+    food: { icon: Utensils, color: 'bg-amber-100 text-amber-700' },
+    shopping: { icon: ShoppingBag, color: 'bg-emerald-100 text-emerald-700' },
+    tech: { icon: Monitor, color: 'rgba(29, 78, 216, 0.12)', textColor: '#1D4ED8' },
+    'beauty & spa': { icon: Sparkles, color: 'bg-rose-100 text-rose-600' },
+    beauty: { icon: Sparkles, color: 'bg-rose-100 text-rose-600' },
+    spa: { icon: Sparkles, color: 'bg-rose-100 text-rose-600' },
 };
+
+function getFirstName(user: { email?: string; profile?: { name?: string } } | null | undefined): string {
+    if (!user) return 'there';
+    if (user.profile?.name) return user.profile.name.split(' ')[0];
+    if (user.email) return user.email.split('@')[0];
+    return 'there';
+}
 
 export default function MarketplacePage() {
     const { user } = useAuth();
-    const [products, setProducts] = useState<Product[]>([]);
+    const [voucherProducts, setVoucherProducts] = useState<Product[]>([]);
     const [categories, setCategories] = useState<Category[]>([]);
     const [featuredProducts, setFeaturedProducts] = useState<Product[]>([]);
     const [categoryProducts, setCategoryProducts] = useState<Product[]>([]);
@@ -64,9 +82,13 @@ export default function MarketplacePage() {
     const [isLoading, setIsLoading] = useState(true);
     const [searchQuery, setSearchQuery] = useState('');
 
+    const firstName = getFirstName(user as { email?: string; profile?: { name?: string } } | null);
+    const isVerified = user?.verificationStatus === 'verified';
+    const hasAnyDeals = featuredProducts.length > 0 || voucherProducts.length > 0;
+
     const fetchCategoryProducts = useCallback(async (categoryId: string) => {
         try {
-            const response = await apiClient.get(`/products?categoryId=${categoryId}&limit=20`);
+            const response = await apiClient.get(`/products?categoryId=${categoryId}&limit=20&deal_type=product`);
             setCategoryProducts(response.data.data.products || []);
         } catch (error) {
             console.error('Error fetching category products:', error);
@@ -76,47 +98,75 @@ export default function MarketplacePage() {
     const fetchData = useCallback(async () => {
         try {
             setIsLoading(true);
-            const [productsRes, categoriesRes, savingsRes] = await Promise.all([
-                apiClient.get('/products?limit=20'),
-                apiClient.get('/products/categories'),
-                user ? apiClient.get('/students/savings').catch(() => null) : Promise.resolve(null),
+            const [productsRes, vouchersRes, categoriesRes] = await Promise.all([
+                apiClient.get('/products?limit=20&deal_type=product').catch(() => null),
+                apiClient.get('/products?limit=20&deal_type=voucher').catch(() => null),
+                apiClient.get('/products/categories').catch(() => null),
             ]);
 
-            const allProducts = productsRes.data.data.products || [];
-            const fetchedCategories = categoriesRes.data.data || [];
+            const allProducts = productsRes?.data?.data?.products || [];
+            const vouchers = vouchersRes?.data?.data?.products || [];
+            const fetchedCategories = categoriesRes?.data?.data || [];
 
-            setProducts(allProducts);
+            setVoucherProducts(vouchers);
             setCategories(fetchedCategories);
             setFeaturedProducts(allProducts.slice(0, 6));
 
-            // Set default selected category only if not already set
             setSelectedCategory((prev) => {
-                if (prev) return prev; // Keep existing selection
-                if (fetchedCategories.length > 0) {
-                    const defaultCategory = fetchedCategories.find((c: Category) =>
-                        c.name.toLowerCase() === 'travel'
-                    ) || fetchedCategories[0];
-                    return defaultCategory.id;
-                }
-                return null;
-            });
+                if (prev) return prev;
+                if (fetchedCategories.length === 0) return null;
 
-            if (savingsRes?.data?.data?.summary) {
-                setSavingsStats({
-                    totalSavings: savingsRes.data.data.summary.totalSavings || 0,
-                    totalPurchases: savingsRes.data.data.summary.totalPurchases || 0,
-                });
-            }
+                const counts = new Map<string, number>();
+                for (const p of allProducts as Product[]) {
+                    if (p.category_id) {
+                        counts.set(p.category_id, (counts.get(p.category_id) || 0) + 1);
+                    }
+                }
+
+                const withData = fetchedCategories.filter(
+                    (c: Category) => (counts.get(c.id) || 0) > 0
+                );
+
+                if (withData.length > 0 && withData.length < fetchedCategories.length) {
+                    return withData[0].id;
+                }
+                return fetchedCategories[0].id;
+            });
         } catch (error) {
             console.error('Error fetching data:', error);
         } finally {
             setIsLoading(false);
         }
-    }, [user]);
+    }, []);
 
     useEffect(() => {
         fetchData();
     }, [fetchData]);
+
+    useEffect(() => {
+        if (!user) {
+            setSavingsStats({ totalSavings: 0, totalPurchases: 0 });
+            return;
+        }
+        let cancelled = false;
+        (async () => {
+            try {
+                const savingsRes = await apiClient.get('/students/savings');
+                if (cancelled) return;
+                if (savingsRes?.data?.data?.summary) {
+                    setSavingsStats({
+                        totalSavings: savingsRes.data.data.summary.totalSavings || 0,
+                        totalPurchases: savingsRes.data.data.summary.totalPurchases || 0,
+                    });
+                }
+            } catch {
+                // non-students / unauthenticated — keep zeros
+            }
+        })();
+        return () => {
+            cancelled = true;
+        };
+    }, [user?.id]);
 
     useEffect(() => {
         if (selectedCategory) {
@@ -126,537 +176,505 @@ export default function MarketplacePage() {
 
     const handleSearch = (e: React.FormEvent) => {
         e.preventDefault();
-        // Navigate to search results or filter products
-        window.location.href = `/marketplace/search?q=${encodeURIComponent(searchQuery)}`;
+        window.location.assign(`/marketplace/search?q=${encodeURIComponent(searchQuery)}`);
     };
 
-
     const calculateDiscount = (price: number, studentPrice: number) => {
-        const discount = ((price - studentPrice) / price) * 100;
-        return Math.round(discount);
+        if (!price) return 0;
+        return Math.round(((price - studentPrice) / price) * 100);
     };
 
     const getCategoryIcon = (categoryName: string) => {
         const normalizedName = categoryName.toLowerCase();
-        const match = categoryIconMap[normalizedName] ||
-            Object.entries(categoryIconMap).find(([key]) =>
-                normalizedName.includes(key) || key.includes(normalizedName)
+        const match =
+            categoryIconMap[normalizedName] ||
+            Object.entries(categoryIconMap).find(
+                ([key]) => normalizedName.includes(key) || key.includes(normalizedName)
             )?.[1];
-
         return match || { icon: ShoppingBag, color: 'bg-slate-100', textColor: '#64748b' };
     };
 
     const getSelectedCategoryName = () => {
         if (!selectedCategory) return 'Deals';
-        const category = categories.find(c => c.id === selectedCategory);
+        const category = categories.find((c) => c.id === selectedCategory);
         return category ? `${category.name} Deals` : 'Deals';
     };
 
-    return (
-        <div className="min-h-screen bg-white">
-            {/* Top Banner */}
-            <div className="text-white py-4 px-4 flex items-center justify-center gap-2 text-sm font-bold" style={{ backgroundColor: '#1D4ED8' }}>
+    const avatarLetter = (() => {
+        const profile = (user as { profile?: { name?: string } } | null)?.profile;
+        if (profile?.name) return profile.name.split(' ')[0].charAt(0).toUpperCase();
+        return user?.email ? user.email.charAt(0).toUpperCase() : 'U';
+    })();
 
-                <span>🎓 Unlock Verified Student Discounts Instantly.</span>
+    return (
+        <div className="min-h-screen bg-[#F4F7FD] text-slate-900">
+            {/* Soft atmosphere wash */}
+            <div
+                aria-hidden
+                className="pointer-events-none fixed inset-0 -z-10"
+                style={{
+                    background:
+                        'radial-gradient(ellipse 80% 50% at 50% -10%, rgba(29,78,216,0.14), transparent 55%), radial-gradient(ellipse 40% 30% at 100% 20%, rgba(56,189,248,0.08), transparent)',
+                }}
+            />
+
+            <div className="bg-[#1D4ED8] text-white py-2.5 px-4 flex items-center justify-center gap-2 text-xs sm:text-sm font-semibold tracking-wide">
+                <Zap className="h-3.5 w-3.5 shrink-0 opacity-90" />
+                <span>Student-only discounts — verified campus prices</span>
             </div>
 
-            {/* Header */}
-            <header className="bg-white border-b border-slate-200">
-                <div className="container mx-auto px-4 py-4">
-                    <div className="flex items-center justify-between gap-4">
-                        <Link href="/" style={{ color: '#1D4ED8' }}>
+            <header className="sticky top-0 z-40 bg-white/80 backdrop-blur-md border-b border-slate-200/80">
+                <div className="mx-auto max-w-6xl px-4 py-3">
+                    <div className="flex items-center justify-between gap-3">
+                        <Link href="/" className="shrink-0">
                             <Image
-                                src="/images/awoofLogo.png"
-                                alt="Awoof Logo"
-                                width={120}
-                                height={40}
+                                src="/images/awoofLogoMain.png"
+                                alt="Awoof"
+                                width={108}
+                                height={36}
                                 className="object-contain"
                             />
                         </Link>
 
-                        {/* Search Bar */}
-                        <form onSubmit={handleSearch} className="flex-1 max-w-2xl mx-4">
+                        <form onSubmit={handleSearch} className="flex-1 max-w-xl mx-2 hidden sm:block">
                             <div className="relative">
-                                <Search className="absolute left-4 top-1/2 transform -translate-y-1/2 h-5 w-5 text-slate-400" />
+                                <Search className="absolute left-3.5 top-1/2 -translate-y-1/2 h-4 w-4 text-slate-400" />
                                 <Input
                                     type="text"
-                                    placeholder="Search for deals"
+                                    placeholder="Search deals, brands, campuses…"
                                     value={searchQuery}
                                     onChange={(e) => setSearchQuery(e.target.value)}
-                                    className="pl-12 h-14 w-full rounded-full border border-[#1D4ED8]"
+                                    className="pl-10 h-11 w-full rounded-full border-slate-200 bg-slate-50/80 focus-visible:ring-[#1D4ED8]"
                                 />
+                                {searchQuery.trim().length > 0 && (
+                                    <Button
+                                        type="submit"
+                                        size="sm"
+                                        className="absolute right-1.5 top-1/2 -translate-y-1/2 rounded-full h-8 px-3 bg-[#1D4ED8] hover:bg-[#1E40AF]"
+                                    >
+                                        Search
+                                    </Button>
+                                )}
                             </div>
                         </form>
 
-                        {/* User Menu */}
-                        <div className="flex items-center gap-4">
-                            {user ? (
-                                <Link href="/student/profile">
-                                    <button className="w-10 h-10 rounded-full bg-gray-200 hover:bg-gray-300 transition-colors flex items-center justify-center">
-                                        <span className="text-lg font-semibold text-gray-700">
-                                            {(() => {
-                                                // Try to get first letter of first name from profile
-                                                const profile = (user as { profile?: { name?: string } })?.profile;
-                                                if (profile?.name) {
-                                                    return profile.name.split(' ')[0].charAt(0).toUpperCase();
-                                                }
-                                                // Fallback to email first letter
-                                                return user.email ? user.email.charAt(0).toUpperCase() : 'U';
-                                            })()}
-                                        </span>
-                                    </button>
-                                </Link>
-                            ) : (
-                                <Link href="/auth/student/login">
-                                    <Button size="lg" className='rounded-full px-7 text-[#1D4ED8]'>Login</Button>
-                                </Link>
-                            )}
-                        </div>
+                        {user ? (
+                            <StudentHeaderActions avatarLetter={avatarLetter} showProfileLink />
+                        ) : (
+                            <Link href="/auth/student/login">
+                                <Button className="rounded-full bg-[#1D4ED8] hover:bg-[#1E40AF]">Log in</Button>
+                            </Link>
+                        )}
                     </div>
+
+                    <form onSubmit={handleSearch} className="mt-3 sm:hidden">
+                        <div className="relative">
+                            <Search className="absolute left-3.5 top-1/2 -translate-y-1/2 h-4 w-4 text-slate-400" />
+                            <Input
+                                type="text"
+                                placeholder="Search deals…"
+                                value={searchQuery}
+                                onChange={(e) => setSearchQuery(e.target.value)}
+                                className="pl-10 h-11 w-full rounded-full border-slate-200 bg-white"
+                            />
+                        </div>
+                    </form>
                 </div>
             </header>
 
-            {/* Main Content */}
-            <main className="container mx-auto px-4 md:px-6 lg:px-12 xl:px-24 py-8">
-                {/* Hero Section - Download App */}
-                <div className="rounded-2xl p-8 mb-8 relative overflow-hidden" style={{ backgroundColor: '#1D4ED8' }}>
-                    <div className="flex items-center justify-around">
-                        <div className="text-white">
-                            <h2 className="text-3xl font-bold mb-3">Download the<br /> Awoof App</h2>
-                            <p className="text-blue-100 mb-6 max-w-xs">
-                                Scan the QR code to download the Awoof app and start unlocking exclusive student discounts.
-                            </p>
-                        </div>
-                        <div className="relative flex items-center justify-center">
-                            <Image
-                                src="/images/Polygon 3.png"
-                                alt="Polygon 1"
-                                width={40}
-                                height={40}
-                                className="absolute top-0 -right-8 transform translate-x-1/2 -translate-y-1/2 z-20"
-                            />
-                            <Image
-                                src="/images/Polygon 2.png"
-                                alt="Polygon 2"
-                                width={30}
-                                height={30}
-                                className="absolute bottom-0 -right-8 transform translate-x-1/2 translate-y-1/2 z-20"
-                            />
-                            <Image
-                                src="/images/Polygon 1.png"
-                                alt="Polygon 3"
-                                width={50}
-                                height={50}
-                                className="absolute top-2/3 -left-10 transform -translate-x-1/2 -translate-y-1/2 z-20"
-                            />
-                            <div className="bg-white p-2 relative z-10">
-                                <Image
-                                    src="/images/awoofQR.png"
-                                    alt="Awoof QR Code"
-                                    width={200}
-                                    height={200}
-                                    className="object-contain"
-                                />
-                            </div>
-                        </div>
-                    </div>
-                </div>
-
-                {/* Statistics */}
-                <div className="grid grid-cols-2 gap-4 mb-8">
-                    <div className="bg-white rounded-xl p-6 shadow-sm border border-slate-200">
-                        <h3 className="text-sm font-medium text-slate-600 mb-2">Money Saved</h3>
-                        <p className="text-3xl font-bold" style={{ color: '#1D4ED8' }}>
-                            {formatCurrency(savingsStats.totalSavings)}
-                        </p>
-                    </div>
-                    <div className="bg-white rounded-xl p-6 shadow-sm border border-slate-200">
-                        <h3 className="text-sm font-medium text-slate-600 mb-2">Total Orders</h3>
-                        <p className="text-3xl font-bold" style={{ color: '#1D4ED8' }}>
-                            {savingsStats.totalPurchases}
-                        </p>
-                    </div>
-                </div>
-
-                {/* Category Icons */}
-                <div className="flex justify-center gap-6 mb-12 flex-wrap">
-                    {categories.map((category) => {
-                        const { icon: Icon, color, textColor } = getCategoryIcon(category.name);
-                        const isActive = selectedCategory === category.id;
-                        const bgColor = typeof color === 'string' && color.startsWith('rgba') ? color : undefined;
-                        const bgClass = typeof color === 'string' && !color.startsWith('rgba') ? color : '';
-                        return (
-                            <button
-                                key={category.id}
-                                onClick={() => setSelectedCategory(category.id)}
-                                className={`flex flex-col items-center gap-2 hover:opacity-80 transition-opacity ${isActive ? 'opacity-100' : 'opacity-70'
-                                    }`}
-                            >
-                                <div className={`w-16 h-16 rounded-full ${bgClass} flex items-center justify-center ${isActive ? 'ring-2 ring-offset-1' : ''
-                                    }`} style={{
-                                        ...(bgColor ? { backgroundColor: bgColor } : {}),
-                                        ...(isActive ? { '--tw-ring-color': '#1D4ED8' } as React.CSSProperties & { '--tw-ring-color'?: string } : {}),
-                                        ...(textColor ? { color: textColor } : {})
-                                    }}>
-                                    <Icon className="h-8 w-8" style={textColor ? { color: textColor } : {}} />
-                                </div>
-                                <span className={`text-sm font-medium ${isActive ? 'font-semibold' : 'text-slate-700'
-                                    }`} style={isActive ? { color: '#1D4ED8' } : {}}>
-                                    {category.name}
-                                </span>
-                            </button>
-                        );
-                    })}
-                </div>
-
-                {/* Featured Deals */}
-                <section className="mb-12">
-                    <div className="flex items-center justify-between mb-4">
-                        <h2 className="text-2xl font-bold text-slate-900">Featured Deals</h2>
-                        <Link href="/marketplace" className="text-red-600 hover:underline font-medium">
-                            See all
-                        </Link>
-                    </div>
-                    <div className="flex gap-4 overflow-x-auto pb-4 scrollbar-hide">
-                        {isLoading ? (
-                            <div className="flex items-center justify-center w-full py-12">
-                                <p className="text-slate-500">Loading deals...</p>
-                            </div>
-                        ) : featuredProducts.length === 0 ? (
-                            <div className="flex items-center justify-center w-full py-12">
-                                <p className="text-slate-500">No featured deals available</p>
-                            </div>
-                        ) : (
-                            featuredProducts.map((product) => {
-                                const discount = calculateDiscount(product.price, product.student_price);
-                                return (
+            <main className="mx-auto max-w-6xl px-4 py-8 md:py-10 space-y-10">
+                {/* Welcome + expectancy */}
+                <FadeIn>
+                    <section className="relative overflow-hidden rounded-3xl bg-[#1D4ED8] text-white px-6 py-8 md:px-10 md:py-10 shadow-xl shadow-[#1D4ED8]/20">
+                        <div
+                            aria-hidden
+                            className="absolute -right-16 -top-16 h-56 w-56 rounded-full bg-white/10 blur-2xl"
+                        />
+                        <div
+                            aria-hidden
+                            className="absolute -bottom-20 left-1/3 h-48 w-48 rounded-full bg-sky-300/20 blur-3xl"
+                        />
+                        <div className="relative flex flex-col lg:flex-row lg:items-end lg:justify-between gap-8">
+                            <div className="max-w-xl space-y-3">
+                                <p className="text-blue-100 text-sm font-medium tracking-wide uppercase">
+                                    Your student pass
+                                </p>
+                                <h1 className="text-3xl md:text-4xl font-extrabold tracking-tight text-balance leading-[1.15]">
+                                    Hey {firstName}, savings are warming up
+                                </h1>
+                                <p className="text-blue-100/95 text-[15px] md:text-base leading-relaxed text-pretty">
+                                    {hasAnyDeals
+                                        ? 'Browse verified campus deals below — every price is locked for students like you.'
+                                        : isVerified
+                                          ? 'You’re verified and ready. Merchants are onboarding — your first exclusive offers will land here.'
+                                          : 'Verify once, then unlock student prices the moment new deals go live.'}
+                                </p>
+                                {!isVerified && user && (
                                     <Link
-                                        key={product.id}
-                                        href={`/marketplace/${product.id}`}
-                                        className="shrink-0 w-72 md:w-80 lg:w-96 bg-white rounded-lg shadow-sm hover:shadow-md transition-shadow overflow-hidden flex flex-col"
+                                        href="/student/profile"
+                                        className="inline-flex items-center gap-2 mt-2 rounded-full bg-white text-[#1D4ED8] text-sm font-bold px-5 py-2.5 hover:bg-blue-50 transition-colors"
                                     >
-                                        {/* Top Half: Banner Image */}
-                                        <div className="relative w-full h-32 md:h-36 lg:h-40 bg-slate-100 shrink-0">
-                                            {product.image_url ? (
-                                                <Image
-                                                    src={getImageUrl(product.image_url) || ''}
-                                                    alt={product.name}
-                                                    fill
-                                                    className="object-cover"
-                                                    unoptimized
-                                                />
-                                            ) : (
-                                                <div className="w-full h-full flex items-center justify-center text-slate-400">
-                                                    No Image
-                                                </div>
-                                            )}
-                                        </div>
-
-                                        {/* Bottom Half: White Card Space */}
-                                        <div className="w-full p-3 md:p-4 lg:p-5 bg-white flex flex-col relative flex-1 h-32 md:h-36 lg:h-40">
-                                            {/* White circle with vendor logo - positioned at border between banner and content */}
-                                            <div className="absolute -top-6 md:-top-7 lg:-top-8 left-3 md:left-4 z-10">
-                                                <div className="w-12 h-12 md:w-14 md:h-14 lg:w-16 lg:h-16 rounded-full bg-white flex items-center justify-center shadow-md p-1 md:p-1.5 lg:p-3">
-                                                    {product.vendor_logo_url ? (
-                                                        <div className="w-full h-full rounded overflow-hidden relative">
-                                                            <Image
-                                                                src={getImageUrl(product.vendor_logo_url) || ''}
-                                                                alt={product.vendor_name || 'Vendor logo'}
-                                                                fill
-                                                                className="object-cover"
-                                                                unoptimized
-                                                            />
-                                                        </div>
-                                                    ) : product.vendor_name ? (
-                                                        <div
-                                                            className="w-full h-full rounded flex items-center justify-center font-bold text-white text-xs"
-                                                            style={{ backgroundColor: '#1D4ED8' }}
-                                                        >
-                                                            {product.vendor_name.substring(0, 2).toUpperCase()}
-                                                        </div>
-                                                    ) : (
-                                                        <div
-                                                            className="w-full h-full rounded flex items-center justify-center"
-                                                            style={{ backgroundColor: '#1D4ED8' }}
-                                                        >
-                                                            <ShoppingBag className="h-4 w-4 md:h-5 md:w-5 lg:h-6 lg:w-6 text-white" />
-                                                        </div>
-                                                    )}
-                                                </div>
-                                            </div>
-
-                                            {/* Row 1: Percentage off as small green pill at top right */}
-                                            <div className="flex justify-end mb-1.5 md:mb-2">
-                                                <div className="bg-green-100 text-green-700 text-xs font-semibold px-2 py-1 rounded-full">
-                                                    {discount}% OFF
-                                                </div>
-                                            </div>
-
-                                            {/* Row 2: Product name on the left */}
-                                            <div className="mb-1.5 md:mb-2">
-                                                <h3 className="font-semibold text-slate-900 text-sm md:text-base line-clamp-2">{product.name}</h3>
-                                            </div>
-
-                                            {/* Row 3: Category name and Visit website link */}
-                                            <div className="flex items-center justify-between mt-auto">
-                                                {/* Category name */}
-                                                {product.category_name && (
-                                                    <p className="text-xs md:text-sm text-red-600 font-normal">{product.category_name}</p>
-                                                )}
-                                                {/* Visit website link at right */}
-                                                <Link
-                                                    href={`/marketplace/${product.id}`}
-                                                    className="text-red-600 underline text-xs font-medium whitespace-nowrap"
-                                                    onClick={(e) => e.stopPropagation()}
-                                                >
-                                                    Visit website
-                                                </Link>
-                                            </div>
-                                        </div>
+                                        Finish verification
+                                        <Sparkles className="h-4 w-4" />
                                     </Link>
-                                );
-                            })
-                        )}
-                    </div>
-                </section>
+                                )}
+                            </div>
+                            <div className="flex items-center gap-4 shrink-0">
+                                <div className="hidden md:block bg-white p-2 rounded-2xl shadow-lg">
+                                    <Image
+                                        src="/images/awoofQR.png"
+                                        alt="Download Awoof"
+                                        width={112}
+                                        height={112}
+                                        className="object-contain rounded-lg"
+                                    />
+                                </div>
+                                <div className="text-sm text-blue-100 max-w-[9rem] leading-snug">
+                                    <Smartphone className="h-5 w-5 mb-2 opacity-90" />
+                                    Scan for the app — same deals, faster checkout
+                                </div>
+                            </div>
+                        </div>
+                    </section>
+                </FadeIn>
 
-                {/* Find Deals - Coupon Style */}
-                <section className="mb-12">
-                    <div className="flex items-center justify-between mb-4">
-                        <h2 className="text-2xl font-bold text-slate-900">Find Deals</h2>
-                        <Link href="/marketplace" className="text-red-600 hover:underline font-medium">
-                            See all
-                        </Link>
+                {/* Savings journey */}
+                <FadeIn delay={0.06}>
+                    <div className="grid grid-cols-2 gap-3 md:gap-4">
+                        <div className="rounded-2xl bg-white border border-slate-200/80 p-5 md:p-6 relative overflow-hidden">
+                            <div className="absolute right-0 top-0 h-20 w-20 bg-[#1D4ED8]/5 rounded-bl-[4rem]" />
+                            <p className="text-xs font-semibold uppercase tracking-wider text-slate-500 mb-2">
+                                Money saved
+                            </p>
+                            <p className="text-2xl md:text-3xl font-extrabold text-[#1D4ED8] tracking-tight">
+                                {formatCurrency(savingsStats.totalSavings)}
+                            </p>
+                            {savingsStats.totalSavings === 0 && (
+                                <p className="mt-2 text-xs text-slate-500 leading-snug">
+                                    Your first discount will show up here
+                                </p>
+                            )}
+                        </div>
+                        <div className="rounded-2xl bg-white border border-slate-200/80 p-5 md:p-6 relative overflow-hidden">
+                            <div className="absolute right-0 top-0 h-20 w-20 bg-emerald-500/5 rounded-bl-[4rem]" />
+                            <p className="text-xs font-semibold uppercase tracking-wider text-slate-500 mb-2">
+                                Total orders
+                            </p>
+                            <p className="text-2xl md:text-3xl font-extrabold text-[#1D4ED8] tracking-tight">
+                                {savingsStats.totalPurchases}
+                            </p>
+                            {savingsStats.totalPurchases === 0 && (
+                                <p className="mt-2 text-xs text-slate-500 leading-snug">
+                                    Ready when the first deal drops
+                                </p>
+                            )}
+                        </div>
                     </div>
-                    <div className="flex gap-4 overflow-x-auto pb-4 scrollbar-hide">
-                        {products.slice(0, 6).map((product) => {
-                            const discount = calculateDiscount(product.price, product.student_price);
-                            return (
-                                <Link
-                                    key={product.id}
-                                    href={`/marketplace/${product.id}`}
-                                    className="shrink-0 w-[420px] md:w-[480px] bg-white rounded-lg shadow-sm hover:shadow-md transition-shadow overflow-hidden flex"
-                                    style={{
-                                        border: '1px dotted #1D4ED8'
-                                    }}
-                                >
-                                    {/* Left Blue Section - Discount */}
-                                    <div
-                                        className="flex items-center justify-center px-2 md:px-3 py-6 relative"
-                                        style={{
-                                            backgroundColor: '#1D4ED8',
-                                            minWidth: '60px',
-                                            width: '60px'
-                                        }}
-                                    >
-                                        <div className="relative inline-block">
-                                            {/* Dotted border around text */}
+                </FadeIn>
+
+                {/* Categories */}
+                {categories.length > 0 && (
+                    <FadeIn delay={0.1}>
+                        <div>
+                            <p className="text-xs font-semibold uppercase tracking-wider text-slate-500 mb-3">
+                                Browse by vibe
+                            </p>
+                            <div className="-mx-1 px-1 flex gap-4 md:gap-6 overflow-x-auto pt-3 pb-3 scrollbar-hide justify-start md:justify-center">
+                                {categories.map((category) => {
+                                    const { icon: Icon, color, textColor } = getCategoryIcon(category.name);
+                                    const isActive = selectedCategory === category.id;
+                                    const bgColor =
+                                        typeof color === 'string' && color.startsWith('rgba') ? color : undefined;
+                                    const bgClass =
+                                        typeof color === 'string' && !color.startsWith('rgba') ? color : '';
+                                    return (
+                                        <button
+                                            key={category.id}
+                                            type="button"
+                                            onClick={() => setSelectedCategory(category.id)}
+                                            className={`flex flex-col items-center gap-2.5 shrink-0 transition-opacity ${
+                                                isActive ? 'opacity-100' : 'opacity-70 hover:opacity-100'
+                                            }`}
+                                        >
                                             <div
-                                                className="absolute inset-0 border-2"
+                                                className={`w-14 h-14 md:w-16 md:h-16 rounded-2xl ${bgClass} flex items-center justify-center transition-[box-shadow,transform] ${
+                                                    isActive
+                                                        ? 'ring-2 ring-[#1D4ED8] shadow-md'
+                                                        : 'hover:-translate-y-0.5'
+                                                }`}
                                                 style={{
-                                                    borderStyle: 'dotted',
-                                                    borderColor: 'rgba(255, 255, 255, 0.5)',
-                                                    borderRadius: '0'
-                                                }}
-                                            />
-                                            <span
-                                                className="text-white font-light text-xs md:text-sm whitespace-nowrap relative z-10 px-4 py-2 block"
-                                                style={{
-                                                    writingMode: 'vertical-lr',
-                                                    textOrientation: 'mixed',
-                                                    transform: 'rotate(180deg)'
+                                                    ...(bgColor ? { backgroundColor: bgColor } : {}),
+                                                    ...(textColor ? { color: textColor } : {}),
                                                 }}
                                             >
-                                                Discount
+                                                <Icon
+                                                    className="h-6 w-6 md:h-7 md:w-7"
+                                                    style={textColor ? { color: textColor } : {}}
+                                                />
+                                            </div>
+                                            <span
+                                                className={`text-xs md:text-sm font-semibold whitespace-nowrap ${
+                                                    isActive ? 'text-[#1D4ED8]' : 'text-slate-600'
+                                                }`}
+                                            >
+                                                {category.name}
                                             </span>
-                                        </div>
+                                        </button>
+                                    );
+                                })}
+                            </div>
+                        </div>
+                    </FadeIn>
+                )}
 
-                                    </div>
+                {/* Category deals */}
+                {selectedCategory && (
+                    <FadeIn delay={0.12}>
+                        <section>
+                            <div className="flex items-end justify-between mb-4 gap-3">
+                                <div>
+                                    <h2 className="text-xl md:text-2xl font-extrabold tracking-tight text-slate-900">
+                                        {getSelectedCategoryName()}
+                                    </h2>
+                                    <p className="text-sm text-slate-500 mt-0.5">Hand-picked for this category</p>
+                                </div>
+                                {categoryProducts.length > 0 && (
+                                    <Link
+                                        href={`/marketplace/search?categoryId=${selectedCategory}`}
+                                        className="text-sm font-semibold text-[#1D4ED8] hover:underline shrink-0"
+                                    >
+                                        See all
+                                    </Link>
+                                )}
+                            </div>
+                            {isLoading ? (
+                                <DealSkeletonRail />
+                            ) : categoryProducts.length === 0 ? (
+                                <ExpectancyEmpty kind="category" />
+                            ) : (
+                                <div className="flex gap-4 overflow-x-auto pb-4 scrollbar-hide">
+                                    {categoryProducts.slice(0, 6).map((product) => (
+                                        <Link
+                                            key={product.id}
+                                            href={`/marketplace/${product.id}`}
+                                            className="shrink-0 w-72 bg-white rounded-2xl border border-slate-200/80 overflow-hidden hover:border-[#1D4ED8]/30 hover:-translate-y-0.5 transition-all duration-200"
+                                        >
+                                            <div className="relative h-40 bg-slate-100">
+                                                {product.image_url ? (
+                                                    <Image
+                                                        src={getImageUrl(product.image_url) || ''}
+                                                        alt={product.name}
+                                                        fill
+                                                        className="object-cover"
+                                                        unoptimized
+                                                    />
+                                                ) : (
+                                                    <div className="w-full h-full flex items-center justify-center bg-gradient-to-br from-[#EEF2FF] to-[#DBEAFE] text-[#1D4ED8]/40">
+                                                        <ShoppingBag className="h-10 w-10" />
+                                                    </div>
+                                                )}
+                                                <div className="absolute top-2 right-2 bg-emerald-500 text-white text-[11px] font-bold px-2 py-1 rounded-full">
+                                                    {calculateDiscount(product.price, product.student_price)}% OFF
+                                                </div>
+                                            </div>
+                                            <div className="p-4">
+                                                <h3 className="font-bold text-slate-900 line-clamp-1">{product.name}</h3>
+                                                {product.category_name && (
+                                                    <p className="text-xs text-slate-500 mt-1">{product.category_name}</p>
+                                                )}
+                                                <p className="mt-3 text-sm font-bold text-[#1D4ED8]">
+                                                    {formatCurrency(product.student_price)}
+                                                </p>
+                                            </div>
+                                        </Link>
+                                    ))}
+                                </div>
+                            )}
+                        </section>
+                    </FadeIn>
+                )}
 
-                                    {/* Right White Section - Content */}
-                                    <div className="flex-1 p-4 md:p-6 relative bg-white">
-                                        {/* First Row: Logo, Percentage, Blue dotted border, Visit website */}
-                                        <div className="flex items-center justify-between mb-3 relative z-10">
-                                            {/* Left side: Logo and Percentage */}
-                                            <div className="flex items-center gap-3 flex-1 min-w-0">
-                                                {/* Vendor Logo/Initials */}
-                                                {product.vendor_logo_url ? (
-                                                    <div className="w-10 h-10 md:w-12 md:h-12 rounded-lg overflow-hidden relative shrink-0">
+                {/* Vouchers */}
+                <FadeIn delay={0.16}>
+                    <section>
+                        <div className="flex items-end justify-between mb-4 gap-3">
+                            <div>
+                                <h2 className="text-xl md:text-2xl font-extrabold tracking-tight text-slate-900">
+                                    Vouchers
+                                </h2>
+                                <p className="text-sm text-slate-500 mt-0.5">Codes & campus perks</p>
+                            </div>
+                            {voucherProducts.length > 0 && (
+                                <Link href="/marketplace" className="text-sm font-semibold text-[#1D4ED8] hover:underline">
+                                    See all
+                                </Link>
+                            )}
+                        </div>
+                        {isLoading ? (
+                            <DealSkeletonRail />
+                        ) : voucherProducts.length === 0 ? (
+                            <ExpectancyEmpty kind="vouchers" />
+                        ) : (
+                            <div className="flex gap-4 overflow-x-auto pb-4 scrollbar-hide">
+                                {voucherProducts.slice(0, 6).map((product) => {
+                                    const discount = calculateDiscount(product.price, product.student_price);
+                                    return (
+                                        <Link
+                                            key={product.id}
+                                            href={`/marketplace/${product.id}`}
+                                            className="shrink-0 w-[380px] md:w-[440px] bg-white rounded-2xl overflow-hidden flex border border-dashed border-[#1D4ED8]/50 hover:border-[#1D4ED8] transition-colors"
+                                        >
+                                            <div className="flex items-center justify-center px-3 py-6 bg-[#1D4ED8] min-w-[56px]">
+                                                <span
+                                                    className="text-white text-xs font-semibold tracking-wide"
+                                                    style={{
+                                                        writingMode: 'vertical-lr',
+                                                        transform: 'rotate(180deg)',
+                                                    }}
+                                                >
+                                                    Voucher
+                                                </span>
+                                            </div>
+                                            <div className="flex-1 p-5 flex flex-col justify-center gap-2">
+                                                <p className="text-2xl font-extrabold text-[#1D4ED8]">{discount}% OFF</p>
+                                                <p className="text-sm text-slate-600 line-clamp-2">{product.name}</p>
+                                                <span className="text-xs font-bold text-[#1D4ED8] mt-1">Claim →</span>
+                                            </div>
+                                        </Link>
+                                    );
+                                })}
+                            </div>
+                        )}
+                    </section>
+                </FadeIn>
+
+                {/* Featured */}
+                <FadeIn delay={0.2}>
+                    <section className="pb-4">
+                        <div className="flex items-end justify-between mb-4 gap-3">
+                            <div>
+                                <h2 className="text-xl md:text-2xl font-extrabold tracking-tight text-slate-900">
+                                    Featured deals
+                                </h2>
+                                <p className="text-sm text-slate-500 mt-0.5">What everyone’s talking about</p>
+                            </div>
+                            {featuredProducts.length > 0 && (
+                                <Link href="/marketplace/search" className="text-sm font-semibold text-[#1D4ED8] hover:underline">
+                                    See all
+                                </Link>
+                            )}
+                        </div>
+                        {isLoading ? (
+                            <DealSkeletonRail count={4} />
+                        ) : featuredProducts.length === 0 ? (
+                            <ExpectancyEmpty kind="deals" />
+                        ) : (
+                            <div className="flex gap-4 overflow-x-auto pb-4 scrollbar-hide">
+                                {featuredProducts.map((product) => {
+                                    const discount = calculateDiscount(product.price, product.student_price);
+                                    return (
+                                        <Link
+                                            key={product.id}
+                                            href={`/marketplace/${product.id}`}
+                                            className="shrink-0 w-72 md:w-80 bg-white rounded-2xl border border-slate-200/80 overflow-hidden hover:-translate-y-0.5 transition-transform duration-200"
+                                        >
+                                            <div className="relative h-36 bg-slate-100">
+                                                {product.image_url ? (
+                                                    <Image
+                                                        src={getImageUrl(product.image_url) || ''}
+                                                        alt={product.name}
+                                                        fill
+                                                        className="object-cover"
+                                                        unoptimized
+                                                    />
+                                                ) : (
+                                                    <div className="w-full h-full flex items-center justify-center bg-gradient-to-br from-[#EEF2FF] to-[#DBEAFE]">
+                                                        <ShoppingBag className="h-10 w-10 text-[#1D4ED8]/35" />
+                                                    </div>
+                                                )}
+                                            </div>
+                                            <div className="p-4 pt-5 relative">
+                                                <div className="absolute -top-5 left-4 w-12 h-12 rounded-full bg-white shadow flex items-center justify-center overflow-hidden border border-slate-100">
+                                                    {product.vendor_logo_url ? (
                                                         <Image
                                                             src={getImageUrl(product.vendor_logo_url) || ''}
-                                                            alt={product.vendor_name || 'Vendor logo'}
-                                                            fill
+                                                            alt=""
+                                                            width={48}
+                                                            height={48}
                                                             className="object-cover"
                                                             unoptimized
                                                         />
-                                                    </div>
-                                                ) : product.vendor_name ? (
-                                                    <div
-                                                        className="w-10 h-10 md:w-12 md:h-12 rounded-lg flex items-center justify-center font-bold text-white text-xs shrink-0"
-                                                        style={{ backgroundColor: '#1D4ED8' }}
-                                                    >
-                                                        {product.vendor_name.substring(0, 2).toUpperCase()}
-                                                    </div>
-                                                ) : (
-                                                    <div
-                                                        className="w-10 h-10 md:w-12 md:h-12 rounded-lg flex items-center justify-center shrink-0"
-                                                        style={{ backgroundColor: '#1D4ED8' }}
-                                                    >
-                                                        <ShoppingBag className="h-5 w-5 md:h-6 md:w-6 text-white" />
-                                                    </div>
-                                                )}
-                                                {/* Percentage Discount */}
-                                                <div
-                                                    className="text-xl md:text-2xl font-bold whitespace-nowrap"
-                                                    style={{ color: '#1D4ED8' }}
-                                                >
-                                                    {discount}% OFF
+                                                    ) : (
+                                                        <span className="text-xs font-bold text-[#1D4ED8]">
+                                                            {(product.vendor_name || 'AW').substring(0, 2).toUpperCase()}
+                                                        </span>
+                                                    )}
+                                                </div>
+                                                <div className="flex justify-end mb-2">
+                                                    <span className="bg-emerald-100 text-emerald-700 text-[11px] font-bold px-2 py-0.5 rounded-full">
+                                                        {discount}% OFF
+                                                    </span>
+                                                </div>
+                                                <h3 className="font-bold text-slate-900 line-clamp-2 text-sm md:text-base">
+                                                    {product.name}
+                                                </h3>
+                                                <div className="mt-3 flex items-center justify-between">
+                                                    <span className="text-sm font-extrabold text-[#1D4ED8]">
+                                                        {formatCurrency(product.student_price)}
+                                                    </span>
+                                                    <span className="text-xs font-semibold text-slate-500">
+                                                        {product.deal_type === 'voucher' ||
+                                                        product.vendor_payment_method === 'vendor_website'
+                                                            ? 'Visit site'
+                                                            : 'Buy'}
+                                                    </span>
                                                 </div>
                                             </div>
-                                            {/* Right side: Blue dotted border and Visit website link */}
-                                            <div className="flex items-center gap-3 shrink-0">
-                                                {/* Blue dotted vertical border */}
-                                                <div
-                                                    className="w-px h-8"
-                                                    style={{
-                                                        borderLeft: '1px dashed #1D4ED8'
-                                                    }}
-                                                />
-                                                {/* Visit Website Link */}
-                                                <Link
-                                                    href={`/marketplace/${product.id}`}
-                                                    className="text-red-600 underline text-xs font-medium whitespace-nowrap"
-                                                    onClick={(e) => e.stopPropagation()}
-                                                >
-                                                    Visit website
-                                                </Link>
-                                            </div>
-                                        </div>
-
-                                        {/* Blue dotted horizontal border */}
-                                        <div
-                                            className="w-full h-px mb-3"
-                                            style={{
-                                                borderTop: '1px dashed #1D4ED8'
-                                            }}
-                                        />
-
-                                        {/* Second Row: Discount description text */}
-                                        <div className="mb-3 relative z-10">
-                                            <p
-                                                className="text-xs whitespace-nowrap"
-                                                style={{ color: '#1D4ED8' }}
-                                            >
-                                                {discount}% discount on all products available for students
-                                            </p>
-                                        </div>
-
-                                        {/* Blue dotted horizontal border below text */}
-                                        <div
-                                            className="w-full h-px"
-                                            style={{
-                                                borderTop: '1px dashed #1D4ED8'
-                                            }}
-                                        />
-                                    </div>
-                                </Link>
-                            );
-                        })}
-                    </div>
-                </section>
-
-                {/* Category Deals - Dynamic based on selected category */}
-                {selectedCategory && (
-                    <section className="mb-12">
-                        <div className="flex items-center justify-between mb-4">
-                            <h2 className="text-2xl font-bold text-slate-900">{getSelectedCategoryName()}</h2>
-                            <Link
-                                href={`/marketplace?categoryId=${selectedCategory}`}
-                                className="text-red-600 hover:underline font-medium"
-                            >
-                                See all
-                            </Link>
-                        </div>
-                        <div className="flex gap-4 overflow-x-auto pb-4 scrollbar-hide">
-                            {isLoading ? (
-                                <div className="flex items-center justify-center w-full py-12">
-                                    <p className="text-slate-500">Loading deals...</p>
-                                </div>
-                            ) : categoryProducts.length === 0 ? (
-                                <div className="flex items-center justify-center w-full py-12">
-                                    <p className="text-slate-500">No deals available in this category</p>
-                                </div>
-                            ) : (
-                                categoryProducts.slice(0, 6).map((product) => (
-                                    <Link
-                                        key={product.id}
-                                        href={`/marketplace/${product.id}`}
-                                        className="shrink-0 w-80 bg-white rounded-lg shadow-sm hover:shadow-md transition-shadow overflow-hidden"
-                                    >
-                                        <div className="relative h-48 bg-slate-100">
-                                            {product.image_url ? (
-                                                <Image
-                                                    src={getImageUrl(product.image_url) || ''}
-                                                    alt={product.name}
-                                                    fill
-                                                    className="object-cover"
-                                                    unoptimized
-                                                />
-                                            ) : (
-                                                <div className="w-full h-full flex items-center justify-center text-slate-400">
-                                                    No Image
-                                                </div>
-                                            )}
-                                            <div className="absolute top-2 right-2 bg-green-500 text-white text-xs font-semibold px-2 py-1 rounded">
-                                                {calculateDiscount(product.price, product.student_price)}% OFF
-                                            </div>
-                                        </div>
-                                        <div className="p-4">
-                                            <h3 className="font-semibold text-slate-900 mb-1 line-clamp-1">{product.name}</h3>
-                                            {product.category_name && (
-                                                <p className="text-xs text-slate-500 mb-2">{product.category_name}</p>
-                                            )}
-                                            <Link
-                                                href={`/marketplace/${product.id}`}
-                                                className="text-red-600 hover:underline text-sm font-medium"
-                                                onClick={(e) => e.stopPropagation()}
-                                            >
-                                                Visit Website
-                                            </Link>
-                                        </div>
-                                    </Link>
-                                ))
-                            )}
-                        </div>
+                                        </Link>
+                                    );
+                                })}
+                            </div>
+                        )}
                     </section>
-                )}
+                </FadeIn>
             </main>
 
-            {/* Footer */}
-            <footer className="text-white py-6" style={{ backgroundColor: '#1D4ED8' }}>
-                <div className="container mx-auto px-4">
-                    <div className="flex items-center justify-between flex-wrap gap-4">
+            <footer className="bg-[#1D4ED8] text-white mt-4">
+                <div className="mx-auto max-w-6xl px-4 py-8">
+                    <div className="flex flex-col md:flex-row md:items-center justify-between gap-6">
                         <Image
                             src="/images/awoofLogo.png"
-                            alt="Awoof Logo"
-                            width={120}
-                            height={40}
-                            className="object-contain"
+                            alt="Awoof"
+                            width={100}
+                            height={34}
+                            className="object-contain brightness-0 invert"
                         />
-                        <div className="flex items-center gap-6">
-                            <Link href="/contact" className="hover:underline text-sm">Contact Us</Link>
-                            <Link href="/partner" className="hover:underline text-sm">Partner With Us</Link>
-                            <Link href="/privacy" className="hover:underline text-sm">Privacy Policy</Link>
-                            <Link href="/terms" className="hover:underline text-sm">Terms of Use</Link>
+                        <div className="flex flex-wrap gap-x-6 gap-y-2 text-sm text-blue-100">
+                            <Link href="/contact" className="hover:text-white">
+                                Contact
+                            </Link>
+                            <Link href="/partner" className="hover:text-white">
+                                Partner
+                            </Link>
+                            <Link href="/privacy" className="hover:text-white">
+                                Privacy
+                            </Link>
+                            <Link href="/terms" className="hover:text-white">
+                                Terms
+                            </Link>
                         </div>
-                        <Button variant="outline" size="sm" className="bg-white/10 border-white text-white hover:bg-white/20">
+                        <Button
+                            variant="outline"
+                            size="sm"
+                            className="rounded-full border-white/40 bg-white/10 text-white hover:bg-white/20 w-fit"
+                        >
                             <Smartphone className="h-4 w-4 mr-2" />
-                            Get the App
+                            Get the app
                         </Button>
                     </div>
-                    <div className="mt-4 text-center text-sm text-blue-100">
-                        ©2025 Awoof — Empowering Students, One Discount at a Time
-                    </div>
+                    <p className="mt-6 text-center text-xs text-blue-200">
+                        © {new Date().getFullYear()} Awoof — Empowering students, one discount at a time
+                    </p>
                 </div>
             </footer>
         </div>

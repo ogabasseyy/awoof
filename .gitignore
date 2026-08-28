@@ -44,6 +44,9 @@ Thumbs.db
 *.tmp
 *.temp
 .cache/
+vps-snapshot/
+compare-with-vps.sh
+trigger-vps-build.sh
 
 # Uploads (user-generated content)
 apps/backend/uploads/

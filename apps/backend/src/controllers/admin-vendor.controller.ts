@@ -5,8 +5,14 @@
  */
 
 import type { Request, Response } from 'express';
+import { z } from 'zod';
 import { db } from '../config/database.js';
+import { NotFoundError } from '../common/errors/AppError.js';
 import { success } from '../common/utils/response.js';
+
+const updateVendorStatusSchema = z.object({
+    status: z.enum(['active', 'suspended', 'rejected']),
+});
 
 export class AdminVendorController {
     /**
@@ -17,6 +23,7 @@ export class AdminVendorController {
         const page = Math.max(1, parseInt(req.query.page as string) || 1);
         const limit = Math.min(100, Math.max(1, parseInt(req.query.limit as string) || 20));
         const search = (req.query.search as string)?.trim();
+        const statusFilter = (req.query.status as string)?.trim();
         const offset = (page - 1) * limit;
 
         const params: unknown[] = [];
@@ -31,6 +38,11 @@ export class AdminVendorController {
                 v.business_category ILIKE $${paramIdx}
             )`;
             params.push(pattern);
+            paramIdx++;
+        }
+        if (statusFilter && ['pending', 'active', 'suspended', 'rejected'].includes(statusFilter)) {
+            whereClause += ` AND v.status = $${paramIdx}`;
+            params.push(statusFilter);
             paramIdx++;
         }
 
@@ -103,6 +115,34 @@ export class AdminVendorController {
             message: 'Vendors retrieved successfully',
             data: { vendors, total, page, limit },
             meta: { page, limit, total, totalPages: Math.ceil(total / limit) },
+        });
+    }
+
+    /**
+     * PATCH /api/admin/vendors/:id/status
+     */
+    async updateVendorStatus(req: Request, res: Response): Promise<void> {
+        const { id } = req.params;
+        const { status } = updateVendorStatusSchema.parse(req.body);
+
+        const result = await db.query(
+            `UPDATE vendors
+             SET status = $1, updated_at = CURRENT_TIMESTAMP
+             WHERE id = $2 AND deleted_at IS NULL
+             RETURNING id, status`,
+            [status, id]
+        );
+
+        if (result.rows.length === 0) {
+            throw new NotFoundError('Vendor not found');
+        }
+
+        success(res, {
+            message: 'Vendor status updated',
+            data: {
+                id: result.rows[0].id,
+                status: result.rows[0].status,
+            },
         });
     }
 }

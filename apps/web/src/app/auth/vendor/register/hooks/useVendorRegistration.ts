@@ -42,6 +42,8 @@ export function useVendorRegistration() {
     });
     const [error, setError] = useState<string | null>(null);
     const [isLoading, setIsLoading] = useState(false);
+    /** True after register + complete-registration succeeded; on retry we only re-run the upload step. */
+    const [registrationPhaseDone, setRegistrationPhaseDone] = useState(false);
 
     const saveStep1Data = (data: Step1Data) => {
         setRegistrationData((prev) => ({
@@ -104,50 +106,90 @@ export function useVendorRegistration() {
             setIsLoading(true);
             setError(null);
 
-            // Step 1: Register user account
-            await registerUser(
-                registrationData.step1.companyEmail,
-                registrationData.step2.password,
-                registrationData.step1.fullName,
-                'vendor'
-            );
-
-            // Step 2: Complete vendor registration with company details
-            await apiClient.post('/vendors/complete-registration', {
-                companyName: registrationData.step1.companyName,
-                phoneNumber: registrationData.step1.phoneNumber,
-                businessCategory: registrationData.step2.businessCategory,
-                businessWebsite: registrationData.step2.businessWebsite || '',
-            });
-
-            // Step 3: Upload files - logo is required
-            if (!registrationData.files.logoImage) {
-                throw new Error('Logo image is required');
+            if (!registrationPhaseDone) {
+                // Step 1: Register user account (sends verification email)
+                await registerUser(
+                    registrationData.step1.companyEmail,
+                    registrationData.step2.password,
+                    registrationData.step1.fullName,
+                    'vendor'
+                );
             }
 
-            const filesToUpload = Object.entries(registrationData.files).filter(([, file]) => file !== undefined);
-            if (filesToUpload.length > 0) {
-                const formData = new FormData();
-                filesToUpload.forEach(([fieldName, file]) => {
-                    if (file) {
-                        formData.append(fieldName, file);
-                    }
-                });
+            let completeOrUploadFailed = false;
+            let stepError: string | null = null;
 
-                await apiClient.post('/vendors/upload', formData, {
-                    headers: {
-                        'Content-Type': 'multipart/form-data',
-                    },
-                });
+            try {
+                if (!registrationPhaseDone) {
+                    // Step 2: Complete vendor registration with company details
+                    await apiClient.post('/vendors/complete-registration', {
+                        companyName: registrationData.step1.companyName,
+                        phoneNumber: registrationData.step1.phoneNumber,
+                        businessCategory: registrationData.step2.businessCategory,
+                        businessWebsite: registrationData.step2.businessWebsite || '',
+                    });
+                    setRegistrationPhaseDone(true);
+                }
+
+                // Step 3: Upload files - logo is required
+                if (!registrationData.files.logoImage) {
+                    throw new Error('Logo image is required');
+                }
+
+                const filesToUpload = Object.entries(registrationData.files).filter(([, file]) => file !== undefined);
+                if (filesToUpload.length > 0) {
+                    const formData = new FormData();
+                    filesToUpload.forEach(([fieldName, file]) => {
+                        if (file) {
+                            formData.append(fieldName, file);
+                        }
+                    });
+
+                    await apiClient.post('/vendors/upload', formData);
+                }
+            } catch (stepErr: unknown) {
+                completeOrUploadFailed = true;
+                const e = stepErr as {
+                    response?: { data?: { error?: { message?: string }; message?: string } };
+                    message?: string;
+                };
+                stepError =
+                    e.response?.data?.error?.message ||
+                    e.response?.data?.message ||
+                    e.message ||
+                    'Profile or file upload failed.';
+                setError(stepError);
             }
 
-            // Redirect to email verification page (vendor email verification is required)
+            // If logo was missing, do not redirect – keep user on Step 3 to upload logo
+            const isLogoRequiredError =
+                stepError &&
+                (stepError === 'Logo image is required' ||
+                    stepError.toLowerCase().includes('logo image is required') ||
+                    stepError.toLowerCase().includes('logo is required'));
+            if (completeOrUploadFailed && isLogoRequiredError) {
+                throw new Error(stepError ?? 'Logo image is required');
+            }
+
+            // Redirect to verify-email once account is created (user already received the email)
             if (typeof window !== 'undefined') {
-                window.location.href = `/auth/vendor/verify-email?email=${encodeURIComponent(registrationData.step1.companyEmail)}`;
+                const params = new URLSearchParams({ email: registrationData.step1.companyEmail });
+                if (completeOrUploadFailed && stepError) {
+                    params.set('profileError', stepError);
+                }
+                window.location.href = `/auth/vendor/verify-email?${params.toString()}`;
             }
         } catch (err: unknown) {
-            const error = err as { response?: { data?: { error?: { message?: string } } } };
-            const errorMessage = error.response?.data?.error?.message || 'Failed to complete registration. Please try again.';
+            // Reach here if registerUser() failed OR we rethrew after upload/logo error (to stay on form)
+            const error = err as {
+                response?: { data?: { error?: { message?: string }; message?: string } };
+                message?: string;
+            };
+            const errorMessage =
+                error.response?.data?.error?.message ||
+                error.response?.data?.message ||
+                error.message ||
+                'Failed to create account. Please try again.';
             setError(errorMessage);
             throw new Error(errorMessage);
         } finally {

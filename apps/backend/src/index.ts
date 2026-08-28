@@ -5,7 +5,7 @@
  * Follows SOLID principles with clean architecture
  */
 
-import express, { type Express } from 'express';
+import express, { type Express, type Request, type Response, type NextFunction } from 'express';
 import cors from 'cors';
 import helmet from 'helmet';
 import rateLimit from 'express-rate-limit';
@@ -27,8 +27,27 @@ class App {
 
   constructor() {
     this.app = express();
+    this.initializeWebhookRoute();
     this.initializeMiddlewares();
     // Note: Error handling must be initialized AFTER routes
+  }
+
+  /**
+   * Paystack webhook must receive raw body for HMAC verification.
+   */
+  private initializeWebhookRoute(): void {
+    this.app.post(
+      '/api/webhooks/paystack',
+      express.raw({ type: 'application/json' }),
+      async (req: Request, res: Response, next: NextFunction) => {
+        try {
+          const { handlePaystackWebhook } = await import('./controllers/webhook.controller.js');
+          await handlePaystackWebhook(req, res);
+        } catch (error) {
+          next(error);
+        }
+      }
+    );
   }
 
   /**
@@ -170,6 +189,15 @@ class App {
     }
 
     try {
+      const widgetRoutes = await import('./routes/widget.routes.js');
+      this.app.use('/api/widget', widgetRoutes.default);
+      appLogger.info('Widget routes registered');
+    } catch (error) {
+      appLogger.error('Failed to register widget routes:', error);
+      throw error;
+    }
+
+    try {
       const vendorRoutes = await import('./routes/vendors.routes.js');
       this.app.use('/api/vendors', vendorRoutes.default);
       appLogger.info('Vendor routes registered');
@@ -188,11 +216,29 @@ class App {
     }
 
     try {
+      const checkoutRoutes = await import('./routes/checkout.routes.js');
+      this.app.use('/api/checkout', checkoutRoutes.default);
+      appLogger.info('Checkout routes registered');
+    } catch (error) {
+      appLogger.error('Failed to register checkout routes:', error);
+      throw error;
+    }
+
+    try {
       const adminRoutes = await import('./routes/admin.routes.js');
       this.app.use('/api/admin', adminRoutes.default);
       appLogger.info('Admin routes registered');
     } catch (error) {
       appLogger.error('Failed to register admin routes:', error);
+      throw error;
+    }
+
+    try {
+      const supportRoutes = await import('./routes/support.routes.js');
+      this.app.use('/api/support', supportRoutes.default);
+      appLogger.info('Support routes registered');
+    } catch (error) {
+      appLogger.error('Failed to register support routes:', error);
       throw error;
     }
   }

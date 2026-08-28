@@ -35,6 +35,31 @@ export const errorHandler = (
     res: Response,
     _next: NextFunction
 ): void => {
+    // Handle Multer errors (file type, size) - return 400 with clear message
+    const multerMessage = err.message || '';
+    if (err instanceof Error && (err as NodeJS.ErrnoException).code === 'LIMIT_FILE_SIZE') {
+        res.status(400).json({
+            success: false,
+            error: {
+                message: 'File is too large. Maximum size is 2MB per file.',
+                code: 'FILE_TOO_LARGE',
+                statusCode: 400,
+            },
+        });
+        return;
+    }
+    if (err instanceof Error && (multerMessage.includes('Invalid file type') || multerMessage.includes('only images'))) {
+        res.status(400).json({
+            success: false,
+            error: {
+                message: 'Invalid file type. Only images (JPEG, PNG, WebP) and PDFs are allowed.',
+                code: 'INVALID_FILE_TYPE',
+                statusCode: 400,
+            },
+        });
+        return;
+    }
+
     // Handle Zod validation errors
     if (err instanceof ZodError) {
         const validationError: ValidationError = fromZodError(err);

@@ -1,58 +1,48 @@
+'use client';
+
+import { Stagger, StaggerItem } from '@/components/motion/Reveal';
+
 export default function AboutSteps() {
   const steps = [
     {
       number: 1,
-      title: "Sign Up",
+      title: 'Sign up & verify',
       description:
-        "Enter your matric number, school, and verify with a 6-digit email code.",
+        'Use your school email, pick your university, and confirm with a one-time code.',
     },
     {
       number: 2,
-      title: "Explore Exclusive Student Discounts",
+      title: 'Explore student-only deals',
       description:
-        "From food and tech to fashion and travel all tailored just for students like you.",
+        'Food, tech, fashion, travel — offers tailored for verified students like you.',
     },
     {
       number: 3,
-      title: "Redeem & Enjoy Your Awoof",
+      title: 'Redeem & enjoy',
       description:
-        'Tap "claim," show your code or voucher, and enjoy real savings no catch.',
+        'Claim on Awoof or at partner sites, show your proof, and save — simple as that.',
     },
   ];
 
   return (
-    <div className="max-w-lg">
-      <div className="">
-        {steps.map((step, index) => (
-          <div key={step.number}>
-            <div className="flex gap-3 sm:gap-4 p-4 sm:p-6">
-              {/* Step Number Circle */}
-              <div className="flex-shrink-0">
-                <div
-                  className={`${
-                    step.number === 1 ? "bg-[#1D4ED8] text-white" : "bg-white text-[#DEDEDE]"
-                  } w-12 h-12 rounded-full flex items-center justify-center`}
-                  // className="w-12 h-12 rounded-full bg-blue-600 flex items-center justify-center"
-                >
-                  <span className=" font-bold text-xl">{step.number}</span>
-                </div>
-              </div>
-
-              {/* Step Content */}
-              <div
-                className={`${
-                  step.number === 1 ? "border-2 border-[#1D4ED8] " : "bg-white shadow-2xl"
-                } flex-1 rounded-2xl p-6 `}
-              >
-                <h3 className="font-bold text-lg">{step.title}</h3>
-                <p className="text-gray-600 text-sm leading-relaxed">
-                  {step.description}
-                </p>
+    <Stagger className="max-w-lg w-full space-y-4">
+      {steps.map((step) => (
+        <StaggerItem key={step.number}>
+          <div className="flex gap-4 p-1">
+            <div className="flex-shrink-0">
+              <div className="w-11 h-11 rounded-full bg-[#1D4ED8] text-white flex items-center justify-center font-bold text-lg shadow-md shadow-blue-900/15">
+                {step.number}
               </div>
             </div>
+            <div className="flex-1 rounded-2xl bg-white border border-[#1D4ED8]/10 px-5 py-4 shadow-sm hover:shadow-md hover:border-[#1D4ED8]/20 transition-shadow">
+              <h3 className="font-bold text-lg text-slate-900">{step.title}</h3>
+              <p className="mt-1 text-slate-600 text-sm leading-relaxed">
+                {step.description}
+              </p>
+            </div>
           </div>
-        ))}
-      </div>
-    </div>
+        </StaggerItem>
+      ))}
+    </Stagger>
   );
 }

@@ -13,6 +13,8 @@ import { adminUniversityController } from '../controllers/admin-university.contr
 import { adminStudentController } from '../controllers/admin-student.controller.js';
 import { adminVendorController } from '../controllers/admin-vendor.controller.js';
 import { adminAnalyticsController } from '../controllers/admin-analytics.controller.js';
+import { getPlatformSettings, updatePlatformSettings } from '../controllers/admin-platform-settings.controller.js';
+import { ticketController } from '../controllers/ticket.controller.js';
 import { csvUpload } from '../config/upload.js';
 
 const router = Router();
@@ -33,7 +35,25 @@ router.delete('/universities/:id', asyncHandler(adminUniversityController.delete
 
 router.get('/students', asyncHandler(adminStudentController.getStudents.bind(adminStudentController)));
 router.get('/vendors', asyncHandler(adminVendorController.getVendors.bind(adminVendorController)));
+router.patch(
+    '/vendors/:id/status',
+    asyncHandler(adminVendorController.updateVendorStatus.bind(adminVendorController))
+);
 router.get('/analytics', asyncHandler(adminAnalyticsController.getAnalytics.bind(adminAnalyticsController)));
+
+/**
+ * @route   GET /api/admin/settings/platform
+ * @desc    Get platform settings (e.g. platform fee %)
+ * @access  Admin
+ */
+router.get('/settings/platform', asyncHandler(getPlatformSettings));
+
+/**
+ * @route   PUT /api/admin/settings/platform
+ * @desc    Update platform settings
+ * @access  Admin
+ */
+router.put('/settings/platform', asyncHandler(updatePlatformSettings));
 
 /**
  * @route   GET /api/admin/categories
@@ -83,6 +103,18 @@ router.put(
 router.delete(
     '/categories/:id',
     asyncHandler(adminController.deleteCategory.bind(adminController))
+);
+
+// Unified support inbox
+router.get('/support/tickets', asyncHandler(ticketController.listAdmin.bind(ticketController)));
+router.get('/support/tickets/:id', asyncHandler(ticketController.getAdmin.bind(ticketController)));
+router.post(
+    '/support/tickets/:id/messages',
+    asyncHandler(ticketController.replyAdmin.bind(ticketController))
+);
+router.patch(
+    '/support/tickets/:id',
+    asyncHandler(ticketController.patchAdmin.bind(ticketController))
 );
 
 export default router;
