@@ -6,7 +6,7 @@
 
 'use client';
 
-import { useState, useEffect } from 'react';
+import { Suspense, useState, useEffect } from 'react';
 import { BarChart3, CreditCard, LayoutDashboard, LifeBuoy, Puzzle, Settings, ShoppingBag, Tag, Plus, Search, RefreshCw } from 'lucide-react';
 import Image from 'next/image';
 import ProtectedRoute from '@/components/ProtectedRoute';
@@ -56,7 +56,7 @@ interface Product {
     updated_at: string;
 }
 
-export default function VendorDealsPage() {
+function VendorDealsContent() {
     const searchParams = useSearchParams();
     const { user, logout } = useAuth();
     const confirm = useConfirm();
@@ -403,3 +403,10 @@ export default function VendorDealsPage() {
     );
 }
 
+export default function VendorDealsPage() {
+    return (
+        <Suspense fallback={<div className="p-6 text-sm text-slate-600">Loading deals…</div>}>
+            <VendorDealsContent />
+        </Suspense>
+    );
+}

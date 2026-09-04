@@ -46,6 +46,10 @@ jobs:
         working-directory: apps/backend
         run: npx tsc --noEmit
 
+      - name: Lint backend
+        working-directory: apps/backend
+        run: npm run lint
+
   build-web:
     name: Build Web
     runs-on: ubuntu-latest
