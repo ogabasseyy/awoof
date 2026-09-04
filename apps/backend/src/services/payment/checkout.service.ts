@@ -173,7 +173,6 @@ export async function completeMarketplaceTransactionWithClient(
 
         if (txResult.rows.length === 0) {
             await client.query('ROLLBACK');
-            transactionOpen = false;
             return { completed: false };
         }
 
@@ -181,13 +180,11 @@ export async function completeMarketplaceTransactionWithClient(
 
         if (tx.status === 'completed') {
             await client.query('COMMIT');
-            transactionOpen = false;
             return { completed: true, transactionId: tx.id, newlyCompleted: false };
         }
 
         if (tx.status === 'failed' || tx.status === 'refunded' || tx.status === 'requires_refund') {
             await client.query('COMMIT');
-            transactionOpen = false;
             return { completed: false, transactionId: tx.id };
         }
 
@@ -210,7 +207,6 @@ export async function completeMarketplaceTransactionWithClient(
                 [tx.id, paystackReference, paidAmountNaira]
             );
             await client.query('COMMIT');
-            transactionOpen = false;
             return { completed: false, transactionId: tx.id };
         }
 
@@ -239,7 +235,6 @@ export async function completeMarketplaceTransactionWithClient(
                 [tx.id, paystackReference, paidAmountNaira]
             );
             await client.query('COMMIT');
-            transactionOpen = false;
             return { completed: false, transactionId: tx.id };
         }
 
@@ -260,7 +255,6 @@ export async function completeMarketplaceTransactionWithClient(
                 [tx.product_id]
             );
             await client.query('COMMIT');
-            transactionOpen = false;
             return { completed: true, transactionId: tx.id, newlyCompleted: false };
         }
 
@@ -283,7 +277,6 @@ export async function completeMarketplaceTransactionWithClient(
         );
 
         await client.query('COMMIT');
-        transactionOpen = false;
         return { completed: true, transactionId: tx.id, newlyCompleted: true };
     } catch (error) {
         if (transactionOpen) {
