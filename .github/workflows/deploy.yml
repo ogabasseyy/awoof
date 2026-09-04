@@ -44,7 +44,14 @@ jobs:
             --exclude '.git/objects' \
             --exclude '*.log' \
             --exclude '.env' \
+            --exclude 'backups' \
             ./ ${{ steps.vps.outputs.user }}@${{ steps.vps.outputs.host }}:~/awoof/
+
+      - name: Back up production database
+        run: |
+          ssh -i ~/.ssh/deploy_key -o StrictHostKeyChecking=no -o ServerAliveInterval=60 -o ServerAliveCountMax=10 \
+            ${{ steps.vps.outputs.user }}@${{ steps.vps.outputs.host }} \
+            "cd ~/awoof && sg docker -c './scripts/backup-awoof-postgres.sh'"
 
       - name: Build and start containers on VPS
         timeout-minutes: 15

@@ -47,13 +47,36 @@ services:
     ports:
       - "5001:5000"
     depends_on:
-      db:
-        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
       redis:
         condition: service_healthy
     env_file:
       - .env
     restart: unless-stopped
+
+  migrate:
+    build:
+      context: ./apps/backend
+      dockerfile: Dockerfile.prod
+    working_dir: /usr/src/app
+    environment:
+      NODE_ENV: production
+      DATABASE_URL: postgresql://${DB_USER:-root}:${DB_PASSWORD:-root}@db:5432/${DB_NAME:-awoofDB}
+      DB_HOST: db
+      DB_PORT: 5432
+      DB_NAME: ${DB_NAME:-awoofDB}
+      DB_USER: ${DB_USER:-root}
+      DB_PASSWORD: ${DB_PASSWORD:-root}
+      JWT_SECRET: ${JWT_SECRET}
+      JWT_REFRESH_SECRET: ${JWT_REFRESH_SECRET}
+    env_file:
+      - .env
+    depends_on:
+      db:
+        condition: service_healthy
+    command: ["node", "dist/database/migrations/run.js"]
+    restart: "no"
 
   db:
     container_name: awoof-postgres
