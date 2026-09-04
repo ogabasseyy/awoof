@@ -30,8 +30,8 @@ jobs:
       - name: Set VPS connection defaults
         id: vps
         run: |
-          echo "host=${VPS_HOST:-82.29.190.219}" >> $GITHUB_OUTPUT
-          echo "user=${VPS_USER:-developer}" >> $GITHUB_OUTPUT
+          echo "host=${VPS_HOST:-82.29.190.219}" >> "$GITHUB_OUTPUT"
+          echo "user=${VPS_USER:-developer}" >> "$GITHUB_OUTPUT"
 
       - name: Setup SSH
         run: |
