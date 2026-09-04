@@ -3,6 +3,7 @@
  */
 
 import { db } from '../../config/database.js';
+import type { PoolClient } from 'pg';
 import { BadRequestError } from '../../common/errors/AppError.js';
 import { appLogger } from '../../common/logger.js';
 import { NotificationService } from '../notification/notification.service.js';
@@ -99,11 +100,42 @@ export async function completeMarketplaceTransaction(
     paystackReference: string,
     paidAmountNaira: number
 ): Promise<{ completed: boolean; transactionId?: string; newlyCompleted?: boolean }> {
-    await db.query('BEGIN');
-    let newlyCompleted = false;
-    let transactionId: string | undefined;
+    // A transaction is connection-scoped in PostgreSQL. Keep every statement on
+    // one checked-out client so stock, payment, and savings updates are atomic.
+    const client = await db.getPool().connect();
     try {
-        const txResult = await db.query(
+        const result = await completeMarketplaceTransactionWithClient(
+            client,
+            paystackReference,
+            paidAmountNaira
+        );
+
+        if (result.newlyCompleted && result.transactionId) {
+            // Outside the DB transaction — failures must not roll back payment.
+            void emitCommerceNotifications(result.transactionId);
+        }
+
+        return result;
+    } finally {
+        client.release();
+    }
+}
+
+/**
+ * Transactional core exported for deterministic tests. Callers must supply one
+ * checked-out client; using Pool.query here would break transaction isolation.
+ */
+export async function completeMarketplaceTransactionWithClient(
+    client: Pick<PoolClient, 'query'>,
+    paystackReference: string,
+    paidAmountNaira: number
+): Promise<{ completed: boolean; transactionId?: string; newlyCompleted?: boolean }> {
+    let transactionOpen = false;
+    try {
+        await client.query('BEGIN');
+        transactionOpen = true;
+
+        const txResult = await client.query(
             `SELECT t.*, p.price AS list_price
              FROM transactions t
              JOIN products p ON p.id = t.product_id
@@ -113,20 +145,22 @@ export async function completeMarketplaceTransaction(
         );
 
         if (txResult.rows.length === 0) {
-            await db.query('ROLLBACK');
+            await client.query('ROLLBACK');
+            transactionOpen = false;
             return { completed: false };
         }
 
         const tx = txResult.rows[0];
-        transactionId = tx.id;
 
         if (tx.status === 'completed') {
-            await db.query('COMMIT');
+            await client.query('COMMIT');
+            transactionOpen = false;
             return { completed: true, transactionId: tx.id, newlyCompleted: false };
         }
 
         if (tx.status === 'failed' || tx.status === 'refunded') {
-            await db.query('COMMIT');
+            await client.query('COMMIT');
+            transactionOpen = false;
             return { completed: false, transactionId: tx.id };
         }
 
@@ -134,11 +168,10 @@ export async function completeMarketplaceTransaction(
         const paidKobo = Math.round(paidAmountNaira * 100);
         // Allow paid >= expected (Paystack may add gateway fees on top of our charge)
         if (paidKobo < expectedKobo) {
-            await db.query('ROLLBACK');
             throw new BadRequestError('Payment amount mismatch');
         }
 
-        const stockUpdate = await db.query(
+        const stockUpdate = await client.query(
             `UPDATE products
              SET stock = stock - 1, updated_at = CURRENT_TIMESTAMP
              WHERE id = $1 AND stock > 0 AND deleted_at IS NULL
@@ -148,17 +181,18 @@ export async function completeMarketplaceTransaction(
 
         if (stockUpdate.rows.length === 0) {
             // Only mark failed if still pending — never overwrite completed
-            await db.query(
+            await client.query(
                 `UPDATE transactions
                  SET status = 'failed', updated_at = CURRENT_TIMESTAMP
                  WHERE id = $1 AND status = 'pending'`,
                 [tx.id]
             );
-            await db.query('COMMIT');
+            await client.query('COMMIT');
+            transactionOpen = false;
             return { completed: false, transactionId: tx.id };
         }
 
-        const completed = await db.query(
+        const completed = await client.query(
             `UPDATE transactions
              SET status = 'completed', updated_at = CURRENT_TIMESTAMP
              WHERE id = $1 AND status = 'pending'
@@ -168,18 +202,19 @@ export async function completeMarketplaceTransaction(
 
         if (completed.rows.length === 0) {
             // Another worker completed it (or status changed) — restore stock
-            await db.query(
+            await client.query(
                 `UPDATE products
                  SET stock = stock + 1, updated_at = CURRENT_TIMESTAMP
                  WHERE id = $1`,
                 [tx.product_id]
             );
-            await db.query('COMMIT');
+            await client.query('COMMIT');
+            transactionOpen = false;
             return { completed: true, transactionId: tx.id, newlyCompleted: false };
         }
 
         const savingsDelta = parseFloat(tx.list_price) - parseFloat(tx.amount);
-        await db.query(
+        await client.query(
             `INSERT INTO savings_stats (student_id, total_savings, total_purchases, last_updated)
              VALUES ($1, $2, 1, CURRENT_TIMESTAMP)
              ON CONFLICT (student_id) DO UPDATE SET
@@ -189,18 +224,17 @@ export async function completeMarketplaceTransaction(
             [tx.student_id, savingsDelta]
         );
 
-        await db.query('COMMIT');
-        newlyCompleted = true;
+        await client.query('COMMIT');
+        transactionOpen = false;
+        return { completed: true, transactionId: tx.id, newlyCompleted: true };
     } catch (error) {
-        await db.query('ROLLBACK');
+        if (transactionOpen) {
+            try {
+                await client.query('ROLLBACK');
+            } catch (rollbackError) {
+                appLogger.error('Marketplace transaction rollback failed', rollbackError);
+            }
+        }
         throw error;
     }
-
-    if (newlyCompleted && transactionId) {
-        // Outside the DB transaction — failures must not roll back payment
-        void emitCommerceNotifications(transactionId);
-        return { completed: true, transactionId, newlyCompleted: true };
-    }
-
-    return { completed: true, ...(transactionId ? { transactionId } : {}), newlyCompleted: false };
 }

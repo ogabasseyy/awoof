@@ -99,7 +99,9 @@ export function verifyPaystackWebhookSignature(
         return false;
     }
     const hash = crypto.createHmac('sha512', secret).update(rawBody).digest('hex');
-    return hash === signatureHeader;
+    const expected = Buffer.from(hash, 'hex');
+    const received = Buffer.from(signatureHeader, 'hex');
+    return received.length === expected.length && crypto.timingSafeEqual(received, expected);
 }
 
 export function generatePaystackReference(): string {
@@ -278,4 +280,3 @@ export async function updatePaystackSubaccount(
         throw new BadRequestError(paystackErrorMessage(error, 'Failed to update Paystack subaccount'));
     }
 }
-
