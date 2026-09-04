@@ -30,7 +30,7 @@ jobs:
       # Pin to specific version for reproducible builds
       image: semgrep/semgrep:1.99.0
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - name: Run Semgrep scan
         # SEMGREP_APP_TOKEN is optional - enables Semgrep Cloud features if configured
