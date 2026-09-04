@@ -54,10 +54,16 @@ function redirectAfterAuth(path: string) {
 
 function getSafeStudentRedirect(): string {
     if (typeof window === 'undefined') return '/marketplace';
-    const redirect = new URLSearchParams(window.location.search).get('redirect');
-    return redirect && redirect.startsWith('/') && !redirect.startsWith('//')
-        ? redirect
-        : '/marketplace';
+    const candidate = new URLSearchParams(window.location.search).get('redirect');
+    if (!candidate) return '/marketplace';
+    try {
+        const resolved = new URL(candidate, window.location.origin);
+        return resolved.origin === window.location.origin
+            ? `${resolved.pathname}${resolved.search}${resolved.hash}`
+            : '/marketplace';
+    } catch {
+        return '/marketplace';
+    }
 }
 
 export function AuthProvider({ children }: { children: ReactNode }) {

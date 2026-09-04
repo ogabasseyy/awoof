@@ -23,6 +23,15 @@ if (!process.env.BREVO_API_KEY) {
 
 const apiInstance = new SibApiV3Sdk.TransactionalEmailsApi();
 
+function escapeHtml(value: string): string {
+    return value
+        .replaceAll('&', '&amp;')
+        .replaceAll('<', '&lt;')
+        .replaceAll('>', '&gt;')
+        .replaceAll('"', '&quot;')
+        .replaceAll("'", '&#39;');
+}
+
 /**
  * Send email with retry logic
  */
@@ -205,8 +214,8 @@ export const sendSupportTicketCreatedEmail = async (
 ) => {
     const html = supportShell(
         'New support ticket',
-        `<p>A new <strong>${requesterRole}</strong> ticket was opened.</p>
-         <p><strong>${subject}</strong></p>
+        `<p>A new <strong>${escapeHtml(requesterRole)}</strong> ticket was opened.</p>
+         <p><strong>${escapeHtml(subject)}</strong></p>
          <p><a href="${ticketLink(ticketId, 'admin')}" style="color:#1D4ED8;">Open in admin</a></p>`
     );
     return sendEmail(email, `[Support] ${subject}`, html);
@@ -222,8 +231,8 @@ export const sendSupportTicketReplyEmail = async (
     const preview = replyPreview.length > 280 ? `${replyPreview.slice(0, 280)}…` : replyPreview;
     const html = supportShell(
         'New reply on your ticket',
-        `<p>Ticket: <strong>${ticketSubject}</strong></p>
-         <p style="white-space:pre-wrap;">${preview}</p>
+        `<p>Ticket: <strong>${escapeHtml(ticketSubject)}</strong></p>
+         <p style="white-space:pre-wrap;">${escapeHtml(preview)}</p>
          <p><a href="${ticketLink(ticketId, viewerRole)}" style="color:#1D4ED8;">View conversation</a></p>`
     );
     return sendEmail(email, `Re: ${ticketSubject}`, html);
@@ -238,7 +247,7 @@ export const sendSupportTicketStatusEmail = async (
 ) => {
     const html = supportShell(
         'Ticket status updated',
-        `<p>Your ticket <strong>${ticketSubject}</strong> is now <strong>${status}</strong>.</p>
+        `<p>Your ticket <strong>${escapeHtml(ticketSubject)}</strong> is now <strong>${escapeHtml(status)}</strong>.</p>
          <p><a href="${ticketLink(ticketId, viewerRole)}" style="color:#1D4ED8;">View ticket</a></p>`
     );
     return sendEmail(email, `Ticket ${status}: ${ticketSubject}`, html);

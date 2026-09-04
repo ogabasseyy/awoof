@@ -45,6 +45,7 @@ export default function AdminSettingsPage() {
     // Platform settings
     const [platformFeePercent, setPlatformFeePercent] = useState<number>(10);
     const [loadingPlatform, setLoadingPlatform] = useState(true);
+    const [platformLoadError, setPlatformLoadError] = useState<string | null>(null);
     const [savingPlatform, setSavingPlatform] = useState(false);
 
     useEffect(() => {
@@ -75,12 +76,13 @@ export default function AdminSettingsPage() {
         (async () => {
             try {
                 setLoadingPlatform(true);
+                setPlatformLoadError(null);
                 const res = await apiClient.get('/admin/settings/platform');
                 if (!cancelled && res.data?.data?.platform_fee_percent != null) {
                     setPlatformFeePercent(Number(res.data.data.platform_fee_percent));
                 }
             } catch {
-                if (!cancelled) setPlatformFeePercent(10);
+                if (!cancelled) setPlatformLoadError('Could not load the current platform fee. Refresh to retry.');
             } finally {
                 if (!cancelled) setLoadingPlatform(false);
             }
@@ -295,6 +297,7 @@ export default function AdminSettingsPage() {
                                 <p className="mt-4 text-slate-500">Loading...</p>
                             ) : (
                                 <form onSubmit={handleSavePlatformFee} className="mt-6 max-w-md space-y-4">
+                                    {platformLoadError && <p className="text-sm text-red-600">{platformLoadError}</p>}
                                     <div>
                                         <Label htmlFor="platform_fee">Platform fee (%)</Label>
                                         <Input
@@ -306,9 +309,10 @@ export default function AdminSettingsPage() {
                                             value={platformFeePercent}
                                             onChange={(e) => setPlatformFeePercent(Number(e.target.value))}
                                             className="mt-1 w-32"
+                                            disabled={Boolean(platformLoadError)}
                                         />
                                     </div>
-                                    <Button type="submit" disabled={savingPlatform}>
+                                    <Button type="submit" disabled={savingPlatform || Boolean(platformLoadError)}>
                                         <Save className="mr-2 h-4 w-4" />
                                         {savingPlatform ? 'Saving…' : 'Save'}
                                     </Button>

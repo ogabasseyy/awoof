@@ -51,8 +51,10 @@ async function emitCommerceNotifications(transactionId: string): Promise<void> {
                     p.name AS product_name, p.price AS list_price,
                     s.user_id AS student_user_id, su.email AS student_email,
                     v.user_id AS vendor_user_id, vu.email AS vendor_email,
-                    ss.total_savings
+                    ss.total_savings, o.student_notified, o.savings_notified,
+                    o.student_emailed, o.vendor_notified, o.vendor_emailed
              FROM transactions t
+             JOIN commerce_notification_outbox o ON o.transaction_id = t.id
              JOIN products p ON p.id = t.product_id
              JOIN students s ON s.id = t.student_id
              JOIN users su ON su.id = s.user_id
@@ -68,41 +70,48 @@ async function emitCommerceNotifications(transactionId: string): Promise<void> {
         const productName = row.product_name as string;
         const discount = parseFloat(row.list_price) - amount;
 
-        await NotificationService.notifyPurchaseConfirmation(
-            row.student_id,
-            productName,
-            amount,
-            discount,
-            row.id
-        );
-        if (row.total_savings != null) {
+        if (!row.student_notified) {
+            await NotificationService.notifyPurchaseConfirmation(
+                row.student_id, productName, amount, discount, row.id
+            );
+            await db.query('UPDATE commerce_notification_outbox SET student_notified = true WHERE transaction_id = $1', [row.id]);
+        }
+        if (!row.savings_notified && row.total_savings != null) {
             await NotificationService.notifySavingsMilestone(
                 row.student_id,
                 parseFloat(row.total_savings)
             );
+            await db.query('UPDATE commerce_notification_outbox SET savings_notified = true WHERE transaction_id = $1', [row.id]);
         }
-        if (row.student_email) {
-            await sendPurchaseConfirmationEmail(
+        if (!row.student_emailed && row.student_email) {
+            const result = await sendPurchaseConfirmationEmail(
                 row.student_email,
                 productName,
                 amount,
                 row.id
             );
+            if (!result.success) throw new Error(result.error || 'Student receipt email failed');
+            await db.query('UPDATE commerce_notification_outbox SET student_emailed = true WHERE transaction_id = $1', [row.id]);
         }
 
-        await NotificationService.notifyVendorNewOrder({
-            vendorUserId: row.vendor_user_id,
-            productName,
-            amount,
-            transactionId: row.id,
-        });
-        if (row.vendor_email) {
-            await sendVendorNewOrderEmail(
+        if (!row.vendor_notified) {
+            await NotificationService.notifyVendorNewOrder({
+                vendorUserId: row.vendor_user_id,
+                productName,
+                amount,
+                transactionId: row.id,
+            });
+            await db.query('UPDATE commerce_notification_outbox SET vendor_notified = true WHERE transaction_id = $1', [row.id]);
+        }
+        if (!row.vendor_emailed && row.vendor_email) {
+            const result = await sendVendorNewOrderEmail(
                 row.vendor_email,
                 productName,
                 amount,
                 row.id
             );
+            if (!result.success) throw new Error(result.error || 'Vendor order email failed');
+            await db.query('UPDATE commerce_notification_outbox SET vendor_emailed = true WHERE transaction_id = $1', [row.id]);
         }
         await db.query(
             `UPDATE commerce_notification_outbox

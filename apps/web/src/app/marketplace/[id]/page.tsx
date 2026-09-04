@@ -124,6 +124,7 @@ export default function ProductDetailPage() {
     const savings = product ? product.price - product.student_price : 0;
     const isExternal =
         product?.deal_type === 'voucher' || product?.vendor_payment_method === 'vendor_website';
+    const isUnavailable = !isExternal && product?.stock === 0;
 
     const avatarLetter = (() => {
         const profile = (user as { profile?: { name?: string } } | null)?.profile;
@@ -333,12 +334,12 @@ export default function ProductDetailPage() {
                         <FadeIn delay={0.3} className="hidden lg:block pt-2">
                             <Button
                                 onClick={handlePurchase}
-                                disabled={product.stock === 0 || isPurchasing}
+                                disabled={isUnavailable || isPurchasing}
                                 className="h-12 w-full rounded-full bg-[#1D4ED8] text-base font-bold hover:bg-[#1E40AF] disabled:opacity-60"
                                 size="lg"
                             >
                                 <ShoppingCart className="mr-2 h-5 w-5" />
-                                {product.stock === 0
+                                {isUnavailable
                                     ? 'Out of stock'
                                     : isPurchasing
                                       ? 'Starting checkout…'
@@ -380,10 +381,10 @@ export default function ProductDetailPage() {
                     </div>
                     <Button
                         onClick={handlePurchase}
-                        disabled={product.stock === 0 || isPurchasing}
+                        disabled={isUnavailable || isPurchasing}
                         className="h-12 flex-1 rounded-full bg-[#1D4ED8] font-bold hover:bg-[#1E40AF]"
                     >
-                        {product.stock === 0
+                        {isUnavailable
                             ? 'Out of stock'
                             : isPurchasing
                               ? '…'
