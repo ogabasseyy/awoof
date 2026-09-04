@@ -40,6 +40,22 @@ Use test-mode Paystack credentials until the checkout acceptance test passes.
    checkout, webhook replay, support replies, notifications, and email.
 8. Record the deployed commit and backup filename in the release notes.
 
+## Payment reconciliation
+
+If a verified charge cannot be fulfilled because stock is unavailable, the
+transaction is set to `requires_refund` and a row is added to
+`payment_reconciliation_queue`. Treat every pending row as an operator action:
+
+1. Match `paystack_reference` and `paid_amount` against the Paystack dashboard.
+2. Issue or confirm the refund in Paystack.
+3. In one database transaction, change the Awoof transaction to `refunded`,
+   change the queue row to `resolved`, and record a non-sensitive
+   `resolution_note` and `resolved_at` timestamp.
+4. Re-query both rows and retain Paystack's refund record for the audit trail.
+
+Never mark the queue row resolved before Paystack confirms the refund. Do not
+store card, bank, or customer identity data in `resolution_note`.
+
 ## Rollback boundary
 
 Application rollback and database rollback are separate operations. Reverting
