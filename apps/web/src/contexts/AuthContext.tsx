@@ -52,6 +52,14 @@ function redirectAfterAuth(path: string) {
     }
 }
 
+function getSafeStudentRedirect(): string {
+    if (typeof window === 'undefined') return '/marketplace';
+    const redirect = new URLSearchParams(window.location.search).get('redirect');
+    return redirect && redirect.startsWith('/') && !redirect.startsWith('//')
+        ? redirect
+        : '/marketplace';
+}
+
 export function AuthProvider({ children }: { children: ReactNode }) {
     const [user, setUser] = useState<User | null>(null);
     const [isLoading, setIsLoading] = useState(true);
@@ -100,7 +108,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
             if (userData.role === 'vendor') {
                 redirectAfterAuth('/vendor/dashboard');
             } else if (userData.role === 'student') {
-                redirectAfterAuth('/marketplace');
+                redirectAfterAuth(getSafeStudentRedirect());
             } else if (userData.role === 'admin') {
                 redirectAfterAuth('/admin/dashboard');
             } else {

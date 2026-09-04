@@ -89,8 +89,7 @@ export class PaymentController {
 
         // Marketplace checkout uses platform_fee_percent; vendor.commission_rate may be unset (0)
         const platformFeePercent = await getPlatformFeePercent();
-        const vendorRate = parseFloat(vendor.commission_rate || '0');
-        const commissionRate = vendorRate > 0 ? vendorRate : platformFeePercent;
+        const commissionRate = platformFeePercent;
 
         // Get payment statistics
         const statsResult = await db.query(
@@ -800,4 +799,3 @@ export class PaymentController {
         }, 201);
     }
 }
-

@@ -112,7 +112,7 @@ export class TicketService {
                 kind: 'support_ticket_created',
                 metadata: { ticketId: ticket.id },
             });
-            const opsEmail = process.env.EMAIL_FROM || process.env.SUPPORT_EMAIL;
+            const opsEmail = process.env.SUPPORT_EMAIL;
             if (opsEmail) {
                 await sendSupportTicketCreatedEmail(
                     opsEmail,
@@ -377,7 +377,7 @@ export class TicketService {
                         kind: 'support_reply',
                         metadata: { ticketId: ticket.id },
                     });
-                    const opsEmail = process.env.EMAIL_FROM || process.env.SUPPORT_EMAIL;
+                    const opsEmail = process.env.SUPPORT_EMAIL;
                     if (opsEmail) {
                         await sendSupportTicketReplyEmail(
                             opsEmail,

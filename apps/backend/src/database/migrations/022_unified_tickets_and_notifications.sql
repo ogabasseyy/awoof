@@ -214,6 +214,7 @@ DELETE FROM notifications WHERE user_id IS NULL;
 ALTER TABLE notifications ALTER COLUMN user_id SET NOT NULL;
 
 ALTER TABLE notifications DROP CONSTRAINT IF EXISTS notifications_student_id_fkey;
+ALTER TABLE notifications ALTER COLUMN student_id DROP NOT NULL;
 DROP INDEX IF EXISTS idx_notifications_student_id;
 DROP INDEX IF EXISTS idx_notifications_read;
 -- Keep the nullable legacy student_id during the transition. Retaining it makes

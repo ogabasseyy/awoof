@@ -58,6 +58,7 @@ const envSchema = z.object({
     BREVO_API_KEY: z.string().optional(),
     BREVO_FROM_NAME: z.string().optional(),
     EMAIL_FROM: z.string().email().optional(),
+    SUPPORT_EMAIL: z.string().email().optional(),
 
     // Security
     CORS_ORIGIN: z.string().default('http://localhost:3000'),

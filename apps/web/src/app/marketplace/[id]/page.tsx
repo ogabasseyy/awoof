@@ -43,6 +43,7 @@ interface Product {
     vendor_id: string;
     vendor_name: string;
     vendor_description: string | null;
+    vendor_website?: string | null;
     vendor_payment_method?: 'awoof' | 'vendor_website';
     deal_type?: 'product' | 'voucher';
     created_at: string;
@@ -82,6 +83,11 @@ export default function ProductDetailPage() {
         if (!product) return;
 
         if (product.deal_type === 'voucher' || product.vendor_payment_method === 'vendor_website') {
+            if (product.vendor_website) {
+                window.open(product.vendor_website, '_blank', 'noopener,noreferrer');
+            } else {
+                toast.error('This vendor has not configured a redemption website yet.');
+            }
             return;
         }
 
@@ -327,7 +333,7 @@ export default function ProductDetailPage() {
                         <FadeIn delay={0.3} className="hidden lg:block pt-2">
                             <Button
                                 onClick={handlePurchase}
-                                disabled={product.stock === 0 || isPurchasing || isExternal}
+                                disabled={product.stock === 0 || isPurchasing}
                                 className="h-12 w-full rounded-full bg-[#1D4ED8] text-base font-bold hover:bg-[#1E40AF] disabled:opacity-60"
                                 size="lg"
                             >
@@ -374,7 +380,7 @@ export default function ProductDetailPage() {
                     </div>
                     <Button
                         onClick={handlePurchase}
-                        disabled={product.stock === 0 || isPurchasing || isExternal}
+                        disabled={product.stock === 0 || isPurchasing}
                         className="h-12 flex-1 rounded-full bg-[#1D4ED8] font-bold hover:bg-[#1E40AF]"
                     >
                         {product.stock === 0

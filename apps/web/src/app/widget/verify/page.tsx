@@ -12,7 +12,7 @@ import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { UniversitySelect } from '@/components/forms/UniversitySelect';
-import apiClient from '@/lib/api-client';
+import apiClient, { publicApiClient } from '@/lib/api-client';
 import { storeTokens } from '@/lib/auth';
 
 const AWOOF_MESSAGE_TYPE = 'AWOOF_VERIFICATION_SUCCESS';
@@ -84,7 +84,7 @@ function WidgetVerifyContent() {
         setLoading(true);
         setError(null);
         try {
-            const res = await apiClient.post('/verification/registration', {
+            const res = await publicApiClient.post('/verification/registration', {
                 universityId,
                 registrationNumber: registrationNumber.trim(),
                 studentName: studentName.trim() || undefined,
@@ -115,7 +115,7 @@ function WidgetVerifyContent() {
         setLoading(true);
         setError(null);
         try {
-            await apiClient.post('/verification/whatsapp/request', {
+            await publicApiClient.post('/verification/whatsapp/request', {
                 universityId,
                 phoneNumber: phoneNumber.trim(),
             });
@@ -136,7 +136,7 @@ function WidgetVerifyContent() {
         setLoading(true);
         setError(null);
         try {
-            const res = await apiClient.post('/verification/whatsapp/verify', {
+            const res = await publicApiClient.post('/verification/whatsapp/verify', {
                 phoneNumber: phoneNumber.trim(),
                 otp: otp.trim(),
                 studentName: whatsappStudentName.trim() || undefined,

@@ -143,6 +143,7 @@ router.get(
                 p.created_at, p.updated_at,
                 c.id as category_id, c.name as category_name, c.slug as category_slug,
                 v.id as vendor_id, v.name as vendor_name, v.description as vendor_description,
+                v.business_website as vendor_website,
                 v.logo_url as vendor_logo_url,
                 COALESCE(v.payment_method, 'awoof') as vendor_payment_method
             FROM products p
@@ -164,4 +165,3 @@ router.get(
 );
 
 export default router;
-

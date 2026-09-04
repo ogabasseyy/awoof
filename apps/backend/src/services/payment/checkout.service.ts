@@ -32,8 +32,9 @@ export async function getPlatformFeePercent(): Promise<number> {
 }
 
 async function emitCommerceNotifications(transactionId: string): Promise<void> {
-    const claimed = await db.query(
-        `UPDATE commerce_notification_outbox
+    try {
+        const claimed = await db.query(
+            `UPDATE commerce_notification_outbox
          SET status = 'processing', attempts = attempts + 1,
              processing_started_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP,
              last_error = NULL
@@ -41,11 +42,10 @@ async function emitCommerceNotifications(transactionId: string): Promise<void> {
            AND (status IN ('pending', 'failed')
                 OR (status = 'processing' AND processing_started_at < CURRENT_TIMESTAMP - INTERVAL '5 minutes'))
          RETURNING transaction_id`,
-        [transactionId]
-    );
-    if (claimed.rows.length === 0) return;
+            [transactionId]
+        );
+        if (claimed.rows.length === 0) return;
 
-    try {
         const result = await db.query(
             `SELECT t.id, t.amount, t.student_id, t.vendor_id,
                     p.name AS product_name, p.price AS list_price,
@@ -123,6 +123,31 @@ async function emitCommerceNotifications(transactionId: string): Promise<void> {
     }
 }
 
+export async function drainCommerceNotificationOutbox(limit = 25): Promise<void> {
+    const pending = await db.query(
+        `SELECT transaction_id FROM commerce_notification_outbox
+         WHERE status IN ('pending', 'failed')
+            OR (status = 'processing' AND processing_started_at < CURRENT_TIMESTAMP - INTERVAL '5 minutes')
+         ORDER BY created_at
+         LIMIT $1`,
+        [limit]
+    );
+    for (const row of pending.rows) {
+        await emitCommerceNotifications(row.transaction_id);
+    }
+}
+
+export function startCommerceNotificationDispatcher(): void {
+    const run = () => {
+        void drainCommerceNotificationOutbox().catch((error) => {
+            appLogger.error('Commerce notification outbox dispatcher failed', error);
+        });
+    };
+    run();
+    const timer = setInterval(run, 60_000);
+    timer.unref();
+}
+
 export async function completeMarketplaceTransaction(
     paystackReference: string,
     paidAmountNaira: number
@@ -139,7 +164,9 @@ export async function completeMarketplaceTransaction(
 
         if (result.completed && result.transactionId) {
             // Outside the DB transaction — failures must not roll back payment.
-            void emitCommerceNotifications(result.transactionId);
+            void emitCommerceNotifications(result.transactionId).catch((error) => {
+                appLogger.error('Commerce notification dispatch failed', error);
+            });
         }
 
         return result;

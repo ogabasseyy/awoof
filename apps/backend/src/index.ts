@@ -318,6 +318,9 @@ class App {
       // Initialize Redis
       redis.initialize();
 
+      const { startCommerceNotificationDispatcher } = await import('./services/payment/checkout.service.js');
+      startCommerceNotificationDispatcher();
+
       // Initialize routes (must be after database is ready)
       await this.initializeRoutes();
 
