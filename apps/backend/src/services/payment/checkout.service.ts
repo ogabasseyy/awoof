@@ -158,7 +158,7 @@ export async function completeMarketplaceTransactionWithClient(
             return { completed: true, transactionId: tx.id, newlyCompleted: false };
         }
 
-        if (tx.status === 'failed' || tx.status === 'refunded') {
+        if (tx.status === 'failed' || tx.status === 'refunded' || tx.status === 'requires_refund') {
             await client.query('COMMIT');
             transactionOpen = false;
             return { completed: false, transactionId: tx.id };
@@ -180,12 +180,20 @@ export async function completeMarketplaceTransactionWithClient(
         );
 
         if (stockUpdate.rows.length === 0) {
-            // Only mark failed if still pending — never overwrite completed
+            // The charge has succeeded but fulfillment cannot continue. Record
+            // this durably in the same transaction so an operator can refund it.
             await client.query(
                 `UPDATE transactions
-                 SET status = 'failed', updated_at = CURRENT_TIMESTAMP
+                 SET status = 'requires_refund', updated_at = CURRENT_TIMESTAMP
                  WHERE id = $1 AND status = 'pending'`,
                 [tx.id]
+            );
+            await client.query(
+                `INSERT INTO payment_reconciliation_queue
+                    (transaction_id, paystack_reference, paid_amount, reason)
+                 VALUES ($1, $2, $3, 'stock_unavailable')
+                 ON CONFLICT (transaction_id) DO NOTHING`,
+                [tx.id, paystackReference, paidAmountNaira]
             );
             await client.query('COMMIT');
             transactionOpen = false;

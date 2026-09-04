@@ -110,4 +110,35 @@ describe('completeMarketplaceTransactionWithClient', () => {
         assert.equal(statements.at(-1), 'COMMIT');
         assert.equal(statements.some((text) => text.includes('stock = stock - 1')), false);
     });
+
+    it('queues a verified payment for refund when stock is unavailable', async () => {
+        const { client, statements } = fakeClient([
+            { rows: [] }, // BEGIN
+            {
+                rows: [{
+                    id: 'tx-1',
+                    status: 'pending',
+                    amount: '900',
+                    list_price: '1000',
+                    product_id: 'product-1',
+                    student_id: 'student-1',
+                }],
+            },
+            { rows: [] }, // stock update
+            { rows: [] }, // requires_refund update
+            { rows: [] }, // reconciliation queue insert
+            { rows: [] }, // COMMIT
+        ]);
+
+        const result = await completeMarketplaceTransactionWithClient(
+            client,
+            'awoof_reference',
+            900
+        );
+
+        assert.deepEqual(result, { completed: false, transactionId: 'tx-1' });
+        assert.match(statements[3] ?? '', /status = 'requires_refund'/);
+        assert.match(statements[4] ?? '', /INSERT INTO payment_reconciliation_queue/);
+        assert.equal(statements[5], 'COMMIT');
+    });
 });

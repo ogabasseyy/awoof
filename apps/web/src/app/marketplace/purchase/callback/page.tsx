@@ -29,7 +29,12 @@ function PurchaseCallbackContent() {
                 const next = res.data.data?.transaction?.status ?? 'pending';
                 if (cancelled) return;
                 setStatus(next);
-                if (next === 'completed' || next === 'failed' || next === 'refunded') {
+                if (
+                    next === 'completed' ||
+                    next === 'failed' ||
+                    next === 'refunded' ||
+                    next === 'requires_refund'
+                ) {
                     terminalRef.current = true;
                     if (intervalId) clearInterval(intervalId);
                 }
@@ -56,6 +61,8 @@ function PurchaseCallbackContent() {
     const title =
         status === 'completed'
             ? 'Payment successful'
+            : status === 'requires_refund'
+              ? 'Payment received — refund required'
             : status === 'failed'
               ? 'Payment failed'
               : 'Processing payment…';
@@ -73,6 +80,12 @@ function PurchaseCallbackContent() {
                     <Link href="/student/profile/receipts">
                         <Button className="w-full">View receipts</Button>
                     </Link>
+                )}
+                {status === 'requires_refund' && (
+                    <p className="text-sm text-amber-700">
+                        This item became unavailable after payment. Your payment has been
+                        flagged for refund; please contact support with your transaction ID.
+                    </p>
                 )}
                 <Link href="/marketplace">
                     <Button variant="outline" className="w-full">
