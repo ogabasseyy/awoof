@@ -4,7 +4,6 @@
 
 import { db } from '../../config/database.js';
 import type { PoolClient } from 'pg';
-import { BadRequestError } from '../../common/errors/AppError.js';
 import { appLogger } from '../../common/logger.js';
 import { NotificationService } from '../notification/notification.service.js';
 import {
@@ -28,10 +27,24 @@ export async function getPlatformFeePercent(): Promise<number> {
     if (result.rows.length === 0) {
         return 10;
     }
-    return parseFloat(result.rows[0].value) || 10;
+    const configuredFee = Number.parseFloat(result.rows[0].value);
+    return Number.isFinite(configuredFee) ? configuredFee : 10;
 }
 
 async function emitCommerceNotifications(transactionId: string): Promise<void> {
+    const claimed = await db.query(
+        `UPDATE commerce_notification_outbox
+         SET status = 'processing', attempts = attempts + 1,
+             processing_started_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP,
+             last_error = NULL
+         WHERE transaction_id = $1
+           AND (status IN ('pending', 'failed')
+                OR (status = 'processing' AND processing_started_at < CURRENT_TIMESTAMP - INTERVAL '5 minutes'))
+         RETURNING transaction_id`,
+        [transactionId]
+    );
+    if (claimed.rows.length === 0) return;
+
     try {
         const result = await db.query(
             `SELECT t.id, t.amount, t.student_id, t.vendor_id,
@@ -91,7 +104,21 @@ async function emitCommerceNotifications(transactionId: string): Promise<void> {
                 row.id
             );
         }
+        await db.query(
+            `UPDATE commerce_notification_outbox
+             SET status = 'delivered', delivered_at = CURRENT_TIMESTAMP,
+                 updated_at = CURRENT_TIMESTAMP, last_error = NULL
+             WHERE transaction_id = $1`,
+            [transactionId]
+        );
     } catch (error) {
+        await db.query(
+            `UPDATE commerce_notification_outbox
+             SET status = 'failed', updated_at = CURRENT_TIMESTAMP,
+                 last_error = $2
+             WHERE transaction_id = $1`,
+            [transactionId, error instanceof Error ? error.message.slice(0, 500) : 'Unknown delivery error']
+        );
         appLogger.error('Commerce notification/email failed', error);
     }
 }
@@ -110,7 +137,7 @@ export async function completeMarketplaceTransaction(
             paidAmountNaira
         );
 
-        if (result.newlyCompleted && result.transactionId) {
+        if (result.completed && result.transactionId) {
             // Outside the DB transaction — failures must not roll back payment.
             void emitCommerceNotifications(result.transactionId);
         }
@@ -166,9 +193,25 @@ export async function completeMarketplaceTransactionWithClient(
 
         const expectedKobo = Math.round(parseFloat(tx.amount) * 100);
         const paidKobo = Math.round(paidAmountNaira * 100);
-        // Allow paid >= expected (Paystack may add gateway fees on top of our charge)
+        // Allow paid >= expected (Paystack may add gateway fees on top of our charge).
+        // A successful but insufficient charge requires operator reconciliation.
         if (paidKobo < expectedKobo) {
-            throw new BadRequestError('Payment amount mismatch');
+            await client.query(
+                `UPDATE transactions
+                 SET status = 'requires_refund', updated_at = CURRENT_TIMESTAMP
+                 WHERE id = $1 AND status = 'pending'`,
+                [tx.id]
+            );
+            await client.query(
+                `INSERT INTO payment_reconciliation_queue
+                    (transaction_id, paystack_reference, paid_amount, reason)
+                 VALUES ($1, $2, $3, 'amount_mismatch')
+                 ON CONFLICT (transaction_id) DO NOTHING`,
+                [tx.id, paystackReference, paidAmountNaira]
+            );
+            await client.query('COMMIT');
+            transactionOpen = false;
+            return { completed: false, transactionId: tx.id };
         }
 
         const stockUpdate = await client.query(
@@ -230,6 +273,13 @@ export async function completeMarketplaceTransactionWithClient(
                total_purchases = savings_stats.total_purchases + 1,
                last_updated = CURRENT_TIMESTAMP`,
             [tx.student_id, savingsDelta]
+        );
+
+        await client.query(
+            `INSERT INTO commerce_notification_outbox (transaction_id)
+             VALUES ($1)
+             ON CONFLICT (transaction_id) DO NOTHING`,
+            [tx.id]
         );
 
         await client.query('COMMIT');

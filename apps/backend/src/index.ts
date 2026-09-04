@@ -69,7 +69,45 @@ class App {
     // CORS
     this.app.use(
       cors({
-        origin: config.cors.origin,
+        origin: (origin, callback) => {
+          if (!origin) {
+            callback(null, true);
+            return;
+          }
+
+          const staticOrigins = new Set(config.cors.origin.map((value) => value.trim()));
+          if (staticOrigins.has(origin)) {
+            callback(null, true);
+            return;
+          }
+
+          let parsed: URL;
+          try {
+            parsed = new URL(origin);
+          } catch {
+            callback(null, false);
+            return;
+          }
+
+          const localDevelopment = config.isDevelopment
+            && parsed.protocol === 'http:'
+            && ['localhost', '127.0.0.1', '[::1]'].includes(parsed.hostname);
+          if (parsed.protocol !== 'https:' && !localDevelopment) {
+            callback(null, false);
+            return;
+          }
+
+          db.query(
+            `SELECT 1 FROM widget_configs
+             WHERE status = 'active' AND $1 = ANY(allowed_domains)
+             LIMIT 1`,
+            [parsed.hostname.toLowerCase()]
+          ).then((result) => callback(null, result.rows.length > 0))
+            .catch((error) => {
+              appLogger.error('Dynamic widget CORS lookup failed', error);
+              callback(null, false);
+            });
+        },
         credentials: true,
       })
     );

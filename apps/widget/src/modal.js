@@ -59,7 +59,7 @@ export function injectStyles() {
  * @param {string} [opts.message]
  * @param {string} [opts.error]
  * @param {() => void} [opts.onClose]
- * @returns {{ open: () => void, close: () => void, setContent: (html: string) => void, setNode: (node: Node) => void, setError: (msg: string) => void }}
+ * @returns {{ open: () => void, close: (notify?: boolean) => void, setNode: (node: Node) => void, setError: (msg: string) => void }}
  */
 export function createModal(opts = {}) {
   injectStyles();
@@ -79,11 +79,14 @@ export function createModal(opts = {}) {
 
     const header = document.createElement('div');
     header.className = 'awoof-modal__header';
-    header.innerHTML = `<h2 class="awoof-modal__title">${escapeHtml(title)}</h2>`;
+    const heading = document.createElement('h2');
+    heading.className = 'awoof-modal__title';
+    heading.textContent = title;
+    header.appendChild(heading);
     const closeBtn = document.createElement('button');
     closeBtn.type = 'button';
     closeBtn.className = 'awoof-modal__close';
-    closeBtn.innerHTML = '&times;';
+    closeBtn.textContent = '×';
     closeBtn.setAttribute('aria-label', 'Close');
     closeBtn.onclick = () => close();
     header.appendChild(closeBtn);
@@ -112,18 +115,12 @@ export function createModal(opts = {}) {
     document.body.appendChild(overlay);
   }
 
-  function close() {
+  function close(notify = true) {
     if (overlay && overlay.parentNode) {
       overlay.parentNode.removeChild(overlay);
       overlay = null;
     }
-    opts.onClose && opts.onClose();
-  }
-
-  function setContent(html) {
-    if (!overlay) return;
-    const body = overlay.querySelector('.awoof-modal__body');
-    if (body) body.innerHTML = html;
+    if (notify && opts.onClose) opts.onClose();
   }
 
   function setNode(node) {
@@ -146,11 +143,5 @@ export function createModal(opts = {}) {
     errEl.textContent = msg;
   }
 
-  return { open, close, setContent, setNode, setError };
-}
-
-function escapeHtml(s) {
-  const div = document.createElement('div');
-  div.textContent = s;
-  return div.innerHTML;
+  return { open, close, setNode, setError };
 }

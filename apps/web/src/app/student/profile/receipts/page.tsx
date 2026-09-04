@@ -23,7 +23,20 @@ interface ReceiptItem {
     discount: number;
     finalAmount: number;
     date: string;
-    status: 'completed' | 'pending' | 'failed';
+    status: 'completed' | 'pending' | 'failed' | 'refunded' | 'requires_refund';
+}
+
+function receiptStatusStyle(status: ReceiptItem['status']): string {
+    if (status === 'completed') return 'bg-green-100 text-green-800';
+    if (status === 'pending') return 'bg-yellow-100 text-yellow-800';
+    if (status === 'requires_refund') return 'bg-amber-100 text-amber-900';
+    if (status === 'refunded') return 'bg-slate-100 text-slate-700';
+    return 'bg-red-100 text-red-800';
+}
+
+function receiptStatusLabel(status: ReceiptItem['status']): string {
+    if (status === 'requires_refund') return 'refund required';
+    return status;
 }
 
 export default function ReceiptsPage() {
@@ -39,7 +52,7 @@ export default function ReceiptsPage() {
         try {
             setIsLoading(true);
             // Fetch from API
-            const response = await apiClient.get('/students/purchases').catch(() => null);
+            const response = await apiClient.get('/students/purchases');
 
             if (response?.data?.data?.transactions) {
                 const transactions = response.data.data.transactions;
@@ -64,40 +77,18 @@ export default function ReceiptsPage() {
                     discount: transaction.discountAmount || 0,
                     finalAmount: transaction.finalAmount || (transaction.amount - transaction.discountAmount),
                     date: transaction.createdAt || new Date().toISOString(),
-                    status: (transaction.status === 'completed' ? 'completed' :
-                        transaction.status === 'pending' ? 'pending' :
-                            transaction.status === 'failed' ? 'failed' : 'completed') as 'completed' | 'pending' | 'failed',
+                    status: ['completed', 'pending', 'failed', 'refunded', 'requires_refund'].includes(transaction.status)
+                        ? transaction.status as ReceiptItem['status']
+                        : 'failed',
                 }));
                 setReceipts(formattedReceipts);
             } else {
-                // Mock data for development
-                setReceipts([
-                    {
-                        id: '1',
-                        transactionId: 'TXN-001',
-                        productName: 'Travel Package Deal',
-                        vendorName: 'Travel Agency',
-                        amount: 50000,
-                        discount: 5000,
-                        finalAmount: 45000,
-                        date: new Date(Date.now() - 1000 * 60 * 60 * 24).toISOString(),
-                        status: 'completed',
-                    },
-                    {
-                        id: '2',
-                        transactionId: 'TXN-002',
-                        productName: 'Restaurant Meal',
-                        vendorName: 'Food Place',
-                        amount: 5000,
-                        discount: 500,
-                        finalAmount: 4500,
-                        date: new Date(Date.now() - 1000 * 60 * 60 * 48).toISOString(),
-                        status: 'completed',
-                    },
-                ]);
+                setReceipts([]);
             }
         } catch (error) {
             console.error('Error fetching receipts:', error);
+            setReceipts([]);
+            toast.error('Unable to load receipts. Please try again.');
         } finally {
             setIsLoading(false);
         }
@@ -163,11 +154,8 @@ export default function ReceiptsPage() {
                                                 <p className="text-sm text-gray-600">{receipt.vendorName}</p>
                                                 <p className="text-xs text-gray-500 mt-1">Transaction: {receipt.transactionId}</p>
                                             </div>
-                                            <span className={`text-xs font-medium px-2 py-1 rounded ${receipt.status === 'completed' ? 'bg-green-100 text-green-800' :
-                                                receipt.status === 'pending' ? 'bg-yellow-100 text-yellow-800' :
-                                                    'bg-red-100 text-red-800'
-                                                }`}>
-                                                {receipt.status}
+                                            <span className={`text-xs font-medium px-2 py-1 rounded ${receiptStatusStyle(receipt.status)}`}>
+                                                {receiptStatusLabel(receipt.status)}
                                             </span>
                                         </div>
                                         <div className="space-y-2 mb-3 pt-3 border-t border-gray-100">
@@ -250,11 +238,8 @@ export default function ReceiptsPage() {
                                                 <div className="flex-1">
                                                     <div className="flex items-center gap-3 mb-2">
                                                         <h3 className="text-lg font-semibold text-gray-900">{receipt.productName}</h3>
-                                                        <span className={`text-xs font-medium px-2 py-1 rounded ${receipt.status === 'completed' ? 'bg-green-100 text-green-800' :
-                                                            receipt.status === 'pending' ? 'bg-yellow-100 text-yellow-800' :
-                                                                'bg-red-100 text-red-800'
-                                                            }`}>
-                                                            {receipt.status}
+                                                        <span className={`text-xs font-medium px-2 py-1 rounded ${receiptStatusStyle(receipt.status)}`}>
+                                                            {receiptStatusLabel(receipt.status)}
                                                         </span>
                                                     </div>
                                                     <p className="text-gray-600 mb-1">{receipt.vendorName}</p>

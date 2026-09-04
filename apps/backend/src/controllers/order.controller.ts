@@ -289,12 +289,18 @@ export class OrderController {
 
         // Check if order exists and belongs to vendor
         const orderCheck = await db.query(
-            'SELECT id, status FROM transactions WHERE id = $1 AND vendor_id = $2',
+            `SELECT id, status, payment_source, paystack_reference
+             FROM transactions WHERE id = $1 AND vendor_id = $2`,
             [orderId, vendorId]
         );
 
         if (orderCheck.rows.length === 0) {
             throw new NotFoundError('Order not found');
+        }
+
+        const order = orderCheck.rows[0];
+        if (order.payment_source === 'awoof' && order.paystack_reference) {
+            throw new BadRequestError('Awoof-managed payment states cannot be changed by vendors');
         }
 
         // Update order status
@@ -322,4 +328,3 @@ export class OrderController {
         });
     }
 }
-

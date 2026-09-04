@@ -13,11 +13,16 @@ $$ LANGUAGE plpgsql;
 ALTER TABLE IF EXISTS support_ticket_responses RENAME TO support_ticket_responses_legacy;
 ALTER TABLE IF EXISTS support_tickets RENAME TO support_tickets_legacy;
 
-DROP TRIGGER IF EXISTS update_support_tickets_updated_at ON support_tickets_legacy;
-DROP TRIGGER IF EXISTS update_support_tickets_legacy_updated_at ON support_tickets_legacy;
-CREATE TRIGGER update_support_tickets_legacy_updated_at
-    BEFORE UPDATE ON support_tickets_legacy
-    FOR EACH ROW EXECUTE PROCEDURE update_updated_at_column();
+DO $$
+BEGIN
+    IF to_regclass('support_tickets_legacy') IS NOT NULL THEN
+        DROP TRIGGER IF EXISTS update_support_tickets_updated_at ON support_tickets_legacy;
+        DROP TRIGGER IF EXISTS update_support_tickets_legacy_updated_at ON support_tickets_legacy;
+        CREATE TRIGGER update_support_tickets_legacy_updated_at
+            BEFORE UPDATE ON support_tickets_legacy
+            FOR EACH ROW EXECUTE PROCEDURE update_updated_at_column();
+    END IF;
+END $$;
 
 -- 2) New unified tables
 CREATE TABLE IF NOT EXISTS tickets (
@@ -110,6 +115,24 @@ FROM support_ticket_responses_legacy r
 WHERE EXISTS (SELECT 1 FROM tickets tk WHERE tk.id = r.ticket_id)
 ON CONFLICT (id) DO NOTHING;
 
+-- Preserve legacy internal notes as admin-only messages.
+INSERT INTO ticket_messages (ticket_id, author_user_id, author_role, body, is_internal, created_at)
+SELECT
+    t.id,
+    NULL,
+    'admin',
+    t.admin_notes,
+    true,
+    COALESCE(t.updated_at, t.created_at)
+FROM support_tickets_legacy t
+WHERE NULLIF(BTRIM(t.admin_notes), '') IS NOT NULL
+  AND EXISTS (SELECT 1 FROM tickets tk WHERE tk.id = t.id)
+  AND NOT EXISTS (
+      SELECT 1 FROM ticket_messages m
+      WHERE m.ticket_id = t.id AND m.author_role = 'admin'
+        AND m.is_internal = true AND m.body = t.admin_notes
+  );
+
 -- 4) Migrate vendor tickets (new UUIDs for tickets that might collide — vendor ids are separate UUID space, keep ids)
 INSERT INTO tickets (
     id, requester_user_id, requester_role, subject, category, status, priority, resolved_at, created_at, updated_at
@@ -160,6 +183,23 @@ FROM vendor_support_ticket_responses r
 WHERE EXISTS (SELECT 1 FROM tickets tk WHERE tk.id = r.ticket_id)
 ON CONFLICT (id) DO NOTHING;
 
+INSERT INTO ticket_messages (ticket_id, author_user_id, author_role, body, is_internal, created_at)
+SELECT
+    t.id,
+    NULL,
+    'admin',
+    t.admin_notes,
+    true,
+    COALESCE(t.updated_at, t.created_at)
+FROM vendor_support_tickets t
+WHERE NULLIF(BTRIM(t.admin_notes), '') IS NOT NULL
+  AND EXISTS (SELECT 1 FROM tickets tk WHERE tk.id = t.id)
+  AND NOT EXISTS (
+      SELECT 1 FROM ticket_messages m
+      WHERE m.ticket_id = t.id AND m.author_role = 'admin'
+        AND m.is_internal = true AND m.body = t.admin_notes
+  );
+
 -- 5) Notifications → user_id
 ALTER TABLE notifications ADD COLUMN IF NOT EXISTS user_id UUID REFERENCES users(id) ON DELETE CASCADE;
 ALTER TABLE notifications ADD COLUMN IF NOT EXISTS kind VARCHAR(50);
@@ -176,14 +216,14 @@ ALTER TABLE notifications ALTER COLUMN user_id SET NOT NULL;
 ALTER TABLE notifications DROP CONSTRAINT IF EXISTS notifications_student_id_fkey;
 DROP INDEX IF EXISTS idx_notifications_student_id;
 DROP INDEX IF EXISTS idx_notifications_read;
-ALTER TABLE notifications DROP COLUMN IF EXISTS student_id;
+-- Keep the nullable legacy student_id during the transition. Retaining it makes
+-- this migration replay-safe for databases where SQL committed before the
+-- migration ledger was updated.
 
 CREATE INDEX IF NOT EXISTS idx_notifications_user_id ON notifications(user_id);
 CREATE INDEX IF NOT EXISTS idx_notifications_user_unread ON notifications(user_id, read) WHERE read = false;
 CREATE INDEX IF NOT EXISTS idx_notifications_kind ON notifications(kind) WHERE kind IS NOT NULL;
 
--- 6) Drop legacy support tables
-DROP TABLE IF EXISTS support_ticket_responses_legacy CASCADE;
-DROP TABLE IF EXISTS support_tickets_legacy CASCADE;
-DROP TABLE IF EXISTS vendor_support_ticket_responses CASCADE;
-DROP TABLE IF EXISTS vendor_support_tickets CASCADE;
+-- Legacy support tables are intentionally retained as a read-only recovery
+-- source. A later, separately approved retention migration may remove them
+-- after production reconciliation confirms every ticket and internal note.

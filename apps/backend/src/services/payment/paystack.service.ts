@@ -94,7 +94,8 @@ export function verifyPaystackWebhookSignature(
     rawBody: Buffer,
     signatureHeader: string | undefined
 ): boolean {
-    const secret = config.paystack.webhookSecret || config.paystack.secretKey;
+    // Paystack signs webhook payloads with the integration secret key.
+    const secret = config.paystack.secretKey;
     if (!secret || !signatureHeader) {
         return false;
     }
@@ -235,7 +236,7 @@ export async function createPaystackSubaccount(params: {
             'https://api.paystack.co/subaccount',
             {
                 business_name: params.businessName,
-                bank_code: params.bankCode,
+                settlement_bank: params.bankCode,
                 account_number: params.accountNumber,
                 percentage_charge: params.percentageCharge,
             },

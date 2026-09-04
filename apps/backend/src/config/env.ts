@@ -54,14 +54,10 @@ const envSchema = z.object({
     WHATSAPP_API_URL: z.string().url().optional().or(z.literal('')),
     PAYSTACK_SECRET_KEY: z.string().optional(),
     PAYSTACK_PUBLIC_KEY: z.string().optional(),
-    PAYSTACK_WEBHOOK_SECRET: z.string().optional(),
     // Brevo (Email Service)
     BREVO_API_KEY: z.string().optional(),
     BREVO_FROM_NAME: z.string().optional(),
     EMAIL_FROM: z.string().email().optional(),
-
-    // Monitoring
-    SENTRY_DSN: z.string().url().optional().or(z.literal('')),
 
     // Security
     CORS_ORIGIN: z.string().default('http://localhost:3000'),
@@ -151,7 +147,6 @@ export const config = {
     paystack: {
         secretKey: env.PAYSTACK_SECRET_KEY,
         publicKey: env.PAYSTACK_PUBLIC_KEY,
-        webhookSecret: env.PAYSTACK_WEBHOOK_SECRET,
     },
 
     aws: {
@@ -161,11 +156,6 @@ export const config = {
         },
         accessKeyId: env.AWS_ACCESS_KEY_ID,
         secretAccessKey: env.AWS_SECRET_ACCESS_KEY,
-    },
-
-    // Monitoring
-    sentry: {
-        dsn: env.SENTRY_DSN || undefined,
     },
 
     // Security
@@ -184,4 +174,3 @@ export const config = {
 } as const;
 
 export default config;
-

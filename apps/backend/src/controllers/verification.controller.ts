@@ -7,6 +7,7 @@
 
 import type { Request, Response } from 'express';
 import { db } from '../config/database.js';
+import { config } from '../config/env.js';
 import { jwtService } from '../services/auth/jwt.service.js';
 import {
     validateStudentEmailDomain,
@@ -53,7 +54,7 @@ const initiateVerificationSchema = z.object({
 const verifyRegistrationSchema = z.object({
     universityId: z.string().uuid('Invalid university ID'),
     registrationNumber: z.string().min(1, 'Registration number is required'),
-    studentName: z.string().min(2, 'Name is required'),
+    studentName: z.string().min(2, 'Name must be at least 2 characters').optional(),
     studentEmail: z.string().email('Invalid email address').optional(),
 });
 
@@ -389,7 +390,7 @@ export class VerificationController {
                     `INSERT INTO students (user_id, name, university, registration_number, status)
                      VALUES ($1, $2, $3, $4, 'active')
                      RETURNING id`,
-                    [userId, verificationResult.studentData?.name || validated.studentName, '', validated.registrationNumber]
+                    [userId, verificationResult.studentData?.name || validated.studentName || 'Student', '', validated.registrationNumber]
                 );
                 studentId = newStudentResult.rows[0].id;
             } else {
@@ -405,7 +406,7 @@ export class VerificationController {
                         `INSERT INTO students (user_id, name, university, registration_number, status)
                          VALUES ($1, $2, $3, $4, 'active')
                          RETURNING id`,
-                        [userId, verificationResult.studentData?.name || validated.studentName, '', validated.registrationNumber]
+                        [userId, verificationResult.studentData?.name || validated.studentName || 'Student', '', validated.registrationNumber]
                     );
                     studentId = newStudentResult.rows[0].id;
                 } else {
@@ -695,8 +696,11 @@ export class VerificationController {
         const validated = generateWidgetTokenSchema.parse(req.body);
 
         const vendorOrigin = new URL(validated.origin);
-        if (!['http:', 'https:'].includes(vendorOrigin.protocol)) {
-            throw new BadRequestError('Vendor origin must use HTTP or HTTPS');
+        const localDevelopment = config.isDevelopment
+            && vendorOrigin.protocol === 'http:'
+            && ['localhost', '127.0.0.1', '[::1]'].includes(vendorOrigin.hostname);
+        if (vendorOrigin.protocol !== 'https:' && !localDevelopment) {
+            throw new BadRequestError('Vendor origin must use HTTPS');
         }
 
         const widgetConfig = await db.query(

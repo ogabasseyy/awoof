@@ -47,7 +47,10 @@ function WidgetVerifyContent() {
         let validOrigin = false;
         try {
             const parsedOrigin = new URL(origin);
-            validOrigin = ['http:', 'https:'].includes(parsedOrigin.protocol)
+            const localDevelopment = process.env.NODE_ENV === 'development'
+                && parsedOrigin.protocol === 'http:'
+                && ['localhost', '127.0.0.1', '[::1]'].includes(parsedOrigin.hostname);
+            validOrigin = (parsedOrigin.protocol === 'https:' || localDevelopment)
                 && parsedOrigin.origin === origin;
         } catch {
             validOrigin = false;

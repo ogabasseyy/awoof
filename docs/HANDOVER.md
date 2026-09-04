@@ -19,11 +19,11 @@ Configure these in the VPS `.env`; never commit their values:
 - `JWT_REFRESH_SECRET`
 - `PAYSTACK_SECRET_KEY`
 - `PAYSTACK_PUBLIC_KEY`
-- `PAYSTACK_WEBHOOK_SECRET`
 - `BREVO_API_KEY`
-- `SENTRY_DSN`
 
 The Paystack webhook URL is `https://api.awoof.tech/api/webhooks/paystack`.
+Paystack signs webhooks with `PAYSTACK_SECRET_KEY`; do not configure a separate
+webhook secret.
 Use test-mode Paystack credentials until the checkout acceptance test passes.
 
 ## Release checklist

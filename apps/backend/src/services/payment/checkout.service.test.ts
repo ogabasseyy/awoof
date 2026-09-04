@@ -39,6 +39,7 @@ describe('completeMarketplaceTransactionWithClient', () => {
             { rows: [{ id: 'product-1' }] },
             { rows: [{ id: 'tx-1' }] },
             { rows: [] }, // savings upsert
+            { rows: [] }, // notification outbox
             { rows: [] }, // COMMIT
         ]);
 
@@ -58,10 +59,11 @@ describe('completeMarketplaceTransactionWithClient', () => {
         assert.match(statements[2] ?? '', /SET stock = stock - 1/);
         assert.match(statements[3] ?? '', /SET status = 'completed'/);
         assert.match(statements[4] ?? '', /INSERT INTO savings_stats/);
-        assert.equal(statements[5], 'COMMIT');
+        assert.match(statements[5] ?? '', /INSERT INTO commerce_notification_outbox/);
+        assert.equal(statements[6], 'COMMIT');
     });
 
-    it('rolls back an underpayment without changing stock', async () => {
+    it('queues a verified underpayment for reconciliation without changing stock', async () => {
         const { client, statements } = fakeClient([
             { rows: [] }, // BEGIN
             {
@@ -74,19 +76,29 @@ describe('completeMarketplaceTransactionWithClient', () => {
                     student_id: 'student-1',
                 }],
             },
-            { rows: [] }, // ROLLBACK
+            { rows: [] }, // requires_refund update
+            { rows: [] }, // reconciliation queue insert
+            { rows: [] }, // COMMIT
         ]);
 
-        await assert.rejects(
-            completeMarketplaceTransactionWithClient(client, 'awoof_reference', 899),
-            /Payment amount mismatch/
+        const result = await completeMarketplaceTransactionWithClient(
+            client,
+            'awoof_reference',
+            899
         );
+
+        assert.deepEqual(result, { completed: false, transactionId: 'tx-1' });
         assert.deepEqual(statements, [
             'BEGIN',
             statements[1],
-            'ROLLBACK',
+            statements[2],
+            statements[3],
+            'COMMIT',
         ]);
         assert.match(statements[1] ?? '', /FOR UPDATE OF t/);
+        assert.match(statements[2] ?? '', /status = 'requires_refund'/);
+        assert.match(statements[3] ?? '', /reason/);
+        assert.equal(statements.some((text) => text.includes('stock = stock - 1')), false);
     });
 
     it('is idempotent when the transaction is already complete', async () => {

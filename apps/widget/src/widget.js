@@ -111,6 +111,19 @@ function verify(verifyOpts = {}) {
     return Promise.reject(err);
   }
 
+  let expectedIframeOrigin;
+  try {
+    const parsedWebAppUrl = new URL(state.webAppUrl);
+    const localDevelopment = parsedWebAppUrl.protocol === 'http:'
+      && ['localhost', '127.0.0.1', '[::1]'].includes(parsedWebAppUrl.hostname);
+    if (parsedWebAppUrl.protocol !== 'https:' && !localDevelopment) throw new Error();
+    expectedIframeOrigin = parsedWebAppUrl.origin;
+  } catch {
+    const err = new Error('Awoof widget: webAppUrl must be an absolute HTTPS URL (HTTP is allowed only for localhost).');
+    if (onError) onError(err);
+    return Promise.reject(err);
+  }
+
   const origin = typeof window !== 'undefined' && window.location ? window.location.origin : '';
   const params = new URLSearchParams({
     apiKey: state.apiKey,
@@ -133,8 +146,6 @@ function verify(verifyOpts = {}) {
   iframe.style.cssText = 'width:100%;height:400px;border:0;border-radius:8px;';
   modal.setNode(iframe);
 
-  const expectedIframeOrigin = new URL(state.webAppUrl).origin;
-
   const handleMessage = (event) => {
     if (event.origin !== expectedIframeOrigin || event.source !== iframe.contentWindow) return;
     if (!event.data || event.data.type !== AWOOF_MESSAGE_TYPE) return;
@@ -142,10 +153,10 @@ function verify(verifyOpts = {}) {
     if (typeof window !== 'undefined' && window.removeEventListener) {
       window.removeEventListener('message', handleMessage);
     }
-    modal.close();
+    modal.close(false);
     const { token, studentId, verifiedAt, method } = event.data;
     state.token = token;
-    sendSuccessToParent(token, { studentId, verifiedAt, method });
+    sendSuccessToParent(token, { studentId, verifiedAt, method }, onSuccess);
   };
   if (typeof window !== 'undefined' && window.addEventListener) {
     window.addEventListener('message', handleMessage);
@@ -158,7 +169,7 @@ function verify(verifyOpts = {}) {
  * Send verification success to the parent window (and to optional callback).
  * Called when the widget has obtained a token from the backend.
  */
-function sendSuccessToParent(token, data = {}) {
+function sendSuccessToParent(token, data = {}, callback = state.callbacks.onSuccess) {
   const payload = {
     type: AWOOF_MESSAGE_TYPE,
     token,
@@ -169,8 +180,7 @@ function sendSuccessToParent(token, data = {}) {
   if (typeof window !== 'undefined' && window.postMessage) {
     window.postMessage(payload, window.location.origin);
   }
-  const cb = state.callbacks.onSuccess;
-  if (cb) cb(token, data);
+  if (callback) callback(token, data);
 }
 
 function config(opts = {}) {

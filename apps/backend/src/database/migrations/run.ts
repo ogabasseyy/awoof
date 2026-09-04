@@ -73,16 +73,6 @@ async function getExecutedMigrations(): Promise<Migration[]> {
 }
 
 /**
- * Record migration as executed
- */
-async function recordMigration(filename: string): Promise<void> {
-    await db.query(
-        'INSERT INTO migrations (filename) VALUES ($1)',
-        [filename]
-    );
-}
-
-/**
  * Execute a single migration file by its full path.
  * fullPath must be a path returned by getMigrationFiles() (under MIGRATIONS_DIR); no join with user input.
  */
@@ -95,13 +85,24 @@ async function executeMigration(fullPath: string): Promise<void> {
 
     appLogger.info(`📄 Running migration: ${base}`);
 
+    const client = await db.getPool().connect();
     try {
-        await db.query(sql);
-        await recordMigration(base);
+        await client.query('BEGIN');
+        await client.query(sql);
+        await client.query(
+            'INSERT INTO migrations (filename) VALUES ($1)',
+            [base]
+        );
+        await client.query('COMMIT');
         appLogger.info(`Migration ${base} executed successfully`);
     } catch (error) {
+        await client.query('ROLLBACK').catch((rollbackError) => {
+            appLogger.error(`Migration ${base} rollback failed:`, rollbackError);
+        });
         appLogger.error(`Migration ${base} failed:`, error);
         throw error;
+    } finally {
+        client.release();
     }
 }
 
@@ -158,4 +159,3 @@ if (isDirectRun) {
             process.exit(1);
         });
 }
-
