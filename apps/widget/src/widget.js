@@ -127,10 +127,18 @@ function verify(verifyOpts = {}) {
     onClose: () => onCancel && onCancel(),
   });
   modal.open();
-  modal.setContent(`<iframe src="${escapeAttr(iframeUrl)}" title="Verify student" style="width:100%;height:400px;border:0;border-radius:8px;"></iframe>`);
+  const iframe = document.createElement('iframe');
+  iframe.src = iframeUrl;
+  iframe.title = 'Verify student';
+  iframe.style.cssText = 'width:100%;height:400px;border:0;border-radius:8px;';
+  modal.setNode(iframe);
+
+  const expectedIframeOrigin = new URL(state.webAppUrl).origin;
 
   const handleMessage = (event) => {
+    if (event.origin !== expectedIframeOrigin || event.source !== iframe.contentWindow) return;
     if (!event.data || event.data.type !== AWOOF_MESSAGE_TYPE) return;
+    if (typeof event.data.token !== 'string' || !event.data.token.startsWith('awoof_')) return;
     if (typeof window !== 'undefined' && window.removeEventListener) {
       window.removeEventListener('message', handleMessage);
     }
@@ -159,7 +167,7 @@ function sendSuccessToParent(token, data = {}) {
     method: data.method || 'widget',
   };
   if (typeof window !== 'undefined' && window.postMessage) {
-    window.postMessage(payload, '*');
+    window.postMessage(payload, window.location.origin);
   }
   const cb = state.callbacks.onSuccess;
   if (cb) cb(token, data);
@@ -187,15 +195,6 @@ function clear() {
 function checkDomainStatus() {
   if (!state.apiKey || !state.apiBaseUrl) return Promise.reject(new Error('Not initialized'));
   return checkDomain(state.apiBaseUrl, getDomain(), state.apiKey);
-}
-
-function escapeAttr(s) {
-  const div = typeof document !== 'undefined' ? document.createElement('div') : null;
-  if (div) {
-    div.textContent = s;
-    return div.innerHTML.replace(/"/g, '&quot;');
-  }
-  return s.replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 }
 
 export default {

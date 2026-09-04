@@ -29,6 +29,7 @@ import {
 } from '../services/verification/verification-token.service.js';
 import {
     BadRequestError,
+    ForbiddenError,
     UnauthorizedError,
 } from '../common/errors/AppError.js';
 import { success } from '../common/utils/response.js';
@@ -64,6 +65,8 @@ const verifyWhatsAppSchema = z.object({
 const generateWidgetTokenSchema = z.object({
     vendorId: z.string().uuid('Invalid vendor ID'),
     productId: z.string().uuid('Invalid product ID').optional(),
+    apiKey: z.string().min(1, 'Widget API key is required'),
+    origin: z.string().url('Valid vendor origin is required'),
 });
 
 /**
@@ -691,6 +694,24 @@ export class VerificationController {
         // Validate request body
         const validated = generateWidgetTokenSchema.parse(req.body);
 
+        const vendorOrigin = new URL(validated.origin);
+        if (!['http:', 'https:'].includes(vendorOrigin.protocol)) {
+            throw new BadRequestError('Vendor origin must use HTTP or HTTPS');
+        }
+
+        const widgetConfig = await db.query(
+            `SELECT vendor_id
+             FROM widget_configs
+             WHERE vendor_id = $1
+               AND api_key = $2
+               AND status = 'active'
+               AND $3 = ANY(allowed_domains)`,
+            [validated.vendorId, validated.apiKey, vendorOrigin.hostname.toLowerCase()]
+        );
+        if (widgetConfig.rows.length === 0) {
+            throw new ForbiddenError('Vendor origin is not allowed for this widget');
+        }
+
         // Get student ID from user
         const studentResult = await db.query(
             'SELECT id, status FROM students WHERE user_id = $1',
@@ -730,4 +751,3 @@ export class VerificationController {
         });
     }
 }
-

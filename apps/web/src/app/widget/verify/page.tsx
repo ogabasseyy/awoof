@@ -24,7 +24,7 @@ function WidgetVerifyContent() {
     const apiKey = searchParams.get('apiKey') || '';
     const vendorId = searchParams.get('vendorId') || '';
     const productId = searchParams.get('productId') || '';
-    const origin = searchParams.get('origin') || '*';
+    const origin = searchParams.get('origin') || '';
 
     const [step, setStep] = useState<Step>('ndpr');
     const [ndprConsent, setNdprConsent] = useState(false);
@@ -44,11 +44,20 @@ function WidgetVerifyContent() {
     const [whatsappStudentName, setWhatsappStudentName] = useState('');
 
     useEffect(() => {
-        if (!apiKey || !vendorId) {
-            setError('Missing apiKey or vendorId. Close and try again from the vendor site.');
+        let validOrigin = false;
+        try {
+            const parsedOrigin = new URL(origin);
+            validOrigin = ['http:', 'https:'].includes(parsedOrigin.protocol)
+                && parsedOrigin.origin === origin;
+        } catch {
+            validOrigin = false;
+        }
+
+        if (!apiKey || !vendorId || !validOrigin) {
+            setError('Missing or invalid widget configuration. Close and try again from the vendor site.');
             setStep('error');
         }
-    }, [apiKey, vendorId]);
+    }, [apiKey, origin, vendorId]);
 
     const fetchMethods = useCallback(async () => {
         if (!universityId) return;
@@ -152,6 +161,8 @@ function WidgetVerifyContent() {
             const res = await apiClient.post('/verification/widget/token', {
                 vendorId,
                 productId: productId || undefined,
+                apiKey,
+                origin,
             });
             const data = res.data?.data ?? res.data;
             const token = data?.token;

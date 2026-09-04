@@ -59,7 +59,7 @@ export function injectStyles() {
  * @param {string} [opts.message]
  * @param {string} [opts.error]
  * @param {() => void} [opts.onClose]
- * @returns {{ open: () => void, close: () => void, setContent: (html: string) => void, setError: (msg: string) => void }}
+ * @returns {{ open: () => void, close: () => void, setContent: (html: string) => void, setNode: (node: Node) => void, setError: (msg: string) => void }}
  */
 export function createModal(opts = {}) {
   injectStyles();
@@ -126,6 +126,13 @@ export function createModal(opts = {}) {
     if (body) body.innerHTML = html;
   }
 
+  function setNode(node) {
+    if (!overlay) return;
+    const body = overlay.querySelector('.awoof-modal__body');
+    if (!body) return;
+    body.replaceChildren(node);
+  }
+
   function setError(msg) {
     if (!overlay) return;
     const body = overlay.querySelector('.awoof-modal__body');
@@ -139,7 +146,7 @@ export function createModal(opts = {}) {
     errEl.textContent = msg;
   }
 
-  return { open, close, setContent, setError };
+  return { open, close, setContent, setNode, setError };
 }
 
 function escapeHtml(s) {
