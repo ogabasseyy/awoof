@@ -55,7 +55,9 @@ class Database {
         if (config.database.url) {
             this.pool = new Pool({
                 connectionString: config.database.url,
-                ...connectionConfig,
+                max: connectionConfig.max,
+                idleTimeoutMillis: connectionConfig.idleTimeoutMillis,
+                connectionTimeoutMillis: connectionConfig.connectionTimeoutMillis,
             });
         } else {
             this.pool = new Pool(connectionConfig);
@@ -132,4 +134,3 @@ export const db = Database.getInstance();
 
 // Export pool for direct access if needed
 export const getPool = () => db.getPool();
-

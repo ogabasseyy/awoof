@@ -5,7 +5,7 @@
  * Follows SOLID principles with clean architecture
  */
 
-import express, { type Express } from 'express';
+import express, { type Express, type Request, type Response, type NextFunction } from 'express';
 import cors from 'cors';
 import helmet from 'helmet';
 import rateLimit from 'express-rate-limit';
@@ -27,8 +27,35 @@ class App {
 
   constructor() {
     this.app = express();
+    // Reverse-proxied VPS deploys: honor the first proxy hop so rate limits use client IPs.
+    this.app.set('trust proxy', 1);
+    this.initializeWebhookRoute();
     this.initializeMiddlewares();
     // Note: Error handling must be initialized AFTER routes
+  }
+
+  /**
+   * Paystack webhook must receive raw body for HMAC verification.
+   */
+  private initializeWebhookRoute(): void {
+    this.app.post(
+      '/api/webhooks/paystack',
+      rateLimit({
+        windowMs: config.rateLimit.windowMs,
+        max: config.rateLimit.maxRequests,
+        standardHeaders: true,
+        legacyHeaders: false,
+      }),
+      express.raw({ type: 'application/json' }),
+      async (req: Request, res: Response, next: NextFunction) => {
+        try {
+          const { handlePaystackWebhook } = await import('./controllers/webhook.controller.js');
+          await handlePaystackWebhook(req, res);
+        } catch (error) {
+          next(error);
+        }
+      }
+    );
   }
 
   /**
@@ -47,10 +74,57 @@ class App {
       })
     );
 
+    // Throttle before dynamic CORS can consume a database connection.
+    this.app.use(rateLimit({
+      windowMs: config.rateLimit.windowMs,
+      max: config.rateLimit.maxRequests,
+      standardHeaders: true,
+      legacyHeaders: false,
+    }));
+
     // CORS
     this.app.use(
       cors({
-        origin: config.cors.origin,
+        origin: (origin, callback) => {
+          if (!origin) {
+            callback(null, true);
+            return;
+          }
+
+          const staticOrigins = new Set(config.cors.origin.map((value) => value.trim()));
+          if (staticOrigins.has(origin)) {
+            callback(null, true);
+            return;
+          }
+
+          let parsed: URL;
+          try {
+            parsed = new URL(origin);
+          } catch {
+            callback(null, false);
+            return;
+          }
+
+          const localDevelopment = config.isDevelopment
+            && parsed.protocol === 'http:'
+            && ['localhost', '127.0.0.1', '[::1]'].includes(parsed.hostname);
+          if (parsed.protocol !== 'https:' && !localDevelopment) {
+            callback(null, false);
+            return;
+          }
+
+          db.query(
+            `SELECT 1 FROM widget_configs wc
+             JOIN vendors v ON v.id = wc.vendor_id AND v.status = 'active' AND v.deleted_at IS NULL
+             WHERE wc.status = 'active' AND $1 = ANY(wc.allowed_domains)
+             LIMIT 1`,
+            [parsed.hostname.toLowerCase()]
+          ).then((result) => callback(null, result.rows.length > 0))
+            .catch((error) => {
+              appLogger.error('Dynamic widget CORS lookup failed', error);
+              callback(null, false);
+            });
+        },
         credentials: true,
       })
     );
@@ -58,22 +132,6 @@ class App {
     // Body parser
     this.app.use(express.json({ limit: '10mb' }));
     this.app.use(express.urlencoded({ extended: true, limit: '10mb' }));
-
-    // Global rate limit (brute-force / DoS protection)
-    this.app.use(
-      rateLimit({
-        windowMs: config.rateLimit.windowMs,
-        max: config.rateLimit.maxRequests,
-        standardHeaders: true,
-        legacyHeaders: false,
-        handler: (_req, res) => {
-          res.status(429).json({
-            success: false,
-            error: { message: 'Too many requests. Please try again later.', statusCode: 429 },
-          });
-        },
-      })
-    );
 
     // Request logger
     this.app.use(logger);
@@ -170,6 +228,15 @@ class App {
     }
 
     try {
+      const widgetRoutes = await import('./routes/widget.routes.js');
+      this.app.use('/api/widget', widgetRoutes.default);
+      appLogger.info('Widget routes registered');
+    } catch (error) {
+      appLogger.error('Failed to register widget routes:', error);
+      throw error;
+    }
+
+    try {
       const vendorRoutes = await import('./routes/vendors.routes.js');
       this.app.use('/api/vendors', vendorRoutes.default);
       appLogger.info('Vendor routes registered');
@@ -188,11 +255,29 @@ class App {
     }
 
     try {
+      const checkoutRoutes = await import('./routes/checkout.routes.js');
+      this.app.use('/api/checkout', checkoutRoutes.default);
+      appLogger.info('Checkout routes registered');
+    } catch (error) {
+      appLogger.error('Failed to register checkout routes:', error);
+      throw error;
+    }
+
+    try {
       const adminRoutes = await import('./routes/admin.routes.js');
       this.app.use('/api/admin', adminRoutes.default);
       appLogger.info('Admin routes registered');
     } catch (error) {
       appLogger.error('Failed to register admin routes:', error);
+      throw error;
+    }
+
+    try {
+      const supportRoutes = await import('./routes/support.routes.js');
+      this.app.use('/api/support', supportRoutes.default);
+      appLogger.info('Support routes registered');
+    } catch (error) {
+      appLogger.error('Failed to register support routes:', error);
       throw error;
     }
   }
@@ -233,6 +318,9 @@ class App {
 
       // Initialize Redis
       redis.initialize();
+
+      const { startCommerceNotificationDispatcher } = await import('./services/payment/checkout.service.js');
+      startCommerceNotificationDispatcher();
 
       // Initialize routes (must be after database is ready)
       await this.initializeRoutes();

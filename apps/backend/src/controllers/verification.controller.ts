@@ -7,6 +7,7 @@
 
 import type { Request, Response } from 'express';
 import { db } from '../config/database.js';
+import { config } from '../config/env.js';
 import { jwtService } from '../services/auth/jwt.service.js';
 import {
     validateStudentEmailDomain,
@@ -29,6 +30,7 @@ import {
 } from '../services/verification/verification-token.service.js';
 import {
     BadRequestError,
+    ForbiddenError,
     UnauthorizedError,
 } from '../common/errors/AppError.js';
 import { success } from '../common/utils/response.js';
@@ -52,11 +54,13 @@ const initiateVerificationSchema = z.object({
 const verifyRegistrationSchema = z.object({
     universityId: z.string().uuid('Invalid university ID'),
     registrationNumber: z.string().min(1, 'Registration number is required'),
-    studentName: z.string().min(2, 'Name is required'),
+    studentName: z.string().min(2, 'Name must be at least 2 characters').optional(),
     studentEmail: z.string().email('Invalid email address').optional(),
 });
 
 const verifyWhatsAppSchema = z.object({
+    universityId: z.string().uuid('Invalid university ID'),
+    registrationNumber: z.string().min(1, 'Registration number is required'),
     phoneNumber: z.string().regex(/^\+?[1-9]\d{1,14}$/, 'Invalid phone number format'),
     otp: z.string().length(6, 'OTP must be 6 digits'),
 });
@@ -64,6 +68,8 @@ const verifyWhatsAppSchema = z.object({
 const generateWidgetTokenSchema = z.object({
     vendorId: z.string().uuid('Invalid vendor ID'),
     productId: z.string().uuid('Invalid product ID').optional(),
+    apiKey: z.string().min(1, 'Widget API key is required'),
+    origin: z.string().url('Valid vendor origin is required'),
 });
 
 /**
@@ -358,7 +364,10 @@ export class VerificationController {
         // Find or create user and student
         let studentId: string;
         let userId: string;
-        const email = validated.studentEmail || `${validated.registrationNumber}@university.edu`;
+        const email = validated.studentEmail || (() => {
+            const safeReg = validated.registrationNumber.replace(/[^a-zA-Z0-9]/g, '').slice(0, 40) || 'student';
+            return `${safeReg}.${validated.universityId}@students.awoof.invalid`;
+        })();
 
         const client = await db.getPool().connect();
 
@@ -386,7 +395,7 @@ export class VerificationController {
                     `INSERT INTO students (user_id, name, university, registration_number, status)
                      VALUES ($1, $2, $3, $4, 'active')
                      RETURNING id`,
-                    [userId, verificationResult.studentData?.name || validated.studentName, '', validated.registrationNumber]
+                    [userId, verificationResult.studentData?.name || validated.studentName || 'Student', '', validated.registrationNumber]
                 );
                 studentId = newStudentResult.rows[0].id;
             } else {
@@ -402,7 +411,7 @@ export class VerificationController {
                         `INSERT INTO students (user_id, name, university, registration_number, status)
                          VALUES ($1, $2, $3, $4, 'active')
                          RETURNING id`,
-                        [userId, verificationResult.studentData?.name || validated.studentName, '', validated.registrationNumber]
+                        [userId, verificationResult.studentData?.name || validated.studentName || 'Student', '', validated.registrationNumber]
                     );
                     studentId = newStudentResult.rows[0].id;
                 } else {
@@ -524,6 +533,11 @@ export class VerificationController {
 
         if (!isValid) {
             throw new UnauthorizedError('Invalid or expired OTP');
+        }
+
+        const enrollment = await verifyRegistrationNumber(validated.universityId, validated.registrationNumber, studentName);
+        if (enrollment.verified !== true) {
+            throw new UnauthorizedError(enrollment.error || 'University enrollment could not be verified');
         }
 
         // Create user and student if needed
@@ -691,6 +705,27 @@ export class VerificationController {
         // Validate request body
         const validated = generateWidgetTokenSchema.parse(req.body);
 
+        const vendorOrigin = new URL(validated.origin);
+        const localDevelopment = config.isDevelopment
+            && vendorOrigin.protocol === 'http:'
+            && ['localhost', '127.0.0.1', '[::1]'].includes(vendorOrigin.hostname);
+        if (vendorOrigin.protocol !== 'https:' && !localDevelopment) {
+            throw new BadRequestError('Vendor origin must use HTTPS');
+        }
+
+        const widgetConfig = await db.query(
+            `SELECT vendor_id
+             FROM widget_configs
+             WHERE vendor_id = $1
+               AND api_key = $2
+               AND status = 'active'
+               AND $3 = ANY(allowed_domains)`,
+            [validated.vendorId, validated.apiKey, vendorOrigin.hostname.toLowerCase()]
+        );
+        if (widgetConfig.rows.length === 0) {
+            throw new ForbiddenError('Vendor origin is not allowed for this widget');
+        }
+
         // Get student ID from user
         const studentResult = await db.query(
             'SELECT id, status FROM students WHERE user_id = $1',
@@ -713,6 +748,22 @@ export class VerificationController {
             throw new UnauthorizedError('Student must be verified to generate widget token');
         }
 
+        if (validated.productId) {
+            const productResult = await db.query(
+                `SELECT id, status, stock
+                 FROM products
+                 WHERE id = $1 AND vendor_id = $2 AND deleted_at IS NULL`,
+                [validated.productId, validated.vendorId]
+            );
+            if (productResult.rows.length === 0) {
+                throw new BadRequestError('Product not found for this vendor');
+            }
+            const product = productResult.rows[0];
+            if (product.status !== 'active' || Number(product.stock) <= 0) {
+                throw new BadRequestError('This deal is no longer available');
+            }
+        }
+
         // Generate verification token
         const { token, expiresAt } = await createVerificationToken(
             student.id,
@@ -724,10 +775,10 @@ export class VerificationController {
             message: 'Verification token generated successfully',
             data: {
                 token,
+                studentId: student.id,
                 expiresAt,
                 expiresInMinutes: 30,
             },
         });
     }
 }
-

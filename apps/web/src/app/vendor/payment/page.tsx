@@ -17,6 +17,9 @@ import { DashboardLayout } from '@/components/dashboard';
 import type { User } from '@/lib/auth';
 import apiClient from '@/lib/api-client';
 import { formatCurrency } from '@/lib/format';
+import toast from 'react-hot-toast';
+import { useConfirm } from '@/components/ui/ConfirmDialog';
+import { getApiErrorMessage } from '@/lib/api-error';
 
 const iconProps = { className: 'h-5 w-5', strokeWidth: 1.5, fill: 'currentColor' as const };
 
@@ -83,6 +86,7 @@ interface MonthlySummary {
 
 export default function VendorPaymentPage() {
     const { user, logout } = useAuth();
+    const confirm = useConfirm();
     const [settings, setSettings] = useState<PaymentSettings | null>(null);
     const [statistics, setStatistics] = useState<PaymentStatistics | null>(null);
     const [paymentHistory, setPaymentHistory] = useState<PaymentHistoryItem[]>([]);
@@ -98,13 +102,16 @@ export default function VendorPaymentPage() {
     const [accountNumber, setAccountNumber] = useState('');
     const [accountName, setAccountName] = useState('');
     const [bankCode, setBankCode] = useState('');
+    const [banks, setBanks] = useState<Array<{ name: string; code: string }>>([]);
+    const [bankQuery, setBankQuery] = useState('');
+    const [banksLoading, setBanksLoading] = useState(false);
+    const [resolveStatus, setResolveStatus] = useState<'idle' | 'loading' | 'resolved' | 'error'>('idle');
+    const [resolveError, setResolveError] = useState<string | null>(null);
 
     // Payment integration state
     const [apiKey, setApiKey] = useState<string | null>(null);
-    const [paystackSubaccountCode, setPaystackSubaccountCode] = useState('');
     const [isGeneratingApiKey, setIsGeneratingApiKey] = useState(false);
     const [isUpdatingPaymentMethod, setIsUpdatingPaymentMethod] = useState(false);
-    const [isUpdatingSubaccount, setIsUpdatingSubaccount] = useState(false);
 
     type VendorProfile = { companyName?: string | null; name?: string | null };
     const extendedUser = user as (User & { profile?: VendorProfile }) | null;
@@ -114,6 +121,73 @@ export default function VendorPaymentPage() {
     useEffect(() => {
         fetchPaymentData();
     }, []);
+
+    useEffect(() => {
+        if (activeTab !== 'payout' || banks.length > 0) return;
+        let cancelled = false;
+        (async () => {
+            try {
+                setBanksLoading(true);
+                const res = await apiClient.get('/vendors/payment/banks');
+                if (!cancelled) setBanks(res.data?.data?.banks ?? []);
+            } catch (error: unknown) {
+                if (!cancelled) {
+                    toast.error(getApiErrorMessage(error, 'Failed to load banks'));
+                }
+            } finally {
+                if (!cancelled) setBanksLoading(false);
+            }
+        })();
+        return () => {
+            cancelled = true;
+        };
+    }, [activeTab, banks.length]);
+
+    useEffect(() => {
+        if (!bankCode || accountNumber.replace(/\D/g, '').length < 10) {
+            if (!accountName) {
+                setResolveStatus('idle');
+                setResolveError(null);
+            }
+            return;
+        }
+
+        // Skip re-resolve when hydrated settings already match
+        if (
+            resolveStatus === 'resolved' &&
+            accountName &&
+            settings?.payoutSettings?.bankCode === bankCode &&
+            settings?.payoutSettings?.accountNumber === accountNumber.replace(/\D/g, '')
+        ) {
+            return;
+        }
+
+        const digits = accountNumber.replace(/\D/g, '');
+        let cancelled = false;
+        const timer = setTimeout(async () => {
+            try {
+                setResolveStatus('loading');
+                setResolveError(null);
+                const res = await apiClient.get('/vendors/payment/resolve-account', {
+                    params: { bankCode, accountNumber: digits },
+                });
+                if (cancelled) return;
+                setAccountName(res.data?.data?.accountName ?? '');
+                setResolveStatus('resolved');
+            } catch (error: unknown) {
+                if (cancelled) return;
+                setAccountName('');
+                setResolveStatus('error');
+                setResolveError(getApiErrorMessage(error, 'Could not resolve account'));
+            }
+        }, 500);
+
+        return () => {
+            cancelled = true;
+            clearTimeout(timer);
+        };
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [bankCode, accountNumber]);
 
     const fetchPaymentData = async () => {
         try {
@@ -134,10 +208,14 @@ export default function VendorPaymentPage() {
                 setAccountNumber(settingsData.settings.payoutSettings.accountNumber || '');
                 setAccountName(settingsData.settings.payoutSettings.accountName || '');
                 setBankCode(settingsData.settings.payoutSettings.bankCode || '');
+                if (
+                    settingsData.settings.payoutSettings.bankCode &&
+                    settingsData.settings.payoutSettings.accountNumber &&
+                    settingsData.settings.payoutSettings.accountName
+                ) {
+                    setResolveStatus('resolved');
+                }
             }
-
-            // Set payment integration values
-            setPaystackSubaccountCode(settingsData.settings.paystackSubaccountCode || '');
 
             // Fetch API key info if exists
             try {
@@ -166,20 +244,27 @@ export default function VendorPaymentPage() {
 
     const handleSavePayoutSettings = async (e: React.FormEvent) => {
         e.preventDefault();
+        if (resolveStatus !== 'resolved' || !bankCode || !accountNumber || !bankName) {
+            toast.error('Select a bank and verify the account number first');
+            return;
+        }
         try {
             setIsSaving(true);
-            await apiClient.put('/vendors/payment/payout-settings', {
+            const res = await apiClient.put('/vendors/payment/payout-settings', {
                 bankName,
-                accountNumber,
-                accountName,
+                accountNumber: accountNumber.replace(/\D/g, ''),
                 bankCode,
             });
-            alert('Payout settings updated successfully');
+            const code = res.data?.data?.paystackSubaccountCode;
+            toast.success(
+                code
+                    ? 'Payout saved — split payments enabled'
+                    : 'Payout settings updated successfully'
+            );
             await fetchPaymentData();
         } catch (error: unknown) {
             console.error('Error updating payout settings:', error);
-            const errorMessage = (error as { response?: { data?: { message?: string } } })?.response?.data?.message;
-            alert(errorMessage || 'Failed to update payout settings');
+            toast.error(getApiErrorMessage(error, 'Failed to update payout settings'));
         } finally {
             setIsSaving(false);
         }
@@ -192,53 +277,33 @@ export default function VendorPaymentPage() {
                 paymentMethod: method,
             });
             await fetchPaymentData();
-            alert('Payment method updated successfully');
+            toast.success('Payment method updated successfully');
         } catch (error: unknown) {
             console.error('Error updating payment method:', error);
-            const errorMessage = (error as { response?: { data?: { message?: string } } })?.response?.data?.message;
-            alert(errorMessage || 'Failed to update payment method');
+            toast.error(getApiErrorMessage(error, 'Failed to update payment method'));
         } finally {
             setIsUpdatingPaymentMethod(false);
         }
     };
 
-    const handleUpdatePaystackSubaccount = async () => {
-        if (!paystackSubaccountCode.trim()) {
-            alert('Please enter a Paystack subaccount code');
-            return;
-        }
-
-        try {
-            setIsUpdatingSubaccount(true);
-            await apiClient.put('/vendors/payment/paystack-subaccount', {
-                paystackSubaccountCode: paystackSubaccountCode.trim(),
-            });
-            await fetchPaymentData();
-            alert('Paystack subaccount updated successfully');
-        } catch (error: unknown) {
-            console.error('Error updating Paystack subaccount:', error);
-            const errorMessage = (error as { response?: { data?: { message?: string } } })?.response?.data?.message;
-            alert(errorMessage || 'Failed to update Paystack subaccount');
-        } finally {
-            setIsUpdatingSubaccount(false);
-        }
-    };
-
     const handleGenerateApiKey = async () => {
-        if (!confirm('Generating a new API key will revoke your existing key. Continue?')) {
-            return;
-        }
+        const ok = await confirm({
+            title: 'Generate new API key?',
+            description: 'This will revoke your existing key. Copy the new key immediately — it will not be shown again.',
+            confirmLabel: 'Generate key',
+            variant: 'destructive',
+        });
+        if (!ok) return;
 
         try {
             setIsGeneratingApiKey(true);
             const response = await apiClient.post('/vendors/payment/api-key');
             const newApiKey = response.data.data.apiKey;
             setApiKey(newApiKey);
-            alert('API key generated successfully! Make sure to copy it now - it will not be shown again.');
+            toast.success('API key generated — copy it now');
         } catch (error: unknown) {
             console.error('Error generating API key:', error);
-            const errorMessage = (error as { response?: { data?: { message?: string } } })?.response?.data?.message;
-            alert(errorMessage || 'Failed to generate API key');
+            toast.error(getApiErrorMessage(error, 'Failed to generate API key'));
         } finally {
             setIsGeneratingApiKey(false);
         }
@@ -264,9 +329,7 @@ export default function VendorPaymentPage() {
     };
 
     // Get API base URL for webhook/API examples
-    const apiBaseUrl = typeof window !== 'undefined'
-        ? window.location.origin.replace('3000', '5001')
-        : 'https://api.awoof.com';
+    const apiBaseUrl = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:5001';
 
     if (isLoading) {
         return (
@@ -429,7 +492,7 @@ export default function VendorPaymentPage() {
                                                 {settings.commissionRate.toFixed(2)}%
                                             </div>
                                             <p className="text-sm text-slate-600">
-                                                Applied to all transactions
+                                                Platform fee on marketplace sales
                                             </p>
                                         </div>
                                     </div>
@@ -621,101 +684,18 @@ export default function VendorPaymentPage() {
                                 </div>
                             </div>
 
-                            {/* Paystack Subaccount Configuration */}
-                            {settings?.paymentMethod === 'vendor_website' && (
+                            {settings?.paystackSubaccountCode && (
                                 <div className="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm">
-                                    <h2 className="mb-4 text-lg font-semibold text-slate-900">Paystack Split Payment</h2>
-                                    <p className="mb-6 text-sm text-slate-600">
-                                        Configure Paystack subaccount for automatic commission splitting. When customers pay on your website, Paystack automatically splits the payment between you and Awoof.
+                                    <h2 className="mb-2 text-lg font-semibold text-slate-900">
+                                        Marketplace split payments
+                                    </h2>
+                                    <p className="text-sm text-slate-600">
+                                        Split settlement is enabled from your{' '}
+                                        <button type="button" className="font-semibold text-[#1D4ED8] hover:underline" onClick={() => setActiveTab('payout')}>
+                                            Payout
+                                        </button>{' '}
+                                        bank details. Awoof configures the platform Paystack webhook; vendor-site payments should use the transaction reporting API below.
                                     </p>
-
-                                    <div className="space-y-4">
-                                        <div>
-                                            <Label htmlFor="paystackSubaccount">Paystack Subaccount Code</Label>
-                                            <div className="mt-2 flex gap-2">
-                                                <Input
-                                                    id="paystackSubaccount"
-                                                    value={paystackSubaccountCode}
-                                                    onChange={(e) => setPaystackSubaccountCode(e.target.value)}
-                                                    placeholder="Enter Paystack subaccount code"
-                                                    className="flex-1"
-                                                />
-                                                <Button
-                                                    type="button"
-                                                    variant="outline"
-                                                    onClick={handleUpdatePaystackSubaccount}
-                                                    disabled={isUpdatingSubaccount}
-                                                >
-                                                    {isUpdatingSubaccount ? 'Updating...' : 'Configure'}
-                                                </Button>
-                                            </div>
-                                            <p className="mt-2 text-xs text-slate-500">
-                                                Contact support to set up your Paystack subaccount with Awoof commission rate.
-                                            </p>
-                                        </div>
-
-                                        {settings?.paystackSubaccountCode && (
-                                            <div className="rounded-lg bg-green-50 p-4">
-                                                <div className="flex items-center gap-2">
-                                                    <Check className="h-5 w-5 text-green-600" />
-                                                    <span className="text-sm font-medium text-green-900">
-                                                        Paystack subaccount configured
-                                                    </span>
-                                                </div>
-                                                <p className="mt-1 text-xs text-green-700">
-                                                    Payments will be automatically split. Commission will be deducted automatically.
-                                                </p>
-                                            </div>
-                                        )}
-                                    </div>
-                                </div>
-                            )}
-
-                            {/* Webhook URL */}
-                            {settings?.paymentMethod === 'vendor_website' && (
-                                <div className="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm">
-                                    <h2 className="mb-4 text-lg font-semibold text-slate-900">Webhook URL</h2>
-                                    <p className="mb-4 text-sm text-slate-600">
-                                        Configure this webhook URL in your Paystack dashboard to automatically track payments.
-                                    </p>
-
-                                    <div className="space-y-4">
-                                        <div>
-                                            <Label>Webhook URL</Label>
-                                            <div className="mt-2 flex gap-2">
-                                                <Input
-                                                    value={`${apiBaseUrl}/api/webhooks/paystack/vendor-payment`}
-                                                    readOnly
-                                                    className="flex-1 font-mono text-sm"
-                                                />
-                                                <Button
-                                                    type="button"
-                                                    variant="outline"
-                                                    onClick={() => copyToClipboard(
-                                                        `${apiBaseUrl}/api/webhooks/paystack/vendor-payment`,
-                                                        'webhook'
-                                                    )}
-                                                >
-                                                    {copiedText === 'webhook' ? (
-                                                        <Check className="h-4 w-4" />
-                                                    ) : (
-                                                        <Copy className="h-4 w-4" />
-                                                    )}
-                                                </Button>
-                                            </div>
-                                        </div>
-
-                                        <div className="rounded-lg bg-blue-50 p-4">
-                                            <h3 className="text-sm font-semibold text-blue-900">Setup Instructions:</h3>
-                                            <ol className="mt-2 list-decimal space-y-1 pl-5 text-xs text-blue-800">
-                                                <li>Log in to your Paystack Dashboard</li>
-                                                <li>Go to Settings → Webhooks</li>
-                                                <li>Add the webhook URL above</li>
-                                                <li>Select events: <code className="rounded bg-blue-100 px-1">charge.success</code></li>
-                                                <li>Save the webhook configuration</li>
-                                            </ol>
-                                        </div>
-                                    </div>
                                 </div>
                             )}
 
@@ -932,17 +912,82 @@ export default function VendorPaymentPage() {
                     {/* Payout Settings Tab */}
                     {activeTab === 'payout' && (
                         <div className="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm">
-                            <h2 className="mb-6 text-lg font-semibold text-slate-900">Payout Settings</h2>
+                            <h2 className="mb-2 text-lg font-semibold text-slate-900">Payout Settings</h2>
+                            <p className="mb-6 text-sm text-slate-600">
+                                We’ll create a Paystack subaccount so student purchases can pay you and Awoof automatically.
+                            </p>
+
+                            {settings?.paystackSubaccountCode && (
+                                <div className="mb-6 rounded-lg bg-green-50 p-4">
+                                    <div className="flex items-center gap-2">
+                                        <Check className="h-5 w-5 text-green-600" />
+                                        <span className="text-sm font-medium text-green-900">
+                                            Split payments enabled
+                                        </span>
+                                    </div>
+                                    <p className="mt-1 text-xs text-green-700 font-mono">
+                                        {settings.paystackSubaccountCode}
+                                    </p>
+                                </div>
+                            )}
+
                             <form onSubmit={handleSavePayoutSettings} className="space-y-6">
-                                <div className="grid gap-4 sm:grid-cols-2">
+                                <div className="space-y-4">
                                     <div>
-                                        <Label htmlFor="bankName">Bank Name</Label>
+                                        <Label htmlFor="bankSearch">Bank</Label>
                                         <Input
-                                            id="bankName"
-                                            value={bankName}
-                                            onChange={(e) => setBankName(e.target.value)}
-                                            placeholder="Enter bank name"
+                                            id="bankSearch"
+                                            value={bankQuery || (bankName && bankCode ? `${bankName}` : '')}
+                                            onChange={(e) => {
+                                                setBankQuery(e.target.value);
+                                                if (bankCode) {
+                                                    setBankCode('');
+                                                    setBankName('');
+                                                    setAccountName('');
+                                                    setResolveStatus('idle');
+                                                }
+                                            }}
+                                            placeholder={banksLoading ? 'Loading banks…' : 'Search banks…'}
+                                            disabled={banksLoading}
+                                            autoComplete="off"
                                         />
+                                        {(bankQuery.trim().length > 0 || (!bankCode && banks.length > 0)) && (
+                                            <div className="mt-2 max-h-48 overflow-y-auto rounded-lg border border-slate-200 bg-white shadow-sm">
+                                                {banks
+                                                    .filter((b) => {
+                                                        const q = (bankQuery || '').toLowerCase().trim();
+                                                        if (!q) return true;
+                                                        return (
+                                                            b.name.toLowerCase().includes(q) ||
+                                                            b.code.includes(q)
+                                                        );
+                                                    })
+                                                    .slice(0, 40)
+                                                    .map((b) => (
+                                                        <button
+                                                            key={b.code}
+                                                            type="button"
+                                                            className="flex w-full items-center justify-between px-3 py-2 text-left text-sm hover:bg-slate-50"
+                                                            onClick={() => {
+                                                                setBankCode(b.code);
+                                                                setBankName(b.name);
+                                                                setBankQuery('');
+                                                                setAccountName('');
+                                                                setResolveStatus('idle');
+                                                            }}
+                                                        >
+                                                            <span className="font-medium text-slate-900">{b.name}</span>
+                                                            <span className="text-xs text-slate-400">{b.code}</span>
+                                                        </button>
+                                                    ))}
+                                            </div>
+                                        )}
+                                        {bankCode && bankName && !bankQuery && (
+                                            <p className="mt-2 text-sm text-slate-600">
+                                                Selected: <span className="font-semibold text-slate-900">{bankName}</span>
+                                                <span className="ml-2 text-xs text-slate-400">({bankCode})</span>
+                                            </p>
+                                        )}
                                     </div>
 
                                     <div>
@@ -950,36 +995,45 @@ export default function VendorPaymentPage() {
                                         <Input
                                             id="accountNumber"
                                             type="text"
+                                            inputMode="numeric"
                                             value={accountNumber}
-                                            onChange={(e) => setAccountNumber(e.target.value)}
-                                            placeholder="Enter account number"
+                                            onChange={(e) => {
+                                                setAccountNumber(e.target.value.replace(/[^\d]/g, ''));
+                                                setAccountName('');
+                                                setResolveStatus('idle');
+                                            }}
+                                            placeholder="Enter 10-digit NUBAN"
+                                            maxLength={20}
                                         />
                                     </div>
 
                                     <div>
-                                        <Label htmlFor="accountName">Account Name</Label>
-                                        <Input
-                                            id="accountName"
-                                            value={accountName}
-                                            onChange={(e) => setAccountName(e.target.value)}
-                                            placeholder="Enter account name"
-                                        />
-                                    </div>
-
-                                    <div>
-                                        <Label htmlFor="bankCode">Bank Code</Label>
-                                        <Input
-                                            id="bankCode"
-                                            value={bankCode}
-                                            onChange={(e) => setBankCode(e.target.value)}
-                                            placeholder="Enter bank code"
-                                        />
+                                        <Label>Account Name</Label>
+                                        <div className="mt-2 rounded-lg border border-slate-200 bg-slate-50 px-3 py-2.5 text-sm">
+                                            {resolveStatus === 'loading' && (
+                                                <span className="text-slate-500">Looking up account…</span>
+                                            )}
+                                            {resolveStatus === 'resolved' && accountName && (
+                                                <span className="font-semibold text-slate-900">{accountName}</span>
+                                            )}
+                                            {resolveStatus === 'error' && (
+                                                <span className="text-rose-600">{resolveError || 'Could not resolve account'}</span>
+                                            )}
+                                            {resolveStatus === 'idle' && (
+                                                <span className="text-slate-400">
+                                                    Select a bank and enter account number to verify
+                                                </span>
+                                            )}
+                                        </div>
                                     </div>
                                 </div>
 
                                 <div className="flex justify-end">
-                                    <Button type="submit" disabled={isSaving}>
-                                        {isSaving ? 'Saving...' : 'Save Settings'}
+                                    <Button
+                                        type="submit"
+                                        disabled={isSaving || resolveStatus !== 'resolved'}
+                                    >
+                                        {isSaving ? 'Saving…' : 'Save & enable split'}
                                     </Button>
                                 </div>
                             </form>
@@ -1063,4 +1117,3 @@ export default function VendorPaymentPage() {
         </ProtectedRoute>
     );
 }
-

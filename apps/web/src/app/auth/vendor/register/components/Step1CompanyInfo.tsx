@@ -12,7 +12,6 @@ import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { StepWrapper } from './StepWrapper';
-import Link from 'next/link';
 import type { Step1Data } from '../hooks/useVendorRegistration';
 
 const step1Schema = z.object({
@@ -39,20 +38,7 @@ export function Step1CompanyInfo({ onNext, error, isLoading, progressIndicator }
     };
 
     return (
-        <StepWrapper
-            title="Create An Account"
-            subtitle="Please fill in your information below."
-            progressIndicator={progressIndicator}
-            error={error}
-            footer={
-                <p className="mt-6 text-center text-sm text-gray-600">
-                    Already have an account?{' '}
-                    <Link href="/auth/vendor/login" className="text-primary hover:underline font-medium">
-                        Login
-                    </Link>
-                </p>
-            }
-        >
+        <StepWrapper progressIndicator={progressIndicator} error={error}>
             <form onSubmit={form.handleSubmit(onSubmit)} className="space-y-5">
                 <div>
                     <Label htmlFor="companyName" className="text-left block mb-2">
@@ -126,7 +112,7 @@ export function Step1CompanyInfo({ onNext, error, isLoading, progressIndicator }
                     )}
                 </div>
 
-                <Button type="submit" className="w-full" disabled={isLoading}>
+                <Button type="submit" className="w-full rounded-full h-11 font-semibold" disabled={isLoading}>
                     Continue
                 </Button>
             </form>

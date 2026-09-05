@@ -17,6 +17,8 @@ import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import apiClient from '@/lib/api-client';
 import { primaryNavItems, secondaryNavItems } from '../adminNav';
+import toast from 'react-hot-toast';
+import { useConfirm } from '@/components/ui/ConfirmDialog';
 
 interface University {
     id: string;
@@ -37,6 +39,7 @@ interface SegmentStats {
 
 export default function AdminUniversitiesPage() {
     const { user, logout } = useAuth();
+    const confirm = useConfirm();
     const [universities, setUniversities] = useState<University[]>([]);
     const [total, setTotal] = useState(0);
     const [page, setPage] = useState(1);
@@ -131,27 +134,36 @@ export default function AdminUniversitiesPage() {
             };
             if (editingUniversity) {
                 await apiClient.put(`/admin/universities/${editingUniversity.id}`, payload);
+                toast.success('University updated');
             } else {
                 await apiClient.post('/admin/universities', payload);
+                toast.success('University created');
             }
             handleCloseModal();
             fetchUniversities();
             fetchSegmentStats();
         } catch (err) {
             const e = err as { response?: { data?: { error?: { message?: string } } } };
-            alert(e.response?.data?.error?.message || 'Failed to save university');
+            toast.error(e.response?.data?.error?.message || 'Failed to save university');
         }
     };
 
     const handleDelete = async (id: string) => {
-        if (!confirm('Are you sure you want to delete this university?')) return;
+        const ok = await confirm({
+            title: 'Delete university?',
+            description: 'This will remove the university from the platform.',
+            confirmLabel: 'Delete',
+            variant: 'destructive',
+        });
+        if (!ok) return;
         try {
             await apiClient.delete(`/admin/universities/${id}`);
             fetchUniversities();
             fetchSegmentStats();
+            toast.success('University deleted');
         } catch (err) {
             const e = err as { response?: { data?: { error?: { message?: string } } } };
-            alert(e.response?.data?.error?.message || 'Failed to delete');
+            toast.error(e.response?.data?.error?.message || 'Failed to delete');
         }
     };
 
@@ -165,30 +177,30 @@ export default function AdminUniversitiesPage() {
             a.download = 'universities_sample.csv';
             a.click();
             URL.revokeObjectURL(url);
+            toast.success('Sample CSV downloaded');
         } catch {
-            alert('Failed to download sample CSV');
+            toast.error('Failed to download sample CSV');
         }
     };
 
     const handleImportCsv = async (e: React.FormEvent) => {
         e.preventDefault();
         if (!csvFile) {
-            alert('Please select a CSV file');
+            toast.error('Please select a CSV file');
             return;
         }
         try {
             setImporting(true);
             const formDataUpload = new FormData();
             formDataUpload.append('file', csvFile);
-            await apiClient.post('/admin/universities/import-csv', formDataUpload, {
-                headers: { 'Content-Type': 'multipart/form-data' },
-            });
+            await apiClient.post('/admin/universities/import-csv', formDataUpload);
             setCsvFile(null);
             fetchUniversities();
             fetchSegmentStats();
+            toast.success('CSV imported successfully');
         } catch (err) {
             const e = err as { response?: { data?: { error?: { message?: string } } } };
-            alert(e.response?.data?.error?.message || 'Failed to import CSV');
+            toast.error(e.response?.data?.error?.message || 'Failed to import CSV');
         } finally {
             setImporting(false);
         }

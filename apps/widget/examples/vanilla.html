@@ -1,0 +1,50 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>Awoof Widget – Vanilla example</title>
+</head>
+<body>
+  <h1>Student discount</h1>
+  <p>Click below to verify you are a student. The Awoof widget will open a modal.</p>
+  <button type="button" id="verify-btn">Verify Student Status</button>
+
+  <!-- Load widget (in production: script from CDN) -->
+  <script src="../dist/awoof.js"></script>
+  <script>
+    const API_BASE = 'http://localhost:5001'; // your backend URL
+    const WEB_APP_URL = 'http://localhost:3000'; // your Awoof frontend origin
+    const API_KEY = 'your-vendor-widget-api-key'; // from Awoof vendor dashboard
+
+    window.addEventListener('message', function (event) {
+      if (event.data && event.data.type === 'AWOOF_VERIFICATION_SUCCESS') {
+        console.log('Verification success:', event.data);
+        alert('Verified! Token: ' + (event.data.token || '').slice(0, 20) + '...');
+      }
+    });
+
+    Awoof.init({
+      apiKey: API_KEY,
+      apiBaseUrl: API_BASE,
+      webAppUrl: WEB_APP_URL,
+      onSuccess: function (token, data) {
+        console.log('onSuccess', token, data);
+      },
+      onError: function (err) {
+        console.error('Awoof error', err);
+      },
+      onCancel: function () {
+        console.log('User closed modal');
+      },
+    }).then(function () {
+      console.log('Widget ready, domain allowed');
+    }).catch(function (err) {
+      console.error('Widget init failed', err);
+    });
+
+    document.getElementById('verify-btn').onclick = function () {
+      Awoof.verify();
+    };
+  </script>
+</body>
+</html>

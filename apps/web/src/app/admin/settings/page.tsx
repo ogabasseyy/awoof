@@ -7,7 +7,7 @@
 'use client';
 
 import { useState, useEffect } from 'react';
-import { User, Lock, Save } from 'lucide-react';
+import { User, Lock, Save, Percent } from 'lucide-react';
 import ProtectedRoute from '@/components/ProtectedRoute';
 import { useAuth } from '@/contexts/AuthContext';
 import { DashboardLayout } from '@/components/dashboard';
@@ -26,7 +26,7 @@ interface MeData {
     profile?: unknown;
 }
 
-type TabId = 'profile' | 'password';
+type TabId = 'profile' | 'password' | 'platform';
 
 export default function AdminSettingsPage() {
     const { user, logout } = useAuth();
@@ -41,6 +41,12 @@ export default function AdminSettingsPage() {
     const [newPassword, setNewPassword] = useState('');
     const [confirmPassword, setConfirmPassword] = useState('');
     const [savingPassword, setSavingPassword] = useState(false);
+
+    // Platform settings
+    const [platformFeePercent, setPlatformFeePercent] = useState<number>(10);
+    const [loadingPlatform, setLoadingPlatform] = useState(true);
+    const [platformLoadError, setPlatformLoadError] = useState<string | null>(null);
+    const [savingPlatform, setSavingPlatform] = useState(false);
 
     useEffect(() => {
         let cancelled = false;
@@ -63,6 +69,42 @@ export default function AdminSettingsPage() {
             cancelled = true;
         };
     }, []);
+
+    // Fetch platform settings
+    useEffect(() => {
+        let cancelled = false;
+        (async () => {
+            try {
+                setLoadingPlatform(true);
+                setPlatformLoadError(null);
+                const res = await apiClient.get('/admin/settings/platform');
+                if (!cancelled && res.data?.data?.platform_fee_percent != null) {
+                    setPlatformFeePercent(Number(res.data.data.platform_fee_percent));
+                }
+            } catch {
+                if (!cancelled) setPlatformLoadError('Could not load the current platform fee. Refresh to retry.');
+            } finally {
+                if (!cancelled) setLoadingPlatform(false);
+            }
+        })();
+        return () => { cancelled = true; };
+    }, []);
+
+    const handleSavePlatformFee = async (e: React.FormEvent) => {
+        e.preventDefault();
+        setError(null);
+        setSuccess(null);
+        setSavingPlatform(true);
+        try {
+            await apiClient.put('/admin/settings/platform', { platform_fee_percent: platformFeePercent });
+            setSuccess('Platform fee updated.');
+        } catch (err: unknown) {
+            const ax = err as { response?: { data?: { error?: { message?: string } } } };
+            setError(ax.response?.data?.error?.message ?? 'Failed to update platform fee');
+        } finally {
+            setSavingPlatform(false);
+        }
+    };
 
     const handleLogout = async () => {
         await logout();
@@ -151,6 +193,17 @@ export default function AdminSettingsPage() {
                                 <Lock className="mr-2 inline h-4 w-4" />
                                 Password
                             </button>
+                            <button
+                                type="button"
+                                onClick={() => { setActiveTab('platform'); setError(null); setSuccess(null); }}
+                                className={`whitespace-nowrap border-b-2 px-1 py-4 text-sm font-medium ${activeTab === 'platform'
+                                        ? 'border-slate-900 text-slate-900'
+                                        : 'border-transparent text-slate-500 hover:border-slate-300 hover:text-slate-700'
+                                    }`}
+                            >
+                                <Percent className="mr-2 inline h-4 w-4" />
+                                Platform fee
+                            </button>
                         </nav>
                     </div>
 
@@ -231,6 +284,40 @@ export default function AdminSettingsPage() {
                                     {savingPassword ? 'Updating…' : 'Update password'}
                                 </Button>
                             </form>
+                        </div>
+                    )}
+
+                    {activeTab === 'platform' && (
+                        <div className="rounded-lg bg-white p-6 shadow-sm">
+                            <h2 className="text-lg font-semibold text-slate-900">Platform fee</h2>
+                            <p className="mt-1 text-sm text-slate-500">
+                                Percentage of the discounted (student) total that Awoof keeps when payment is processed by Awoof. The rest goes to the vendor.
+                            </p>
+                            {loadingPlatform ? (
+                                <p className="mt-4 text-slate-500">Loading...</p>
+                            ) : (
+                                <form onSubmit={handleSavePlatformFee} className="mt-6 max-w-md space-y-4">
+                                    {platformLoadError && <p className="text-sm text-red-600">{platformLoadError}</p>}
+                                    <div>
+                                        <Label htmlFor="platform_fee">Platform fee (%)</Label>
+                                        <Input
+                                            id="platform_fee"
+                                            type="number"
+                                            min={0}
+                                            max={100}
+                                            step={0.5}
+                                            value={platformFeePercent}
+                                            onChange={(e) => setPlatformFeePercent(Number(e.target.value))}
+                                            className="mt-1 w-32"
+                                            disabled={Boolean(platformLoadError)}
+                                        />
+                                    </div>
+                                    <Button type="submit" disabled={savingPlatform || Boolean(platformLoadError)}>
+                                        <Save className="mr-2 h-4 w-4" />
+                                        {savingPlatform ? 'Saving…' : 'Save'}
+                                    </Button>
+                                </form>
+                            )}
                         </div>
                     )}
                 </div>

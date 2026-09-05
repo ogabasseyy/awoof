@@ -23,6 +23,15 @@ if (!process.env.BREVO_API_KEY) {
 
 const apiInstance = new SibApiV3Sdk.TransactionalEmailsApi();
 
+function escapeHtml(value: string): string {
+    return value
+        .replaceAll('&', '&amp;')
+        .replaceAll('<', '&lt;')
+        .replaceAll('>', '&gt;')
+        .replaceAll('"', '&quot;')
+        .replaceAll("'", '&#39;');
+}
+
 /**
  * Send email with retry logic
  */
@@ -172,3 +181,106 @@ export const sendWelcomeEmail = async (
     return await sendEmail(email, subject, html);
 };
 
+
+function supportShell(title: string, bodyHtml: string): string {
+    return `
+        <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
+            <div style="background-color: #1D4ED8; padding: 20px; text-align: center;">
+                <h1 style="color: #FFFFFF; margin: 0;">Awoof</h1>
+            </div>
+            <div style="padding: 30px; background-color: #f9f9f9;">
+                <h2 style="color: #1D4ED8;">${title}</h2>
+                ${bodyHtml}
+            </div>
+            <div style="background-color: #1D4ED8; padding: 20px; text-align: center; color: #FFFFFF;">
+                <p style="margin: 0;">© Awoof. All rights reserved.</p>
+            </div>
+        </div>
+    `;
+}
+
+function ticketLink(ticketId: string, role: string): string {
+    const base = process.env.FRONTEND_URL || 'http://localhost:3000';
+    if (role === 'admin') return `${base}/admin/support/${ticketId}`;
+    if (role === 'vendor') return `${base}/vendor/support/${ticketId}`;
+    return `${base}/student/profile/support/${ticketId}`;
+}
+
+export const sendSupportTicketCreatedEmail = async (
+    email: string,
+    subject: string,
+    requesterRole: string,
+    ticketId: string
+) => {
+    const html = supportShell(
+        'New support ticket',
+        `<p>A new <strong>${escapeHtml(requesterRole)}</strong> ticket was opened.</p>
+         <p><strong>${escapeHtml(subject)}</strong></p>
+         <p><a href="${ticketLink(ticketId, 'admin')}" style="color:#1D4ED8;">Open in admin</a></p>`
+    );
+    return sendEmail(email, `[Support] ${subject}`, html);
+};
+
+export const sendSupportTicketReplyEmail = async (
+    email: string,
+    ticketSubject: string,
+    replyPreview: string,
+    ticketId: string,
+    viewerRole: string
+) => {
+    const preview = replyPreview.length > 280 ? `${replyPreview.slice(0, 280)}…` : replyPreview;
+    const html = supportShell(
+        'New reply on your ticket',
+        `<p>Ticket: <strong>${escapeHtml(ticketSubject)}</strong></p>
+         <p style="white-space:pre-wrap;">${escapeHtml(preview)}</p>
+         <p><a href="${ticketLink(ticketId, viewerRole)}" style="color:#1D4ED8;">View conversation</a></p>`
+    );
+    return sendEmail(email, `Re: ${ticketSubject}`, html);
+};
+
+export const sendSupportTicketStatusEmail = async (
+    email: string,
+    ticketSubject: string,
+    status: string,
+    ticketId: string,
+    viewerRole: string
+) => {
+    const html = supportShell(
+        'Ticket status updated',
+        `<p>Your ticket <strong>${escapeHtml(ticketSubject)}</strong> is now <strong>${escapeHtml(status)}</strong>.</p>
+         <p><a href="${ticketLink(ticketId, viewerRole)}" style="color:#1D4ED8;">View ticket</a></p>`
+    );
+    return sendEmail(email, `Ticket ${status}: ${ticketSubject}`, html);
+};
+
+export const sendPurchaseConfirmationEmail = async (
+    email: string,
+    productName: string,
+    amount: number,
+    transactionId: string
+) => {
+    const base = process.env.FRONTEND_URL || 'http://localhost:3000';
+    const html = supportShell(
+        'Purchase confirmed',
+        `<p>Your purchase of <strong>${escapeHtml(productName)}</strong> for <strong>₦${amount.toLocaleString()}</strong> is confirmed.</p>
+         <p>Reference: ${transactionId}</p>
+         <p><a href="${base}/student/profile/receipts" style="color:#1D4ED8;">View receipts</a></p>`
+    );
+    return sendEmail(email, `Receipt: ${productName}`, html);
+};
+
+export const sendVendorNewOrderEmail = async (
+    email: string,
+    productName: string,
+    amount: number,
+    transactionId: string
+) => {
+    const base = process.env.FRONTEND_URL || 'http://localhost:3000';
+    const html = supportShell(
+        'New marketplace order',
+        `<p>You received an order for <strong>${escapeHtml(productName)}</strong> (₦${amount.toLocaleString()}).</p>
+         <p>Reference: ${transactionId}</p>
+         <p><a href="${base}/vendor/orders" style="color:#1D4ED8;">View orders</a></p>`
+    );
+    return sendEmail(email, `New order: ${productName}`, html);
+};

@@ -4,38 +4,51 @@
 name: Deploy to VPS
 
 on:
-  push:
-    branches:
-      - main
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
   workflow_dispatch: # Allow manual run from Actions tab
+
+permissions:
+  contents: read
 
 jobs:
   deploy:
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event.workflow_run.conclusion == 'success' &&
+       github.event.workflow_run.event == 'push' &&
+       github.event.workflow_run.head_branch == 'main' &&
+       github.event.workflow_run.head_repository.full_name == github.repository)
     runs-on: ubuntu-latest
     env:
       VPS_HOST: ${{ secrets.VPS_HOST }}
       VPS_USER: ${{ secrets.VPS_USER }}
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
 
       - name: Set VPS connection defaults
         id: vps
         run: |
-          echo "host=${VPS_HOST:-82.29.190.219}" >> $GITHUB_OUTPUT
-          echo "user=${VPS_USER:-developer}" >> $GITHUB_OUTPUT
+          echo "host=${VPS_HOST:-82.29.190.219}" >> "$GITHUB_OUTPUT"
+          echo "user=${VPS_USER:-developer}" >> "$GITHUB_OUTPUT"
 
       - name: Setup SSH
         run: |
+          test -n "${{ secrets.VPS_KNOWN_HOSTS }}" || { echo "VPS_KNOWN_HOSTS is required" >&2; exit 1; }
           mkdir -p ~/.ssh
           echo "${{ secrets.VPS_SSH_KEY }}" > ~/.ssh/deploy_key
           chmod 600 ~/.ssh/deploy_key
-          ssh-keyscan -H ${{ steps.vps.outputs.host }} >> ~/.ssh/known_hosts 2>/dev/null || true
+          printf '%s\n' "${{ secrets.VPS_KNOWN_HOSTS }}" > ~/.ssh/known_hosts
+          chmod 600 ~/.ssh/known_hosts
 
       - name: Sync files to VPS
         run: |
           rsync -avz --delete \
-            -e "ssh -i ~/.ssh/deploy_key -o StrictHostKeyChecking=no -o ServerAliveInterval=60 -o ServerAliveCountMax=10" \
+            -e "ssh -i ~/.ssh/deploy_key -o StrictHostKeyChecking=yes -o ServerAliveInterval=60 -o ServerAliveCountMax=10" \
             --exclude 'node_modules' \
             --exclude 'apps/*/node_modules' \
             --exclude 'packages/node_modules' \
@@ -44,18 +57,26 @@ jobs:
             --exclude '.git/objects' \
             --exclude '*.log' \
             --exclude '.env' \
+            --exclude 'backups' \
             ./ ${{ steps.vps.outputs.user }}@${{ steps.vps.outputs.host }}:~/awoof/
+
+      - name: Back up production database
+        timeout-minutes: 15
+        run: |
+          ssh -i ~/.ssh/deploy_key -o StrictHostKeyChecking=yes -o ServerAliveInterval=60 -o ServerAliveCountMax=10 \
+            ${{ steps.vps.outputs.user }}@${{ steps.vps.outputs.host }} \
+            "cd ~/awoof && timeout --signal=TERM --kill-after=30s 12m sg docker -c './scripts/backup-awoof-postgres.sh'"
 
       - name: Build and start containers on VPS
         timeout-minutes: 15
         run: |
-          ssh -i ~/.ssh/deploy_key -o StrictHostKeyChecking=no -o ServerAliveInterval=60 -o ServerAliveCountMax=10 \
+          ssh -i ~/.ssh/deploy_key -o StrictHostKeyChecking=yes -o ServerAliveInterval=60 -o ServerAliveCountMax=10 \
             ${{ steps.vps.outputs.user }}@${{ steps.vps.outputs.host }} \
             "cd ~/awoof && sg docker -c 'docker compose -f docker-compose.hostinger.yml up -d --build'"
 
       - name: Verify deployment
         run: |
           sleep 15
-          ssh -i ~/.ssh/deploy_key -o StrictHostKeyChecking=no -o ServerAliveInterval=60 -o ServerAliveCountMax=10 \
+          ssh -i ~/.ssh/deploy_key -o StrictHostKeyChecking=yes -o ServerAliveInterval=60 -o ServerAliveCountMax=10 \
             ${{ steps.vps.outputs.user }}@${{ steps.vps.outputs.host }} \
             "sg docker -c 'cd ~/awoof && docker compose -f docker-compose.hostinger.yml ps'"

@@ -9,6 +9,7 @@ import { useForm } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { z } from 'zod';
 import apiClient from '@/lib/api-client';
+import { AuthShell } from '@/components/auth/AuthShell';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
@@ -48,73 +49,57 @@ export default function ForgotPasswordPage() {
 
     if (success) {
         return (
-            <div className="min-h-screen flex items-center justify-center bg-gray-50 px-4">
-                <div className="w-full max-w-md">
-                    <div className="bg-white rounded-lg shadow-md p-8 text-center">
-                        <div className="mb-4">
-                            <div className="mx-auto w-12 h-12 bg-green-100 rounded-full flex items-center justify-center">
-                                <svg className="w-6 h-6 text-green-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
-                                </svg>
-                            </div>
-                        </div>
-                        <h1 className="text-2xl font-bold mb-2">Check Your Email</h1>
-                        <p className="text-gray-600 mb-6">
-                            We&apos;ve sent a password reset OTP to your email address.
-                        </p>
-                        <Link href="/auth/reset-password">
-                            <Button className="w-full">Enter OTP</Button>
-                        </Link>
-                    </div>
-                </div>
-            </div>
+            <AuthShell
+                role="generic"
+                title="Check Your Email"
+                subtitle="We've sent a password reset OTP to your email address."
+            >
+                <Link href="/auth/reset-password">
+                    <Button className="w-full rounded-full h-11 font-semibold">Enter OTP</Button>
+                </Link>
+            </AuthShell>
         );
     }
 
     return (
-        <div className="min-h-screen flex items-center justify-center bg-gray-50 px-4">
-            <div className="w-full max-w-md">
-                <div className="bg-white rounded-lg shadow-md p-8">
-                    <h1 className="text-2xl font-bold text-center mb-6">Forgot Password</h1>
-                    <p className="text-center text-gray-600 mb-6">
-                        Enter your email address and we&apos;ll send you an OTP to reset your password.
-                    </p>
-
-                    {error && (
-                        <div className="mb-4 p-3 bg-red-50 border border-red-200 text-red-700 rounded-md text-sm">
-                            {error}
-                        </div>
-                    )}
-
-                    <form onSubmit={handleSubmit(onSubmit)} className="space-y-4">
-                        <div>
-                            <Label htmlFor="email">Email</Label>
-                            <Input
-                                id="email"
-                                type="email"
-                                placeholder="you@example.com"
-                                {...register('email')}
-                                aria-invalid={errors.email ? 'true' : 'false'}
-                            />
-                            {errors.email && (
-                                <p className="mt-1 text-sm text-red-600">{errors.email.message}</p>
-                            )}
-                        </div>
-
-                        <Button type="submit" className="w-full" disabled={isLoading}>
-                            {isLoading ? 'Sending...' : 'Send OTP'}
-                        </Button>
-                    </form>
-
-                    <p className="mt-6 text-center text-sm text-gray-600">
-                        Remember your password?{' '}
-                        <Link href="/auth/login" className="text-primary hover:underline font-medium">
-                            Sign in
-                        </Link>
-                    </p>
+        <AuthShell
+            role="generic"
+            title="Forgot Password"
+            subtitle="Enter your email address and we'll send you an OTP to reset your password."
+            footer={
+                <p className="text-center text-sm text-slate-600">
+                    Remember your password?{' '}
+                    <Link href="/auth/login" className="text-primary hover:underline font-medium">
+                        Sign in
+                    </Link>
+                </p>
+            }
+        >
+            {error && (
+                <div className="mb-4 p-3 bg-red-50 border border-red-200 text-red-700 rounded-xl text-sm">
+                    {error}
                 </div>
-            </div>
-        </div>
+            )}
+
+            <form onSubmit={handleSubmit(onSubmit)} className="space-y-4">
+                <div>
+                    <Label htmlFor="email">Email</Label>
+                    <Input
+                        id="email"
+                        type="email"
+                        placeholder="you@example.com"
+                        {...register('email')}
+                        aria-invalid={errors.email ? 'true' : 'false'}
+                    />
+                    {errors.email && (
+                        <p className="mt-1 text-sm text-red-600">{errors.email.message}</p>
+                    )}
+                </div>
+
+                <Button type="submit" className="w-full rounded-full h-11 font-semibold" disabled={isLoading}>
+                    {isLoading ? 'Sending...' : 'Send OTP'}
+                </Button>
+            </form>
+        </AuthShell>
     );
 }
-

@@ -11,6 +11,7 @@ node_modules/
 # Testing
 coverage/
 *.log
+backups/
 
 # Environment variables
 .env
@@ -44,6 +45,9 @@ Thumbs.db
 *.tmp
 *.temp
 .cache/
+vps-snapshot/
+compare-with-vps.sh
+trigger-vps-build.sh
 
 # Uploads (user-generated content)
 apps/backend/uploads/
@@ -73,4 +77,3 @@ SECURITY_MEASURES.md
 apps/web/**/*.md
 apps/backend/**/*.md
 apps/widget/**/*.md
-

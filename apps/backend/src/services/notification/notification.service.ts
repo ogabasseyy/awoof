@@ -1,80 +1,56 @@
 /**
- * Notification Service
- * 
- * Handles creation and management of notifications for students
+ * Notification Service — user-scoped in-app notifications
  */
 
 import { db } from '../../config/database.js';
 
 export type NotificationType = 'info' | 'success' | 'warning' | 'error';
 
-export interface CreateNotificationParams {
-    studentId: string;
+export interface NotifyParams {
     title: string;
     message: string;
     type?: NotificationType;
+    kind?: string;
     metadata?: Record<string, unknown>;
 }
 
-/**
- * Notification Service
- */
 export class NotificationService {
-    /**
-     * Create a notification for a student
-     */
-    public static async createNotification(params: CreateNotificationParams): Promise<void> {
-        const { studentId, title, message, type = 'info', metadata } = params;
-
+    public static async notifyUser(userId: string, params: NotifyParams): Promise<void> {
+        const { title, message, type = 'info', kind, metadata } = params;
         await db.query(
-            `INSERT INTO notifications (
-                student_id,
+            `INSERT INTO notifications (user_id, title, message, type, kind, metadata)
+             VALUES ($1, $2, $3, $4, $5, $6)`,
+            [
+                userId,
                 title,
                 message,
                 type,
-                metadata
-            ) VALUES ($1, $2, $3, $4, $5)`,
-            [studentId, title, message, type, metadata ? JSON.stringify(metadata) : null]
+                kind ?? null,
+                metadata ? JSON.stringify(metadata) : null,
+            ]
         );
     }
 
-    /**
-     * Create notifications for multiple students
-     */
-    public static async createBulkNotifications(
-        studentIds: string[],
-        title: string,
-        message: string,
-        type: NotificationType = 'info',
-        metadata?: Record<string, unknown>
+    public static async notifyMany(userIds: string[], params: NotifyParams): Promise<void> {
+        const unique = [...new Set(userIds.filter(Boolean))];
+        for (const userId of unique) {
+            await this.notifyUser(userId, params);
+        }
+    }
+
+    /** Resolve student profile id → user id, then notify */
+    public static async notifyStudentByProfileId(
+        studentId: string,
+        params: NotifyParams
     ): Promise<void> {
-        if (studentIds.length === 0) return;
-
-        const values = studentIds.map((_, index) => {
-            const baseIndex = index * 5;
-            return `($${baseIndex + 1}, $${baseIndex + 2}, $${baseIndex + 3}, $${baseIndex + 4}, $${baseIndex + 5})`;
-        }).join(', ');
-
-        const params: (string | null)[] = [];
-        studentIds.forEach(studentId => {
-            params.push(studentId, title, message, type, metadata ? JSON.stringify(metadata) : null);
-        });
-
-        await db.query(
-            `INSERT INTO notifications (
-                student_id,
-                title,
-                message,
-                type,
-                metadata
-            ) VALUES ${values}`,
-            params
+        const result = await db.query(
+            `SELECT user_id FROM students WHERE id = $1`,
+            [studentId]
         );
+        if (result.rows.length === 0) return;
+        await this.notifyUser(result.rows[0].user_id, params);
     }
 
-    /**
-     * Create notification for purchase confirmation
-     */
     public static async notifyPurchaseConfirmation(
         studentId: string,
         productName: string,
@@ -82,101 +58,75 @@ export class NotificationService {
         discount: number,
         transactionId: string
     ): Promise<void> {
-        await this.createNotification({
-            studentId,
-            title: 'Purchase Confirmed',
-            message: `Your purchase of ${productName} has been confirmed. Receipt sent to your email.`,
+        await this.notifyStudentByProfileId(studentId, {
+            title: 'Purchase confirmed',
+            message: `Your purchase of ${productName} is confirmed. Receipt sent to your email.`,
             type: 'success',
-            metadata: {
-                transactionId,
-                productName,
-                amount,
-                discount,
-            },
+            kind: 'purchase',
+            metadata: { transactionId, productName, amount, discount },
         });
     }
 
-    /**
-     * Create notification for savings milestone
-     */
     public static async notifySavingsMilestone(
         studentId: string,
         totalSavings: number
     ): Promise<void> {
-        // Define milestone thresholds
         const milestones = [1000, 5000, 10000, 25000, 50000, 100000];
-        const milestone = milestones.find(m => totalSavings >= m && totalSavings < m * 2);
-
-        if (milestone) {
-            await this.createNotification({
-                studentId,
-                title: 'Savings Milestone',
-                message: `Congratulations! You have saved over ₦${milestone.toLocaleString()}`,
-                type: 'success',
-                metadata: {
-                    milestone,
-                    totalSavings,
-                },
-            });
-        }
+        const milestone = milestones.filter((m) => totalSavings >= m).at(-1);
+        if (!milestone) return;
+        // Claim and publish atomically: concurrent purchases and outbox retries
+        // must not announce the same milestone twice, even if an inbox is cleared.
+        await db.query(
+            `WITH claimed AS (
+                INSERT INTO savings_milestones (user_id, milestone)
+                SELECT user_id, $2 FROM students WHERE id = $1
+                ON CONFLICT (user_id, milestone) DO NOTHING
+                RETURNING user_id
+             )
+             INSERT INTO notifications (user_id, title, message, type, kind, metadata)
+             SELECT user_id, 'Savings milestone', $3, 'success', 'savings', $4
+             FROM claimed`,
+            [studentId, milestone,
+                `Congratulations! You have saved over ₦${milestone.toLocaleString()}`,
+                JSON.stringify({ milestone, totalSavings })]
+        );
     }
 
-    /**
-     * Create notification for new deal/product
-     */
-    public static async notifyNewDeal(
-        studentId: string,
-        productName: string,
-        categoryName: string,
-        productId: string
-    ): Promise<void> {
-        await this.createNotification({
-            studentId,
-            title: 'New Deal Available',
-            message: `A new discount is available for ${categoryName} category`,
-            type: 'info',
-            metadata: {
-                productId,
-                productName,
-                categoryName,
-            },
-        });
-    }
-
-    /**
-     * Create notification for verification success
-     */
-    public static async notifyVerificationSuccess(
-        studentId: string
-    ): Promise<void> {
-        await this.createNotification({
-            studentId,
-            title: 'Verification Successful',
+    public static async notifyVerificationSuccess(studentId: string): Promise<void> {
+        await this.notifyStudentByProfileId(studentId, {
+            title: 'Verification successful',
             message: 'Your student verification has been completed successfully!',
             type: 'success',
+            kind: 'verification',
+            metadata: { event: 'verification_success' },
+        });
+    }
+
+    public static async notifyVendorNewOrder(params: {
+        vendorUserId: string;
+        productName: string;
+        amount: number;
+        transactionId: string;
+    }): Promise<void> {
+        await this.notifyUser(params.vendorUserId, {
+            title: 'New order',
+            message: `${params.productName} — ₦${params.amount.toLocaleString()}`,
+            type: 'success',
+            kind: 'order',
             metadata: {
-                event: 'verification_success',
+                transactionId: params.transactionId,
+                productName: params.productName,
+                amount: params.amount,
             },
         });
     }
 
-    /**
-     * Create notification for support ticket response
-     */
-    public static async notifySupportTicketResponse(
-        studentId: string,
-        ticketId: string,
-        ticketSubject: string
-    ): Promise<void> {
-        await this.createNotification({
-            studentId,
-            title: 'Support Ticket Update',
-            message: `You have a new response on your ticket: ${ticketSubject}`,
-            type: 'info',
-            metadata: {
-                ticketId,
-                ticketSubject,
-            },
+    public static async notifyVendorPayoutEnabled(vendorUserId: string): Promise<void> {
+        await this.notifyUser(vendorUserId, {
+            title: 'Split payments enabled',
+            message: 'Your payout account is set. Marketplace sales can split to your bank via Paystack.',
+            type: 'success',
+            kind: 'payout',
         });
     }
 }
