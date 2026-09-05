@@ -7,8 +7,10 @@
  */
 
 import type { Request, Response, NextFunction } from 'express';
+import crypto from 'crypto';
 import { jwtService } from '../services/auth/jwt.service.js';
 import { UnauthorizedError } from '../common/errors/AppError.js';
+import { db } from '../config/database.js';
 
 /**
  * Extended Express Request with user data
@@ -77,5 +79,51 @@ export const requireRole = (...allowedRoles: string[]) => {
 
         next();
     };
+};
+
+/**
+ * Vendor JWT or hashed reporting API key (`awoof_...`).
+ */
+export const authenticateVendorJwtOrApiKey = async (
+    req: AuthRequest,
+    res: Response,
+    next: NextFunction
+): Promise<void> => {
+    const token = getBearerToken(req);
+    if (!token.startsWith('awoof_')) {
+        authenticate(req, res, next);
+        return;
+    }
+
+    try {
+        const keys = await db.query(
+            `SELECT k.key_hash, v.user_id, u.email
+             FROM api_keys k
+             JOIN vendors v ON v.id = k.vendor_id
+             JOIN users u ON u.id = v.user_id
+             WHERE k.status = 'active'
+               AND v.deleted_at IS NULL
+               AND (k.expires_at IS NULL OR k.expires_at > CURRENT_TIMESTAMP)`
+        );
+        for (const row of keys.rows) {
+            const [hashHex, saltHex] = String(row.key_hash).split(':');
+            if (!hashHex || !saltHex) continue;
+            const computed = crypto.pbkdf2Sync(token, Buffer.from(saltHex, 'hex'), 100000, 32, 'sha256');
+            const expected = Buffer.from(hashHex, 'hex');
+            if (computed.length === expected.length && crypto.timingSafeEqual(computed, expected)) {
+                req.user = {
+                    id: row.user_id,
+                    userId: row.user_id,
+                    email: row.email,
+                    role: 'vendor',
+                };
+                next();
+                return;
+            }
+        }
+        next(new UnauthorizedError('Authentication failed'));
+    } catch (error) {
+        next(error);
+    }
 };
 

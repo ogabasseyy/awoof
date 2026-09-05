@@ -6,7 +6,7 @@
 
 import { Router } from 'express';
 import { asyncHandler } from '../common/middleware/errorHandler.js';
-import { authenticate } from '../middleware/auth.middleware.js';
+import { authenticate, authenticateVendorJwtOrApiKey } from '../middleware/auth.middleware.js';
 import { VendorController } from '../controllers/vendor.controller.js';
 import { ProductController } from '../controllers/product.controller.js';
 import { OrderController } from '../controllers/order.controller.js';
@@ -317,7 +317,7 @@ router.put(
  */
 router.post(
     '/transactions/report',
-    authenticate, // TODO: Add API key authentication middleware
+    authenticateVendorJwtOrApiKey,
     asyncHandler(paymentController.reportTransaction.bind(paymentController))
 );
 

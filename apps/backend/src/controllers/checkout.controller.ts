@@ -176,7 +176,7 @@ export class CheckoutController {
         const tx = result.rows[0];
 
         // If webhook hasn't arrived yet, confirm with Paystack and complete (local/tunnel gaps)
-        if (tx.status === 'pending' && tx.paystack_reference) {
+        if ((tx.status === 'pending' || tx.status === 'failed') && tx.paystack_reference) {
             const verified = await verifyPaystackPayment(tx.paystack_reference);
             if (verified.verified && verified.amount != null) {
                 await completeMarketplaceTransaction(tx.paystack_reference, verified.amount);

@@ -15,6 +15,11 @@ case "$max_files:$minimum_free_percent" in
     *[!0-9:]*|:*|*:) echo "Backup limits must be positive integers." >&2; exit 1 ;;
 esac
 
+if [ "$max_files" -lt 1 ] || [ "$minimum_free_percent" -lt 1 ]; then
+    echo "Backup limits must be positive integers." >&2
+    exit 1
+fi
+
 available_percent="$(df -Pk "$backup_dir" | awk 'NR == 2 { print int(($4 * 100) / $2) }')"
 if [ "$available_percent" -lt "$minimum_free_percent" ]; then
     echo "Only ${available_percent}% disk space is free; at least ${minimum_free_percent}% is required." >&2
