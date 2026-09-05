@@ -276,14 +276,9 @@ function WidgetVerifyContent() {
                                 </Button>
                             )}
                             {methods.length === 0 && (
-                                <>
-                                    <Button variant="outline" className="w-full" onClick={() => setStep('reg')}>
-                                        Registration number
-                                    </Button>
-                                    <Button variant="outline" className="w-full" onClick={() => setStep('whatsapp_request')}>
-                                        WhatsApp OTP
-                                    </Button>
-                                </>
+                                <p className="text-sm text-slate-600">
+                                    No verification methods are available for this university yet. Ask the vendor to use a university with a configured method, or try again later.
+                                </p>
                             )}
                         </div>
                     </>

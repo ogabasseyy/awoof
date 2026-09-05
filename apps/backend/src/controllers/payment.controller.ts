@@ -555,6 +555,7 @@ export class PaymentController {
         const hashHex = crypto.pbkdf2Sync(apiKey, salt, 100000, 32, 'sha256').toString('hex');
         const saltHex = salt.toString('hex');
         const keyHashStored = `${hashHex}:${saltHex}`;
+        const lookupHash = crypto.createHash('sha256').update(apiKey).digest('hex');
 
         // If there's an existing key, revoke it
         if (existingKeyResult.rows.length > 0) {
@@ -568,9 +569,9 @@ export class PaymentController {
 
         // Create new API key (key_hash stores "hash:salt" for verification)
         await db.query(
-            `INSERT INTO api_keys (vendor_id, key_hash, name, rate_limit, status)
-             VALUES ($1, $2, $3, $4, 'active')`,
-            [vendorId, keyHashStored, 'Transaction Reporting API Key', 1000]
+            `INSERT INTO api_keys (vendor_id, key_hash, lookup_hash, name, rate_limit, status)
+             VALUES ($1, $2, $3, $4, $5, 'active')`,
+            [vendorId, keyHashStored, lookupHash, 'Transaction Reporting API Key', 1000]
         );
 
         // Return the API key (only shown once)
@@ -652,7 +653,8 @@ export class PaymentController {
 
         // Get vendor ID
         const vendorResult = await db.query(
-            'SELECT id FROM vendors WHERE user_id = $1 AND deleted_at IS NULL',
+            `SELECT id FROM vendors
+             WHERE user_id = $1 AND deleted_at IS NULL AND status = 'active'`,
             [req.user?.userId]
         );
 

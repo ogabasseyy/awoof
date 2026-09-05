@@ -40,7 +40,8 @@ export class CheckoutController {
             `SELECT s.id, u.email, u.verification_status
              FROM students s
              JOIN users u ON u.id = s.user_id
-             WHERE s.user_id = $1 AND u.deleted_at IS NULL`,
+             WHERE s.user_id = $1 AND u.deleted_at IS NULL
+               AND (s.status IS NULL OR s.status = 'active')`,
             [req.user.userId]
         );
 

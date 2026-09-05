@@ -102,26 +102,40 @@ export const authenticateVendorJwtOrApiKey = async (
              JOIN vendors v ON v.id = k.vendor_id
              JOIN users u ON u.id = v.user_id
              WHERE k.status = 'active'
+               AND k.lookup_hash = $1
                AND v.deleted_at IS NULL
-               AND (k.expires_at IS NULL OR k.expires_at > CURRENT_TIMESTAMP)`
+               AND v.status = 'active'
+               AND (k.expires_at IS NULL OR k.expires_at > CURRENT_TIMESTAMP)`,
+            [crypto.createHash('sha256').update(token).digest('hex')]
         );
-        for (const row of keys.rows) {
-            const [hashHex, saltHex] = String(row.key_hash).split(':');
-            if (!hashHex || !saltHex) continue;
-            const computed = crypto.pbkdf2Sync(token, Buffer.from(saltHex, 'hex'), 100000, 32, 'sha256');
-            const expected = Buffer.from(hashHex, 'hex');
-            if (computed.length === expected.length && crypto.timingSafeEqual(computed, expected)) {
-                req.user = {
-                    id: row.user_id,
-                    userId: row.user_id,
-                    email: row.email,
-                    role: 'vendor',
-                };
-                next();
-                return;
-            }
+        if (keys.rows.length !== 1) {
+            next(new UnauthorizedError('Authentication failed'));
+            return;
         }
-        next(new UnauthorizedError('Authentication failed'));
+        const row = keys.rows[0];
+        const [hashHex, saltHex] = String(row.key_hash).split(':');
+        if (!hashHex || !saltHex) {
+            next(new UnauthorizedError('Authentication failed'));
+            return;
+        }
+        const computed = await new Promise<Buffer>((resolve, reject) => {
+            crypto.pbkdf2(token, Buffer.from(saltHex, 'hex'), 100000, 32, 'sha256', (err, derived) => {
+                if (err) reject(err);
+                else resolve(derived);
+            });
+        });
+        const expected = Buffer.from(hashHex, 'hex');
+        if (computed.length !== expected.length || !crypto.timingSafeEqual(computed, expected)) {
+            next(new UnauthorizedError('Authentication failed'));
+            return;
+        }
+        req.user = {
+            id: row.user_id,
+            userId: row.user_id,
+            email: row.email,
+            role: 'vendor',
+        };
+        next();
     } catch (error) {
         next(error);
     }
