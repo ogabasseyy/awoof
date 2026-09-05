@@ -66,7 +66,7 @@ function WidgetVerifyContent() {
         setLoading(true);
         setError(null);
         try {
-            const res = await apiClient.get(`/verification/methods/${universityId}`);
+            const res = await publicApiClient.get(`/verification/methods/${universityId}`);
             const list = res.data?.data?.methods ?? res.data?.methods ?? [];
             setMethods(Array.isArray(list) ? list : []);
             setStep('method');

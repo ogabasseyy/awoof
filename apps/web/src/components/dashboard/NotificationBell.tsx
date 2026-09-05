@@ -4,6 +4,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import Link from 'next/link';
 import { Bell } from 'lucide-react';
 import { useAuth } from '@/contexts/AuthContext';
+import apiClient from '@/lib/api-client';
 
 interface BellNotification {
     id: string;
