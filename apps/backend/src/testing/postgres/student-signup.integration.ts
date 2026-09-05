@@ -68,17 +68,105 @@ async function withPool(operation: (pool: pg.Pool) => Promise<void>): Promise<vo
     }
 }
 
-async function waitForBlockingBackend(observer: pg.Pool, label: string): Promise<void> {
-    for (let attempt = 0; attempt < 100; attempt += 1) {
-        const blocked = await observer.query<{ pids: number[] }>(
-            `SELECT pg_blocking_pids(pid) AS pids
-             FROM pg_stat_activity
-             WHERE datname = current_database() AND pid <> pg_backend_pid()`,
-        );
-        if (blocked.rows.some((row) => row.pids.length > 0)) return;
+type SignupRows = {
+    budgets: string;
+    challenges: string;
+    users: string;
+    students: string;
+    grants: string;
+    proofs: string;
+    evidence: string;
+};
+
+async function readSignupRows(pool: pg.Pool, email: string): Promise<SignupRows> {
+    const subjectDigest = challengeSubjectDigest('student_signup', email);
+    const result = await pool.query<SignupRows>(
+        `SELECT (SELECT count(*) FROM verification_challenge_budgets
+                 WHERE purpose = 'student_signup' AND subject_digest = $1) AS budgets,
+                (SELECT count(*) FROM verification_challenges
+                 WHERE purpose = 'student_signup' AND subject_digest = $1) AS challenges,
+                (SELECT count(*) FROM users WHERE lower(btrim(email)) = $2) AS users,
+                (SELECT count(*) FROM students
+                 JOIN users ON users.id = students.user_id
+                 WHERE lower(btrim(users.email)) = $2) AS students,
+                (SELECT count(*) FROM verification_consents
+                 JOIN users ON users.id = verification_consents.user_id
+                 WHERE lower(btrim(users.email)) = $2) AS grants,
+                (SELECT count(*) FROM user_email_proofs
+                 JOIN users ON users.id = user_email_proofs.user_id
+                 WHERE lower(btrim(users.email)) = $2) AS proofs,
+                (SELECT count(*) FROM eligibility_evidence
+                 JOIN students ON students.id = eligibility_evidence.student_id
+                 JOIN users ON users.id = students.user_id
+                 WHERE lower(btrim(users.email)) = $2) AS evidence`,
+        [subjectDigest, email],
+    );
+    return result.rows[0]!;
+}
+
+async function assertNoSignupRows(pool: pg.Pool, email: string): Promise<void> {
+    assert.deepEqual(await readSignupRows(pool, email), {
+        budgets: '0', challenges: '0', users: '0', students: '0', grants: '0', proofs: '0', evidence: '0',
+    });
+}
+
+async function assertNoSignupAuthority(pool: pg.Pool, email: string): Promise<void> {
+    const rows = await readSignupRows(pool, email);
+    assert.deepEqual(
+        { users: rows.users, students: rows.students, grants: rows.grants, proofs: rows.proofs, evidence: rows.evidence },
+        { users: '0', students: '0', grants: '0', proofs: '0', evidence: '0' },
+    );
+}
+
+async function waitFor(label: string, predicate: () => Promise<boolean>, timeoutMs = 5_000): Promise<void> {
+    const deadline = Date.now() + timeoutMs;
+    do {
+        if (await predicate()) return;
         await delay(10);
-    }
-    throw new Error(`Expected PostgreSQL blocking for ${label}`);
+    } while (Date.now() < deadline);
+    throw new Error(`Timed out waiting for ${label}`);
+}
+
+function settle<T>(operation: Promise<T>): Promise<PromiseSettledResult<T>> {
+    return operation.then(
+        (value) => ({ status: 'fulfilled', value }),
+        (reason) => ({ status: 'rejected', reason }),
+    );
+}
+
+function trackedSignupPool(pool: pg.Pool): { pool: Pick<pg.Pool, 'connect'>; pids: number[] } {
+    const pids: number[] = [];
+    return {
+        pids,
+        pool: {
+            connect: async () => {
+                const client = await pool.connect();
+                const pid = await client.query<{ pid: number }>('SELECT pg_backend_pid() AS pid');
+                pids.push(pid.rows[0]!.pid);
+                return client;
+            },
+        },
+    };
+}
+
+async function waitForAdvisoryWait(observer: pg.Pool, pid: number): Promise<void> {
+    await waitFor(`winner PID ${pid} to reach the fixture barrier`, async () => {
+        const status = await observer.query<{ wait_event_type: string | null; wait_event: string | null }>(
+            'SELECT wait_event_type, wait_event FROM pg_stat_activity WHERE pid = $1',
+            [pid],
+        );
+        return status.rows[0]?.wait_event_type === 'Lock' && status.rows[0]?.wait_event === 'advisory';
+    });
+}
+
+async function waitForExactBlockingPid(observer: pg.Pool, contenderPid: number, winnerPid: number): Promise<void> {
+    await waitFor(`contender PID ${contenderPid} to block behind winner PID ${winnerPid}`, async () => {
+        const blocked = await observer.query<{ pids: number[] }>(
+            'SELECT pg_blocking_pids($1) AS pids',
+            [contenderPid],
+        );
+        return blocked.rows[0]?.pids.map(Number).includes(winnerPid) ?? false;
+    });
 }
 
 async function withHttpServer(controller: AuthController, operation: (baseUrl: string) => Promise<void>): Promise<void> {
@@ -131,8 +219,9 @@ test('request records only an immutable signup challenge and wrong confirmation 
         );
         assert.deepEqual(before.rows[0], { users: '0', proofs: '0', evidence: '0' });
 
+        const wrongOtp = delivered[0]?.code === '000000' ? '000001' : '000000';
         await assert.rejects(
-            service.confirm({ ...requestInput(fixture), challengeId: request.challengeId, otp: '000000', password: 'StrongPass123!' }),
+            service.confirm({ ...requestInput(fixture), challengeId: request.challengeId, otp: wrongOtp, password: 'StrongPass123!' }),
             UnauthorizedError,
         );
         const after = await pool.query<{ failed_attempts: number; users: string; grants: string; proofs: string; evidence: string }>(
@@ -318,7 +407,78 @@ test('rejects existing normalized and soft-deleted identities without issuing a 
     });
 });
 
-test('does not issue a challenge when mail is unconfigured and retains delivery-failed cooldown without leaking transport detail', async () => {
+test('rejects unsupported exact, website, general-domain, and inactive-policy requests before creating signup rows', async () => {
+    await withPool(async (pool) => {
+        const client = await pool.connect();
+        const fixture = await createFixture(client);
+        client.release();
+        const service = createStudentSignupService({ pool, isEmailConfigured: () => true, deliverOtp: async () => ({ success: true }) });
+        const deniedEmails = [
+            'ada@other-school.example',
+            'ada@www.signup-university.example',
+            'ada@gmail.com',
+        ];
+        for (const email of deniedEmails) {
+            await assert.rejects(service.request({ ...requestInput(fixture), email }), BadRequestError);
+            await assertNoSignupRows(pool, email);
+        }
+
+        await pool.query('UPDATE universities SET is_active = false WHERE id = $1', [fixture.universityId]);
+        await assert.rejects(service.request(requestInput(fixture)), BadRequestError);
+        await assertNoSignupRows(pool, fixture.email);
+    });
+});
+
+test('rejects confirmation after domain withdrawal or university deactivation without consuming proof or creating authority', async () => {
+    await withPool(async (pool) => {
+        for (const withdrawal of ['domain', 'university'] as const) {
+            const client = await pool.connect();
+            const fixture = await createFixture(client);
+            client.release();
+            let otp = '';
+            const service = createStudentSignupService({
+                pool,
+                isEmailConfigured: () => true,
+                deliverOtp: async (_email, code) => {
+                    otp = code;
+                    return { success: true };
+                },
+            });
+            const request = await service.request(requestInput(fixture));
+            if (withdrawal === 'domain') {
+                await pool.query(
+                    `UPDATE approved_student_email_domains SET is_active = false
+                     WHERE university_id = $1 AND domain = 'students.school.example'`,
+                    [fixture.universityId],
+                );
+            } else {
+                await pool.query('UPDATE universities SET is_active = false WHERE id = $1', [fixture.universityId]);
+            }
+
+            await assert.rejects(
+                service.confirm({ ...requestInput(fixture), challengeId: request.challengeId, otp, password: 'StrongPass123!' }),
+                BadRequestError,
+            );
+            assert.deepEqual(await readSignupRows(pool, fixture.email), {
+                budgets: '1', challenges: '1', users: '0', students: '0', grants: '0', proofs: '0', evidence: '0',
+            });
+            const budget = await pool.query<{ current_challenge_id: string; failed_attempts: number; send_count: number }>(
+                `SELECT current_challenge_id, failed_attempts, send_count
+                 FROM verification_challenge_budgets
+                 WHERE purpose = 'student_signup' AND subject_digest = $1`,
+                [challengeSubjectDigest('student_signup', fixture.email)],
+            );
+            assert.deepEqual(budget.rows[0], { current_challenge_id: request.challengeId, failed_attempts: 0, send_count: 1 });
+            const challenge = await pool.query<{ consumed_at: Date | null; superseded_at: Date | null }>(
+                'SELECT consumed_at, superseded_at FROM verification_challenges WHERE id = $1',
+                [request.challengeId],
+            );
+            assert.deepEqual(challenge.rows[0], { consumed_at: null, superseded_at: null });
+        }
+    });
+});
+
+test('does not issue a challenge when mail is unconfigured', async () => {
     await withPool(async (pool) => {
         const client = await pool.connect();
         const fixture = await createFixture(client);
@@ -330,22 +490,69 @@ test('does not issue a challenge when mail is unconfigured and retains delivery-
              WHERE purpose = 'student_signup' AND subject_digest = $1`,
             [challengeSubjectDigest('student_signup', fixture.email)],
         )).rowCount, 0);
+    });
+});
 
+test('retains a failed-delivery cooldown, redacts transport detail, and later issues a usable replacement challenge', async () => {
+    await withPool(async (pool) => {
+        const client = await pool.connect();
+        const fixture = await createFixture(client);
+        client.release();
+        let deliveries = 0;
+        let recoveredOtp = '';
         const deliveryFailed = createStudentSignupService({
             pool,
             isEmailConfigured: () => true,
-            deliverOtp: async () => ({ success: false }),
+            deliverOtp: async (_email, code) => {
+                deliveries += 1;
+                if (deliveries === 1) throw new Error('synthetic provider transport detail');
+                recoveredOtp = code;
+                return { success: true };
+            },
         });
         await assert.rejects(deliveryFailed.request(requestInput(fixture)), (error: unknown) => {
             assert.ok(error instanceof ServiceUnavailableError);
-            assert.doesNotMatch(error.message, /provider|brevo|transport/i);
+            assert.doesNotMatch(error.message, /provider|brevo|transport|detail/i);
             return true;
         });
-        assert.equal((await pool.query(
-            `SELECT 1 FROM verification_challenge_budgets
+        assert.equal(deliveries, 1);
+        assert.deepEqual(await readSignupRows(pool, fixture.email), {
+            budgets: '1', challenges: '1', users: '0', students: '0', grants: '0', proofs: '0', evidence: '0',
+        });
+        const failedBudget = await pool.query<{ current_challenge_id: string; resend_available_at: Date }>(
+            `SELECT current_challenge_id, resend_available_at
+             FROM verification_challenge_budgets
              WHERE purpose = 'student_signup' AND subject_digest = $1`,
             [challengeSubjectDigest('student_signup', fixture.email)],
-        )).rowCount, 1);
+        );
+        const firstChallengeId = failedBudget.rows[0]!.current_challenge_id;
+        await assert.rejects(deliveryFailed.request(requestInput(fixture)), (error: unknown) => {
+            assert.ok(error instanceof StudentSignupRateLimitError);
+            assert.equal(error.statusCode, 429);
+            assert.equal(error.retryAt.getTime(), failedBudget.rows[0]!.resend_available_at.getTime());
+            return true;
+        });
+        assert.equal(deliveries, 1);
+
+        await pool.query(
+            `UPDATE verification_challenge_budgets
+             SET resend_available_at = clock_timestamp() - interval '1 second'
+             WHERE current_challenge_id = $1`,
+            [firstChallengeId],
+        );
+        const replacement = await deliveryFailed.request(requestInput(fixture));
+        assert.notEqual(replacement.challengeId, firstChallengeId);
+        assert.equal(deliveries, 2);
+        await assertNoSignupAuthority(pool, fixture.email);
+        const firstChallenge = await pool.query<{ superseded_at: Date | null }>(
+            'SELECT superseded_at FROM verification_challenges WHERE id = $1',
+            [firstChallengeId],
+        );
+        assert.notEqual(firstChallenge.rows[0]?.superseded_at, null);
+        const completion = await deliveryFailed.confirm({
+            ...requestInput(fixture), challengeId: replacement.challengeId, otp: recoveredOtp, password: 'StrongPass123!',
+        });
+        assert.equal(completion.user.email, fixture.email);
     });
 });
 
@@ -415,14 +622,15 @@ test('rolls back successful proof consumption and every new row if evidence writ
     });
 });
 
-test('serializes concurrent confirmations at PostgreSQL and only the winner creates an account', async () => {
+test('holds the winner at an explicit PostgreSQL barrier and proves the exact contender PID blocks behind it', async () => {
     await withPool(async (pool) => {
         const client = await pool.connect();
         const fixture = await createFixture(client);
         client.release();
         let otp = '';
+        const tracked = trackedSignupPool(pool);
         const service = createStudentSignupService({
-            pool,
+            pool: tracked.pool,
             isEmailConfigured: () => true,
             deliverOtp: async (_email, code) => {
                 otp = code;
@@ -430,37 +638,67 @@ test('serializes concurrent confirmations at PostgreSQL and only the winner crea
             },
         });
         const request = await service.request(requestInput(fixture));
+        const barrierKey = 734261;
+        const emailLiteral = fixture.email.replaceAll("'", "''");
         await pool.query(`
-            CREATE FUNCTION student_signup_test_delay_insert() RETURNS trigger LANGUAGE plpgsql AS $$
+            CREATE FUNCTION student_signup_test_hold_winner() RETURNS trigger LANGUAGE plpgsql AS $$
             BEGIN
-                IF NEW.email = '${fixture.email}' THEN PERFORM pg_sleep(0.35); END IF;
+                IF NEW.email = '${emailLiteral}' THEN
+                    PERFORM pg_advisory_xact_lock(${barrierKey});
+                END IF;
                 RETURN NEW;
             END $$;
-            CREATE TRIGGER student_signup_test_delay_before_insert
+            CREATE TRIGGER student_signup_test_hold_winner_before_insert
             BEFORE INSERT ON users
-            FOR EACH ROW EXECUTE FUNCTION student_signup_test_delay_insert();
+            FOR EACH ROW EXECUTE FUNCTION student_signup_test_hold_winner();
         `);
+        const control = await pool.connect();
+        let barrierReleased = false;
+        let first: Promise<PromiseSettledResult<Awaited<ReturnType<typeof service.confirm>>>> | undefined;
+        let second: Promise<PromiseSettledResult<Awaited<ReturnType<typeof service.confirm>>>> | undefined;
         try {
-            const first = service.confirm({ ...requestInput(fixture), challengeId: request.challengeId, otp, password: 'StrongPass123!' });
-            await delay(25);
-            const second = service.confirm({ ...requestInput(fixture), challengeId: request.challengeId, otp, password: 'StrongPass123!' });
-            await waitForBlockingBackend(pool, 'concurrent signup confirmation');
-            const results = await Promise.allSettled([first, second]);
-            assert.equal(results.filter((result) => result.status === 'fulfilled').length, 1);
-            assert.equal(results.filter((result) => result.status === 'rejected').length, 1);
+            await control.query('SELECT pg_advisory_lock($1)', [barrierKey]);
+            first = settle(service.confirm({ ...requestInput(fixture), challengeId: request.challengeId, otp, password: 'StrongPass123!' }));
+            await waitFor('winner confirmation connection', async () => tracked.pids.length >= 2);
+            const winnerPid = tracked.pids[1]!;
+            await waitForAdvisoryWait(pool, winnerPid);
+
+            second = settle(service.confirm({ ...requestInput(fixture), challengeId: request.challengeId, otp, password: 'StrongPass123!' }));
+            await waitFor('contender confirmation connection', async () => tracked.pids.length >= 3);
+            const contenderPid = tracked.pids[2]!;
+            await waitForExactBlockingPid(pool, contenderPid, winnerPid);
+
+            await control.query('SELECT pg_advisory_unlock($1)', [barrierKey]);
+            barrierReleased = true;
+            const results = await Promise.all([first, second]);
+            assert.equal(results[0]?.status, 'fulfilled');
+            assert.equal(results[1]?.status, 'rejected');
+            if (results[1]?.status === 'rejected') assert.ok(results[1].reason instanceof ConflictError);
         } finally {
-            await pool.query('DROP TRIGGER IF EXISTS student_signup_test_delay_before_insert ON users');
-            await pool.query('DROP FUNCTION IF EXISTS student_signup_test_delay_insert()');
+            if (!barrierReleased) await control.query('SELECT pg_advisory_unlock($1)', [barrierKey]).catch(() => undefined);
+            control.release();
+            await Promise.all([first, second].filter((pending): pending is Promise<PromiseSettledResult<Awaited<ReturnType<typeof service.confirm>>>> => pending !== undefined));
+            await pool.query('DROP TRIGGER IF EXISTS student_signup_test_hold_winner_before_insert ON users');
+            await pool.query('DROP FUNCTION IF EXISTS student_signup_test_hold_winner()');
         }
-        const outcome = await pool.query<{ users: string; evidence: string }>(
+        const outcome = await pool.query<{ users: string; students: string; grants: string; proofs: string; evidence: string }>(
             `SELECT (SELECT count(*) FROM users WHERE lower(btrim(email)) = $1) AS users,
+                    (SELECT count(*) FROM students
+                     JOIN users ON users.id = students.user_id
+                     WHERE lower(btrim(users.email)) = $1) AS students,
+                    (SELECT count(*) FROM verification_consents
+                     JOIN users ON users.id = verification_consents.user_id
+                     WHERE lower(btrim(users.email)) = $1) AS grants,
+                    (SELECT count(*) FROM user_email_proofs
+                     JOIN users ON users.id = user_email_proofs.user_id
+                     WHERE lower(btrim(users.email)) = $1) AS proofs,
                     (SELECT count(*) FROM eligibility_evidence evidence
                      JOIN students ON students.id = evidence.student_id
                      JOIN users ON users.id = students.user_id
                      WHERE lower(btrim(users.email)) = $1) AS evidence`,
             [fixture.email],
         );
-        assert.deepEqual(outcome.rows[0], { users: '1', evidence: '1' });
+        assert.deepEqual(outcome.rows[0], { users: '1', students: '1', grants: '1', proofs: '1', evidence: '1' });
     });
 });
 
