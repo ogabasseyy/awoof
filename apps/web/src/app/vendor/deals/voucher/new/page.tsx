@@ -128,7 +128,7 @@ export default function NewVoucherPage() {
                     email: user?.email ?? null,
                     roleLabel: 'Vendor',
                     secondaryText: companyName ?? undefined,
-                    profileHref: '/vendor/settings/profile',
+                    profileHref: '/vendor/settings',
                     avatarUrl: null,
                 }}
             >

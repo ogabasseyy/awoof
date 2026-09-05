@@ -189,7 +189,7 @@ export default function ProductDetailPage() {
                     </div>
                     {product.category_name ? (
                         <Link
-                            href={`/marketplace/search?categoryId=${product.category_id}`}
+                            href={`/marketplace/search?categoryId=${product.category_id}&deal_type=${product.deal_type ?? 'product'}`}
                             className="rounded-full bg-[#1D4ED8]/10 px-3 py-1.5 text-xs font-semibold text-[#1D4ED8] hover:bg-[#1D4ED8]/15"
                         >
                             {product.category_name}

@@ -72,15 +72,24 @@ export class NotificationService {
         totalSavings: number
     ): Promise<void> {
         const milestones = [1000, 5000, 10000, 25000, 50000, 100000];
-        const milestone = milestones.find((m) => totalSavings >= m && totalSavings < m * 2);
+        const milestone = milestones.filter((m) => totalSavings >= m).at(-1);
         if (!milestone) return;
-        await this.notifyStudentByProfileId(studentId, {
-            title: 'Savings milestone',
-            message: `Congratulations! You have saved over ₦${milestone.toLocaleString()}`,
-            type: 'success',
-            kind: 'savings',
-            metadata: { milestone, totalSavings },
-        });
+        // Claim and publish atomically: concurrent purchases and outbox retries
+        // must not announce the same milestone twice, even if an inbox is cleared.
+        await db.query(
+            `WITH claimed AS (
+                INSERT INTO savings_milestones (user_id, milestone)
+                SELECT user_id, $2 FROM students WHERE id = $1
+                ON CONFLICT (user_id, milestone) DO NOTHING
+                RETURNING user_id
+             )
+             INSERT INTO notifications (user_id, title, message, type, kind, metadata)
+             SELECT user_id, 'Savings milestone', $3, 'success', 'savings', $4
+             FROM claimed`,
+            [studentId, milestone,
+                `Congratulations! You have saved over ₦${milestone.toLocaleString()}`,
+                JSON.stringify({ milestone, totalSavings })]
+        );
     }
 
     public static async notifyVerificationSuccess(studentId: string): Promise<void> {
