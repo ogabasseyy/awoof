@@ -19,11 +19,32 @@
   widget origins; legacy directory domains and widget hostnames do not authorize
   eligibility. Duplicate student-profile and normalized-email legacy data blocks
   the migration with count-only operator diagnostics; it is never merged or
-  deleted by the migration. Service transactions lock user, student,
-  institution, eligibility state, consent, challenge, then proof/assertion rows
-  in that order. Enrollment provider replies are single-consumption generations:
-  invalid, stale, mismatched-email, or untrusted-source replies do not advance
-  the marker. Routes and merchant consumers remain a separate rollout boundary.
+  deleted by the migration. Standard student transactions lock user, student,
+  institution (UUID order when more than one is relevant), eligibility state,
+  consent, challenge, then proof/assertion rows in that order. Withdrawal uses
+  that same order without requiring an active subject: it locks both the
+  current and historical grant institutions before the consent so historical
+  evidence can still be revoked. Enrollment reads a configured method without
+  locking that method after its university; a concurrent method mutation is
+  serialized by the institution policy generation instead.
+
+  Qualified merchant disclosure is a distinct transaction-entry contract. It
+  first resolves the candidate merchant without a lock, then locks the student
+  and candidate merchant-owner user rows in UUID order, followed by vendor,
+  exact-origin active widget, student context/state, and disclosure consent.
+  Do not call `grantMerchantDisclosure` or
+  `getEffectiveEligibility(..., disclosure)` after `lockStudentContext`,
+  `recordEmailAssurance`, a plain eligibility read, or another merchant
+  disclosure in the same transaction unless all participant users were
+  predeclared and locked in that one sorted entry phase. The current route
+  entrypoints use each operation as a fresh transaction. A merchant must stay
+  active and undeleted, with a non-deleted vendor owner and active exact-origin
+  widget; changed ownership fails closed. Institution-specific approved domains
+  and verification methods cannot be reparented—remove and add configuration
+  under the target institution instead. Enrollment provider replies are
+  single-consumption generations: invalid, stale, mismatched-email, or
+  untrusted-source replies do not advance the marker. Routes and merchant
+  consumers remain a separate rollout boundary.
 
 ## Owner-controlled configuration
 

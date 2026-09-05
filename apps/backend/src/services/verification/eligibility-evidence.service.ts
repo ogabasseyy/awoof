@@ -40,6 +40,7 @@ type MailboxUser = {
 type StudentProfile = {
     id: string;
     name: string;
+    registration_number: string | null;
     university_id: string | null;
     identity_version: number;
     verification_policy_version: number | null;
@@ -72,6 +73,7 @@ function sameSignupBindings(
     return bindings.email === user.email
         && bindings.name === profile.name
         && bindings.universityId === profile.university_id
+        && bindings.matricNumber === profile.registration_number
         && bindings.policyVersion === profile.verification_policy_version
         && bindings.verificationConsent === true
         && bindings.noticeVersion === VERIFICATION_NOTICE_VERSION;
@@ -104,7 +106,7 @@ async function lockMailboxUser(tx: PoolClient, userId: string): Promise<MailboxU
 
 async function lockStudentProfile(tx: PoolClient, userId: string): Promise<StudentProfile> {
     const result = await tx.query<StudentProfile>(
-        `SELECT students.id, students.name, students.university_id, students.identity_version,
+        `SELECT students.id, students.name, students.registration_number, students.university_id, students.identity_version,
                 universities.verification_policy_version
          FROM students
          JOIN universities ON universities.id = students.university_id
@@ -144,13 +146,7 @@ async function challengePurpose(tx: PoolClient, challengeId: string): Promise<st
     return purpose;
 }
 
-async function lockState(tx: PoolClient, context: StudentContext): Promise<StateRow> {
-    await tx.query(
-        `INSERT INTO student_eligibility_state (student_id, university_id)
-         VALUES ($1, $2)
-         ON CONFLICT (student_id, university_id) DO NOTHING`,
-        [context.studentId, context.universityId],
-    );
+async function lockExistingState(tx: PoolClient, context: StudentContext): Promise<StateRow | undefined> {
     const result = await tx.query<StateRow>(
         `SELECT provider_request_generation, provider_applied_generation, authoritative_denial
          FROM student_eligibility_state
@@ -158,7 +154,17 @@ async function lockState(tx: PoolClient, context: StudentContext): Promise<State
          FOR UPDATE`,
         [context.studentId, context.universityId],
     );
-    const state = result.rows[0];
+    return result.rows[0];
+}
+
+async function ensureState(tx: PoolClient, context: StudentContext): Promise<StateRow> {
+    await tx.query(
+        `INSERT INTO student_eligibility_state (student_id, university_id)
+         VALUES ($1, $2)
+         ON CONFLICT (student_id, university_id) DO NOTHING`,
+        [context.studentId, context.universityId],
+    );
+    const state = await lockExistingState(tx, context);
     if (!state) throw new Error('Eligibility state was not returned');
     return state;
 }
@@ -269,8 +275,9 @@ export async function recordEmailAssurance(
 ): Promise<EligibilityResult> {
     const context = await lockStudentContext(tx, userId);
     assertActiveContext(context);
-    const state = await lockState(tx, context);
+    const existingState = await lockExistingState(tx, context);
     await lockCurrentProcessingGrant(tx, userId, context.universityId, input.processingGrantId);
+    const state = existingState ?? await ensureState(tx, context);
     const challenge = await lockChallenge(tx, input.challengeId);
     const user = await lockMailboxUser(tx, userId);
 
@@ -359,8 +366,9 @@ export async function beginEnrollmentCheck(
 ): Promise<EnrollmentSnapshot> {
     const context = await lockStudentContext(tx, userId);
     assertActiveContext(context);
-    await lockState(tx, context);
+    const existingState = await lockExistingState(tx, context);
     await lockCurrentProcessingGrant(tx, userId, context.universityId, processingGrantId);
+    if (!existingState) await ensureState(tx, context);
     const proof = await tx.query<{ id: string }>(
         `SELECT id
          FROM user_email_proofs
@@ -379,8 +387,7 @@ export async function beginEnrollmentCheck(
            AND method_type = 'registration'
            AND is_active
            AND api_endpoint IS NOT NULL
-           AND length(btrim(api_endpoint)) > 0
-         FOR UPDATE`,
+           AND length(btrim(api_endpoint)) > 0`,
         [context.universityId],
     );
     if (adapter.rowCount !== 1) throw new BadRequestError('Enrollment method unavailable');
@@ -409,7 +416,8 @@ export async function applyEnrollmentDecision(
         || context.policyVersion !== snapshot.policyVersion) {
         throw new ConflictError('Enrollment snapshot is stale');
     }
-    const state = await lockState(tx, context);
+    const state = await lockExistingState(tx, context);
+    if (!state) throw new ConflictError('Enrollment state is missing');
     if (state.provider_request_generation !== snapshot.requestGeneration
         || state.provider_applied_generation >= snapshot.requestGeneration) {
         throw new ConflictError('Enrollment generation already applied or stale');
@@ -430,8 +438,7 @@ export async function applyEnrollmentDecision(
            AND method_type = 'registration'
            AND is_active
            AND api_endpoint IS NOT NULL
-           AND length(btrim(api_endpoint)) > 0
-         FOR UPDATE`,
+           AND length(btrim(api_endpoint)) > 0`,
         [context.universityId],
     );
     if (adapter.rowCount !== 1) throw new ConflictError('Enrollment provider configuration changed');

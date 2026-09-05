@@ -1,6 +1,11 @@
 import type { PoolClient } from 'pg';
-import { NotFoundError } from '../../common/errors/AppError.js';
+import { BadRequestError, NotFoundError } from '../../common/errors/AppError.js';
 import { lockStudentContext } from './eligibility-context.service.js';
+import {
+    canonicalWidgetOrigin,
+    prepareMerchantDisclosure,
+    type MerchantDisclosureContext,
+} from './eligibility-merchant-context.service.js';
 import { isApprovedStudentEmail } from './eligibility-policy.service.js';
 import type { EligibilityResult, StudentContext } from './eligibility.types.js';
 import { MERCHANT_DISCLOSURE_NOTICE_VERSION, VERIFICATION_NOTICE_VERSION } from './verification-notices.js';
@@ -23,11 +28,11 @@ async function validMerchantDisclosure(
     tx: PoolClient,
     userId: string,
     disclosure: { vendorId: string; grantId: string; origin: string; purpose: string },
+    merchant: MerchantDisclosureContext,
 ): Promise<boolean> {
     const result = await tx.query(
         `SELECT 1
          FROM verification_consents consents
-         JOIN widget_configs widgets ON widgets.vendor_id = consents.vendor_id
          WHERE consents.id = $1
            AND consents.user_id = $2
            AND consents.kind = 'disclosure'
@@ -37,9 +42,7 @@ async function validMerchantDisclosure(
            AND consents.notice_version = $6
            AND consents.accepted
            AND consents.withdrawn_at IS NULL
-           AND widgets.status = 'active'
-           AND $4 = ANY(widgets.allowed_origins)
-         FOR UPDATE OF consents, widgets`,
+         FOR UPDATE OF consents`,
         [
             disclosure.grantId,
             userId,
@@ -49,7 +52,9 @@ async function validMerchantDisclosure(
             MERCHANT_DISCLOSURE_NOTICE_VERSION,
         ],
     );
-    return result.rowCount === 1;
+    return result.rowCount === 1
+        && merchant.vendorId === disclosure.vendorId
+        && merchant.origin === disclosure.origin;
 }
 
 export async function getEffectiveEligibility(
@@ -57,6 +62,26 @@ export async function getEffectiveEligibility(
     userId: string,
     disclosure?: { vendorId: string; grantId: string; origin: string; purpose: string },
 ): Promise<EligibilityResult> {
+    let merchant: MerchantDisclosureContext | undefined;
+    let canonicalDisclosure: typeof disclosure;
+    if (disclosure) {
+        try {
+            canonicalDisclosure = { ...disclosure, origin: canonicalWidgetOrigin(disclosure.origin) };
+        } catch (error) {
+            if (error instanceof BadRequestError) return { eligible: false, reason: 'consent_required' };
+            throw error;
+        }
+        // Qualified disclosure reads are transaction entrypoints: participant
+        // users are the first locks. See prepareMerchantDisclosure's contract.
+        const preparedMerchant = await prepareMerchantDisclosure(
+            tx,
+            userId,
+            canonicalDisclosure.vendorId,
+            canonicalDisclosure.origin,
+        );
+        if (!preparedMerchant) return { eligible: false, reason: 'consent_required' };
+        merchant = preparedMerchant;
+    }
     let context: StudentContext;
     try {
         context = await lockStudentContext(tx, userId);
@@ -118,7 +143,7 @@ export async function getEffectiveEligibility(
         && !await isApprovedStudentEmail(tx, context.universityId, context.email)) {
         return { eligible: false, reason: 'policy_changed' };
     }
-    if (disclosure && !await validMerchantDisclosure(tx, userId, disclosure)) {
+    if (canonicalDisclosure && merchant && !await validMerchantDisclosure(tx, userId, canonicalDisclosure, merchant)) {
         return { eligible: false, reason: 'consent_required' };
     }
     const now = await tx.query<{ now: Date }>('SELECT clock_timestamp() AS now');

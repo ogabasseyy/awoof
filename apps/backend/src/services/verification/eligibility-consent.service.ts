@@ -1,7 +1,8 @@
 import { randomUUID } from 'node:crypto';
 import type { PoolClient } from 'pg';
-import { BadRequestError, ForbiddenError, NotFoundError } from '../../common/errors/AppError.js';
+import { BadRequestError, ConflictError, ForbiddenError, NotFoundError } from '../../common/errors/AppError.js';
 import { lockStudentContext } from './eligibility-context.service.js';
+import { canonicalWidgetOrigin, prepareMerchantDisclosure } from './eligibility-merchant-context.service.js';
 import { MERCHANT_DISCLOSURE_NOTICE_VERSION, VERIFICATION_NOTICE_VERSION } from './verification-notices.js';
 
 function assertCurrentAction(
@@ -13,24 +14,6 @@ function assertCurrentAction(
     if (accepted !== true || noticeVersion !== expectedVersion) {
         throw new BadRequestError(`Current ${description} consent required`);
     }
-}
-
-function canonicalWidgetOrigin(value: string): string {
-    let parsed: URL;
-    try {
-        parsed = new URL(value);
-    } catch {
-        throw new BadRequestError('Invalid merchant origin');
-    }
-    const permittedSpelling = value === parsed.origin || value === `${parsed.origin}/`;
-    const localDevelopmentHttp = process.env.NODE_ENV === 'development'
-        && parsed.protocol === 'http:'
-        && (parsed.hostname === 'localhost' || parsed.hostname === '127.0.0.1' || parsed.hostname === '::1');
-    if ((parsed.protocol !== 'https:' && !localDevelopmentHttp) || parsed.username || parsed.password || parsed.pathname !== '/'
-        || parsed.search || parsed.hash || !permittedSpelling) {
-        throw new BadRequestError('Invalid merchant origin');
-    }
-    return parsed.origin;
 }
 
 async function assertActiveStudent(tx: PoolClient, userId: string, universityId?: string): Promise<void> {
@@ -71,17 +54,13 @@ export async function grantMerchantDisclosure(
     if (typeof input.purpose !== 'string' || input.purpose.trim().length === 0) {
         throw new BadRequestError('Disclosure purpose required');
     }
-    await assertActiveStudent(tx, userId);
     const origin = canonicalWidgetOrigin(input.origin);
-    const liveWidget = await tx.query(
-        `SELECT 1
-         FROM widget_configs
-         WHERE vendor_id = $1
-           AND status = 'active'
-           AND $2 = ANY(allowed_origins)`,
-        [input.vendorId, origin],
-    );
-    if (liveWidget.rowCount !== 1) throw new NotFoundError('Merchant widget origin not configured');
+    // This is the transaction entrypoint: participant user locks precede every
+    // subject/context lock. See prepareMerchantDisclosure's contract.
+    if (!await prepareMerchantDisclosure(tx, userId, input.vendorId, origin)) {
+        throw new NotFoundError('Live merchant widget origin not configured');
+    }
+    await assertActiveStudent(tx, userId);
 
     const id = randomUUID();
     await tx.query(
@@ -99,21 +78,63 @@ export async function grantMerchantDisclosure(
 }
 
 export async function withdrawConsent(tx: PoolClient, userId: string, grantId: string): Promise<void> {
-    const consent = await tx.query<{
+    const preliminary = await tx.query<{
+        user_id: string;
         kind: 'processing' | 'disclosure';
         university_id: string | null;
     }>(
-        `SELECT kind, university_id
+        `SELECT user_id, kind, university_id
+         FROM verification_consents
+         WHERE id = $1`,
+        [grantId],
+    );
+    const target = preliminary.rows[0];
+    if (!target) throw new NotFoundError('Consent not found');
+    if (target.user_id !== userId) throw new ForbiddenError('Consent belongs to another user');
+
+    // Withdrawal intentionally permits inactive/historical subjects. It locks
+    // user, student, every current/historical institution, and state before
+    // consent, matching readers/application and avoiding the audit-FK cycle.
+    const subject = await tx.query('SELECT id FROM users WHERE id = $1 FOR UPDATE', [userId]);
+    if (subject.rowCount !== 1) throw new NotFoundError('Consent subject not found');
+    const student = await tx.query<{ id: string; university_id: string | null }>(
+        'SELECT id, university_id FROM students WHERE user_id = $1 FOR UPDATE',
+        [userId],
+    );
+    const relevantInstitutions = [student.rows[0]?.university_id, target.university_id]
+        .filter((id): id is string => id !== null && id !== undefined)
+        .filter((id, index, all) => all.indexOf(id) === index)
+        .sort();
+    for (const universityId of relevantInstitutions) {
+        const university = await tx.query('SELECT id FROM universities WHERE id = $1 FOR UPDATE', [universityId]);
+        if (university.rowCount !== 1) throw new NotFoundError('Consent institution not found');
+    }
+    if (student.rows[0]) {
+        for (const universityId of relevantInstitutions) {
+            await tx.query(
+                `SELECT student_id
+                 FROM student_eligibility_state
+                 WHERE student_id = $1 AND university_id = $2
+                 FOR UPDATE`,
+                [student.rows[0].id, universityId],
+            );
+        }
+    }
+
+    const consent = await tx.query<{
+        user_id: string;
+        kind: 'processing' | 'disclosure';
+        university_id: string | null;
+    }>(
+        `SELECT user_id, kind, university_id
          FROM verification_consents
          WHERE id = $1 AND user_id = $2
          FOR UPDATE`,
         [grantId, userId],
     );
     const row = consent.rows[0];
-    if (!row) {
-        const exists = await tx.query('SELECT 1 FROM verification_consents WHERE id = $1', [grantId]);
-        if (exists.rowCount) throw new ForbiddenError('Consent belongs to another user');
-        throw new NotFoundError('Consent not found');
+    if (!row || row.user_id !== target.user_id || row.kind !== target.kind || row.university_id !== target.university_id) {
+        throw new ConflictError('Consent changed while preparing withdrawal');
     }
     await tx.query(
         `UPDATE verification_consents

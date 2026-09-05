@@ -172,6 +172,14 @@ BEGIN
     RETURN COALESCE(NEW, OLD);
 END $$;
 
+CREATE OR REPLACE FUNCTION eligibility_reject_domain_reparent() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+    IF NEW.university_id IS DISTINCT FROM OLD.university_id THEN
+        RAISE EXCEPTION 'approved student email domains cannot be reparented; remove and add under the target institution';
+    END IF;
+    RETURN NEW;
+END $$;
+
 CREATE OR REPLACE FUNCTION eligibility_bump_method_policy() RETURNS trigger LANGUAGE plpgsql AS $$
 DECLARE
     changed_university UUID;
@@ -191,6 +199,14 @@ BEGIN
         WHERE id = changed_university;
     END IF;
     RETURN COALESCE(NEW, OLD);
+END $$;
+
+CREATE OR REPLACE FUNCTION eligibility_reject_method_reparent() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+    IF NEW.university_id IS DISTINCT FROM OLD.university_id THEN
+        RAISE EXCEPTION 'university verification methods cannot be reparented; remove and add under the target institution';
+    END IF;
+    RETURN NEW;
 END $$;
 
 CREATE OR REPLACE FUNCTION eligibility_bump_student_identity() RETURNS trigger LANGUAGE plpgsql AS $$
@@ -245,9 +261,13 @@ END $$;
 
 CREATE TRIGGER eligibility_university_policy_before_update
     BEFORE UPDATE ON universities FOR EACH ROW EXECUTE FUNCTION eligibility_bump_university_policy();
+CREATE TRIGGER eligibility_domain_before_reparent
+    BEFORE UPDATE ON approved_student_email_domains FOR EACH ROW EXECUTE FUNCTION eligibility_reject_domain_reparent();
 CREATE TRIGGER eligibility_domain_policy_after_change
     AFTER INSERT OR UPDATE OR DELETE ON approved_student_email_domains
     FOR EACH ROW EXECUTE FUNCTION eligibility_bump_domain_policy();
+CREATE TRIGGER eligibility_method_before_reparent
+    BEFORE UPDATE ON university_verification_methods FOR EACH ROW EXECUTE FUNCTION eligibility_reject_method_reparent();
 CREATE TRIGGER eligibility_method_policy_after_change
     AFTER INSERT OR UPDATE OR DELETE ON university_verification_methods
     FOR EACH ROW EXECUTE FUNCTION eligibility_bump_method_policy();
