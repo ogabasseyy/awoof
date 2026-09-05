@@ -244,10 +244,18 @@ export async function completeMarketplaceTransactionWithClient(
         }
 
         const stockUpdate = await client.query(
-            `UPDATE products
+            `UPDATE products p
              SET stock = stock - 1, updated_at = CURRENT_TIMESTAMP
-             WHERE id = $1 AND stock > 0 AND deleted_at IS NULL
-             RETURNING id`,
+             FROM vendors v
+             WHERE p.id = $1
+               AND v.id = p.vendor_id
+               AND p.stock > 0
+               AND p.deleted_at IS NULL
+               AND p.status = 'active'
+               AND COALESCE(p.deal_type, 'product') = 'product'
+               AND v.status = 'active'
+               AND v.deleted_at IS NULL
+             RETURNING p.id`,
             [tx.product_id]
         );
 

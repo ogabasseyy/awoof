@@ -745,6 +745,22 @@ export class VerificationController {
             throw new UnauthorizedError('Student must be verified to generate widget token');
         }
 
+        if (validated.productId) {
+            const productResult = await db.query(
+                `SELECT id, status, stock
+                 FROM products
+                 WHERE id = $1 AND vendor_id = $2 AND deleted_at IS NULL`,
+                [validated.productId, validated.vendorId]
+            );
+            if (productResult.rows.length === 0) {
+                throw new BadRequestError('Product not found for this vendor');
+            }
+            const product = productResult.rows[0];
+            if (product.status !== 'active' || Number(product.stock) <= 0) {
+                throw new BadRequestError('This deal is no longer available');
+            }
+        }
+
         // Generate verification token
         const { token, expiresAt } = await createVerificationToken(
             student.id,

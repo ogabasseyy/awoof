@@ -12,8 +12,7 @@ import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { UniversitySelect } from '@/components/forms/UniversitySelect';
-import apiClient, { publicApiClient } from '@/lib/api-client';
-import { storeTokens } from '@/lib/auth';
+import { publicApiClient } from '@/lib/api-client';
 
 const AWOOF_MESSAGE_TYPE = 'AWOOF_VERIFICATION_SUCCESS';
 
@@ -96,8 +95,7 @@ function WidgetVerifyContent() {
                 setError('Verification succeeded but no session. Try again.');
                 return;
             }
-            storeTokens(tokens);
-            await requestWidgetTokenAndPostMessage();
+            await requestWidgetTokenAndPostMessage(tokens.accessToken);
         } catch (err: unknown) {
             const msg = (err as { response?: { data?: { error?: { message?: string }; message?: string } } })?.response?.data?.error?.message
                 || (err as { response?: { data?: { message?: string } } })?.response?.data?.message
@@ -149,8 +147,7 @@ function WidgetVerifyContent() {
                 setError('Verification succeeded but no session. Try again.');
                 return;
             }
-            storeTokens(tokens);
-            await requestWidgetTokenAndPostMessage();
+            await requestWidgetTokenAndPostMessage(tokens.accessToken);
         } catch (err: unknown) {
             const msg = (err as { response?: { data?: { error?: { message?: string } } } })?.response?.data?.error?.message
                 || (err as Error).message
@@ -161,13 +158,15 @@ function WidgetVerifyContent() {
         }
     };
 
-    async function requestWidgetTokenAndPostMessage() {
+    async function requestWidgetTokenAndPostMessage(accessToken: string) {
         try {
-            const res = await apiClient.post('/verification/widget/token', {
+            const res = await publicApiClient.post('/verification/widget/token', {
                 vendorId,
                 productId: productId || undefined,
                 apiKey,
                 origin,
+            }, {
+                headers: { Authorization: `Bearer ${accessToken}` },
             });
             const data = res.data?.data ?? res.data;
             const token = data?.token;

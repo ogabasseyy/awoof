@@ -5,7 +5,7 @@
  */
 
 import type { Response } from 'express';
-import { db } from '../config/database.js';
+import { db, getPool } from '../config/database.js';
 import {
     BadRequestError,
     NotFoundError,
@@ -508,42 +508,14 @@ export class PaymentController {
     }
 
     /**
-     * Update Paystack subaccount code
+     * Reject raw Paystack subaccount codes. Split settlement is created only
+     * through the payout bank-account workflow, which owns the Paystack record.
      */
-    public async updatePaystackSubaccount(req: AuthRequest, res: Response): Promise<void> {
-        if (!req.user || req.user.role !== 'vendor') {
-            throw new UnauthorizedError('Only vendors can update Paystack subaccount');
-        }
-
-        // Get vendor ID
-        const vendorResult = await db.query(
-            'SELECT id FROM vendors WHERE user_id = $1 AND deleted_at IS NULL',
-            [req.user.userId]
+    public async updatePaystackSubaccount(_req: AuthRequest, _res: Response): Promise<void> {
+        updatePaystackSubaccountSchema.parse(_req.body);
+        throw new BadRequestError(
+            'Paystack subaccounts can only be created from payout bank details. Use the Payout tab instead of entering a code.'
         );
-
-        if (vendorResult.rows.length === 0) {
-            throw new NotFoundError('Vendor profile not found');
-        }
-
-        const vendorId = vendorResult.rows[0].id;
-
-        // Validate request body
-        const validated = updatePaystackSubaccountSchema.parse(req.body);
-
-        // Update Paystack subaccount code
-        await db.query(
-            `UPDATE vendors 
-             SET paystack_subaccount_code = $1, updated_at = CURRENT_TIMESTAMP
-             WHERE id = $2`,
-            [validated.paystackSubaccountCode, vendorId]
-        );
-
-        success(res, {
-            message: 'Paystack subaccount updated successfully',
-            data: {
-                paystackSubaccountCode: validated.paystackSubaccountCode,
-            },
-        });
     }
 
     /**
@@ -692,7 +664,7 @@ export class PaymentController {
 
         // 2. Verify product exists and belongs to vendor
         const productResult = await db.query(
-            `SELECT id, price, student_price, vendor_id
+            `SELECT id, name, price, student_price, vendor_id, status, stock
              FROM products
              WHERE id = $1 AND vendor_id = $2 AND deleted_at IS NULL`,
             [validated.productId, vendorId]
@@ -703,6 +675,9 @@ export class PaymentController {
         }
 
         const product = productResult.rows[0];
+        if (product.status !== 'active') {
+            throw new BadRequestError('This deal is no longer available');
+        }
 
         // 3. Validate payment amount matches product price (allow small variance for rounding)
         const expectedAmount = parseFloat(product.student_price.toString());
@@ -734,69 +709,85 @@ export class PaymentController {
             }
         }
 
-        // 5. Check for duplicate payment reference
-        const duplicateCheck = await db.query(
-            `SELECT id FROM transactions
-             WHERE vendor_payment_reference = $1 AND vendor_id = $2`,
-            [validated.paymentReference, vendorId]
+        const commissionRate = parseFloat(
+            (await db.query('SELECT commission_rate FROM vendors WHERE id = $1', [vendorId])).rows[0]
+                ?.commission_rate || '0'
         );
-
-        if (duplicateCheck.rows.length > 0) {
-            throw new BadRequestError('Payment reference has already been used');
-        }
-
-        // 6. Get vendor commission rate
-        const vendorInfo = await db.query(
-            'SELECT commission_rate FROM vendors WHERE id = $1',
-            [vendorId]
-        );
-
-        const commissionRate = parseFloat(vendorInfo.rows[0]?.commission_rate || '0');
         const commission = (reportedAmount * commissionRate) / 100;
         const earnings = reportedAmount - commission;
-
-        // 7. Create transaction record
-        const transactionResult = await db.query(
-            `INSERT INTO transactions (
-                student_id, product_id, vendor_id, amount, commission,
-                status, verification_token, payment_source, vendor_payment_reference, verified_at
-            )
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, CURRENT_TIMESTAMP)
-            RETURNING id, status, created_at`,
-            [
-                tokenData.studentId,
-                validated.productId,
-                vendorId,
-                reportedAmount,
-                commission,
-                'completed',
-                validated.verificationToken,
-                validated.paymentGateway === 'paystack' ? 'vendor_paystack' : 'vendor_other',
-                validated.paymentReference,
-            ]
-        );
-
-        const transaction = transactionResult.rows[0];
-
-        // 8. Update savings stats for student
         const discountAmount = parseFloat(product.price.toString()) - reportedAmount;
-        await db.query(
-            `INSERT INTO savings_stats (student_id, total_savings, total_purchases, last_updated)
-             VALUES ($1, $2, 1, CURRENT_TIMESTAMP)
-             ON CONFLICT (student_id)
-             DO UPDATE SET
-                 total_savings = savings_stats.total_savings + $2,
-                 total_purchases = savings_stats.total_purchases + 1,
-                 last_updated = CURRENT_TIMESTAMP`,
-            [tokenData.studentId, discountAmount]
-        );
 
-        // 9. Get updated savings total for milestone check
-        const savingsResult = await db.query(
-            'SELECT total_savings FROM savings_stats WHERE student_id = $1',
-            [tokenData.studentId]
-        );
-        const totalSavings = savingsResult.rows[0]?.total_savings || 0;
+        const client = await getPool().connect();
+        let transaction: { id: string; status: string; created_at: Date };
+        let totalSavings = 0;
+        try {
+            await client.query('BEGIN');
+
+            const duplicateCheck = await client.query(
+                `SELECT id FROM transactions
+                 WHERE vendor_payment_reference = $1 AND vendor_id = $2
+                 FOR UPDATE`,
+                [validated.paymentReference, vendorId]
+            );
+            if (duplicateCheck.rows.length > 0) {
+                throw new BadRequestError('Payment reference has already been used');
+            }
+
+            const stockUpdate = await client.query(
+                `UPDATE products
+                 SET stock = stock - 1, updated_at = CURRENT_TIMESTAMP
+                 WHERE id = $1 AND vendor_id = $2 AND stock > 0 AND deleted_at IS NULL AND status = 'active'
+                 RETURNING id`,
+                [validated.productId, vendorId]
+            );
+            if (stockUpdate.rows.length === 0) {
+                throw new BadRequestError('This deal is no longer available');
+            }
+
+            const transactionResult = await client.query(
+                `INSERT INTO transactions (
+                    student_id, product_id, vendor_id, amount, commission,
+                    status, verification_token, payment_source, vendor_payment_reference, verified_at
+                )
+                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, CURRENT_TIMESTAMP)
+                RETURNING id, status, created_at`,
+                [
+                    tokenData.studentId,
+                    validated.productId,
+                    vendorId,
+                    reportedAmount,
+                    commission,
+                    'completed',
+                    validated.verificationToken,
+                    validated.paymentGateway === 'paystack' ? 'vendor_paystack' : 'vendor_other',
+                    validated.paymentReference,
+                ]
+            );
+            transaction = transactionResult.rows[0];
+
+            await client.query(
+                `INSERT INTO savings_stats (student_id, total_savings, total_purchases, last_updated)
+                 VALUES ($1, $2, 1, CURRENT_TIMESTAMP)
+                 ON CONFLICT (student_id)
+                 DO UPDATE SET
+                     total_savings = savings_stats.total_savings + $2,
+                     total_purchases = savings_stats.total_purchases + 1,
+                     last_updated = CURRENT_TIMESTAMP`,
+                [tokenData.studentId, discountAmount]
+            );
+
+            const savingsResult = await client.query(
+                'SELECT total_savings FROM savings_stats WHERE student_id = $1',
+                [tokenData.studentId]
+            );
+            totalSavings = savingsResult.rows[0]?.total_savings || 0;
+            await client.query('COMMIT');
+        } catch (error) {
+            await client.query('ROLLBACK');
+            throw error;
+        } finally {
+            client.release();
+        }
 
         // 10. Create purchase confirmation notification
         try {
