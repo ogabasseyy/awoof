@@ -35,7 +35,12 @@ jobs:
       - name: Run Semgrep scan
         # SEMGREP_APP_TOKEN is optional - enables Semgrep Cloud features if configured
         # To enable: add SEMGREP_APP_TOKEN secret from https://semgrep.dev
-        run: semgrep ci --sarif --output=semgrep.sarif
+        run: |
+          if [ -n "$SEMGREP_APP_TOKEN" ]; then
+            semgrep ci --no-suppress-errors --sarif --output=semgrep.sarif
+          else
+            semgrep scan --config=p/ci --error --sarif --output=semgrep.sarif .
+          fi
         env:
           SEMGREP_APP_TOKEN: ${{ secrets.SEMGREP_APP_TOKEN || '' }}
 
