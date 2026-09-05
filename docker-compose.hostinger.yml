@@ -8,13 +8,13 @@ services:
       context: ./apps/web
       dockerfile: Dockerfile.prod
       args:
-        NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-http://localhost:5001}
+        NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:?Set NEXT_PUBLIC_API_URL to the public HTTPS API URL behind a reverse proxy}
     ports:
-      - "3000:3000"
+      - "127.0.0.1:3000:3000"
     environment:
       NODE_ENV: production
-      # Set to your public API URL (e.g. https://api.yourdomain.com or http://YOUR_VPS_IP:5001)
-      NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-http://localhost:5001}
+      # Public HTTPS API URL served by a reverse proxy. Port 5001 is loopback-only.
+      NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:?Set NEXT_PUBLIC_API_URL to the public HTTPS API URL behind a reverse proxy}
     restart: unless-stopped
 
   backend:
@@ -31,29 +31,52 @@ services:
     environment:
       NODE_ENV: production
       PORT: 5000
-      DATABASE_URL: postgresql://${DB_USER:-root}:${DB_PASSWORD:-root}@db:5432/${DB_NAME:-awoofDB}
       DB_HOST: db
       DB_PORT: 5432
       DB_NAME: ${DB_NAME:-awoofDB}
       DB_USER: ${DB_USER:-root}
-      DB_PASSWORD: ${DB_PASSWORD:-root}
+      DB_PASSWORD: ${DB_PASSWORD:?Set a strong DB_PASSWORD}
       REDIS_HOST: redis
       REDIS_PORT: 6379
-      REDIS_PASSWORD: ${REDIS_PASSWORD}
-      JWT_SECRET: ${JWT_SECRET}
-      JWT_REFRESH_SECRET: ${JWT_REFRESH_SECRET}
-      CORS_ORIGIN: ${CORS_ORIGIN:-http://localhost:3000}
-      FRONTEND_URL: ${FRONTEND_URL:-http://localhost:3000}
+      REDIS_PASSWORD: ${REDIS_PASSWORD:?Set REDIS_PASSWORD}
+      JWT_SECRET: ${JWT_SECRET:?Set JWT_SECRET}
+      JWT_REFRESH_SECRET: ${JWT_REFRESH_SECRET:?Set JWT_REFRESH_SECRET}
+      CORS_ORIGIN: ${CORS_ORIGIN:?Set CORS_ORIGIN to the public HTTPS web origin}
+      FRONTEND_URL: ${FRONTEND_URL:?Set FRONTEND_URL to the public HTTPS web origin}
     ports:
-      - "5001:5000"
+      - "127.0.0.1:5001:5000"
     depends_on:
       db:
         condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
       redis:
         condition: service_healthy
     env_file:
       - .env
     restart: unless-stopped
+
+  migrate:
+    build:
+      context: ./apps/backend
+      dockerfile: Dockerfile.prod
+    working_dir: /usr/src/app
+    environment:
+      NODE_ENV: production
+      DB_HOST: db
+      DB_PORT: 5432
+      DB_NAME: ${DB_NAME:-awoofDB}
+      DB_USER: ${DB_USER:-root}
+      DB_PASSWORD: ${DB_PASSWORD:?Set a strong DB_PASSWORD}
+      JWT_SECRET: ${JWT_SECRET:?Set JWT_SECRET}
+      JWT_REFRESH_SECRET: ${JWT_REFRESH_SECRET:?Set JWT_REFRESH_SECRET}
+    env_file:
+      - .env
+    depends_on:
+      db:
+        condition: service_healthy
+    command: ["node", "dist/database/migrations/run.js"]
+    restart: "no"
 
   db:
     container_name: awoof-postgres
@@ -61,10 +84,8 @@ services:
     restart: always
     environment:
       POSTGRES_USER: ${DB_USER:-root}
-      POSTGRES_PASSWORD: ${DB_PASSWORD:-root}
+      POSTGRES_PASSWORD: ${DB_PASSWORD:?Set a strong DB_PASSWORD}
       POSTGRES_DB: ${DB_NAME:-awoofDB}
-    ports:
-      - "5432:5432"
     volumes:
       - db_data:/var/lib/postgresql/data
     healthcheck:

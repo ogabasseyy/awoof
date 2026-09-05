@@ -5,7 +5,7 @@
  */
 
 import type { Response } from 'express';
-import { db } from '../config/database.js';
+import { db, getPool } from '../config/database.js';
 import {
     BadRequestError,
     NotFoundError,
@@ -61,6 +61,7 @@ export class OrderController {
                 t.commission,
                 t.status,
                 t.paystack_reference,
+                t.payment_source,
                 t.created_at,
                 t.updated_at,
                 p.id as product_id,
@@ -143,6 +144,7 @@ export class OrderController {
             commission: parseFloat(row.commission),
             status: row.status,
             paystackReference: row.paystack_reference,
+            managedPayment: row.payment_source === 'awoof' && Boolean(row.paystack_reference),
             createdAt: row.created_at,
             updatedAt: row.updated_at,
             product: {
@@ -203,6 +205,7 @@ export class OrderController {
                 t.commission,
                 t.status,
                 t.paystack_reference,
+                t.payment_source,
                 t.created_at,
                 t.updated_at,
                 p.id as product_id,
@@ -235,6 +238,7 @@ export class OrderController {
             commission: parseFloat(row.commission),
             status: row.status,
             paystackReference: row.paystack_reference,
+            managedPayment: row.payment_source === 'awoof' && Boolean(row.paystack_reference),
             createdAt: row.created_at,
             updatedAt: row.updated_at,
             product: {
@@ -242,8 +246,8 @@ export class OrderController {
                 name: row.product_name,
                 description: row.product_description,
                 imageUrl: row.product_image,
-                price: parseFloat(row.price),
-                studentPrice: parseFloat(row.student_price),
+                price: parseFloat(row.product_price),
+                studentPrice: parseFloat(row.product_student_price),
             },
             student: {
                 id: row.student_id,
@@ -287,39 +291,68 @@ export class OrderController {
         // Validate request body
         const validated = updateOrderStatusSchema.parse(req.body);
 
-        // Check if order exists and belongs to vendor
-        const orderCheck = await db.query(
-            'SELECT id, status FROM transactions WHERE id = $1 AND vendor_id = $2',
-            [orderId, vendorId]
-        );
+        const client = await getPool().connect();
+        try {
+            await client.query('BEGIN');
+            const orderCheck = await client.query(
+                `SELECT id, status, payment_source, paystack_reference, product_id
+                 FROM transactions WHERE id = $1 AND vendor_id = $2 FOR UPDATE`,
+                [orderId, vendorId]
+            );
 
-        if (orderCheck.rows.length === 0) {
-            throw new NotFoundError('Order not found');
-        }
+            if (orderCheck.rows.length === 0) {
+                throw new NotFoundError('Order not found');
+            }
 
-        // Update order status
-        const result = await db.query(
-            `UPDATE transactions 
-             SET status = $1, updated_at = CURRENT_TIMESTAMP
-             WHERE id = $2 AND vendor_id = $3
-             RETURNING id, status, updated_at`,
-            [validated.status, orderId, vendorId]
-        );
+            const order = orderCheck.rows[0];
+            if (order.payment_source === 'awoof' && order.paystack_reference) {
+                throw new BadRequestError('Awoof-managed payment states cannot be changed by vendors');
+            }
+            if (order.status === 'refunded') {
+                throw new BadRequestError('Refunded orders cannot change status');
+            }
+            if (validated.status === 'refunded' && order.status !== 'completed') {
+                throw new BadRequestError('Only completed orders can be refunded');
+            }
 
-        if (result.rows.length === 0) {
-            throw new NotFoundError('Order not found');
-        }
+            const result = await client.query(
+                `UPDATE transactions
+                 SET status = $1, updated_at = CURRENT_TIMESTAMP
+                 WHERE id = $2 AND vendor_id = $3
+                 RETURNING id, status, updated_at`,
+                [validated.status, orderId, vendorId]
+            );
 
-        success(res, {
-            message: 'Order status updated successfully',
-            data: {
-                order: {
-                    id: result.rows[0].id,
-                    status: result.rows[0].status,
-                    updatedAt: result.rows[0].updated_at,
+            if (result.rows.length === 0) {
+                throw new NotFoundError('Order not found');
+            }
+
+            if (order.status === 'completed' && validated.status === 'refunded') {
+                await client.query(
+                    `UPDATE products
+                     SET stock = stock + 1, updated_at = CURRENT_TIMESTAMP
+                     WHERE id = $1`,
+                    [order.product_id]
+                );
+            }
+
+            await client.query('COMMIT');
+
+            success(res, {
+                message: 'Order status updated successfully',
+                data: {
+                    order: {
+                        id: result.rows[0].id,
+                        status: result.rows[0].status,
+                        updatedAt: result.rows[0].updated_at,
+                    },
                 },
-            },
-        });
+            });
+        } catch (error) {
+            await client.query('ROLLBACK');
+            throw error;
+        } finally {
+            client.release();
+        }
     }
 }
-

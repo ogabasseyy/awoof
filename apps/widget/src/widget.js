@@ -111,6 +111,19 @@ function verify(verifyOpts = {}) {
     return Promise.reject(err);
   }
 
+  let expectedIframeOrigin;
+  try {
+    const parsedWebAppUrl = new URL(state.webAppUrl);
+    const localDevelopment = parsedWebAppUrl.protocol === 'http:'
+      && ['localhost', '127.0.0.1', '[::1]'].includes(parsedWebAppUrl.hostname);
+    if (parsedWebAppUrl.protocol !== 'https:' && !localDevelopment) throw new Error();
+    expectedIframeOrigin = parsedWebAppUrl.origin;
+  } catch {
+    const err = new Error('Awoof widget: webAppUrl must be an absolute HTTPS URL (HTTP is allowed only for localhost).');
+    if (onError) onError(err);
+    return Promise.reject(err);
+  }
+
   const origin = typeof window !== 'undefined' && window.location ? window.location.origin : '';
   const params = new URLSearchParams({
     apiKey: state.apiKey,
@@ -127,17 +140,23 @@ function verify(verifyOpts = {}) {
     onClose: () => onCancel && onCancel(),
   });
   modal.open();
-  modal.setContent(`<iframe src="${escapeAttr(iframeUrl)}" title="Verify student" style="width:100%;height:400px;border:0;border-radius:8px;"></iframe>`);
+  const iframe = document.createElement('iframe');
+  iframe.src = iframeUrl;
+  iframe.title = 'Verify student';
+  iframe.style.cssText = 'width:100%;height:400px;border:0;border-radius:8px;';
+  modal.setNode(iframe);
 
   const handleMessage = (event) => {
+    if (event.origin !== expectedIframeOrigin || event.source !== iframe.contentWindow) return;
     if (!event.data || event.data.type !== AWOOF_MESSAGE_TYPE) return;
+    if (typeof event.data.token !== 'string' || !event.data.token.startsWith('awoof_')) return;
     if (typeof window !== 'undefined' && window.removeEventListener) {
       window.removeEventListener('message', handleMessage);
     }
-    modal.close();
+    modal.close(false);
     const { token, studentId, verifiedAt, method } = event.data;
     state.token = token;
-    sendSuccessToParent(token, { studentId, verifiedAt, method });
+    sendSuccessToParent(token, { studentId, verifiedAt, method }, onSuccess);
   };
   if (typeof window !== 'undefined' && window.addEventListener) {
     window.addEventListener('message', handleMessage);
@@ -150,7 +169,7 @@ function verify(verifyOpts = {}) {
  * Send verification success to the parent window (and to optional callback).
  * Called when the widget has obtained a token from the backend.
  */
-function sendSuccessToParent(token, data = {}) {
+function sendSuccessToParent(token, data = {}, callback = state.callbacks.onSuccess) {
   const payload = {
     type: AWOOF_MESSAGE_TYPE,
     token,
@@ -159,10 +178,9 @@ function sendSuccessToParent(token, data = {}) {
     method: data.method || 'widget',
   };
   if (typeof window !== 'undefined' && window.postMessage) {
-    window.postMessage(payload, '*');
+    window.postMessage(payload, window.location.origin);
   }
-  const cb = state.callbacks.onSuccess;
-  if (cb) cb(token, data);
+  if (callback) callback(token, data);
 }
 
 function config(opts = {}) {
@@ -187,15 +205,6 @@ function clear() {
 function checkDomainStatus() {
   if (!state.apiKey || !state.apiBaseUrl) return Promise.reject(new Error('Not initialized'));
   return checkDomain(state.apiBaseUrl, getDomain(), state.apiKey);
-}
-
-function escapeAttr(s) {
-  const div = typeof document !== 'undefined' ? document.createElement('div') : null;
-  if (div) {
-    div.textContent = s;
-    return div.innerHTML.replace(/"/g, '&quot;');
-  }
-  return s.replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 }
 
 export default {

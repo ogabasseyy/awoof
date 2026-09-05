@@ -6,7 +6,7 @@
 
 'use client';
 
-import { useState, useEffect } from 'react';
+import { Suspense, useState, useEffect } from 'react';
 import { BarChart3, CreditCard, LayoutDashboard, LifeBuoy, Puzzle, Settings, ShoppingBag, Tag, Plus, Search, RefreshCw } from 'lucide-react';
 import Image from 'next/image';
 import ProtectedRoute from '@/components/ProtectedRoute';
@@ -56,7 +56,7 @@ interface Product {
     updated_at: string;
 }
 
-export default function VendorDealsPage() {
+function VendorDealsContent() {
     const searchParams = useSearchParams();
     const { user, logout } = useAuth();
     const confirm = useConfirm();
@@ -105,7 +105,6 @@ export default function VendorDealsPage() {
 
     // Debounced search — skip the initial empty query (mount already fetched)
     useEffect(() => {
-        if (searchQuery === '') return;
         const timer = setTimeout(() => {
             if (page === 1) {
                 fetchProducts();
@@ -189,7 +188,7 @@ export default function VendorDealsPage() {
                     <nav className="-mb-px flex gap-6">
                         <button
                             type="button"
-                            onClick={() => setActiveTab('products')}
+                            onClick={() => { setPage(1); setActiveTab('products'); }}
                             className={`whitespace-nowrap border-b-2 px-1 py-3 text-sm font-medium ${activeTab === 'products'
                                 ? 'border-blue-600 text-blue-600'
                                 : 'border-transparent text-slate-500 hover:border-slate-300 hover:text-slate-700'
@@ -199,7 +198,7 @@ export default function VendorDealsPage() {
                         </button>
                         <button
                             type="button"
-                            onClick={() => setActiveTab('vouchers')}
+                            onClick={() => { setPage(1); setActiveTab('vouchers'); }}
                             className={`whitespace-nowrap border-b-2 px-1 py-3 text-sm font-medium ${activeTab === 'vouchers'
                                 ? 'border-blue-600 text-blue-600'
                                 : 'border-transparent text-slate-500 hover:border-slate-300 hover:text-slate-700'
@@ -403,3 +402,10 @@ export default function VendorDealsPage() {
     );
 }
 
+export default function VendorDealsPage() {
+    return (
+        <Suspense fallback={<div className="p-6 text-sm text-slate-600">Loading deals…</div>}>
+            <VendorDealsContent />
+        </Suspense>
+    );
+}

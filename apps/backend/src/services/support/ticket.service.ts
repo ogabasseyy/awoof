@@ -2,7 +2,7 @@
  * Unified ticket service — create/list/reply/status for students, vendors, admins.
  */
 
-import { db } from '../../config/database.js';
+import { db, getPool } from '../../config/database.js';
 import {
     BadRequestError,
     ForbiddenError,
@@ -89,18 +89,19 @@ export class TicketService {
             : 'general';
 
         const insert = await db.query(
-            `INSERT INTO tickets (requester_user_id, requester_role, subject, category, status, priority)
+            `WITH new_ticket AS (
+             INSERT INTO tickets (requester_user_id, requester_role, subject, category, status, priority)
              VALUES ($1, $2, $3, $4, 'open', 'normal')
-             RETURNING *`,
-            [params.requesterUserId, params.requesterRole, params.subject, category]
+             RETURNING *
+             ), opening_message AS (
+               INSERT INTO ticket_messages (ticket_id, author_user_id, author_role, body, is_internal)
+               SELECT id, $1, $2, $5, false FROM new_ticket
+               RETURNING ticket_id
+             )
+             SELECT new_ticket.* FROM new_ticket JOIN opening_message ON opening_message.ticket_id = new_ticket.id`,
+            [params.requesterUserId, params.requesterRole, params.subject, category, params.message]
         );
         const ticket = insert.rows[0];
-
-        await db.query(
-            `INSERT INTO ticket_messages (ticket_id, author_user_id, author_role, body, is_internal)
-             VALUES ($1, $2, $3, $4, false)`,
-            [ticket.id, params.requesterUserId, params.requesterRole, params.message]
-        );
 
         // Notify admins (in-app + email ops)
         try {
@@ -112,7 +113,7 @@ export class TicketService {
                 kind: 'support_ticket_created',
                 metadata: { ticketId: ticket.id },
             });
-            const opsEmail = process.env.EMAIL_FROM || process.env.SUPPORT_EMAIL;
+            const opsEmail = process.env.SUPPORT_EMAIL;
             if (opsEmail) {
                 await sendSupportTicketCreatedEmail(
                     opsEmail,
@@ -291,61 +292,88 @@ export class TicketService {
         body: string;
         isInternal?: boolean;
     }) {
-        const ticketResult = await db.query(`SELECT * FROM tickets WHERE id = $1`, [
-            params.ticketId,
-        ]);
-        if (ticketResult.rows.length === 0) {
-            throw new NotFoundError('Ticket not found');
-        }
-        const ticket = ticketResult.rows[0];
-
-        if (params.authorRole !== 'admin') {
-            if (ticket.requester_user_id !== params.authorUserId) {
-                throw new ForbiddenError('You cannot reply to this ticket');
+        const client = await getPool().connect();
+        let transactionOpen = false;
+        let ticket: {
+            id: string;
+            requester_user_id: string;
+            requester_role: string;
+            subject: string;
+            status: TicketStatus;
+        };
+        let isInternal: boolean;
+        let msgRow: Record<string, unknown>;
+        try {
+            await client.query('BEGIN');
+            transactionOpen = true;
+            const ticketResult = await client.query(`SELECT * FROM tickets WHERE id = $1 FOR UPDATE`, [
+                params.ticketId,
+            ]);
+            if (ticketResult.rows.length === 0) {
+                throw new NotFoundError('Ticket not found');
             }
-            if (ticket.status === 'closed') {
-                throw new BadRequestError('This ticket is closed');
+            ticket = ticketResult.rows[0] as typeof ticket;
+
+            if (params.authorRole !== 'admin') {
+                if (ticket.requester_user_id !== params.authorUserId) {
+                    throw new ForbiddenError('You cannot reply to this ticket');
+                }
+                if (ticket.status === 'closed') {
+                    throw new BadRequestError('This ticket is closed');
+                }
+                if (params.isInternal) {
+                    throw new ForbiddenError('Only admins can post internal notes');
+                }
             }
-            if (params.isInternal) {
-                throw new ForbiddenError('Only admins can post internal notes');
-            }
-        }
 
-        const isInternal = params.authorRole === 'admin' && params.isInternal === true;
+            isInternal = params.authorRole === 'admin' && params.isInternal === true;
 
-        const msg = await db.query(
-            `INSERT INTO ticket_messages (ticket_id, author_user_id, author_role, body, is_internal)
-             VALUES ($1, $2, $3, $4, $5)
-             RETURNING *`,
-            [params.ticketId, params.authorUserId, params.authorRole, params.body, isInternal]
-        );
-
-        await db.query(
-            `UPDATE tickets SET updated_at = CURRENT_TIMESTAMP
-             WHERE id = $1`,
-            [params.ticketId]
-        );
-
-        // Reopen if admin replies to resolved
-        if (
-            params.authorRole === 'admin' &&
-            !isInternal &&
-            (ticket.status === 'resolved' || ticket.status === 'closed')
-        ) {
-            await db.query(
-                `UPDATE tickets SET status = 'in-progress', resolved_at = NULL, updated_at = CURRENT_TIMESTAMP
-                 WHERE id = $1`,
-                [params.ticketId]
+            const msg = await client.query(
+                `INSERT INTO ticket_messages (ticket_id, author_user_id, author_role, body, is_internal)
+                 VALUES ($1, $2, $3, $4, $5)
+                 RETURNING *`,
+                [params.ticketId, params.authorUserId, params.authorRole, params.body, isInternal]
             );
-        } else if (
-            params.authorRole === 'admin' &&
-            !isInternal &&
-            ticket.status === 'open'
-        ) {
-            await db.query(
-                `UPDATE tickets SET status = 'in-progress', updated_at = CURRENT_TIMESTAMP WHERE id = $1`,
-                [params.ticketId]
-            );
+            msgRow = msg.rows[0];
+
+            if (
+                !isInternal &&
+                (ticket.status === 'resolved' || ticket.status === 'closed')
+            ) {
+                await client.query(
+                    `UPDATE tickets SET status = 'in-progress', resolved_at = NULL, updated_at = CURRENT_TIMESTAMP
+                     WHERE id = $1`,
+                    [params.ticketId]
+                );
+            } else if (
+                params.authorRole === 'admin' &&
+                !isInternal &&
+                ticket.status === 'open'
+            ) {
+                await client.query(
+                    `UPDATE tickets SET status = 'in-progress', updated_at = CURRENT_TIMESTAMP WHERE id = $1`,
+                    [params.ticketId]
+                );
+            } else {
+                await client.query(
+                    `UPDATE tickets SET updated_at = CURRENT_TIMESTAMP WHERE id = $1`,
+                    [params.ticketId]
+                );
+            }
+
+            await client.query('COMMIT');
+            transactionOpen = false;
+        } catch (error) {
+            if (transactionOpen) {
+                try {
+                    await client.query('ROLLBACK');
+                } catch (rollbackError) {
+                    appLogger.error('Ticket reply rollback failed', rollbackError);
+                }
+            }
+            throw error;
+        } finally {
+            client.release();
         }
 
         if (!isInternal) {
@@ -377,7 +405,7 @@ export class TicketService {
                         kind: 'support_reply',
                         metadata: { ticketId: ticket.id },
                     });
-                    const opsEmail = process.env.EMAIL_FROM || process.env.SUPPORT_EMAIL;
+                    const opsEmail = process.env.SUPPORT_EMAIL;
                     if (opsEmail) {
                         await sendSupportTicketReplyEmail(
                             opsEmail,
@@ -393,7 +421,7 @@ export class TicketService {
             }
         }
 
-        return mapMessage(msg.rows[0]);
+        return mapMessage(msgRow);
     }
 
     static async updateStatus(params: {

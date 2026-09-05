@@ -2,9 +2,8 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 import Link from 'next/link';
-import { usePathname } from 'next/navigation';
 import { Bell } from 'lucide-react';
-import apiClient from '@/lib/api-client';
+import { useAuth } from '@/contexts/AuthContext';
 
 interface BellNotification {
     id: string;
@@ -16,26 +15,27 @@ interface BellNotification {
     createdAt: string;
 }
 
-function inboxHref(pathname: string | null): string {
-    if (pathname?.startsWith('/admin')) return '/admin/notifications';
-    if (pathname?.startsWith('/vendor')) return '/vendor/notifications';
+function inboxHref(role: string | undefined): string {
+    if (role === 'admin') return '/admin/notifications';
+    if (role === 'vendor') return '/vendor/notifications';
     return '/student/profile/notifications';
 }
 
-function deepLink(n: BellNotification, pathname: string | null): string | null {
+function deepLink(n: BellNotification, role: string | undefined): string | null {
     const ticketId = n.metadata?.ticketId;
     if (ticketId) {
-        if (pathname?.startsWith('/admin')) return `/admin/support/${ticketId}`;
-        if (pathname?.startsWith('/vendor')) return `/vendor/support/${ticketId}`;
+        if (role === 'admin') return `/admin/support/${ticketId}`;
+        if (role === 'vendor') return `/vendor/support/${ticketId}`;
         return `/student/profile/support/${ticketId}`;
     }
-    if (n.kind === 'order' && pathname?.startsWith('/vendor')) return '/vendor/orders';
+    if (n.kind === 'order' && role === 'vendor') return '/vendor/orders';
     if (n.kind === 'purchase') return '/student/profile/receipts';
     return null;
 }
 
 export function NotificationBell() {
-    const pathname = usePathname();
+    const { user } = useAuth();
+    const role = user?.role;
     const [open, setOpen] = useState(false);
     const [unreadCount, setUnreadCount] = useState(0);
     const [items, setItems] = useState<BellNotification[]>([]);
@@ -73,7 +73,7 @@ export function NotificationBell() {
         try {
             await apiClient.put(`/support/notifications/${id}/read`);
             setItems((prev) => prev.map((n) => (n.id === id ? { ...n, read: true } : n)));
-            setUnreadCount((c) => Math.max(0, c - 1));
+            await refresh();
         } catch {
             /* ignore */
         }
@@ -103,7 +103,7 @@ export function NotificationBell() {
                     <div className="flex items-center justify-between border-b border-slate-100 px-4 py-3">
                         <p className="text-sm font-semibold text-slate-900">Notifications</p>
                         <Link
-                            href={inboxHref(pathname)}
+                            href={inboxHref(role)}
                             className="text-xs font-medium text-[#1D4ED8]"
                             onClick={() => setOpen(false)}
                         >
@@ -115,7 +115,7 @@ export function NotificationBell() {
                             <p className="px-4 py-8 text-center text-sm text-slate-500">No notifications</p>
                         ) : (
                             items.map((n) => {
-                                const href = deepLink(n, pathname);
+                                const href = deepLink(n, role);
                                 const content = (
                                     <>
                                         <p className="text-sm font-medium text-slate-900">{n.title}</p>

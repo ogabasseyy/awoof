@@ -43,6 +43,7 @@ interface Product {
     vendor_id: string;
     vendor_name: string;
     vendor_description: string | null;
+    vendor_website?: string | null;
     vendor_payment_method?: 'awoof' | 'vendor_website';
     deal_type?: 'product' | 'voucher';
     created_at: string;
@@ -82,6 +83,11 @@ export default function ProductDetailPage() {
         if (!product) return;
 
         if (product.deal_type === 'voucher' || product.vendor_payment_method === 'vendor_website') {
+            if (product.vendor_website) {
+                window.open(product.vendor_website, '_blank', 'noopener,noreferrer');
+            } else {
+                toast.error('This vendor has not configured a redemption website yet.');
+            }
             return;
         }
 
@@ -118,6 +124,7 @@ export default function ProductDetailPage() {
     const savings = product ? product.price - product.student_price : 0;
     const isExternal =
         product?.deal_type === 'voucher' || product?.vendor_payment_method === 'vendor_website';
+    const isUnavailable = !isExternal && product?.stock === 0;
 
     const avatarLetter = (() => {
         const profile = (user as { profile?: { name?: string } } | null)?.profile;
@@ -182,7 +189,7 @@ export default function ProductDetailPage() {
                     </div>
                     {product.category_name ? (
                         <Link
-                            href={`/marketplace/search?categoryId=${product.category_id}`}
+                            href={`/marketplace/search?categoryId=${product.category_id}&deal_type=${product.deal_type ?? 'product'}`}
                             className="rounded-full bg-[#1D4ED8]/10 px-3 py-1.5 text-xs font-semibold text-[#1D4ED8] hover:bg-[#1D4ED8]/15"
                         >
                             {product.category_name}
@@ -283,10 +290,10 @@ export default function ProductDetailPage() {
 
                         <FadeIn delay={0.18}>
                             <div className="flex flex-wrap items-center gap-3">
-                                {product.stock > 0 ? (
+                                {isExternal || product.stock > 0 ? (
                                     <span className="inline-flex items-center gap-1.5 rounded-full bg-emerald-50 px-3 py-1.5 text-sm font-semibold text-emerald-700">
                                         <Check className="h-4 w-4" />
-                                        In stock · {product.stock} left
+                                        {isExternal && product.stock === 0 ? 'Available' : `In stock · ${product.stock} left`}
                                     </span>
                                 ) : (
                                     <span className="inline-flex items-center gap-1.5 rounded-full bg-red-50 px-3 py-1.5 text-sm font-semibold text-red-600">
@@ -327,12 +334,12 @@ export default function ProductDetailPage() {
                         <FadeIn delay={0.3} className="hidden lg:block pt-2">
                             <Button
                                 onClick={handlePurchase}
-                                disabled={product.stock === 0 || isPurchasing || isExternal}
+                                disabled={isUnavailable || isPurchasing}
                                 className="h-12 w-full rounded-full bg-[#1D4ED8] text-base font-bold hover:bg-[#1E40AF] disabled:opacity-60"
                                 size="lg"
                             >
                                 <ShoppingCart className="mr-2 h-5 w-5" />
-                                {product.stock === 0
+                                {isUnavailable
                                     ? 'Out of stock'
                                     : isPurchasing
                                       ? 'Starting checkout…'
@@ -374,10 +381,10 @@ export default function ProductDetailPage() {
                     </div>
                     <Button
                         onClick={handlePurchase}
-                        disabled={product.stock === 0 || isPurchasing || isExternal}
+                        disabled={isUnavailable || isPurchasing}
                         className="h-12 flex-1 rounded-full bg-[#1D4ED8] font-bold hover:bg-[#1E40AF]"
                     >
-                        {product.stock === 0
+                        {isUnavailable
                             ? 'Out of stock'
                             : isPurchasing
                               ? '…'

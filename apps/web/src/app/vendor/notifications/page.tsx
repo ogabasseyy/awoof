@@ -48,6 +48,9 @@ export default function VendorNotificationsPage() {
     const { user, logout } = useAuth();
     const [notifications, setNotifications] = useState<Notification[]>([]);
     const [loading, setLoading] = useState(true);
+    const [page, setPage] = useState(1);
+    const [totalPages, setTotalPages] = useState(1);
+    const [refresh, setRefresh] = useState(0);
 
     const extendedUser = user as (User & { profile?: { companyName?: string; name?: string } }) | null;
     const displayName =
@@ -56,25 +59,30 @@ export default function VendorNotificationsPage() {
         extendedUser?.email ??
         'Vendor';
 
-    const load = async () => {
-        try {
-            setLoading(true);
-            const res = await apiClient.get('/support/notifications');
-            setNotifications(res.data.data.notifications || []);
-        } catch {
-            setNotifications([]);
-        } finally {
-            setLoading(false);
-        }
-    };
-
     useEffect(() => {
+        let cancelled = false;
+        const load = async () => {
+            try {
+                setLoading(true);
+                const res = await apiClient.get('/support/notifications', { params: { page, limit: 20 } });
+                if (cancelled) return;
+                setNotifications(res.data.data.notifications || []);
+                const pages = res.data.data.pagination.totalPages;
+                setTotalPages(pages);
+                if (page > pages) setPage(pages);
+            } catch {
+                if (!cancelled) setNotifications([]);
+            } finally {
+                if (!cancelled) setLoading(false);
+            }
+        };
         void load();
-    }, []);
+        return () => { cancelled = true; };
+    }, [page, refresh]);
 
     const markAll = async () => {
         await apiClient.put('/support/notifications/read', { markAll: true });
-        await load();
+        setRefresh((value) => value + 1);
     };
 
     return (
@@ -118,6 +126,15 @@ export default function VendorNotificationsPage() {
                         </ul>
                     )}
                 </div>
+                <nav aria-label="Notification pages" className="mt-4 flex items-center justify-between">
+                    <Button variant="outline" disabled={loading || page <= 1} onClick={() => setPage((value) => value - 1)}>
+                        Previous
+                    </Button>
+                    <span className="text-sm text-slate-600">Page {page} of {totalPages}</span>
+                    <Button variant="outline" disabled={loading || page >= totalPages} onClick={() => setPage((value) => value + 1)}>
+                        Next
+                    </Button>
+                </nav>
             </DashboardLayout>
         </ProtectedRoute>
     );

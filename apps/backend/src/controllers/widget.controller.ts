@@ -39,8 +39,9 @@ export async function domainCheck(req: Request, res: Response): Promise<void> {
     }
 
     const result = await db.query(
-        `SELECT vendor_id FROM widget_configs
-         WHERE api_key = $1 AND status = 'active' AND $2 = ANY(allowed_domains)`,
+        `SELECT wc.vendor_id FROM widget_configs wc
+         JOIN vendors v ON v.id = wc.vendor_id AND v.status = 'active' AND v.deleted_at IS NULL
+         WHERE wc.api_key = $1 AND wc.status = 'active' AND $2 = ANY(wc.allowed_domains)`,
         [apiKey, hostname]
     );
 

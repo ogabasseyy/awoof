@@ -12,8 +12,7 @@ import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { UniversitySelect } from '@/components/forms/UniversitySelect';
-import apiClient from '@/lib/api-client';
-import { storeTokens } from '@/lib/auth';
+import { publicApiClient } from '@/lib/api-client';
 
 const AWOOF_MESSAGE_TYPE = 'AWOOF_VERIFICATION_SUCCESS';
 
@@ -24,7 +23,7 @@ function WidgetVerifyContent() {
     const apiKey = searchParams.get('apiKey') || '';
     const vendorId = searchParams.get('vendorId') || '';
     const productId = searchParams.get('productId') || '';
-    const origin = searchParams.get('origin') || '*';
+    const origin = searchParams.get('origin') || '';
 
     const [step, setStep] = useState<Step>('ndpr');
     const [ndprConsent, setNdprConsent] = useState(false);
@@ -44,11 +43,23 @@ function WidgetVerifyContent() {
     const [whatsappStudentName, setWhatsappStudentName] = useState('');
 
     useEffect(() => {
-        if (!apiKey || !vendorId) {
-            setError('Missing apiKey or vendorId. Close and try again from the vendor site.');
+        let validOrigin = false;
+        try {
+            const parsedOrigin = new URL(origin);
+            const localDevelopment = process.env.NODE_ENV === 'development'
+                && parsedOrigin.protocol === 'http:'
+                && ['localhost', '127.0.0.1', '[::1]'].includes(parsedOrigin.hostname);
+            validOrigin = (parsedOrigin.protocol === 'https:' || localDevelopment)
+                && parsedOrigin.origin === origin;
+        } catch {
+            validOrigin = false;
+        }
+
+        if (!apiKey || !vendorId || !validOrigin) {
+            setError('Missing or invalid widget configuration. Close and try again from the vendor site.');
             setStep('error');
         }
-    }, [apiKey, vendorId]);
+    }, [apiKey, origin, vendorId]);
 
     const fetchMethods = useCallback(async () => {
         if (!universityId) return;
@@ -72,7 +83,7 @@ function WidgetVerifyContent() {
         setLoading(true);
         setError(null);
         try {
-            const res = await apiClient.post('/verification/registration', {
+            const res = await publicApiClient.post('/verification/registration', {
                 universityId,
                 registrationNumber: registrationNumber.trim(),
                 studentName: studentName.trim() || undefined,
@@ -84,8 +95,7 @@ function WidgetVerifyContent() {
                 setError('Verification succeeded but no session. Try again.');
                 return;
             }
-            storeTokens(tokens);
-            await requestWidgetTokenAndPostMessage(data?.studentId);
+            await requestWidgetTokenAndPostMessage(tokens.accessToken);
         } catch (err: unknown) {
             const msg = (err as { response?: { data?: { error?: { message?: string }; message?: string } } })?.response?.data?.error?.message
                 || (err as { response?: { data?: { message?: string } } })?.response?.data?.message
@@ -103,7 +113,7 @@ function WidgetVerifyContent() {
         setLoading(true);
         setError(null);
         try {
-            await apiClient.post('/verification/whatsapp/request', {
+            await publicApiClient.post('/verification/whatsapp/request', {
                 universityId,
                 phoneNumber: phoneNumber.trim(),
             });
@@ -124,7 +134,9 @@ function WidgetVerifyContent() {
         setLoading(true);
         setError(null);
         try {
-            const res = await apiClient.post('/verification/whatsapp/verify', {
+            const res = await publicApiClient.post('/verification/whatsapp/verify', {
+                universityId,
+                registrationNumber,
                 phoneNumber: phoneNumber.trim(),
                 otp: otp.trim(),
                 studentName: whatsappStudentName.trim() || undefined,
@@ -135,8 +147,7 @@ function WidgetVerifyContent() {
                 setError('Verification succeeded but no session. Try again.');
                 return;
             }
-            storeTokens(tokens);
-            await requestWidgetTokenAndPostMessage();
+            await requestWidgetTokenAndPostMessage(tokens.accessToken);
         } catch (err: unknown) {
             const msg = (err as { response?: { data?: { error?: { message?: string } } } })?.response?.data?.error?.message
                 || (err as Error).message
@@ -147,22 +158,26 @@ function WidgetVerifyContent() {
         }
     };
 
-    async function requestWidgetTokenAndPostMessage(studentId?: string) {
+    async function requestWidgetTokenAndPostMessage(accessToken: string) {
         try {
-            const res = await apiClient.post('/verification/widget/token', {
+            const res = await publicApiClient.post('/verification/widget/token', {
                 vendorId,
                 productId: productId || undefined,
+                apiKey,
+                origin,
+            }, {
+                headers: { Authorization: `Bearer ${accessToken}` },
             });
             const data = res.data?.data ?? res.data;
             const token = data?.token;
-            if (!token) {
+            if (!token || !data?.studentId) {
                 setError('Could not get verification token.');
                 return;
             }
             const payload = {
                 type: AWOOF_MESSAGE_TYPE,
                 token,
-                studentId: studentId ?? undefined,
+                studentId: data.studentId,
                 verifiedAt: new Date().toISOString(),
                 method: step === 'reg' ? 'registration' : 'whatsapp',
             };
@@ -261,14 +276,9 @@ function WidgetVerifyContent() {
                                 </Button>
                             )}
                             {methods.length === 0 && (
-                                <>
-                                    <Button variant="outline" className="w-full" onClick={() => setStep('reg')}>
-                                        Registration number
-                                    </Button>
-                                    <Button variant="outline" className="w-full" onClick={() => setStep('whatsapp_request')}>
-                                        WhatsApp OTP
-                                    </Button>
-                                </>
+                                <p className="text-sm text-slate-600">
+                                    No verification methods are available for this university yet. Ask the vendor to use a university with a configured method, or try again later.
+                                </p>
                             )}
                         </div>
                     </>
@@ -311,6 +321,10 @@ function WidgetVerifyContent() {
                 {step === 'whatsapp_verify' && (
                     <form onSubmit={handleWhatsAppVerify} className="space-y-4">
                         <p className="text-slate-600 text-sm">Enter the 6-digit code sent to your WhatsApp.</p>
+                        <div>
+                            <Label htmlFor="waRegistration">University registration number *</Label>
+                            <Input id="waRegistration" value={registrationNumber} onChange={(e) => setRegistrationNumber(e.target.value)} required />
+                        </div>
                         <div>
                             <Label htmlFor="otp">Verification code *</Label>
                             <Input id="otp" value={otp} onChange={(e) => setOtp(e.target.value)} placeholder="000000" maxLength={6} required />

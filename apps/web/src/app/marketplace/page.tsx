@@ -505,7 +505,7 @@ export default function MarketplacePage() {
                                 <p className="text-sm text-slate-500 mt-0.5">Codes & campus perks</p>
                             </div>
                             {voucherProducts.length > 0 && (
-                                <Link href="/marketplace" className="text-sm font-semibold text-[#1D4ED8] hover:underline">
+                                <Link href="/marketplace/search?deal_type=voucher" className="text-sm font-semibold text-[#1D4ED8] hover:underline">
                                     See all
                                 </Link>
                             )}

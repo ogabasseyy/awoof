@@ -43,12 +43,15 @@ export async function handlePaystackWebhook(req: Request, res: Response): Promis
     try {
         await completeMarketplaceTransaction(reference, amountNaira);
     } catch (error) {
-        // Acknowledge so Paystack stops retrying; log for ops / callback verify can still settle
+        // Return a retryable failure. A 200 response here would tell Paystack to
+        // discard an event that has not been durably applied to our database.
         appLogger.error('Paystack webhook completion failed', {
             reference,
             amountNaira,
             error: error instanceof Error ? error.message : String(error),
         });
+        res.status(500).json({ success: false });
+        return;
     }
 
     res.status(200).json({ success: true });

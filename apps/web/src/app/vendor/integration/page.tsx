@@ -81,9 +81,8 @@ export default function VendorIntegrationPage() {
     const displayName = companyName ?? extendedUser?.profile?.name ?? extendedUser?.email ?? 'Vendor';
 
     // Get API base URL
-    const apiBaseUrl = typeof window !== 'undefined'
-        ? window.location.origin.replace('3000', '5001')
-        : 'https://api.awoof.com';
+    const apiBaseUrl = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:5001';
+    const webAppUrl = typeof window !== 'undefined' ? window.location.origin : '';
 
     useEffect(() => {
         fetchIntegrationData();
@@ -525,8 +524,8 @@ export default function VendorIntegrationPage() {
                                                 {`// After script loads, initialize once (e.g. on page load)
 Awoof.init({
   apiKey: 'YOUR_WIDGET_API_KEY',  // From Widget settings above
-  apiBaseUrl: 'https://api.awoof.com',  // Your backend API URL
-  webAppUrl: 'https://app.awoof.com',   // Awoof web app (for verification iframe)
+  apiBaseUrl: '${apiBaseUrl}',  // Your backend API URL
+  webAppUrl: '${webAppUrl}',   // Awoof web app (for verification iframe)
   onSuccess: (token, data) => {
     applyStudentDiscount();
     window.verificationToken = token;
@@ -548,8 +547,8 @@ function onVerifyStudentClick() {
                                                 onClick={() => copyToClipboard(
                                                     `Awoof.init({
   apiKey: 'YOUR_WIDGET_API_KEY',
-  apiBaseUrl: 'https://api.awoof.com',
-  webAppUrl: 'https://app.awoof.com',
+  apiBaseUrl: '${apiBaseUrl}',
+  webAppUrl: '${webAppUrl}',
   onSuccess: (token) => { applyStudentDiscount(); window.verificationToken = token; },
   onError: (err) => console.error(err),
 });
@@ -931,4 +930,3 @@ function onVerifyStudentClick() { Awoof.verify(); }`,
         </ProtectedRoute>
     );
 }
-

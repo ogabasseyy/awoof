@@ -110,10 +110,8 @@ export default function VendorPaymentPage() {
 
     // Payment integration state
     const [apiKey, setApiKey] = useState<string | null>(null);
-    const [paystackSubaccountCode, setPaystackSubaccountCode] = useState('');
     const [isGeneratingApiKey, setIsGeneratingApiKey] = useState(false);
     const [isUpdatingPaymentMethod, setIsUpdatingPaymentMethod] = useState(false);
-    const [isUpdatingSubaccount, setIsUpdatingSubaccount] = useState(false);
 
     type VendorProfile = { companyName?: string | null; name?: string | null };
     const extendedUser = user as (User & { profile?: VendorProfile }) | null;
@@ -219,9 +217,6 @@ export default function VendorPaymentPage() {
                 }
             }
 
-            // Set payment integration values
-            setPaystackSubaccountCode(settingsData.settings.paystackSubaccountCode || '');
-
             // Fetch API key info if exists
             try {
                 const apiKeyRes = await apiClient.get('/vendors/payment/api-key');
@@ -291,27 +286,6 @@ export default function VendorPaymentPage() {
         }
     };
 
-    const handleUpdatePaystackSubaccount = async () => {
-        if (!paystackSubaccountCode.trim()) {
-            toast.error('Please enter a Paystack subaccount code');
-            return;
-        }
-
-        try {
-            setIsUpdatingSubaccount(true);
-            await apiClient.put('/vendors/payment/paystack-subaccount', {
-                paystackSubaccountCode: paystackSubaccountCode.trim(),
-            });
-            await fetchPaymentData();
-            toast.success('Paystack subaccount updated successfully');
-        } catch (error: unknown) {
-            console.error('Error updating Paystack subaccount:', error);
-            toast.error(getApiErrorMessage(error, 'Failed to update Paystack subaccount'));
-        } finally {
-            setIsUpdatingSubaccount(false);
-        }
-    };
-
     const handleGenerateApiKey = async () => {
         const ok = await confirm({
             title: 'Generate new API key?',
@@ -355,9 +329,7 @@ export default function VendorPaymentPage() {
     };
 
     // Get API base URL for webhook/API examples
-    const apiBaseUrl = typeof window !== 'undefined'
-        ? window.location.origin.replace('3000', '5001')
-        : 'https://api.awoof.com';
+    const apiBaseUrl = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:5001';
 
     if (isLoading) {
         return (
@@ -712,105 +684,20 @@ export default function VendorPaymentPage() {
                                 </div>
                             </div>
 
-                            {/* Paystack Subaccount — advanced fallback */}
-                            <div className="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm">
-                                <h2 className="mb-4 text-lg font-semibold text-slate-900">
-                                    Paystack Subaccount (advanced)
-                                </h2>
-                                <p className="mb-6 text-sm text-slate-600">
-                                    Prefer the <button type="button" className="font-semibold text-[#1D4ED8] hover:underline" onClick={() => setActiveTab('payout')}>Payout</button> tab — saving your bank account creates a subaccount automatically. Use this only if you already have an <code className="text-xs">ACCT_…</code> code.
-                                </p>
-
-                                <div className="space-y-4">
-                                    <div>
-                                        <Label htmlFor="paystackSubaccount">Paystack Subaccount Code</Label>
-                                        <div className="mt-2 flex gap-2">
-                                            <Input
-                                                id="paystackSubaccount"
-                                                value={paystackSubaccountCode}
-                                                onChange={(e) => setPaystackSubaccountCode(e.target.value)}
-                                                placeholder="Enter Paystack subaccount code"
-                                                className="flex-1"
-                                            />
-                                            <Button
-                                                type="button"
-                                                variant="outline"
-                                                onClick={handleUpdatePaystackSubaccount}
-                                                disabled={isUpdatingSubaccount}
-                                            >
-                                                {isUpdatingSubaccount ? 'Updating...' : 'Configure'}
-                                            </Button>
-                                        </div>
-                                    </div>
-
-                                    {settings?.paystackSubaccountCode && (
-                                        <div className="rounded-lg bg-green-50 p-4">
-                                            <div className="flex items-center gap-2">
-                                                <Check className="h-5 w-5 text-green-600" />
-                                                <span className="text-sm font-medium text-green-900">
-                                                    Paystack subaccount configured
-                                                </span>
-                                            </div>
-                                            <p className="mt-1 text-xs text-green-700">
-                                                Marketplace purchases can split payment between you and Awoof automatically.
-                                            </p>
-                                        </div>
-                                    )}
+                            {settings?.paystackSubaccountCode && (
+                                <div className="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm">
+                                    <h2 className="mb-2 text-lg font-semibold text-slate-900">
+                                        Marketplace split payments
+                                    </h2>
+                                    <p className="text-sm text-slate-600">
+                                        Split settlement is enabled from your{' '}
+                                        <button type="button" className="font-semibold text-[#1D4ED8] hover:underline" onClick={() => setActiveTab('payout')}>
+                                            Payout
+                                        </button>{' '}
+                                        bank details. Awoof configures the platform Paystack webhook; vendor-site payments should use the transaction reporting API below.
+                                    </p>
                                 </div>
-                            </div>
-
-                            {/* Webhook URL — marketplace Paystack events */}
-                            <div className="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm">
-                                <h2 className="mb-4 text-lg font-semibold text-slate-900">Paystack Webhook</h2>
-                                <p className="mb-4 text-sm text-slate-600">
-                                    Set this URL in the Paystack dashboard (Events: <code className="text-xs">charge.success</code>). For local testing, use your ngrok HTTPS URL instead of localhost.
-                                </p>
-
-                                <div className="space-y-4">
-                                    <div>
-                                        <Label>Webhook URL</Label>
-                                        <div className="mt-2 flex gap-2">
-                                            <Input
-                                                value={`${apiBaseUrl}/api/webhooks/paystack`}
-                                                readOnly
-                                                className="flex-1 font-mono text-sm"
-                                            />
-                                            <Button
-                                                type="button"
-                                                variant="outline"
-                                                onClick={() =>
-                                                    copyToClipboard(
-                                                        `${apiBaseUrl}/api/webhooks/paystack`,
-                                                        'webhook-url'
-                                                    )
-                                                }
-                                            >
-                                                {copiedText === 'webhook-url' ? (
-                                                    <Check className="h-4 w-4" />
-                                                ) : (
-                                                    <Copy className="h-4 w-4" />
-                                                )}
-                                            </Button>
-                                        </div>
-                                    </div>
-
-                                    <div className="rounded-lg bg-blue-50 p-4">
-                                        <h3 className="text-sm font-semibold text-blue-900">Setup:</h3>
-                                        <ol className="mt-2 list-decimal space-y-1 pl-5 text-xs text-blue-800">
-                                            <li>Paystack Dashboard → Settings → API Keys &amp; Webhooks</li>
-                                            <li>
-                                                URL:{' '}
-                                                <code className="rounded bg-blue-100 px-1">
-                                                    https://&lt;your-api-host&gt;/api/webhooks/paystack
-                                                </code>
-                                            </li>
-                                            <li>
-                                                Event: <code className="rounded bg-blue-100 px-1">charge.success</code>
-                                            </li>
-                                        </ol>
-                                    </div>
-                                </div>
-                            </div>
+                            )}
 
                             {/* Transaction Reporting API */}
                             {settings?.paymentMethod === 'vendor_website' && (
@@ -1230,4 +1117,3 @@ export default function VendorPaymentPage() {
         </ProtectedRoute>
     );
 }
-

@@ -5,7 +5,7 @@
  */
 
 import type { Response } from 'express';
-import { db } from '../config/database.js';
+import { db, getPool } from '../config/database.js';
 import {
     BadRequestError,
     NotFoundError,
@@ -89,8 +89,7 @@ export class PaymentController {
 
         // Marketplace checkout uses platform_fee_percent; vendor.commission_rate may be unset (0)
         const platformFeePercent = await getPlatformFeePercent();
-        const vendorRate = parseFloat(vendor.commission_rate || '0');
-        const commissionRate = vendorRate > 0 ? vendorRate : platformFeePercent;
+        const commissionRate = platformFeePercent;
 
         // Get payment statistics
         const statsResult = await db.query(
@@ -183,7 +182,7 @@ export class PaymentController {
         }
 
         const vendorResult = await db.query(
-            `SELECT id, name, company_name, paystack_subaccount_code
+            `SELECT id, name, company_name, paystack_subaccount_code, status
              FROM vendors WHERE user_id = $1 AND deleted_at IS NULL`,
             [req.user.userId]
         );
@@ -193,6 +192,9 @@ export class PaymentController {
         }
 
         const vendor = vendorResult.rows[0];
+        if (vendor.status !== 'active') {
+            throw new BadRequestError('Only approved vendors can update payout settings');
+        }
         const validated = updatePayoutSettingsSchema.parse(req.body);
 
         const resolved = await resolvePaystackAccount(validated.bankCode, validated.accountNumber);
@@ -210,27 +212,57 @@ export class PaymentController {
             percentageCharge,
         };
 
-        let subaccountCode: string;
-        if (vendor.paystack_subaccount_code) {
-            const updated = await updatePaystackSubaccount(
-                vendor.paystack_subaccount_code,
-                subaccountParams
+        let payoutChangeId: string;
+        try {
+            const pendingChange = await db.query(
+                `INSERT INTO payout_change_requests
+                    (vendor_id, bank_name, bank_code, account_number, account_name)
+                 VALUES ($1, $2, $3, $4, $5)
+                 RETURNING id`,
+                [vendor.id, validated.bankName, validated.bankCode, validated.accountNumber, resolved.accountName]
             );
-            subaccountCode = updated.subaccountCode;
-        } else {
-            const created = await createPaystackSubaccount(subaccountParams);
-            subaccountCode = created.subaccountCode;
+            payoutChangeId = pendingChange.rows[0].id;
+        } catch (error: unknown) {
+            if ((error as { code?: string }).code === '23505') {
+                throw new BadRequestError('A payout change is already pending reconciliation');
+            }
+            throw error;
+        }
+
+        let subaccountCode: string;
+        try {
+            // Read again after acquiring the durable per-vendor pending-change guard.
+            const currentVendor = await db.query('SELECT paystack_subaccount_code FROM vendors WHERE id = $1', [vendor.id]);
+            const currentCode = currentVendor.rows[0].paystack_subaccount_code;
+            if (currentCode) {
+                const updated = await updatePaystackSubaccount(currentCode, subaccountParams);
+                subaccountCode = updated.subaccountCode;
+            } else {
+                const created = await createPaystackSubaccount(subaccountParams);
+                subaccountCode = created.subaccountCode;
+            }
+        } catch (error: unknown) {
+            await db.query(
+                // An HTTP timeout can follow a successful remote mutation. Keep the
+                // guard pending until reconciled instead of allowing a duplicate.
+                `UPDATE payout_change_requests SET error = $2, updated_at = CURRENT_TIMESTAMP WHERE id = $1`,
+                [payoutChangeId, 'Provider outcome requires reconciliation']
+            );
+            throw error;
         }
 
         await db.query(
-            `UPDATE vendors
-             SET bank_name = $1,
-                 bank_code = $2,
-                 account_number = $3,
-                 account_name = $4,
-                 paystack_subaccount_code = $5,
-                 updated_at = CURRENT_TIMESTAMP
-             WHERE id = $6`,
+            `WITH updated_vendor AS (
+                UPDATE vendors
+                SET bank_name = $1, bank_code = $2, account_number = $3,
+                    account_name = $4, paystack_subaccount_code = $5,
+                    updated_at = CURRENT_TIMESTAMP
+                WHERE id = $6
+                RETURNING id
+             )
+             UPDATE payout_change_requests
+             SET status = 'applied', updated_at = CURRENT_TIMESTAMP
+             WHERE id = $7 AND EXISTS (SELECT 1 FROM updated_vendor)`,
             [
                 validated.bankName,
                 validated.bankCode,
@@ -238,6 +270,7 @@ export class PaymentController {
                 resolved.accountName,
                 subaccountCode,
                 vendor.id,
+                payoutChangeId,
             ]
         );
 
@@ -478,42 +511,14 @@ export class PaymentController {
     }
 
     /**
-     * Update Paystack subaccount code
+     * Reject raw Paystack subaccount codes. Split settlement is created only
+     * through the payout bank-account workflow, which owns the Paystack record.
      */
-    public async updatePaystackSubaccount(req: AuthRequest, res: Response): Promise<void> {
-        if (!req.user || req.user.role !== 'vendor') {
-            throw new UnauthorizedError('Only vendors can update Paystack subaccount');
-        }
-
-        // Get vendor ID
-        const vendorResult = await db.query(
-            'SELECT id FROM vendors WHERE user_id = $1 AND deleted_at IS NULL',
-            [req.user.userId]
+    public async updatePaystackSubaccount(_req: AuthRequest, _res: Response): Promise<void> {
+        updatePaystackSubaccountSchema.parse(_req.body);
+        throw new BadRequestError(
+            'Paystack subaccounts can only be created from payout bank details. Use the Payout tab instead of entering a code.'
         );
-
-        if (vendorResult.rows.length === 0) {
-            throw new NotFoundError('Vendor profile not found');
-        }
-
-        const vendorId = vendorResult.rows[0].id;
-
-        // Validate request body
-        const validated = updatePaystackSubaccountSchema.parse(req.body);
-
-        // Update Paystack subaccount code
-        await db.query(
-            `UPDATE vendors 
-             SET paystack_subaccount_code = $1, updated_at = CURRENT_TIMESTAMP
-             WHERE id = $2`,
-            [validated.paystackSubaccountCode, vendorId]
-        );
-
-        success(res, {
-            message: 'Paystack subaccount updated successfully',
-            data: {
-                paystackSubaccountCode: validated.paystackSubaccountCode,
-            },
-        });
     }
 
     /**
@@ -550,6 +555,7 @@ export class PaymentController {
         const hashHex = crypto.pbkdf2Sync(apiKey, salt, 100000, 32, 'sha256').toString('hex');
         const saltHex = salt.toString('hex');
         const keyHashStored = `${hashHex}:${saltHex}`;
+        const lookupHash = crypto.createHash('sha256').update(apiKey).digest('hex');
 
         // If there's an existing key, revoke it
         if (existingKeyResult.rows.length > 0) {
@@ -563,9 +569,9 @@ export class PaymentController {
 
         // Create new API key (key_hash stores "hash:salt" for verification)
         await db.query(
-            `INSERT INTO api_keys (vendor_id, key_hash, name, rate_limit, status)
-             VALUES ($1, $2, $3, $4, 'active')`,
-            [vendorId, keyHashStored, 'Transaction Reporting API Key', 1000]
+            `INSERT INTO api_keys (vendor_id, key_hash, lookup_hash, name, rate_limit, status)
+             VALUES ($1, $2, $3, $4, $5, 'active')`,
+            [vendorId, keyHashStored, lookupHash, 'Transaction Reporting API Key', 1000]
         );
 
         // Return the API key (only shown once)
@@ -647,7 +653,8 @@ export class PaymentController {
 
         // Get vendor ID
         const vendorResult = await db.query(
-            'SELECT id FROM vendors WHERE user_id = $1 AND deleted_at IS NULL',
+            `SELECT id FROM vendors
+             WHERE user_id = $1 AND deleted_at IS NULL AND status = 'active'`,
             [req.user?.userId]
         );
 
@@ -659,10 +666,13 @@ export class PaymentController {
 
         // 1. Validate and consume verification token
         const tokenData = await validateAndConsumeToken(validated.verificationToken, vendorId);
+        if (tokenData.productId && tokenData.productId !== validated.productId) {
+            throw new BadRequestError('Verification token is scoped to a different product');
+        }
 
         // 2. Verify product exists and belongs to vendor
         const productResult = await db.query(
-            `SELECT id, price, student_price, vendor_id
+            `SELECT id, name, price, student_price, vendor_id, status, stock
              FROM products
              WHERE id = $1 AND vendor_id = $2 AND deleted_at IS NULL`,
             [validated.productId, vendorId]
@@ -673,6 +683,9 @@ export class PaymentController {
         }
 
         const product = productResult.rows[0];
+        if (product.status !== 'active') {
+            throw new BadRequestError('This deal is no longer available');
+        }
 
         // 3. Validate payment amount matches product price (allow small variance for rounding)
         const expectedAmount = parseFloat(product.student_price.toString());
@@ -704,69 +717,80 @@ export class PaymentController {
             }
         }
 
-        // 5. Check for duplicate payment reference
-        const duplicateCheck = await db.query(
-            `SELECT id FROM transactions
-             WHERE vendor_payment_reference = $1 AND vendor_id = $2`,
-            [validated.paymentReference, vendorId]
+        const commissionRate = parseFloat(
+            (await db.query('SELECT commission_rate FROM vendors WHERE id = $1', [vendorId])).rows[0]
+                ?.commission_rate || '0'
         );
-
-        if (duplicateCheck.rows.length > 0) {
-            throw new BadRequestError('Payment reference has already been used');
-        }
-
-        // 6. Get vendor commission rate
-        const vendorInfo = await db.query(
-            'SELECT commission_rate FROM vendors WHERE id = $1',
-            [vendorId]
-        );
-
-        const commissionRate = parseFloat(vendorInfo.rows[0]?.commission_rate || '0');
         const commission = (reportedAmount * commissionRate) / 100;
         const earnings = reportedAmount - commission;
-
-        // 7. Create transaction record
-        const transactionResult = await db.query(
-            `INSERT INTO transactions (
-                student_id, product_id, vendor_id, amount, commission,
-                status, verification_token, payment_source, vendor_payment_reference, verified_at
-            )
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, CURRENT_TIMESTAMP)
-            RETURNING id, status, created_at`,
-            [
-                tokenData.studentId,
-                validated.productId,
-                vendorId,
-                reportedAmount,
-                commission,
-                'completed',
-                validated.verificationToken,
-                validated.paymentGateway === 'paystack' ? 'vendor_paystack' : 'vendor_other',
-                validated.paymentReference,
-            ]
-        );
-
-        const transaction = transactionResult.rows[0];
-
-        // 8. Update savings stats for student
         const discountAmount = parseFloat(product.price.toString()) - reportedAmount;
-        await db.query(
-            `INSERT INTO savings_stats (student_id, total_savings, total_purchases, last_updated)
-             VALUES ($1, $2, 1, CURRENT_TIMESTAMP)
-             ON CONFLICT (student_id)
-             DO UPDATE SET
-                 total_savings = savings_stats.total_savings + $2,
-                 total_purchases = savings_stats.total_purchases + 1,
-                 last_updated = CURRENT_TIMESTAMP`,
-            [tokenData.studentId, discountAmount]
-        );
 
-        // 9. Get updated savings total for milestone check
-        const savingsResult = await db.query(
-            'SELECT total_savings FROM savings_stats WHERE student_id = $1',
-            [tokenData.studentId]
-        );
-        const totalSavings = savingsResult.rows[0]?.total_savings || 0;
+        const client = await getPool().connect();
+        let transaction: { id: string; status: string; created_at: Date };
+        let totalSavings = 0;
+        try {
+            await client.query('BEGIN');
+
+            const transactionResult = await client.query(
+                `INSERT INTO transactions (
+                    student_id, product_id, vendor_id, amount, commission, list_price_snapshot,
+                    status, verification_token, payment_source, vendor_payment_reference, verified_at
+                )
+                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, CURRENT_TIMESTAMP)
+                RETURNING id, status, created_at`,
+                [
+                    tokenData.studentId,
+                    validated.productId,
+                    vendorId,
+                    reportedAmount,
+                    commission,
+                    parseFloat(product.price.toString()),
+                    'completed',
+                    validated.verificationToken,
+                    validated.paymentGateway === 'paystack' ? 'vendor_paystack' : 'vendor_other',
+                    validated.paymentReference,
+                ]
+            );
+            transaction = transactionResult.rows[0];
+
+            const stockUpdate = await client.query(
+                `UPDATE products
+                 SET stock = stock - 1, updated_at = CURRENT_TIMESTAMP
+                 WHERE id = $1 AND vendor_id = $2 AND stock > 0 AND deleted_at IS NULL AND status = 'active'
+                 RETURNING id`,
+                [validated.productId, vendorId]
+            );
+            if (stockUpdate.rows.length === 0) {
+                throw new BadRequestError('This deal is no longer available');
+            }
+
+            await client.query(
+                `INSERT INTO savings_stats (student_id, total_savings, total_purchases, last_updated)
+                 VALUES ($1, $2, 1, CURRENT_TIMESTAMP)
+                 ON CONFLICT (student_id)
+                 DO UPDATE SET
+                     total_savings = savings_stats.total_savings + $2,
+                     total_purchases = savings_stats.total_purchases + 1,
+                     last_updated = CURRENT_TIMESTAMP`,
+                [tokenData.studentId, discountAmount]
+            );
+
+            const savingsResult = await client.query(
+                'SELECT total_savings FROM savings_stats WHERE student_id = $1',
+                [tokenData.studentId]
+            );
+            totalSavings = savingsResult.rows[0]?.total_savings || 0;
+            await client.query('COMMIT');
+        } catch (error) {
+            await client.query('ROLLBACK');
+            const code = (error as { code?: string }).code;
+            if (code === '23505') {
+                throw new BadRequestError('Payment reference has already been used');
+            }
+            throw error;
+        } finally {
+            client.release();
+        }
 
         // 10. Create purchase confirmation notification
         try {
@@ -800,4 +824,3 @@ export class PaymentController {
         }, 201);
     }
 }
-

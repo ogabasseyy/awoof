@@ -34,7 +34,7 @@ export default function StudentTicketDetailPage() {
     }, [load]);
 
     const onReply = async (body: string) => {
-        await apiClient.post(`/students/support-tickets/${id}/messages`, { body });
+        await apiClient.post(`/students/support-tickets/${id}/responses`, { body });
         toast.success('Reply sent');
         await load();
     };

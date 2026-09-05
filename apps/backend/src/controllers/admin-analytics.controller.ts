@@ -39,7 +39,7 @@ export class AdminAnalyticsController {
                 FROM transactions
             `),
             db.query(`
-                SELECT COALESCE(SUM(p.price - p.student_price), 0)::numeric(14,2) AS total_student_savings
+                SELECT COALESCE(SUM(COALESCE(t.list_price_snapshot, p.price) - t.amount), 0)::numeric(14,2) AS total_student_savings
                 FROM transactions t
                 JOIN products p ON p.id = t.product_id
                 WHERE t.status = 'completed'

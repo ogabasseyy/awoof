@@ -49,8 +49,11 @@ const voucherSchema = z.object({
     price: z.number().positive('Regular value must be positive'),
     studentPrice: z.number().positive('Student / discounted value must be positive'),
     categoryId: z.string().min(1, 'Please select a category').uuid('Invalid category'),
-    stock: z.number().int().min(0, 'Stock cannot be negative'),
+    stock: z.number().int().min(1, 'Set a redemption limit of at least 1'),
     status: z.enum(['active', 'inactive', 'out_of_stock']),
+}).refine((data) => data.studentPrice <= data.price, {
+    message: 'Discounted value cannot exceed the regular value',
+    path: ['studentPrice'],
 });
 
 type VoucherFormData = z.infer<typeof voucherSchema>;
@@ -74,7 +77,7 @@ export default function NewVoucherPage() {
     } = useForm<VoucherFormData>({
         resolver: zodResolver(voucherSchema),
         defaultValues: {
-            stock: 0,
+            stock: 1,
             status: 'active',
         },
     });
@@ -128,7 +131,7 @@ export default function NewVoucherPage() {
                     email: user?.email ?? null,
                     roleLabel: 'Vendor',
                     secondaryText: companyName ?? undefined,
-                    profileHref: '/vendor/settings/profile',
+                    profileHref: '/vendor/settings',
                     avatarUrl: null,
                 }}
             >
@@ -229,12 +232,13 @@ export default function NewVoucherPage() {
                                 </div>
                                 <div className="grid gap-4 sm:grid-cols-2">
                                     <div>
-                                        <Label htmlFor="stock">Redemption limit (optional)</Label>
+                                        <Label htmlFor="stock">Redemption limit *</Label>
                                         <Input
                                             id="stock"
                                             type="number"
+                                            min={1}
                                             {...register('stock', { valueAsNumber: true })}
-                                            placeholder="0 = unlimited"
+                                            placeholder="Maximum redemptions"
                                             className={errors.stock ? 'border-rose-500' : ''}
                                         />
                                         {errors.stock && <p className="mt-1 text-sm text-rose-600">{errors.stock.message}</p>}

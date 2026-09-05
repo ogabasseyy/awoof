@@ -42,6 +42,7 @@ interface Order {
     commission: number;
     status: 'pending' | 'completed' | 'failed' | 'refunded';
     paystackReference: string | null;
+    managedPayment: boolean;
     createdAt: string;
     updatedAt: string;
     product: {
@@ -360,6 +361,7 @@ export default function OrderDetailsPage() {
                             </div>
 
                             {/* Status Update */}
+                            {!order.managedPayment && (
                             <div className="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm">
                                 <h2 className="mb-4 text-lg font-semibold text-slate-900">Update Status</h2>
                                 <div className="space-y-2">
@@ -376,6 +378,7 @@ export default function OrderDetailsPage() {
                                     ))}
                                 </div>
                             </div>
+                            )}
                         </div>
                     </div>
                 </div>
@@ -383,4 +386,3 @@ export default function OrderDetailsPage() {
         </ProtectedRoute>
     );
 }
-

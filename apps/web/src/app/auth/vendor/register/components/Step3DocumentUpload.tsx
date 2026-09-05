@@ -15,7 +15,7 @@ interface Step3DocumentUploadProps {
     onNext: () => void;
     onPrevious: () => void;
     onSubmit: () => Promise<void>;
-    onFilesChange: (files: { documentFront?: File; documentBack?: File; logoImage?: File; bannerImage?: File }) => void;
+    onFilesChange: (files: { documentFront?: File | null; documentBack?: File | null; logoImage?: File | null; bannerImage?: File | null }) => void;
     existingFiles?: { documentFront?: File; documentBack?: File; logoImage?: File; bannerImage?: File };
     error?: string | null;
     isLoading?: boolean;
@@ -84,10 +84,10 @@ export function Step3DocumentUpload({
 
         // Call parent with full current files so registrationData.files stays in sync
         onFilesChangeRef.current({
-            documentFront: files.documentFront ?? undefined,
-            documentBack: files.documentBack ?? undefined,
-            logoImage: files.logoImage ?? undefined,
-            bannerImage: files.bannerImage ?? undefined,
+            documentFront: files.documentFront,
+            documentBack: files.documentBack,
+            logoImage: files.logoImage,
+            bannerImage: files.bannerImage,
         });
 
         // Update ref for next comparison
@@ -247,4 +247,3 @@ export function Step3DocumentUpload({
         </StepWrapper>
     );
 }
-

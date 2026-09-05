@@ -26,6 +26,12 @@ const apiClient: AxiosInstance = axios.create({
     },
 });
 
+/** Client for unauthenticated verification calls; 401s stay inside the widget. */
+export const publicApiClient: AxiosInstance = axios.create({
+    baseURL: `${API_URL}/api`,
+    headers: { 'Content-Type': 'application/json' },
+});
+
 /** Shared refresh promise so parallel 401s don't stampede /auth/refresh */
 let refreshPromise: Promise<string | null> | null = null;
 

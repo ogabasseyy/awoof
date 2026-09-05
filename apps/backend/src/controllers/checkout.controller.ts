@@ -40,7 +40,8 @@ export class CheckoutController {
             `SELECT s.id, u.email, u.verification_status
              FROM students s
              JOIN users u ON u.id = s.user_id
-             WHERE s.user_id = $1 AND u.deleted_at IS NULL`,
+             WHERE s.user_id = $1 AND u.deleted_at IS NULL
+               AND (s.status IS NULL OR s.status = 'active')`,
             [req.user.userId]
         );
 
@@ -94,10 +95,10 @@ export class CheckoutController {
 
         const insert = await db.query(
             `INSERT INTO transactions (
-                student_id, product_id, vendor_id, amount, commission,
+                student_id, product_id, vendor_id, amount, commission, list_price_snapshot,
                 status, paystack_reference, payment_source, settlement_mode
              )
-             VALUES ($1, $2, $3, $4, $5, 'pending', $6, 'awoof', $7)
+             VALUES ($1, $2, $3, $4, $5, $6, 'pending', $7, 'awoof', $8)
              RETURNING id`,
             [
                 student.id,
@@ -105,6 +106,7 @@ export class CheckoutController {
                 product.vendor_id,
                 amount,
                 commission,
+                parseFloat(product.price),
                 reference,
                 settlementMode,
             ]
@@ -175,7 +177,7 @@ export class CheckoutController {
         const tx = result.rows[0];
 
         // If webhook hasn't arrived yet, confirm with Paystack and complete (local/tunnel gaps)
-        if (tx.status === 'pending' && tx.paystack_reference) {
+        if ((tx.status === 'pending' || tx.status === 'failed') && tx.paystack_reference) {
             const verified = await verifyPaystackPayment(tx.paystack_reference);
             if (verified.verified && verified.amount != null) {
                 await completeMarketplaceTransaction(tx.paystack_reference, verified.amount);

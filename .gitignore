@@ -11,6 +11,7 @@ node_modules/
 # Testing
 coverage/
 *.log
+backups/
 
 # Environment variables
 .env
@@ -76,4 +77,3 @@ SECURITY_MEASURES.md
 apps/web/**/*.md
 apps/backend/**/*.md
 apps/widget/**/*.md
-
