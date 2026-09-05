@@ -15,12 +15,6 @@ case "$max_files:$minimum_free_percent" in
     *[!0-9:]*|:*|*:) echo "Backup limits must be positive integers." >&2; exit 1 ;;
 esac
 
-existing_count="$(find "$backup_dir" -maxdepth 1 -type f -name 'awoof-*.dump' | wc -l | tr -d ' ')"
-if [ "$existing_count" -ge "$max_files" ]; then
-    echo "Backup retention limit ($max_files) reached; archive or remove an old verified dump." >&2
-    exit 1
-fi
-
 available_percent="$(df -Pk "$backup_dir" | awk 'NR == 2 { print int(($4 * 100) / $2) }')"
 if [ "$available_percent" -lt "$minimum_free_percent" ]; then
     echo "Only ${available_percent}% disk space is free; at least ${minimum_free_percent}% is required." >&2
@@ -53,3 +47,10 @@ trap - EXIT HUP INT TERM
 checksum="$(sha256sum "$target" | awk '{print $1}')"
 echo "Verified database backup: $target"
 echo "SHA-256: $checksum"
+
+while [ "$(find "$backup_dir" -maxdepth 1 -type f -name 'awoof-*.dump' | wc -l | tr -d ' ')" -gt "$max_files" ]; do
+    oldest="$(find "$backup_dir" -maxdepth 1 -type f -name 'awoof-*.dump' | sort | head -n 1)"
+    [ -n "$oldest" ] || break
+    rm -f "$oldest"
+    echo "Rotated old database backup: $oldest"
+done

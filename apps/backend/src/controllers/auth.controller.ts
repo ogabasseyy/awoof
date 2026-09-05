@@ -826,8 +826,15 @@ export class AuthController {
             );
         }
 
-        const otp = await storeStudentSignupOTP(validated.email);
-        await sendEmailVerificationOTP(validated.email, otp, validated.name, 'student');
+        const otp = await storeStudentSignupOTP(validated.email, {
+            universityId: validated.universityId,
+            name: validated.name,
+            matricNumber: validated.matricNumber ?? '',
+        });
+        const emailResult = await sendEmailVerificationOTP(validated.email, otp, validated.name, 'student');
+        if (!emailResult.success) {
+            throw new BadRequestError(`Failed to send verification email: ${emailResult.error}`);
+        }
 
         success(res, {
             message: 'OTP sent to your email. Please enter it to complete registration.',
@@ -850,9 +857,28 @@ export class AuthController {
 
         const validated = schema.parse(req.body);
 
-        const valid = await verifyStudentSignupOTP(validated.email, validated.otp);
-        if (!valid) {
+        const passwordValidation = passwordService.validatePassword(validated.password);
+        if (!passwordValidation.valid) {
+            throw new BadRequestError(passwordValidation.errors.join(', '));
+        }
+
+        const claim = await verifyStudentSignupOTP(validated.email, validated.otp);
+        if (!claim) {
             throw new UnauthorizedError('Invalid or expired OTP. Please request a new one.');
+        }
+        if (
+            claim.universityId !== validated.universityId
+            || claim.name !== validated.name
+            || (claim.matricNumber || '') !== (validated.matricNumber || '')
+        ) {
+            throw new BadRequestError('Signup details do not match the verified request. Please request a new OTP.');
+        }
+
+        const emailVerification = await verifyStudentEmailService(validated.universityId, validated.email);
+        if (!emailVerification.verified) {
+            throw new BadRequestError(
+                emailVerification.error || 'Email verification failed. Please ensure you are using your official university email.'
+            );
         }
 
         const existingUser = await db.query(

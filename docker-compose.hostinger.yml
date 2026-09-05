@@ -8,13 +8,13 @@ services:
       context: ./apps/web
       dockerfile: Dockerfile.prod
       args:
-        NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:?Set NEXT_PUBLIC_API_URL to the public HTTPS API URL}
+        NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:?Set NEXT_PUBLIC_API_URL to the public HTTPS API URL behind a reverse proxy}
     ports:
       - "127.0.0.1:3000:3000"
     environment:
       NODE_ENV: production
-      # Set to your public API URL (e.g. https://api.yourdomain.com or http://YOUR_VPS_IP:5001)
-      NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:?Set NEXT_PUBLIC_API_URL to the public HTTPS API URL}
+      # Public HTTPS API URL served by a reverse proxy. Port 5001 is loopback-only.
+      NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:?Set NEXT_PUBLIC_API_URL to the public HTTPS API URL behind a reverse proxy}
     restart: unless-stopped
 
   backend:

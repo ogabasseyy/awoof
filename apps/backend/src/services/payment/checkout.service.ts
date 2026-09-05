@@ -125,9 +125,16 @@ async function emitCommerceNotifications(transactionId: string): Promise<void> {
 export async function drainCommerceNotificationOutbox(limit = 25): Promise<void> {
     const pending = await db.query(
         `SELECT transaction_id FROM commerce_notification_outbox
-         WHERE status IN ('pending', 'failed')
-            OR (status = 'processing' AND processing_started_at < CURRENT_TIMESTAMP - INTERVAL '5 minutes')
-         ORDER BY created_at
+         WHERE (
+                status = 'pending'
+                OR (
+                    status = 'failed'
+                    AND attempts < 8
+                    AND updated_at < CURRENT_TIMESTAMP - (INTERVAL '2 minutes' * GREATEST(attempts, 1))
+                )
+                OR (status = 'processing' AND processing_started_at < CURRENT_TIMESTAMP - INTERVAL '5 minutes')
+              )
+         ORDER BY CASE WHEN status = 'pending' THEN 0 ELSE 1 END, created_at
          LIMIT $1`,
         [limit]
     );
