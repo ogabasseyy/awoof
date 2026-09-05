@@ -998,8 +998,8 @@ test('proves owner withdrawal and live profile and policy mutations block behind
         let barrierReleased = false;
         let winner: Promise<PromiseSettledResult<EligibilityResult>> | undefined;
         let withdrawal: Promise<PromiseSettledResult<void>> | undefined;
-        let profileMutation: Promise<pg.QueryResult> | undefined;
-        let policyMutation: Promise<pg.QueryResult> | undefined;
+        let profileMutation: Promise<PromiseSettledResult<pg.QueryResult>> | undefined;
+        let policyMutation: Promise<PromiseSettledResult<pg.QueryResult>> | undefined;
         try {
             await control.query('SELECT pg_advisory_lock($1)', [barrierKey]);
             winner = settle(winnerFlow.confirmEmail(fixture.userId, {
@@ -1009,21 +1009,22 @@ test('proves owner withdrawal and live profile and policy mutations block behind
 
             withdrawal = settle(withdrawalFlow.withdrawConsent(fixture.userId, initiated.processingGrantId));
             await waitForExactBlockingPid(pool, withdrawalPid, winnerPid);
-            profileMutation = profileClient.query(
+            profileMutation = settle(profileClient.query(
                 `UPDATE students SET name = name || ' updated' WHERE user_id = $1`,
                 [fixture.userId],
-            );
+            ));
             await waitForExactBlockingPid(pool, profilePid, winnerPid);
-            policyMutation = policyClient.query(
+            policyMutation = settle(policyClient.query(
                 `UPDATE universities SET email_evidence_validity_days = email_evidence_validity_days - 1 WHERE id = $1`,
                 [fixture.universityId],
-            );
+            ));
             await waitForExactBlockingPid(pool, policyPid, winnerPid);
 
             await control.query('SELECT pg_advisory_unlock($1)', [barrierKey]);
             barrierReleased = true;
             assert.equal((await winner).status, 'fulfilled');
-            await Promise.all([profileMutation, policyMutation]);
+            assert.equal((await profileMutation).status, 'fulfilled');
+            assert.equal((await policyMutation).status, 'fulfilled');
             assert.equal((await withdrawal).status, 'fulfilled');
         } finally {
             if (!barrierReleased) await control.query('SELECT pg_advisory_unlock($1)', [barrierKey]).catch(() => undefined);
