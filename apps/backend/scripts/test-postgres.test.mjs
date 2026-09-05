@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { execPath } from 'node:process';
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { spawnSync } from 'node:child_process';
@@ -47,9 +47,9 @@ test('uses actual disposable subprocess fixtures for cleanup outcomes', () => {
     const script = join(fixture, 'fake-pgctl.mjs');
     const record = join(fixture, 'record.jsonl');
     writeFileSync(script, `import { appendFileSync, existsSync, readFileSync, writeFileSync } from 'node:fs';
-const args = process.argv.slice(2); appendFileSync(process.env.RECORD, JSON.stringify(args) + '\\n');
-if (args.at(-1) === 'status') { const count = existsSync(process.env.COUNT) ? Number(readFileSync(process.env.COUNT, 'utf8')) : 0; writeFileSync(process.env.COUNT, String(count + 1)); process.exit(Number(process.env.STATUS.split(',')[count] ?? 4)); }
-if (args.at(-1) === 'stop') process.exit(Number(process.env.STOP)); process.exit(0);`);
+const args = process.argv.slice(2); const operation = args[args.indexOf('-D') + 2] ?? args[0]; appendFileSync(process.env.RECORD, JSON.stringify(args) + '\\n');
+if (operation === 'status') { const count = existsSync(process.env.COUNT) ? Number(readFileSync(process.env.COUNT, 'utf8')) : 0; writeFileSync(process.env.COUNT, String(count + 1)); process.exit(Number(process.env.STATUS.split(',')[count] ?? 4)); }
+if (operation === 'stop') process.exit(Number(process.env.STOP)); process.exit(0);`);
     try {
         for (const [name, status, stop, expectedRemoved] of [
             ['startup survivor stop failure', '0,0', '1', false],
@@ -67,8 +67,44 @@ if (args.at(-1) === 'stop') process.exit(Number(process.env.STOP)); process.exit
             assert.equal(result.removed, expectedRemoved, name);
             assert.ok(calls.every((call) => call.args.includes('-D') && call.args[call.args.indexOf('-D') + 1] === join(scratch, 'data')), name);
             assert.ok(calls.every((call) => call.timeout > 0), name);
+            const stopCall = calls.find((call) => call.args[call.args.indexOf('-D') + 2] === 'stop');
+            if (stopCall) assert.equal(stopCall.child.status, Number(stop), `${name} invokes the requested stop exit`);
         }
         assert.ok(readFileSync(record, 'utf8').includes('"status"'));
+    } finally {
+        rmSync(fixture, { recursive: true, force: true });
+    }
+});
+
+test('launches failing setup and timed-out startup fixtures before safe cleanup', () => {
+    const fixture = mkdtempSync(join(tmpdir(), 'awoof-pg-subprocess-'));
+    const script = join(fixture, 'fake-pgctl.mjs');
+    const record = join(fixture, 'record.jsonl');
+    writeFileSync(script, `import { appendFileSync } from 'node:fs'; const args = process.argv.slice(2); appendFileSync(process.env.RECORD, JSON.stringify(args) + '\\n'); if (args[0] === 'setup-fail') process.exit(2); if (args[0] === 'start-timeout') setTimeout(() => process.exit(0), 10_000); const operation = args[args.indexOf('-D') + 2]; if (operation === 'status') process.exit(0); if (operation === 'stop') process.exit(1); process.exit(0);`);
+    const launch = (args, timeout) => spawnSync(execPath, [script, ...args], { env: { ...process.env, RECORD: record }, timeout });
+    try {
+        const setupScratch = join(fixture, 'setup-failure');
+        mkdirSync(setupScratch);
+        const setup = launch(['setup-fail'], 1_000);
+        assert.equal(setup.status, 2);
+        assert.equal(setup.error, undefined);
+        assert.equal(existsSync(setupScratch), true);
+        const setupCleanup = cleanupOwnedCluster({ scratch: setupScratch, dataDirectory: join(setupScratch, 'data'), pgCtl: undefined, startupAttempted: false, spawn: () => { throw new Error('not called'); }, remove: (path) => rmSync(path, { recursive: true, force: true }), write: () => {} });
+        assert.equal(setupCleanup.removed, true);
+        assert.equal(existsSync(setupScratch), false);
+
+        const timeoutScratch = join(fixture, 'startup-timeout');
+        mkdirSync(timeoutScratch);
+        const startup = launch(['start-timeout'], 30);
+        assert.ok(startup.error?.code === 'ETIMEDOUT' || startup.signal !== null);
+        assert.equal(existsSync(timeoutScratch), true);
+        const timeoutCleanup = cleanupOwnedCluster({ scratch: timeoutScratch, dataDirectory: join(timeoutScratch, 'data'), pgCtl: execPath, startupAttempted: true,
+            spawn: (binary, args, timeout) => spawnSync(binary, [script, ...args], { env: { ...process.env, RECORD: record }, timeout }),
+            remove: (path) => rmSync(path, { recursive: true, force: true }), write: () => {},
+        });
+        assert.equal(timeoutCleanup.retained, true);
+        assert.equal(existsSync(timeoutScratch), true);
+        if (typeof startup.pid === 'number') assert.throws(() => process.kill(startup.pid, 0), /ESRCH/);
     } finally {
         rmSync(fixture, { recursive: true, force: true });
     }

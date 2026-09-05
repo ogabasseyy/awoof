@@ -84,7 +84,10 @@ test('issues distinct immutable bindings after cooldown', async () => {
 
 test('accepts a near-limit canonical binding and deliberately rejects exponent expansion', async () => {
     await withTestClient(async (client) => {
-        const nearLimit = Object.fromEntries(Array.from({ length: 150 }, (_, index) => [`field_${index}`, 'value']));
+        const nearLimit = Object.fromEntries(Array.from({ length: 190 }, (_, index) => [`field_${index}`, 'value']));
+        const canonicalBytes = await client.query<{ bytes: number }>('SELECT octet_length($1::jsonb::text) AS bytes', [JSON.stringify(nearLimit)]);
+        assert.ok((canonicalBytes.rows[0]?.bytes ?? 0) > 0.95 * 4096);
+        assert.ok((canonicalBytes.rows[0]?.bytes ?? Infinity) <= 4096);
         const accepted = await inTransaction(client, () => requestChallenge(client, { purpose, subjectKey: subject(), bindings: nearLimit }));
         assert.equal(accepted.status, 'issued');
         await assert.rejects(
