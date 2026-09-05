@@ -69,6 +69,25 @@
   password; do not retry proof consumption or roll back committed identity
   rows. Frontend enrollment UX and the separate authenticated verification and
   widget routes remain follow-on rollout work.
+- Authenticated student verification is now a separate signed-in flow:
+  `POST /verification/initiate`, `POST /verification/email/request`,
+  `POST /verification/email/confirm`, `GET /verification/status`,
+  `POST /verification/disclosures`, and `DELETE /verification/consents/:id`.
+  Bodies never select an account; identity comes only from the access JWT and
+  current locked database authority. Email request stores a bounded OTP
+  challenge and sends its code only after the challenge transaction commits;
+  email confirmation consumes that challenge, then records mailbox proof and
+  eligibility evidence atomically. Clients must
+  display the returned current verification/disclosure notices and provide the
+  literal affirmative action before a new processing or merchant grant.
+- `POST /verification/email`, `GET /verification/email/verify`, both WhatsApp
+  verification routes, and `GET /verification/status/:studentId` are retired
+  with 410 upgrade guidance. `POST /verification/registration` and
+  `POST /verification/widget/token` are authenticated but intentionally return
+  503 until the separate enrollment-adapter and merchant-assertion tasks ship.
+  They do not create accounts, issue sessions, or substitute legacy flags.
+  This is a temporary non-release boundary: the student UI, the configured
+  university adapter, and merchant widget assertion remain outstanding.
 
 ## Owner-controlled configuration
 
@@ -111,9 +130,9 @@ and `awoof_test_*` database, sets its own test-only database URL and guard
 token, runs migrations, uses one test worker, then stops and removes only that
 fixture. It refuses normal database URLs; do not run integration files directly.
 
-The suite verifies storage and session boundaries only. Challenge routes and
-external OTP delivery remain deliberately unwired until their dependent route
-migration is reviewed.
+The suite verifies storage, session, and synthetic authenticated verification
+flows. It never delivers a real email or contacts a university; transport and
+provider production assurance remain separate release gates.
 
 ## Payment reconciliation
 
