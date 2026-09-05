@@ -33,7 +33,7 @@ function digest(label: string, value: string): string {
     return createHmac('sha256', config.jwt.secret).update(`${label}\u0000${value}`).digest('hex');
 }
 
-function subjectDigest(purpose: ChallengePurpose, subjectKey: string): string {
+export function challengeSubjectDigest(purpose: ChallengePurpose, subjectKey: string): string {
     return digest('awoof-verification-subject-v1', `${purpose}\u0000${subjectKey}`);
 }
 
@@ -56,7 +56,7 @@ function copiedBindings(value: ChallengeBindings): ChallengeBindings {
         throw new TypeError('Challenge bindings must be JSON serializable');
     }
     // PostgreSQL renders JSONB with canonical separator whitespace; keep the
-    // application limit below the schema's 8 KiB storage ceiling so a valid
+    // application limit below the schema's 4 KiB storage ceiling so a valid
     // compact payload cannot fail later solely because of JSONB formatting.
     if (!json || Buffer.byteLength(json, 'utf8') > 4096) {
         throw new RangeError('Challenge bindings exceed the 4 KiB limit');
@@ -143,7 +143,7 @@ export async function requestChallenge(tx: PoolClient, input: {
 }): Promise<{ status: 'issued'; challengeId: string; code: string; expiresAt: Date } | { status: 'cooldown' | 'locked'; retryAt: Date }> {
     validInput(input.purpose, input.subjectKey);
     const bindings = copiedBindings(input.bindings);
-    const subject = subjectDigest(input.purpose, input.subjectKey);
+    const subject = challengeSubjectDigest(input.purpose, input.subjectKey);
     let budget = await lockedBudget(tx, input.purpose, subject);
     const now = await databaseNow(tx);
     budget = await resetWindowIfNeeded(tx, input.purpose, subject, budget, now);
@@ -194,7 +194,7 @@ export async function consumeChallenge(tx: PoolClient, input: {
     code: string;
 }): Promise<{ status: 'verified'; challengeId: string; bindings: ChallengeBindings } | { status: 'invalid' | 'expired' | 'locked' }> {
     validInput(input.purpose, input.subjectKey);
-    const subject = subjectDigest(input.purpose, input.subjectKey);
+    const subject = challengeSubjectDigest(input.purpose, input.subjectKey);
     const budgetResult = await tx.query<Budget>(
         `SELECT current_challenge_id, window_started_at, failed_attempts, send_count, resend_available_at
          FROM verification_challenge_budgets WHERE purpose = $1 AND subject_digest = $2 FOR UPDATE`,

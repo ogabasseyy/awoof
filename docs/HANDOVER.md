@@ -12,6 +12,18 @@
   enforces durable refresh sessions starts. It intentionally does not create
   sessions for existing refresh JWTs, so users must sign in again after this
   migration is deployed.
+- Migration `030_eligibility_authority.sql` adds explicit policy, consent,
+  mailbox-proof and eligibility-evidence records. It intentionally backfills
+  nothing: historical `verification_status='verified'` accounts must reverify.
+  Operators must configure exact approved student-email domains and exact HTTPS
+  widget origins; legacy directory domains and widget hostnames do not authorize
+  eligibility. Duplicate student-profile and normalized-email legacy data blocks
+  the migration with count-only operator diagnostics; it is never merged or
+  deleted by the migration. Service transactions lock user, student,
+  institution, eligibility state, consent, challenge, then proof/assertion rows
+  in that order. Enrollment provider replies are single-consumption generations:
+  invalid, stale, mismatched-email, or untrusted-source replies do not advance
+  the marker. Routes and merchant consumers remain a separate rollout boundary.
 
 ## Owner-controlled configuration
 

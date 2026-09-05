@@ -1,6 +1,10 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { requestChallenge } from './challenge.service.js';
+import { challengeSubjectDigest, requestChallenge } from './challenge.service.js';
+
+test('derives purpose-separated canonical subject digests', () => {
+    assert.notEqual(challengeSubjectDigest('student_email', 'user-1'), challengeSubjectDigest('account_email', 'user-1'));
+});
 
 test('rejects non-object challenge bindings before querying a caller transaction', async () => {
     const tx = { query: async () => { throw new Error('must not query'); } };
