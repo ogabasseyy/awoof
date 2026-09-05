@@ -9,8 +9,8 @@ import { asyncHandler } from '../common/middleware/errorHandler.js';
 import { authenticate } from '../middleware/auth.middleware.js';
 import { AuthController } from '../controllers/auth.controller.js';
 
-const router = Router();
-const authController = new AuthController();
+export function createAuthRouter(authController: AuthController = new AuthController()): Router {
+    const router = Router();
 
 /**
  * @swagger
@@ -179,7 +179,7 @@ router.post(
 
 /**
  * @route   POST /api/auth/verify-student-email
- * @desc    Verify student email against university database
+ * @desc    Check approved student-domain support and return the current processing notice; does not verify mailbox ownership
  * @access  Public
  */
 router.post(
@@ -189,7 +189,7 @@ router.post(
 
 /**
  * @route   POST /api/auth/student/register-request
- * @desc    Request OTP for student signup (validates email domain, no user created)
+ * @desc    Request a proof-bound signup OTP; no user is created until confirmation succeeds
  * @access  Public
  */
 router.post(
@@ -199,7 +199,7 @@ router.post(
 
 /**
  * @route   POST /api/auth/student/register-confirm
- * @desc    Confirm OTP and create student account
+ * @desc    Confirm the bound OTP and atomically create a new student account with eligibility evidence
  * @access  Public
  */
 router.post(
@@ -207,5 +207,7 @@ router.post(
     asyncHandler(authController.studentRegisterConfirm.bind(authController))
 );
 
-export default router;
+    return router;
+}
 
+export default createAuthRouter();

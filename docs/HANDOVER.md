@@ -47,6 +47,29 @@
   untrusted-source replies do not advance the marker. Routes and merchant
   consumers remain a separate rollout boundary.
 
+- Student signup is now proof-bound and must use only the dedicated public
+  endpoints: `POST /auth/student/register-request` followed by
+  `POST /auth/student/register-confirm`. The request stores no password and
+  only returns a challenge receipt after email delivery; its challenge is
+  bounded to a 10-minute code, five failed guesses, and a 60-second resend
+  cooldown. Confirmation repeats the immutable identity and current
+  processing-notice action, creates the new student account/proof/processing
+  grant/evidence in one transaction, and returns authoritative eligibility.
+  Never infer merchant disclosure consent or eligibility from the legacy
+  `verification_status` field.
+- `POST /auth/verify-student-email` is a public domain-support preflight, not
+  mailbox proof. Its successful response always includes the current
+  `verificationNotice` version and text; clients must display it before asking
+  for the literal affirmative processing action. A supported domain is not an
+  account lookup, enrollment result, or `verified` claim. Generic
+  `POST /auth/register` with `role: student` returns 410 and vendors keep the
+  established registration path.
+- A failure after signup proof commits but before session issuance leaves the
+  new account intact. Tell the user to sign in normally with the same email and
+  password; do not retry proof consumption or roll back committed identity
+  rows. Frontend enrollment UX and the separate authenticated verification and
+  widget routes remain follow-on rollout work.
+
 ## Owner-controlled configuration
 
 Configure these in the VPS `.env`; never commit their values:

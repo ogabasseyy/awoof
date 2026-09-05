@@ -23,6 +23,10 @@ if (!process.env.BREVO_API_KEY) {
 
 const apiInstance = new SibApiV3Sdk.TransactionalEmailsApi();
 
+export function isEmailConfigured(): boolean {
+    return typeof process.env.BREVO_API_KEY === 'string' && process.env.BREVO_API_KEY.trim().length > 0;
+}
+
 function escapeHtml(value: string): string {
     return value
         .replaceAll('&', '&amp;')
