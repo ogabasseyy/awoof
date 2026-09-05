@@ -327,9 +327,8 @@ export class TicketService {
             [params.ticketId]
         );
 
-        // Reopen if admin replies to resolved
+        // Any public reply makes a resolved ticket actionable again.
         if (
-            params.authorRole === 'admin' &&
             !isInternal &&
             (ticket.status === 'resolved' || ticket.status === 'closed')
         ) {

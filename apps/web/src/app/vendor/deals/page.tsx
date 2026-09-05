@@ -188,7 +188,7 @@ function VendorDealsContent() {
                     <nav className="-mb-px flex gap-6">
                         <button
                             type="button"
-                            onClick={() => setActiveTab('products')}
+                            onClick={() => { setPage(1); setActiveTab('products'); }}
                             className={`whitespace-nowrap border-b-2 px-1 py-3 text-sm font-medium ${activeTab === 'products'
                                 ? 'border-blue-600 text-blue-600'
                                 : 'border-transparent text-slate-500 hover:border-slate-300 hover:text-slate-700'
@@ -198,7 +198,7 @@ function VendorDealsContent() {
                         </button>
                         <button
                             type="button"
-                            onClick={() => setActiveTab('vouchers')}
+                            onClick={() => { setPage(1); setActiveTab('vouchers'); }}
                             className={`whitespace-nowrap border-b-2 px-1 py-3 text-sm font-medium ${activeTab === 'vouchers'
                                 ? 'border-blue-600 text-blue-600'
                                 : 'border-transparent text-slate-500 hover:border-slate-300 hover:text-slate-700'

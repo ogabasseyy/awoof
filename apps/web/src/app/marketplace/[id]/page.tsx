@@ -290,10 +290,10 @@ export default function ProductDetailPage() {
 
                         <FadeIn delay={0.18}>
                             <div className="flex flex-wrap items-center gap-3">
-                                {product.stock > 0 ? (
+                                {isExternal || product.stock > 0 ? (
                                     <span className="inline-flex items-center gap-1.5 rounded-full bg-emerald-50 px-3 py-1.5 text-sm font-semibold text-emerald-700">
                                         <Check className="h-4 w-4" />
-                                        In stock · {product.stock} left
+                                        {isExternal && product.stock === 0 ? 'Available' : `In stock · ${product.stock} left`}
                                     </span>
                                 ) : (
                                     <span className="inline-flex items-center gap-1.5 rounded-full bg-red-50 px-3 py-1.5 text-sm font-semibold text-red-600">

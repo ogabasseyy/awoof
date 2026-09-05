@@ -61,6 +61,7 @@ export class OrderController {
                 t.commission,
                 t.status,
                 t.paystack_reference,
+                t.payment_source,
                 t.created_at,
                 t.updated_at,
                 p.id as product_id,
@@ -143,6 +144,7 @@ export class OrderController {
             commission: parseFloat(row.commission),
             status: row.status,
             paystackReference: row.paystack_reference,
+            managedPayment: row.payment_source === 'awoof' && Boolean(row.paystack_reference),
             createdAt: row.created_at,
             updatedAt: row.updated_at,
             product: {
@@ -203,6 +205,7 @@ export class OrderController {
                 t.commission,
                 t.status,
                 t.paystack_reference,
+                t.payment_source,
                 t.created_at,
                 t.updated_at,
                 p.id as product_id,
@@ -235,6 +238,7 @@ export class OrderController {
             commission: parseFloat(row.commission),
             status: row.status,
             paystackReference: row.paystack_reference,
+            managedPayment: row.payment_source === 'awoof' && Boolean(row.paystack_reference),
             createdAt: row.created_at,
             updatedAt: row.updated_at,
             product: {
@@ -242,8 +246,8 @@ export class OrderController {
                 name: row.product_name,
                 description: row.product_description,
                 imageUrl: row.product_image,
-                price: parseFloat(row.price),
-                studentPrice: parseFloat(row.student_price),
+                price: parseFloat(row.product_price),
+                studentPrice: parseFloat(row.product_student_price),
             },
             student: {
                 id: row.student_id,

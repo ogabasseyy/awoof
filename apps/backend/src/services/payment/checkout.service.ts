@@ -138,6 +138,13 @@ export async function drainCommerceNotificationOutbox(limit = 25): Promise<void>
 
 export function startCommerceNotificationDispatcher(): void {
     const run = () => {
+        // Expired attempts remain recoverable if a verified payment arrives late.
+        void db.query(
+            `UPDATE transactions SET status = 'failed', updated_at = CURRENT_TIMESTAMP
+             WHERE status = 'pending' AND payment_source = 'awoof'
+               AND paystack_reference IS NOT NULL
+               AND created_at < CURRENT_TIMESTAMP - INTERVAL '24 hours'`
+        ).catch(error => appLogger.error('Checkout expiry failed', error));
         void drainCommerceNotificationOutbox().catch((error) => {
             appLogger.error('Commerce notification outbox dispatcher failed', error);
         });
@@ -209,7 +216,7 @@ export async function completeMarketplaceTransactionWithClient(
             return { completed: true, transactionId: tx.id, newlyCompleted: false };
         }
 
-        if (tx.status === 'failed' || tx.status === 'refunded' || tx.status === 'requires_refund') {
+        if (tx.status === 'refunded' || tx.status === 'requires_refund') {
             await client.query('COMMIT');
             return { completed: false, transactionId: tx.id };
         }
@@ -222,7 +229,7 @@ export async function completeMarketplaceTransactionWithClient(
             await client.query(
                 `UPDATE transactions
                  SET status = 'requires_refund', updated_at = CURRENT_TIMESTAMP
-                 WHERE id = $1 AND status = 'pending'`,
+                 WHERE id = $1 AND status IN ('pending', 'failed')`,
                 [tx.id]
             );
             await client.query(
@@ -250,7 +257,7 @@ export async function completeMarketplaceTransactionWithClient(
             await client.query(
                 `UPDATE transactions
                  SET status = 'requires_refund', updated_at = CURRENT_TIMESTAMP
-                 WHERE id = $1 AND status = 'pending'`,
+                 WHERE id = $1 AND status IN ('pending', 'failed')`,
                 [tx.id]
             );
             await client.query(
@@ -267,7 +274,7 @@ export async function completeMarketplaceTransactionWithClient(
         const completed = await client.query(
             `UPDATE transactions
              SET status = 'completed', updated_at = CURRENT_TIMESTAMP
-             WHERE id = $1 AND status = 'pending'
+             WHERE id = $1 AND status IN ('pending', 'failed')
              RETURNING id`,
             [tx.id]
         );

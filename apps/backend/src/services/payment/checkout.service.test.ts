@@ -23,13 +23,14 @@ function fakeClient(replies: QueryReply[]) {
 }
 
 describe('completeMarketplaceTransactionWithClient', () => {
-    it('commits stock, transaction, and savings changes on one client', async () => {
+    for (const initialStatus of ['pending', 'failed']) {
+    it(`settles a ${initialStatus} checkout atomically when a verified payment arrives`, async () => {
         const { client, statements } = fakeClient([
             { rows: [] }, // BEGIN
             {
                 rows: [{
                     id: 'tx-1',
-                    status: 'pending',
+                    status: initialStatus,
                     amount: '900',
                     list_price: '1000',
                     product_id: 'product-1',
@@ -62,6 +63,8 @@ describe('completeMarketplaceTransactionWithClient', () => {
         assert.match(statements[5] ?? '', /INSERT INTO commerce_notification_outbox/);
         assert.equal(statements[6], 'COMMIT');
     });
+
+    }
 
     it('queues a verified underpayment for reconciliation without changing stock', async () => {
         const { client, statements } = fakeClient([

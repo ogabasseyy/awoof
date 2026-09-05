@@ -31,13 +31,6 @@ function SearchContent() {
 
     const fetchResults = useCallback(async (searchTerm: string, catId: string) => {
         const term = searchTerm.trim();
-        if (!term && !catId && dealType !== 'voucher') {
-            setProducts([]);
-            setTotal(0);
-            setCategoryName(null);
-            setIsLoading(false);
-            return;
-        }
 
         try {
             setIsLoading(true);
@@ -93,12 +86,12 @@ function SearchContent() {
         window.location.href = `/marketplace/search?${params.toString()}`;
     };
 
-    const hasFilter = Boolean(q.trim() || categoryId || dealType === 'voucher');
+    const hasFilter = true;
     const heading = q.trim()
         ? `Results for “${q}”`
         : categoryName
           ? `${categoryName} deals`
-          : dealType === 'voucher' ? 'Student vouchers' : 'Category deals';
+          : dealType === 'voucher' ? 'Student vouchers' : 'Student deals';
     const sub = q.trim()
         ? 'Student prices across products and brands'
         : 'Every deal in this lane — locked for verified students';

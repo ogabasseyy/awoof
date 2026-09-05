@@ -27,27 +27,36 @@ export default function AdminSupportPage() {
     const [role, setRole] = useState('');
     const [search, setSearch] = useState('');
     const [loading, setLoading] = useState(true);
+    const [page, setPage] = useState(1);
+    const [totalPages, setTotalPages] = useState(1);
 
     useEffect(() => {
+        let cancelled = false;
         const load = async () => {
             try {
                 setLoading(true);
                 const res = await apiClient.get('/admin/support/tickets', {
                     params: {
+                        page,
+                        limit: 20,
                         ...(status ? { status } : {}),
                         ...(role ? { role } : {}),
                         ...(search.trim() ? { search: search.trim() } : {}),
                     },
                 });
-                setTickets(res.data.data.tickets || []);
+                if (!cancelled) {
+                    setTickets(res.data.data.tickets || []);
+                    setTotalPages(res.data.data.pagination?.totalPages || 1);
+                }
             } catch {
-                setTickets([]);
+                if (!cancelled) setTickets([]);
             } finally {
-                setLoading(false);
+                if (!cancelled) setLoading(false);
             }
         };
         void load();
-    }, [status, role, search]);
+        return () => { cancelled = true; };
+    }, [status, role, search, page]);
 
     return (
         <ProtectedRoute requiredRole="admin">
@@ -67,7 +76,7 @@ export default function AdminSupportPage() {
                 <div className="mb-4 flex flex-wrap gap-3">
                     <select
                         value={status}
-                        onChange={(e) => setStatus(e.target.value)}
+                        onChange={(e) => { setPage(1); setStatus(e.target.value); }}
                         className="rounded-lg border border-slate-200 px-3 py-2 text-sm"
                     >
                         <option value="">All statuses</option>
@@ -78,7 +87,7 @@ export default function AdminSupportPage() {
                     </select>
                     <select
                         value={role}
-                        onChange={(e) => setRole(e.target.value)}
+                        onChange={(e) => { setPage(1); setRole(e.target.value); }}
                         className="rounded-lg border border-slate-200 px-3 py-2 text-sm"
                     >
                         <option value="">All roles</option>
@@ -87,7 +96,7 @@ export default function AdminSupportPage() {
                     </select>
                     <input
                         value={search}
-                        onChange={(e) => setSearch(e.target.value)}
+                        onChange={(e) => { setPage(1); setSearch(e.target.value); }}
                         placeholder="Search subject or email"
                         className="min-w-[200px] flex-1 rounded-lg border border-slate-200 px-3 py-2 text-sm"
                     />
@@ -127,6 +136,11 @@ export default function AdminSupportPage() {
                         </ul>
                     )}
                 </div>
+                <nav aria-label="Support ticket pages" className="mt-4 flex items-center gap-4">
+                    <button disabled={loading || page <= 1} onClick={() => setPage(p => p - 1)}>Previous</button>
+                    <span>Page {page} of {totalPages}</span>
+                    <button disabled={loading || page >= totalPages} onClick={() => setPage(p => p + 1)}>Next</button>
+                </nav>
             </DashboardLayout>
         </ProtectedRoute>
     );
