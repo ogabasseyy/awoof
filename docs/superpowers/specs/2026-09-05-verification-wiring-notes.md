@@ -4,9 +4,9 @@ Planning notes derived from current code and the approved core design; not an ex
 
 ## Current task boundary
 
-- A09 fixed707c96e, Astra approved. A14 fixed325b1bc, Astra approved; real-SQL fixtures are part of challenge-foundation task.
-- Challenge foundation owns029 and disposable PostgreSQL harness. Helper exports reported by Terra: validateTestEnvironment(), createTestPool(), assertFixtureDatabase(client), inTransaction(client, op), withTestClient(op). Normal application transaction helper in eligibility plan has a different file and one-callback signature; alias imports in tests to avoid confusion.
-- Eligibility authority plan030 is complete but waits on the challenge task review. Do not dispatch overlapping implementation workers.
+- A09 fixed707c96e, Astra approved. A14 fixed325b1bc, Astra approved; real-SQL fixtures passed the completed challenge/authority suites.
+- Challenge foundation029 and disposable PostgreSQL harness are Astra-approved through0cf9788. Actual test helper exports used by the reviewed authority include createTestPool(), assertFixtureDatabase(client), inTransaction(client, zero-argument op), and withTestClient(op). The normal application transaction helper has a different file and one-callback signature; alias imports in tests to avoid confusion.
+- Eligibility authority030 passed Astra throughd62d63d. Proof-bound signup backend passed Astra through58727e5, with64real PostgreSQL/32unit tests independently passing. Authenticated-flow Task1 is next; produced interfaces were reconciled and Astra-approved before dispatch. UI/benefit consumers remain dependent work. Do not dispatch overlapping implementation workers. The source maps below retain historical observations; use the reviewed task plans/current source for implementation truth.
 
 ## Authenticated core wiring
 
