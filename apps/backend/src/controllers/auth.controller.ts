@@ -9,6 +9,7 @@ import type { Request, Response } from 'express';
 import { db } from '../config/database.js';
 import { redis } from '../config/redis.js';
 import { jwtService } from '../services/auth/jwt.service.js';
+import { issueSession, refreshSession, revokeSession } from '../services/auth/session.service.js';
 import { passwordService } from '../services/auth/password.service.js';
 import { generateOTP, getOTPExpiryDate, isOTPExpired } from '../services/auth/otp.service.js';
 import { sendPasswordResetOTP, sendEmailVerificationOTP, sendWelcomeEmail } from '../services/email/email.service.js';
@@ -182,21 +183,11 @@ export class AuthController {
             await client.query('COMMIT');
 
             // Generate tokens
-            const tokens = jwtService.generateTokenPair({
+            const tokens = await issueSession({
                 userId: user.id,
                 email: user.email,
                 role: user.role,
-            });
-
-            // Store refresh token in Redis (optional, for token invalidation)
-            const redisClient = redis.getClient();
-            if (redis.isConnected()) {
-                await redisClient.setex(
-                    `refresh_token:${user.id}`,
-                    7 * 24 * 60 * 60, // 7 days in seconds
-                    tokens.refreshToken
-                );
-            }
+            }, false, passwordHash);
 
             success(res, {
                 message: validated.role === 'vendor'
@@ -264,23 +255,11 @@ export class AuthController {
 
         // Generate tokens (with rememberMe option)
         const rememberMe = validated.rememberMe ?? false;
-        const tokens = jwtService.generateTokenPair({
+        const tokens = await issueSession({
             userId: user.id,
             email: user.email,
             role: user.role,
-        }, rememberMe);
-
-        // Store refresh token in Redis
-        // If remember me is checked, store for 30 days, otherwise 7 days
-        const redisExpiry = rememberMe ? 30 * 24 * 60 * 60 : 7 * 24 * 60 * 60;
-        const redisClient = redis.getClient();
-        if (redis.isConnected()) {
-            await redisClient.setex(
-                `refresh_token:${user.id}`,
-                redisExpiry,
-                tokens.refreshToken
-            );
-        }
+        }, rememberMe, user.password_hash);
 
         success(res, {
             message: 'Login successful',
@@ -303,29 +282,7 @@ export class AuthController {
         // Validate input
         const validated = refreshTokenSchema.parse(req.body);
 
-        // Verify refresh token
-        let decoded;
-        try {
-            decoded = jwtService.verifyRefreshToken(validated.refreshToken);
-        } catch (error) {
-            throw new UnauthorizedError('Invalid or expired refresh token');
-        }
-
-        // Check if refresh token exists in Redis (optional validation)
-        const redisClient = redis.getClient();
-        if (redis.isConnected()) {
-            const storedToken = await redisClient.get(`refresh_token:${decoded.userId}`);
-            if (storedToken !== validated.refreshToken) {
-                throw new UnauthorizedError('Refresh token not found or invalid');
-            }
-        }
-
-        // Generate new access token
-        const accessToken = jwtService.generateAccessToken({
-            userId: decoded.userId,
-            email: decoded.email,
-            role: decoded.role,
-        });
+        const accessToken = await refreshSession(validated.refreshToken);
 
         success(res, {
             message: 'Token refreshed successfully',
@@ -343,11 +300,7 @@ export class AuthController {
             throw new UnauthorizedError('User not authenticated');
         }
 
-        // Remove refresh token from Redis
-        const redisClient = redis.getClient();
-        if (redis.isConnected()) {
-            await redisClient.del(`refresh_token:${req.user.userId}`);
-        }
+        await revokeSession(req.user.userId);
 
         success(res, {
             message: 'Logged out successfully',
@@ -576,15 +529,16 @@ export class AuthController {
              SET password_hash = $1, 
                  password_reset_otp = NULL, 
                  password_reset_otp_expires_at = NULL,
+                 refresh_token_hash = NULL,
+                 refresh_token_expires_at = NULL,
                  updated_at = CURRENT_TIMESTAMP
              WHERE id = $2`,
             [passwordHash, user.id]
         );
 
-        // Invalidate all refresh tokens (force re-login)
+        // Clear the password-reset cache entry; refresh-session authority is durable.
         const redisClient = redis.getClient();
         if (redis.isConnected()) {
-            await redisClient.del(`refresh_token:${user.id}`);
             await redisClient.del(`password_reset:${user.id}`);
         }
 
@@ -645,16 +599,12 @@ export class AuthController {
         await db.query(
             `UPDATE users 
              SET password_hash = $1, 
+                 refresh_token_hash = NULL,
+                 refresh_token_expires_at = NULL,
                  updated_at = CURRENT_TIMESTAMP
              WHERE id = $2`,
             [passwordHash, user.id]
         );
-
-        // Invalidate all refresh tokens (force re-login with new password)
-        const redisClient = redis.getClient();
-        if (redis.isConnected()) {
-            await redisClient.del(`refresh_token:${req.user.userId}`);
-        }
 
         success(res, {
             message: 'Password updated successfully',
@@ -918,20 +868,11 @@ export class AuthController {
 
             await client.query('COMMIT');
 
-            const tokens = jwtService.generateTokenPair({
+            const tokens = await issueSession({
                 userId: user.id,
                 email: user.email,
                 role: user.role,
-            });
-
-            const redisClient = redis.getClient();
-            if (redis.isConnected()) {
-                await redisClient.setex(
-                    `refresh_token:${user.id}`,
-                    7 * 24 * 60 * 60,
-                    tokens.refreshToken
-                );
-            }
+            }, false, passwordHash);
 
             sendWelcomeEmail(validated.email, validated.name).catch((err) =>
                 appLogger.error('Failed to send welcome email:', err)
@@ -982,4 +923,3 @@ export class AuthController {
         });
     }
 }
-

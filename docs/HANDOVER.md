@@ -8,6 +8,10 @@
   building containers.
 - The one-shot `migrate` service must finish successfully before the backend
   starts.
+- Migration `028_durable_refresh_sessions.sql` must run before a backend that
+  enforces durable refresh sessions starts. It intentionally does not create
+  sessions for existing refresh JWTs, so users must sign in again after this
+  migration is deployed.
 
 ## Owner-controlled configuration
 

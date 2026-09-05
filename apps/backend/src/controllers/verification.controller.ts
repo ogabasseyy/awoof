@@ -8,7 +8,7 @@
 import type { Request, Response } from 'express';
 import { db } from '../config/database.js';
 import { config } from '../config/env.js';
-import { jwtService } from '../services/auth/jwt.service.js';
+import { issueSession } from '../services/auth/session.service.js';
 import {
     validateStudentEmailDomain,
     generateMagicLinkToken,
@@ -313,7 +313,7 @@ export class VerificationController {
             await client.query('COMMIT');
 
             // Generate tokens for the user
-            const tokens = jwtService.generateTokenPair({
+            const tokens = await issueSession({
                 userId: verification.user_id,
                 email: verification.email,
                 role: 'student',
@@ -456,7 +456,7 @@ export class VerificationController {
 
             // Generate tokens
             const userEmailResult = await client.query(`SELECT email FROM users WHERE id = $1`, [userId]);
-            const tokens = jwtService.generateTokenPair({
+            const tokens = await issueSession({
                 userId,
                 email: userEmailResult.rows[0].email,
                 role: 'student',
@@ -614,7 +614,7 @@ export class VerificationController {
 
             // Generate tokens
             const userEmailResult = await client.query(`SELECT email FROM users WHERE id = $1`, [userId]);
-            const tokens = jwtService.generateTokenPair({
+            const tokens = await issueSession({
                 userId,
                 email: userEmailResult.rows[0].email,
                 role: 'student',
