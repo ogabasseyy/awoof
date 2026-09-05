@@ -44,6 +44,20 @@ Use test-mode Paystack credentials until the checkout acceptance test passes.
    checkout, webhook replay, support replies, notifications, and email.
 8. Record the deployed commit and backup filename in the release notes.
 
+## Disposable PostgreSQL verification suite
+
+Run `npm run test:postgres` from `apps/backend` for the real-SQL transactional
+verification suite. It requires local `initdb`, `pg_ctl`, and `createdb`
+binaries on `PATH` (or `POSTGRES_BIN_DIR`), and at least 3 GiB free in the OS
+temporary directory. The runner creates a uniquely named loopback-only cluster
+and `awoof_test_*` database, sets its own test-only database URL and guard
+token, runs migrations, uses one test worker, then stops and removes only that
+fixture. It refuses normal database URLs; do not run integration files directly.
+
+The suite verifies storage and session boundaries only. Challenge routes and
+external OTP delivery remain deliberately unwired until their dependent route
+migration is reviewed.
+
 ## Payment reconciliation
 
 If a verified charge cannot be fulfilled because stock is unavailable, the
