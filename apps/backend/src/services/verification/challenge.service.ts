@@ -122,6 +122,15 @@ async function recordFailure(tx: PoolClient, purpose: ChallengePurpose, subject:
     );
 }
 
+async function assertCanonicalBindingsSize(tx: PoolClient, bindings: ChallengeBindings): Promise<string> {
+    const json = JSON.stringify(bindings);
+    const result = await tx.query<{ bytes: number }>('SELECT octet_length($1::jsonb::text) AS bytes', [json]);
+    if ((result.rows[0]?.bytes ?? Infinity) > 4096) {
+        throw new RangeError('Challenge bindings exceed the canonical JSONB size limit');
+    }
+    return json;
+}
+
 function constantTimeDigestEquals(expected: string, actual: string): boolean {
     if (!/^[a-f0-9]{64}$/.test(expected) || !/^[a-f0-9]{64}$/.test(actual)) return false;
     return timingSafeEqual(Buffer.from(expected, 'hex'), Buffer.from(actual, 'hex'));
@@ -156,11 +165,12 @@ export async function requestChallenge(tx: PoolClient, input: {
     const challengeId = randomUUID();
     const code = String(randomInt(0, 1_000_000)).padStart(6, '0');
     const expiresAt = new Date(now.getTime() + OTP_MS);
+    const bindingsJson = await assertCanonicalBindingsSize(tx, bindings);
     await tx.query(
         `INSERT INTO verification_challenges
              (id, purpose, subject_digest, secret_digest, bindings, created_at, expires_at)
          VALUES ($1, $2, $3, $4, $5::jsonb, $6, $7)`,
-        [challengeId, input.purpose, subject, otpDigest(input.purpose, subject, challengeId, code), JSON.stringify(bindings), now, expiresAt],
+        [challengeId, input.purpose, subject, otpDigest(input.purpose, subject, challengeId, code), bindingsJson, now, expiresAt],
     );
     await tx.query(
         `UPDATE verification_challenge_budgets

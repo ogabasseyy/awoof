@@ -5,14 +5,22 @@ export function cleanupOwnedCluster({ scratch, dataDirectory, pgCtl, startupAtte
         return { removed: true, retained: false };
     }
     const status = spawn(pgCtl, ['-D', dataDirectory, 'status'], 10_000);
-    if (status.error) return retain(scratch, write);
-    if (status.status === 0) {
+    if (isExactStopped(status)) {
+        remove(scratch);
+        return { removed: true, retained: false };
+    }
+    if (!status.error && !status.signal && status.status === 0) {
         const stopped = spawn(pgCtl, ['-D', dataDirectory, 'stop', '-m', 'fast', '-w', '-t', '15'], 20_000);
         const confirmation = spawn(pgCtl, ['-D', dataDirectory, 'status'], 10_000);
-        if (stopped.error || stopped.status !== 0 || confirmation.error || confirmation.status === 0) return retain(scratch, write);
-    } else if (status.status !== 3) return retain(scratch, write);
-    remove(scratch);
-    return { removed: true, retained: false };
+        if (stopped.error || stopped.signal || stopped.status !== 0 || !isExactStopped(confirmation)) return retain(scratch, write);
+        remove(scratch);
+        return { removed: true, retained: false };
+    }
+    return retain(scratch, write);
+}
+
+function isExactStopped(result) {
+    return !result.error && !result.signal && result.status === 3;
 }
 
 function retain(scratch, write) {

@@ -66,6 +66,9 @@ test('uses durable profile authority, stored hashes, and current database claims
         assert.equal(jwtService.verifyAccessToken(await refreshSession(second.refreshToken)).role, 'student');
         await revokeSession(student.userId);
         await assert.rejects(refreshSession(second.refreshToken), /Refresh token not found or invalid/);
+        const revoked = await client.query<{ refresh_token_hash: string | null; refresh_token_expires_at: Date | null }>('SELECT refresh_token_hash, refresh_token_expires_at FROM users WHERE id = $1', [student.userId]);
+        assert.equal(revoked.rows[0]?.refresh_token_hash, null);
+        assert.equal(revoked.rows[0]?.refresh_token_expires_at, null);
 
         const staleStudent = await createProfile(client, 'student');
         const staleToken = await issueSession(staleStudent, false, staleStudent.passwordHash);
@@ -83,9 +86,9 @@ test('denies suspended, rejected, deleted, and password-mismatched durable ident
     await withTestClient(async (client) => {
         const suspendedStudent = await createProfile(client, 'student', 'suspended');
         const deletedStudent = await createProfile(client, 'student', 'deleted');
-        const suspendedVendor = await createProfile(client, 'vendor', 'suspended');
+        const initiallySuspendedVendor = await createProfile(client, 'vendor', 'suspended');
         const rejectedVendor = await createProfile(client, 'vendor', 'rejected');
-        for (const profile of [suspendedStudent, deletedStudent, suspendedVendor, rejectedVendor]) await assertIssueRejected(profile);
+        for (const profile of [suspendedStudent, deletedStudent, initiallySuspendedVendor, rejectedVendor]) await assertIssueRejected(profile);
         const deletedUser = await createProfile(client, 'student');
         await client.query('UPDATE users SET deleted_at = clock_timestamp() WHERE id = $1', [deletedUser.userId]);
         await assertIssueRejected(deletedUser);
@@ -106,6 +109,10 @@ test('denies suspended, rejected, deleted, and password-mismatched durable ident
         await client.query('UPDATE vendors SET status = $2 WHERE user_id = $1', [activeVendor.userId, 'rejected']);
         await assert.rejects(refreshSession(studentSession.refreshToken), /Refresh token not found or invalid/);
         await assert.rejects(refreshSession(vendorSession.refreshToken), /Refresh token not found or invalid/);
+        const suspendedVendor = await createProfile(client, 'vendor');
+        const suspendedVendorSession = await issueSession(suspendedVendor, false, suspendedVendor.passwordHash);
+        await client.query('UPDATE vendors SET status = $2 WHERE user_id = $1', [suspendedVendor.userId, 'suspended']);
+        await assert.rejects(refreshSession(suspendedVendorSession.refreshToken), /Refresh token not found or invalid/);
 
         const newlyDeletedStudent = await createProfile(client, 'student');
         const newlyDeletedVendor = await createProfile(client, 'vendor');
