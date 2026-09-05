@@ -36,8 +36,9 @@
   `getEffectiveEligibility(..., disclosure)` after `lockStudentContext`,
   `recordEmailAssurance`, a plain eligibility read, or another merchant
   disclosure in the same transaction unless all participant users were
-  predeclared and locked in that one sorted entry phase. The current route
-  entrypoints use each operation as a fresh transaction. A merchant must stay
+  predeclared and locked in that one sorted entry phase. Future route
+  entrypoints must invoke each operation in a fresh transaction; route wiring
+  is not part of this authority change. A merchant must stay
   active and undeleted, with a non-deleted vendor owner and active exact-origin
   widget; changed ownership fails closed. Institution-specific approved domains
   and verification methods cannot be reparented—remove and add configuration

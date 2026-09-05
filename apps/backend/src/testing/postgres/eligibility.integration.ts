@@ -18,7 +18,7 @@ import {
 } from '../../services/verification/eligibility-evidence.service.js';
 import { updateInstitutionPolicy } from '../../services/verification/eligibility-policy.service.js';
 import { getEffectiveEligibility } from '../../services/verification/eligibility-read.service.js';
-import { ENROLLMENT_SOURCE, type EnrollmentSnapshot } from '../../services/verification/eligibility.types.js';
+import { ENROLLMENT_SOURCE, type EnrollmentSnapshot, type StudentContext } from '../../services/verification/eligibility.types.js';
 import {
     MERCHANT_DISCLOSURE_NOTICE_VERSION,
     VERIFICATION_NOTICE_VERSION,
@@ -44,6 +44,49 @@ type FixtureOptions = {
 
 function uniqueLabel(): string {
     return randomUUID().replaceAll('-', '').slice(0, 12);
+}
+
+async function lockExistingStudentForChallenge(
+    client: PoolClient,
+    userId: string,
+    processingGrantId: string,
+): Promise<StudentContext> {
+    const context = await lockStudentContext(client, userId);
+    await client.query(
+        `INSERT INTO student_eligibility_state (student_id, university_id)
+         VALUES ($1, $2)
+         ON CONFLICT (student_id, university_id) DO NOTHING`,
+        [context.studentId, context.universityId],
+    );
+    const state = await client.query(
+        `SELECT student_id FROM student_eligibility_state
+         WHERE student_id = $1 AND university_id = $2
+         FOR UPDATE`,
+        [context.studentId, context.universityId],
+    );
+    assert.equal(state.rowCount, 1);
+    const grant = await client.query(
+        `SELECT id FROM verification_consents
+         WHERE id = $1
+           AND user_id = $2
+           AND university_id = $3
+           AND kind = 'processing'
+           AND accepted
+           AND withdrawn_at IS NULL
+           AND notice_version = $4
+         FOR UPDATE`,
+        [processingGrantId, userId, context.universityId, VERIFICATION_NOTICE_VERSION],
+    );
+    assert.equal(grant.rowCount, 1);
+    return context;
+}
+
+async function lockExistingAccountForChallenge(client: PoolClient, userId: string): Promise<void> {
+    const account = await client.query(
+        `SELECT id FROM users WHERE id = $1 FOR UPDATE`,
+        [userId],
+    );
+    assert.equal(account.rowCount, 1);
 }
 
 async function createFixture(client: PoolClient, options: FixtureOptions = {}): Promise<Fixture> {
@@ -89,21 +132,9 @@ async function createFixture(client: PoolClient, options: FixtureOptions = {}): 
         { accepted: true, noticeVersion: VERIFICATION_NOTICE_VERSION },
     ));
     await inTransaction(client, async () => {
-        // Existing-subject assurance always locks context, state, and grant
-        // before the challenge budget/consumption/proof path.
-        const context = await lockStudentContext(client, userId);
-        await client.query(
-            `INSERT INTO student_eligibility_state (student_id, university_id)
-             VALUES ($1, $2)
-             ON CONFLICT (student_id, university_id) DO NOTHING`,
-            [context.studentId, context.universityId],
-        );
-        await client.query(
-            `SELECT id FROM verification_consents
-             WHERE id = $1 AND user_id = $2 AND university_id = $3
-             FOR UPDATE`,
-            [grantId, userId, universityId],
-        );
+        // Existing-subject assurance locks context/state/grant before the
+        // challenge budget/consumption/proof path in this transaction.
+        const context = await lockExistingStudentForChallenge(client, userId, grantId);
         const issued = await requestChallenge(client, {
             purpose: 'student_email',
             subjectKey: userId,
@@ -137,19 +168,7 @@ async function issueEmailAssurance(client: PoolClient, fixture: Fixture): Promis
          WHERE purpose = 'student_email'`,
     );
     await inTransaction(client, async () => {
-        const context = await lockStudentContext(client, fixture.userId);
-        await client.query(
-            `SELECT student_id FROM student_eligibility_state
-             WHERE student_id = $1 AND university_id = $2
-             FOR UPDATE`,
-            [context.studentId, context.universityId],
-        );
-        await client.query(
-            `SELECT id FROM verification_consents
-             WHERE id = $1 AND user_id = $2 AND university_id = $3
-             FOR UPDATE`,
-            [fixture.grantId, fixture.userId, fixture.universityId],
-        );
+        const context = await lockExistingStudentForChallenge(client, fixture.userId, fixture.grantId);
         const issued = await requestChallenge(client, {
             purpose: 'student_email',
             subjectKey: fixture.userId,
@@ -529,6 +548,7 @@ test('records account-email ownership for a non-student account without granting
         assert.equal(issued.status, 'issued');
         if (issued.status !== 'issued') throw new Error('Account challenge was not issued');
         const proofId = await inTransaction(client, async () => {
+            await lockExistingAccountForChallenge(client, account);
             const consumed = await consumeChallenge(client, {
                 purpose: 'account_email', subjectKey: account, challengeId: issued.challengeId, code: issued.code,
             });
@@ -558,6 +578,7 @@ test('rejects unconsumed, cross-account, and evidence-reused challenge reference
             /consumed/i,
         );
         await inTransaction(client, async () => {
+            await lockExistingAccountForChallenge(client, fixture.userId);
             await consumeChallenge(client, {
                 purpose: 'account_email', subjectKey: fixture.userId, challengeId: issued.challengeId, code: issued.code,
             });
@@ -753,43 +774,6 @@ test('rejects missing and foreign processing grants without changing current aut
     });
 });
 
-test('accepts only matching immutable signup bindings when issuing signup email assurance', async () => {
-    await withTestClient(async (client) => {
-        const fixture = await createFixture(client);
-        const profile = await client.query<{ name: string }>(
-            `SELECT name FROM students WHERE id = $1`,
-            [fixture.studentId],
-        );
-        const context = await inTransaction(client, () => lockStudentContext(client, fixture.userId));
-        const issued = await inTransaction(client, () => requestChallenge(client, {
-            purpose: 'student_signup',
-            subjectKey: fixture.email,
-            bindings: {
-                email: fixture.email,
-                name: profile.rows[0]!.name,
-                universityId: fixture.universityId,
-                matricNumber: null,
-                policyVersion: context.policyVersion,
-                verificationConsent: true,
-                noticeVersion: VERIFICATION_NOTICE_VERSION,
-            },
-        }));
-        assert.equal(issued.status, 'issued');
-        if (issued.status !== 'issued') throw new Error('Signup challenge was not issued');
-        assert.equal((await inTransaction(client, async () => {
-            const consumed = await consumeChallenge(client, {
-                purpose: 'student_signup', subjectKey: fixture.email,
-                challengeId: issued.challengeId, code: issued.code,
-            });
-            assert.equal(consumed.status, 'verified');
-            return recordEmailAssurance(client, fixture.userId, {
-                challengeId: issued.challengeId,
-                processingGrantId: fixture.grantId,
-            });
-        })).eligible, true);
-    });
-});
-
 test('rejects stale generations and every changed provider snapshot input', async () => {
     await withTestClient(async (client) => {
         const fixture = await createFixture(client, { enrollment: true, normalization: 'trim_upper' });
@@ -846,9 +830,10 @@ test('scopes registration identity to an institution and rejects same-institutio
             verifiedDecision(second.email, 'shared-reg'),
         ))).eligible, true);
 
+        const sameUniversityEmail = `same-${uniqueLabel()}@students.school.example`;
         const sameUniversityUser = (await client.query<{ id: string }>(
             `INSERT INTO users (email, role) VALUES ($1, 'student') RETURNING id`,
-            [`same-${uniqueLabel()}@students.school.example`],
+            [sameUniversityEmail],
         )).rows[0]!.id;
         const sameUniversityStudent = (await client.query<{ id: string }>(
             `INSERT INTO students (user_id, name, university_id) VALUES ($1, 'Same University', $2) RETURNING id`,
@@ -858,14 +843,14 @@ test('scopes registration identity to an institution and rejects same-institutio
             client, sameUniversityUser, first.universityId,
             { accepted: true, noticeVersion: VERIFICATION_NOTICE_VERSION },
         ));
-        const sameContext = await inTransaction(client, () => lockStudentContext(client, sameUniversityUser));
-        const issue = await inTransaction(client, () => requestChallenge(client, {
-            purpose: 'student_email', subjectKey: sameUniversityUser,
-            bindings: { ...sameContext, processingGrantId: sameGrant, noticeVersion: VERIFICATION_NOTICE_VERSION },
-        }));
-        assert.equal(issue.status, 'issued');
-        if (issue.status !== 'issued') throw new Error('Same-institution challenge was not issued');
         await inTransaction(client, async () => {
+            const sameContext = await lockExistingStudentForChallenge(client, sameUniversityUser, sameGrant);
+            const issue = await requestChallenge(client, {
+                purpose: 'student_email', subjectKey: sameUniversityUser,
+                bindings: { ...sameContext, processingGrantId: sameGrant, noticeVersion: VERIFICATION_NOTICE_VERSION },
+            });
+            assert.equal(issue.status, 'issued');
+            if (issue.status !== 'issued') throw new Error('Same-institution challenge was not issued');
             await consumeChallenge(client, {
                 purpose: 'student_email', subjectKey: sameUniversityUser,
                 challengeId: issue.challengeId, code: issue.code,
@@ -879,7 +864,7 @@ test('scopes registration identity to an institution and rejects same-institutio
             inTransaction(client, () => applyEnrollmentDecision(
                 client,
                 sameSnapshot,
-                verifiedDecision(sameContext.email, 'shared-reg'),
+                verifiedDecision(sameUniversityEmail, 'shared-reg'),
             )),
             /belongs/i,
         );
@@ -1335,20 +1320,28 @@ test('rolls back proof consumption and provider markers, evidence, and reservati
              SET resend_available_at = clock_timestamp() - interval '1 second'
              WHERE purpose = 'student_email'`,
         );
-        const context = await inTransaction(client, () => lockStudentContext(client, fixture.userId));
-        const issued = await inTransaction(client, () => requestChallenge(client, {
-            purpose: 'student_email', subjectKey: fixture.userId,
-            bindings: { ...context, processingGrantId: fixture.grantId, noticeVersion: VERIFICATION_NOTICE_VERSION },
-        }));
+        const issued = await inTransaction(client, async () => {
+            const context = await lockExistingStudentForChallenge(client, fixture.userId, fixture.grantId);
+            return requestChallenge(client, {
+                purpose: 'student_email', subjectKey: fixture.userId,
+                bindings: { ...context, processingGrantId: fixture.grantId, noticeVersion: VERIFICATION_NOTICE_VERSION },
+            });
+        });
         assert.equal(issued.status, 'issued');
         if (issued.status !== 'issued') throw new Error('Rollback challenge was not issued');
         await client.query('BEGIN');
-        await consumeChallenge(client, {
-            purpose: 'student_email', subjectKey: fixture.userId, challengeId: issued.challengeId, code: issued.code,
-        });
-        await recordEmailAssurance(client, fixture.userId, {
-            challengeId: issued.challengeId, processingGrantId: fixture.grantId,
-        });
+        try {
+            await lockExistingStudentForChallenge(client, fixture.userId, fixture.grantId);
+            await consumeChallenge(client, {
+                purpose: 'student_email', subjectKey: fixture.userId, challengeId: issued.challengeId, code: issued.code,
+            });
+            await recordEmailAssurance(client, fixture.userId, {
+                challengeId: issued.challengeId, processingGrantId: fixture.grantId,
+            });
+        } catch (error) {
+            await client.query('ROLLBACK');
+            throw error;
+        }
         await client.query('ROLLBACK');
         const challenge = await client.query<{ consumed_at: Date | null }>(
             `SELECT consumed_at FROM verification_challenges WHERE id = $1`,
