@@ -63,7 +63,7 @@ export function useVendorRegistration() {
         setRegistrationData((prev) => {
             // Merge new files with existing files - only update fields that are provided
             // This prevents clearing other files when one is selected
-            // undefined = don't update, null/undefined = clear (remove), File = set
+            // undefined = don't update, null = clear (remove), File = set
             const mergedFiles = {
                 ...prev.files,
             };
@@ -212,4 +212,3 @@ export function useVendorRegistration() {
         clearError,
     };
 }
-

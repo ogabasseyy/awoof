@@ -97,7 +97,7 @@ function WidgetVerifyContent() {
                 return;
             }
             storeTokens(tokens);
-            await requestWidgetTokenAndPostMessage(data?.studentId);
+            await requestWidgetTokenAndPostMessage();
         } catch (err: unknown) {
             const msg = (err as { response?: { data?: { error?: { message?: string }; message?: string } } })?.response?.data?.error?.message
                 || (err as { response?: { data?: { message?: string } } })?.response?.data?.message
@@ -161,7 +161,7 @@ function WidgetVerifyContent() {
         }
     };
 
-    async function requestWidgetTokenAndPostMessage(studentId?: string) {
+    async function requestWidgetTokenAndPostMessage() {
         try {
             const res = await apiClient.post('/verification/widget/token', {
                 vendorId,
@@ -171,14 +171,14 @@ function WidgetVerifyContent() {
             });
             const data = res.data?.data ?? res.data;
             const token = data?.token;
-            if (!token) {
+            if (!token || !data?.studentId) {
                 setError('Could not get verification token.');
                 return;
             }
             const payload = {
                 type: AWOOF_MESSAGE_TYPE,
                 token,
-                studentId: studentId ?? undefined,
+                studentId: data.studentId,
                 verifiedAt: new Date().toISOString(),
                 method: step === 'reg' ? 'registration' : 'whatsapp',
             };

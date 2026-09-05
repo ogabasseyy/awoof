@@ -756,6 +756,7 @@ export class VerificationController {
             message: 'Verification token generated successfully',
             data: {
                 token,
+                studentId: student.id,
                 expiresAt,
                 expiresInMinutes: 30,
             },

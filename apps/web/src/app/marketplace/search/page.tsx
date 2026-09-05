@@ -4,7 +4,7 @@
 
 'use client';
 
-import { useState, useEffect, useCallback, Suspense } from 'react';
+import { useState, useEffect, useCallback, useRef, Suspense } from 'react';
 import { useSearchParams } from 'next/navigation';
 import { Search, ShoppingBag, ArrowLeft, Sparkles } from 'lucide-react';
 import { Input } from '@/components/ui/input';
@@ -23,6 +23,10 @@ function SearchContent() {
     const q = searchParams.get('q') || searchParams.get('search') || '';
     const categoryId = searchParams.get('categoryId') || '';
     const dealType = searchParams.get('deal_type') === 'voucher' ? 'voucher' : 'product';
+    const requestedPage = Number(searchParams.get('page') || '1');
+    const page = Number.isSafeInteger(requestedPage) && requestedPage > 0 ? requestedPage : 1;
+    const pageSize = 50;
+    const requestId = useRef(0);
     const [query, setQuery] = useState(q);
     const [products, setProducts] = useState<DealCardProduct[]>([]);
     const [total, setTotal] = useState(0);
@@ -30,15 +34,17 @@ function SearchContent() {
     const [isLoading, setIsLoading] = useState(true);
 
     const fetchResults = useCallback(async (searchTerm: string, catId: string) => {
+        const currentRequest = ++requestId.current;
         const term = searchTerm.trim();
 
         try {
             setIsLoading(true);
-            const params = new URLSearchParams({ limit: '50', deal_type: dealType });
+            const params = new URLSearchParams({ limit: String(pageSize), page: String(page), deal_type: dealType });
             if (term) params.set('search', term);
             if (catId) params.set('categoryId', catId);
 
             const res = await apiClient.get(`/products?${params.toString()}`);
+            if (currentRequest !== requestId.current) return;
             const data = res.data?.data;
             const list: DealCardProduct[] = data?.products || [];
             setProducts(list);
@@ -51,29 +57,32 @@ function SearchContent() {
                 } else {
                     try {
                         const catRes = await apiClient.get('/products/categories');
+                        if (currentRequest !== requestId.current) return;
                         const cats = catRes.data?.data || [];
                         const match = cats.find((c: { id: string; name: string }) => c.id === catId);
                         setCategoryName(match?.name ?? null);
                     } catch {
-                        setCategoryName(null);
+                        if (currentRequest === requestId.current) setCategoryName(null);
                     }
                 }
             } else {
                 setCategoryName(null);
             }
         } catch (err) {
+            if (currentRequest !== requestId.current) return;
             console.error('Search error:', err);
             setProducts([]);
             setTotal(0);
             setCategoryName(null);
         } finally {
-            setIsLoading(false);
+            if (currentRequest === requestId.current) setIsLoading(false);
         }
-    }, [dealType]);
+    }, [dealType, page]);
 
     useEffect(() => {
         setQuery(q);
         fetchResults(q, categoryId);
+        return () => { requestId.current++; };
     }, [q, categoryId, fetchResults]);
 
     const handleSubmit = (e: React.FormEvent) => {
@@ -87,6 +96,12 @@ function SearchContent() {
     };
 
     const hasFilter = true;
+    const totalPages = Math.max(1, Math.ceil(total / pageSize));
+    const pageHref = (nextPage: number) => {
+        const params = new URLSearchParams(searchParams.toString());
+        params.set('page', String(nextPage));
+        return `/marketplace/search?${params.toString()}`;
+    };
     const heading = q.trim()
         ? `Results for “${q}”`
         : categoryName
@@ -256,6 +271,17 @@ function SearchContent() {
                                     <DealCard key={product.id} product={product} index={i} />
                                 ))}
                             </div>
+                        )}
+                        {!isLoading && (totalPages > 1 || page > 1) && (
+                            <nav aria-label="Marketplace pages" className="mt-8 flex items-center justify-between">
+                                {page > 1 ? (
+                                    <Link href={pageHref(page - 1)} className="rounded-full border px-4 py-2">Previous</Link>
+                                ) : <span />}
+                                <span className="text-sm text-slate-600">Page {page} of {totalPages}</span>
+                                {page < totalPages ? (
+                                    <Link href={pageHref(page + 1)} className="rounded-full border px-4 py-2">Next</Link>
+                                ) : <span />}
+                            </nav>
                         )}
                     </>
                 )}
