@@ -726,27 +726,6 @@ export class PaymentController {
         try {
             await client.query('BEGIN');
 
-            const duplicateCheck = await client.query(
-                `SELECT id FROM transactions
-                 WHERE vendor_payment_reference = $1 AND vendor_id = $2
-                 FOR UPDATE`,
-                [validated.paymentReference, vendorId]
-            );
-            if (duplicateCheck.rows.length > 0) {
-                throw new BadRequestError('Payment reference has already been used');
-            }
-
-            const stockUpdate = await client.query(
-                `UPDATE products
-                 SET stock = stock - 1, updated_at = CURRENT_TIMESTAMP
-                 WHERE id = $1 AND vendor_id = $2 AND stock > 0 AND deleted_at IS NULL AND status = 'active'
-                 RETURNING id`,
-                [validated.productId, vendorId]
-            );
-            if (stockUpdate.rows.length === 0) {
-                throw new BadRequestError('This deal is no longer available');
-            }
-
             const transactionResult = await client.query(
                 `INSERT INTO transactions (
                     student_id, product_id, vendor_id, amount, commission, list_price_snapshot,
@@ -769,6 +748,17 @@ export class PaymentController {
             );
             transaction = transactionResult.rows[0];
 
+            const stockUpdate = await client.query(
+                `UPDATE products
+                 SET stock = stock - 1, updated_at = CURRENT_TIMESTAMP
+                 WHERE id = $1 AND vendor_id = $2 AND stock > 0 AND deleted_at IS NULL AND status = 'active'
+                 RETURNING id`,
+                [validated.productId, vendorId]
+            );
+            if (stockUpdate.rows.length === 0) {
+                throw new BadRequestError('This deal is no longer available');
+            }
+
             await client.query(
                 `INSERT INTO savings_stats (student_id, total_savings, total_purchases, last_updated)
                  VALUES ($1, $2, 1, CURRENT_TIMESTAMP)
@@ -788,6 +778,10 @@ export class PaymentController {
             await client.query('COMMIT');
         } catch (error) {
             await client.query('ROLLBACK');
+            const code = (error as { code?: string }).code;
+            if (code === '23505') {
+                throw new BadRequestError('Payment reference has already been used');
+            }
             throw error;
         } finally {
             client.release();

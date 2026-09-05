@@ -27,6 +27,8 @@ class App {
 
   constructor() {
     this.app = express();
+    // Reverse-proxied VPS deploys: honor the first proxy hop so rate limits use client IPs.
+    this.app.set('trust proxy', 1);
     this.initializeWebhookRoute();
     this.initializeMiddlewares();
     // Note: Error handling must be initialized AFTER routes
