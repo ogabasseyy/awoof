@@ -355,9 +355,7 @@ export default function VendorPaymentPage() {
     };
 
     // Get API base URL for webhook/API examples
-    const apiBaseUrl = typeof window !== 'undefined'
-        ? window.location.origin.replace('3000', '5001')
-        : 'https://api.awoof.com';
+    const apiBaseUrl = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:5001';
 
     if (isLoading) {
         return (
@@ -1230,4 +1228,3 @@ export default function VendorPaymentPage() {
         </ProtectedRoute>
     );
 }
-

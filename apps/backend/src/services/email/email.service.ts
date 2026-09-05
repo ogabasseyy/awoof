@@ -262,7 +262,7 @@ export const sendPurchaseConfirmationEmail = async (
     const base = process.env.FRONTEND_URL || 'http://localhost:3000';
     const html = supportShell(
         'Purchase confirmed',
-        `<p>Your purchase of <strong>${productName}</strong> for <strong>₦${amount.toLocaleString()}</strong> is confirmed.</p>
+        `<p>Your purchase of <strong>${escapeHtml(productName)}</strong> for <strong>₦${amount.toLocaleString()}</strong> is confirmed.</p>
          <p>Reference: ${transactionId}</p>
          <p><a href="${base}/student/profile/receipts" style="color:#1D4ED8;">View receipts</a></p>`
     );
@@ -278,7 +278,7 @@ export const sendVendorNewOrderEmail = async (
     const base = process.env.FRONTEND_URL || 'http://localhost:3000';
     const html = supportShell(
         'New marketplace order',
-        `<p>You received an order for <strong>${productName}</strong> (₦${amount.toLocaleString()}).</p>
+        `<p>You received an order for <strong>${escapeHtml(productName)}</strong> (₦${amount.toLocaleString()}).</p>
          <p>Reference: ${transactionId}</p>
          <p><a href="${base}/vendor/orders" style="color:#1D4ED8;">View orders</a></p>`
     );

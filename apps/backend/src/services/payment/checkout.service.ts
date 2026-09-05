@@ -48,7 +48,7 @@ async function emitCommerceNotifications(transactionId: string): Promise<void> {
 
         const result = await db.query(
             `SELECT t.id, t.amount, t.student_id, t.vendor_id,
-                    p.name AS product_name, p.price AS list_price,
+                    p.name AS product_name, COALESCE(t.list_price_snapshot, p.price) AS list_price,
                     s.user_id AS student_user_id, su.email AS student_email,
                     v.user_id AS vendor_user_id, vu.email AS vendor_email,
                     ss.total_savings, o.student_notified, o.savings_notified,
@@ -70,49 +70,39 @@ async function emitCommerceNotifications(transactionId: string): Promise<void> {
         const productName = row.product_name as string;
         const discount = parseFloat(row.list_price) - amount;
 
-        if (!row.student_notified) {
-            await NotificationService.notifyPurchaseConfirmation(
-                row.student_id, productName, amount, discount, row.id
-            );
+        const steps: Array<() => Promise<void>> = [];
+        if (!row.student_notified) steps.push(async () => {
+            await NotificationService.notifyPurchaseConfirmation(row.student_id, productName, amount, discount, row.id);
             await db.query('UPDATE commerce_notification_outbox SET student_notified = true WHERE transaction_id = $1', [row.id]);
-        }
-        if (!row.savings_notified && row.total_savings != null) {
-            await NotificationService.notifySavingsMilestone(
-                row.student_id,
-                parseFloat(row.total_savings)
-            );
+        });
+        if (!row.savings_notified && row.total_savings != null) steps.push(async () => {
+            await NotificationService.notifySavingsMilestone(row.student_id, parseFloat(row.total_savings));
             await db.query('UPDATE commerce_notification_outbox SET savings_notified = true WHERE transaction_id = $1', [row.id]);
-        }
-        if (!row.student_emailed && row.student_email) {
-            const result = await sendPurchaseConfirmationEmail(
-                row.student_email,
-                productName,
-                amount,
-                row.id
-            );
-            if (!result.success) throw new Error(result.error || 'Student receipt email failed');
+        });
+        if (!row.student_emailed && row.student_email) steps.push(async () => {
+            const delivery = await sendPurchaseConfirmationEmail(row.student_email, productName, amount, row.id);
+            if (!delivery.success) throw new Error(delivery.error || 'Student receipt email failed');
             await db.query('UPDATE commerce_notification_outbox SET student_emailed = true WHERE transaction_id = $1', [row.id]);
-        }
-
-        if (!row.vendor_notified) {
-            await NotificationService.notifyVendorNewOrder({
-                vendorUserId: row.vendor_user_id,
-                productName,
-                amount,
-                transactionId: row.id,
-            });
+        });
+        if (!row.vendor_notified) steps.push(async () => {
+            await NotificationService.notifyVendorNewOrder({ vendorUserId: row.vendor_user_id, productName, amount, transactionId: row.id });
             await db.query('UPDATE commerce_notification_outbox SET vendor_notified = true WHERE transaction_id = $1', [row.id]);
-        }
-        if (!row.vendor_emailed && row.vendor_email) {
-            const result = await sendVendorNewOrderEmail(
-                row.vendor_email,
-                productName,
-                amount,
-                row.id
-            );
-            if (!result.success) throw new Error(result.error || 'Vendor order email failed');
+        });
+        if (!row.vendor_emailed && row.vendor_email) steps.push(async () => {
+            const delivery = await sendVendorNewOrderEmail(row.vendor_email, productName, amount, row.id);
+            if (!delivery.success) throw new Error(delivery.error || 'Vendor order email failed');
             await db.query('UPDATE commerce_notification_outbox SET vendor_emailed = true WHERE transaction_id = $1', [row.id]);
+        });
+
+        const failures: string[] = [];
+        for (const step of steps) {
+            try {
+                await step();
+            } catch (error) {
+                failures.push(error instanceof Error ? error.message : 'Unknown delivery error');
+            }
         }
+        if (failures.length > 0) throw new Error(failures.join('; '));
         await db.query(
             `UPDATE commerce_notification_outbox
              SET status = 'delivered', delivered_at = CURRENT_TIMESTAMP,
@@ -199,7 +189,7 @@ export async function completeMarketplaceTransactionWithClient(
         transactionOpen = true;
 
         const txResult = await client.query(
-            `SELECT t.*, p.price AS list_price
+            `SELECT t.*, COALESCE(t.list_price_snapshot, p.price) AS list_price
              FROM transactions t
              JOIN products p ON p.id = t.product_id
              WHERE t.paystack_reference = $1

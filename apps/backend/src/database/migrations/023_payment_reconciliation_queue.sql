@@ -35,13 +35,6 @@ CREATE TABLE IF NOT EXISTS commerce_notification_outbox (
     updated_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
-ALTER TABLE commerce_notification_outbox
-    ADD COLUMN IF NOT EXISTS student_notified BOOLEAN NOT NULL DEFAULT false,
-    ADD COLUMN IF NOT EXISTS savings_notified BOOLEAN NOT NULL DEFAULT false,
-    ADD COLUMN IF NOT EXISTS student_emailed BOOLEAN NOT NULL DEFAULT false,
-    ADD COLUMN IF NOT EXISTS vendor_notified BOOLEAN NOT NULL DEFAULT false,
-    ADD COLUMN IF NOT EXISTS vendor_emailed BOOLEAN NOT NULL DEFAULT false;
-
 CREATE INDEX IF NOT EXISTS idx_commerce_notification_outbox_pending
     ON commerce_notification_outbox (created_at)
     WHERE status IN ('pending', 'failed');

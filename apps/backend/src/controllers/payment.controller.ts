@@ -209,27 +209,57 @@ export class PaymentController {
             percentageCharge,
         };
 
-        let subaccountCode: string;
-        if (vendor.paystack_subaccount_code) {
-            const updated = await updatePaystackSubaccount(
-                vendor.paystack_subaccount_code,
-                subaccountParams
+        let payoutChangeId: string;
+        try {
+            const pendingChange = await db.query(
+                `INSERT INTO payout_change_requests
+                    (vendor_id, bank_name, bank_code, account_number, account_name)
+                 VALUES ($1, $2, $3, $4, $5)
+                 RETURNING id`,
+                [vendor.id, validated.bankName, validated.bankCode, validated.accountNumber, resolved.accountName]
             );
-            subaccountCode = updated.subaccountCode;
-        } else {
-            const created = await createPaystackSubaccount(subaccountParams);
-            subaccountCode = created.subaccountCode;
+            payoutChangeId = pendingChange.rows[0].id;
+        } catch (error: unknown) {
+            if ((error as { code?: string }).code === '23505') {
+                throw new BadRequestError('A payout change is already pending reconciliation');
+            }
+            throw error;
+        }
+
+        let subaccountCode: string;
+        try {
+            // Read again after acquiring the durable per-vendor pending-change guard.
+            const currentVendor = await db.query('SELECT paystack_subaccount_code FROM vendors WHERE id = $1', [vendor.id]);
+            const currentCode = currentVendor.rows[0].paystack_subaccount_code;
+            if (currentCode) {
+                const updated = await updatePaystackSubaccount(currentCode, subaccountParams);
+                subaccountCode = updated.subaccountCode;
+            } else {
+                const created = await createPaystackSubaccount(subaccountParams);
+                subaccountCode = created.subaccountCode;
+            }
+        } catch (error: unknown) {
+            await db.query(
+                // An HTTP timeout can follow a successful remote mutation. Keep the
+                // guard pending until reconciled instead of allowing a duplicate.
+                `UPDATE payout_change_requests SET error = $2, updated_at = CURRENT_TIMESTAMP WHERE id = $1`,
+                [payoutChangeId, 'Provider outcome requires reconciliation']
+            );
+            throw error;
         }
 
         await db.query(
-            `UPDATE vendors
-             SET bank_name = $1,
-                 bank_code = $2,
-                 account_number = $3,
-                 account_name = $4,
-                 paystack_subaccount_code = $5,
-                 updated_at = CURRENT_TIMESTAMP
-             WHERE id = $6`,
+            `WITH updated_vendor AS (
+                UPDATE vendors
+                SET bank_name = $1, bank_code = $2, account_number = $3,
+                    account_name = $4, paystack_subaccount_code = $5,
+                    updated_at = CURRENT_TIMESTAMP
+                WHERE id = $6
+                RETURNING id
+             )
+             UPDATE payout_change_requests
+             SET status = 'applied', updated_at = CURRENT_TIMESTAMP
+             WHERE id = $7 AND EXISTS (SELECT 1 FROM updated_vendor)`,
             [
                 validated.bankName,
                 validated.bankCode,
@@ -237,6 +267,7 @@ export class PaymentController {
                 resolved.accountName,
                 subaccountCode,
                 vendor.id,
+                payoutChangeId,
             ]
         );
 

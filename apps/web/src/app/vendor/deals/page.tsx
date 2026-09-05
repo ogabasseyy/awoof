@@ -105,7 +105,6 @@ function VendorDealsContent() {
 
     // Debounced search — skip the initial empty query (mount already fetched)
     useEffect(() => {
-        if (searchQuery === '') return;
         const timer = setTimeout(() => {
             if (page === 1) {
                 fetchProducts();

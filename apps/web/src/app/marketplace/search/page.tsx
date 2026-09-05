@@ -22,6 +22,7 @@ function SearchContent() {
     const { user } = useAuth();
     const q = searchParams.get('q') || searchParams.get('search') || '';
     const categoryId = searchParams.get('categoryId') || '';
+    const dealType = searchParams.get('deal_type') === 'voucher' ? 'voucher' : 'product';
     const [query, setQuery] = useState(q);
     const [products, setProducts] = useState<DealCardProduct[]>([]);
     const [total, setTotal] = useState(0);
@@ -30,7 +31,7 @@ function SearchContent() {
 
     const fetchResults = useCallback(async (searchTerm: string, catId: string) => {
         const term = searchTerm.trim();
-        if (!term && !catId) {
+        if (!term && !catId && dealType !== 'voucher') {
             setProducts([]);
             setTotal(0);
             setCategoryName(null);
@@ -40,7 +41,7 @@ function SearchContent() {
 
         try {
             setIsLoading(true);
-            const params = new URLSearchParams({ limit: '50', deal_type: 'product' });
+            const params = new URLSearchParams({ limit: '50', deal_type: dealType });
             if (term) params.set('search', term);
             if (catId) params.set('categoryId', catId);
 
@@ -75,7 +76,7 @@ function SearchContent() {
         } finally {
             setIsLoading(false);
         }
-    }, []);
+    }, [dealType]);
 
     useEffect(() => {
         setQuery(q);
@@ -87,16 +88,17 @@ function SearchContent() {
         const term = query.trim();
         if (!term) return;
         const params = new URLSearchParams({ q: term });
+        params.set('deal_type', dealType);
         if (categoryId) params.set('categoryId', categoryId);
         window.location.href = `/marketplace/search?${params.toString()}`;
     };
 
-    const hasFilter = Boolean(q.trim() || categoryId);
+    const hasFilter = Boolean(q.trim() || categoryId || dealType === 'voucher');
     const heading = q.trim()
         ? `Results for “${q}”`
         : categoryName
           ? `${categoryName} deals`
-          : 'Category deals';
+          : dealType === 'voucher' ? 'Student vouchers' : 'Category deals';
     const sub = q.trim()
         ? 'Student prices across products and brands'
         : 'Every deal in this lane — locked for verified students';

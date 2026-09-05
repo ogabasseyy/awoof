@@ -94,10 +94,10 @@ export class CheckoutController {
 
         const insert = await db.query(
             `INSERT INTO transactions (
-                student_id, product_id, vendor_id, amount, commission,
+                student_id, product_id, vendor_id, amount, commission, list_price_snapshot,
                 status, paystack_reference, payment_source, settlement_mode
              )
-             VALUES ($1, $2, $3, $4, $5, 'pending', $6, 'awoof', $7)
+             VALUES ($1, $2, $3, $4, $5, $6, 'pending', $7, 'awoof', $8)
              RETURNING id`,
             [
                 student.id,
@@ -105,6 +105,7 @@ export class CheckoutController {
                 product.vendor_id,
                 amount,
                 commission,
+                parseFloat(product.price),
                 reference,
                 settlementMode,
             ]
