@@ -240,7 +240,7 @@ export async function createPaystackSubaccount(params: {
                 account_number: params.accountNumber,
                 percentage_charge: params.percentageCharge,
             },
-            { headers: paystackAuthHeaders() }
+            { headers: paystackAuthHeaders(), timeout: 15000 }
         );
         const code = response.data?.data?.subaccount_code;
         if (!code) {
@@ -272,7 +272,7 @@ export async function updatePaystackSubaccount(
                 account_number: params.accountNumber,
                 percentage_charge: params.percentageCharge,
             },
-            { headers: paystackAuthHeaders() }
+            { headers: paystackAuthHeaders(), timeout: 15000 }
         );
         const code = response.data?.data?.subaccount_code ?? subaccountCode;
         return { subaccountCode: String(code) };

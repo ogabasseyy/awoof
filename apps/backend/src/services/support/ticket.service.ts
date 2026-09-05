@@ -89,18 +89,19 @@ export class TicketService {
             : 'general';
 
         const insert = await db.query(
-            `INSERT INTO tickets (requester_user_id, requester_role, subject, category, status, priority)
+            `WITH new_ticket AS (
+             INSERT INTO tickets (requester_user_id, requester_role, subject, category, status, priority)
              VALUES ($1, $2, $3, $4, 'open', 'normal')
-             RETURNING *`,
-            [params.requesterUserId, params.requesterRole, params.subject, category]
+             RETURNING *
+             ), opening_message AS (
+               INSERT INTO ticket_messages (ticket_id, author_user_id, author_role, body, is_internal)
+               SELECT id, $1, $2, $5, false FROM new_ticket
+               RETURNING ticket_id
+             )
+             SELECT new_ticket.* FROM new_ticket JOIN opening_message ON opening_message.ticket_id = new_ticket.id`,
+            [params.requesterUserId, params.requesterRole, params.subject, category, params.message]
         );
         const ticket = insert.rows[0];
-
-        await db.query(
-            `INSERT INTO ticket_messages (ticket_id, author_user_id, author_role, body, is_internal)
-             VALUES ($1, $2, $3, $4, false)`,
-            [ticket.id, params.requesterUserId, params.requesterRole, params.message]
-        );
 
         // Notify admins (in-app + email ops)
         try {

@@ -59,6 +59,8 @@ const verifyRegistrationSchema = z.object({
 });
 
 const verifyWhatsAppSchema = z.object({
+    universityId: z.string().uuid('Invalid university ID'),
+    registrationNumber: z.string().min(1, 'Registration number is required'),
     phoneNumber: z.string().regex(/^\+?[1-9]\d{1,14}$/, 'Invalid phone number format'),
     otp: z.string().length(6, 'OTP must be 6 digits'),
 });
@@ -528,6 +530,11 @@ export class VerificationController {
 
         if (!isValid) {
             throw new UnauthorizedError('Invalid or expired OTP');
+        }
+
+        const enrollment = await verifyRegistrationNumber(validated.universityId, validated.registrationNumber, studentName);
+        if (enrollment.verified !== true) {
+            throw new UnauthorizedError(enrollment.error || 'University enrollment could not be verified');
         }
 
         // Create user and student if needed

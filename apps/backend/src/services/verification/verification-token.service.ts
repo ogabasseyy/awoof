@@ -62,7 +62,7 @@ export async function createVerificationToken(
 
     // Verify vendor exists
     const vendorResult = await db.query(
-        `SELECT id FROM vendors WHERE id = $1 AND deleted_at IS NULL`,
+        `SELECT id FROM vendors WHERE id = $1 AND status = 'active' AND deleted_at IS NULL`,
         [vendorId]
     );
 
@@ -111,7 +111,10 @@ export async function validateAndConsumeToken(
     const tokenResult = await db.query(
         `SELECT id, student_id, vendor_id, product_id, expires_at, used_at
          FROM verification_tokens
-         WHERE token = $1`,
+         WHERE token = $1 AND EXISTS (
+             SELECT 1 FROM vendors v WHERE v.id = verification_tokens.vendor_id
+               AND v.status = 'active' AND v.deleted_at IS NULL
+         )`,
         [token]
     );
 
@@ -201,4 +204,3 @@ export async function validateToken(
         return { valid: false, error: 'Error validating token' };
     }
 }
-

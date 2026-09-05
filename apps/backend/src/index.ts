@@ -66,6 +66,14 @@ class App {
       })
     );
 
+    // Throttle before dynamic CORS can consume a database connection.
+    this.app.use(rateLimit({
+      windowMs: config.rateLimit.windowMs,
+      max: config.rateLimit.maxRequests,
+      standardHeaders: true,
+      legacyHeaders: false,
+    }));
+
     // CORS
     this.app.use(
       cors({
@@ -98,8 +106,9 @@ class App {
           }
 
           db.query(
-            `SELECT 1 FROM widget_configs
-             WHERE status = 'active' AND $1 = ANY(allowed_domains)
+            `SELECT 1 FROM widget_configs wc
+             JOIN vendors v ON v.id = wc.vendor_id AND v.status = 'active' AND v.deleted_at IS NULL
+             WHERE wc.status = 'active' AND $1 = ANY(wc.allowed_domains)
              LIMIT 1`,
             [parsed.hostname.toLowerCase()]
           ).then((result) => callback(null, result.rows.length > 0))
@@ -115,22 +124,6 @@ class App {
     // Body parser
     this.app.use(express.json({ limit: '10mb' }));
     this.app.use(express.urlencoded({ extended: true, limit: '10mb' }));
-
-    // Global rate limit (brute-force / DoS protection)
-    this.app.use(
-      rateLimit({
-        windowMs: config.rateLimit.windowMs,
-        max: config.rateLimit.maxRequests,
-        standardHeaders: true,
-        legacyHeaders: false,
-        handler: (_req, res) => {
-          res.status(429).json({
-            success: false,
-            error: { message: 'Too many requests. Please try again later.', statusCode: 429 },
-          });
-        },
-      })
-    );
 
     // Request logger
     this.app.use(logger);

@@ -29,7 +29,7 @@ export async function getWidgetConfig(req: AuthRequest, res: Response): Promise<
     }
 
     const vendorResult = await db.query(
-        `SELECT id FROM vendors WHERE user_id = $1 AND deleted_at IS NULL`,
+        `SELECT id FROM vendors WHERE user_id = $1 AND status = 'active' AND deleted_at IS NULL`,
         [req.user.userId]
     );
     if (vendorResult.rows.length === 0) {
@@ -80,7 +80,7 @@ export async function updateWidgetConfig(req: AuthRequest, res: Response): Promi
     }
 
     const vendorResult = await db.query(
-        `SELECT id FROM vendors WHERE user_id = $1 AND deleted_at IS NULL`,
+        `SELECT id FROM vendors WHERE user_id = $1 AND status = 'active' AND deleted_at IS NULL`,
         [req.user.userId]
     );
     if (vendorResult.rows.length === 0) {

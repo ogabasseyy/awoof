@@ -73,7 +73,7 @@ export function NotificationBell() {
         try {
             await apiClient.put(`/support/notifications/${id}/read`);
             setItems((prev) => prev.map((n) => (n.id === id ? { ...n, read: true } : n)));
-            setUnreadCount((c) => Math.max(0, c - 1));
+            await refresh();
         } catch {
             /* ignore */
         }

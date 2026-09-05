@@ -137,6 +137,8 @@ function WidgetVerifyContent() {
         setError(null);
         try {
             const res = await publicApiClient.post('/verification/whatsapp/verify', {
+                universityId,
+                registrationNumber,
                 phoneNumber: phoneNumber.trim(),
                 otp: otp.trim(),
                 studentName: whatsappStudentName.trim() || undefined,
@@ -325,6 +327,10 @@ function WidgetVerifyContent() {
                 {step === 'whatsapp_verify' && (
                     <form onSubmit={handleWhatsAppVerify} className="space-y-4">
                         <p className="text-slate-600 text-sm">Enter the 6-digit code sent to your WhatsApp.</p>
+                        <div>
+                            <Label htmlFor="waRegistration">University registration number *</Label>
+                            <Input id="waRegistration" value={registrationNumber} onChange={(e) => setRegistrationNumber(e.target.value)} required />
+                        </div>
                         <div>
                             <Label htmlFor="otp">Verification code *</Label>
                             <Input id="otp" value={otp} onChange={(e) => setOtp(e.target.value)} placeholder="000000" maxLength={6} required />

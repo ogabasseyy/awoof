@@ -273,8 +273,8 @@ export class StudentController {
                 t.created_at,
                 p.id as product_id,
                 p.name as product_name,
-                p.price as product_price,
-                p.student_price,
+                COALESCE(t.list_price_snapshot, t.amount) as product_price,
+                t.amount as student_price,
                 p.category_id,
                 v.id as vendor_id,
                 v.name as vendor_name,
@@ -393,4 +393,3 @@ export class StudentController {
         });
     }
 }
-
