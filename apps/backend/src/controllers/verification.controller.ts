@@ -364,7 +364,10 @@ export class VerificationController {
         // Find or create user and student
         let studentId: string;
         let userId: string;
-        const email = validated.studentEmail || `${validated.registrationNumber}@university.edu`;
+        const email = validated.studentEmail || (() => {
+            const safeReg = validated.registrationNumber.replace(/[^a-zA-Z0-9]/g, '').slice(0, 40) || 'student';
+            return `${safeReg}.${validated.universityId}@students.awoof.invalid`;
+        })();
 
         const client = await db.getPool().connect();
 

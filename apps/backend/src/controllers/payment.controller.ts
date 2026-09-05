@@ -182,7 +182,7 @@ export class PaymentController {
         }
 
         const vendorResult = await db.query(
-            `SELECT id, name, company_name, paystack_subaccount_code
+            `SELECT id, name, company_name, paystack_subaccount_code, status
              FROM vendors WHERE user_id = $1 AND deleted_at IS NULL`,
             [req.user.userId]
         );
@@ -192,6 +192,9 @@ export class PaymentController {
         }
 
         const vendor = vendorResult.rows[0];
+        if (vendor.status !== 'active') {
+            throw new BadRequestError('Only approved vendors can update payout settings');
+        }
         const validated = updatePayoutSettingsSchema.parse(req.body);
 
         const resolved = await resolvePaystackAccount(validated.bankCode, validated.accountNumber);
@@ -746,10 +749,10 @@ export class PaymentController {
 
             const transactionResult = await client.query(
                 `INSERT INTO transactions (
-                    student_id, product_id, vendor_id, amount, commission,
+                    student_id, product_id, vendor_id, amount, commission, list_price_snapshot,
                     status, verification_token, payment_source, vendor_payment_reference, verified_at
                 )
-                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, CURRENT_TIMESTAMP)
+                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, CURRENT_TIMESTAMP)
                 RETURNING id, status, created_at`,
                 [
                     tokenData.studentId,
@@ -757,6 +760,7 @@ export class PaymentController {
                     vendorId,
                     reportedAmount,
                     commission,
+                    parseFloat(product.price.toString()),
                     'completed',
                     validated.verificationToken,
                     validated.paymentGateway === 'paystack' ? 'vendor_paystack' : 'vendor_other',

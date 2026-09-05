@@ -38,6 +38,12 @@ class App {
   private initializeWebhookRoute(): void {
     this.app.post(
       '/api/webhooks/paystack',
+      rateLimit({
+        windowMs: config.rateLimit.windowMs,
+        max: config.rateLimit.maxRequests,
+        standardHeaders: true,
+        legacyHeaders: false,
+      }),
       express.raw({ type: 'application/json' }),
       async (req: Request, res: Response, next: NextFunction) => {
         try {
