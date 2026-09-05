@@ -45,6 +45,7 @@ Thumbs.db
 *.tmp
 *.temp
 .cache/
+.worktrees/
 vps-snapshot/
 compare-with-vps.sh
 trigger-vps-build.sh
