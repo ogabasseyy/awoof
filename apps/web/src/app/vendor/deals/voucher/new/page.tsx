@@ -51,6 +51,9 @@ const voucherSchema = z.object({
     categoryId: z.string().min(1, 'Please select a category').uuid('Invalid category'),
     stock: z.number().int().min(1, 'Set a redemption limit of at least 1'),
     status: z.enum(['active', 'inactive', 'out_of_stock']),
+}).refine((data) => data.studentPrice <= data.price, {
+    message: 'Discounted value cannot exceed the regular value',
+    path: ['studentPrice'],
 });
 
 type VoucherFormData = z.infer<typeof voucherSchema>;

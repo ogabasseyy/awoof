@@ -666,6 +666,9 @@ export class PaymentController {
 
         // 1. Validate and consume verification token
         const tokenData = await validateAndConsumeToken(validated.verificationToken, vendorId);
+        if (tokenData.productId && tokenData.productId !== validated.productId) {
+            throw new BadRequestError('Verification token is scoped to a different product');
+        }
 
         // 2. Verify product exists and belongs to vendor
         const productResult = await db.query(

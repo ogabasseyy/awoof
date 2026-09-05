@@ -28,9 +28,30 @@ const createProductSchema = z.object({
     stock: z.coerce.number().int().min(0, 'Stock cannot be negative').default(0),
     status: z.enum(['active', 'inactive', 'out_of_stock']).default('active'),
     dealType: z.enum(['product', 'voucher']).optional().default('product'),
+}).refine((data) => data.studentPrice <= data.price, {
+    message: 'Student price cannot exceed the regular price',
+    path: ['studentPrice'],
 });
 
-const updateProductSchema = createProductSchema.partial();
+const updateProductSchema = z.object({
+    name: z.string().min(1, 'Product name is required').max(255, 'Product name too long').optional(),
+    description: z.string().optional(),
+    price: z.coerce.number().positive('Price must be positive').optional(),
+    studentPrice: z.coerce.number().positive('Student price must be positive').optional(),
+    categoryId: z.string().uuid('Invalid category ID').optional().nullable(),
+    stock: z.coerce.number().int().min(0, 'Stock cannot be negative').optional(),
+    status: z.enum(['active', 'inactive', 'out_of_stock']).optional(),
+    dealType: z.enum(['product', 'voucher']).optional(),
+}).refine(
+    (data) =>
+        data.price === undefined
+        || data.studentPrice === undefined
+        || data.studentPrice <= data.price,
+    {
+        message: 'Student price cannot exceed the regular price',
+        path: ['studentPrice'],
+    }
+);
 
 /**
  * Product Controller

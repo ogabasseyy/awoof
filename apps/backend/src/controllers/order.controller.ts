@@ -308,6 +308,12 @@ export class OrderController {
             if (order.payment_source === 'awoof' && order.paystack_reference) {
                 throw new BadRequestError('Awoof-managed payment states cannot be changed by vendors');
             }
+            if (order.status === 'refunded') {
+                throw new BadRequestError('Refunded orders cannot change status');
+            }
+            if (validated.status === 'refunded' && order.status !== 'completed') {
+                throw new BadRequestError('Only completed orders can be refunded');
+            }
 
             const result = await client.query(
                 `UPDATE transactions
