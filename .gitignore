@@ -1,5 +1,5 @@
 # Dependencies
-node_modules/
+node_modules
 .pnp
 .pnp.*
 .yarn/*
@@ -46,6 +46,7 @@ Thumbs.db
 *.temp
 .cache/
 .worktrees/
+.superpowers/
 vps-snapshot/
 compare-with-vps.sh
 trigger-vps-build.sh

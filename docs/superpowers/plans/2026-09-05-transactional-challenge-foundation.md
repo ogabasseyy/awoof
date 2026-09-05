@@ -1,3 +1,24 @@
+# Transactional challenge and PostgreSQL validation foundation
+
+> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development to implement this plan task-by-task. Steps use checkbox syntax for tracking.
+
+**Goal:** Establish the reusable atomic OTP primitive required by A12 and the approved verification design, and close the real-SQL validation gap for A14. This task deliberately does not switch public routes before the evidence/consent core exists.
+
+**Architecture:** A PostgreSQL row per subject/purpose owns the abuse budget and current challenge. Challenge records bind immutable claims to a keyed secret digest. Caller-owned transactions allow proof creation and successful consumption to commit together. A disposable loopback PostgreSQL runner exercises real SQL and races without access to existing databases.
+
+**Tech stack:** Existing PostgreSQL/pg, Node crypto, TypeScript, node:test/tsx; no added runtime or test dependencies.
+
+**Spec:** docs/superpowers/specs/2026-09-05-verification-core-remediation-design.md, approved by owner and Astra. Official implementation references: https://www.postgresql.org/docs/current/explicit-locking.html and https://nodejs.org/docs/latest-v24.x/api/crypto.html .
+
+## Global constraints
+
+- Work only in /Users/mac/Downloads/Awoof/.worktrees/verification-remediation on codex/awoof-verification-remediation. Terra implements; Astra reviews. No child agents.
+- You are not alone in this codebase. Preserve others' edits and do not stage unowned files, dependency symlinks or root-owned tracker/spec.
+- No push, merge, VPS/production/provider access or real-user data. No dependency install/update through shared node_modules links.
+- The owner accepts approved student-email OTP first-line, configurable 90-day assurance, 10-minute OTP, five failed attempts and 60-second resend cooldown. This is not a mandatory enrollment-provider design.
+- No Paystack work, route changes, institution approval, evidence backfill, manual-review feature or existing-account mutation in this task.
+- All destructive test cleanup is limited to the unique synthetic scratch cluster created by this runner invocation, after stopping its exact PostgreSQL instance; never use an existing DB or arbitrary external URL.
+
 ### Task 1: Add atomic challenge storage and a real-database test runner
 
 **Owned files:**
@@ -11,7 +32,7 @@
 **Public interfaces and semantics:**
 
 ```ts
-export type ChallengePurpose = 'student_signup' | 'student_email' | 'account_email' | 'whatsapp' | 'password_reset';
+export type ChallengePurpose = 'student_signup' | 'student_email' | 'whatsapp' | 'password_reset';
 export type ChallengeBindings = Record<string, unknown>;
 export function requestChallenge(tx: PoolClient, input: {
   purpose: ChallengePurpose; subjectKey: string; bindings: ChallengeBindings;
