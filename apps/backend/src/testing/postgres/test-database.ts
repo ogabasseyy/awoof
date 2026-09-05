@@ -18,6 +18,9 @@ export function validateTestEnvironment(environment: NodeJS.ProcessEnv = process
     } catch {
         throw new Error('AWOOF_TEST_DATABASE_URL must be a valid PostgreSQL URL');
     }
+    if (parsed.search || parsed.hash) {
+        throw new Error('AWOOF_TEST_DATABASE_URL must not include query parameters or fragments');
+    }
     if (!['postgres:', 'postgresql:'].includes(parsed.protocol) || !LOOPBACK_HOSTS.has(parsed.hostname)) {
         throw new Error('AWOOF_TEST_DATABASE_URL must use a literal loopback PostgreSQL host');
     }

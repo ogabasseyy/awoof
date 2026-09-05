@@ -16,7 +16,7 @@ CREATE TABLE verification_challenges (
     purpose VARCHAR(32) NOT NULL CHECK (purpose IN ('student_signup', 'student_email', 'account_email', 'whatsapp', 'password_reset')),
     subject_digest VARCHAR(64) NOT NULL CHECK (char_length(subject_digest) = 64),
     secret_digest VARCHAR(64) NOT NULL CHECK (char_length(secret_digest) = 64),
-    bindings JSONB NOT NULL CHECK (jsonb_typeof(bindings) = 'object' AND octet_length(bindings::text) <= 4096),
+    bindings JSONB NOT NULL CHECK (jsonb_typeof(bindings) = 'object' AND octet_length(bindings::text) <= 8192),
     created_at TIMESTAMPTZ NOT NULL,
     expires_at TIMESTAMPTZ NOT NULL CHECK (expires_at > created_at),
     consumed_at TIMESTAMPTZ,

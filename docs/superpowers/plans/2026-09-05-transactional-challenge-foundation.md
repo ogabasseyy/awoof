@@ -32,7 +32,7 @@
 **Public interfaces and semantics:**
 
 ```ts
-export type ChallengePurpose = 'student_signup' | 'student_email' | 'whatsapp' | 'password_reset';
+export type ChallengePurpose = 'student_signup' | 'student_email' | 'account_email' | 'whatsapp' | 'password_reset';
 export type ChallengeBindings = Record<string, unknown>;
 export function requestChallenge(tx: PoolClient, input: {
   purpose: ChallengePurpose; subjectKey: string; bindings: ChallengeBindings;

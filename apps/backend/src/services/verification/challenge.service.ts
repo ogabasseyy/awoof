@@ -55,6 +55,9 @@ function copiedBindings(value: ChallengeBindings): ChallengeBindings {
     } catch {
         throw new TypeError('Challenge bindings must be JSON serializable');
     }
+    // PostgreSQL renders JSONB with canonical separator whitespace; keep the
+    // application limit below the schema's 8 KiB storage ceiling so a valid
+    // compact payload cannot fail later solely because of JSONB formatting.
     if (!json || Buffer.byteLength(json, 'utf8') > 4096) {
         throw new RangeError('Challenge bindings exceed the 4 KiB limit');
     }
@@ -100,7 +103,7 @@ async function resetWindowIfNeeded(tx: PoolClient, purpose: ChallengePurpose, su
     if (now < fixedWindowEnd(budget.window_started_at)) return budget;
     const result = await tx.query<Budget>(
         `UPDATE verification_challenge_budgets
-         SET window_started_at = $3, failed_attempts = 0, send_count = 0, resend_available_at = $3
+         SET window_started_at = $3, failed_attempts = 0, send_count = 0
          WHERE purpose = $1 AND subject_digest = $2
          RETURNING current_challenge_id, window_started_at, failed_attempts, send_count, resend_available_at`,
         [purpose, subject, now],

@@ -6,13 +6,15 @@ import { basename, join, resolve } from 'node:path';
 import { randomBytes, randomUUID } from 'node:crypto';
 import { execFileSync, spawnSync } from 'node:child_process';
 import process from 'node:process';
+import { cleanupOwnedCluster } from './test-postgres-lifecycle.mjs';
 
 const backendRoot = resolve(import.meta.dirname, '..');
 const scratch = mkdtempSync(join(tmpdir(), 'awoof-postgres-'));
 const dataDirectory = join(scratch, 'data');
 const socketDirectory = join(scratch, 'socket');
-let started = false;
 let cleaned = false;
+let startupAttempted = false;
+let retainedScratch = false;
 
 function findBinary(name) {
     const candidates = [];
@@ -62,18 +64,21 @@ function integrationFiles(directory) {
 }
 
 function stopAndRemove(pgCtl) {
-    if (cleaned) return;
+    if (cleaned) return !retainedScratch;
     cleaned = true;
-    if (started) {
-        const stopped = spawnSync(pgCtl, ['-D', dataDirectory, 'stop', '-m', 'fast', '-w', '-t', '15'], { encoding: 'utf8', timeout: 20_000 });
-        if (stopped.status !== 0) process.stderr.write('Disposable PostgreSQL did not stop cleanly; removing only this invocation scratch directory.\n');
-    }
-    rmSync(scratch, { recursive: true, force: true, maxRetries: 2 });
+    const result = cleanupOwnedCluster({
+        scratch, dataDirectory, pgCtl, startupAttempted,
+        spawn: (binary, args, timeout) => spawnSync(binary, args, { encoding: 'utf8', timeout }),
+        remove: (path) => rmSync(path, { recursive: true, force: true, maxRetries: 2 }),
+        write: (message) => process.stderr.write(message),
+    });
+    retainedScratch = result.retained;
+    return result.removed;
 }
 
 let pgCtlForSignal;
 function onSignal(signal) {
-    try { if (pgCtlForSignal) stopAndRemove(pgCtlForSignal); } finally { process.exit(signal === 'SIGINT' ? 130 : 143); }
+    try { stopAndRemove(pgCtlForSignal); } finally { process.exit(signal === 'SIGINT' ? 130 : 143); }
 }
 process.once('SIGINT', () => onSignal('SIGINT'));
 process.once('SIGTERM', () => onSignal('SIGTERM'));
@@ -87,8 +92,8 @@ try {
     mkdirSync(socketDirectory);
     run(initdb, ['-D', dataDirectory, '-U', 'awoof_test', '--auth-local=trust', '--auth-host=trust']);
     const port = await selectPort();
+    startupAttempted = true;
     run(pgCtl, ['-D', dataDirectory, '-l', join(scratch, 'postgres.log'), '-o', `-h 127.0.0.1 -p ${port} -k ${socketDirectory} -c listen_addresses=127.0.0.1`, 'start', '-w', '-t', '20']);
-    started = true;
     const database = `awoof_test_${randomUUID().replaceAll('-', '_')}`;
     run(createdb, ['-h', '127.0.0.1', '-p', String(port), '-U', 'awoof_test', database]);
     const databaseUrl = `postgresql://awoof_test@127.0.0.1:${port}/${database}`;
@@ -112,8 +117,8 @@ try {
     process.stdout.write('Disposable PostgreSQL integration suite passed.\n');
 } catch (error) {
     process.stderr.write(`${error instanceof Error ? error.message : String(error)}\n`);
-    if (started) process.stderr.write('Disposable PostgreSQL server output was withheld to avoid exposing fixture data.\n');
+    if (startupAttempted) process.stderr.write('Disposable PostgreSQL server output was withheld to avoid exposing fixture data.\n');
     process.exitCode = 1;
 } finally {
-    if (pgCtlForSignal) stopAndRemove(pgCtlForSignal);
+    if (!stopAndRemove(pgCtlForSignal)) process.exitCode = 1;
 }
