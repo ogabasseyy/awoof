@@ -16,6 +16,10 @@ import { createVerificationFlowService } from '../../services/verification/verif
 import { getAvailableVerificationMethods } from '../../services/verification/verification-orchestrator.service.js';
 import type { EligibilityResult } from '../../services/verification/eligibility.types.js';
 import {
+    ENROLLMENT_SCHEMA_VERSION,
+    type EnrollmentTransport,
+} from '../../services/verification/registration-lookup.service.js';
+import {
     MERCHANT_DISCLOSURE_NOTICE_VERSION,
     VERIFICATION_NOTICE_VERSION,
 } from '../../services/verification/verification-notices.js';
@@ -97,6 +101,50 @@ async function createMerchantFixture(pool: pg.Pool): Promise<MerchantFixture> {
         [vendorId, origin, `public-${label}`],
     );
     return { vendorId, origin };
+}
+
+async function configureEnrollmentAdapter(
+    pool: pg.Pool,
+    fixture: Fixture,
+    options: { config?: unknown; normalization?: 'exact' | 'trim_upper' | null } = {},
+): Promise<void> {
+    await pool.query(
+        `UPDATE universities
+         SET registration_normalization = $2
+         WHERE id = $1`,
+        [fixture.universityId, options.normalization ?? 'trim_upper'],
+    );
+    await pool.query(
+        `INSERT INTO university_verification_methods
+             (university_id, method_type, api_endpoint, api_config, is_active)
+         VALUES ($1, 'registration', 'https://provider.school.example/v1/enrollment', $2, true)`,
+        [fixture.universityId, options.config ?? { schemaVersion: ENROLLMENT_SCHEMA_VERSION }],
+    );
+}
+
+async function prepareRegistrationFlow(
+    pool: pg.Pool,
+    fixture: Fixture,
+    enrollmentTransport: EnrollmentTransport,
+) {
+    const delivered: Array<{ email: string; code: string }> = [];
+    const flow = createVerificationFlowService({
+        pool,
+        isEmailConfigured: () => true,
+        deliverOtp: async (email, code) => {
+            delivered.push({ email, code });
+            return { success: true };
+        },
+        enrollmentTransport,
+    });
+    const initiated = await flow.initiate(fixture.userId, {
+        universityId: fixture.universityId,
+        accepted: true,
+        noticeVersion: VERIFICATION_NOTICE_VERSION,
+    });
+    const requested = await flow.requestEmail(fixture.userId, { processingGrantId: initiated.processingGrantId });
+    await flow.confirmEmail(fixture.userId, { challengeId: requested.challengeId, otp: delivered[0]!.code });
+    return { flow, processingGrantId: initiated.processingGrantId };
 }
 
 async function withVerificationServer(
@@ -697,6 +745,29 @@ test('advertises email only from active approved-domain policy and configured tr
             process.env.BREVO_API_KEY = 'synthetic-mail-config';
             const withoutSeed = await getAvailableVerificationMethods(fixture.universityId);
             assert.equal(withoutSeed.find((method) => method.methodType === 'email')?.isAvailable, true);
+            assert.equal(withoutSeed.find((method) => method.methodType === 'registration')?.isAvailable, false);
+            await pool.query(
+                `INSERT INTO university_verification_methods
+                     (university_id, method_type, api_endpoint, api_config, is_active)
+                 VALUES ($1, 'registration', 'https://provider.school.example/v1/enrollment', '{}'::jsonb, true)`,
+                [fixture.universityId],
+            );
+            const genericRegistration = await getAvailableVerificationMethods(fixture.universityId);
+            assert.equal(genericRegistration.find((method) => method.methodType === 'registration')?.isAvailable, false);
+            await pool.query(
+                `UPDATE university_verification_methods
+                 SET api_config = $2
+                 WHERE university_id = $1 AND method_type = 'registration'`,
+                [fixture.universityId, { schemaVersion: ENROLLMENT_SCHEMA_VERSION }],
+            );
+            await pool.query(
+                `UPDATE universities SET registration_normalization = 'trim_upper' WHERE id = $1`,
+                [fixture.universityId],
+            );
+            const configuredRegistration = await getAvailableVerificationMethods(fixture.universityId);
+            const registrationMethod = configuredRegistration.find((method) => method.methodType === 'registration');
+            assert.equal(registrationMethod?.isAvailable, true);
+            assert.equal(JSON.stringify(registrationMethod).includes('api_config'), false);
 
             const unconfiguredUniversity = (await pool.query<{ id: string }>(
                 `INSERT INTO universities (name, is_active) VALUES ($1, true) RETURNING id`,
@@ -979,9 +1050,9 @@ test('actual router applies current database identity to every new verification 
                 const baseline = await actorVerificationSnapshot(pool, currentStudent.userId, currentStudent.email);
                 const unavailable = await fetch(`${baseUrl}${path}`, {
                     method: 'POST', headers: currentHeaders,
-                    body: JSON.stringify({
-                        email: currentStudent.email, name: 'Ada Flow', registrationNumber: 'current-student-registration',
-                    }),
+                    body: JSON.stringify(path === '/registration'
+                        ? { registrationNumber: 'current-student-registration', processingGrantId: initiatedBody.data.processingGrantId }
+                        : {}),
                 });
                 assert.equal(unavailable.status, 503);
                 const serialized = JSON.stringify(await unavailable.json()).toLowerCase();
@@ -1199,7 +1270,11 @@ test('actual authenticated routes bind student actions to the live subject and n
 
             for (const path of ['/registration', '/widget/token']) {
                 const unavailable = await fetch(`${baseUrl}${path}`, {
-                    method: 'POST', headers: { authorization: `Bearer ${accessToken(student.userId, student.email)}` },
+                    method: 'POST',
+                    headers: { 'content-type': 'application/json', authorization: `Bearer ${accessToken(student.userId, student.email)}` },
+                    body: JSON.stringify(path === '/registration'
+                        ? { registrationNumber: 'registration-unavailable', processingGrantId: initiatedBody.data.processingGrantId }
+                        : {}),
                 });
                 assert.equal(unavailable.status, 503);
                 const serialized = JSON.stringify(await unavailable.json()).toLowerCase();
@@ -1603,5 +1678,195 @@ test('actual authenticated confirmation returns 400 and commits exactly one wron
             [requested.challengeId],
         );
         assert.deepEqual(budget.rows, [{ failed_attempts: 1 }]);
+    });
+});
+
+test('authenticated registration commits a proven-mailbox snapshot before synthetic v1 transport and returns only effective eligibility', async () => {
+    await withPool(async (pool) => {
+        const fixture = await createFixture(pool);
+        await configureEnrollmentAdapter(pool, fixture);
+        const providerCalls: Array<{ email: string; registrationNumber: string }> = [];
+        const { flow, processingGrantId } = await prepareRegistrationFlow(pool, fixture, async (request) => {
+            providerCalls.push({ email: request.email, registrationNumber: request.registrationNumber });
+            return {
+                status: 200,
+                data: {
+                    schemaVersion: ENROLLMENT_SCHEMA_VERSION,
+                    outcome: 'verified',
+                    email: request.email,
+                    registrationNumber: request.registrationNumber,
+                    validUntil: '2099-01-02T03:04:05.000Z',
+                },
+            };
+        });
+        await withVerificationServer(async (baseUrl) => {
+            const response = await fetch(`${baseUrl}/registration`, {
+                method: 'POST',
+                headers: {
+                    'content-type': 'application/json',
+                    authorization: `Bearer ${accessToken(fixture.userId, fixture.email)}`,
+                },
+                body: JSON.stringify({ registrationNumber: 'REG-FLOW-1', processingGrantId }),
+            });
+            assert.equal(response.status, 200);
+            const body = await response.json() as { data: { eligibility: EligibilityResult } };
+            assert.equal(body.data.eligibility.eligible, true);
+            assert.equal(JSON.stringify(body).includes('provider.school.example'), false);
+            assert.equal(JSON.stringify(body).toLowerCase().includes('accesstoken'), false);
+            assert.equal(JSON.stringify(body).toLowerCase().includes('refreshtoken'), false);
+        }, new VerificationController({ flow }));
+        assert.deepEqual(providerCalls, [{ email: fixture.email, registrationNumber: 'REG-FLOW-1' }]);
+        const evidence = await pool.query<{ method: string; outcome: string; source: string }>(
+            `SELECT method, outcome, source
+             FROM eligibility_evidence
+             WHERE student_id = (SELECT id FROM students WHERE user_id = $1)
+               AND method = 'enrollment'`,
+            [fixture.userId],
+        );
+        assert.deepEqual(evidence.rows, [{ method: 'enrollment', outcome: 'verified', source: 'institution-registration:v1' }]);
+    });
+});
+
+test('registration keeps a denial through unknown or mismatched provider replies and only a later matching positive clears it', async () => {
+    await withPool(async (pool) => {
+        const fixture = await createFixture(pool);
+        await configureEnrollmentAdapter(pool, fixture);
+        let reply: unknown = { schemaVersion: ENROLLMENT_SCHEMA_VERSION, outcome: 'denied', email: fixture.email };
+        const { flow, processingGrantId } = await prepareRegistrationFlow(pool, fixture, async () => ({ status: 200, data: reply }));
+
+        const denied = await flow.verifyRegistration(fixture.userId, { registrationNumber: 'REG-DENIED', processingGrantId });
+        assert.deepEqual(denied.eligibility, { eligible: false, reason: 'enrollment_denied' });
+
+        reply = { schemaVersion: ENROLLMENT_SCHEMA_VERSION, outcome: 'denied', email: 'victim@students.flow.example' };
+        const unknown = await flow.verifyRegistration(fixture.userId, { registrationNumber: 'REG-DENIED', processingGrantId });
+        assert.deepEqual(unknown, { eligibility: { eligible: false, reason: 'enrollment_denied' }, reason: 'provider_unknown' });
+
+        reply = {
+            schemaVersion: ENROLLMENT_SCHEMA_VERSION,
+            outcome: 'verified',
+            email: fixture.email,
+            registrationNumber: ' reg-denied ',
+            validUntil: '2099-01-02T03:04:05.000Z',
+        };
+        const verified = await flow.verifyRegistration(fixture.userId, { registrationNumber: 'REG-DENIED', processingGrantId });
+        assert.equal(verified.eligibility.eligible, true);
+    });
+});
+
+test('provider transport runs after snapshot commit, so current identity, policy, or grant changes settle before application', async () => {
+    await withPool(async (pool) => {
+        const scenarios: Array<{
+            name: string;
+            mutate: (fixture: Fixture, processingGrantId: string) => Promise<unknown>;
+            expected: RegExp;
+        }> = [
+            {
+                name: 'mailbox',
+                mutate: (fixture) => pool.query(
+                    `UPDATE users SET email = $2 WHERE id = $1`,
+                    [fixture.userId, `changed-${randomUUID()}@students.flow.example`],
+                ),
+                expected: /Enrollment snapshot is stale/,
+            },
+            {
+                name: 'student profile',
+                mutate: (fixture) => pool.query(
+                    `UPDATE students SET name = 'Changed Student' WHERE user_id = $1`,
+                    [fixture.userId],
+                ),
+                expected: /Enrollment snapshot is stale/,
+            },
+            {
+                name: 'institution policy',
+                mutate: (fixture) => pool.query(
+                    `UPDATE universities
+                     SET enrollment_validity_days = enrollment_validity_days + 1
+                     WHERE id = $1`,
+                    [fixture.universityId],
+                ),
+                expected: /Enrollment snapshot is stale/,
+            },
+            {
+                name: 'processing grant',
+                mutate: (_fixture, processingGrantId) => pool.query(
+                    `UPDATE verification_consents SET withdrawn_at = clock_timestamp() WHERE id = $1`,
+                    [processingGrantId],
+                ),
+                expected: /Current processing consent required/,
+            },
+        ];
+        for (const scenario of scenarios) {
+            const fixture = await createFixture(pool);
+            await configureEnrollmentAdapter(pool, fixture);
+            let releaseTransport: (() => void) | undefined;
+            let transportStarted = false;
+            const barrier = new Promise<void>((resolve) => { releaseTransport = resolve; });
+            const { flow, processingGrantId } = await prepareRegistrationFlow(pool, fixture, async (request) => {
+                transportStarted = true;
+                await barrier;
+                return {
+                    status: 200,
+                    data: {
+                        schemaVersion: ENROLLMENT_SCHEMA_VERSION,
+                        outcome: 'verified',
+                        email: request.email,
+                        registrationNumber: request.registrationNumber,
+                        validUntil: '2099-01-02T03:04:05.000Z',
+                    },
+                };
+            });
+            const registration = flow.verifyRegistration(fixture.userId, { registrationNumber: 'REG-STALE', processingGrantId });
+            await waitFor(`${scenario.name} provider transport barrier`, async () => transportStarted);
+            await scenario.mutate(fixture, processingGrantId);
+            releaseTransport!();
+            await assert.rejects(registration, scenario.expected, scenario.name);
+            const enrollmentEvidence = await pool.query<{ count: string }>(
+                `SELECT count(*)::text AS count
+                 FROM eligibility_evidence
+                 WHERE student_id = (SELECT id FROM students WHERE user_id = $1)
+                   AND method = 'enrollment'`,
+                [fixture.userId],
+            );
+            assert.deepEqual(enrollmentEvidence.rows, [{ count: '0' }], scenario.name);
+        }
+    });
+});
+
+test('two committed registration snapshots can wait on synthetic transport, but only the newest generation applies', async () => {
+    await withPool(async (pool) => {
+        const fixture = await createFixture(pool);
+        await configureEnrollmentAdapter(pool, fixture);
+        let arrivals = 0;
+        let releaseTransport: (() => void) | undefined;
+        const barrier = new Promise<void>((resolve) => { releaseTransport = resolve; });
+        const { flow, processingGrantId } = await prepareRegistrationFlow(pool, fixture, async (request) => {
+            arrivals += 1;
+            await barrier;
+            return {
+                status: 200,
+                data: {
+                    schemaVersion: ENROLLMENT_SCHEMA_VERSION,
+                    outcome: 'verified',
+                    email: request.email,
+                    registrationNumber: request.registrationNumber,
+                    validUntil: '2099-01-02T03:04:05.000Z',
+                },
+            };
+        });
+        const first = flow.verifyRegistration(fixture.userId, { registrationNumber: 'REG-CONCURRENT', processingGrantId });
+        const second = flow.verifyRegistration(fixture.userId, { registrationNumber: 'REG-CONCURRENT', processingGrantId });
+        await waitFor('both synthetic provider requests', async () => arrivals === 2);
+        releaseTransport!();
+        const settled = await Promise.allSettled([first, second]);
+        assert.equal(settled.filter((result) => result.status === 'fulfilled').length, 1);
+        assert.equal(settled.filter((result) => result.status === 'rejected').length, 1);
+        const state = await pool.query<{ provider_request_generation: number; provider_applied_generation: number }>(
+            `SELECT state.provider_request_generation, state.provider_applied_generation
+             FROM student_eligibility_state state
+             JOIN students ON students.id = state.student_id
+             WHERE students.user_id = $1`,
+            [fixture.userId],
+        );
+        assert.deepEqual(state.rows, [{ provider_request_generation: 2, provider_applied_generation: 2 }]);
     });
 });
