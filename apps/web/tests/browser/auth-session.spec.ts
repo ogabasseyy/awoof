@@ -1,9 +1,11 @@
 import { expect, test, type Page } from '@playwright/test';
 import {
   createGate,
+  installSessionWriteControl,
   installSyntheticApi,
   replaceSession,
   seedSession,
+  setSessionWriteDenied,
   writeSignedOutMarker,
 } from './fixtures';
 
@@ -81,6 +83,69 @@ test('a failing current-user response never exposes a seeded account', async ({ 
   await expect(page).toHaveURL(/\/auth\/student\/login/);
   await expect(page.getByText(/student profile/i)).toHaveCount(0);
   expect(faults).toEqual([]);
+});
+
+test('a successful terminal 401 on an auth page clears provider warning and pending state', async ({ page }) => {
+  const firstCurrentUser = createGate();
+  await seedSession(page, 'student');
+  await installSessionWriteControl(page);
+  const api = await installSyntheticApi(page, {
+    meGate: firstCurrentUser,
+    delayCurrentUserCalls: 1,
+    unauthorizedCurrentUserCalls: 2,
+  });
+  const faults = collectBrowserFaults(page);
+
+  try {
+    await page.goto('/auth/student/login', { waitUntil: 'domcontentloaded' });
+    await expect.poll(() => api.meCalls).toBe(1);
+    firstCurrentUser.release();
+
+    await expect.poll(() => api.refreshCalls).toBe(1);
+    await expect(page.getByRole('alert')).toHaveCount(0);
+    await expect(page.getByText(/^loading\.\.\.$/i)).toHaveCount(0);
+    await expect(page.getByLabel(/email/i)).toBeVisible();
+    expect(faults).toEqual([]);
+  } finally {
+    firstCurrentUser.release();
+  }
+});
+
+test('a failed clear stays quarantined after storage recovery until Retry sign out succeeds', async ({ page }) => {
+  const firstCurrentUser = createGate();
+  await seedSession(page, 'student');
+  await installSessionWriteControl(page);
+  const api = await installSyntheticApi(page, {
+    meGate: firstCurrentUser,
+    delayCurrentUserCalls: 1,
+    unauthorizedCurrentUserCalls: 2,
+  });
+  const faults = collectBrowserFaults(page);
+
+  try {
+    await page.goto('/auth/student/login', { waitUntil: 'domcontentloaded' });
+    await expect.poll(() => api.meCalls).toBe(1);
+    await setSessionWriteDenied(page, true);
+    firstCurrentUser.release();
+
+    await expect.poll(() => api.refreshCalls).toBe(1);
+    await expect(page.getByRole('alert')).toContainText(/could not save your signed-out state/i);
+    await expect(page.getByRole('button', { name: /retry sign out/i })).toBeVisible();
+
+    await setSessionWriteDenied(page, false);
+    await page.evaluate(() => localStorage.getItem('awoof.session.v1'));
+    await expect(page.getByRole('alert')).toContainText(/could not save your signed-out state/i);
+
+    await page.getByRole('button', { name: /retry sign out/i }).click();
+    await expect(page).toHaveURL(/\/$/);
+    await expect(page.getByRole('alert')).toHaveCount(0);
+    await expect(page.getByRole('link', { name: /^login$/i })).toBeVisible();
+    await expect(page.getByRole('button', { name: /^logout$/i })).toHaveCount(0);
+    await expect.poll(() => page.evaluate(() => localStorage.getItem('awoof.session.v1'))).toContain('"state":"signed_out"');
+    expect(faults).toEqual([]);
+  } finally {
+    firstCurrentUser.release();
+  }
 });
 
 test('cross-tab signed-out state removes protected student content', async ({ page, context }) => {

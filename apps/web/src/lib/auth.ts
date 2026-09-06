@@ -315,6 +315,10 @@ export function clearTokens(): void {
         // The durable marker still prevents a legacy credential resurrection.
     }
     quarantined = false;
+    // Listeners already saw the provisional quarantine that immediately
+    // invalidated the old account. Announce the durable final state too, so a
+    // provider can release its failure UI without reviving that account.
+    emit();
 }
 
 export function getSessionSnapshot(): SessionSnapshot {

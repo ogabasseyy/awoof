@@ -41,12 +41,16 @@ function createStorage(): Storage {
   };
 }
 
-async function withStorage(storage: Storage, run: (navigation: string[]) => Promise<void>): Promise<void> {
+async function withStorage(
+  storage: Storage,
+  run: (navigation: string[]) => Promise<void>,
+  pathname = '/marketplace',
+): Promise<void> {
   const oldWindow = Object.getOwnPropertyDescriptor(globalThis, 'window');
   const oldStorage = Object.getOwnPropertyDescriptor(globalThis, 'localStorage');
   const navigation: string[] = [];
   const location = {
-    pathname: '/marketplace',
+    pathname,
     get href() { return navigation.at(-1) ?? '/marketplace'; },
     set href(value: string) { navigation.push(value); },
     assign(value: string) { navigation.push(value); },
@@ -305,4 +309,31 @@ test('a terminal 401 keeps a failed signed-out marker quarantine in the current 
       clearTokens();
     }
   });
+});
+
+test('a successful terminal 401 on an auth path persists signed-out without navigation', async () => {
+  const storage = createStorage();
+  await withStorage(storage, async (navigation) => {
+    storeTokens({ accessToken: 'access-a', refreshToken: 'refresh-a' });
+    const oldApiAdapter = apiClient.defaults.adapter;
+    const oldAxiosAdapter = axios.defaults.adapter;
+    try {
+      apiClient.defaults.adapter = async (config) => Promise.reject({ config, response: { status: 401 } });
+      axios.defaults.adapter = async (config) => ok(config, {
+        success: true,
+        data: { accessToken: 'access-a2' },
+      });
+
+      await apiClient.get('/terminal-401-on-auth').catch(() => undefined);
+
+      assert.equal(isSessionStorageQuarantined(), false);
+      assert.equal(getAccessToken(), null);
+      assert.match(storage.getItem('awoof.session.v1') ?? '', /"state":"signed_out"/);
+      assert.deepEqual(navigation, []);
+    } finally {
+      apiClient.defaults.adapter = oldApiAdapter;
+      axios.defaults.adapter = oldAxiosAdapter;
+      clearTokens();
+    }
+  }, '/auth/student/login');
 });

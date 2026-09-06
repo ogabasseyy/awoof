@@ -83,8 +83,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
             if (mountedRef.current && operation === operationRef.current) {
                 setUser(null);
                 const blocked = isSessionStorageQuarantined();
-                setIsLoading(blocked ? true : false);
-                if (blocked) setError(STORAGE_FAILURE_MESSAGE);
+                setIsLoading(blocked);
+                setError(blocked ? STORAGE_FAILURE_MESSAGE : null);
             }
             return;
         }
@@ -299,7 +299,16 @@ export function AuthProvider({ children }: { children: ReactNode }) {
             {children}
             {error && (
                 <div role="alert" className="fixed inset-x-4 top-4 z-[100] rounded-lg border border-red-200 bg-red-50 p-3 text-sm text-red-700 shadow-sm sm:left-auto sm:right-4 sm:max-w-md">
-                    {error}
+                    <p>{error}</p>
+                    {error === STORAGE_FAILURE_MESSAGE && (
+                        <button
+                            type="button"
+                            className="mt-2 rounded border border-red-300 px-2 py-1 font-medium hover:bg-red-100"
+                            onClick={() => { void logout(); }}
+                        >
+                            Retry sign out
+                        </button>
+                    )}
                 </div>
             )}
         </AuthContext.Provider>

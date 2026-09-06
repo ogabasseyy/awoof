@@ -7,6 +7,7 @@ import {
   getSessionSnapshot,
   isCurrentSession,
   isExactSession,
+  isSessionStorageQuarantined,
   replaceCurrentSessionTokens,
   storeTokens,
   subscribeSessionChanges,
@@ -140,6 +141,50 @@ test('a blocked logout quarantines the tab until an explicit durable clear succe
   });
 });
 
+test('a live subscriber receives the final durable-clear state after a failed clear recovers', () => {
+  resetSessionState();
+  const values = new Map<string, string>();
+  let denyWrites = false;
+  const storage: Storage = {
+    get length() { return values.size; },
+    clear() { values.clear(); },
+    key(index) { return [...values.keys()][index] ?? null; },
+    getItem(key) { return values.get(key) ?? null; },
+    removeItem(key) {
+      if (denyWrites) throw new Error('Removal denied');
+      values.delete(key);
+    },
+    setItem(key, value) {
+      if (denyWrites) throw new Error('Quota denied');
+      values.set(key, value);
+    },
+  };
+  withStorage(storage, () => {
+    storeTokens({ accessToken: 'access-a', refreshToken: 'refresh-a' });
+    const states: Array<{ accessToken: string | null; quarantined: boolean }> = [];
+    const unsubscribe = subscribeSessionChanges(() => {
+      states.push({
+        accessToken: getAccessToken(),
+        quarantined: isSessionStorageQuarantined(),
+      });
+    });
+    try {
+      denyWrites = true;
+      clearTokens();
+      denyWrites = false;
+      clearTokens();
+
+      assert.deepEqual(states, [
+        { accessToken: null, quarantined: true },
+        { accessToken: null, quarantined: false },
+      ]);
+      assert.match(storage.getItem('awoof.session.v1') ?? '', /"state":"signed_out"/);
+    } finally {
+      unsubscribe();
+    }
+  });
+});
+
 test('an own refresh keeps a logical session current while fencing its old exact pair', () => {
   resetSessionState();
   withStorage(memoryStorage(), () => {
@@ -156,7 +201,7 @@ test('an own refresh keeps a logical session current while fencing its old exact
   });
 });
 
-test('subscribers see local login and logout lifecycle changes', () => {
+test('subscribers see local login plus provisional and durable logout lifecycle changes', () => {
   resetSessionState();
   withStorage(memoryStorage(), () => {
     let changes = 0;
@@ -164,7 +209,7 @@ test('subscribers see local login and logout lifecycle changes', () => {
     try {
       storeTokens({ accessToken: 'access-a', refreshToken: 'refresh-a' });
       clearTokens();
-      assert.equal(changes, 2);
+      assert.equal(changes, 3);
     } finally {
       unsubscribe();
     }

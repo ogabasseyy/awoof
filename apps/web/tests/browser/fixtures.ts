@@ -17,6 +17,10 @@ type DeferredGate = {
   release: () => void;
 };
 
+type SessionWriteControlWindow = Window & {
+  __awoofSessionWriteControl?: { setDenied: (denied: boolean) => void };
+};
+
 export type ApiFixtureOptions = {
   meGate?: DeferredGate;
   delayCurrentUserCalls?: number;
@@ -177,6 +181,33 @@ export async function replaceSession(page: Page, role: TestRole, sessionId?: str
   await page.evaluate((session) => {
     localStorage.setItem('awoof.session.v1', JSON.stringify(session));
   }, envelopeFor(role, sessionId));
+}
+
+export async function installSessionWriteControl(page: Page): Promise<void> {
+  await page.addInitScript(() => {
+    const controlledWindow = window as SessionWriteControlWindow;
+    const original = Storage.prototype.setItem;
+    let denied = false;
+    Storage.prototype.setItem = function controlledSessionWrite(key: string, value: string): void {
+      if (denied && key === 'awoof.session.v1') {
+        throw new DOMException('Denied', 'SecurityError');
+      }
+      original.call(this, key, value);
+    };
+    controlledWindow.__awoofSessionWriteControl = {
+      setDenied(next: boolean): void { denied = next; },
+    };
+  });
+}
+
+export async function setSessionWriteDenied(page: Page, denied: boolean): Promise<void> {
+  await page.evaluate((next) => {
+    const controlledWindow = window as SessionWriteControlWindow;
+    if (!controlledWindow.__awoofSessionWriteControl) {
+      throw new Error('Synthetic session-write control was not installed.');
+    }
+    controlledWindow.__awoofSessionWriteControl.setDenied(next);
+  }, denied);
 }
 
 export async function writeSignedOutMarker(page: Page): Promise<void> {
