@@ -2,6 +2,7 @@ import type { Page, Route } from '@playwright/test';
 
 export const appOrigin = 'http://127.0.0.1:3107';
 export const apiOrigin = 'http://127.0.0.1:3108';
+export const storageTabPath = '/__awoof-browser-storage-tab__';
 
 const sessionKey = 'awoof.session.v1';
 const fixtureWaitTimeoutMs = 5_000;
@@ -382,7 +383,17 @@ export async function installSyntheticApi(page: Page, options: ApiFixtureOptions
     const url = new URL(request.url());
     const handlerLabel = `${request.method()} ${url.pathname}`;
     return trackHandler(handlerLabel, async () => {
-    if (url.origin === appOrigin) return route.continue();
+    if (url.origin === appOrigin) {
+      if (url.pathname === storageTabPath) {
+        await route.fulfill({
+          status: 200,
+          contentType: 'text/html',
+          body: '<!doctype html><title>Awoof browser storage fixture</title>',
+        });
+        return;
+      }
+      return route.continue();
+    }
     if (url.origin !== apiOrigin) {
       fixture.unexpectedRequests.push(`${route.request().method()} ${url.origin}${url.pathname}`);
       return route.abort('failed');
@@ -493,6 +504,12 @@ export async function installSyntheticApi(page: Page, options: ApiFixtureOptions
     if (path === '/support/notifications/unread-count' && method === 'GET') {
       record('student-unread-count', 1, route, 'student');
       await respond(route, 200, { success: true, data: { unreadCount: 0 } });
+      return;
+    }
+
+    if (path === '/support/notifications' && method === 'GET') {
+      record('notifications', 1, route, roleFromAuthorization(route) ?? 'unauthenticated');
+      await respond(route, 200, { success: true, data: { notifications: [] } });
       return;
     }
 

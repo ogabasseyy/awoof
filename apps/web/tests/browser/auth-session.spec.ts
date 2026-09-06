@@ -9,6 +9,7 @@ import {
   seedLegacySession,
   seedSession,
   setSignedOutMarkerWriteDenied,
+  storageTabPath,
   writeSignedOutMarker,
   type ApiFixture,
   type Gate,
@@ -48,8 +49,17 @@ async function assertCleanFixture(api: ApiFixture, faults: string[]): Promise<vo
 
 async function openStorageTab(context: BrowserContext): Promise<Page> {
   const other = await context.newPage();
-  await other.goto(`${appOrigin}/favicon.ico`);
+  await other.goto(`${appOrigin}${storageTabPath}`);
   return other;
+}
+
+function storageFailureAlert(page: Page) {
+  return page.getByRole('alert').filter({ hasText: /could not save your signed-out state/i });
+}
+
+async function expectStudentMarketplaceIdentity(page: Page): Promise<void> {
+  await expect(page.getByRole('link', { name: /^open profile$/i })).toBeVisible();
+  await expect(page.getByRole('heading', { name: /hey student, savings are warming up/i })).toBeVisible();
 }
 
 async function expectSignedOutMarker(page: Page): Promise<void> {
@@ -77,7 +87,7 @@ test('student login keeps a safe return destination after the submitted request 
   await api.waitForLoginCompleted(1);
 
   await expect(page).toHaveURL(/\/marketplace\?from=auth-test$/);
-  await expect(page.getByRole('button', { name: /^logout$/i })).toBeVisible();
+  await expectStudentMarketplaceIdentity(page);
   expect(api.refreshCalls).toBe(0);
   await assertCleanFixture(api, faults);
 });
@@ -170,7 +180,7 @@ test('a successful terminal 401 on an auth page reaches durable signed-out UI st
     await api.waitForCurrentUserCompleted(2);
 
     await expectSignedOutMarker(page);
-    await expect(page.getByRole('alert')).toHaveCount(0);
+    await expect(storageFailureAlert(page)).toHaveCount(0);
     await expect(page.getByLabel(/email/i)).toBeVisible();
     await assertCleanFixture(api, faults);
   } finally {
@@ -202,15 +212,15 @@ test('failed clear remains visible until Retry sign out durably clears it', asyn
     retryCurrentUser.release();
     await api.waitForCurrentUserCompleted(2);
 
-    await expect(page.getByRole('alert')).toContainText(/could not save your signed-out state/i);
+    await expect(storageFailureAlert(page)).toBeVisible();
     await setSignedOutMarkerWriteDenied(page, false);
     await page.evaluate(() => localStorage.getItem('awoof.session.v1'));
-    await expect(page.getByRole('alert')).toContainText(/could not save your signed-out state/i);
+    await expect(storageFailureAlert(page)).toBeVisible();
 
     await page.getByRole('button', { name: /retry sign out/i }).click();
     await expect(page).toHaveURL(/\/$/);
     await expectSignedOutMarker(page);
-    await expect(page.getByRole('alert')).toHaveCount(0);
+    await expect(storageFailureAlert(page)).toHaveCount(0);
     await expect(page.getByRole('link', { name: /^login$/i })).toBeVisible();
     await assertCleanFixture(api, faults);
   } finally {
@@ -424,8 +434,20 @@ test('vendor registration keeps email-verification onboarding after all modeled 
 });
 
 for (const scenario of [
-  { role: 'vendor', login: '/auth/vendor/login', destination: '/vendor/dashboard' },
-  { role: 'admin', login: '/auth/admin/login', destination: '/admin/dashboard' },
+  {
+    role: 'vendor',
+    login: '/auth/vendor/login',
+    destination: '/vendor/dashboard',
+    greeting: /hey there, here’s your storefront/i,
+    userControl: /vendor@approved\.test vendor/i,
+  },
+  {
+    role: 'admin',
+    login: '/auth/admin/login',
+    destination: '/admin/dashboard',
+    greeting: /hey admin, here’s the pulse/i,
+    userControl: /admin admin/i,
+  },
 ] as const) {
   test(`${scenario.role} login reaches only its own rendered destination`, async ({ page }) => {
     const api = await installSyntheticApi(page);
@@ -439,7 +461,8 @@ for (const scenario of [
     await api.waitForCurrentUserCompleted(1);
 
     await expect(page).toHaveURL(new RegExp(`${scenario.destination}$`));
-    await expect(page.getByText(`${scenario.role}@approved.test`, { exact: true })).toBeVisible();
+    await expect(page.getByRole('heading', { name: scenario.greeting })).toBeVisible();
+    await expect(page.getByRole('button', { name: scenario.userControl })).toBeVisible();
     await assertCleanFixture(api, faults);
   });
 }
@@ -458,7 +481,7 @@ test.describe('mobile keyboard login', () => {
     await api.waitForLoginCompleted(1);
 
     await expect(page).toHaveURL(/\/marketplace\?from=mobile$/);
-    await expect(page.getByRole('button', { name: /^logout$/i })).toBeVisible();
+    await expectStudentMarketplaceIdentity(page);
     await assertCleanFixture(api, faults);
   });
 });
