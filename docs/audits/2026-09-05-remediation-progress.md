@@ -17,7 +17,7 @@ Owner-requested allocation: Terra implementation, Astra review.
 
 | Audit finding | Code workstream | Status/evidence |
 |---|---|---|
-| A01 identity binding | Evidence and authenticated verification | Proof-bound signup through58727e5 Astra-approved; old public verification routes still require authenticated retirement/replacement |
+| A01 identity binding | Evidence and authenticated verification | Signup through58727e5 and authenticated flow/public-route retirement throughd45c78a Astra-approved; UI/merchant consumers remain pending |
 | A02 assurance separation | Approved student-mail evidence, owner policy above | Authority throughd62d63d Astra-approved; consumers still unwired. Email-first assurance follows owner policy |
 | A03 provider decisions | Strict provider contract and identity binding | Pending |
 | A04 email domain policy | One exact approved-student-domain policy | Authority throughd62d63d Astra-approved; old HTTP paths/admin UI still require migration |
@@ -34,7 +34,7 @@ Owner-requested allocation: Terra implementation, Astra review.
 | A15 uploads | Content validation, role-first upload, cleanup/limits | Pending |
 | A16 merchant keys | Serialised lifecycle and real quotas | Pending |
 | A17 release readiness | CI/CD guards, artifact checks, recovery drills | Code pending; live restore/VPS parity will remain separately unverified |
-| A18 honest methods | Configured/implemented availability only | Pending |
+| A18 honest methods | Configured/implemented availability only | Email policy/transport availability throughd45c78a Astra-approved. Provider adapter remains unavailable pending Task2 |
 
 ## Additional audit scope
 
@@ -84,5 +84,9 @@ Separate asynchronous question asks whether to add development-only Playwright a
 - Astra signup review at d717535: Spec FAIL / Quality Needs fixes for missing direct signup denial/delivery-recovery assertions and a timing-dependent contention fixture, plus a rare wrong-OTP collision in one test. No Critical or concrete production authority bypass found. Same Terra owner receives narrow test-only fix round 1; signup gate remains open until exact-head re-review passes.
 - Signup test-only fix committed 58727e5; PostgreSQL64/64, unit32/32 and type/lint/diff gates reported passing (37existing lint warnings). Same Astra reviewer has the exact d717535..58727e5 delta; root independently validates final HEAD. No signup gate completion yet. Authenticated verification Task1 produced-interface reconciliation separately passed Astra; implementation remains undispatched until signup gate passes.
 - Signup backend gate COMPLETE at58727e5: Astra Spec PASS / Quality Approved with no unresolved findings. Root independently confirmed exact-head PostgreSQL64/64, unit32/32, type-check/diff pass and lint0errors/37existing warnings. Application interface is unchanged fromd717535; next authenticated-flow Task1 reconciliation remains applicable and Astra-approved. This milestone is local source validation, not CI or release readiness.
+- Authenticated verification Task1 dispatched to fresh /root/terra_authenticated_verification (Terra xhigh) at documentation BASE4403efe. Exclusive scope is signed-in email verification/consent/status and retiring unsafe public identity-grant routes; strict provider Task2 and UI/merchant work remain separate. No completion claim yet.
+- Authenticated verification Task1 implemented in dc8e037198d756171fbd3ba3f9ebd7d3b4b68504 plus test-hardening follow-up1b7af785eeb9ebe11759e22f5d21066c9a6ed65d. On2026-09-06 root independently ran the final immutable HEAD: PostgreSQL80/80 in38.30s, unit36/36, type-check/diff checks pass, lint0errors/34existing warnings. Initial sandbox-only attempts failed at local IPC/shared-memory setup before tests; the same guarded synthetic loopback tests passed with the required permission. No new production migration or provider call occurred in this task.
+- Task1 Astra review completed at1b7af78 in the owner-approved separate task `01a07547-cbb6-7513-9c19-44a3f85ecc95`: Spec FAIL / Quality Needs fixes for two required coverage gaps (mutation-first blocked-confirmation races and the complete applicable real-JWT/database route matrix); no concrete new application-code defect found. The app task list omitted the new task, but native wait/read using its real ID confirmed the verdict and reviewer80/80 PostgreSQL run. Original Terra owner is implementing test-only fix round1; exact evidence/review/brief live under `.superpowers/sdd/2026-09-05-authenticated-verification-flows/`. Task2 remains paused at this review gate. Registration and widget-token endpoints intentionally return503 until their separate work is implemented; current frontend still needs the new protocol.
+- Authenticated verification Task1 gate COMPLETE atd45c78a37ea6a4d9f2b3d5f97fe5b27178b9ef60: test-only fix round1 closed both Astra findings; same reviewer returned Spec PASS / Quality Approved, no new breakage or remaining findings. Root independently verified PostgreSQL86/86, unit36/36, type-check/diff pass, lint0errors/34existingwarnings. This is not whole-app release approval. Task2 provider adapter is next; its produced-interface preflight is recorded, but no worker is dispatched while owner permission for a separate fresh Terra task remains pending. No push, merge, deployment or live provider operation occurred.
 
 All future completion claims require commits, covering tests and an Astra review; local success, CI, merge and production deployment remain distinct.
