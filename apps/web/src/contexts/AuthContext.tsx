@@ -53,6 +53,7 @@ const AuthContext = createContext<AuthContextType | undefined>(undefined);
 
 const STORAGE_FAILURE_MESSAGE = 'We could not save your signed-out state on this device. Please close this tab before using a shared device.';
 const ACCOUNT_FAILURE_MESSAGE = 'We could not confirm your account. Please sign in again.';
+const AUTH_OPERATION_SUPERSEDED_MESSAGE = 'This authentication request was superseded.';
 
 function redirectAfterAuth(path: string): void {
     if (typeof window !== 'undefined') window.location.href = path;
@@ -79,6 +80,12 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     const loadCurrentUser = useCallback(async (showLoading: boolean): Promise<void> => {
         const operation = ++operationRef.current;
         const started = getSessionSnapshot();
+        const isCurrentRead = (): boolean => {
+            const current = getSessionSnapshot();
+            return mountedRef.current
+                && operation === operationRef.current
+                && current.generation === started.generation;
+        };
         if (!started.accessToken) {
             if (mountedRef.current && operation === operationRef.current) {
                 setUser(null);
@@ -94,26 +101,18 @@ export function AuthProvider({ children }: { children: ReactNode }) {
             const response = await apiClient.get('/auth/me');
             const account = parseCurrentAccountResponse(response.data);
             if (!account) throw new Error('The server returned an invalid current account.');
-            if (
-                mountedRef.current
-                && operation === operationRef.current
-                && getSessionSnapshot().generation === started.generation
-            ) {
+            if (isCurrentRead()) {
                 setUser(account);
                 setError(null);
             }
         } catch {
-            if (
-                mountedRef.current
-                && operation === operationRef.current
-                && getSessionSnapshot().generation === started.generation
-            ) {
+            if (isCurrentRead()) {
                 setUser(null);
                 setError(ACCOUNT_FAILURE_MESSAGE);
             }
         } finally {
-            if (mountedRef.current && operation === operationRef.current && showLoading) {
-                setIsLoading(false);
+            if (isCurrentRead()) {
+                setIsLoading(isSessionStorageQuarantined());
             }
         }
     }, []);
@@ -226,7 +225,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
             || operation !== operationRef.current
             || beforeCommit.generation !== started.generation
         ) {
-            return;
+            throw new Error(AUTH_OPERATION_SUPERSEDED_MESSAGE);
         }
 
         const authentication = parseAuthenticationResponse(response.data);
@@ -242,7 +241,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
             throw commitError;
         }
 
-        if (!mountedRef.current || operation !== operationRef.current) return;
+        if (!mountedRef.current || operation !== operationRef.current) {
+            throw new Error(AUTH_OPERATION_SUPERSEDED_MESSAGE);
+        }
         setIsLoading(false);
         setUser(account);
         if (account.role === 'vendor' && authentication.requiresEmailVerification) return;

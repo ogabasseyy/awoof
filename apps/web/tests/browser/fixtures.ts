@@ -10,6 +10,7 @@ const xhrRefreshContinuationPrefix = '[awoof-fixture/xhr-refresh-continuation]:'
 let seedNumber = 0;
 
 export type TestRole = 'student' | 'vendor' | 'admin';
+type TestSessionRole = TestRole | 'vendorB';
 
 type TestUser = {
   id: string;
@@ -45,10 +46,14 @@ export type ApiFixtureOptions = {
   meGate?: Gate;
   delayCurrentUserCalls?: number;
   delayCurrentUserOrdinals?: readonly number[];
+  currentUserGates?: Readonly<Record<number, Gate>>;
   loginGate?: Gate;
+  registerGate?: Gate;
   refreshGate?: Gate;
   failCurrentUser?: boolean;
+  failCurrentUserOrdinals?: readonly number[];
   unauthorizedCurrentUserCalls?: number;
+  unauthorizedCurrentUserOrdinals?: readonly number[];
 };
 
 export type BrowserApiRequest = {
@@ -67,6 +72,7 @@ export type ApiFixture = {
   refreshCalls: number;
   meCalls: number;
   loginCalls: number;
+  registerCalls: number;
   logoutCalls: number;
   requests: BrowserApiRequest[];
   syntheticHttpFailures: SyntheticHttpFailure[];
@@ -75,6 +81,8 @@ export type ApiFixture = {
   waitForCurrentUserCompleted: (ordinal: number) => Promise<void>;
   waitForLoginStarted: (ordinal: number) => Promise<void>;
   waitForLoginCompleted: (ordinal: number) => Promise<void>;
+  waitForRegisterStarted: (ordinal: number) => Promise<void>;
+  waitForRegisterCompleted: (ordinal: number) => Promise<void>;
   waitForRefreshStarted: (ordinal: number) => Promise<void>;
   waitForRefreshCompleted: (ordinal: number) => Promise<void>;
   waitForRefreshContinuation: (ordinal: number) => Promise<void>;
@@ -88,7 +96,7 @@ type SessionWriteControlWindow = Window & {
   __awoofSessionWriteControl?: { setSignedOutMarkerDenied: (denied: boolean) => void };
 };
 
-const users: Record<TestRole, TestUser> = {
+const users: Record<TestSessionRole, TestUser> = {
   student: {
     id: '00000000-0000-4000-8000-000000000001',
     email: 'student@approved.test',
@@ -100,6 +108,11 @@ const users: Record<TestRole, TestUser> = {
     email: 'vendor@approved.test',
     role: 'vendor',
   },
+  vendorB: {
+    id: '00000000-0000-4000-8000-000000000004',
+    email: 'vendor-b@approved.test',
+    role: 'vendor',
+  },
   admin: {
     id: '00000000-0000-4000-8000-000000000003',
     email: 'admin@approved.test',
@@ -107,12 +120,13 @@ const users: Record<TestRole, TestUser> = {
   },
 };
 
-function tokensFor(role: TestRole) {
+function tokensFor(role: TestSessionRole) {
+  if (role === 'vendorB') return { accessToken: 'vendor-b-access', refreshToken: 'vendor-b-refresh' };
   return { accessToken: `${role}-access`, refreshToken: `${role}-refresh` };
 }
 
 function envelopeFor(
-  role: TestRole,
+  role: TestSessionRole,
   sessionId = `synthetic-${role}-session`,
   tokenOverrides: Partial<ReturnType<typeof tokensFor>> = {},
 ) {
@@ -215,17 +229,19 @@ async function respond(route: Route, status: number, payload: unknown): Promise<
   });
 }
 
-function roleFromAuthorization(route: Route): TestRole | null {
+function roleFromAuthorization(route: Route): TestSessionRole | null {
   const authorization = route.request().headers().authorization;
   if (authorization === 'Bearer student-access') return 'student';
   if (authorization === 'Bearer vendor-access') return 'vendor';
+  if (authorization === 'Bearer vendor-b-access') return 'vendorB';
   if (authorization === 'Bearer admin-access') return 'admin';
   return null;
 }
 
-function roleFromRefreshToken(route: Route): TestRole {
+function roleFromRefreshToken(route: Route): TestSessionRole {
   const refreshToken = body(route).refreshToken;
   if (refreshToken === 'vendor-refresh') return 'vendor';
+  if (refreshToken === 'vendor-b-refresh') return 'vendorB';
   if (refreshToken === 'admin-refresh') return 'admin';
   return 'student';
 }
@@ -234,6 +250,11 @@ function shouldDelayCurrentUser(options: ApiFixtureOptions, ordinal: number): bo
   if (!options.meGate) return false;
   if (options.delayCurrentUserOrdinals) return options.delayCurrentUserOrdinals.includes(ordinal);
   return options.delayCurrentUserCalls === undefined || ordinal <= options.delayCurrentUserCalls;
+}
+
+function gateForCurrentUser(options: ApiFixtureOptions, ordinal: number): Gate | undefined {
+  return options.currentUserGates?.[ordinal]
+    ?? (shouldDelayCurrentUser(options, ordinal) ? options.meGate : undefined);
 }
 
 function endpointLifecycle(map: Map<number, Lifecycle>, ordinal: number): Lifecycle {
@@ -283,6 +304,7 @@ async function installXhrRefreshContinuationObserver(page: Page): Promise<void> 
 export async function installSyntheticApi(page: Page, options: ApiFixtureOptions = {}): Promise<ApiFixture> {
   const currentUserLifecycles = new Map<number, Lifecycle>();
   const loginLifecycles = new Map<number, Lifecycle>();
+  const registerLifecycles = new Map<number, Lifecycle>();
   const refreshLifecycles = new Map<number, Lifecycle>();
   const vendorRegistration = lifecycle();
   const vendorUpload = lifecycle();
@@ -339,6 +361,7 @@ export async function installSyntheticApi(page: Page, options: ApiFixtureOptions
     refreshCalls: 0,
     meCalls: 0,
     loginCalls: 0,
+    registerCalls: 0,
     logoutCalls: 0,
     requests: [],
     syntheticHttpFailures: [],
@@ -347,6 +370,8 @@ export async function installSyntheticApi(page: Page, options: ApiFixtureOptions
     waitForCurrentUserCompleted: (ordinal) => waitFor(endpointLifecycle(currentUserLifecycles, ordinal).completed, `current-user completion ${ordinal}`),
     waitForLoginStarted: (ordinal) => waitFor(endpointLifecycle(loginLifecycles, ordinal).started, `login request ${ordinal}`),
     waitForLoginCompleted: (ordinal) => waitFor(endpointLifecycle(loginLifecycles, ordinal).completed, `login completion ${ordinal}`),
+    waitForRegisterStarted: (ordinal) => waitFor(endpointLifecycle(registerLifecycles, ordinal).started, `register request ${ordinal}`),
+    waitForRegisterCompleted: (ordinal) => waitFor(endpointLifecycle(registerLifecycles, ordinal).completed, `register completion ${ordinal}`),
     waitForRefreshStarted: (ordinal) => waitFor(endpointLifecycle(refreshLifecycles, ordinal).started, `refresh request ${ordinal}`),
     waitForRefreshCompleted: (ordinal) => waitFor(endpointLifecycle(refreshLifecycles, ordinal).completed, `refresh completion ${ordinal}`),
     waitForRefreshContinuation: (ordinal) => waitFor(endpointLifecycle(refreshLifecycles, ordinal).continued, `refresh browser continuation ${ordinal}`),
@@ -426,32 +451,39 @@ export async function installSyntheticApi(page: Page, options: ApiFixtureOptions
     }
 
     if (path === '/auth/register' && method === 'POST') {
+      const ordinal = ++fixture.registerCalls;
       const request = body(route);
       const role = request.role === 'vendor' ? 'vendor' : 'student';
-      record('register', 1, route, role);
-      await respond(route, 201, {
-        success: true,
-        data: {
-          user: users[role],
-          tokens: tokensFor(role),
-          ...(role === 'vendor' ? { requiresEmailVerification: true } : {}),
-        },
+      const requestLifecycle = endpointLifecycle(registerLifecycles, ordinal);
+      record('register', ordinal, route, role);
+      requestLifecycle.start();
+      return completeLifecycle(requestLifecycle, async () => {
+        if (options.registerGate) await options.registerGate.wait();
+        await respond(route, 201, {
+          success: true,
+          data: {
+            user: users[role],
+            tokens: tokensFor(role),
+            ...(role === 'vendor' ? { requiresEmailVerification: true } : {}),
+          },
+        });
       });
-      return;
     }
 
     if (path === '/auth/me' && method === 'GET') {
       const ordinal = ++fixture.meCalls;
       const role = roleFromAuthorization(route);
-      const shouldFail = options.failCurrentUser
-        || (options.unauthorizedCurrentUserCalls !== undefined && ordinal <= options.unauthorizedCurrentUserCalls);
-      const status = options.failCurrentUser ? 503 : 401;
+      const serviceFailure = options.failCurrentUser || options.failCurrentUserOrdinals?.includes(ordinal);
+      const unauthorized = options.unauthorizedCurrentUserOrdinals?.includes(ordinal)
+        ?? (options.unauthorizedCurrentUserCalls !== undefined && ordinal <= options.unauthorizedCurrentUserCalls);
+      const shouldFail = serviceFailure || unauthorized;
+      const status = serviceFailure ? 503 : 401;
       const responseIdentity = shouldFail ? `error-${status}` : role ?? 'unauthorized';
       const requestLifecycle = endpointLifecycle(currentUserLifecycles, ordinal);
       record('current-user', ordinal, route, responseIdentity);
       requestLifecycle.start();
       return completeLifecycle(requestLifecycle, async () => {
-        if (shouldDelayCurrentUser(options, ordinal)) await options.meGate?.wait();
+        await gateForCurrentUser(options, ordinal)?.wait();
         if (shouldFail) {
           recordSyntheticHttpFailure(path, status);
           await respond(route, status, { success: false, error: { message: 'Synthetic current-user failure' } });
@@ -580,7 +612,7 @@ async function seedOnce(page: Page, storageEntries: Record<string, string>): Pro
 
 export async function seedSession(
   page: Page,
-  role: TestRole,
+  role: TestSessionRole,
   tokenOverrides: Partial<ReturnType<typeof tokensFor>> = {},
 ): Promise<void> {
   await seedOnce(page, { [sessionKey]: JSON.stringify(envelopeFor(role, undefined, tokenOverrides)) });
@@ -591,7 +623,7 @@ export async function seedLegacySession(page: Page, role: TestRole): Promise<voi
   await seedOnce(page, { accessToken: tokens.accessToken, refreshToken: tokens.refreshToken });
 }
 
-export async function replaceSession(page: Page, role: TestRole, sessionId?: string): Promise<void> {
+export async function replaceSession(page: Page, role: TestSessionRole, sessionId?: string): Promise<void> {
   await page.evaluate((session) => {
     localStorage.setItem('awoof.session.v1', JSON.stringify(session));
   }, envelopeFor(role, sessionId));
