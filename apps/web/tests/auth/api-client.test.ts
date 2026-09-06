@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import axios from 'axios';
 import apiClient, { publicApiClient } from '../../src/lib/api-client';
-import { clearTokens, getAccessToken, storeTokens } from '../../src/lib/auth';
+import { clearTokens, getAccessToken, isSessionStorageQuarantined, storeTokens } from '../../src/lib/auth';
 
 type Deferred<T> = {
   promise: Promise<T>;
@@ -13,6 +13,20 @@ function deferred<T>(): Deferred<T> {
   let resolve!: (value: T) => void;
   const promise = new Promise<T>((complete) => { resolve = complete; });
   return { promise, resolve };
+}
+
+async function waitForDispatch(signal: Promise<void>, label: string): Promise<void> {
+  let timeout: ReturnType<typeof setTimeout> | undefined;
+  try {
+    await Promise.race([
+      signal,
+      new Promise<void>((_resolve, reject) => {
+        timeout = setTimeout(() => reject(new Error(`Timed out waiting for ${label}`)), 250);
+      }),
+    ]);
+  } finally {
+    if (timeout) clearTimeout(timeout);
+  }
 }
 
 function createStorage(): Storage {
@@ -27,21 +41,28 @@ function createStorage(): Storage {
   };
 }
 
-async function withStorage(storage: Storage, run: () => Promise<void>): Promise<void> {
+async function withStorage(storage: Storage, run: (navigation: string[]) => Promise<void>): Promise<void> {
   const oldWindow = Object.getOwnPropertyDescriptor(globalThis, 'window');
   const oldStorage = Object.getOwnPropertyDescriptor(globalThis, 'localStorage');
+  const navigation: string[] = [];
+  const location = {
+    pathname: '/marketplace',
+    get href() { return navigation.at(-1) ?? '/marketplace'; },
+    set href(value: string) { navigation.push(value); },
+    assign(value: string) { navigation.push(value); },
+  };
   Object.defineProperty(globalThis, 'window', {
     configurable: true,
     value: {
       localStorage: storage,
-      location: { pathname: '/marketplace', assign() {} },
+      location,
       addEventListener() {},
       removeEventListener() {},
     },
   });
   Object.defineProperty(globalThis, 'localStorage', { configurable: true, value: storage });
   try {
-    await run();
+    await run(navigation);
   } finally {
     if (oldWindow) Object.defineProperty(globalThis, 'window', oldWindow);
     else Reflect.deleteProperty(globalThis, 'window');
@@ -56,8 +77,10 @@ test('a late old-session refresh cannot overwrite a replacement session', async 
     const gate = deferred<{ data: { success: true; data: { accessToken: string } }; status: number; statusText: string; headers: object; config: object }>();
     const oldApiAdapter = apiClient.defaults.adapter;
     const oldAxiosAdapter = axios.defaults.adapter;
+    const refreshStarted = deferred<void>();
     let refreshCalls = 0;
     let protectedCalls = 0;
+    let pending: Promise<void | undefined> | undefined;
     try {
       apiClient.defaults.adapter = async (config) => {
         protectedCalls += 1;
@@ -65,11 +88,12 @@ test('a late old-session refresh cannot overwrite a replacement session', async 
       };
       axios.defaults.adapter = async () => {
         refreshCalls += 1;
+        refreshStarted.resolve(undefined);
         return gate.promise as never;
       };
 
-      const pending = apiClient.get('/protected').catch(() => undefined);
-      while (refreshCalls === 0) await Promise.resolve();
+      pending = apiClient.get('/protected').then(() => undefined, () => undefined);
+      await waitForDispatch(refreshStarted.promise, 'the original refresh');
 
       storeTokens({ accessToken: 'access-b', refreshToken: 'refresh-b' });
       gate.resolve({
@@ -85,6 +109,8 @@ test('a late old-session refresh cannot overwrite a replacement session', async 
       assert.equal(refreshCalls, 1);
       assert.equal(protectedCalls, 1);
     } finally {
+      gate.resolve(ok({}, { success: true, data: { accessToken: 'cleanup-access' } }));
+      await pending;
       apiClient.defaults.adapter = oldApiAdapter;
       axios.defaults.adapter = oldAxiosAdapter;
     }
@@ -103,6 +129,8 @@ test('parallel expired requests share one refresh and replay with its rotated ac
     const oldAxiosAdapter = axios.defaults.adapter;
     const headers: string[] = [];
     let refreshCalls = 0;
+    const refreshStarted = deferred<void>();
+    let settled: Promise<unknown[]> | undefined;
     try {
       apiClient.defaults.adapter = async (config) => {
         const authorization = String(config.headers?.Authorization ?? '');
@@ -112,12 +140,14 @@ test('parallel expired requests share one refresh and replay with its rotated ac
       };
       axios.defaults.adapter = async () => {
         refreshCalls += 1;
+        refreshStarted.resolve(undefined);
         return gate.promise as never;
       };
 
       const first = apiClient.get('/parallel-one');
       const second = apiClient.get('/parallel-two');
-      while (refreshCalls === 0) await Promise.resolve();
+      settled = Promise.all([first.catch(() => undefined), second.catch(() => undefined)]);
+      await waitForDispatch(refreshStarted.promise, 'the shared refresh');
       gate.resolve({
         data: { success: true, data: { accessToken: 'access-a2' } },
         status: 200,
@@ -136,6 +166,8 @@ test('parallel expired requests share one refresh and replay with its rotated ac
       ].sort());
       assert.equal(getAccessToken(), 'access-a2');
     } finally {
+      gate.resolve(ok({}, { success: true, data: { accessToken: 'cleanup-access' } }));
+      await settled;
       apiClient.defaults.adapter = oldApiAdapter;
       axios.defaults.adapter = oldAxiosAdapter;
       clearTokens();
@@ -154,6 +186,8 @@ test('a delayed original 401 replays with a current same-session token without a
     const oldAxiosAdapter = axios.defaults.adapter;
     const delayedHeaders: string[] = [];
     let refreshCalls = 0;
+    const refreshStarted = deferred<void>();
+    let settled: Promise<unknown[]> | undefined;
     try {
       apiClient.defaults.adapter = async (config) => {
         const authorization = String(config.headers?.Authorization ?? '');
@@ -169,12 +203,14 @@ test('a delayed original 401 replays with a current same-session token without a
       };
       axios.defaults.adapter = async () => {
         refreshCalls += 1;
+        refreshStarted.resolve(undefined);
         return refreshGate.promise as never;
       };
 
       const first = apiClient.get('/first');
       const second = apiClient.get('/second');
-      while (refreshCalls === 0) await Promise.resolve();
+      settled = Promise.all([first.catch(() => undefined), second.catch(() => undefined)]);
+      await waitForDispatch(refreshStarted.promise, 'the first refresh');
       refreshGate.resolve({
         data: { success: true, data: { accessToken: 'access-a2' } },
         status: 200,
@@ -189,6 +225,9 @@ test('a delayed original 401 replays with a current same-session token without a
       assert.equal(refreshCalls, 1);
       assert.deepEqual(delayedHeaders, ['Bearer access-a2']);
     } finally {
+      refreshGate.resolve(ok({}, { success: true, data: { accessToken: 'cleanup-access' } }));
+      if (rejectDelayed) rejectDelayed(new Error('test cleanup'));
+      await settled;
       apiClient.defaults.adapter = oldApiAdapter;
       axios.defaults.adapter = oldAxiosAdapter;
       clearTokens();
@@ -215,6 +254,53 @@ test('a public 401 never refreshes or clears the browser session', async () => {
       assert.equal(getAccessToken(), 'access-a');
     } finally {
       publicApiClient.defaults.adapter = oldPublicAdapter;
+      axios.defaults.adapter = oldAxiosAdapter;
+      clearTokens();
+    }
+  });
+});
+
+test('a terminal 401 keeps a failed signed-out marker quarantine in the current document', async () => {
+  const values = new Map<string, string>();
+  let denyWrites = false;
+  const storage: Storage = {
+    get length() { return values.size; },
+    clear() { values.clear(); },
+    key(index) { return [...values.keys()][index] ?? null; },
+    getItem(key) { return values.get(key) ?? null; },
+    removeItem(key) {
+      if (denyWrites) throw new Error('Removal denied');
+      values.delete(key);
+    },
+    setItem(key, value) {
+      if (denyWrites) throw new Error('Quota denied');
+      values.set(key, value);
+    },
+  };
+  await withStorage(storage, async (navigation) => {
+    storeTokens({ accessToken: 'access-a', refreshToken: 'refresh-a' });
+    const oldApiAdapter = apiClient.defaults.adapter;
+    const oldAxiosAdapter = axios.defaults.adapter;
+    try {
+      apiClient.defaults.adapter = async (config) => {
+        const authorization = String(config.headers?.Authorization ?? '');
+        if (authorization === 'Bearer access-a') return Promise.reject({ config, response: { status: 401 } });
+        denyWrites = true;
+        return Promise.reject({ config, response: { status: 401 } });
+      };
+      axios.defaults.adapter = async (config) => ok(config, {
+        success: true,
+        data: { accessToken: 'access-a2' },
+      });
+
+      await apiClient.get('/terminal-401').catch(() => undefined);
+
+      assert.equal(isSessionStorageQuarantined(), true);
+      assert.equal(getAccessToken(), null);
+      assert.deepEqual(navigation, []);
+    } finally {
+      denyWrites = false;
+      apiClient.defaults.adapter = oldApiAdapter;
       axios.defaults.adapter = oldAxiosAdapter;
       clearTokens();
     }

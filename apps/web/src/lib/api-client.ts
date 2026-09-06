@@ -7,6 +7,7 @@ import {
     getSessionSnapshot,
     isCurrentSession,
     isExactSession,
+    isSessionStorageQuarantined,
     replaceCurrentSessionTokens,
     type SessionSnapshot,
 } from './auth';
@@ -106,6 +107,7 @@ function clearOnlyCurrentFailedSession(request: SessionBoundRequest): void {
     const failed = exactFailedRequest(request);
     if (!failed || !isExactSession(failed)) return;
     clearTokens();
+    if (isSessionStorageQuarantined()) return;
     if (typeof window !== 'undefined' && !window.location.pathname.startsWith('/auth/')) {
         // This module has no router context; navigation occurs only after the
         // current failed session has been durably fenced.

@@ -18,10 +18,14 @@ import {
     isSessionStorageQuarantined,
     storeTokens,
     subscribeSessionChanges,
-    type TokenPair,
     type User,
 } from '@/lib/auth';
 import apiClient, { publicApiClient } from '@/lib/api-client';
+import {
+    parseAuthenticationResponse,
+    parseCurrentAccountResponse,
+    type AuthenticationResponse,
+} from '@/lib/auth-response';
 import { resolveStudentReturn } from '@/lib/student-return';
 
 interface AuthContextType {
@@ -49,38 +53,6 @@ const AuthContext = createContext<AuthContextType | undefined>(undefined);
 
 const STORAGE_FAILURE_MESSAGE = 'We could not save your signed-out state on this device. Please close this tab before using a shared device.';
 const ACCOUNT_FAILURE_MESSAGE = 'We could not confirm your account. Please sign in again.';
-
-function isRole(value: unknown): value is User['role'] {
-    return value === 'student' || value === 'vendor' || value === 'admin';
-}
-
-function isUser(value: unknown): value is User {
-    if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
-    const user = value as Partial<User>;
-    return typeof user.id === 'string'
-        && user.id.length > 0
-        && typeof user.email === 'string'
-        && user.email.length > 0
-        && isRole(user.role)
-        && (user.verificationStatus === undefined
-            || user.verificationStatus === 'unverified'
-            || user.verificationStatus === 'verified'
-            || user.verificationStatus === 'expired');
-}
-
-function isTokenPair(value: unknown): value is TokenPair {
-    if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
-    const tokens = value as Partial<TokenPair>;
-    return typeof tokens.accessToken === 'string'
-        && tokens.accessToken.length > 0
-        && typeof tokens.refreshToken === 'string'
-        && tokens.refreshToken.length > 0;
-}
-
-function responseData(value: unknown): Record<string, unknown> | null {
-    if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
-    return value as Record<string, unknown>;
-}
 
 function redirectAfterAuth(path: string): void {
     if (typeof window !== 'undefined') window.location.href = path;
@@ -110,7 +82,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         if (!started.accessToken) {
             if (mountedRef.current && operation === operationRef.current) {
                 setUser(null);
-                if (showLoading) setIsLoading(false);
+                const blocked = isSessionStorageQuarantined();
+                setIsLoading(blocked ? true : false);
+                if (blocked) setError(STORAGE_FAILURE_MESSAGE);
             }
             return;
         }
@@ -118,8 +92,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         if (showLoading && mountedRef.current) setIsLoading(true);
         try {
             const response = await apiClient.get('/auth/me');
-            const account = responseData(response.data)?.data;
-            if (!isUser(account)) throw new Error('The server returned an invalid current account.');
+            const account = parseCurrentAccountResponse(response.data);
+            if (!account) throw new Error('The server returned an invalid current account.');
             if (
                 mountedRef.current
                 && operation === operationRef.current
@@ -146,11 +120,18 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
     useEffect(() => {
         mountedRef.current = true;
+        // Reconcile first: an initial legacy migration/active envelope can
+        // notify synchronously, so it must happen before subscribing.
+        getSessionSnapshot();
         const unsubscribe = subscribeSessionChanges(() => {
             if (ownCommitRef.current) return;
-            void loadCurrentUser(false);
+            setUser(null);
+            void loadCurrentUser(true);
         });
-        queueMicrotask(() => { void loadCurrentUser(true); });
+        const initialOperation = operationRef.current;
+        queueMicrotask(() => {
+            if (operationRef.current === initialOperation) void loadCurrentUser(true);
+        });
         return () => {
             mountedRef.current = false;
             operationRef.current += 1;
@@ -158,11 +139,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         };
     }, [loadCurrentUser]);
 
-    const commitAuthenticatedResponse = useCallback((data: unknown, requiredRole?: User['role']): User => {
-        const payload = responseData(data);
-        const account = payload?.user;
-        const tokens = payload?.tokens;
-        if (!isUser(account) || !isTokenPair(tokens) || (requiredRole && account.role !== requiredRole)) {
+    const commitAuthenticatedResponse = useCallback((authentication: AuthenticationResponse, requiredRole?: User['role']): User => {
+        const { user: account, tokens } = authentication;
+        if (requiredRole && account.role !== requiredRole) {
             throw new Error('The server returned an invalid authentication response.');
         }
 
@@ -204,9 +183,11 @@ export function AuthProvider({ children }: { children: ReactNode }) {
             return;
         }
 
+        const authentication = parseAuthenticationResponse(response.data);
+        if (!authentication) throw new Error('The server returned an invalid authentication response.');
         let account: User;
         try {
-            account = commitAuthenticatedResponse(response.data, requiredRole);
+            account = commitAuthenticatedResponse(authentication, requiredRole);
         } catch (commitError) {
             if (mountedRef.current && operation === operationRef.current) {
                 setUser(null);
@@ -224,6 +205,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         ) {
             return;
         }
+        setIsLoading(false);
         setUser(account);
         redirectAfterAuth(destinationFor(account));
     }, [commitAuthenticatedResponse]);
@@ -247,9 +229,11 @@ export function AuthProvider({ children }: { children: ReactNode }) {
             return;
         }
 
+        const authentication = parseAuthenticationResponse(response.data);
+        if (!authentication) throw new Error('The server returned an invalid authentication response.');
         let account: User;
         try {
-            account = commitAuthenticatedResponse(response.data, role);
+            account = commitAuthenticatedResponse(authentication, role);
         } catch (commitError) {
             if (mountedRef.current && operation === operationRef.current) {
                 setUser(null);
@@ -258,10 +242,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
             throw commitError;
         }
 
-        const payload = responseData(response.data);
         if (!mountedRef.current || operation !== operationRef.current) return;
+        setIsLoading(false);
         setUser(account);
-        if (account.role === 'vendor' && payload?.requiresEmailVerification === true) return;
+        if (account.role === 'vendor' && authentication.requiresEmailVerification) return;
         redirectAfterAuth(account.role === 'student' ? '/marketplace' : destinationFor(account));
     }, [commitAuthenticatedResponse]);
 
@@ -270,16 +254,19 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         const role = user?.role;
         operationRef.current += 1;
         clearTokens();
+        const blocked = isSessionStorageQuarantined();
         if (mountedRef.current) {
             setUser(null);
-            setIsLoading(false);
-            setError(isSessionStorageQuarantined() ? STORAGE_FAILURE_MESSAGE : null);
+            setIsLoading(blocked);
+            setError(blocked ? STORAGE_FAILURE_MESSAGE : null);
         }
 
-        if (role === 'admin') redirectAfterAuth('/auth/admin/login');
-        else if (role === 'vendor') redirectAfterAuth('/auth/vendor/login');
-        else if (role === 'student') redirectAfterAuth('/auth/student/login');
-        else redirectAfterAuth('/');
+        if (!blocked) {
+            if (role === 'admin') redirectAfterAuth('/auth/admin/login');
+            else if (role === 'vendor') redirectAfterAuth('/auth/vendor/login');
+            else if (role === 'student') redirectAfterAuth('/auth/student/login');
+            else redirectAfterAuth('/');
+        }
 
         if (!captured.accessToken) return;
         try {
