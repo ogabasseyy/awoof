@@ -5,6 +5,7 @@ export const apiOrigin = 'http://127.0.0.1:3108';
 
 const sessionKey = 'awoof.session.v1';
 const fixtureWaitTimeoutMs = 5_000;
+const xhrRefreshContinuationPrefix = '[awoof-fixture/xhr-refresh-continuation]:';
 let seedNumber = 0;
 
 export type TestRole = 'student' | 'vendor' | 'admin';
@@ -19,13 +20,18 @@ type TestUser = {
 type Deferred = {
   promise: Promise<void>;
   resolve: () => void;
+  reject: (error: Error) => void;
 };
 
 type Lifecycle = {
   started: Promise<void>;
   completed: Promise<void>;
+  continued: Promise<void>;
   start: () => void;
   complete: () => void;
+  continue: () => void;
+  fail: (error: unknown) => void;
+  failContinuation: (error: unknown) => void;
 };
 
 export type Gate = {
@@ -51,12 +57,18 @@ export type BrowserApiRequest = {
   responseIdentity: string;
 };
 
+export type SyntheticHttpFailure = {
+  path: string;
+  status: number;
+};
+
 export type ApiFixture = {
   refreshCalls: number;
   meCalls: number;
   loginCalls: number;
   logoutCalls: number;
   requests: BrowserApiRequest[];
+  syntheticHttpFailures: SyntheticHttpFailure[];
   unexpectedRequests: string[];
   waitForCurrentUserStarted: (ordinal: number) => Promise<void>;
   waitForCurrentUserCompleted: (ordinal: number) => Promise<void>;
@@ -64,13 +76,15 @@ export type ApiFixture = {
   waitForLoginCompleted: (ordinal: number) => Promise<void>;
   waitForRefreshStarted: (ordinal: number) => Promise<void>;
   waitForRefreshCompleted: (ordinal: number) => Promise<void>;
+  waitForRefreshContinuation: (ordinal: number) => Promise<void>;
   waitForVendorRegistrationCompleted: () => Promise<void>;
   waitForVendorUploadCompleted: () => Promise<void>;
+  drainPendingHandlers: () => Promise<void>;
   assertNoUnexpectedRequests: () => void;
 };
 
 type SessionWriteControlWindow = Window & {
-  __awoofSessionWriteControl?: { setDenied: (denied: boolean) => void };
+  __awoofSessionWriteControl?: { setSignedOutMarkerDenied: (denied: boolean) => void };
 };
 
 const users: Record<TestRole, TestUser> = {
@@ -112,18 +126,41 @@ function envelopeFor(
 
 function deferred(): Deferred {
   let resolve!: () => void;
-  const promise = new Promise<void>((complete) => { resolve = complete; });
-  return { promise, resolve };
+  let reject!: (error: Error) => void;
+  const promise = new Promise<void>((complete, fail) => {
+    resolve = complete;
+    reject = fail;
+  });
+  // Every fixture lifecycle is observed by its waiter and the cleanup drain,
+  // but register a rejection observer immediately so a failing route handler
+  // cannot become an unhandled rejection before teardown reports it.
+  void promise.catch(() => undefined);
+  return { promise, resolve, reject };
+}
+
+function asError(error: unknown): Error {
+  return error instanceof Error ? error : new Error(String(error));
 }
 
 function lifecycle(): Lifecycle {
   const started = deferred();
   const completed = deferred();
+  const continued = deferred();
   return {
     started: started.promise,
     completed: completed.promise,
+    continued: continued.promise,
     start: started.resolve,
     complete: completed.resolve,
+    continue: continued.resolve,
+    fail(error: unknown): void {
+      const failure = asError(error);
+      completed.reject(failure);
+      continued.reject(failure);
+    },
+    failContinuation(error: unknown): void {
+      continued.reject(asError(error));
+    },
   };
 }
 
@@ -206,18 +243,104 @@ function endpointLifecycle(map: Map<number, Lifecycle>, ordinal: number): Lifecy
   return next;
 }
 
+async function installXhrRefreshContinuationObserver(page: Page): Promise<void> {
+  await page.addInitScript(({ origin, prefix }) => {
+    const originalSend = XMLHttpRequest.prototype.send;
+    let refreshOrdinal = 0;
+
+    XMLHttpRequest.prototype.send = function observedSend(
+      this: XMLHttpRequest,
+      body?: Document | XMLHttpRequestBodyInit | null,
+    ): void {
+      // Axios assigns its native onloadend handler before calling send. This
+      // listener is intentionally registered afterwards, so its signal follows
+      // the adapter's response settlement. Two microtask turns plus the next
+      // frame provide a bounded browser-side continuation fence without
+      // modifying React, application code, or a window test global.
+      this.addEventListener('loadend', () => {
+        try {
+          const responseUrl = new URL(this.responseURL);
+          if (responseUrl.origin !== origin || responseUrl.pathname.replace(/^\/api/, '') !== '/auth/refresh') return;
+          const ordinal = ++refreshOrdinal;
+          queueMicrotask(() => {
+            queueMicrotask(() => {
+              requestAnimationFrame(() => {
+                console.debug(`${prefix}${ordinal}`);
+              });
+            });
+          });
+        } catch {
+          // This observer never changes application request behavior. A
+          // malformed response URL simply cannot satisfy the bounded signal.
+        }
+      }, { once: true });
+      originalSend.call(this, body);
+    };
+  }, { origin: apiOrigin, prefix: xhrRefreshContinuationPrefix });
+}
+
 export async function installSyntheticApi(page: Page, options: ApiFixtureOptions = {}): Promise<ApiFixture> {
   const currentUserLifecycles = new Map<number, Lifecycle>();
   const loginLifecycles = new Map<number, Lifecycle>();
   const refreshLifecycles = new Map<number, Lifecycle>();
   const vendorRegistration = lifecycle();
   const vendorUpload = lifecycle();
+  const pendingHandlers = new Set<Promise<void>>();
+  const successfulHandlers: string[] = [];
+  const failedHandlers: Array<{ label: string; error: Error }> = [];
+
+  function trackHandler(label: string, handler: () => Promise<void>): Promise<void> {
+    const pending = Promise.resolve().then(handler);
+    pendingHandlers.add(pending);
+    void pending.then(
+      () => {
+        successfulHandlers.push(label);
+        pendingHandlers.delete(pending);
+      },
+      (error: unknown) => {
+        failedHandlers.push({ label, error: asError(error) });
+        pendingHandlers.delete(pending);
+      },
+    );
+    return pending;
+  }
+
+  async function drainPendingHandlers(): Promise<void> {
+    let drainPass = 0;
+    while (pendingHandlers.size > 0) {
+      if (++drainPass > 8) {
+        throw new Error(`Synthetic API handler drainage did not settle after ${drainPass - 1} passes.`);
+      }
+      const pending = [...pendingHandlers];
+      await waitFor(
+        Promise.allSettled(pending).then(() => undefined),
+        `synthetic API handler drainage pass ${drainPass}`,
+      );
+    }
+    if (failedHandlers.length > 0) {
+      const details = failedHandlers
+        .map(({ label, error }) => `${label}: ${error.message}`)
+        .join('; ');
+      throw new Error(
+        `Synthetic API handler failure after ${successfulHandlers.length} successful handler(s): ${details}`,
+      );
+    }
+  }
+
+  await installXhrRefreshContinuationObserver(page);
+  page.on('console', (message) => {
+    const ordinalText = message.text().slice(xhrRefreshContinuationPrefix.length);
+    if (!message.text().startsWith(xhrRefreshContinuationPrefix) || !/^\d+$/.test(ordinalText)) return;
+    endpointLifecycle(refreshLifecycles, Number(ordinalText)).continue();
+  });
+
   const fixture: ApiFixture = {
     refreshCalls: 0,
     meCalls: 0,
     loginCalls: 0,
     logoutCalls: 0,
     requests: [],
+    syntheticHttpFailures: [],
     unexpectedRequests: [],
     waitForCurrentUserStarted: (ordinal) => waitFor(endpointLifecycle(currentUserLifecycles, ordinal).started, `current-user request ${ordinal}`),
     waitForCurrentUserCompleted: (ordinal) => waitFor(endpointLifecycle(currentUserLifecycles, ordinal).completed, `current-user completion ${ordinal}`),
@@ -225,8 +348,10 @@ export async function installSyntheticApi(page: Page, options: ApiFixtureOptions
     waitForLoginCompleted: (ordinal) => waitFor(endpointLifecycle(loginLifecycles, ordinal).completed, `login completion ${ordinal}`),
     waitForRefreshStarted: (ordinal) => waitFor(endpointLifecycle(refreshLifecycles, ordinal).started, `refresh request ${ordinal}`),
     waitForRefreshCompleted: (ordinal) => waitFor(endpointLifecycle(refreshLifecycles, ordinal).completed, `refresh completion ${ordinal}`),
+    waitForRefreshContinuation: (ordinal) => waitFor(endpointLifecycle(refreshLifecycles, ordinal).continued, `refresh browser continuation ${ordinal}`),
     waitForVendorRegistrationCompleted: () => waitFor(vendorRegistration.completed, 'vendor complete-registration completion'),
     waitForVendorUploadCompleted: () => waitFor(vendorUpload.completed, 'vendor upload completion'),
+    drainPendingHandlers,
     assertNoUnexpectedRequests: () => {
       if (fixture.unexpectedRequests.length > 0) {
         throw new Error(`Unexpected API requests: ${fixture.unexpectedRequests.join(', ')}`);
@@ -238,8 +363,25 @@ export async function installSyntheticApi(page: Page, options: ApiFixtureOptions
     fixture.requests.push({ endpoint, ordinal, method: route.request().method(), responseIdentity });
   }
 
-  await page.context().route('**/*', async (route) => {
-    const url = new URL(route.request().url());
+  function recordSyntheticHttpFailure(path: string, status: number): void {
+    fixture.syntheticHttpFailures.push({ path, status });
+  }
+
+  async function completeLifecycle(lifecycleToComplete: Lifecycle, handler: () => Promise<void>): Promise<void> {
+    try {
+      await handler();
+      lifecycleToComplete.complete();
+    } catch (error) {
+      lifecycleToComplete.fail(error);
+      throw error;
+    }
+  }
+
+  await page.context().route('**/*', (route) => {
+    const request = route.request();
+    const url = new URL(request.url());
+    const handlerLabel = `${request.method()} ${url.pathname}`;
+    return trackHandler(handlerLabel, async () => {
     if (url.origin === appOrigin) return route.continue();
     if (url.origin !== apiOrigin) {
       fixture.unexpectedRequests.push(`${route.request().method()} ${url.origin}${url.pathname}`);
@@ -257,9 +399,10 @@ export async function installSyntheticApi(page: Page, options: ApiFixtureOptions
       const requestLifecycle = endpointLifecycle(loginLifecycles, ordinal);
       record('login', ordinal, route, responseIdentity);
       requestLifecycle.start();
-      try {
+      return completeLifecycle(requestLifecycle, async () => {
         if (options.loginGate) await options.loginGate.wait();
         if (request.email === 'invalid@approved.test') {
+          recordSyntheticHttpFailure(path, 401);
           await respond(route, 401, { success: false, error: { message: 'Invalid credentials' } });
           return;
         }
@@ -268,10 +411,7 @@ export async function installSyntheticApi(page: Page, options: ApiFixtureOptions
           return;
         }
         await respond(route, 200, { success: true, data: { user: users[role], tokens: tokensFor(role) } });
-        return;
-      } finally {
-        requestLifecycle.complete();
-      }
+      });
     }
 
     if (path === '/auth/register' && method === 'POST') {
@@ -299,21 +439,20 @@ export async function installSyntheticApi(page: Page, options: ApiFixtureOptions
       const requestLifecycle = endpointLifecycle(currentUserLifecycles, ordinal);
       record('current-user', ordinal, route, responseIdentity);
       requestLifecycle.start();
-      try {
+      return completeLifecycle(requestLifecycle, async () => {
         if (shouldDelayCurrentUser(options, ordinal)) await options.meGate?.wait();
         if (shouldFail) {
+          recordSyntheticHttpFailure(path, status);
           await respond(route, status, { success: false, error: { message: 'Synthetic current-user failure' } });
           return;
         }
         if (!role) {
+          recordSyntheticHttpFailure(path, 401);
           await respond(route, 401, { success: false, error: { message: 'Unauthorized' } });
           return;
         }
         await respond(route, 200, { success: true, data: users[role] });
-        return;
-      } finally {
-        requestLifecycle.complete();
-      }
+      });
     }
 
     if (path === '/auth/refresh' && method === 'POST') {
@@ -322,13 +461,10 @@ export async function installSyntheticApi(page: Page, options: ApiFixtureOptions
       const requestLifecycle = endpointLifecycle(refreshLifecycles, ordinal);
       record('refresh', ordinal, route, role);
       requestLifecycle.start();
-      try {
+      return completeLifecycle(requestLifecycle, async () => {
         if (options.refreshGate) await options.refreshGate.wait();
         await respond(route, 200, { success: true, data: { accessToken: tokensFor(role).accessToken } });
-        return;
-      } finally {
-        requestLifecycle.complete();
-      }
+      });
     }
 
     if (path === '/auth/logout' && method === 'POST') {
@@ -341,23 +477,17 @@ export async function installSyntheticApi(page: Page, options: ApiFixtureOptions
     if (path === '/vendors/complete-registration' && method === 'POST') {
       record('vendor-complete-registration', 1, route, 'vendor');
       vendorRegistration.start();
-      try {
+      return completeLifecycle(vendorRegistration, async () => {
         await respond(route, 200, { success: true, data: { profile: {} } });
-        return;
-      } finally {
-        vendorRegistration.complete();
-      }
+      });
     }
 
     if (path === '/vendors/upload' && method === 'POST') {
       record('vendor-upload', 1, route, 'vendor');
       vendorUpload.start();
-      try {
+      return completeLifecycle(vendorUpload, async () => {
         await respond(route, 200, { success: true, data: { uploaded: true } });
-        return;
-      } finally {
-        vendorUpload.complete();
-      }
+      });
     }
 
     if (path === '/support/notifications/unread-count' && method === 'GET') {
@@ -413,6 +543,7 @@ export async function installSyntheticApi(page: Page, options: ApiFixtureOptions
 
     fixture.unexpectedRequests.push(`${method} ${path}`);
     return route.abort('failed');
+    });
   });
   return fixture;
 }
@@ -453,20 +584,36 @@ export async function installSessionWriteControl(page: Page): Promise<void> {
   await page.addInitScript((targetKey) => {
     const controlledWindow = window as SessionWriteControlWindow;
     const original = Storage.prototype.setItem;
-    let denied = false;
+    let signedOutMarkerDenied = false;
     Storage.prototype.setItem = function controlledSessionWrite(storageKey: string, value: string): void {
-      if (denied && storageKey === targetKey) throw new DOMException('Denied', 'SecurityError');
+      let signedOutMarker = false;
+      try {
+        const parsed: unknown = JSON.parse(value);
+        signedOutMarker = !!parsed
+          && typeof parsed === 'object'
+          && (parsed as { v?: unknown; state?: unknown }).v === 1
+          && (parsed as { state?: unknown }).state === 'signed_out';
+      } catch {
+        signedOutMarker = false;
+      }
+      if (signedOutMarkerDenied && storageKey === targetKey && signedOutMarker) {
+        throw new DOMException('Denied', 'SecurityError');
+      }
       original.call(this, storageKey, value);
     };
-    controlledWindow.__awoofSessionWriteControl = { setDenied(next: boolean): void { denied = next; } };
+    controlledWindow.__awoofSessionWriteControl = {
+      setSignedOutMarkerDenied(next: boolean): void {
+        signedOutMarkerDenied = next;
+      },
+    };
   }, sessionKey);
 }
 
-export async function setSessionWriteDenied(page: Page, denied: boolean): Promise<void> {
+export async function setSignedOutMarkerWriteDenied(page: Page, denied: boolean): Promise<void> {
   await page.evaluate((next) => {
     const controlledWindow = window as SessionWriteControlWindow;
     if (!controlledWindow.__awoofSessionWriteControl) throw new Error('Synthetic session-write control was not installed.');
-    controlledWindow.__awoofSessionWriteControl.setDenied(next);
+    controlledWindow.__awoofSessionWriteControl.setSignedOutMarkerDenied(next);
   }, denied);
 }
 
