@@ -11,6 +11,7 @@ import { createVerificationRouter } from '../../routes/verification.routes.js';
 import { jwtService } from '../../services/auth/jwt.service.js';
 import { challengeSubjectDigest } from '../../services/verification/challenge.service.js';
 import { applyEnrollmentDecision, beginEnrollmentCheck } from '../../services/verification/eligibility-evidence.service.js';
+import { getEffectiveEligibility } from '../../services/verification/eligibility-read.service.js';
 import {
     ENROLLMENT_SCHEMA_VERSION,
     parseConfiguredEnrollmentAdapter,
@@ -23,6 +24,8 @@ import { assertFixtureDatabase, createTestPool } from './test-database.js';
 
 type Institution = { adminId: string; universityId: string };
 type StudentFixture = { userId: string; studentId: string; email: string; universityId: string };
+
+const MUTATION_TIMEOUT_MS = 100;
 
 async function withPool(operation: (pool: pg.Pool) => Promise<void>): Promise<void> {
     const pool = createTestPool();
@@ -48,6 +51,30 @@ async function inTransaction<T>(pool: pg.Pool, operation: (client: pg.PoolClient
         return result;
     } catch (error) {
         await client.query('ROLLBACK').catch(() => undefined);
+        throw error;
+    } finally {
+        client.release();
+    }
+}
+
+async function runBoundedMutation<T>(
+    pool: pg.Pool,
+    mutation: (client: pg.PoolClient) => Promise<T>,
+    timeoutMs = MUTATION_TIMEOUT_MS,
+): Promise<T> {
+    const client = await pool.connect();
+    let transactionOpen = false;
+    try {
+        await client.query('BEGIN');
+        transactionOpen = true;
+        await client.query(`SET LOCAL lock_timeout = '${timeoutMs}ms'`);
+        await client.query(`SET LOCAL statement_timeout = '${timeoutMs}ms'`);
+        const result = await mutation(client);
+        await client.query('COMMIT');
+        transactionOpen = false;
+        return result;
+    } catch (error) {
+        if (transactionOpen) await settleWithin(settle(client.query('ROLLBACK')), 'bounded mutation rollback', timeoutMs);
         throw error;
     } finally {
         client.release();
@@ -187,6 +214,20 @@ async function waitFor(label: string, predicate: () => boolean, timeoutMs = 500)
     throw new Error(`Timed out waiting for ${label}`);
 }
 
+async function settleWithin<T>(operation: Promise<T>, label: string, timeoutMs = 500): Promise<T> {
+    let timer: NodeJS.Timeout | undefined;
+    try {
+        return await Promise.race([
+            operation,
+            new Promise<T>((_resolve, reject) => {
+                timer = setTimeout(() => reject(new Error(`Timed out draining ${label}`)), timeoutMs);
+            }),
+        ]);
+    } finally {
+        if (timer) clearTimeout(timer);
+    }
+}
+
 function deferred(): { promise: Promise<void>; release: () => void } {
     let release: () => void = () => undefined;
     const promise = new Promise<void>((resolve) => { release = resolve; });
@@ -269,7 +310,7 @@ test('a denied enrollment remains denied after a weaker email retry; mismatched 
     });
 });
 
-test('the adapter decision cannot be applied twice for the same persisted generation', async () => {
+test('a conflicting parsed denial cannot change an already applied positive generation', async () => {
     await withPool(async (pool) => {
         const institution = await createInstitution(pool);
         const student = await createStudent(pool, institution);
@@ -281,17 +322,47 @@ test('the adapter decision cannot be applied twice for the same persisted genera
             apiConfig: { schemaVersion: ENROLLMENT_SCHEMA_VERSION },
         });
         if (!adapter) throw new Error('Fixture adapter did not parse');
-        const decision = await verifyConfiguredEnrollment(adapter, {
+        const positive = await verifyConfiguredEnrollment(adapter, {
             email: student.email,
             registrationNumber: 'REG-SAME-GENERATION',
             normalization: 'trim_upper',
         }, async (request) => verifiedReply(request.email, request.registrationNumber));
-        assert.equal(decision.decision.outcome, 'verified');
-        await inTransaction(pool, (client) => applyEnrollmentDecision(client, snapshot, decision.decision));
+        const conflictingDenial = await verifyConfiguredEnrollment(adapter, {
+            email: student.email,
+            registrationNumber: 'REG-SAME-GENERATION',
+            normalization: 'trim_upper',
+        }, async (request) => ({
+            status: 200,
+            data: { schemaVersion: ENROLLMENT_SCHEMA_VERSION, outcome: 'denied', email: request.email },
+        }));
+        assert.equal(positive.decision.outcome, 'verified');
+        assert.equal(conflictingDenial.decision.outcome, 'denied');
+        await inTransaction(pool, (client) => applyEnrollmentDecision(client, snapshot, positive.decision));
+        const capture = async () => ({
+            state: (await pool.query(
+                `SELECT provider_request_generation, provider_applied_generation, authoritative_denial, current_evidence_id::text
+                 FROM student_eligibility_state WHERE student_id = $1 AND university_id = $2`,
+                [student.studentId, student.universityId],
+            )).rows,
+            evidence: (await pool.query<{ evidence: string }>(
+                `SELECT coalesce(json_agg(to_jsonb(e) ORDER BY e.id)::text, '[]') AS evidence
+                 FROM eligibility_evidence e WHERE e.student_id = $1 AND e.method = 'enrollment'`,
+                [student.studentId],
+            )).rows,
+            ownership: (await pool.query(
+                `SELECT identifier, student_id::text, revoked_at::text
+                 FROM verified_registration_identities
+                 WHERE university_id = $1 ORDER BY identifier`,
+                [student.universityId],
+            )).rows,
+            eligibility: await inTransaction(pool, (client) => getEffectiveEligibility(client, student.userId)),
+        });
+        const before = await capture();
         await assert.rejects(
-            inTransaction(pool, (client) => applyEnrollmentDecision(client, snapshot, decision.decision)),
+            inTransaction(pool, (client) => applyEnrollmentDecision(client, snapshot, conflictingDenial.decision)),
             (error: unknown) => error instanceof ConflictError && /generation/.test(error.message),
         );
+        assert.deepEqual(await capture(), before);
     });
 });
 
@@ -327,12 +398,12 @@ test('transport barriers settle and drain in finally while every stale snapshot 
     await withPool(async (pool) => {
         const scenarios: Array<{
             name: string;
-            mutate: (student: StudentFixture, processingGrantId: string) => Promise<unknown>;
+            mutate: (client: pg.PoolClient, student: StudentFixture, processingGrantId: string) => Promise<unknown>;
             expected: RegExp;
         }> = [
             {
                 name: 'mailbox',
-                mutate: (student) => pool.query(
+                mutate: (client, student) => client.query(
                     `UPDATE users SET email = $2 WHERE id = $1`,
                     [student.userId, `changed-${randomUUID()}@students.flow.example`],
                 ),
@@ -340,7 +411,7 @@ test('transport barriers settle and drain in finally while every stale snapshot 
             },
             {
                 name: 'student profile',
-                mutate: (student) => pool.query(
+                mutate: (client, student) => client.query(
                     `UPDATE students SET name = 'Changed Student' WHERE user_id = $1`,
                     [student.userId],
                 ),
@@ -348,7 +419,7 @@ test('transport barriers settle and drain in finally while every stale snapshot 
             },
             {
                 name: 'institution policy',
-                mutate: (student) => pool.query(
+                mutate: (client, student) => client.query(
                     `UPDATE universities SET enrollment_validity_days = enrollment_validity_days + 1 WHERE id = $1`,
                     [student.universityId],
                 ),
@@ -356,7 +427,7 @@ test('transport barriers settle and drain in finally while every stale snapshot 
             },
             {
                 name: 'processing grant',
-                mutate: (_student, processingGrantId) => pool.query(
+                mutate: (client, _student, processingGrantId) => client.query(
                     `UPDATE verification_consents SET withdrawn_at = clock_timestamp() WHERE id = $1`,
                     [processingGrantId],
                 ),
@@ -376,7 +447,9 @@ test('transport barriers settle and drain in finally while every stale snapshot 
             const registration = settle(flow.verifyRegistration(student.userId, { registrationNumber: 'REG-STALE', processingGrantId }));
             try {
                 await waitFor(`${scenario.name} provider transport barrier`, () => started);
-                await scenario.mutate(student, processingGrantId);
+                const mutation = settle(runBoundedMutation(pool, (client) => scenario.mutate(client, student, processingGrantId)));
+                const mutationResult = await mutation;
+                assert.equal(mutationResult.status, 'fulfilled', scenario.name);
                 gate.release();
                 const settled = await registration;
                 assert.equal(settled.status, 'rejected', scenario.name);
@@ -388,8 +461,58 @@ test('transport barriers settle and drain in finally while every stale snapshot 
                 assert.deepEqual(evidence.rows, [{ count: '0' }], scenario.name);
             } finally {
                 gate.release();
-                await registration;
+                await settleWithin(registration, `${scenario.name} registration`);
             }
+        }
+    });
+});
+
+test('held database contention bounds the mutation before the transport barrier is released and drained', async () => {
+    await withPool(async (pool) => {
+        const institution = await createInstitution(pool);
+        const student = await createStudent(pool, institution);
+        const gate = deferred();
+        let transportStarted = false;
+        const { flow, processingGrantId } = await prepareEnrollmentFlow(pool, student, async (request) => {
+            transportStarted = true;
+            await gate.promise;
+            return verifiedReply(request.email, request.registrationNumber);
+        });
+        const registration = settle(flow.verifyRegistration(student.userId, { registrationNumber: 'REG-LOCK-TIMEOUT', processingGrantId }));
+        const blocker = await pool.connect();
+        let blockerTransactionOpen = false;
+        let mutation: Promise<PromiseSettledResult<unknown>> | undefined;
+        try {
+            await waitFor('provider transport barrier', () => transportStarted);
+            await blocker.query('BEGIN');
+            blockerTransactionOpen = true;
+            await blocker.query(`SET LOCAL statement_timeout = '${MUTATION_TIMEOUT_MS}ms'`);
+            await blocker.query('SELECT id FROM users WHERE id = $1 FOR UPDATE', [student.userId]);
+
+            const startedAt = Date.now();
+            mutation = settle(runBoundedMutation(pool, (client) => client.query(
+                `UPDATE users SET email = $2 WHERE id = $1`,
+                [student.userId, `blocked-${randomUUID()}@students.flow.example`],
+            )));
+            const mutationResult = await settleWithin(mutation, 'blocked mutation', MUTATION_TIMEOUT_MS * 3);
+            assert.equal(mutationResult.status, 'rejected');
+            if (mutationResult.status === 'rejected') assert.match(String(mutationResult.reason), /lock timeout|statement timeout/i);
+            assert.ok(Date.now() - startedAt < MUTATION_TIMEOUT_MS * 3);
+
+            gate.release();
+            const rollback = await settleWithin(settle(blocker.query('ROLLBACK')), 'blocker rollback', MUTATION_TIMEOUT_MS * 3);
+            assert.equal(rollback.status, 'fulfilled');
+            blockerTransactionOpen = false;
+            const registrationResult = await settleWithin(registration, 'released registration', MUTATION_TIMEOUT_MS * 5);
+            assert.equal(registrationResult.status, 'fulfilled');
+        } finally {
+            gate.release();
+            if (blockerTransactionOpen) {
+                await settleWithin(settle(blocker.query('ROLLBACK')), 'finally blocker rollback', MUTATION_TIMEOUT_MS * 3);
+            }
+            blocker.release();
+            if (mutation) await settleWithin(mutation, 'finally blocked mutation', MUTATION_TIMEOUT_MS * 3);
+            await settleWithin(registration, 'finally registration', MUTATION_TIMEOUT_MS * 5);
         }
     });
 });
@@ -424,7 +547,7 @@ test('concurrent provider barriers settle and drain in finally, applying only th
             assert.deepEqual(state.rows, [{ provider_request_generation: 2, provider_applied_generation: 2 }]);
         } finally {
             gate.release();
-            await Promise.all(registrations);
+            await settleWithin(Promise.all(registrations), 'concurrent registrations');
         }
     });
 });
