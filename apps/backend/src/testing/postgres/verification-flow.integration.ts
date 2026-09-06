@@ -10,6 +10,8 @@ import { errorHandler } from '../../common/middleware/errorHandler.js';
 import { createVerificationRouter } from '../../routes/verification.routes.js';
 import { jwtService } from '../../services/auth/jwt.service.js';
 import { challengeSubjectDigest } from '../../services/verification/challenge.service.js';
+import { withdrawConsent as withdrawEligibilityConsent } from '../../services/verification/eligibility-consent.service.js';
+import { updateInstitutionPolicy } from '../../services/verification/eligibility-policy.service.js';
 import { createVerificationFlowService } from '../../services/verification/verification-flow.service.js';
 import { getAvailableVerificationMethods } from '../../services/verification/verification-orchestrator.service.js';
 import type { EligibilityResult } from '../../services/verification/eligibility.types.js';
@@ -24,6 +26,7 @@ after(async () => {
 });
 
 type Fixture = {
+    adminId: string;
     userId: string;
     universityId: string;
     email: string;
@@ -74,7 +77,7 @@ async function createFixture(pool: pg.Pool): Promise<Fixture> {
          VALUES ($1, 'Ada Flow', $2, 'active')`,
         [userId, universityId],
     );
-    return { userId, universityId, email };
+    return { adminId, userId, universityId, email };
 }
 
 async function createMerchantFixture(pool: pg.Pool): Promise<MerchantFixture> {
@@ -174,6 +177,85 @@ function settle<T>(operation: Promise<T>): Promise<PromiseSettledResult<T>> {
         (value) => ({ status: 'fulfilled', value }),
         (reason) => ({ status: 'rejected', reason }),
     );
+}
+
+async function challengeArtifacts(pool: pg.Pool, challengeId: string): Promise<{
+    consumed_at: Date | null;
+    failed_attempts: number;
+    proofs: string;
+    evidence: string;
+}> {
+    const result = await pool.query<{
+        consumed_at: Date | null;
+        failed_attempts: number;
+        proofs: string;
+        evidence: string;
+    }>(
+        `SELECT challenges.consumed_at,
+                budgets.failed_attempts,
+                (SELECT count(*)::text FROM user_email_proofs WHERE challenge_id = challenges.id) AS proofs,
+                (SELECT count(*)::text FROM eligibility_evidence WHERE challenge_id = challenges.id) AS evidence
+         FROM verification_challenges challenges
+         JOIN verification_challenge_budgets budgets
+           ON budgets.purpose = challenges.purpose
+          AND budgets.current_challenge_id = challenges.id
+         WHERE challenges.id = $1`,
+        [challengeId],
+    );
+    return result.rows[0]!;
+}
+
+async function actorVerificationSnapshot(pool: pg.Pool, userId: string, email: string): Promise<{
+    matching_accounts: string;
+    role: string;
+    deleted_at: Date | null;
+    refresh_token_hash: string | null;
+    refresh_token_expires_at: Date | null;
+    grants: string;
+    active_grants: string;
+    challenges: string;
+    budgets: string;
+    failed_attempts: string;
+    proofs: string;
+    evidence: string;
+}> {
+    const result = await pool.query<{
+        matching_accounts: string;
+        role: string;
+        deleted_at: Date | null;
+        refresh_token_hash: string | null;
+        refresh_token_expires_at: Date | null;
+        grants: string;
+        active_grants: string;
+        challenges: string;
+        budgets: string;
+        failed_attempts: string;
+        proofs: string;
+        evidence: string;
+    }>(
+        `SELECT
+            (SELECT count(*)::text FROM users WHERE lower(btrim(email)) = lower(btrim($2))) AS matching_accounts,
+            users.role,
+            users.deleted_at,
+            users.refresh_token_hash,
+            users.refresh_token_expires_at,
+            (SELECT count(*)::text FROM verification_consents WHERE user_id = users.id) AS grants,
+            (SELECT count(*)::text FROM verification_consents WHERE user_id = users.id AND withdrawn_at IS NULL) AS active_grants,
+            (SELECT count(*)::text FROM verification_challenges
+             WHERE purpose = 'student_email' AND subject_digest = $3) AS challenges,
+            (SELECT count(*)::text FROM verification_challenge_budgets
+             WHERE purpose = 'student_email' AND subject_digest = $3) AS budgets,
+            (SELECT COALESCE(sum(failed_attempts), 0)::text FROM verification_challenge_budgets
+             WHERE purpose = 'student_email' AND subject_digest = $3) AS failed_attempts,
+            (SELECT count(*)::text FROM user_email_proofs WHERE user_id = users.id) AS proofs,
+            (SELECT count(*)::text FROM eligibility_evidence evidence
+             JOIN students ON students.id = evidence.student_id
+             WHERE students.user_id = users.id) AS evidence
+         FROM users
+         WHERE users.id = $1`,
+        [userId, email, challengeSubjectDigest('student_email', userId)],
+    );
+    return result.rows[0]!;
 }
 
 test('binds a delivered email OTP and resulting evidence to the current signed-in student', async () => {
@@ -696,6 +778,295 @@ test('actual Express routes use live database identity over anonymous, vendor, d
     });
 });
 
+test('actual router independently rejects anonymous calls to every protected verification endpoint without writes', async () => {
+    await withPool(async (pool) => {
+        const victim = await createFixture(pool);
+        const merchant = await createMerchantFixture(pool);
+        const delivered: Array<{ code: string }> = [];
+        const flow = createVerificationFlowService({
+            pool,
+            isEmailConfigured: () => true,
+            deliverOtp: async (_email, code) => { delivered.push({ code }); return { success: true }; },
+        });
+        const initiated = await flow.initiate(victim.userId, {
+            universityId: victim.universityId, accepted: true, noticeVersion: VERIFICATION_NOTICE_VERSION,
+        });
+        const requested = await flow.requestEmail(victim.userId, { processingGrantId: initiated.processingGrantId });
+        const disclosure = await flow.grantDisclosure(victim.userId, {
+            vendorId: merchant.vendorId,
+            origin: merchant.origin,
+            purpose: 'student-discount',
+            accepted: true,
+            noticeVersion: MERCHANT_DISCLOSURE_NOTICE_VERSION,
+        });
+        const baseline = await actorVerificationSnapshot(pool, victim.userId, victim.email);
+        const deliveredBefore = delivered.length;
+
+        await withVerificationServer(async (baseUrl) => {
+            const protectedRoutes: Array<{ name: string; path: string; method: 'GET' | 'POST' | 'DELETE'; body?: unknown }> = [
+                {
+                    name: 'initiate', path: '/initiate', method: 'POST',
+                    body: { universityId: victim.universityId, accepted: true, noticeVersion: VERIFICATION_NOTICE_VERSION },
+                },
+                {
+                    name: 'email request', path: '/email/request', method: 'POST',
+                    body: { processingGrantId: initiated.processingGrantId },
+                },
+                {
+                    name: 'email confirmation', path: '/email/confirm', method: 'POST',
+                    body: { challengeId: requested.challengeId, otp: delivered[0]!.code },
+                },
+                { name: 'status', path: '/status', method: 'GET' },
+                {
+                    name: 'disclosure', path: '/disclosures', method: 'POST',
+                    body: {
+                        vendorId: merchant.vendorId, origin: merchant.origin, purpose: 'student-discount',
+                        accepted: true, noticeVersion: MERCHANT_DISCLOSURE_NOTICE_VERSION,
+                    },
+                },
+                { name: 'withdrawal', path: `/consents/${disclosure.grantId}`, method: 'DELETE' },
+                {
+                    name: 'registration', path: '/registration', method: 'POST',
+                    body: { email: victim.email, name: 'Ada Flow', registrationNumber: 'victim-registration' },
+                },
+                { name: 'widget token', path: '/widget/token', method: 'POST', body: {} },
+            ];
+            for (const route of protectedRoutes) {
+                const response = await fetch(`${baseUrl}${route.path}`, {
+                    method: route.method,
+                    ...(route.body === undefined ? {} : {
+                        headers: { 'content-type': 'application/json' }, body: JSON.stringify(route.body),
+                    }),
+                });
+                assert.equal(response.status, 401, `${route.name} must authenticate before acting`);
+                const serialized = JSON.stringify(await response.json()).toLowerCase();
+                assert.equal(serialized.includes('accesstoken'), false);
+                assert.equal(serialized.includes('refreshtoken'), false);
+                assert.deepEqual(await actorVerificationSnapshot(pool, victim.userId, victim.email), baseline);
+                assert.equal(delivered.length, deliveredBefore);
+            }
+        }, new VerificationController({ flow }));
+    });
+});
+
+test('actual router applies current database identity to every new verification action and status', async () => {
+    await withPool(async (pool) => {
+        const currentStudent = await createFixture(pool);
+        const liveVendor = await createFixture(pool);
+        const staleStudentVendor = await createFixture(pool);
+        const deletedStudent = await createFixture(pool);
+        const merchant = await createMerchantFixture(pool);
+        const delivered: Array<{ code: string }> = [];
+        const flow = createVerificationFlowService({
+            pool,
+            isEmailConfigured: () => true,
+            deliverOtp: async (_email, code) => { delivered.push({ code }); return { success: true }; },
+        });
+        async function provision(actor: Fixture): Promise<{ processingGrantId: string; challengeId: string; otp: string }> {
+            const initiated = await flow.initiate(actor.userId, {
+                universityId: actor.universityId, accepted: true, noticeVersion: VERIFICATION_NOTICE_VERSION,
+            });
+            const requested = await flow.requestEmail(actor.userId, { processingGrantId: initiated.processingGrantId });
+            return { processingGrantId: initiated.processingGrantId, challengeId: requested.challengeId, otp: delivered.at(-1)!.code };
+        }
+        const liveVendorProof = await provision(liveVendor);
+        const staleStudentVendorProof = await provision(staleStudentVendor);
+        const deletedProof = await provision(deletedStudent);
+        await pool.query(`UPDATE users SET role = 'vendor' WHERE id = ANY($1::uuid[])`, [
+            [liveVendor.userId, staleStudentVendor.userId],
+        ]);
+        await pool.query(`UPDATE users SET deleted_at = clock_timestamp() WHERE id = $1`, [deletedStudent.userId]);
+
+        await withVerificationServer(async (baseUrl) => {
+            const currentHeaders = {
+                'content-type': 'application/json',
+                authorization: `Bearer ${accessToken(currentStudent.userId, currentStudent.email, 'vendor')}`,
+            };
+            const initiated = await fetch(`${baseUrl}/initiate`, {
+                method: 'POST', headers: currentHeaders,
+                body: JSON.stringify({
+                    universityId: currentStudent.universityId, accepted: true, noticeVersion: VERIFICATION_NOTICE_VERSION,
+                }),
+            });
+            assert.equal(initiated.status, 200);
+            const initiatedBody = await initiated.json() as { data: { processingGrantId: string } };
+            const requested = await fetch(`${baseUrl}/email/request`, {
+                method: 'POST', headers: currentHeaders,
+                body: JSON.stringify({ processingGrantId: initiatedBody.data.processingGrantId }),
+            });
+            assert.equal(requested.status, 200);
+            const requestedBody = await requested.json() as { data: { challengeId: string } };
+            const confirmed = await fetch(`${baseUrl}/email/confirm`, {
+                method: 'POST', headers: currentHeaders,
+                body: JSON.stringify({ challengeId: requestedBody.data.challengeId, otp: delivered.at(-1)!.code }),
+            });
+            assert.equal(confirmed.status, 200);
+            const disclosure = await fetch(`${baseUrl}/disclosures`, {
+                method: 'POST', headers: currentHeaders,
+                body: JSON.stringify({
+                    vendorId: merchant.vendorId, origin: merchant.origin, purpose: 'student-discount',
+                    accepted: true, noticeVersion: MERCHANT_DISCLOSURE_NOTICE_VERSION,
+                }),
+            });
+            assert.equal(disclosure.status, 201);
+            const statusBefore = await actorVerificationSnapshot(pool, currentStudent.userId, currentStudent.email);
+            const status = await fetch(`${baseUrl}/status`, { headers: { authorization: currentHeaders.authorization } });
+            assert.equal(status.status, 200);
+            assert.deepEqual(await actorVerificationSnapshot(pool, currentStudent.userId, currentStudent.email), statusBefore);
+
+            const rejectedActors = [
+                {
+                    label: 'live vendor', actor: liveVendor, proof: liveVendorProof,
+                    tokenRole: 'vendor' as const,
+                },
+                {
+                    label: 'stale student JWT for current vendor', actor: staleStudentVendor, proof: staleStudentVendorProof,
+                    tokenRole: 'student' as const,
+                },
+                {
+                    label: 'deleted student', actor: deletedStudent, proof: deletedProof,
+                    tokenRole: 'student' as const,
+                },
+            ];
+            for (const rejected of rejectedActors) {
+                const headers = {
+                    'content-type': 'application/json',
+                    authorization: `Bearer ${accessToken(rejected.actor.userId, rejected.actor.email, rejected.tokenRole)}`,
+                };
+                const actions: Array<{ name: string; path: string; method: 'GET' | 'POST'; body?: unknown }> = [
+                    {
+                        name: 'initiation', path: '/initiate', method: 'POST',
+                        body: {
+                            universityId: rejected.actor.universityId, accepted: true, noticeVersion: VERIFICATION_NOTICE_VERSION,
+                        },
+                    },
+                    {
+                        name: 'email request', path: '/email/request', method: 'POST',
+                        body: { processingGrantId: rejected.proof.processingGrantId },
+                    },
+                    {
+                        name: 'email confirmation', path: '/email/confirm', method: 'POST',
+                        body: { challengeId: rejected.proof.challengeId, otp: rejected.proof.otp },
+                    },
+                    {
+                        name: 'disclosure', path: '/disclosures', method: 'POST',
+                        body: {
+                            vendorId: merchant.vendorId, origin: merchant.origin, purpose: 'student-discount',
+                            accepted: true, noticeVersion: MERCHANT_DISCLOSURE_NOTICE_VERSION,
+                        },
+                    },
+                    { name: 'status', path: '/status', method: 'GET' },
+                ];
+                for (const action of actions) {
+                    const baseline = await actorVerificationSnapshot(pool, rejected.actor.userId, rejected.actor.email);
+                    const deliveredBefore = delivered.length;
+                    const response = await fetch(`${baseUrl}${action.path}`, {
+                        method: action.method,
+                        ...(action.body === undefined
+                            ? { headers: { authorization: headers.authorization } }
+                            : { headers, body: JSON.stringify(action.body) }),
+                    });
+                    assert.equal(response.status, 400, `${rejected.label} ${action.name} must use live database authority`);
+                    const serialized = JSON.stringify(await response.json()).toLowerCase();
+                    assert.equal(serialized.includes('accesstoken'), false);
+                    assert.equal(serialized.includes('refreshtoken'), false);
+                    assert.deepEqual(await actorVerificationSnapshot(pool, rejected.actor.userId, rejected.actor.email), baseline);
+                    assert.equal(delivered.length, deliveredBefore);
+                }
+            }
+
+            for (const path of ['/registration', '/widget/token']) {
+                const baseline = await actorVerificationSnapshot(pool, currentStudent.userId, currentStudent.email);
+                const unavailable = await fetch(`${baseUrl}${path}`, {
+                    method: 'POST', headers: currentHeaders,
+                    body: JSON.stringify({
+                        email: currentStudent.email, name: 'Ada Flow', registrationNumber: 'current-student-registration',
+                    }),
+                });
+                assert.equal(unavailable.status, 503);
+                const serialized = JSON.stringify(await unavailable.json()).toLowerCase();
+                assert.equal(serialized.includes('accesstoken'), false);
+                assert.equal(serialized.includes('refreshtoken'), false);
+                assert.deepEqual(await actorVerificationSnapshot(pool, currentStudent.userId, currentStudent.email), baseline);
+            }
+        }, new VerificationController({ flow }));
+    });
+});
+
+test('actual router keeps withdrawal owner-scoped and permits inactive or missing-profile owners', async () => {
+    await withPool(async (pool) => {
+        const owner = await createFixture(pool);
+        const foreign = await createFixture(pool);
+        const inactive = await createFixture(pool);
+        const missingProfile = await createFixture(pool);
+        const flow = createVerificationFlowService({
+            pool, isEmailConfigured: () => true, deliverOtp: async () => ({ success: true }),
+        });
+        const ownerGrant = await flow.initiate(owner.userId, {
+            universityId: owner.universityId, accepted: true, noticeVersion: VERIFICATION_NOTICE_VERSION,
+        });
+        const inactiveGrant = await flow.initiate(inactive.userId, {
+            universityId: inactive.universityId, accepted: true, noticeVersion: VERIFICATION_NOTICE_VERSION,
+        });
+        const missingProfileGrant = await flow.initiate(missingProfile.userId, {
+            universityId: missingProfile.universityId, accepted: true, noticeVersion: VERIFICATION_NOTICE_VERSION,
+        });
+        await pool.query(`UPDATE students SET status = 'suspended' WHERE user_id = $1`, [inactive.userId]);
+        await pool.query(`UPDATE universities SET is_active = false WHERE id = $1`, [inactive.universityId]);
+        await pool.query(`DELETE FROM students WHERE user_id = $1`, [missingProfile.userId]);
+
+        await withVerificationServer(async (baseUrl) => {
+            const foreignBaseline = await actorVerificationSnapshot(pool, foreign.userId, foreign.email);
+            const ownerBaseline = await actorVerificationSnapshot(pool, owner.userId, owner.email);
+            const foreignAttempt = await fetch(`${baseUrl}/consents/${ownerGrant.processingGrantId}`, {
+                method: 'DELETE',
+                headers: { authorization: `Bearer ${accessToken(foreign.userId, foreign.email)}` },
+            });
+            assert.equal(foreignAttempt.status, 403);
+            assert.deepEqual(await actorVerificationSnapshot(pool, foreign.userId, foreign.email), foreignBaseline);
+            assert.deepEqual(await actorVerificationSnapshot(pool, owner.userId, owner.email), ownerBaseline);
+
+            const ownerFirst = await fetch(`${baseUrl}/consents/${ownerGrant.processingGrantId}`, {
+                method: 'DELETE', headers: { authorization: `Bearer ${accessToken(owner.userId, owner.email)}` },
+            });
+            assert.equal(ownerFirst.status, 200);
+            const afterFirst = await actorVerificationSnapshot(pool, owner.userId, owner.email);
+            const ownerSecond = await fetch(`${baseUrl}/consents/${ownerGrant.processingGrantId}`, {
+                method: 'DELETE', headers: { authorization: `Bearer ${accessToken(owner.userId, owner.email)}` },
+            });
+            assert.equal(ownerSecond.status, 200);
+            assert.deepEqual(await actorVerificationSnapshot(pool, owner.userId, owner.email), afterFirst);
+
+            for (const ownerException of [
+                { label: 'inactive owner', actor: inactive, grantId: inactiveGrant.processingGrantId },
+                { label: 'missing-profile owner', actor: missingProfile, grantId: missingProfileGrant.processingGrantId },
+            ]) {
+                const baseline = await actorVerificationSnapshot(pool, ownerException.actor.userId, ownerException.actor.email);
+                const response = await fetch(`${baseUrl}/consents/${ownerException.grantId}`, {
+                    method: 'DELETE',
+                    headers: { authorization: `Bearer ${accessToken(ownerException.actor.userId, ownerException.actor.email)}` },
+                });
+                assert.equal(response.status, 200, `${ownerException.label} can revoke only their own historical grant`);
+                const serialized = JSON.stringify(await response.json()).toLowerCase();
+                assert.equal(serialized.includes('accesstoken'), false);
+                assert.equal(serialized.includes('refreshtoken'), false);
+                const after = await actorVerificationSnapshot(pool, ownerException.actor.userId, ownerException.actor.email);
+                assert.equal(after.grants, baseline.grants);
+                assert.equal(Number(after.active_grants), Number(baseline.active_grants) - 1);
+                assert.equal(after.challenges, baseline.challenges);
+                assert.equal(after.budgets, baseline.budgets);
+                assert.equal(after.proofs, baseline.proofs);
+                assert.equal(after.evidence, baseline.evidence);
+                const grant = await pool.query<{ withdrawn_at: Date | null }>(
+                    `SELECT withdrawn_at FROM verification_consents WHERE id = $1`,
+                    [ownerException.grantId],
+                );
+                assert.equal(grant.rows[0]?.withdrawn_at instanceof Date, true);
+            }
+        }, new VerificationController({ flow }));
+    });
+});
+
 test('actual authenticated routes bind student actions to the live subject and never issue a session', async () => {
     await withPool(async (pool) => {
         const student = await createFixture(pool);
@@ -873,6 +1244,159 @@ test('does not consume a stale identity challenge and refuses a withdrawn proces
             flow.requestEmail(fixture.userId, { processingGrantId: initiated.processingGrantId }),
             /Current processing consent required/i,
         );
+    });
+});
+
+test('rejects a confirmation blocked behind an uncommitted owner withdrawal without consuming its challenge', async () => {
+    await withPool(async (pool) => {
+        const fixture = await createFixture(pool);
+        const delivered: Array<{ code: string }> = [];
+        const setupFlow = createVerificationFlowService({
+            pool,
+            isEmailConfigured: () => true,
+            deliverOtp: async (_email, code) => { delivered.push({ code }); return { success: true }; },
+        });
+        const initiated = await setupFlow.initiate(fixture.userId, {
+            universityId: fixture.universityId, accepted: true, noticeVersion: VERIFICATION_NOTICE_VERSION,
+        });
+        const requested = await setupFlow.requestEmail(fixture.userId, { processingGrantId: initiated.processingGrantId });
+        const baseline = await challengeArtifacts(pool, requested.challengeId);
+        assert.deepEqual(baseline, { consumed_at: null, failed_attempts: 0, proofs: '0', evidence: '0' });
+
+        const withdrawalClient = await pool.connect();
+        const confirmationClient = await pool.connect();
+        const withdrawalPid = await backendPid(withdrawalClient);
+        const confirmationPid = await backendPid(confirmationClient);
+        const confirmationFlow = createVerificationFlowService({
+            pool: pinnedPool(confirmationClient), isEmailConfigured: () => true, deliverOtp: async () => ({ success: true }),
+        });
+        let confirmation: Promise<PromiseSettledResult<EligibilityResult>> | undefined;
+        try {
+            await withdrawalClient.query('BEGIN');
+            const withdrawal = await settle(withdrawEligibilityConsent(withdrawalClient, fixture.userId, initiated.processingGrantId));
+            assert.equal(withdrawal.status, 'fulfilled');
+
+            confirmation = settle(confirmationFlow.confirmEmail(fixture.userId, {
+                challengeId: requested.challengeId, otp: delivered[0]!.code,
+            }));
+            await waitForExactBlockingPid(pool, confirmationPid, withdrawalPid);
+            await withdrawalClient.query('COMMIT');
+
+            const result = await confirmation;
+            assert.equal(result.status, 'rejected');
+            if (result.status === 'rejected') assert.match(String(result.reason), /Current processing consent required/i);
+        } finally {
+            await withdrawalClient.query('ROLLBACK').catch(() => undefined);
+            await confirmation?.then(() => undefined, () => undefined);
+            withdrawalClient.release();
+            confirmationClient.release();
+        }
+        assert.deepEqual(await challengeArtifacts(pool, requested.challengeId), baseline);
+    });
+});
+
+test('rejects a confirmation blocked behind an uncommitted material identity change without issuing proof', async () => {
+    await withPool(async (pool) => {
+        const fixture = await createFixture(pool);
+        const delivered: Array<{ code: string }> = [];
+        const setupFlow = createVerificationFlowService({
+            pool,
+            isEmailConfigured: () => true,
+            deliverOtp: async (_email, code) => { delivered.push({ code }); return { success: true }; },
+        });
+        const initiated = await setupFlow.initiate(fixture.userId, {
+            universityId: fixture.universityId, accepted: true, noticeVersion: VERIFICATION_NOTICE_VERSION,
+        });
+        const requested = await setupFlow.requestEmail(fixture.userId, { processingGrantId: initiated.processingGrantId });
+        const baseline = await challengeArtifacts(pool, requested.challengeId);
+        assert.deepEqual(baseline, { consumed_at: null, failed_attempts: 0, proofs: '0', evidence: '0' });
+
+        const identityClient = await pool.connect();
+        const confirmationClient = await pool.connect();
+        const identityPid = await backendPid(identityClient);
+        const confirmationPid = await backendPid(confirmationClient);
+        const confirmationFlow = createVerificationFlowService({
+            pool: pinnedPool(confirmationClient), isEmailConfigured: () => true, deliverOtp: async () => ({ success: true }),
+        });
+        let confirmation: Promise<PromiseSettledResult<EligibilityResult>> | undefined;
+        try {
+            await identityClient.query('BEGIN');
+            const changed = await settle(identityClient.query(
+                `UPDATE users SET email = $2 WHERE id = $1`,
+                [fixture.userId, `changed-${randomUUID()}@students.flow.example`],
+            ));
+            assert.equal(changed.status, 'fulfilled');
+
+            confirmation = settle(confirmationFlow.confirmEmail(fixture.userId, {
+                challengeId: requested.challengeId, otp: delivered[0]!.code,
+            }));
+            await waitForExactBlockingPid(pool, confirmationPid, identityPid);
+            await identityClient.query('COMMIT');
+
+            const result = await confirmation;
+            assert.equal(result.status, 'rejected');
+            if (result.status === 'rejected') assert.match(String(result.reason), /bindings are stale/i);
+        } finally {
+            await identityClient.query('ROLLBACK').catch(() => undefined);
+            await confirmation?.then(() => undefined, () => undefined);
+            identityClient.release();
+            confirmationClient.release();
+        }
+        assert.deepEqual(await challengeArtifacts(pool, requested.challengeId), baseline);
+    });
+});
+
+test('rejects a confirmation blocked behind an uncommitted policy change without issuing proof', async () => {
+    await withPool(async (pool) => {
+        const fixture = await createFixture(pool);
+        const delivered: Array<{ code: string }> = [];
+        const setupFlow = createVerificationFlowService({
+            pool,
+            isEmailConfigured: () => true,
+            deliverOtp: async (_email, code) => { delivered.push({ code }); return { success: true }; },
+        });
+        const initiated = await setupFlow.initiate(fixture.userId, {
+            universityId: fixture.universityId, accepted: true, noticeVersion: VERIFICATION_NOTICE_VERSION,
+        });
+        const requested = await setupFlow.requestEmail(fixture.userId, { processingGrantId: initiated.processingGrantId });
+        const baseline = await challengeArtifacts(pool, requested.challengeId);
+        assert.deepEqual(baseline, { consumed_at: null, failed_attempts: 0, proofs: '0', evidence: '0' });
+
+        const policyClient = await pool.connect();
+        const confirmationClient = await pool.connect();
+        const policyPid = await backendPid(policyClient);
+        const confirmationPid = await backendPid(confirmationClient);
+        const confirmationFlow = createVerificationFlowService({
+            pool: pinnedPool(confirmationClient), isEmailConfigured: () => true, deliverOtp: async () => ({ success: true }),
+        });
+        let confirmation: Promise<PromiseSettledResult<EligibilityResult>> | undefined;
+        try {
+            await policyClient.query('BEGIN');
+            const policyChange = await settle(updateInstitutionPolicy(policyClient, fixture.adminId, fixture.universityId, {
+                domains: ['students.flow.example'],
+                emailEvidenceValidityDays: 89,
+                enrollmentValidityDays: 30,
+                registrationNormalization: null,
+                isActive: true,
+            }));
+            assert.equal(policyChange.status, 'fulfilled');
+
+            confirmation = settle(confirmationFlow.confirmEmail(fixture.userId, {
+                challengeId: requested.challengeId, otp: delivered[0]!.code,
+            }));
+            await waitForExactBlockingPid(pool, confirmationPid, policyPid);
+            await policyClient.query('COMMIT');
+
+            const result = await confirmation;
+            assert.equal(result.status, 'rejected');
+            if (result.status === 'rejected') assert.match(String(result.reason), /bindings are stale/i);
+        } finally {
+            await policyClient.query('ROLLBACK').catch(() => undefined);
+            await confirmation?.then(() => undefined, () => undefined);
+            policyClient.release();
+            confirmationClient.release();
+        }
+        assert.deepEqual(await challengeArtifacts(pool, requested.challengeId), baseline);
     });
 });
 
