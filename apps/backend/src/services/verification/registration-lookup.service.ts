@@ -129,6 +129,42 @@ function isInIpv4Range(value: number, network: string, prefix: number): boolean 
     return (value & mask) === (networkValue & mask);
 }
 
+function ipv6ToInteger(value: string): bigint | null {
+    const parts = value.split('::');
+    if (parts.length > 2) return null;
+    const expand = (side: string): string[] | null => {
+        if (!side) return [];
+        const segments = side.split(':');
+        const expanded: string[] = [];
+        for (const [index, segment] of segments.entries()) {
+            if (segment.includes('.')) {
+                if (index !== segments.length - 1) return null;
+                const ipv4 = ipv4ToInteger(segment);
+                if (ipv4 === null) return null;
+                expanded.push(((ipv4 >>> 16) & 0xffff).toString(16), (ipv4 & 0xffff).toString(16));
+                continue;
+            }
+            if (!/^[0-9a-f]{1,4}$/i.test(segment)) return null;
+            expanded.push(segment);
+        }
+        return expanded;
+    };
+    const leading = expand(parts[0]!);
+    const trailing = expand(parts[1] ?? '');
+    if (!leading || !trailing) return null;
+    const missing = 8 - leading.length - trailing.length;
+    if (missing < 0 || (parts.length === 1 && missing !== 0)) return null;
+    const hextets = [...leading, ...Array(missing).fill('0'), ...trailing];
+    return hextets.reduce((result, hextet) => (result << 16n) | BigInt(`0x${hextet}`), 0n);
+}
+
+function isInIpv6Range(value: bigint, network: string, prefix: number): boolean {
+    const networkValue = ipv6ToInteger(network);
+    if (networkValue === null) return true;
+    const mask = prefix === 0 ? 0n : ((1n << BigInt(prefix)) - 1n) << BigInt(128 - prefix);
+    return (value & mask) === (networkValue & mask);
+}
+
 export function isPublicEnrollmentAddress(address: string): boolean {
     const family = isIP(address);
     if (family === 4) {
@@ -143,12 +179,21 @@ export function isPublicEnrollmentAddress(address: string): boolean {
         return !blockedRanges.some(([network, prefix]) => isInIpv4Range(value, network, prefix));
     }
     if (family === 6) {
-        const normalized = address.toLowerCase();
-        if (normalized === '::' || normalized === '::1' || normalized.startsWith('ff') || normalized.startsWith('fe8')
-            || normalized.startsWith('fe9') || normalized.startsWith('fea') || normalized.startsWith('feb')
-            || normalized.startsWith('fc') || normalized.startsWith('fd') || /^2001:0?db8:/i.test(normalized)) return false;
-        const mapped = normalized.match(/^::ffff:(\d+\.\d+\.\d+\.\d+)$/);
-        return mapped ? isPublicEnrollmentAddress(mapped[1]!) : true;
+        const value = ipv6ToInteger(address);
+        if (value === null) return false;
+        const embeddedIpv4 = value & 0xffffffffn;
+        if (value >> 32n === 0n || value >> 32n === 0xffffn) {
+            return isPublicEnrollmentAddress([
+                Number((embeddedIpv4 >> 24n) & 0xffn),
+                Number((embeddedIpv4 >> 16n) & 0xffn),
+                Number((embeddedIpv4 >> 8n) & 0xffn),
+                Number(embeddedIpv4 & 0xffn),
+            ].join('.'));
+        }
+        const blockedRanges: Array<[string, number]> = [
+            ['::', 128], ['::1', 128], ['ff00::', 8], ['fe80::', 10], ['fc00::', 7], ['2001:db8::', 32],
+        ];
+        return !blockedRanges.some(([network, prefix]) => isInIpv6Range(value, network, prefix));
     }
     return false;
 }
@@ -161,15 +206,33 @@ async function resolvePublicAddresses(endpoint: URL): Promise<PinnedEnrollmentDe
         .sort((left, right) => left.family - right.family || left.address.localeCompare(right.address));
 }
 
-export function createPinnedEnrollmentLookup(configuredHostname: string, destination: PinnedEnrollmentDestination) {
+type EnrollmentTransportOptions = {
+    timeoutMs?: number;
+    resolveAddresses?: (endpoint: URL) => Promise<PinnedEnrollmentDestination[]>;
+    certificateAuthority?: https.AgentOptions['ca'];
+};
+
+type PinnedLookup = {
+    (hostname: string, options: { all: true }, callback: (error: Error | null, addresses: PinnedEnrollmentDestination[]) => void): void;
+    (hostname: string, options: { all?: false } | undefined, callback: (error: Error | null, address: string, family: number) => void): void;
+};
+type PinnedLookupCallback =
+    | ((error: Error | null, addresses: PinnedEnrollmentDestination[]) => void)
+    | ((error: Error | null, address: string, family: number) => void);
+
+export function createPinnedEnrollmentLookup(configuredHostname: string, destination: PinnedEnrollmentDestination): PinnedLookup {
     const expectedHost = configuredHostname.toLowerCase();
-    return (hostname: string, _options: object, callback: (error: Error | null, address: string, family: number) => void): void => {
+    return ((hostname: string, options: { all?: boolean } | undefined, callback: PinnedLookupCallback): void => {
         if (hostname.toLowerCase() !== expectedHost) {
-            callback(new Error('Enrollment destination hostname changed'), '', 0);
+            (callback as (error: Error) => void)(new Error('Enrollment destination hostname changed'));
             return;
         }
-        callback(null, destination.address, destination.family);
-    };
+        if (options?.all) {
+            (callback as (error: Error | null, addresses: PinnedEnrollmentDestination[]) => void)(null, [destination]);
+            return;
+        }
+        (callback as (error: Error | null, address: string, family: number) => void)(null, destination.address, destination.family);
+    }) as PinnedLookup;
 }
 
 /**
@@ -177,44 +240,67 @@ export function createPinnedEnrollmentLookup(configuredHostname: string, destina
  * pinned to a public address validated immediately before this call, while the
  * original hostname remains the TLS SNI/certificate verification name.
  */
-export const defaultEnrollmentTransport: EnrollmentTransport = async (request) => {
-    const destinations = await resolvePublicAddresses(request.endpoint);
-    const destination = destinations[0];
-    if (!destination) throw new Error('Enrollment destination is not public');
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
-    const agent = new https.Agent({
-        keepAlive: false,
-        maxSockets: 1,
-        lookup: createPinnedEnrollmentLookup(request.endpoint.hostname, destination),
-        servername: request.endpoint.hostname,
-        rejectUnauthorized: true,
-    });
-    try {
-        const response = await axios.post(request.endpoint.toString(), {
-            email: request.email,
-            registrationNumber: request.registrationNumber,
-        }, {
-            headers: { 'content-type': 'application/json', accept: 'application/json', 'accept-encoding': 'identity' },
-            timeout: REQUEST_TIMEOUT_MS,
-            signal: controller.signal,
-            maxBodyLength: MAX_REQUEST_BYTES,
-            maxContentLength: MAX_RESPONSE_BYTES,
-            maxRedirects: 0,
-            proxy: false,
-            httpsAgent: agent,
-            adapter: 'http',
-            responseType: 'json',
-            decompress: false,
-            transitional: { silentJSONParsing: false, forcedJSONParsing: true, clarifyTimeoutError: true },
-            validateStatus: () => true,
+export function createEnrollmentTransport({
+    timeoutMs = REQUEST_TIMEOUT_MS,
+    resolveAddresses = resolvePublicAddresses,
+    certificateAuthority,
+}: EnrollmentTransportOptions = {}): EnrollmentTransport {
+    return async (request) => {
+        const controller = new AbortController();
+        const deadlineAt = Date.now() + timeoutMs;
+        let rejectDeadline: (error: Error) => void = () => undefined;
+        const deadline = new Promise<never>((_, reject) => {
+            rejectDeadline = reject;
         });
-        return { status: response.status, data: response.data };
-    } finally {
-        clearTimeout(timeout);
-        agent.destroy();
-    }
-};
+        const timeout = setTimeout(() => {
+            controller.abort();
+            rejectDeadline(new Error('Enrollment provider deadline exceeded'));
+        }, timeoutMs);
+        let agent: https.Agent | undefined;
+        try {
+            const destinations = await Promise.race([resolveAddresses(request.endpoint), deadline]);
+            if (controller.signal.aborted || Date.now() >= deadlineAt) {
+                throw new Error('Enrollment provider deadline exceeded');
+            }
+            const destination = destinations[0];
+            if (!destination) throw new Error('Enrollment destination is not public');
+            const remainingTimeoutMs = deadlineAt - Date.now();
+            if (remainingTimeoutMs <= 0) throw new Error('Enrollment provider deadline exceeded');
+            agent = new https.Agent({
+                keepAlive: false,
+                maxSockets: 1,
+                lookup: createPinnedEnrollmentLookup(request.endpoint.hostname, destination) as unknown as NonNullable<https.AgentOptions['lookup']>,
+                servername: request.endpoint.hostname,
+                rejectUnauthorized: true,
+                ca: certificateAuthority,
+            });
+            const response = await axios.post(request.endpoint.toString(), {
+                email: request.email,
+                registrationNumber: request.registrationNumber,
+            }, {
+                headers: { 'content-type': 'application/json', accept: 'application/json', 'accept-encoding': 'identity' },
+                timeout: remainingTimeoutMs,
+                signal: controller.signal,
+                maxBodyLength: MAX_REQUEST_BYTES,
+                maxContentLength: MAX_RESPONSE_BYTES,
+                maxRedirects: 0,
+                proxy: false,
+                httpsAgent: agent,
+                adapter: 'http',
+                responseType: 'json',
+                decompress: false,
+                transitional: { silentJSONParsing: false, forcedJSONParsing: true, clarifyTimeoutError: true },
+                validateStatus: () => true,
+            });
+            return { status: response.status, data: response.data };
+        } finally {
+            clearTimeout(timeout);
+            agent?.destroy();
+        }
+    };
+}
+
+export const defaultEnrollmentTransport = createEnrollmentTransport();
 
 function unknown(reason: NonNullable<EnrollmentLookupResult['reason']>): EnrollmentLookupResult {
     return { decision: { outcome: 'unknown' }, reason };
