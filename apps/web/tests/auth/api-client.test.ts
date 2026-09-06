@@ -1,0 +1,222 @@
+import assert from 'node:assert/strict';
+import { test } from 'node:test';
+import axios from 'axios';
+import apiClient, { publicApiClient } from '../../src/lib/api-client';
+import { clearTokens, getAccessToken, storeTokens } from '../../src/lib/auth';
+
+type Deferred<T> = {
+  promise: Promise<T>;
+  resolve: (value: T) => void;
+};
+
+function deferred<T>(): Deferred<T> {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((complete) => { resolve = complete; });
+  return { promise, resolve };
+}
+
+function createStorage(): Storage {
+  const values = new Map<string, string>();
+  return {
+    get length() { return values.size; },
+    clear() { values.clear(); },
+    key(index) { return [...values.keys()][index] ?? null; },
+    getItem(key) { return values.get(key) ?? null; },
+    removeItem(key) { values.delete(key); },
+    setItem(key, value) { values.set(key, value); },
+  };
+}
+
+async function withStorage(storage: Storage, run: () => Promise<void>): Promise<void> {
+  const oldWindow = Object.getOwnPropertyDescriptor(globalThis, 'window');
+  const oldStorage = Object.getOwnPropertyDescriptor(globalThis, 'localStorage');
+  Object.defineProperty(globalThis, 'window', {
+    configurable: true,
+    value: {
+      localStorage: storage,
+      location: { pathname: '/marketplace', assign() {} },
+      addEventListener() {},
+      removeEventListener() {},
+    },
+  });
+  Object.defineProperty(globalThis, 'localStorage', { configurable: true, value: storage });
+  try {
+    await run();
+  } finally {
+    if (oldWindow) Object.defineProperty(globalThis, 'window', oldWindow);
+    else Reflect.deleteProperty(globalThis, 'window');
+    if (oldStorage) Object.defineProperty(globalThis, 'localStorage', oldStorage);
+    else Reflect.deleteProperty(globalThis, 'localStorage');
+  }
+}
+
+test('a late old-session refresh cannot overwrite a replacement session', async () => {
+  await withStorage(createStorage(), async () => {
+    storeTokens({ accessToken: 'access-a', refreshToken: 'refresh-a' });
+    const gate = deferred<{ data: { success: true; data: { accessToken: string } }; status: number; statusText: string; headers: object; config: object }>();
+    const oldApiAdapter = apiClient.defaults.adapter;
+    const oldAxiosAdapter = axios.defaults.adapter;
+    let refreshCalls = 0;
+    let protectedCalls = 0;
+    try {
+      apiClient.defaults.adapter = async (config) => {
+        protectedCalls += 1;
+        return Promise.reject({ config, response: { status: 401 } });
+      };
+      axios.defaults.adapter = async () => {
+        refreshCalls += 1;
+        return gate.promise as never;
+      };
+
+      const pending = apiClient.get('/protected').catch(() => undefined);
+      while (refreshCalls === 0) await Promise.resolve();
+
+      storeTokens({ accessToken: 'access-b', refreshToken: 'refresh-b' });
+      gate.resolve({
+        data: { success: true, data: { accessToken: 'access-a-rotated' } },
+        status: 200,
+        statusText: 'OK',
+        headers: {},
+        config: {},
+      });
+      await pending;
+
+      assert.equal(getAccessToken(), 'access-b');
+      assert.equal(refreshCalls, 1);
+      assert.equal(protectedCalls, 1);
+    } finally {
+      apiClient.defaults.adapter = oldApiAdapter;
+      axios.defaults.adapter = oldAxiosAdapter;
+    }
+  });
+});
+
+function ok(config: object, data: unknown) {
+  return { data, status: 200, statusText: 'OK', headers: {}, config } as never;
+}
+
+test('parallel expired requests share one refresh and replay with its rotated access token', async () => {
+  await withStorage(createStorage(), async () => {
+    storeTokens({ accessToken: 'access-a', refreshToken: 'refresh-a' });
+    const gate = deferred<{ data: { success: true; data: { accessToken: string } }; status: number; statusText: string; headers: object; config: object }>();
+    const oldApiAdapter = apiClient.defaults.adapter;
+    const oldAxiosAdapter = axios.defaults.adapter;
+    const headers: string[] = [];
+    let refreshCalls = 0;
+    try {
+      apiClient.defaults.adapter = async (config) => {
+        const authorization = String(config.headers?.Authorization ?? '');
+        headers.push(authorization);
+        if (authorization === 'Bearer access-a') return Promise.reject({ config, response: { status: 401 } });
+        return ok(config, { ok: true });
+      };
+      axios.defaults.adapter = async () => {
+        refreshCalls += 1;
+        return gate.promise as never;
+      };
+
+      const first = apiClient.get('/parallel-one');
+      const second = apiClient.get('/parallel-two');
+      while (refreshCalls === 0) await Promise.resolve();
+      gate.resolve({
+        data: { success: true, data: { accessToken: 'access-a2' } },
+        status: 200,
+        statusText: 'OK',
+        headers: {},
+        config: {},
+      });
+      await Promise.all([first, second]);
+
+      assert.equal(refreshCalls, 1);
+      assert.deepEqual(headers.sort(), [
+        'Bearer access-a',
+        'Bearer access-a',
+        'Bearer access-a2',
+        'Bearer access-a2',
+      ].sort());
+      assert.equal(getAccessToken(), 'access-a2');
+    } finally {
+      apiClient.defaults.adapter = oldApiAdapter;
+      axios.defaults.adapter = oldAxiosAdapter;
+      clearTokens();
+    }
+  });
+});
+
+test('a delayed original 401 replays with a current same-session token without a second refresh', async () => {
+  await withStorage(createStorage(), async () => {
+    storeTokens({ accessToken: 'access-a', refreshToken: 'refresh-a' });
+    const refreshGate = deferred<{ data: { success: true; data: { accessToken: string } }; status: number; statusText: string; headers: object; config: object }>();
+    let rejectDelayed!: (reason: unknown) => void;
+    let delayedConfig: object | undefined;
+    const delayed401 = new Promise<never>((_resolve, reject) => { rejectDelayed = reject; });
+    const oldApiAdapter = apiClient.defaults.adapter;
+    const oldAxiosAdapter = axios.defaults.adapter;
+    const delayedHeaders: string[] = [];
+    let refreshCalls = 0;
+    try {
+      apiClient.defaults.adapter = async (config) => {
+        const authorization = String(config.headers?.Authorization ?? '');
+        if (config.url === '/first' && authorization === 'Bearer access-a') {
+          return Promise.reject({ config, response: { status: 401 } });
+        }
+        if (config.url === '/second' && authorization === 'Bearer access-a') {
+          delayedConfig = config;
+          return delayed401;
+        }
+        if (config.url === '/second') delayedHeaders.push(authorization);
+        return ok(config, { ok: true });
+      };
+      axios.defaults.adapter = async () => {
+        refreshCalls += 1;
+        return refreshGate.promise as never;
+      };
+
+      const first = apiClient.get('/first');
+      const second = apiClient.get('/second');
+      while (refreshCalls === 0) await Promise.resolve();
+      refreshGate.resolve({
+        data: { success: true, data: { accessToken: 'access-a2' } },
+        status: 200,
+        statusText: 'OK',
+        headers: {},
+        config: {},
+      });
+      await first;
+      rejectDelayed({ config: delayedConfig, response: { status: 401 } });
+      await second;
+
+      assert.equal(refreshCalls, 1);
+      assert.deepEqual(delayedHeaders, ['Bearer access-a2']);
+    } finally {
+      apiClient.defaults.adapter = oldApiAdapter;
+      axios.defaults.adapter = oldAxiosAdapter;
+      clearTokens();
+    }
+  });
+});
+
+test('a public 401 never refreshes or clears the browser session', async () => {
+  await withStorage(createStorage(), async () => {
+    storeTokens({ accessToken: 'access-a', refreshToken: 'refresh-a' });
+    const oldPublicAdapter = publicApiClient.defaults.adapter;
+    const oldAxiosAdapter = axios.defaults.adapter;
+    let refreshCalls = 0;
+    try {
+      publicApiClient.defaults.adapter = async (config) => Promise.reject({ config, response: { status: 401 } });
+      axios.defaults.adapter = async () => {
+        refreshCalls += 1;
+        return ok({}, { success: true, data: { accessToken: 'not-used' } });
+      };
+
+      await publicApiClient.get('/public-otp').catch(() => undefined);
+
+      assert.equal(refreshCalls, 0);
+      assert.equal(getAccessToken(), 'access-a');
+    } finally {
+      publicApiClient.defaults.adapter = oldPublicAdapter;
+      axios.defaults.adapter = oldAxiosAdapter;
+      clearTokens();
+    }
+  });
+});
