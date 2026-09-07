@@ -7,7 +7,7 @@
 'use client';
 
 import { useState, useEffect } from 'react';
-import { BarChart3, CreditCard, LayoutDashboard, LifeBuoy, Puzzle, Settings, ShoppingBag, Tag, Code, Key, Copy, Check, BookOpen, Webhook, CheckCircle2, AlertCircle } from 'lucide-react';
+import { BarChart3, CreditCard, LayoutDashboard, LifeBuoy, Puzzle, Settings, ShoppingBag, Tag, Code, Key, Copy, Check, Webhook, CheckCircle2, AlertCircle } from 'lucide-react';
 import ProtectedRoute from '@/components/ProtectedRoute';
 import { useAuth } from '@/contexts/AuthContext';
 import { Button } from '@/components/ui/button';
@@ -82,7 +82,6 @@ export default function VendorIntegrationPage() {
 
     // Get API base URL
     const apiBaseUrl = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:5001';
-    const webAppUrl = typeof window !== 'undefined' ? window.location.origin : '';
 
     useEffect(() => {
         fetchIntegrationData();
@@ -480,160 +479,10 @@ export default function VendorIntegrationPage() {
 
                             <div className="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm">
                                 <h2 className="mb-4 text-lg font-semibold text-slate-900">Widget Integration</h2>
-                                <p className="mb-6 text-sm text-slate-600">
-                                    Add the Awoof verification widget to your website to verify students and apply discounts.
+                                <p className="text-sm text-slate-600">
+                                    Widget integration is not yet available. Installation instructions will appear here
+                                    when student verification and discount redemption are ready for merchant use.
                                 </p>
-
-                                <div className="space-y-6">
-                                    <div>
-                                        <h3 className="mb-2 font-semibold text-slate-900">Step 1: Add Widget Script</h3>
-                                        <p className="mb-3 text-sm text-slate-600">
-                                            Add this script tag to your website&apos;s HTML, preferably in the <code className="rounded bg-slate-100 px-1 py-0.5 text-xs">&lt;head&gt;</code> section:
-                                        </p>
-                                        <div className="flex gap-2">
-                                            <Input
-                                                value='<script src="https://widget.awoof.com/awoof.js"></script>'
-                                                readOnly
-                                                className="flex-1 font-mono text-xs"
-                                            />
-                                            <Button
-                                                type="button"
-                                                variant="outline"
-                                                size="sm"
-                                                onClick={() => copyToClipboard(
-                                                    '<script src="https://widget.awoof.com/awoof.js"></script>',
-                                                    'widget-script'
-                                                )}
-                                            >
-                                                {copiedText === 'widget-script' ? (
-                                                    <Check className="h-4 w-4" />
-                                                ) : (
-                                                    <Copy className="h-4 w-4" />
-                                                )}
-                                            </Button>
-                                        </div>
-                                    </div>
-
-                                    <div>
-                                        <h3 className="mb-2 font-semibold text-slate-900">Step 2: Initialize and verify</h3>
-                                        <p className="mb-3 text-sm text-slate-600">
-                                            Initialize the widget with your API key and web app URL, then call verify to open the student verification flow:
-                                        </p>
-                                        <div className="relative">
-                                            <pre className="overflow-x-auto rounded-lg bg-slate-900 p-4 text-xs text-slate-100">
-                                                {`// After script loads, initialize once (e.g. on page load)
-Awoof.init({
-  apiKey: 'YOUR_WIDGET_API_KEY',  // From Widget settings above
-  apiBaseUrl: '${apiBaseUrl}',  // Your backend API URL
-  webAppUrl: '${webAppUrl}',   // Awoof web app (for verification iframe)
-  onSuccess: (token, data) => {
-    applyStudentDiscount();
-    window.verificationToken = token;
-  },
-  onError: (err) => console.error('Verification error', err),
-  onCancel: () => console.log('User closed verification'),
-});
-
-// When user clicks "Verify student" (e.g. on checkout)
-function onVerifyStudentClick() {
-  Awoof.verify();
-}`}
-                                            </pre>
-                                            <Button
-                                                type="button"
-                                                variant="outline"
-                                                size="sm"
-                                                className="absolute right-2 top-2"
-                                                onClick={() => copyToClipboard(
-                                                    `Awoof.init({
-  apiKey: 'YOUR_WIDGET_API_KEY',
-  apiBaseUrl: '${apiBaseUrl}',
-  webAppUrl: '${webAppUrl}',
-  onSuccess: (token) => { applyStudentDiscount(); window.verificationToken = token; },
-  onError: (err) => console.error(err),
-});
-function onVerifyStudentClick() { Awoof.verify(); }`,
-                                                    'widget-code'
-                                                )}
-                                            >
-                                                {copiedText === 'widget-code' ? (
-                                                    <Check className="h-4 w-4" />
-                                                ) : (
-                                                    <Copy className="h-4 w-4" />
-                                                )}
-                                            </Button>
-                                        </div>
-                                        <p className="mt-2 text-xs text-slate-500">Add your site&apos;s domain in &quot;Allowed domains&quot; above first, or the widget will show an error.</p>
-                                    </div>
-
-                                    <div>
-                                        <h3 className="mb-2 font-semibold text-slate-900">Step 3: Apply Discount</h3>
-                                        <p className="mb-3 text-sm text-slate-600">
-                                            After successful verification, apply the student discount:
-                                        </p>
-                                        <div className="relative">
-                                            <pre className="overflow-x-auto rounded-lg bg-slate-900 p-4 text-xs text-slate-100">
-                                                {`function applyStudentDiscount() {
-  // Calculate discount (e.g., 10% off)
-  const discountPercent = 10;
-  const originalPrice = getCartTotal();
-  const discountAmount = originalPrice * (discountPercent / 100);
-  const finalPrice = originalPrice - discountAmount;
-  
-  // Update cart with discounted price
-  updateCartPrice(finalPrice);
-  
-  // Show discount message
-  showMessage('Student discount applied!');
-}`}
-                                            </pre>
-                                            <Button
-                                                type="button"
-                                                variant="outline"
-                                                size="sm"
-                                                className="absolute right-2 top-2"
-                                                onClick={() => copyToClipboard(
-                                                    `function applyStudentDiscount() {
-  // Calculate discount (e.g., 10% off)
-  const discountPercent = 10;
-  const originalPrice = getCartTotal();
-  const discountAmount = originalPrice * (discountPercent / 100);
-  const finalPrice = originalPrice - discountAmount;
-  
-  // Update cart with discounted price
-  updateCartPrice(finalPrice);
-  
-  // Show discount message
-  showMessage('Student discount applied!');
-}`,
-                                                    'discount-code'
-                                                )}
-                                            >
-                                                {copiedText === 'discount-code' ? (
-                                                    <Check className="h-4 w-4" />
-                                                ) : (
-                                                    <Copy className="h-4 w-4" />
-                                                )}
-                                            </Button>
-                                        </div>
-                                    </div>
-
-                                    <div className="rounded-lg bg-blue-50 p-4">
-                                        <div className="flex items-start gap-2">
-                                            <BookOpen className="mt-0.5 h-5 w-5 text-blue-600" />
-                                            <div>
-                                                <h3 className="font-semibold text-blue-900">Need More Help?</h3>
-                                                <p className="mt-1 text-sm text-blue-800">
-                                                    Check out our{' '}
-                                                    <a href="/docs/widget" className="underline hover:text-blue-900">
-                                                        widget documentation
-                                                    </a>{' '}
-                                                    for advanced configuration options and examples.
-                                                </p>
-                                            </div>
-                                        </div>
-                                    </div>
-                                </div>
                             </div>
                         </div>
                     )}

@@ -15,6 +15,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
 
       - name: Setup Node.js
         uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
@@ -27,16 +29,19 @@ jobs:
             apps/backend/package-lock.json
             apps/widget/package-lock.json
 
+      - name: Test deployment safeguards
+        run: node --test scripts/deployment-gate.test.mjs
+
       - name: Install root dependencies
-        run: npm ci --ignore-scripts || npm install
+        run: npm ci --ignore-scripts
 
       - name: Install web dependencies
         working-directory: apps/web
-        run: npm ci || npm install
+        run: npm ci
 
       - name: Install backend dependencies
         working-directory: apps/backend
-        run: npm ci || npm install
+        run: npm ci
 
       - name: Install widget dependencies
         working-directory: apps/widget
@@ -62,6 +67,14 @@ jobs:
         working-directory: apps/backend
         run: npm test
 
+      - name: Test PostgreSQL authority and migration regressions
+        working-directory: apps/backend
+        run: POSTGRES_BIN_DIR="$(pg_config --bindir)" npm run test:postgres
+
+      - name: Test web session and marketplace policies
+        working-directory: apps/web
+        run: npm run test:auth
+
       - name: Build widget
         working-directory: apps/widget
         run: npm run build
@@ -72,6 +85,8 @@ jobs:
     needs: lint-and-typecheck
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
 
       - name: Setup Node.js
         uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
@@ -85,7 +100,7 @@ jobs:
 
       - name: Install dependencies
         working-directory: apps/web
-        run: npm ci || npm install
+        run: npm ci
 
       - name: Build
         working-directory: apps/web
@@ -99,6 +114,8 @@ jobs:
     needs: lint-and-typecheck
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
 
       - name: Setup Node.js
         uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
@@ -112,7 +129,7 @@ jobs:
 
       - name: Install dependencies
         working-directory: apps/backend
-        run: npm ci || npm install
+        run: npm ci
 
       - name: Build
         working-directory: apps/backend

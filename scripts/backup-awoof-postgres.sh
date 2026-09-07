@@ -15,8 +15,8 @@ case "$max_files:$minimum_free_percent" in
     *[!0-9:]*|:*|*:) echo "Backup limits must be positive integers." >&2; exit 1 ;;
 esac
 
-if [ "$max_files" -lt 1 ] || [ "$minimum_free_percent" -lt 1 ]; then
-    echo "Backup limits must be positive integers." >&2
+if [ "$max_files" -lt 1 ] || [ "$minimum_free_percent" -lt 1 ] || [ "$minimum_free_percent" -gt 100 ]; then
+    echo "Backup count must be positive and minimum free percent must be between 1 and 100." >&2
     exit 1
 fi
 

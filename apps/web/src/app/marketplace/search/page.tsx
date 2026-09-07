@@ -5,7 +5,7 @@
 'use client';
 
 import { useState, useEffect, useCallback, useRef, Suspense } from 'react';
-import { useSearchParams } from 'next/navigation';
+import { useSearchParams, useRouter } from 'next/navigation';
 import { Search, ShoppingBag, ArrowLeft, Sparkles } from 'lucide-react';
 import { Input } from '@/components/ui/input';
 import { Button } from '@/components/ui/button';
@@ -19,6 +19,7 @@ import { StudentHeaderActions } from '@/components/student/StudentHeaderActions'
 
 function SearchContent() {
     const searchParams = useSearchParams();
+    const router = useRouter();
     const { user } = useAuth();
     const q = searchParams.get('q') || searchParams.get('search') || '';
     const categoryId = searchParams.get('categoryId') || '';
@@ -47,8 +48,16 @@ function SearchContent() {
             if (currentRequest !== requestId.current) return;
             const data = res.data?.data;
             const list: DealCardProduct[] = data?.products || [];
+            const resultTotal = data?.pagination?.total ?? list.length;
+            const lastPage = Math.max(1, Math.ceil(resultTotal / pageSize));
+            if (page > lastPage) {
+                const corrected = new URLSearchParams(window.location.search);
+                corrected.set('page', String(lastPage));
+                router.replace(`/marketplace/search?${corrected.toString()}`);
+                return;
+            }
             setProducts(list);
-            setTotal(data?.pagination?.total ?? list.length);
+            setTotal(resultTotal);
 
             if (catId) {
                 const fromProduct = list.find((p) => p.category_name)?.category_name;
@@ -77,7 +86,7 @@ function SearchContent() {
         } finally {
             if (currentRequest === requestId.current) setIsLoading(false);
         }
-    }, [dealType, page]);
+    }, [dealType, page, router]);
 
     useEffect(() => {
         setQuery(q);

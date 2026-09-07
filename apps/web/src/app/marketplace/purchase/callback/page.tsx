@@ -83,7 +83,7 @@ function PurchaseCallbackContent() {
                 )}
                 {status === 'requires_refund' && (
                     <p className="text-sm text-amber-700">
-                        This item became unavailable after payment. Your payment has been
+                        Your order could not be completed. Your payment has been
                         flagged for refund; please contact support with your transaction ID.
                     </p>
                 )}

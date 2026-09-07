@@ -18,7 +18,7 @@ export function StudentHeaderActions({
     const profileHref = user?.role === 'vendor'
         ? '/vendor/dashboard'
         : user?.role === 'admin'
-            ? '/admin'
+            ? '/admin/dashboard'
             : '/student/profile';
 
     return (

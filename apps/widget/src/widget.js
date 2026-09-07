@@ -137,7 +137,10 @@ function verify(verifyOpts = {}) {
   const modal = createModal({
     title: state.config.modalTitle,
     message: 'Loading verification…',
-    onClose: () => onCancel && onCancel(),
+    onClose: () => {
+      window.removeEventListener('message', handleMessage);
+      if (onCancel) onCancel();
+    },
   });
   modal.open();
   const iframe = document.createElement('iframe');

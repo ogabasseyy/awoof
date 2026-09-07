@@ -4,6 +4,8 @@
 
 'use client';
 
+import { redemptionUrl, dealUnavailable } from '@/lib/marketplace-policy';
+
 import { useState, useEffect } from 'react';
 import { useParams, useRouter } from 'next/navigation';
 import {
@@ -83,8 +85,15 @@ export default function ProductDetailPage() {
         if (!product) return;
 
         if (product.deal_type === 'voucher' || product.vendor_payment_method === 'vendor_website') {
-            if (product.vendor_website) {
-                window.open(product.vendor_website, '_blank', 'noopener,noreferrer');
+            const website = redemptionUrl(product.vendor_website);
+            if (website) {
+                if (user?.role === 'student') {
+                    // Start the history write before navigation; keep the new tab
+                    // synchronous with the click so popup blockers do not suppress it.
+                    void apiClient.post('/students/website-visits', { productId, url: website })
+                        .catch(() => toast.error('The visit could not be saved to your history.'));
+                }
+                window.open(website, '_blank', 'noopener,noreferrer');
             } else {
                 toast.error('This vendor has not configured a redemption website yet.');
             }
@@ -124,7 +133,7 @@ export default function ProductDetailPage() {
     const savings = product ? product.price - product.student_price : 0;
     const isExternal =
         product?.deal_type === 'voucher' || product?.vendor_payment_method === 'vendor_website';
-    const isUnavailable = !isExternal && product?.stock === 0;
+    const isUnavailable = dealUnavailable(product);
 
     const avatarLetter = (() => {
         const profile = (user as { profile?: { name?: string } } | null)?.profile;

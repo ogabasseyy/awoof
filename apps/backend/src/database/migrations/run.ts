@@ -133,6 +133,20 @@ export async function runMigrations(): Promise<void> {
 
         appLogger.info(`Found ${pendingMigrations.length} pending migration(s)\n`);
 
+        // Fail before any upgrade mutation when the historical reporting data cannot
+        // satisfy 026. Never silently delete or merge paid-order records.
+        if (pendingMigrations.some((path) => basename(path) === '026_unique_vendor_payment_reference.sql')) {
+            const columns = await db.query(`SELECT 1 FROM information_schema.columns
+                WHERE table_schema = current_schema() AND table_name = 'transactions'
+                  AND column_name = 'vendor_payment_reference'`);
+            if (columns.rows.length) {
+                const duplicates = await db.query(`SELECT 1 FROM transactions
+                    WHERE vendor_payment_reference IS NOT NULL AND vendor_id IS NOT NULL
+                    GROUP BY vendor_id, vendor_payment_reference HAVING COUNT(*) > 1 LIMIT 1`);
+                if (duplicates.rows.length) throw new Error('Reconcile duplicate vendor payment references before applying migration 026; no migration changes were applied.');
+            }
+        }
+
         // Execute pending migrations in order
         for (const fullPath of pendingMigrations) {
             await executeMigration(fullPath);

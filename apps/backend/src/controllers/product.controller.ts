@@ -410,18 +410,19 @@ export class ProductController {
             throw new BadRequestError('No fields to update');
         }
 
-        values.push(productId, vendorId);
+        values.push(productId, vendorId, validated.price ?? null, validated.studentPrice ?? null);
         const result = await db.query(
             `UPDATE products 
              SET ${updates.join(', ')}, updated_at = CURRENT_TIMESTAMP
              WHERE id = $${paramCount} AND vendor_id = $${paramCount + 1} AND deleted_at IS NULL
+               AND COALESCE($${paramCount + 3}::numeric, student_price) <= COALESCE($${paramCount + 2}::numeric, price)
              RETURNING id, name, description, price, student_price, category_id, 
                        image_url, api_id, stock, status, deal_type, created_at, updated_at`,
             values
         );
 
         if (result.rows.length === 0) {
-            throw new NotFoundError('Product not found');
+            throw new BadRequestError('Product changed or student price exceeds the regular price');
         }
 
         success(res, {

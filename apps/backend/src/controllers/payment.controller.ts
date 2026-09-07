@@ -15,7 +15,7 @@ import { success } from '../common/utils/response.js';
 import { appLogger } from '../common/logger.js';
 import type { AuthRequest } from '../middleware/auth.middleware.js';
 import { z } from 'zod';
-import crypto from 'crypto';
+import { rotateReportingKey } from '../services/auth/reporting-key.service.js';
 import { validateAndConsumeToken } from '../services/verification/verification-token.service.js';
 import {
     createPaystackSubaccount,
@@ -539,40 +539,7 @@ export class PaymentController {
             throw new NotFoundError('Vendor profile not found');
         }
 
-        const vendorId = vendorResult.rows[0].id;
-
-        // Check if vendor already has an active API key
-        const existingKeyResult = await db.query(
-            `SELECT id, key_hash FROM api_keys 
-             WHERE vendor_id = $1 AND status = 'active' 
-             ORDER BY created_at DESC LIMIT 1`,
-            [vendorId]
-        );
-
-        // Generate new API key and hash with high computational cost (CodeQL: sufficient effort)
-        const apiKey = `awoof_${crypto.randomBytes(32).toString('hex')}`;
-        const salt = crypto.randomBytes(16);
-        const hashHex = crypto.pbkdf2Sync(apiKey, salt, 100000, 32, 'sha256').toString('hex');
-        const saltHex = salt.toString('hex');
-        const keyHashStored = `${hashHex}:${saltHex}`;
-        const lookupHash = crypto.createHash('sha256').update(apiKey).digest('hex');
-
-        // If there's an existing key, revoke it
-        if (existingKeyResult.rows.length > 0) {
-            await db.query(
-                `UPDATE api_keys 
-                 SET status = 'revoked', updated_at = CURRENT_TIMESTAMP
-                 WHERE id = $1`,
-                [existingKeyResult.rows[0].id]
-            );
-        }
-
-        // Create new API key (key_hash stores "hash:salt" for verification)
-        await db.query(
-            `INSERT INTO api_keys (vendor_id, key_hash, lookup_hash, name, rate_limit, status)
-             VALUES ($1, $2, $3, $4, $5, 'active')`,
-            [vendorId, keyHashStored, lookupHash, 'Transaction Reporting API Key', 1000]
-        );
+        const apiKey = await rotateReportingKey(getPool(), req.user.userId);
 
         // Return the API key (only shown once)
         success(res, {
