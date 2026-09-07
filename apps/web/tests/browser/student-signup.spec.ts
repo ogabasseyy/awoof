@@ -5,6 +5,7 @@ import {
   createGate,
   fixtureUniversities,
   installSessionReadControl,
+  installSessionStorageEventSuppression,
   installSessionWriteControl,
   installSyntheticApi,
   replaceSession,
@@ -13,6 +14,7 @@ import {
   storageTabPath,
   studentSignupTestData,
   writeTaggedSignedOutAction,
+  writeUnobservedActiveThenTaggedSignedOutAction,
 } from './fixtures';
 
 const {
@@ -54,7 +56,28 @@ function preflightResponse(verificationNotice = notice, supported = true) {
   } as const;
 }
 
-function signupReceipt(challenge = challengeId, resendAvailableAt = new Date(Date.now() - 1_000).toISOString()) {
+type SignupRequestBody = {
+  email: string;
+  password: string;
+  name: string;
+  universityId: string;
+  matricNumber: string | null;
+  verificationConsent: true;
+  noticeVersion: string;
+};
+
+type SignupReceiptOverrides = Partial<{
+  email: string;
+  challengeId: string;
+  expiresAt: string;
+  resendAvailableAt: string;
+}>;
+
+function signupReceipt(
+  challenge = challengeId,
+  resendAvailableAt = new Date(Date.now() - 1_000).toISOString(),
+  overrides: SignupReceiptOverrides = {},
+) {
   return {
     success: true,
     data: {
@@ -62,11 +85,12 @@ function signupReceipt(challenge = challengeId, resendAvailableAt = new Date(Dat
       challengeId: challenge,
       expiresAt: new Date(Date.now() + 600_000).toISOString(),
       resendAvailableAt,
+      ...overrides,
     },
   };
 }
 
-function requestBody() {
+function requestBody(overrides: Partial<SignupRequestBody> = {}): SignupRequestBody {
   return {
     email,
     password,
@@ -75,11 +99,12 @@ function requestBody() {
     matricNumber: null,
     verificationConsent: true,
     noticeVersion: notice.version,
+    ...overrides,
   };
 }
 
-function confirmationBody(challenge = challengeId, proof = validOtp) {
-  return { ...requestBody(), challengeId: challenge, otp: proof };
+function confirmationBody(challenge = challengeId, proof = validOtp, overrides: Partial<SignupRequestBody> = {}) {
+  return { ...requestBody(overrides), challengeId: challenge, otp: proof };
 }
 
 function confirmationResponse() {
@@ -100,6 +125,20 @@ async function enterOtp(page: Page): Promise<void> {
   await consent.check();
   await page.getByRole('button', { name: 'Continue', exact: true }).click();
   await expect(page.getByLabel('Verification Code', { exact: true })).toBeFocused();
+}
+
+async function runNextAnimationFrameBeforeReactCommit(page: Page): Promise<void> {
+  await page.evaluate(() => {
+    const original = window.requestAnimationFrame.bind(window);
+    let intercepted = false;
+    window.requestAnimationFrame = ((callback: FrameRequestCallback): number => {
+      if (intercepted) return original(callback);
+      intercepted = true;
+      window.requestAnimationFrame = original;
+      callback(performance.now());
+      return 0;
+    }) as typeof window.requestAnimationFrame;
+  });
 }
 
 async function pasteOtp(page: Page, value = validOtp): Promise<void> {
@@ -225,25 +264,105 @@ test('request freezes canonical claims, enters the proof step, and keeps the bro
   await assertCleanFixture(api, faults);
 });
 
-test('malformed request receipts keep the editable details phase and never start confirmation', async ({ page }) => {
-  const malformedReceipt = { ...signupReceipt(), data: { ...signupReceipt().data, challengeId: 'not-a-uuid' } };
+test('committed OTP input receives focus when the original animation frame arrives before React commits', async ({ page }) => {
+  const heldRequest = createGate('precommit student OTP focus');
   const api = await installSyntheticApi(page, {
     signup: {
       preflight: [preflightResponse()],
-      request: [{ response: { status: 200, body: malformedReceipt }, expectedBody: requestBody() }],
+      request: [{ response: { status: 200, body: signupReceipt() }, gate: heldRequest, expectedBody: requestBody() }],
+    },
+  });
+  const faults = collectBrowserFaults(page, api);
+  try {
+    await page.goto('/auth/student/register');
+    await fillDetails(page);
+    await page.getByRole('checkbox', { name: 'I agree to student verification processing' }).check();
+    await page.getByRole('button', { name: 'Continue', exact: true }).click();
+    await api.waitForSignupStarted('request', 1);
+    await runNextAnimationFrameBeforeReactCommit(page);
+    heldRequest.release();
+    await expect(page.getByLabel('Verification Code', { exact: true })).toBeFocused();
+  } finally {
+    heldRequest.release();
+  }
+  expect(api.signupRequests.filter((request) => request.endpoint === 'request').every((request) => request.matchesExpectedBody)).toBe(true);
+  expect(await hasActiveSession(page)).toBe(false);
+  expect(api.refreshCalls).toBe(0);
+  expectSafePublicRequests(api);
+  await assertCleanFixture(api, faults);
+});
+
+test('Back focuses the committed email input when the original animation frame arrives before details remount', async ({ page }) => {
+  const api = await installSyntheticApi(page, {
+    signup: {
+      preflight: [preflightResponse()],
+      request: [{ response: { status: 200, body: signupReceipt() }, expectedBody: requestBody() }],
     },
   });
   const faults = collectBrowserFaults(page, api);
   await page.goto('/auth/student/register');
-  await fillDetails(page);
-  await page.getByRole('checkbox', { name: 'I agree to student verification processing' }).check();
-  await page.getByRole('button', { name: 'Continue', exact: true }).click();
-  await expect(page.locator('#signup-flow-error')).toContainText(/could not start/i);
-  await expect(page.getByLabel('Student Email', { exact: true })).toBeVisible();
-  expect(api.signupRequests.filter((request) => request.endpoint === 'confirm')).toHaveLength(0);
+  await enterOtp(page);
+  await runNextAnimationFrameBeforeReactCommit(page);
+  await page.getByRole('button', { name: 'Back', exact: true }).click();
+  await expect(page.getByLabel('Student Email', { exact: true })).toBeFocused();
+  expect(api.signupRequests.filter((request) => request.endpoint === 'request')).toHaveLength(1);
+  expect(await hasActiveSession(page)).toBe(false);
   expect(api.refreshCalls).toBe(0);
   await assertCleanFixture(api, faults);
 });
+
+test('initial details support updates do not steal focus without a focus intent', async ({ page }) => {
+  const heldPreflight = createGate('initial details support');
+  const api = await installSyntheticApi(page, {
+    signup: {
+      preflight: [{ ...preflightResponse(), gate: heldPreflight }],
+    },
+  });
+  const faults = collectBrowserFaults(page, api);
+  try {
+    await page.goto('/auth/student/register');
+    await fillDetails(page);
+    await api.waitForSignupStarted('preflight', 1);
+    const passwordField = page.getByLabel('Password', { exact: true });
+    await passwordField.focus();
+    heldPreflight.release();
+    await expect(page.getByText(notice.text, { exact: true })).toBeVisible();
+    await expect(passwordField).toBeFocused();
+  } finally {
+    heldPreflight.release();
+  }
+  expect(api.signupRequests.filter((request) => request.endpoint !== 'preflight')).toHaveLength(0);
+  await assertCleanFixture(api, faults);
+});
+
+for (const scenario of [
+  { name: 'malformed challenge UUID', receipt: () => signupReceipt('not-a-uuid') },
+  { name: 'wrong mailbox', receipt: () => signupReceipt(challengeId, undefined, { email: changedEmail }) },
+  { name: 'invalid expiry date', receipt: () => signupReceipt(challengeId, undefined, { expiresAt: 'not-a-date' }) },
+  { name: 'invalid resend date', receipt: () => signupReceipt(challengeId, undefined, { resendAvailableAt: 'not-a-date' }) },
+] as const) {
+  test(`${scenario.name} receipt keeps the editable details phase and never starts confirmation`, async ({ page }) => {
+    const api = await installSyntheticApi(page, {
+      signup: {
+        preflight: [preflightResponse()],
+        request: [{ response: { status: 200, body: scenario.receipt() }, expectedBody: requestBody() }],
+      },
+    });
+    const faults = collectBrowserFaults(page, api);
+    await page.goto('/auth/student/register');
+    await fillDetails(page);
+    await page.getByRole('checkbox', { name: 'I agree to student verification processing' }).check();
+    await page.getByRole('button', { name: 'Continue', exact: true }).click();
+    await expect(page.locator('#signup-flow-error')).toContainText(/could not start/i);
+    await expect(page.getByLabel('Student Email', { exact: true })).toBeVisible();
+    expect(api.signupRequests.filter((request) => request.endpoint === 'confirm')).toHaveLength(0);
+    expect(api.signupRequests.every((request) => request.matchesExpectedBody)).toBe(true);
+    expect(await hasActiveSession(page)).toBe(false);
+    expect(api.refreshCalls).toBe(0);
+    expectSafePublicRequests(api);
+    await assertCleanFixture(api, faults);
+  });
+}
 
 test('a pasted six-digit rejected proof stays local without refresh', async ({ page }) => {
   const api = await installSyntheticApi(page, {
@@ -342,6 +461,67 @@ for (const scenario of [
       .toHaveAttribute('href', '/auth/student/login?redirect=%2Fmarketplace%3Fsource%3Dwidget');
     expect(await hasActiveSession(page)).toBe(false);
     expect(api.signupRequests.filter((request) => request.endpoint === 'confirm')).toHaveLength(1);
+    expect(api.refreshCalls).toBe(0);
+    expectSafePublicRequests(api);
+    await assertCleanFixture(api, faults);
+  });
+}
+
+for (const scenario of [
+  {
+    name: 'malformed201 confirmation',
+    response: { status: 201, body: { success: true, data: {} } },
+  },
+  {
+    name: 'outer-success-false201 confirmation',
+    response: { status: 201, body: { ...confirmationResponse(), success: false } },
+  },
+  {
+    name: 'wrong-role201 confirmation',
+    response: (() => {
+      const response = confirmationResponse();
+      return {
+        status: 201,
+        body: { ...response, data: { ...response.data, user: { ...response.data.user, role: 'vendor' } } },
+      };
+    })(),
+  },
+  {
+    name: 'wrong-mailbox201 confirmation',
+    response: (() => {
+      const response = confirmationResponse();
+      return {
+        status: 201,
+        body: { ...response, data: { ...response.data, user: { ...response.data.user, email: changedEmail } } },
+      };
+    })(),
+  },
+  {
+    name: 'transport-failed confirmation',
+    response: { transportFailure: true },
+  },
+] as const) {
+  test(`${scenario.name} offers only uncertain signup recovery`, async ({ page }) => {
+    const api = await installSyntheticApi(page, {
+      signup: {
+        preflight: [preflightResponse()],
+        request: [{ response: { status: 200, body: signupReceipt() }, expectedBody: requestBody() }],
+        confirm: [{ response: scenario.response, expectedBody: confirmationBody() }],
+      },
+    });
+    const faults = collectBrowserFaults(page, api);
+    await page.goto('/auth/student/register?redirect=%2Fmarketplace%3Fsource%3Dwidget');
+    await enterOtp(page);
+    await page.getByLabel('Verification Code', { exact: true }).fill(validOtp);
+    await page.getByRole('button', { name: 'Create Account', exact: true }).click();
+    await expect(page.locator('#signup-recovery-error')).toContainText(/could not confirm whether/i);
+    await expect(page.getByRole('link', { name: 'Sign in', exact: true }).last())
+      .toHaveAttribute('href', '/auth/student/login?redirect=%2Fmarketplace%3Fsource%3Dwidget');
+    await expect(page).toHaveURL(/\/auth\/student\/register\?redirect=%2Fmarketplace%3Fsource%3Dwidget$/);
+    expect(await hasActiveSession(page)).toBe(false);
+    expect(api.signupRequests.filter((request) => request.endpoint === 'request')).toHaveLength(1);
+    expect(api.signupRequests.filter((request) => request.endpoint === 'confirm')).toHaveLength(1);
+    expect(api.signupRequests.every((request) => request.matchesExpectedBody)).toBe(true);
     expect(api.refreshCalls).toBe(0);
     expectSafePublicRequests(api);
     await assertCleanFixture(api, faults);
@@ -463,45 +643,69 @@ test('a server-provided resend deadline re-enables the control without another i
 for (const scenario of [
   {
     name: 'rate-limit response',
-    response: { status: 429, body: { success: false, error: { details: { retryAt: new Date(Date.now() + 600_000).toISOString() } } } },
-    expectDisabled: true,
+    failedResponse: () => ({
+      status: 429,
+      body: { success: false, error: { details: { retryAt: new Date(Date.now() + 2_000).toISOString() } } },
+    }),
+    waitsForServerDeadline: true,
   },
   {
     name: 'ambiguous server failure',
-    response: { status: 503, body: { success: false, error: { code: 'SERVICE_UNAVAILABLE' } } },
-    expectDisabled: false,
+    failedResponse: () => ({ status: 503, body: { success: false, error: { code: 'SERVICE_UNAVAILABLE' } } }),
+    waitsForServerDeadline: false,
   },
   {
     name: 'transport failure',
-    response: { transportFailure: true },
-    expectDisabled: false,
+    failedResponse: () => ({ transportFailure: true } as const),
+    waitsForServerDeadline: false,
   },
 ] as const) {
-  test(`failed resend after ${scenario.name} discards the old proof`, async ({ page }) => {
+  test(`failed resend after ${scenario.name} discards proof and recovers only through an explicit new request`, async ({ page }) => {
+    const failedResponse = scenario.failedResponse();
     const api = await installSyntheticApi(page, {
       signup: {
         preflight: [preflightResponse()],
         request: [
           { response: { status: 200, body: signupReceipt() }, expectedBody: requestBody() },
-          { response: scenario.response, expectedBody: requestBody() },
+          { response: failedResponse, expectedBody: requestBody() },
+          { response: { status: 200, body: signupReceipt(replacementChallengeId) }, expectedBody: requestBody() },
         ],
+        confirm: [{ response: { status: 401, body: { success: false, error: { code: 'INVALID_PROOF' } } }, expectedBody: confirmationBody(replacementChallengeId) }],
       },
     });
     const faults = collectBrowserFaults(page, api);
     await page.goto('/auth/student/register');
     await enterOtp(page);
     const otp = page.getByLabel('Verification Code', { exact: true });
+    const resend = page.getByRole('button', { name: 'Resend code', exact: true });
+    const confirmation = page.getByRole('button', { name: 'Create Account', exact: true });
     await otp.fill(validOtp);
-    await page.getByRole('button', { name: 'Resend code', exact: true }).click();
+    await resend.click();
     await expect(page.locator('#signup-flow-error')).toContainText(/could not|wait/i);
     await expect.poll(async () => (await otp.inputValue()) === '').toBe(true);
-    await expect(page.getByRole('button', { name: 'Create Account', exact: true })).toBeDisabled();
-    if (scenario.expectDisabled) {
-      await expect(page.getByRole('button', { name: 'Resend code', exact: true })).toBeDisabled();
+    await expect(confirmation).toBeDisabled();
+    await expect(page.getByText('A new verification code was sent. Check your email.', { exact: true })).toHaveCount(0);
+    await expect(page.locator('#signup-recovery-error')).toHaveCount(0);
+    expect(api.signupRequests.filter((request) => request.endpoint === 'request')).toHaveLength(2);
+    if (scenario.waitsForServerDeadline) {
+      await expect(resend).toBeDisabled();
+      await expect(resend).toBeEnabled({ timeout: 5_000 });
+    } else {
+      await expect(resend).toBeEnabled();
     }
     expect(api.signupRequests.filter((request) => request.endpoint === 'confirm')).toHaveLength(0);
+    await resend.click();
+    await expect(page.getByText('A new verification code was sent. Check your email.', { exact: true })).toBeVisible();
+    await expect(confirmation).toBeEnabled();
+    await otp.fill(validOtp);
+    await confirmation.click();
+    await expect(page.locator('#otp-error')).toContainText(/code|proof/i);
+    expect(api.signupRequests.filter((request) => request.endpoint === 'request')).toHaveLength(3);
+    expect(api.signupRequests.filter((request) => request.endpoint === 'request').every((request) => request.matchesExpectedBody)).toBe(true);
+    expect(api.signupRequests.filter((request) => request.endpoint === 'confirm').every((request) => request.matchesExpectedBody)).toBe(true);
     expect(api.refreshCalls).toBe(0);
     expect(await hasActiveSession(page)).toBe(false);
+    expectSafePublicRequests(api);
     await assertCleanFixture(api, faults);
   });
 }
@@ -603,6 +807,63 @@ test('Back cancels a held initial proof request and restores editable identity f
     heldRequest.release();
   }
   expect(api.refreshCalls).toBe(0);
+  await assertCleanFixture(api, faults);
+});
+
+test('Back edit and retry keeps an old request from replacing newer canonical proof claims', async ({ page }) => {
+  const heldRequest = createGate('held old student request before edited retry');
+  const changedClaims = {
+    email: changedEmail,
+    name: changedName,
+    noticeVersion: replacementNotice.version,
+  };
+  const api = await installSyntheticApi(page, {
+    signup: {
+      preflight: [preflightResponse(notice), preflightResponse(replacementNotice)],
+      request: [
+        { response: { status: 200, body: signupReceipt() }, gate: heldRequest, expectCancellation: true, expectedBody: requestBody() },
+        { response: { status: 200, body: signupReceipt(replacementChallengeId, undefined, { email: changedEmail }) }, expectedBody: requestBody(changedClaims) },
+      ],
+      confirm: [{ response: { status: 401, body: { success: false, error: { code: 'INVALID_PROOF' } } }, expectedBody: confirmationBody(replacementChallengeId, validOtp, changedClaims) }],
+    },
+  });
+  const faults = collectBrowserFaults(page, api);
+  try {
+    await page.goto('/auth/student/register');
+    await fillDetails(page);
+    await page.getByRole('checkbox', { name: 'I agree to student verification processing' }).check();
+    await page.getByRole('button', { name: 'Continue', exact: true }).click();
+    await api.waitForSignupStarted('request', 1);
+    await page.getByRole('button', { name: 'Back', exact: true }).click();
+    await api.waitForSignupNetworkFailed('request', 1);
+
+    await page.getByLabel('Full Name', { exact: true }).fill(changedName);
+    await page.getByLabel('Student Email', { exact: true }).fill(changedEmail);
+    await expect(page.getByText(replacementNotice.text, { exact: true })).toBeVisible();
+    const consent = page.getByRole('checkbox', { name: 'I agree to student verification processing' });
+    await expect(consent).not.toBeChecked();
+    await consent.check();
+    await page.getByRole('button', { name: 'Continue', exact: true }).click();
+    await api.waitForSignupStarted('request', 2);
+    const otp = page.getByLabel('Verification Code', { exact: true });
+    await expect(otp).toBeFocused();
+
+    heldRequest.release();
+    await api.waitForSignupRouteSettled('request', 1);
+    await expect(otp).toBeVisible();
+    await expect(page).toHaveURL(/\/auth\/student\/register$/);
+    await otp.fill(validOtp);
+    await page.getByRole('button', { name: 'Create Account', exact: true }).click();
+    await expect(page.locator('#otp-error')).toContainText(/code|proof/i);
+  } finally {
+    heldRequest.release();
+  }
+  expect(api.signupRequests.filter((request) => request.endpoint === 'request')).toHaveLength(2);
+  expect(api.signupRequests.filter((request) => request.endpoint === 'request').every((request) => request.matchesExpectedBody)).toBe(true);
+  expect(api.signupRequests.filter((request) => request.endpoint === 'confirm').every((request) => request.matchesExpectedBody)).toBe(true);
+  expect(await hasActiveSession(page)).toBe(false);
+  expect(api.refreshCalls).toBe(0);
+  expectSafePublicRequests(api);
   await assertCleanFixture(api, faults);
 });
 
@@ -726,13 +987,15 @@ for (const replacement of [
       await page.getByRole('button', { name: 'Create Account', exact: true }).click();
       await api.waitForSignupStarted('confirm', 1);
       await other.goto(storageTabPath);
-      await replacement.apply(other);
+      const newerEnvelope = await replacement.apply(other);
       heldConfirmation.release();
       await api.waitForSignupRouteSettled('confirm', 1);
       await expect(page.locator('#signup-flow-error')).toContainText(/signup stopped/i);
       await expect(page).toHaveURL(/\/auth\/student\/register/);
+      expect(await newerEnvelope.matches(page)).toBe(true);
       expect(await hasActiveSession(page)).toBe(replacement.activeAfter);
       expect(api.refreshCalls).toBe(0);
+      expectSafePublicRequests(api);
     } finally {
       heldConfirmation.release();
       await other.close();
@@ -740,6 +1003,42 @@ for (const replacement of [
     await assertCleanFixture(api, faults);
   });
 }
+
+test('a held confirmation fresh-reconciles an unobserved active-to-tagged signed-out replacement', async ({ page, context }) => {
+  await installSessionStorageEventSuppression(page);
+  const heldConfirmation = createGate('held confirmation before unobserved remote sign-out');
+  const api = await installSyntheticApi(page, {
+    signup: {
+      preflight: [preflightResponse()],
+      request: [{ response: { status: 200, body: signupReceipt() }, expectedBody: requestBody() }],
+      confirm: [{ response: { status: 201, body: confirmationResponse() }, gate: heldConfirmation, expectedBody: confirmationBody() }],
+    },
+  });
+  const faults = collectBrowserFaults(page, api);
+  const other = await context.newPage();
+  try {
+    await page.goto('/auth/student/register?redirect=%2Fmarketplace%3Fsource%3Dwidget');
+    await enterOtp(page);
+    await page.getByLabel('Verification Code', { exact: true }).fill(validOtp);
+    await page.getByRole('button', { name: 'Create Account', exact: true }).click();
+    await api.waitForSignupStarted('confirm', 1);
+    await other.goto(storageTabPath);
+    const newerEnvelope = await writeUnobservedActiveThenTaggedSignedOutAction(other);
+    await expect(page.getByLabel('Verification Code', { exact: true })).toBeVisible();
+    heldConfirmation.release();
+    await api.waitForSignupRouteSettled('confirm', 1);
+    await expect(page.locator('#signup-flow-error')).toContainText(/signup stopped/i);
+    await expect(page).toHaveURL(/\/auth\/student\/register/);
+    expect(await newerEnvelope.matches(page)).toBe(true);
+    expect(await hasActiveSession(page)).toBe(false);
+    expect(api.refreshCalls).toBe(0);
+    expectSafePublicRequests(api);
+  } finally {
+    heldConfirmation.release();
+    await other.close();
+  }
+  await assertCleanFixture(api, faults);
+});
 
 for (const viewport of [
   { name: 'desktop', width: 1280, height: 900 },

@@ -4,6 +4,7 @@ import {
     Suspense,
     useCallback,
     useEffect,
+    useLayoutEffect,
     useMemo,
     useRef,
     useState,
@@ -65,6 +66,12 @@ type ConsentBinding = Readonly<{ claims: StudentSignupClaims }>;
 type RecoveryState = Readonly<{
     message: string;
     signInPath: string;
+}>;
+
+type FocusIntent = Readonly<{
+    target: 'email' | 'otp';
+    phase: Extract<Phase, 'details' | 'otp'>;
+    submissionAttempt: number;
 }>;
 
 const canonicalEmailSchema = z.string().trim().toLowerCase().email();
@@ -137,6 +144,7 @@ function StudentRegisterInner() {
     const [retryAt, setRetryAt] = useState<number | null>(null);
     const [recovery, setRecovery] = useState<RecoveryState | null>(null);
     const [, setCooldownRefresh] = useState(0);
+    const [focusRevision, setFocusRevision] = useState(0);
     const mountedRef = useRef(false);
     const phaseRef = useRef<Phase>('details');
     const preflightAttemptRef = useRef(0);
@@ -148,6 +156,7 @@ function StudentRegisterInner() {
     const emailRef = useRef<HTMLInputElement | null>(null);
     const consentRef = useRef<HTMLInputElement | null>(null);
     const otpRef = useRef<HTMLInputElement | null>(null);
+    const focusIntentRef = useRef<FocusIntent | null>(null);
 
     const {
         register,
@@ -186,6 +195,11 @@ function StudentRegisterInner() {
         setPending(next);
     }, []);
 
+    const requestCommittedFocus = useCallback((target: FocusIntent['target'], nextPhase: FocusIntent['phase'], submissionAttempt: number): void => {
+        focusIntentRef.current = { target, phase: nextPhase, submissionAttempt };
+        setFocusRevision((revision) => revision + 1);
+    }, []);
+
     const cancelPreflight = useCallback((): void => {
         preflightAttemptRef.current += 1;
         preflightControllerRef.current?.abort();
@@ -196,6 +210,7 @@ function StudentRegisterInner() {
         submissionAttemptRef.current += 1;
         submissionControllerRef.current?.abort();
         submissionControllerRef.current = null;
+        focusIntentRef.current = null;
         setIsRequesting(false);
         setIsConfirming(false);
         setIsResending(false);
@@ -216,8 +231,23 @@ function StudentRegisterInner() {
             submissionAttemptRef.current += 1;
             submissionControllerRef.current?.abort();
             pendingRef.current = null;
+            focusIntentRef.current = null;
         };
     }, []);
+
+    useLayoutEffect(() => {
+        const intent = focusIntentRef.current;
+        if (!intent
+            || !mountedRef.current
+            || phase !== intent.phase
+            || phaseRef.current !== intent.phase
+            || submissionAttemptRef.current !== intent.submissionAttempt) return;
+
+        const target = intent.target === 'email' ? emailRef.current : otpRef.current;
+        if (!target) return;
+        focusIntentRef.current = null;
+        target.focus();
+    }, [focusRevision, phase]);
 
     useEffect(() => {
         clearConsent();
@@ -346,9 +376,7 @@ function StudentRegisterInner() {
             updatePending({ ...frozen, receipt });
             setRetryAt(Date.parse(receipt.resendAvailableAt));
             changePhase('otp');
-            requestAnimationFrame(() => {
-                if (mountedRef.current && phaseRef.current === 'otp') otpRef.current?.focus();
-            });
+            requestCommittedFocus('otp', 'otp', attempt);
         } catch (error: unknown) {
             if (!isCurrent()) return;
             updatePending(null);
@@ -363,6 +391,7 @@ function StudentRegisterInner() {
         changePhase,
         consentChecked,
         identity,
+        requestCommittedFocus,
         support,
         updatePending,
     ]);
@@ -526,10 +555,8 @@ function StudentRegisterInner() {
         setRecovery(null);
         changePhase('details');
         setSupportRevision((revision) => revision + 1);
-        requestAnimationFrame(() => {
-            if (mountedRef.current && phaseRef.current === 'details') emailRef.current?.focus();
-        });
-    }, [cancelPreflight, cancelSubmission, changePhase, clearConsent, updatePending]);
+        requestCommittedFocus('email', 'details', submissionAttemptRef.current);
+    }, [cancelPreflight, cancelSubmission, changePhase, clearConsent, requestCommittedFocus, updatePending]);
 
     const supported = isCurrentSupport(support, identity) ? support : null;
     const canResend = !isRequesting

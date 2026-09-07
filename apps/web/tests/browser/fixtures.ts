@@ -201,6 +201,11 @@ export type ApiFixture = {
   assertNoUnexpectedRequests: () => void;
 };
 
+/** Keeps a protected synthetic envelope private while exposing only a boolean comparison. */
+export type StoredSessionExpectation = Readonly<{
+  matches: (page: Page) => Promise<boolean>;
+}>;
+
 type SessionWriteControlWindow = Window & {
   __awoofSessionWriteControl?: {
     setSignedOutMarkerDenied: (denied: boolean) => void;
@@ -253,6 +258,14 @@ function envelopeFor(
     ...tokensFor(role),
     ...tokenOverrides,
   };
+}
+
+function storedSessionExpectation(serialized: string): StoredSessionExpectation {
+  return Object.freeze({
+    matches: async (page: Page): Promise<boolean> => page.evaluate(({ key, expected }) => (
+      localStorage.getItem(key) === expected
+    ), { key: sessionKey, expected: serialized }),
+  });
 }
 
 function deferred(): Deferred {
@@ -929,10 +942,27 @@ export async function seedLegacySession(page: Page, role: TestRole): Promise<voi
   await seedOnce(page, { accessToken: tokens.accessToken, refreshToken: tokens.refreshToken });
 }
 
-export async function replaceSession(page: Page, role: TestSessionRole, sessionId?: string): Promise<void> {
-  await page.evaluate((session) => {
-    localStorage.setItem('awoof.session.v1', JSON.stringify(session));
-  }, envelopeFor(role, sessionId));
+export async function replaceSession(page: Page, role: TestSessionRole, sessionId?: string): Promise<StoredSessionExpectation> {
+  const serialized = JSON.stringify(envelopeFor(role, sessionId));
+  await page.evaluate(({ key, value }) => {
+    localStorage.setItem(key, value);
+  }, { key: sessionKey, value: serialized });
+  return storedSessionExpectation(serialized);
+}
+
+/**
+ * This isolated-page control prevents the app's storage subscription from
+ * observing a remote write. The confirmation path must therefore fresh-read
+ * local storage itself; disposing the test page restores normal behavior.
+ */
+export async function installSessionStorageEventSuppression(page: Page): Promise<void> {
+  await page.addInitScript(() => {
+    const originalAddEventListener = EventTarget.prototype.addEventListener;
+    window.addEventListener = ((type: string, listener: EventListenerOrEventListenerObject | null, options?: boolean | AddEventListenerOptions): void => {
+      if (type === 'storage') return;
+      originalAddEventListener.call(window, type, listener, options);
+    }) as typeof window.addEventListener;
+  });
 }
 
 export async function installSessionWriteControl(page: Page): Promise<void> {
@@ -1024,8 +1054,24 @@ export async function writeSignedOutMarker(page: Page): Promise<void> {
   }, sessionKey);
 }
 
-export async function writeTaggedSignedOutAction(page: Page, actionId = 'synthetic-signout-action'): Promise<void> {
-  await page.evaluate(({ key, action }) => {
-    localStorage.setItem(key, JSON.stringify({ v: 1, state: 'signed_out', actionId: action }));
-  }, { key: sessionKey, action: actionId });
+export async function writeTaggedSignedOutAction(page: Page, actionId = 'synthetic-signout-action'): Promise<StoredSessionExpectation> {
+  const serialized = JSON.stringify({ v: 1, state: 'signed_out', actionId });
+  await page.evaluate(({ key, value }) => {
+    localStorage.setItem(key, value);
+  }, { key: sessionKey, value: serialized });
+  return storedSessionExpectation(serialized);
+}
+
+/** Writes two remote authority values in one task so the recipient only sees a fresh final read. */
+export async function writeUnobservedActiveThenTaggedSignedOutAction(
+  page: Page,
+  actionId = 'synthetic-unobserved-signout-action',
+): Promise<StoredSessionExpectation> {
+  const active = JSON.stringify(envelopeFor('vendor', 'synthetic-unobserved-vendor-session'));
+  const signedOut = JSON.stringify({ v: 1, state: 'signed_out', actionId });
+  await page.evaluate(({ key, activeValue, signedOutValue }) => {
+    localStorage.setItem(key, activeValue);
+    localStorage.setItem(key, signedOutValue);
+  }, { key: sessionKey, activeValue: active, signedOutValue: signedOut });
+  return storedSessionExpectation(signedOut);
 }
