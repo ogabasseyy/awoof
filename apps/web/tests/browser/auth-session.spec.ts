@@ -205,6 +205,43 @@ test('legacy credentials initialize through current-user authority and render th
   await assertCleanFixture(api, faults);
 });
 
+for (const viewport of [
+  { name: 'desktop', width: 1280, height: 900 },
+  { name: 'mobile', width: 390, height: 844 },
+]) {
+  test(`profile dark-mode control is a single keyboard switch on ${viewport.name}`, async ({ page }) => {
+    await page.setViewportSize({ width: viewport.width, height: viewport.height });
+    await seedSession(page, 'student');
+    const api = await installSyntheticApi(page);
+    const faults = collectBrowserFaults(page, api);
+    await page.goto('/student/profile');
+    await api.waitForCurrentUserCompleted(1);
+    await expect(page.getByText('student@approved.test', { exact: true })).toBeVisible();
+    await expect(page.locator('button button')).toHaveCount(0);
+
+    const control = page.getByRole('switch', { name: 'Dark mode', exact: true });
+    await expect(control).toHaveCount(1);
+    await expect(control).toHaveAttribute('aria-checked', 'false');
+    await expect(control.locator('button, a[href], input, select, textarea, [tabindex]')).toHaveCount(0);
+    await page.getByRole('link', { name: 'Websites visited', exact: true }).focus();
+    await page.keyboard.press('Tab');
+    await expect(control).toBeFocused();
+    await page.keyboard.press('Space');
+    await expect(control).toHaveAttribute('aria-checked', 'true');
+    await page.keyboard.press('Enter');
+    await expect(control).toHaveAttribute('aria-checked', 'false');
+    await control.click();
+    await expect(control).toHaveAttribute('aria-checked', 'true');
+    await page.keyboard.press('Tab');
+    await expect(page.getByRole('link', { name: 'Receipts', exact: true })).toBeFocused();
+    const box = await control.boundingBox();
+    expect(box).not.toBeNull();
+    expect(box!.width).toBeGreaterThanOrEqual(24);
+    expect(box!.height).toBeGreaterThanOrEqual(24);
+    await assertCleanFixture(api, faults);
+  });
+}
+
 test('a JWT-looking stored token with failing current-user authority never exposes protected content', async ({ page }) => {
   await seedSession(page, 'student', {
     accessToken: 'eyJhbGciOiJub25lIn0.eyJ1c2VySWQiOiIwMDAwMDAwMC0wMDAwLTQwMDAtODAwMC0wMDAwMDAwMDAwMDEiLCJlbWFpbCI6InN0dWRlbnRAYXBwcm92ZWQudGVzdCIsInJvbGUiOiJzdHVkZW50In0.',

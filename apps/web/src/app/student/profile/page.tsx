@@ -110,7 +110,7 @@ export default function StudentProfilePage() {
         const Icon = item.icon;
         const content = (
             <>
-                <div className="flex items-center gap-3 min-w-0">
+                <span className="flex items-center gap-3 min-w-0">
                     <span
                         className={`w-10 h-10 rounded-xl flex items-center justify-center shrink-0 ${
                             item.tone === 'danger' ? 'bg-red-50 text-red-600' : 'bg-[#EEF2FF] text-[#1D4ED8]'
@@ -130,16 +130,10 @@ export default function StudentProfilePage() {
                             {unreadCount > 9 ? '9+' : unreadCount}
                         </span>
                     ) : null}
-                </div>
+                </span>
                 {item.trailing === 'toggle' ? (
-                    <button
-                        type="button"
-                        onClick={(e) => {
-                            e.preventDefault();
-                            e.stopPropagation();
-                            setDarkMode(!darkMode);
-                        }}
-                        aria-label="Toggle dark mode"
+                    <span
+                        aria-hidden="true"
                         className={`relative inline-flex h-7 w-12 items-center rounded-full transition-colors ${
                             darkMode ? 'bg-[#1D4ED8]' : 'bg-slate-200'
                         }`}
@@ -149,7 +143,7 @@ export default function StudentProfilePage() {
                                 darkMode ? 'translate-x-6' : 'translate-x-1'
                             }`}
                         />
-                    </button>
+                    </span>
                 ) : (
                     <ChevronRight
                         className={`h-5 w-5 shrink-0 ${item.tone === 'danger' ? 'text-red-300' : 'text-slate-300'}`}
@@ -160,6 +154,22 @@ export default function StudentProfilePage() {
 
         const className =
             'flex items-center justify-between gap-3 px-4 py-3.5 bg-white hover:bg-slate-50/80 transition-colors first:rounded-t-2xl last:rounded-b-2xl';
+
+        if (item.trailing === 'toggle') {
+            return (
+                <button
+                    key={item.label}
+                    type="button"
+                    role="switch"
+                    aria-label="Dark mode"
+                    aria-checked={darkMode}
+                    onClick={() => setDarkMode((previous) => !previous)}
+                    className={`w-full text-left ${className} focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#1D4ED8]`}
+                >
+                    {content}
+                </button>
+            );
+        }
 
         if (item.href) {
             return (

@@ -31,5 +31,8 @@ export default defineConfig({
     url: 'http://127.0.0.1:3107',
     reuseExistingServer: false,
     timeout: 120_000,
+    gracefulShutdown: browserMode === 'production'
+      ? { signal: 'SIGTERM', timeout: 10_000 }
+      : undefined,
   },
 });
