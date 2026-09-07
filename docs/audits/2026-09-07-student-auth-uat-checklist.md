@@ -1,6 +1,6 @@
 # Student signup and login — hands-on test checkpoint
 
-Status: **not yet handed over for testing**. The signup core is accepted at `7501746e5c29f2f9bc5e6163764331f0e52a55a5`; the entry/login/password-control task is still being implemented and reviewed. The VPS has not received these changes.
+Status: **final combined review and preview validation in progress; not yet handed over for testing**. Both signup-plan tasks are accepted at `280e25bd20ebd6e604b7245fa5642311e0bfbf67`, with independent34auth/89development/89production browser tests passing. The root production build is `bWvfdk85YCBkYN6lN1ldP` (54pages). Astra approved each task; the final combined review remains. The VPS has not received these changes.
 
 ## What the first test covers
 
