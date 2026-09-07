@@ -1,4 +1,9 @@
-import type { Page, Route } from '@playwright/test';
+import type { Page, Request, Route } from '@playwright/test';
+
+// Playwright 1.63.0 checks this environment flag before automatically copying
+// a page aria snapshot into a failure artifact. Keep test failures visible; the
+// flag only prevents submitted synthetic form values from being copied there.
+process.env.PLAYWRIGHT_NO_COPY_PROMPT = '1';
 
 export const appOrigin = 'http://127.0.0.1:3107';
 export const apiOrigin = 'http://127.0.0.1:3108';
@@ -7,16 +12,32 @@ export const storageTabPath = '/__awoof-browser-storage-tab__';
 const sessionKey = 'awoof.session.v1';
 const fixtureWaitTimeoutMs = 5_000;
 const xhrRefreshContinuationPrefix = '[awoof-fixture/xhr-refresh-continuation]:';
+const signupTransportFailureText = 'Failed to load resource: net::ERR_FAILED';
 let seedNumber = 0;
 
 export type TestRole = 'student' | 'vendor' | 'admin';
 type TestSessionRole = TestRole | 'vendorB';
+
+export type SignupEndpoint = 'preflight' | 'request' | 'confirm';
+
+export type SignupReply = Readonly<{
+  response: { status: number; body: unknown } | { transportFailure: true };
+  gate?: Gate;
+  expectCancellation?: boolean;
+  expectedBody?: Readonly<Record<string, unknown>>;
+}>;
 
 type TestUser = {
   id: string;
   email: string;
   role: TestRole;
   verificationStatus?: 'unverified' | 'verified' | 'expired';
+};
+
+type SyntheticSignupAccount = {
+  user: TestUser;
+  accessToken: string;
+  refreshToken: string;
 };
 
 type Deferred = {
@@ -34,6 +55,16 @@ type Lifecycle = {
   continue: () => void;
   fail: (error: unknown) => void;
   failContinuation: (error: unknown) => void;
+};
+
+type SignupLifecycle = {
+  started: Promise<void>;
+  routeSettled: Promise<void>;
+  networkFailed: Promise<void>;
+  hasNetworkFailed: () => boolean;
+  start: () => void;
+  settle: () => void;
+  requestFailed: () => void;
 };
 
 export type Gate = {
@@ -56,6 +87,7 @@ export type ApiFixtureOptions = {
   unauthorizedCurrentUserOrdinals?: readonly number[];
   universityStatus?: 200 | 401 | 503;
   universityResults?: readonly unknown[];
+  signup?: Partial<Record<SignupEndpoint, readonly SignupReply[]>>;
 };
 
 export type FixtureUniversity = {
@@ -71,6 +103,45 @@ export const fixtureUniversities: readonly FixtureUniversity[] = [
   { id: '10000000-0000-4000-8000-000000000002', name: 'Approved Beta University', shortcode: 'ABU', domain: 'beta.approved.test', country: 'Ghana' },
 ];
 
+type StudentSignupTestData = {
+  notice: Readonly<{ version: string; text: string }>;
+  replacementNotice: Readonly<{ version: string; text: string }>;
+  name: string;
+  changedName: string;
+  email: string;
+  changedEmail: string;
+  betaEmail: string;
+  matricNumber: string;
+  password: string;
+  otp: string;
+  invalidOtps: readonly string[];
+  challengeId: string;
+  replacementChallengeId: string;
+  accountId: string;
+  accessToken: string;
+  refreshToken: string;
+};
+
+/** Keep submitted signup fixtures out of auto-copied spec source frames. */
+export const studentSignupTestData: Readonly<StudentSignupTestData> = Object.freeze({
+  notice: Object.freeze({ version: '2026-09-05.v1', text: 'Synthetic verification processing notice.' }),
+  replacementNotice: Object.freeze({ version: '2026-09-05.v2', text: 'Synthetic replacement processing notice.' }),
+  name: 'Synthetic Student',
+  changedName: 'Changed Synthetic Student',
+  email: 'student@alpha.approved.test',
+  changedEmail: 'changed@alpha.approved.test',
+  betaEmail: 'student@beta.approved.test',
+  matricNumber: 'SYN-100',
+  password: 'Synthetic!Pass9',
+  otp: '123456',
+  invalidOtps: Object.freeze(['12345', 'ABC123', '１２３４５６']),
+  challengeId: '20000000-0000-4000-8000-000000000001',
+  replacementChallengeId: '20000000-0000-4000-8000-000000000002',
+  accountId: 'synthetic-student-account',
+  accessToken: 'synthetic-signup-access',
+  refreshToken: 'synthetic-signup-refresh',
+});
+
 export type BrowserApiRequest = {
   endpoint: string;
   ordinal: number;
@@ -83,6 +154,20 @@ export type SyntheticHttpFailure = {
   status: number;
 };
 
+export type SyntheticTransportFailure = {
+  path: string;
+  errorText: string;
+  consumed: boolean;
+};
+
+export type SignupRequest = {
+  endpoint: SignupEndpoint;
+  ordinal: number;
+  authorizationPresent: boolean;
+  bodyKeys: string[];
+  matchesExpectedBody: boolean;
+};
+
 export type ApiFixture = {
   refreshCalls: number;
   meCalls: number;
@@ -90,8 +175,10 @@ export type ApiFixture = {
   registerCalls: number;
   logoutCalls: number;
   universityRequests: Array<{ ordinal: number; authorizationPresent: boolean }>;
+  signupRequests: SignupRequest[];
   requests: BrowserApiRequest[];
   syntheticHttpFailures: SyntheticHttpFailure[];
+  syntheticTransportFailures: SyntheticTransportFailure[];
   unexpectedRequests: string[];
   waitForCurrentUserStarted: (ordinal: number) => Promise<void>;
   waitForCurrentUserCompleted: (ordinal: number) => Promise<void>;
@@ -103,15 +190,26 @@ export type ApiFixture = {
   waitForRefreshCompleted: (ordinal: number) => Promise<void>;
   waitForRefreshContinuation: (ordinal: number) => Promise<void>;
   waitForUniversitiesCompleted: (ordinal: number) => Promise<void>;
+  waitForSignupStarted: (endpoint: SignupEndpoint, ordinal: number) => Promise<void>;
+  waitForSignupRouteSettled: (endpoint: SignupEndpoint, ordinal: number) => Promise<void>;
+  waitForSignupNetworkFailed: (endpoint: SignupEndpoint, ordinal: number) => Promise<void>;
   setUniversityDirectory: (status: 200 | 401 | 503, universities?: readonly unknown[]) => void;
   waitForVendorRegistrationCompleted: () => Promise<void>;
   waitForVendorUploadCompleted: () => Promise<void>;
   drainPendingHandlers: () => Promise<void>;
+  consumeExpectedTransportFailure: (path: string, errorText: string) => boolean;
   assertNoUnexpectedRequests: () => void;
 };
 
 type SessionWriteControlWindow = Window & {
-  __awoofSessionWriteControl?: { setSignedOutMarkerDenied: (denied: boolean) => void };
+  __awoofSessionWriteControl?: {
+    setSignedOutMarkerDenied: (denied: boolean) => void;
+    setActiveEnvelopeWriteDenied: (denied: boolean) => void;
+  };
+};
+
+type SessionReadControlWindow = Window & {
+  __awoofSessionReadControl?: { setReadDenied: (denied: boolean) => void };
 };
 
 const users: Record<TestSessionRole, TestUser> = {
@@ -197,6 +295,26 @@ function lifecycle(): Lifecycle {
   };
 }
 
+function signupLifecycle(): SignupLifecycle {
+  const started = deferred();
+  const routeSettled = deferred();
+  const networkFailed = deferred();
+  let failed = false;
+  return {
+    started: started.promise,
+    routeSettled: routeSettled.promise,
+    networkFailed: networkFailed.promise,
+    hasNetworkFailed: (): boolean => failed,
+    start: started.resolve,
+    settle: routeSettled.resolve,
+    requestFailed: (): void => {
+      if (failed) return;
+      failed = true;
+      networkFailed.resolve();
+    },
+  };
+}
+
 async function waitFor(signal: Promise<void>, label: string): Promise<void> {
   let timer: ReturnType<typeof setTimeout> | undefined;
   try {
@@ -237,6 +355,55 @@ function body(route: Route): Record<string, unknown> {
   } catch {
     return {};
   }
+}
+
+function asRecord(value: unknown): Record<string, unknown> | null {
+  return value && typeof value === 'object' && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : null;
+}
+
+function isPrimitive(value: unknown): value is string | number | boolean | null {
+  return value === null || typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean';
+}
+
+function expectedSignupBodyMatches(actual: Record<string, unknown>, expected: Readonly<Record<string, unknown>> | undefined): boolean {
+  if (!expected) return true;
+  const actualKeys = Object.keys(actual).sort();
+  const expectedKeys = Object.keys(expected).sort();
+  if (actualKeys.length !== expectedKeys.length || actualKeys.some((key, index) => key !== expectedKeys[index])) return false;
+  return expectedKeys.every((key) => isPrimitive(expected[key]) && actual[key] === expected[key]);
+}
+
+function signupEndpointFor(path: string): SignupEndpoint | null {
+  if (path === '/auth/verify-student-email') return 'preflight';
+  if (path === '/auth/student/register-request') return 'request';
+  if (path === '/auth/student/register-confirm') return 'confirm';
+  return null;
+}
+
+function signupAccountFromResponse(value: unknown): SyntheticSignupAccount | null {
+  const data = asRecord(asRecord(value)?.data);
+  const user = asRecord(data?.user);
+  const tokens = asRecord(data?.tokens);
+  if (
+    !user
+    || user.role !== 'student'
+    || typeof user.id !== 'string'
+    || user.id.length === 0
+    || typeof user.email !== 'string'
+    || user.email.length === 0
+    || !tokens
+    || typeof tokens.accessToken !== 'string'
+    || tokens.accessToken.length === 0
+    || typeof tokens.refreshToken !== 'string'
+    || tokens.refreshToken.length === 0
+  ) return null;
+  return {
+    user: { id: user.id, email: user.email, role: 'student' },
+    accessToken: tokens.accessToken,
+    refreshToken: tokens.refreshToken,
+  };
 }
 
 async function respond(route: Route, status: number, payload: unknown): Promise<void> {
@@ -325,6 +492,9 @@ export async function installSyntheticApi(page: Page, options: ApiFixtureOptions
   const registerLifecycles = new Map<number, Lifecycle>();
   const refreshLifecycles = new Map<number, Lifecycle>();
   const universityLifecycles = new Map<number, Lifecycle>();
+  const signupLifecycles = new Map<string, SignupLifecycle>();
+  const signupRequestLifecycles = new WeakMap<Request, SignupLifecycle>();
+  const signupOrdinals: Record<SignupEndpoint, number> = { preflight: 0, request: 0, confirm: 0 };
   const vendorRegistration = lifecycle();
   const vendorUpload = lifecycle();
   const pendingHandlers = new Set<Promise<void>>();
@@ -332,6 +502,16 @@ export async function installSyntheticApi(page: Page, options: ApiFixtureOptions
   const failedHandlers: Array<{ label: string; error: Error }> = [];
   let directoryStatus = options.universityStatus ?? 200;
   let directoryResults: readonly unknown[] = options.universityResults ?? fixtureUniversities;
+  let syntheticSignupAccount: SyntheticSignupAccount | null = null;
+
+  function signupLifecycleFor(endpoint: SignupEndpoint, ordinal: number): SignupLifecycle {
+    const key = `${endpoint}:${ordinal}`;
+    const existing = signupLifecycles.get(key);
+    if (existing) return existing;
+    const next = signupLifecycle();
+    signupLifecycles.set(key, next);
+    return next;
+  }
 
   function trackHandler(label: string, handler: () => Promise<void>): Promise<void> {
     const pending = Promise.resolve().then(handler);
@@ -377,6 +557,9 @@ export async function installSyntheticApi(page: Page, options: ApiFixtureOptions
     if (!message.text().startsWith(xhrRefreshContinuationPrefix) || !/^\d+$/.test(ordinalText)) return;
     endpointLifecycle(refreshLifecycles, Number(ordinalText)).continue();
   });
+  page.on('requestfailed', (request) => {
+    signupRequestLifecycles.get(request)?.requestFailed();
+  });
 
   const fixture: ApiFixture = {
     refreshCalls: 0,
@@ -385,8 +568,10 @@ export async function installSyntheticApi(page: Page, options: ApiFixtureOptions
     registerCalls: 0,
     logoutCalls: 0,
     universityRequests: [],
+    signupRequests: [],
     requests: [],
     syntheticHttpFailures: [],
+    syntheticTransportFailures: [],
     unexpectedRequests: [],
     waitForCurrentUserStarted: (ordinal) => waitFor(endpointLifecycle(currentUserLifecycles, ordinal).started, `current-user request ${ordinal}`),
     waitForCurrentUserCompleted: (ordinal) => waitFor(endpointLifecycle(currentUserLifecycles, ordinal).completed, `current-user completion ${ordinal}`),
@@ -398,6 +583,9 @@ export async function installSyntheticApi(page: Page, options: ApiFixtureOptions
     waitForRefreshCompleted: (ordinal) => waitFor(endpointLifecycle(refreshLifecycles, ordinal).completed, `refresh completion ${ordinal}`),
     waitForRefreshContinuation: (ordinal) => waitFor(endpointLifecycle(refreshLifecycles, ordinal).continued, `refresh browser continuation ${ordinal}`),
     waitForUniversitiesCompleted: (ordinal) => waitFor(endpointLifecycle(universityLifecycles, ordinal).completed, `universities completion ${ordinal}`),
+    waitForSignupStarted: (endpoint, ordinal) => waitFor(signupLifecycleFor(endpoint, ordinal).started, `${endpoint} signup request ${ordinal}`),
+    waitForSignupRouteSettled: (endpoint, ordinal) => waitFor(signupLifecycleFor(endpoint, ordinal).routeSettled, `${endpoint} signup route settlement ${ordinal}`),
+    waitForSignupNetworkFailed: (endpoint, ordinal) => waitFor(signupLifecycleFor(endpoint, ordinal).networkFailed, `${endpoint} signup network failure ${ordinal}`),
     setUniversityDirectory: (status, universities) => {
       directoryStatus = status;
       directoryResults = universities ?? fixtureUniversities;
@@ -405,9 +593,21 @@ export async function installSyntheticApi(page: Page, options: ApiFixtureOptions
     waitForVendorRegistrationCompleted: () => waitFor(vendorRegistration.completed, 'vendor complete-registration completion'),
     waitForVendorUploadCompleted: () => waitFor(vendorUpload.completed, 'vendor upload completion'),
     drainPendingHandlers,
+    consumeExpectedTransportFailure: (path, errorText) => {
+      const expected = fixture.syntheticTransportFailures.find(
+        (failure) => !failure.consumed && failure.path === path && failure.errorText === errorText,
+      );
+      if (!expected) return false;
+      expected.consumed = true;
+      return true;
+    },
     assertNoUnexpectedRequests: () => {
       if (fixture.unexpectedRequests.length > 0) {
         throw new Error(`Unexpected API requests: ${fixture.unexpectedRequests.join(', ')}`);
+      }
+      const unconsumedTransportFailure = fixture.syntheticTransportFailures.find((failure) => !failure.consumed);
+      if (unconsumedTransportFailure) {
+        throw new Error(`Expected synthetic transport failure was not observed for ${unconsumedTransportFailure.path}.`);
       }
     },
   };
@@ -472,6 +672,61 @@ export async function installSyntheticApi(page: Page, options: ApiFixtureOptions
       });
     }
 
+    const signupEndpoint = signupEndpointFor(path);
+    if (signupEndpoint !== null && method === 'POST') {
+      const ordinal = ++signupOrdinals[signupEndpoint];
+      const requestLifecycle = signupLifecycleFor(signupEndpoint, ordinal);
+      const requestBody = body(route);
+      const reply = options.signup?.[signupEndpoint]?.[ordinal - 1];
+      fixture.signupRequests.push({
+        endpoint: signupEndpoint,
+        ordinal,
+        authorizationPresent: route.request().headers().authorization !== undefined,
+        bodyKeys: Object.keys(requestBody).sort(),
+        matchesExpectedBody: expectedSignupBodyMatches(requestBody, reply?.expectedBody),
+      });
+      signupRequestLifecycles.set(route.request(), requestLifecycle);
+      requestLifecycle.start();
+
+      if (!reply) {
+        fixture.unexpectedRequests.push(`${method} ${path} (missing signup ${signupEndpoint} reply ${ordinal})`);
+        try {
+          await route.abort('failed');
+        } finally {
+          requestLifecycle.settle();
+        }
+        return;
+      }
+
+      try {
+        await reply.gate?.wait();
+        if (reply.expectCancellation && requestLifecycle.hasNetworkFailed()) return;
+        if ('transportFailure' in reply.response) {
+          fixture.syntheticTransportFailures.push({
+            path,
+            errorText: signupTransportFailureText,
+            consumed: false,
+          });
+          await route.abort('failed');
+          return;
+        }
+        if (signupEndpoint === 'confirm' && reply.response.status === 201) {
+          syntheticSignupAccount = signupAccountFromResponse(reply.response.body);
+        }
+        if (reply.response.status >= 400) {
+          recordSyntheticHttpFailure(path, reply.response.status);
+        }
+        record(`signup-${signupEndpoint}`, ordinal, route, `status-${reply.response.status}`);
+        await respond(route, reply.response.status, reply.response.body);
+      } catch (error) {
+        if (reply.expectCancellation && requestLifecycle.hasNetworkFailed()) return;
+        throw error;
+      } finally {
+        requestLifecycle.settle();
+      }
+      return;
+    }
+
     if (path === '/auth/login' && method === 'POST') {
       const ordinal = ++fixture.loginCalls;
       const request = body(route);
@@ -518,12 +773,14 @@ export async function installSyntheticApi(page: Page, options: ApiFixtureOptions
     if (path === '/auth/me' && method === 'GET') {
       const ordinal = ++fixture.meCalls;
       const role = roleFromAuthorization(route);
+      const isSyntheticSignupAccount = syntheticSignupAccount !== null
+        && route.request().headers().authorization === `Bearer ${syntheticSignupAccount.accessToken}`;
       const serviceFailure = options.failCurrentUser || options.failCurrentUserOrdinals?.includes(ordinal);
       const unauthorized = options.unauthorizedCurrentUserOrdinals?.includes(ordinal)
         ?? (options.unauthorizedCurrentUserCalls !== undefined && ordinal <= options.unauthorizedCurrentUserCalls);
       const shouldFail = serviceFailure || unauthorized;
       const status = serviceFailure ? 503 : 401;
-      const responseIdentity = shouldFail ? `error-${status}` : role ?? 'unauthorized';
+      const responseIdentity = shouldFail ? `error-${status}` : isSyntheticSignupAccount ? 'signup-student' : role ?? 'unauthorized';
       const requestLifecycle = endpointLifecycle(currentUserLifecycles, ordinal);
       record('current-user', ordinal, route, responseIdentity);
       requestLifecycle.start();
@@ -532,6 +789,10 @@ export async function installSyntheticApi(page: Page, options: ApiFixtureOptions
         if (shouldFail) {
           recordSyntheticHttpFailure(path, status);
           await respond(route, status, { success: false, error: { message: 'Synthetic current-user failure' } });
+          return;
+        }
+        if (isSyntheticSignupAccount && syntheticSignupAccount) {
+          await respond(route, 200, { success: true, data: syntheticSignupAccount.user });
           return;
         }
         if (!role) {
@@ -679,18 +940,28 @@ export async function installSessionWriteControl(page: Page): Promise<void> {
     const controlledWindow = window as SessionWriteControlWindow;
     const original = Storage.prototype.setItem;
     let signedOutMarkerDenied = false;
+    let activeEnvelopeWriteDenied = false;
     Storage.prototype.setItem = function controlledSessionWrite(storageKey: string, value: string): void {
       let signedOutMarker = false;
+      let activeEnvelope = false;
       try {
         const parsed: unknown = JSON.parse(value);
         signedOutMarker = !!parsed
           && typeof parsed === 'object'
           && (parsed as { v?: unknown; state?: unknown }).v === 1
           && (parsed as { state?: unknown }).state === 'signed_out';
+        activeEnvelope = !!parsed
+          && typeof parsed === 'object'
+          && (parsed as { v?: unknown; state?: unknown }).v === 1
+          && (parsed as { state?: unknown }).state === 'active';
       } catch {
         signedOutMarker = false;
+        activeEnvelope = false;
       }
       if (signedOutMarkerDenied && storageKey === targetKey && signedOutMarker) {
+        throw new DOMException('Denied', 'SecurityError');
+      }
+      if (activeEnvelopeWriteDenied && storageKey === targetKey && activeEnvelope) {
         throw new DOMException('Denied', 'SecurityError');
       }
       original.call(this, storageKey, value);
@@ -698,6 +969,9 @@ export async function installSessionWriteControl(page: Page): Promise<void> {
     controlledWindow.__awoofSessionWriteControl = {
       setSignedOutMarkerDenied(next: boolean): void {
         signedOutMarkerDenied = next;
+      },
+      setActiveEnvelopeWriteDenied(next: boolean): void {
+        activeEnvelopeWriteDenied = next;
       },
     };
   }, sessionKey);
@@ -711,8 +985,47 @@ export async function setSignedOutMarkerWriteDenied(page: Page, denied: boolean)
   }, denied);
 }
 
+export async function setActiveSessionWriteDenied(page: Page, denied: boolean): Promise<void> {
+  await page.evaluate((next) => {
+    const controlledWindow = window as SessionWriteControlWindow;
+    if (!controlledWindow.__awoofSessionWriteControl) throw new Error('Synthetic session-write control was not installed.');
+    controlledWindow.__awoofSessionWriteControl.setActiveEnvelopeWriteDenied(next);
+  }, denied);
+}
+
+export async function installSessionReadControl(page: Page, initiallyDenied = false): Promise<void> {
+  await page.addInitScript(({ targetKey, initiallyDenied: denied }) => {
+    const controlledWindow = window as SessionReadControlWindow;
+    const original = Storage.prototype.getItem;
+    let readDenied = denied;
+    Storage.prototype.getItem = function controlledSessionRead(storageKey: string): string | null {
+      if (readDenied && storageKey === targetKey) throw new DOMException('Denied', 'SecurityError');
+      return original.call(this, storageKey);
+    };
+    controlledWindow.__awoofSessionReadControl = {
+      setReadDenied(next: boolean): void {
+        readDenied = next;
+      },
+    };
+  }, { targetKey: sessionKey, initiallyDenied });
+}
+
+export async function setSessionReadDenied(page: Page, denied: boolean): Promise<void> {
+  await page.evaluate((next) => {
+    const controlledWindow = window as SessionReadControlWindow;
+    if (!controlledWindow.__awoofSessionReadControl) throw new Error('Synthetic session-read control was not installed.');
+    controlledWindow.__awoofSessionReadControl.setReadDenied(next);
+  }, denied);
+}
+
 export async function writeSignedOutMarker(page: Page): Promise<void> {
   await page.evaluate((key) => {
     localStorage.setItem(key, JSON.stringify({ v: 1, state: 'signed_out' }));
   }, sessionKey);
+}
+
+export async function writeTaggedSignedOutAction(page: Page, actionId = 'synthetic-signout-action'): Promise<void> {
+  await page.evaluate(({ key, action }) => {
+    localStorage.setItem(key, JSON.stringify({ v: 1, state: 'signed_out', actionId: action }));
+  }, { key: sessionKey, action: actionId });
 }

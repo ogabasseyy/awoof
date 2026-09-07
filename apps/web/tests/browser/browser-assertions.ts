@@ -16,11 +16,28 @@ function isExpectedSyntheticHttpFailure(message: ConsoleMessage, api: ApiFixture
   }
 }
 
+function isExpectedSyntheticTransportFailure(message: ConsoleMessage, api: ApiFixture): boolean {
+  const location = message.location().url;
+  if (!location) return false;
+
+  try {
+    const url = new URL(location);
+    if (url.origin !== apiOrigin) return false;
+    return api.consumeExpectedTransportFailure(url.pathname.replace(/^\/api/, ''), message.text());
+  } catch {
+    return false;
+  }
+}
+
 export function collectBrowserFaults(page: Page, api: ApiFixture): string[] {
   const faults: string[] = [];
   page.on('pageerror', (error) => faults.push(error.message));
   page.on('console', (message) => {
-    if (message.type() !== 'error' || isExpectedSyntheticHttpFailure(message, api)) return;
+    if (
+      message.type() !== 'error'
+      || isExpectedSyntheticHttpFailure(message, api)
+      || isExpectedSyntheticTransportFailure(message, api)
+    ) return;
     const location = message.location().url;
     faults.push(location ? `${message.text()} (${location})` : message.text());
   });

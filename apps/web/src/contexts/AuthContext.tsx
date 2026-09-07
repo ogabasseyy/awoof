@@ -12,6 +12,7 @@ import {
     useState,
     type ReactNode,
 } from 'react';
+import axios from 'axios';
 import {
     clearTokens,
     getSessionSnapshot,
@@ -27,6 +28,11 @@ import {
     type AuthenticationResponse,
 } from '@/lib/auth-response';
 import { resolveStudentReturn } from '@/lib/student-return';
+import {
+    parseSignupAuthentication,
+    type ConfirmSignupResult,
+    type SignupConfirmation,
+} from '@/lib/student-signup';
 
 interface AuthContextType {
     user: User | null;
@@ -47,6 +53,10 @@ interface AuthContextType {
     ) => Promise<void>;
     logout: () => Promise<void>;
     refreshUser: () => Promise<void>;
+    confirmStudentSignup: (
+        input: SignupConfirmation,
+        options: { signal: AbortSignal; returnTo: string | null },
+    ) => Promise<ConfirmSignupResult>;
 }
 
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
@@ -67,6 +77,23 @@ function destinationFor(user: User): string {
         new URLSearchParams(window.location.search).get('redirect'),
         window.location.origin,
     );
+}
+
+function asRecord(value: unknown): Record<string, unknown> | null {
+    return value && typeof value === 'object' && !Array.isArray(value)
+        ? value as Record<string, unknown>
+        : null;
+}
+
+function hasSessionIssuanceFailure(body: unknown): boolean {
+    return asRecord(asRecord(body)?.error)?.code === 'SESSION_ISSUANCE_UNAVAILABLE';
+}
+
+function studentRecoveryPaths(returnTo: string | null): { returnPath: string; signInPath: string } {
+    const origin = typeof window === 'undefined' ? null : window.location.origin;
+    const returnPath = origin ? resolveStudentReturn(returnTo, origin) : '/marketplace';
+    const query = new URLSearchParams({ redirect: returnPath }).toString();
+    return { returnPath, signInPath: `/auth/student/login?${query}` };
 }
 
 export function AuthProvider({ children }: { children: ReactNode }) {
@@ -284,6 +311,129 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         await loadCurrentUser(false);
     }, [loadCurrentUser]);
 
+    const confirmStudentSignup = useCallback(async (
+        input: SignupConfirmation,
+        options: { signal: AbortSignal; returnTo: string | null },
+    ): Promise<ConfirmSignupResult> => {
+        const confirmation: SignupConfirmation = {
+            email: input.email,
+            name: input.name,
+            universityId: input.universityId,
+            matricNumber: input.matricNumber,
+            verificationConsent: true,
+            noticeVersion: input.noticeVersion,
+            password: input.password,
+            challengeId: input.challengeId,
+            otp: input.otp,
+        };
+        const { returnPath, signInPath } = studentRecoveryPaths(options.returnTo);
+        const started = getSessionSnapshot();
+        if (options.signal.aborted) {
+            return { kind: 'cancelled', reason: 'aborted', serverOutcome: 'not_dispatched' };
+        }
+        if (isSessionStorageQuarantined()) {
+            return { kind: 'not_started', reason: 'storage_unavailable' };
+        }
+        if (started.accessToken || started.refreshToken) {
+            return { kind: 'not_started', reason: 'active_session' };
+        }
+
+        const operation = ++operationRef.current;
+        let dispatched = false;
+        const cancellation = (serverOutcome: 'not_dispatched' | 'unknown' | 'created'): ConfirmSignupResult => ({
+            kind: 'cancelled',
+            reason: options.signal.aborted ? 'aborted' : 'superseded',
+            serverOutcome,
+        });
+        const onAbort = (): void => {
+            if (operationRef.current === operation) operationRef.current += 1;
+        };
+        const ownsBeforeCommit = (): boolean => {
+            const fresh = getSessionSnapshot();
+            return mountedRef.current
+                && operationRef.current === operation
+                && !options.signal.aborted
+                && !isSessionStorageQuarantined()
+                && !fresh.accessToken
+                && !fresh.refreshToken
+                && fresh.generation === started.generation;
+        };
+
+        options.signal.addEventListener('abort', onAbort, { once: true });
+        try {
+            if (!ownsBeforeCommit()) return cancellation('not_dispatched');
+            setError(null);
+            dispatched = true;
+            const response = await publicApiClient.post('/auth/student/register-confirm', confirmation, {
+                signal: options.signal,
+            });
+            const authentication = parseSignupAuthentication(response.status, response.data, confirmation.email);
+            if (!authentication) {
+                if (!ownsBeforeCommit()) return cancellation('unknown');
+                return { kind: 'outcome_unknown', reason: 'invalid_response', signInPath };
+            }
+            if (!ownsBeforeCommit()) return cancellation('created');
+
+            let account: User;
+            try {
+                account = commitAuthenticatedResponse(authentication, 'student');
+            } catch {
+                if (!mountedRef.current || operationRef.current !== operation || options.signal.aborted) {
+                    return cancellation('created');
+                }
+                if (isSessionStorageQuarantined()) {
+                    return { kind: 'account_created', reason: 'storage', signInPath };
+                }
+                return cancellation('created');
+            }
+
+            const adopted = getSessionSnapshot();
+            const ownsAdoptedSession = (): boolean => {
+                const current = getSessionSnapshot();
+                return mountedRef.current
+                    && operationRef.current === operation
+                    && !options.signal.aborted
+                    && !isSessionStorageQuarantined()
+                    && current.generation === adopted.generation
+                    && current.accessToken === authentication.tokens.accessToken
+                    && current.refreshToken === authentication.tokens.refreshToken;
+            };
+            if (!ownsAdoptedSession()) return cancellation('created');
+
+            setIsLoading(false);
+            setError(null);
+            setUser(account);
+            // The committed response remains the immediate UI authority. This
+            // background read only reconciles the named server account after
+            // persistence; it is intentionally not awaited before navigation.
+            void loadCurrentUser(false);
+            redirectAfterAuth(returnPath);
+            return { kind: 'completed' };
+        } catch (error: unknown) {
+            const response = axios.isAxiosError(error) ? error.response : undefined;
+            const status = response?.status;
+            const body = response?.data;
+            const knownCreated = status === 503 && hasSessionIssuanceFailure(body);
+            const observedOutcome: 'not_dispatched' | 'unknown' | 'created' = knownCreated
+                ? 'created'
+                : dispatched
+                    ? 'unknown'
+                    : 'not_dispatched';
+            if (!ownsBeforeCommit()) return cancellation(observedOutcome);
+            if (knownCreated) {
+                return { kind: 'account_created', reason: 'session_issuance', signInPath };
+            }
+            if (!response) return { kind: 'outcome_unknown', reason: 'transport', signInPath };
+            if (status === 400 || status === 422) return { kind: 'rejected', reason: 'validation' };
+            if (status === 401) return { kind: 'rejected', reason: 'proof' };
+            if (status === 409) return { kind: 'rejected', reason: 'conflict' };
+            if (status !== undefined && status >= 400 && status < 500) return { kind: 'rejected', reason: 'other' };
+            return { kind: 'outcome_unknown', reason: 'server', signInPath };
+        } finally {
+            options.signal.removeEventListener('abort', onAbort);
+        }
+    }, [commitAuthenticatedResponse, loadCurrentUser]);
+
     const value = useMemo<AuthContextType>(() => ({
         user,
         isAuthenticated: !!user,
@@ -293,7 +443,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         register,
         logout,
         refreshUser,
-    }), [user, isLoading, error, login, register, logout, refreshUser]);
+        confirmStudentSignup,
+    }), [user, isLoading, error, login, register, logout, refreshUser, confirmStudentSignup]);
 
     return (
         <AuthContext.Provider value={value}>
