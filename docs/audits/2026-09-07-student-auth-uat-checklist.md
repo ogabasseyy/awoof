@@ -1,6 +1,8 @@
 # Student signup and login — hands-on test checkpoint
 
-Status: **local synthetic success-path preview opened for owner testing** on2026-09-07. Both signup-plan tasks and Astra's final combined review are accepted at `280e25bd20ebd6e604b7245fa5642311e0bfbf67`, with independent34auth/89development/89production browser tests passing. The root production build is `bWvfdk85YCBkYN6lN1ldP` (54pages). No Critical/Important findings remain. The VPS has not received these changes.
+Status: **preview closed; approved numeric-matric follow-up awaits final validation and a fresh preview**. The earlier signup-plan release candidate remains accepted at `280e25bd20ebd6e604b7245fa5642311e0bfbf67` with independent34auth/89development/89production tests and build `bWvfdk85YCBkYN6lN1ldP`. Numeric-email matric autofill is now implemented locally at `b8248c363dea2d62a2e3d67a84d75e3d3a92cffc`, with independent35auth/92development tests passing. Astra found no product defect but requested safer test diagnostics. That one-file correction is written and statically checked, but its browser verification, scoped re-review, fresh build/production tests and new numeric preview remain pending because free disk fell below3GiB. The old window has exited; the VPS is unchanged.
+
+The approved new behavior preserves numeric email local parts as text, including leading zeroes; follows email edits while auto-owned; clears stale auto values; and permanently respects manual matric edits/clearing for that form lifetime. It does not verify the matric number or change consent/OTP authority. The prepared next preview uses dummy email `0012345@alpha.approved.test` and should fill `0012345`; it has not yet been launched. The instructions below describe the prior text-preset preview, not current availability.
 
 ## Open preview and dummy values
 
