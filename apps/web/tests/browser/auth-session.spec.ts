@@ -1,6 +1,6 @@
-import { expect, test, type BrowserContext, type ConsoleMessage, type Page } from '@playwright/test';
+import { expect, test, type BrowserContext, type Page } from '@playwright/test';
+import { assertCleanFixture, collectBrowserFaults } from './browser-assertions';
 import {
-  apiOrigin,
   appOrigin,
   createGate,
   installSessionWriteControl,
@@ -14,38 +14,6 @@ import {
   type ApiFixture,
   type Gate,
 } from './fixtures';
-
-function isExpectedSyntheticHttpFailure(message: ConsoleMessage, api: ApiFixture): boolean {
-  const status = /^Failed to load resource: the server responded with a status of (\d{3})\b/.exec(message.text())?.[1];
-  const location = message.location().url;
-  if (!status || !location) return false;
-
-  try {
-    const url = new URL(location);
-    if (url.origin !== apiOrigin) return false;
-    const path = url.pathname.replace(/^\/api/, '');
-    return api.syntheticHttpFailures.some((failure) => failure.path === path && failure.status === Number(status));
-  } catch {
-    return false;
-  }
-}
-
-function collectBrowserFaults(page: Page, api: ApiFixture): string[] {
-  const faults: string[] = [];
-  page.on('pageerror', (error) => faults.push(error.message));
-  page.on('console', (message) => {
-    if (message.type() !== 'error' || isExpectedSyntheticHttpFailure(message, api)) return;
-    const location = message.location().url;
-    faults.push(location ? `${message.text()} (${location})` : message.text());
-  });
-  return faults;
-}
-
-async function assertCleanFixture(api: ApiFixture, faults: string[]): Promise<void> {
-  await api.drainPendingHandlers();
-  api.assertNoUnexpectedRequests();
-  expect(faults).toEqual([]);
-}
 
 async function openStorageTab(context: BrowserContext): Promise<Page> {
   const other = await context.newPage();

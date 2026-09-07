@@ -54,7 +54,22 @@ export type ApiFixtureOptions = {
   failCurrentUserOrdinals?: readonly number[];
   unauthorizedCurrentUserCalls?: number;
   unauthorizedCurrentUserOrdinals?: readonly number[];
+  universityStatus?: 200 | 401 | 503;
+  universityResults?: readonly FixtureUniversity[];
 };
+
+export type FixtureUniversity = {
+  id: string;
+  name: string;
+  shortcode: string;
+  domain: string;
+  country: string;
+};
+
+export const fixtureUniversities: readonly FixtureUniversity[] = [
+  { id: '10000000-0000-4000-8000-000000000001', name: 'Approved Alpha University', shortcode: 'AAU', domain: 'alpha.approved.test', country: 'Nigeria' },
+  { id: '10000000-0000-4000-8000-000000000002', name: 'Approved Beta University', shortcode: 'ABU', domain: 'beta.approved.test', country: 'Ghana' },
+];
 
 export type BrowserApiRequest = {
   endpoint: string;
@@ -74,6 +89,7 @@ export type ApiFixture = {
   loginCalls: number;
   registerCalls: number;
   logoutCalls: number;
+  universityRequests: Array<{ ordinal: number; authorizationPresent: boolean }>;
   requests: BrowserApiRequest[];
   syntheticHttpFailures: SyntheticHttpFailure[];
   unexpectedRequests: string[];
@@ -86,6 +102,8 @@ export type ApiFixture = {
   waitForRefreshStarted: (ordinal: number) => Promise<void>;
   waitForRefreshCompleted: (ordinal: number) => Promise<void>;
   waitForRefreshContinuation: (ordinal: number) => Promise<void>;
+  waitForUniversitiesCompleted: (ordinal: number) => Promise<void>;
+  setUniversityDirectory: (status: 200 | 401 | 503, universities?: readonly FixtureUniversity[]) => void;
   waitForVendorRegistrationCompleted: () => Promise<void>;
   waitForVendorUploadCompleted: () => Promise<void>;
   drainPendingHandlers: () => Promise<void>;
@@ -306,11 +324,14 @@ export async function installSyntheticApi(page: Page, options: ApiFixtureOptions
   const loginLifecycles = new Map<number, Lifecycle>();
   const registerLifecycles = new Map<number, Lifecycle>();
   const refreshLifecycles = new Map<number, Lifecycle>();
+  const universityLifecycles = new Map<number, Lifecycle>();
   const vendorRegistration = lifecycle();
   const vendorUpload = lifecycle();
   const pendingHandlers = new Set<Promise<void>>();
   const successfulHandlers: string[] = [];
   const failedHandlers: Array<{ label: string; error: Error }> = [];
+  let directoryStatus = options.universityStatus ?? 200;
+  let directoryResults: readonly FixtureUniversity[] = options.universityResults ?? fixtureUniversities;
 
   function trackHandler(label: string, handler: () => Promise<void>): Promise<void> {
     const pending = Promise.resolve().then(handler);
@@ -363,6 +384,7 @@ export async function installSyntheticApi(page: Page, options: ApiFixtureOptions
     loginCalls: 0,
     registerCalls: 0,
     logoutCalls: 0,
+    universityRequests: [],
     requests: [],
     syntheticHttpFailures: [],
     unexpectedRequests: [],
@@ -375,6 +397,11 @@ export async function installSyntheticApi(page: Page, options: ApiFixtureOptions
     waitForRefreshStarted: (ordinal) => waitFor(endpointLifecycle(refreshLifecycles, ordinal).started, `refresh request ${ordinal}`),
     waitForRefreshCompleted: (ordinal) => waitFor(endpointLifecycle(refreshLifecycles, ordinal).completed, `refresh completion ${ordinal}`),
     waitForRefreshContinuation: (ordinal) => waitFor(endpointLifecycle(refreshLifecycles, ordinal).continued, `refresh browser continuation ${ordinal}`),
+    waitForUniversitiesCompleted: (ordinal) => waitFor(endpointLifecycle(universityLifecycles, ordinal).completed, `universities completion ${ordinal}`),
+    setUniversityDirectory: (status, universities) => {
+      directoryStatus = status;
+      directoryResults = universities ?? fixtureUniversities;
+    },
     waitForVendorRegistrationCompleted: () => waitFor(vendorRegistration.completed, 'vendor complete-registration completion'),
     waitForVendorUploadCompleted: () => waitFor(vendorUpload.completed, 'vendor upload completion'),
     drainPendingHandlers,
@@ -426,6 +453,24 @@ export async function installSyntheticApi(page: Page, options: ApiFixtureOptions
 
     const method = route.request().method();
     const path = url.pathname.replace(/^\/api/, '');
+
+    if (path === '/universities' && method === 'GET') {
+      const ordinal = fixture.universityRequests.length + 1;
+      fixture.universityRequests.push({
+        ordinal,
+        authorizationPresent: route.request().headers().authorization !== undefined,
+      });
+      const requestLifecycle = endpointLifecycle(universityLifecycles, ordinal);
+      requestLifecycle.start();
+      return completeLifecycle(requestLifecycle, async () => {
+        if (directoryStatus !== 200) {
+          recordSyntheticHttpFailure(path, directoryStatus);
+          await respond(route, directoryStatus, { success: false, error: { message: 'Synthetic university directory failure' } });
+          return;
+        }
+        await respond(route, 200, { success: true, data: { universities: directoryResults, total: directoryResults.length } });
+      });
+    }
 
     if (path === '/auth/login' && method === 'POST') {
       const ordinal = ++fixture.loginCalls;
