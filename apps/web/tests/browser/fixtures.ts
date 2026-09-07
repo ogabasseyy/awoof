@@ -55,7 +55,7 @@ export type ApiFixtureOptions = {
   unauthorizedCurrentUserCalls?: number;
   unauthorizedCurrentUserOrdinals?: readonly number[];
   universityStatus?: 200 | 401 | 503;
-  universityResults?: readonly FixtureUniversity[];
+  universityResults?: readonly unknown[];
 };
 
 export type FixtureUniversity = {
@@ -103,7 +103,7 @@ export type ApiFixture = {
   waitForRefreshCompleted: (ordinal: number) => Promise<void>;
   waitForRefreshContinuation: (ordinal: number) => Promise<void>;
   waitForUniversitiesCompleted: (ordinal: number) => Promise<void>;
-  setUniversityDirectory: (status: 200 | 401 | 503, universities?: readonly FixtureUniversity[]) => void;
+  setUniversityDirectory: (status: 200 | 401 | 503, universities?: readonly unknown[]) => void;
   waitForVendorRegistrationCompleted: () => Promise<void>;
   waitForVendorUploadCompleted: () => Promise<void>;
   drainPendingHandlers: () => Promise<void>;
@@ -331,7 +331,7 @@ export async function installSyntheticApi(page: Page, options: ApiFixtureOptions
   const successfulHandlers: string[] = [];
   const failedHandlers: Array<{ label: string; error: Error }> = [];
   let directoryStatus = options.universityStatus ?? 200;
-  let directoryResults: readonly FixtureUniversity[] = options.universityResults ?? fixtureUniversities;
+  let directoryResults: readonly unknown[] = options.universityResults ?? fixtureUniversities;
 
   function trackHandler(label: string, handler: () => Promise<void>): Promise<void> {
     const pending = Promise.resolve().then(handler);

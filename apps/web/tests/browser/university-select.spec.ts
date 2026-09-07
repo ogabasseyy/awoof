@@ -109,6 +109,67 @@ test('an empty public directory announces a local no-match state', async ({ page
   await assertCleanFixture(api, faults);
 });
 
+test('mixed malformed directory fields never break search or reach the option consumer', async ({ page }) => {
+  const api = await installSyntheticApi(page, {
+    universityResults: [
+      { id: '10000000-0000-4000-8000-000000000011', name: 'Approved Safe University', shortcode: 'SAFE', domain: 'safe.approved.test', country: 'Nigeria' },
+      { id: '10000000-0000-4000-8000-000000000012', name: 'Unsafe Metadata University', shortcode: 123, domain: { unexpected: true }, country: ['not-a-country'] },
+      { id: '', name: 'Missing Identity University', shortcode: 'MISS', domain: 'missing.approved.test', country: 'Nigeria' },
+    ],
+  });
+  const faults = collectBrowserFaults(page, api);
+  await page.goto('/auth/student/register');
+  const input = page.getByLabel(/^University/);
+  await input.fill('does-not-match-a-name');
+  await expect(page.getByRole('status')).toContainText('No matching university');
+  await input.fill('unsafe');
+  const unsafeOption = page.getByRole('option', { name: /Unsafe Metadata University/ });
+  await expect(unsafeOption).toBeVisible();
+  await expect(unsafeOption).not.toContainText('123');
+  await expect(unsafeOption).not.toContainText('[object Object]');
+  await input.fill('safe');
+  await input.press('ArrowDown');
+  await input.press('Enter');
+  await expect(input).toHaveValue('Approved Safe University');
+  await assertCleanFixture(api, faults);
+});
+
+test('keyboard navigation keeps the active long-directory option visible before committing it', async ({ page }) => {
+  const longDirectory = Array.from({ length: 18 }, (_, index) => ({
+    id: `10000000-0000-4000-8000-${String(index + 21).padStart(12, '0')}`,
+    name: `Long Directory University ${String(index + 1).padStart(2, '0')}`,
+    shortcode: `LONG${index + 1}`,
+    domain: `long-${index + 1}.approved.test`,
+    country: 'Nigeria',
+  }));
+  const api = await installSyntheticApi(page, { universityResults: longDirectory });
+  const faults = collectBrowserFaults(page, api);
+  await page.goto('/auth/student/register');
+  const input = page.getByLabel(/^University/);
+  const listbox = page.getByRole('listbox');
+
+  async function expectActiveOptionVisible(): Promise<void> {
+    const activeOption = page.getByRole('option', { selected: true });
+    const [listboxRect, optionRect] = await Promise.all([listbox.boundingBox(), activeOption.boundingBox()]);
+    expect(listboxRect).not.toBeNull();
+    expect(optionRect).not.toBeNull();
+    expect(optionRect!.y).toBeGreaterThanOrEqual(listboxRect!.y);
+    expect(optionRect!.y + optionRect!.height).toBeLessThanOrEqual(listboxRect!.y + listboxRect!.height);
+  }
+
+  await input.fill('long directory');
+  for (let index = 0; index < 15; index += 1) await input.press('ArrowDown');
+  await expect(page.getByRole('option', { selected: true })).toContainText('Long Directory University 15');
+  await expectActiveOptionVisible();
+  for (let index = 0; index < 10; index += 1) await input.press('ArrowUp');
+  await expect(page.getByRole('option', { selected: true })).toContainText('Long Directory University 05');
+  await expectActiveOptionVisible();
+  await input.press('Enter');
+  await expect(input).toHaveValue('Long Directory University 05');
+  await expect(input).toBeFocused();
+  await assertCleanFixture(api, faults);
+});
+
 test('widget selection follows controlled identity without entering verification', async ({ page }) => {
   const api = await installSyntheticApi(page);
   const faults = collectBrowserFaults(page, api);

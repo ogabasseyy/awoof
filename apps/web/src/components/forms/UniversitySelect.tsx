@@ -24,13 +24,18 @@ interface UniversitySelectProps {
 
 type SearchState = { value: string; draft: string | null; clearingFrom: string | null };
 
-function isUniversity(value: unknown): value is University {
-    return Boolean(value
-        && typeof value === 'object'
-        && typeof (value as University).id === 'string'
-        && (value as University).id.trim().length > 0
-        && typeof (value as University).name === 'string'
-        && (value as University).name.trim().length > 0);
+function normalizeUniversity(value: unknown): University | null {
+    if (!value || typeof value !== 'object') return null;
+    const record = value as Record<string, unknown>;
+    if (typeof record.id !== 'string' || record.id.trim().length === 0) return null;
+    if (typeof record.name !== 'string' || record.name.trim().length === 0) return null;
+    return {
+        id: record.id,
+        name: record.name,
+        shortcode: typeof record.shortcode === 'string' ? record.shortcode : undefined,
+        domain: typeof record.domain === 'string' ? record.domain : undefined,
+        country: typeof record.country === 'string' ? record.country : undefined,
+    };
 }
 
 export function UniversitySelect({ value, onChange, error, required = false }: UniversitySelectProps) {
@@ -67,6 +72,7 @@ export function UniversitySelect({ value, onChange, error, required = false }: U
         .some((part) => part?.toLowerCase().includes(term))) : [];
     const noMatches = Boolean(term) && !loading && !fetchError && matches.length === 0;
     const activeUniversity = open && activeIndex >= 0 ? matches[activeIndex] : undefined;
+    const activeUniversityId = activeUniversity?.id;
 
     const fetchUniversities = useCallback(async () => {
         abortRef.current?.abort();
@@ -79,7 +85,7 @@ export function UniversitySelect({ value, onChange, error, required = false }: U
             const response = await publicApiClient.get('/universities', { signal: controller.signal });
             const raw = response.data?.data?.universities;
             if (!Array.isArray(raw)) throw new Error('Malformed university directory response.');
-            const directory = raw.filter(isUniversity);
+            const directory = raw.map(normalizeUniversity).filter((entry): entry is University => entry !== null);
             if (request !== requestRef.current || controller.signal.aborted) return;
             setUniversities(directory);
         } catch {
@@ -101,6 +107,11 @@ export function UniversitySelect({ value, onChange, error, required = false }: U
             abortRef.current?.abort();
         };
     }, [fetchUniversities]);
+
+    useEffect(() => {
+        if (!open || !activeUniversityId) return;
+        document.getElementById(`${listboxId}-${activeUniversityId}`)?.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+    }, [activeUniversityId, listboxId, open]);
 
     function closePopup(): void {
         setOpen(false);
