@@ -215,3 +215,102 @@ test('subscribers see local login plus provisional and durable logout lifecycle 
     }
   });
 });
+
+test('each explicit durable clear writes a distinct opaque action id', () => {
+  resetSessionState();
+  withStorage(memoryStorage(), () => {
+    clearTokens();
+    const first = JSON.parse(window.localStorage.getItem('awoof.session.v1')!);
+    clearTokens();
+    const second = JSON.parse(window.localStorage.getItem('awoof.session.v1')!);
+    assert.equal(first.state, 'signed_out');
+    assert.equal(typeof first.actionId, 'string');
+    assert.ok(first.actionId.length > 0);
+    assert.equal(typeof second.actionId, 'string');
+    assert.notEqual(first.actionId, second.actionId);
+    assert.deepEqual(Object.keys(second).sort(), ['actionId', 'state', 'v']);
+  });
+});
+
+test('a changed signed-out marker notifies once and repeated reads are stable', () => {
+  resetSessionState();
+  const storage = memoryStorage();
+  withStorage(storage, () => {
+    clearTokens();
+    const before = getSessionSnapshot();
+    const seen: number[] = [];
+    const stop = subscribeSessionChanges(() => { seen.push(getSessionSnapshot().generation); });
+    try {
+      storage.setItem('awoof.session.v1', JSON.stringify({ v: 1, state: 'signed_out', actionId: 'remote-action-b' }));
+      const after = getSessionSnapshot();
+      assert.equal(after.generation, before.generation + 1);
+      assert.equal(after.accessToken, null);
+      assert.equal(after.refreshToken, null);
+      assert.deepEqual(seen, [after.generation]);
+      assert.deepEqual(getSessionSnapshot(), after);
+      assert.deepEqual(getSessionSnapshot(), after);
+      assert.deepEqual(seen, [after.generation]);
+    } finally { stop(); }
+  });
+});
+
+test('a fresh read detects an unobserved active then signed-out round trip', () => {
+  resetSessionState();
+  const storage = memoryStorage();
+  withStorage(storage, () => {
+    clearTokens();
+    const before = getSessionSnapshot();
+    // Simulate completed other-tab writes without delivering intermediate events or reads.
+    storage.setItem('awoof.session.v1', JSON.stringify({ v: 1, state: 'active', sessionId: 'remote-active', accessToken: 'synthetic-access', refreshToken: 'synthetic-refresh' }));
+    storage.setItem('awoof.session.v1', JSON.stringify({ v: 1, state: 'signed_out', actionId: 'remote-action-c' }));
+    const after = getSessionSnapshot();
+    assert.equal(after.generation, before.generation + 1);
+    assert.equal(after.accessToken, null);
+    assert.equal(after.refreshToken, null);
+    assert.equal(isSessionStorageQuarantined(), false);
+  });
+});
+
+test('legacy and invalid signed-out markers never revive residual legacy credentials', () => {
+  resetSessionState();
+  const storage = memoryStorage({ accessToken: 'legacy-access', refreshToken: 'legacy-refresh' });
+  withStorage(storage, () => {
+    for (const marker of [
+      { v: 1, state: 'signed_out' },
+      { v: 1, state: 'signed_out', actionId: '' },
+      { v: 1, state: 'signed_out', actionId: { invalid: true } },
+    ]) {
+      const encoded = JSON.stringify(marker);
+      storage.setItem('awoof.session.v1', encoded);
+      const first = getSessionSnapshot();
+      assert.equal(first.accessToken, null);
+      assert.equal(first.refreshToken, null);
+      assert.deepEqual(getSessionSnapshot(), first);
+      assert.equal(storage.getItem('awoof.session.v1'), encoded);
+    }
+  });
+});
+
+test('action id generation failure leaves clear quarantined until explicit recovery', () => {
+  resetSessionState();
+  withStorage(memoryStorage(), () => {
+    storeTokens({ accessToken: 'synthetic-access', refreshToken: 'synthetic-refresh' });
+    const originalCrypto = Object.getOwnPropertyDescriptor(globalThis, 'crypto');
+    Object.defineProperty(globalThis, 'crypto', { configurable: true, value: {
+      randomUUID() { throw new Error('Synthetic entropy unavailable'); },
+    } });
+    try {
+      assert.doesNotThrow(() => clearTokens());
+      assert.equal(isSessionStorageQuarantined(), true);
+      assert.equal(getAccessToken(), null);
+      assert.equal(getRefreshToken(), null);
+    } finally {
+      if (originalCrypto) Object.defineProperty(globalThis, 'crypto', originalCrypto);
+      else Reflect.deleteProperty(globalThis, 'crypto');
+    }
+    clearTokens();
+    assert.equal(isSessionStorageQuarantined(), false);
+    assert.equal(getAccessToken(), null);
+    assert.equal(typeof JSON.parse(window.localStorage.getItem('awoof.session.v1')!).actionId, 'string');
+  });
+});

@@ -34,6 +34,7 @@ type ActiveEnvelope = {
 type SignedOutEnvelope = {
     v: 1;
     state: 'signed_out';
+    actionId?: string;
 };
 
 type SessionEnvelope = ActiveEnvelope | SignedOutEnvelope;
@@ -74,14 +75,20 @@ function isActiveEnvelope(value: unknown): value is ActiveEnvelope {
 function isSignedOutEnvelope(value: unknown): value is SignedOutEnvelope {
     if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
     const envelope = value as Partial<SignedOutEnvelope>;
-    return envelope.v === 1 && envelope.state === 'signed_out';
+    return envelope.v === 1
+        && envelope.state === 'signed_out'
+        && (envelope.actionId === undefined || isNonEmptyString(envelope.actionId));
 }
 
 function parseEnvelope(value: string): SessionEnvelope | null {
     try {
         const parsed: unknown = JSON.parse(value);
         if (isActiveEnvelope(parsed)) return parsed;
-        if (isSignedOutEnvelope(parsed)) return parsed;
+        if (isSignedOutEnvelope(parsed)) {
+            return parsed.actionId === undefined
+                ? { v: 1, state: 'signed_out' }
+                : { v: 1, state: 'signed_out', actionId: parsed.actionId };
+        }
     } catch {
         // A malformed envelope is authoritative signed-out state, not a cue to
         // revive legacy credentials.
@@ -97,10 +104,14 @@ function emit(): void {
     for (const listener of listeners) listener();
 }
 
-function invalidateToSignedOut(force = false): void {
-    if (force || observed.state === 'active') {
+function invalidateToSignedOut(
+    force = false,
+    next: SignedOutEnvelope = { v: 1, state: 'signed_out' },
+): void {
+    const changed = force || observed.state === 'active' || observed.actionId !== next.actionId;
+    observed = next;
+    if (changed) {
         generation += 1;
-        observed = { v: 1, state: 'signed_out' };
         emit();
     }
 }
@@ -172,7 +183,7 @@ function reconcileStorage(): void {
     if (encoded !== null) {
         const envelope = parseEnvelope(encoded);
         if (envelope && envelope.state === 'active') observeActive(envelope);
-        else invalidateToSignedOut();
+        else invalidateToSignedOut(false, envelope?.state === 'signed_out' ? envelope : undefined);
         return;
     }
 
@@ -306,7 +317,13 @@ export function clearTokens(): void {
     quarantineSession();
     if (!storage) return;
 
-    const marker: SignedOutEnvelope = { v: 1, state: 'signed_out' };
+    let marker: SignedOutEnvelope;
+    try {
+        // This identifies a completed action; it is not cross-tab atomic exclusion.
+        marker = { v: 1, state: 'signed_out', actionId: newSessionId() };
+    } catch {
+        return;
+    }
     if (!writeAndReadBack(storage, marker)) return;
     try {
         storage.removeItem(LEGACY_ACCESS_KEY);
@@ -314,6 +331,7 @@ export function clearTokens(): void {
     } catch {
         // The durable marker still prevents a legacy credential resurrection.
     }
+    observed = marker;
     quarantined = false;
     // Listeners already saw the provisional quarantine that immediately
     // invalidated the old account. Announce the durable final state too, so a
