@@ -14,10 +14,20 @@ import {
     withdrawConsent as withdrawEligibilityConsent,
 } from './eligibility-consent.service.js';
 import { lockStudentContext, selectStudentInstitution } from './eligibility-context.service.js';
-import { recordEmailAssurance } from './eligibility-evidence.service.js';
+import {
+    applyEnrollmentDecision,
+    beginEnrollmentCheck,
+    recordEmailAssurance,
+} from './eligibility-evidence.service.js';
 import { getInstitutionPolicy } from './eligibility-policy.service.js';
 import { getEffectiveEligibility } from './eligibility-read.service.js';
 import type { EligibilityResult, StudentContext, StudentEmailChallengeBindings } from './eligibility.types.js';
+import {
+    parseConfiguredEnrollmentAdapter,
+    verifyConfiguredEnrollment,
+    type EnrollmentTransport,
+    type RegistrationNormalization,
+} from './registration-lookup.service.js';
 import {
     MERCHANT_DISCLOSURE_NOTICE_TEXT,
     MERCHANT_DISCLOSURE_NOTICE_VERSION,
@@ -31,6 +41,7 @@ export type VerificationFlowDependencies = {
     pool: PoolLike;
     isEmailConfigured: () => boolean;
     deliverOtp: (email: string, code: string) => Promise<{ success: boolean }>;
+    enrollmentTransport?: EnrollmentTransport;
 };
 
 type InitiateInput = {
@@ -46,6 +57,11 @@ type RequestEmailInput = {
 type ConfirmEmailInput = {
     challengeId: string;
     otp: string;
+};
+
+type RegistrationInput = {
+    registrationNumber: string;
+    processingGrantId: string;
 };
 
 type DisclosureInput = {
@@ -83,6 +99,11 @@ export type VerificationStatus = {
     eligibility: EligibilityResult;
     notices: VerificationNotices;
     guidance?: 'incomplete_profile';
+};
+
+export type RegistrationVerification = {
+    eligibility: EligibilityResult;
+    reason?: 'provider_unknown' | 'provider_unavailable';
 };
 
 export class VerificationFlowRateLimitError extends RateLimitError {
@@ -222,6 +243,27 @@ async function lockedRetryAt(tx: PoolClient, userId: string): Promise<Date> {
     const startedAt = result.rows[0]?.window_started_at;
     if (!startedAt) throw new Error('Verification challenge budget was not returned');
     return new Date(startedAt.getTime() + 10 * 60 * 1000);
+}
+
+async function loadConfiguredEnrollmentAdapter(tx: PoolClient, universityId: string) {
+    const methods = await tx.query<{
+        is_active: unknown;
+        api_endpoint: unknown;
+        api_config: unknown;
+    }>(
+        `SELECT is_active, api_endpoint, api_config
+         FROM university_verification_methods
+         WHERE university_id = $1
+           AND method_type = 'registration'`,
+        [universityId],
+    );
+    if (methods.rows.length !== 1) return null;
+    const method = methods.rows[0]!;
+    return parseConfiguredEnrollmentAdapter({
+        isActive: method.is_active,
+        apiEndpoint: method.api_endpoint,
+        apiConfig: method.api_config,
+    });
 }
 
 async function discoverProcessingGrant(
@@ -376,6 +418,46 @@ export function createVerificationFlowService(dependencies: VerificationFlowDepe
         throw new BadRequestError('Invalid verification code.');
     }
 
+    async function verifyRegistration(userId: string, input: RegistrationInput): Promise<RegistrationVerification> {
+        let captured: {
+            snapshot: Awaited<ReturnType<typeof beginEnrollmentCheck>>;
+            adapter: NonNullable<Awaited<ReturnType<typeof loadConfiguredEnrollmentAdapter>>>;
+            normalization: RegistrationNormalization;
+        };
+        try {
+            captured = await inTransaction(dependencies.pool, async (tx) => {
+                await assertLiveStudentActor(tx, userId);
+                const snapshot = await beginEnrollmentCheck(tx, userId, input.processingGrantId);
+                // This read intentionally has no FOR UPDATE clause. The snapshot
+                // already holds the institution lock; method changes advance its
+                // policy generation rather than creating a method-lock cycle.
+                const adapter = await loadConfiguredEnrollmentAdapter(tx, snapshot.universityId);
+                const policy = await getInstitutionPolicy(tx, snapshot.universityId);
+                if (!adapter || policy.registrationNormalization === null) {
+                    throw new ServiceUnavailableError('Registration verification is unavailable for this institution.');
+                }
+                return { snapshot, adapter, normalization: policy.registrationNormalization };
+            });
+        } catch (error) {
+            if (error instanceof BadRequestError && error.message === 'Enrollment method unavailable') {
+                throw new ServiceUnavailableError('Registration verification is unavailable for this institution.');
+            }
+            throw error;
+        }
+
+        // Provider transport is deliberately outside all database locks. Both
+        // the snapshot and the requested identifier are immutable inputs here.
+        const lookup = await verifyConfiguredEnrollment(captured.adapter, {
+            email: captured.snapshot.email,
+            registrationNumber: input.registrationNumber,
+            normalization: captured.normalization,
+        }, dependencies.enrollmentTransport);
+        const eligibility = await inTransaction(dependencies.pool, (tx) => (
+            applyEnrollmentDecision(tx, captured.snapshot, lookup.decision)
+        ));
+        return lookup.reason === undefined ? { eligibility } : { eligibility, reason: lookup.reason };
+    }
+
     async function status(userId: string): Promise<VerificationStatus> {
         return inTransaction(dependencies.pool, async (tx) => {
             try {
@@ -438,7 +520,7 @@ export function createVerificationFlowService(dependencies: VerificationFlowDepe
         await inTransaction(dependencies.pool, (tx) => withdrawEligibilityConsent(tx, userId, grantId));
     }
 
-    return { initiate, requestEmail, confirmEmail, status, grantDisclosure, withdrawConsent };
+    return { initiate, requestEmail, confirmEmail, verifyRegistration, status, grantDisclosure, withdrawConsent };
 }
 
 export type VerificationFlowService = ReturnType<typeof createVerificationFlowService>;

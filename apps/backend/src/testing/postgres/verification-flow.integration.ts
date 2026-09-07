@@ -15,6 +15,7 @@ import { updateInstitutionPolicy } from '../../services/verification/eligibility
 import { createVerificationFlowService } from '../../services/verification/verification-flow.service.js';
 import { getAvailableVerificationMethods } from '../../services/verification/verification-orchestrator.service.js';
 import type { EligibilityResult } from '../../services/verification/eligibility.types.js';
+import { ENROLLMENT_SCHEMA_VERSION } from '../../services/verification/registration-lookup.service.js';
 import {
     MERCHANT_DISCLOSURE_NOTICE_VERSION,
     VERIFICATION_NOTICE_VERSION,
@@ -697,6 +698,29 @@ test('advertises email only from active approved-domain policy and configured tr
             process.env.BREVO_API_KEY = 'synthetic-mail-config';
             const withoutSeed = await getAvailableVerificationMethods(fixture.universityId);
             assert.equal(withoutSeed.find((method) => method.methodType === 'email')?.isAvailable, true);
+            assert.equal(withoutSeed.find((method) => method.methodType === 'registration')?.isAvailable, false);
+            await pool.query(
+                `INSERT INTO university_verification_methods
+                     (university_id, method_type, api_endpoint, api_config, is_active)
+                 VALUES ($1, 'registration', 'https://provider.school.example/v1/enrollment', '{}'::jsonb, true)`,
+                [fixture.universityId],
+            );
+            const genericRegistration = await getAvailableVerificationMethods(fixture.universityId);
+            assert.equal(genericRegistration.find((method) => method.methodType === 'registration')?.isAvailable, false);
+            await pool.query(
+                `UPDATE university_verification_methods
+                 SET api_config = $2
+                 WHERE university_id = $1 AND method_type = 'registration'`,
+                [fixture.universityId, { schemaVersion: ENROLLMENT_SCHEMA_VERSION }],
+            );
+            await pool.query(
+                `UPDATE universities SET registration_normalization = 'trim_upper' WHERE id = $1`,
+                [fixture.universityId],
+            );
+            const configuredRegistration = await getAvailableVerificationMethods(fixture.universityId);
+            const registrationMethod = configuredRegistration.find((method) => method.methodType === 'registration');
+            assert.equal(registrationMethod?.isAvailable, true);
+            assert.equal(JSON.stringify(registrationMethod).includes('api_config'), false);
 
             const unconfiguredUniversity = (await pool.query<{ id: string }>(
                 `INSERT INTO universities (name, is_active) VALUES ($1, true) RETURNING id`,
@@ -979,9 +1003,9 @@ test('actual router applies current database identity to every new verification 
                 const baseline = await actorVerificationSnapshot(pool, currentStudent.userId, currentStudent.email);
                 const unavailable = await fetch(`${baseUrl}${path}`, {
                     method: 'POST', headers: currentHeaders,
-                    body: JSON.stringify({
-                        email: currentStudent.email, name: 'Ada Flow', registrationNumber: 'current-student-registration',
-                    }),
+                    body: JSON.stringify(path === '/registration'
+                        ? { registrationNumber: 'current-student-registration', processingGrantId: initiatedBody.data.processingGrantId }
+                        : {}),
                 });
                 assert.equal(unavailable.status, 503);
                 const serialized = JSON.stringify(await unavailable.json()).toLowerCase();
@@ -1199,7 +1223,11 @@ test('actual authenticated routes bind student actions to the live subject and n
 
             for (const path of ['/registration', '/widget/token']) {
                 const unavailable = await fetch(`${baseUrl}${path}`, {
-                    method: 'POST', headers: { authorization: `Bearer ${accessToken(student.userId, student.email)}` },
+                    method: 'POST',
+                    headers: { 'content-type': 'application/json', authorization: `Bearer ${accessToken(student.userId, student.email)}` },
+                    body: JSON.stringify(path === '/registration'
+                        ? { registrationNumber: 'registration-unavailable', processingGrantId: initiatedBody.data.processingGrantId }
+                        : {}),
                 });
                 assert.equal(unavailable.status, 503);
                 const serialized = JSON.stringify(await unavailable.json()).toLowerCase();

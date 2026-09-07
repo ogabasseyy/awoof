@@ -13,7 +13,7 @@ const ROLE_PANEL: Record<
 > = {
     student: {
         headline: 'Student deals, unlocked',
-        line: 'Verify once. Save on food, tech, fashion, and more from brands that want you on campus.',
+        line: 'Verify your student status and keep it up to date. Save on food, tech, fashion, and more.',
         accent: 'Campus-ready savings',
     },
     vendor: {

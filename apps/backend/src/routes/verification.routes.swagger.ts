@@ -205,9 +205,10 @@
  * @swagger
  * /api/verification/registration:
  *   post:
- *     summary: Verify student via registration number
+ *     summary: Check the signed-in student's registration with its configured institution adapter
  *     tags: [Verification]
- *     security: []
+ *     security:
+ *       - bearerAuth: []
  *     requestBody:
  *       required: true
  *       content:
@@ -215,28 +216,19 @@
  *           schema:
  *             type: object
  *             required:
- *               - universityId
  *               - registrationNumber
- *               - studentName
+ *               - processingGrantId
  *             properties:
- *               universityId:
- *                 type: string
- *                 format: uuid
- *                 example: 123e4567-e89b-12d3-a456-426614174000
  *               registrationNumber:
  *                 type: string
  *                 example: 2019/12345
- *               studentName:
+ *               processingGrantId:
  *                 type: string
- *                 minLength: 2
- *                 example: John Doe
- *               studentEmail:
- *                 type: string
- *                 format: email
- *                 example: student@unilag.edu.ng
+ *                 format: uuid
+ *                 description: Current signed-in student's processing-consent grant
  *     responses:
  *       200:
- *         description: Registration number verified successfully
+ *         description: Effective eligibility after a strict configured-adapter check
  *         content:
  *           application/json:
  *             schema:
@@ -247,16 +239,17 @@
  *                     data:
  *                       type: object
  *                       properties:
- *                         verified:
- *                           type: boolean
- *                         studentData:
+ *                         eligibility:
  *                           type: object
- *                         tokens:
- *                           $ref: '#/components/schemas/Tokens'
+ *                         reason:
+ *                           type: string
+ *                           enum: [provider_unknown, provider_unavailable]
  *       401:
  *         $ref: '#/components/responses/Unauthorized'
  *       400:
  *         $ref: '#/components/responses/BadRequest'
+ *       503:
+ *         description: No active supported adapter is configured for the student's institution
  */
 
 /**
@@ -416,4 +409,3 @@
  *       400:
  *         $ref: '#/components/responses/BadRequest'
  */
-

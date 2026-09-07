@@ -43,9 +43,8 @@
   widget; changed ownership fails closed. Institution-specific approved domains
   and verification methods cannot be reparented—remove and add configuration
   under the target institution instead. Enrollment provider replies are
-  single-consumption generations: invalid, stale, mismatched-email, or
-  untrusted-source replies do not advance the marker. Routes and merchant
-  consumers remain a separate rollout boundary.
+  single-consumption generations; snapshot and generation revalidation remain
+  authoritative. Merchant consumers remain a separate rollout boundary.
 
 - Student signup is now proof-bound and must use only the dedicated public
   endpoints: `POST /auth/student/register-request` followed by
@@ -82,12 +81,57 @@
   literal affirmative action before a new processing or merchant grant.
 - `POST /verification/email`, `GET /verification/email/verify`, both WhatsApp
   verification routes, and `GET /verification/status/:studentId` are retired
-  with 410 upgrade guidance. `POST /verification/registration` and
-  `POST /verification/widget/token` are authenticated but intentionally return
-  503 until the separate enrollment-adapter and merchant-assertion tasks ship.
-  They do not create accounts, issue sessions, or substitute legacy flags.
-  This is a temporary non-release boundary: the student UI, the configured
-  university adapter, and merchant widget assertion remain outstanding.
+  with 410 upgrade guidance. `POST /verification/registration` is authenticated
+  and accepts only `{ registrationNumber, processingGrantId }`; it cannot select
+  a user, university, mailbox, or name. It returns effective eligibility plus
+  only `provider_unknown` or `provider_unavailable` when applicable. It does
+  not create accounts, issue sessions, expose provider data, or substitute
+  legacy flags. `POST /verification/widget/token` remains unavailable pending
+  the separate merchant-assertion task.
+
+## Enrollment-provider v1 configuration
+
+The only implemented enrollment adapter contract is `awoof.enrollment.v1`.
+An institution must have exactly one active `registration` method row, an HTTPS
+hostname endpoint without URL userinfo or a fragment, an explicit non-null
+`registration_normalization` policy (`exact` or `trim_upper`), and exactly this
+server-side `api_config` shape:
+
+```json
+{"schemaVersion":"awoof.enrollment.v1"}
+```
+
+Generic `database_api_url` values, an endpoint alone, inactive rows, unknown
+versions, and extra configuration keys are unavailable; they must never be
+treated as a compatible school integration. The public methods endpoint uses
+the same parser and does not return `api_config` or endpoint details.
+
+The configured provider receives only the authenticated proven mailbox and the
+requested registration identifier. Its response must be exactly one of:
+
+```json
+{"schemaVersion":"awoof.enrollment.v1","outcome":"unknown"}
+{"schemaVersion":"awoof.enrollment.v1","outcome":"denied","email":"student@school.example"}
+{"schemaVersion":"awoof.enrollment.v1","outcome":"verified","email":"student@school.example","registrationNumber":"REG-1","validUntil":"2027-01-01T00:00:00.000Z"}
+```
+
+The adapter rejects non-200 responses, malformed JSON, unrecognized or extra
+fields, missing/mismatched mailbox, wrong version, non-future timestamps,
+unmatched registration identifiers, inferred names/student data, and caller
+mailbox fallbacks as unknown. It supplies the fixed internal
+`institution-registration:v1` source; provider-controlled source metadata is
+never trusted. A verified identifier must match under the institution's
+explicit normalization before a new application transaction can record it.
+
+Transport runs only after the snapshot transaction commits and is bounded to a
+five-second HTTPS request, 2 KiB request, 16 KiB response, no redirects or
+proxy, disabled decompression, explicit abort signal, a fresh TLS-verifying
+agent, and a socket lookup pinned to a just-validated public DNS address. No
+private, loopback, link-local, documentation, multicast, or unique-local
+destination is allowed. A private-network exception, provider authentication
+format, live endpoint allowlist, and proof of a university's interoperability
+all require a future owner operating decision; synthetic fixtures are not live
+provider assurance.
 
 ## Owner-controlled configuration
 

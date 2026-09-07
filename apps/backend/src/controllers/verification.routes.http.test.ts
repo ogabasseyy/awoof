@@ -35,6 +35,10 @@ function flow(calls: string[]): VerificationFlowService {
             challengeId, expiresAt: new Date('2026-09-05T12:10:00.000Z'), resendAvailableAt: new Date('2026-09-05T12:01:00.000Z'),
         }),
         confirmEmail: async () => ({ eligible: false as const, reason: 'unverified' as const }),
+        verifyRegistration: async (subject, input) => {
+            calls.push(`registration:${subject}:${input.registrationNumber}:${input.processingGrantId}`);
+            return { eligibility: { eligible: false as const, reason: 'unverified' as const }, reason: 'provider_unknown' as const };
+        },
         status: async () => ({
             email: 'ada@students.school.example', universityId,
             eligibility: { eligible: false as const, reason: 'unverified' as const },
@@ -134,20 +138,31 @@ test('requires a real access JWT and rejects body identity substitution before i
     });
 });
 
-test('keeps registration and merchant-token legacy routes honestly unavailable without issuing a session', async () => {
-    await withServer(new VerificationController({ flow: flow([]) }), async (baseUrl) => {
-        for (const path of ['/registration', '/widget/token']) {
-            const response = await fetch(`${baseUrl}${path}`, {
-                method: 'POST',
-                headers: { 'content-type': 'application/json', authorization: `Bearer ${token()}` },
-                body: JSON.stringify({ email: 'victim@students.school.example', registrationNumber: 'victim-registration' }),
-            });
-            assert.equal(response.status, 503, `${path} remains unavailable until its owned task`);
-            const body = await response.json() as Record<string, unknown>;
-            const serialized = JSON.stringify(body).toLowerCase();
-            assert.equal(serialized.includes('accesstoken'), false);
-            assert.equal(serialized.includes('refreshtoken'), false);
-        }
+test('accepts only the strict authenticated registration body and keeps merchant-token unavailable', async () => {
+    const calls: string[] = [];
+    await withServer(new VerificationController({ flow: flow(calls) }), async (baseUrl) => {
+        const headers = { 'content-type': 'application/json', authorization: `Bearer ${token()}` };
+        const rejected = await fetch(`${baseUrl}/registration`, {
+            method: 'POST', headers,
+            body: JSON.stringify({ processingGrantId: grantId, registrationNumber: 'REG-1', email: 'victim@students.school.example' }),
+        });
+        assert.equal(rejected.status, 422);
+        assert.deepEqual(calls, []);
+
+        const registration = await fetch(`${baseUrl}/registration`, {
+            method: 'POST', headers,
+            body: JSON.stringify({ processingGrantId: grantId, registrationNumber: 'REG-1' }),
+        });
+        assert.equal(registration.status, 200);
+        const registrationBody = await registration.json() as Record<string, unknown>;
+        assert.match(JSON.stringify(registrationBody), /provider_unknown/);
+        assert.deepEqual(calls, [`registration:${userId}:REG-1:${grantId}`]);
+
+        const widget = await fetch(`${baseUrl}/widget/token`, { method: 'POST', headers, body: JSON.stringify({}) });
+        assert.equal(widget.status, 503);
+        const serialized = JSON.stringify(await widget.json()).toLowerCase();
+        assert.equal(serialized.includes('accesstoken'), false);
+        assert.equal(serialized.includes('refreshtoken'), false);
     });
 });
 

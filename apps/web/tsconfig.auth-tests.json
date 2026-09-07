@@ -1,0 +1,22 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "CommonJS",
+    "moduleResolution": "Node",
+    "lib": ["ES2022", "DOM"],
+    "types": ["node"],
+    "rootDir": ".",
+    "strict": true,
+    "esModuleInterop": true,
+    "skipLibCheck": true,
+    "noEmit": false,
+    "incremental": false
+  },
+  "include": [
+    "src/lib/auth.ts",
+    "src/lib/auth-response.ts",
+    "src/lib/api-client.ts",
+    "src/lib/student-return.ts",
+    "tests/auth/**/*.ts"
+  ]
+}

@@ -8,22 +8,23 @@ import { cn } from '@/lib/utils';
 export type PasswordInputProps = React.ComponentProps<typeof Input>;
 
 const PasswordInput = React.forwardRef<HTMLInputElement, PasswordInputProps>(
-    ({ className, ...props }, ref) => {
+    ({ className, disabled, ...props }, ref) => {
         const [showPassword, setShowPassword] = React.useState(false);
 
         return (
             <div className="relative">
                 <Input
+                    {...props}
                     ref={ref}
+                    disabled={disabled}
                     type={showPassword ? 'text' : 'password'}
                     className={cn('pr-9', className)}
-                    {...props}
                 />
                 <button
                     type="button"
-                    tabIndex={-1}
-                    onClick={() => setShowPassword((prev) => !prev)}
-                    className="absolute right-2 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-0 rounded p-1"
+                    disabled={disabled}
+                    onClick={() => setShowPassword((value) => !value)}
+                    className="absolute right-2 top-1/2 -translate-y-1/2 min-h-6 min-w-6 rounded p-1 text-muted-foreground hover:text-foreground focus-visible:outline-2 focus-visible:outline-offset-2 disabled:opacity-50"
                     aria-label={showPassword ? 'Hide password' : 'Show password'}
                 >
                     {showPassword ? (

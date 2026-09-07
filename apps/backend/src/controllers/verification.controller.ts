@@ -32,6 +32,14 @@ const emailConfirmSchema = z.object({
     otp: z.string().regex(/^\d{6}$/, 'Verification OTP must be six digits'),
 }).strict();
 
+const registrationSchema = z.object({
+    registrationNumber: z.string().min(1, 'Registration number is required').max(100).refine(
+        (value) => value.trim().length > 0,
+        'Registration number is required',
+    ),
+    processingGrantId: z.string().uuid('Invalid processing grant ID'),
+}).strict();
+
 const disclosureSchema = z.object({
     vendorId: z.string().uuid('Invalid merchant ID'),
     origin: z.string().min(1).max(2048),
@@ -131,8 +139,15 @@ export class VerificationController {
         success(res, { message: 'Verification consent withdrawn', data: { grantId } });
     }
 
-    public async registrationUnavailable(): Promise<void> {
-        throw new ServiceUnavailableError('Registration verification is temporarily unavailable pending the configured institution adapter.');
+    public async verifyRegistration(req: AuthRequest, res: Response): Promise<void> {
+        const input = registrationSchema.parse(req.body);
+        const result = await this.flow.verifyRegistration(authenticatedUserId(req), input);
+        success(res, {
+            message: 'Registration eligibility checked',
+            data: result.reason === undefined
+                ? { eligibility: result.eligibility }
+                : { eligibility: result.eligibility, reason: result.reason },
+        });
     }
 
     public async retiredLegacyRoute(): Promise<void> {
