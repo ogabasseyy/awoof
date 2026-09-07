@@ -71,6 +71,7 @@ export function UniversitySelect({ value, onChange, error, required = false }: U
     const matches = term ? universities.filter((entry) => [entry.name, entry.shortcode, entry.domain]
         .some((part) => part?.toLowerCase().includes(term))) : [];
     const noMatches = Boolean(term) && !loading && !fetchError && matches.length === 0;
+    const popupVisible = open && matches.length > 0;
     const activeUniversity = open && activeIndex >= 0 ? matches[activeIndex] : undefined;
     const activeUniversityId = activeUniversity?.id;
 
@@ -175,12 +176,12 @@ export function UniversitySelect({ value, onChange, error, required = false }: U
                     aria-autocomplete="list"
                     aria-controls={listboxId}
                     aria-activedescendant={activeUniversity ? `${listboxId}-${activeUniversity.id}` : undefined}
-                    aria-expanded={open}
+                    aria-expanded={popupVisible}
                     aria-required={required || undefined}
                     aria-describedby={describedBy}
                     disabled={loading}
                 />
-                {open && matches.length > 0 && (
+                {popupVisible && (
                     <div id={listboxId} role="listbox" className="absolute z-50 w-full mt-1 bg-white border border-gray-200 rounded-md shadow-lg max-h-60 overflow-auto">
                         {matches.map((university, index) => (
                             <div

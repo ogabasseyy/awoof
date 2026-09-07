@@ -103,6 +103,8 @@ test('an empty public directory announces a local no-match state', async ({ page
   const input = page.getByLabel(/^University/);
   await input.fill('aau');
   await expect(page.getByRole('status')).toContainText('No matching university');
+  await expect(input).toHaveAttribute('aria-expanded', 'false');
+  await expect(page.getByRole('listbox')).toHaveCount(0);
   await expect(page.getByRole('option')).toHaveCount(0);
   await input.press('Tab');
   await expect(input).toHaveValue('');
