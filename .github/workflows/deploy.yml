@@ -17,7 +17,7 @@ jobs:
       VPS_USER: ${{ secrets.VPS_USER }}
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
       - name: Set VPS connection defaults
         id: vps
