@@ -31,6 +31,28 @@ export class NotificationService {
         );
     }
 
+    /** Publish once per outbox recipient; a failed insert also rolls back its marker. */
+    public static async notifyCommerce(
+        transactionId: string,
+        recipient: 'student' | 'vendor',
+        userId: string,
+        params: NotifyParams,
+        database: { query(text: string, params?: unknown[]): Promise<unknown> } = db
+    ): Promise<void> {
+        const marker = recipient === 'student' ? 'student_notified' : 'vendor_notified';
+        await database.query(
+            `WITH claimed AS (
+                UPDATE commerce_notification_outbox SET ${marker} = true
+                WHERE transaction_id = $1 AND ${marker} = false
+                RETURNING transaction_id
+             )
+             INSERT INTO notifications (user_id, title, message, type, kind, metadata)
+             SELECT $2, $3, $4, $5, $6, $7 FROM claimed`,
+            [transactionId, userId, params.title, params.message, params.type ?? 'info',
+                params.kind ?? null, params.metadata ? JSON.stringify(params.metadata) : null]
+        );
+    }
+
     public static async notifyMany(userIds: string[], params: NotifyParams): Promise<void> {
         const unique = [...new Set(userIds.filter(Boolean))];
         for (const userId of unique) {

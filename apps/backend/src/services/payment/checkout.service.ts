@@ -78,8 +78,12 @@ async function emitCommerceNotifications(transactionId: string): Promise<void> {
 
         const steps: Array<() => Promise<void>> = [];
         if (!row.student_notified) steps.push(async () => {
-            await NotificationService.notifyPurchaseConfirmation(row.student_id, productName, amount, discount, row.id);
-            await db.query('UPDATE commerce_notification_outbox SET student_notified = true WHERE transaction_id = $1', [row.id]);
+            await NotificationService.notifyCommerce(row.id, 'student', row.student_user_id, {
+                title: 'Purchase confirmed',
+                message: `Your purchase of ${productName} is confirmed. Receipt sent to your email.`,
+                type: 'success', kind: 'purchase',
+                metadata: { transactionId: row.id, productName, amount, discount },
+            });
         });
         if (!row.savings_notified && row.total_savings != null) steps.push(async () => {
             await NotificationService.notifySavingsMilestone(row.student_id, parseFloat(row.total_savings));
@@ -91,8 +95,11 @@ async function emitCommerceNotifications(transactionId: string): Promise<void> {
             await db.query('UPDATE commerce_notification_outbox SET student_emailed = true WHERE transaction_id = $1', [row.id]);
         });
         if (!row.vendor_notified) steps.push(async () => {
-            await NotificationService.notifyVendorNewOrder({ vendorUserId: row.vendor_user_id, productName, amount, transactionId: row.id });
-            await db.query('UPDATE commerce_notification_outbox SET vendor_notified = true WHERE transaction_id = $1', [row.id]);
+            await NotificationService.notifyCommerce(row.id, 'vendor', row.vendor_user_id, {
+                title: 'New order', message: `${productName} — ₦${amount.toLocaleString()}`,
+                type: 'success', kind: 'order',
+                metadata: { transactionId: row.id, productName, amount },
+            });
         });
         if (!row.vendor_emailed && row.vendor_email) steps.push(async () => {
             const delivery = await sendVendorNewOrderEmail(row.vendor_email, productName, amount, row.id);

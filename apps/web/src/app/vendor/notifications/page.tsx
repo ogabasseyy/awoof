@@ -16,7 +16,7 @@ import ProtectedRoute from '@/components/ProtectedRoute';
 import { useAuth } from '@/contexts/AuthContext';
 import { DashboardLayout } from '@/components/dashboard';
 import { Button } from '@/components/ui/button';
-import type { User } from '@/lib/auth';
+import { getSessionSnapshot, type User } from '@/lib/auth';
 import apiClient from '@/lib/api-client';
 
 const iconProps = { className: 'h-5 w-5', strokeWidth: 1.5, fill: 'currentColor' as const };
@@ -45,6 +45,15 @@ interface Notification {
 }
 
 export default function VendorNotificationsPage() {
+    const { user } = useAuth();
+    return (
+        <ProtectedRoute requiredRole="vendor">
+            {user?.role === 'vendor' ? <AccountNotifications key={user.id} /> : null}
+        </ProtectedRoute>
+    );
+}
+
+function AccountNotifications() {
     const { user, logout } = useAuth();
     const [notifications, setNotifications] = useState<Notification[]>([]);
     const [loading, setLoading] = useState(true);
@@ -61,81 +70,83 @@ export default function VendorNotificationsPage() {
 
     useEffect(() => {
         let cancelled = false;
+        const generation = getSessionSnapshot().generation;
+        const isCurrent = () => !cancelled && getSessionSnapshot().generation === generation;
         const load = async () => {
             try {
                 setLoading(true);
                 const res = await apiClient.get('/support/notifications', { params: { page, limit: 20 } });
-                if (cancelled) return;
+                if (!isCurrent()) return;
                 setNotifications(res.data.data.notifications || []);
                 const pages = res.data.data.pagination.totalPages;
                 setTotalPages(pages);
                 if (page > pages) setPage(pages);
             } catch {
-                if (!cancelled) setNotifications([]);
+                if (isCurrent()) setNotifications([]);
             } finally {
-                if (!cancelled) setLoading(false);
+                if (isCurrent()) setLoading(false);
             }
         };
-        void load();
-        return () => { cancelled = true; };
+        const initial = setTimeout(() => { void load(); }, 0);
+        return () => { cancelled = true; clearTimeout(initial); };
     }, [page, refresh]);
 
     const markAll = async () => {
+        const generation = getSessionSnapshot().generation;
         await apiClient.put('/support/notifications/read', { markAll: true });
+        if (getSessionSnapshot().generation !== generation) return;
         setRefresh((value) => value + 1);
     };
 
     return (
-        <ProtectedRoute requiredRole="vendor">
-            <DashboardLayout
-                navItems={primaryNavItems}
-                secondaryNavItems={secondaryNavItems}
-                pageTitle="Notifications"
-                user={{
-                    name: displayName,
-                    email: user?.email,
-                    roleLabel: 'Vendor',
-                    profileHref: '/vendor/settings',
-                }}
-                onLogout={logout}
-            >
-                <div className="mb-4 flex justify-end">
-                    <Button variant="outline" size="sm" onClick={() => void markAll()}>
-                        Mark all read
-                    </Button>
-                </div>
-                <div className="overflow-hidden rounded-xl border border-slate-200 bg-white">
-                    {loading ? (
-                        <p className="p-6 text-sm text-slate-500">Loading…</p>
-                    ) : notifications.length === 0 ? (
-                        <p className="p-6 text-sm text-slate-500">No notifications</p>
-                    ) : (
-                        <ul className="divide-y divide-slate-100">
-                            {notifications.map((n) => (
-                                <li
-                                    key={n.id}
-                                    className={`px-4 py-4 ${n.read ? '' : 'bg-blue-50/40'}`}
-                                >
-                                    <p className="font-medium text-slate-900">{n.title}</p>
-                                    <p className="mt-1 text-sm text-slate-600">{n.message}</p>
-                                    <p className="mt-2 text-xs text-slate-400">
-                                        {new Date(n.createdAt).toLocaleString()}
-                                    </p>
-                                </li>
-                            ))}
-                        </ul>
-                    )}
-                </div>
-                <nav aria-label="Notification pages" className="mt-4 flex items-center justify-between">
-                    <Button variant="outline" disabled={loading || page <= 1} onClick={() => setPage((value) => value - 1)}>
-                        Previous
-                    </Button>
-                    <span className="text-sm text-slate-600">Page {page} of {totalPages}</span>
-                    <Button variant="outline" disabled={loading || page >= totalPages} onClick={() => setPage((value) => value + 1)}>
-                        Next
-                    </Button>
-                </nav>
-            </DashboardLayout>
-        </ProtectedRoute>
+        <DashboardLayout
+            navItems={primaryNavItems}
+            secondaryNavItems={secondaryNavItems}
+            pageTitle="Notifications"
+            user={{
+                name: displayName,
+                email: user?.email,
+                roleLabel: 'Vendor',
+                profileHref: '/vendor/settings',
+            }}
+            onLogout={logout}
+        >
+            <div className="mb-4 flex justify-end">
+                <Button variant="outline" size="sm" onClick={() => void markAll()}>
+                    Mark all read
+                </Button>
+            </div>
+            <div className="overflow-hidden rounded-xl border border-slate-200 bg-white">
+                {loading ? (
+                    <p className="p-6 text-sm text-slate-500">Loading…</p>
+                ) : notifications.length === 0 ? (
+                    <p className="p-6 text-sm text-slate-500">No notifications</p>
+                ) : (
+                    <ul className="divide-y divide-slate-100">
+                        {notifications.map((n) => (
+                            <li
+                                key={n.id}
+                                className={`px-4 py-4 ${n.read ? '' : 'bg-blue-50/40'}`}
+                            >
+                                <p className="font-medium text-slate-900">{n.title}</p>
+                                <p className="mt-1 text-sm text-slate-600">{n.message}</p>
+                                <p className="mt-2 text-xs text-slate-400">
+                                    {new Date(n.createdAt).toLocaleString()}
+                                </p>
+                            </li>
+                        ))}
+                    </ul>
+                )}
+            </div>
+            <nav aria-label="Notification pages" className="mt-4 flex items-center justify-between">
+                <Button variant="outline" disabled={loading || page <= 1} onClick={() => setPage((value) => value - 1)}>
+                    Previous
+                </Button>
+                <span className="text-sm text-slate-600">Page {page} of {totalPages}</span>
+                <Button variant="outline" disabled={loading || page >= totalPages} onClick={() => setPage((value) => value + 1)}>
+                    Next
+                </Button>
+            </nav>
+        </DashboardLayout>
     );
 }

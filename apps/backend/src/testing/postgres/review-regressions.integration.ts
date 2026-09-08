@@ -6,6 +6,7 @@ import type { Request, Response } from 'express';
 import { ProductController } from '../../controllers/product.controller.js';
 import { AdminVendorController } from '../../controllers/admin-vendor.controller.js';
 import type { AuthRequest } from '../../middleware/auth.middleware.js';
+import { NotificationService } from '../../services/notification/notification.service.js';
 import { db } from '../../config/database.js';
 import { withTestClient } from './test-database.js';
 
@@ -176,3 +177,29 @@ test('voucher creation is rejected while external redemption is disabled', async
         } } as unknown as AuthRequest, {} as Response), /Voucher creation is unavailable/);
     });
 });
+
+for (const recipient of ['student', 'vendor'] as const) {
+    test(`${recipient} commerce notification retries preserve an atomic marker and deliver once`, async () => {
+        await withTestClient(async (client) => {
+            // Session-local tables exercise the real delivery statement with a failing insert.
+            await client.query(`CREATE TEMP TABLE commerce_notification_outbox (
+                transaction_id text PRIMARY KEY, student_notified boolean DEFAULT false,
+                vendor_notified boolean DEFAULT false);
+                CREATE TEMP TABLE notifications (user_id text, title text CHECK (title <> 'reject'),
+                    message text, type text, kind text, metadata jsonb);
+                INSERT INTO commerce_notification_outbox (transaction_id) VALUES ('purchase');`);
+            const deliver = (title: string) => NotificationService.notifyCommerce(
+                'purchase', recipient, 'recipient', { title, message: 'Synthetic receipt' }, client
+            );
+            await assert.rejects(deliver('reject'), /check constraint/);
+            const marker = recipient === 'student' ? 'student_notified' : 'vendor_notified';
+            assert.equal((await client.query(`SELECT ${marker} FROM commerce_notification_outbox`)).rows[0][marker], false);
+            assert.equal((await client.query('SELECT * FROM notifications')).rowCount, 0);
+            await deliver('accepted');
+            // A retry after successful delivery must not insert again, even with a stale worker snapshot.
+            await deliver('accepted');
+            assert.equal((await client.query(`SELECT ${marker} FROM commerce_notification_outbox`)).rows[0][marker], true);
+            assert.equal((await client.query('SELECT * FROM notifications')).rowCount, 1);
+        });
+    });
+}

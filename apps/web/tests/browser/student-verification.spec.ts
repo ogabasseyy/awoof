@@ -252,3 +252,33 @@ test('notification contents and late responses cannot cross an account replaceme
         await expect(page.getByText('Private student notice')).toHaveCount(0);
     } finally { release(); }
 });
+
+test('vendor notification page clears prior identity and ignores its late response', async ({ page, context }) => {
+    await installSyntheticApi(page); await seedSession(page, 'vendor');
+    const other = await context.newPage();
+    await other.goto(`${appOrigin}${storageTabPath}`);
+    let loads = 0; let release!: () => void;
+    const held = new Promise<void>((resolve) => { release = resolve; });
+    await page.route((url) => url.origin === apiOrigin && url.pathname === '/api/support/notifications', async (route) => {
+        const oldAccount = route.request().headers().authorization === 'Bearer vendor-access';
+        const pageRequest = new URL(route.request().url()).searchParams.get('limit') === '20';
+        if (oldAccount && pageRequest && ++loads > 1) await held;
+        await route.fulfill({ json: { data: {
+            notifications: oldAccount ? [{ id: 'old', title: 'Vendor A private notice', message: 'Account A only', read: false, createdAt: new Date().toISOString() }] : [],
+            pagination: { totalPages: 2 },
+        } }, headers: { 'access-control-allow-origin': '*' } });
+    });
+    try {
+        await page.goto('/vendor/notifications');
+        await expect(page.getByText('Vendor A private notice')).toBeVisible();
+        await page.getByRole('button', { name: 'Next', exact: true }).click();
+        await expect.poll(() => loads).toBeGreaterThan(1);
+        await replaceSession(other, 'vendorB');
+        await expect(page.getByText('No notifications', { exact: true })).toBeVisible();
+        await expect(page.getByText('Vendor A private notice')).toHaveCount(0);
+        await expect(page.getByText('Page 1 of 2', { exact: true })).toBeVisible();
+        release();
+        await expect(page.getByText('No notifications', { exact: true })).toBeVisible();
+        await expect(page.getByText('Vendor A private notice')).toHaveCount(0);
+    } finally { release(); }
+});
