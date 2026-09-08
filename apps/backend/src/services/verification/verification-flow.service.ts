@@ -94,6 +94,7 @@ export type VerificationEmailRequest = {
 };
 
 export type VerificationStatus = {
+    emailDomainApproved: boolean;
     mailboxConfirmed: boolean;
     email: string;
     universityId: string | null;
@@ -483,7 +484,9 @@ export function createVerificationFlowService(dependencies: VerificationFlowDepe
                 const proof = await tx.query(
                     'SELECT 1 FROM user_email_proofs WHERE user_id = $1 AND email = $2 LIMIT 1',
                     [userId, context.email]);
+                const policy = await getInstitutionPolicy(tx, context.universityId);
                 return {
+                    emailDomainApproved: context.active && policy.isActive && policy.domains.includes(mailboxDomain(context.email)),
                     mailboxConfirmed: proof.rowCount === 1,
                     email: context.email,
                     universityId: context.universityId,
@@ -504,6 +507,7 @@ export function createVerificationFlowService(dependencies: VerificationFlowDepe
                     throw new BadRequestError('Active student context required');
                 }
                 return {
+                    emailDomainApproved: false,
                     mailboxConfirmed: false,
                     email: user.email,
                     universityId: null,

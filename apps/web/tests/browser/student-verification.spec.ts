@@ -12,7 +12,7 @@ test('an existing student renews eligibility with the current notice and email c
         const body = route.request().method() === 'POST' ? route.request().postDataJSON() : null;
         let data: unknown;
         if (endpoint.endsWith('/status')) data = {
-            email: 'student@approved.test', universityId: 'b9c35781-9f75-44b6-98ca-0c928fb993a9',
+            emailDomainApproved: true, email: 'student@approved.test', universityId: 'b9c35781-9f75-44b6-98ca-0c928fb993a9',
             eligibility: { eligible }, notices: { verification: { version: 'current-fixture-notice', text: 'I agree to school email verification.' } },
         };
         else if (endpoint.includes('/methods/')) data = { methods: [{ methodType: 'email', isAvailable: true }, { methodType: 'registration', isAvailable: false }] };
@@ -87,7 +87,7 @@ test('enrollment becomes actionable only after school email confirmation', async
     await page.route(`${apiOrigin}/api/verification/**`, async (route) => {
         const endpoint = new URL(route.request().url()).pathname;
         let data: unknown;
-        if (endpoint.endsWith('/status')) data = { mailboxConfirmed: emailConfirmed, email: 'student@approved.test', universityId: 'b9c35781-9f75-44b6-98ca-0c928fb993a9', eligibility: { eligible }, notices: { verification: { version: 'fixture', text: 'I agree to verification.' } } };
+        if (endpoint.endsWith('/status')) data = { mailboxConfirmed: emailConfirmed, emailDomainApproved: true, email: 'student@approved.test', universityId: 'b9c35781-9f75-44b6-98ca-0c928fb993a9', eligibility: { eligible }, notices: { verification: { version: 'fixture', text: 'I agree to verification.' } } };
         else if (endpoint.includes('/methods/')) data = { methods: [{ methodType: 'email', isAvailable: true }, { methodType: 'registration', isAvailable: true }] };
         else if (endpoint.endsWith('/initiate')) data = { processingGrantId: 'fixture-grant' };
         else if (endpoint.endsWith('/email/request')) data = { challengeId: 'fixture-challenge', resendAvailableAt: new Date().toISOString() };
@@ -116,7 +116,7 @@ test('persisted mailbox proof allows enrollment while email delivery is unavaila
     await page.route(`${apiOrigin}/api/verification/**`, async (route) => {
         const endpoint = new URL(route.request().url()).pathname;
         let data: unknown;
-        if (endpoint.endsWith('/status')) data = { mailboxConfirmed: true, email: 'student@approved.test', universityId: 'b9c35781-9f75-44b6-98ca-0c928fb993a9', eligibility: { eligible }, notices: { verification: { version: 'fixture', text: 'I agree to verification.' } } };
+        if (endpoint.endsWith('/status')) data = { mailboxConfirmed: true, emailDomainApproved: true, email: 'student@approved.test', universityId: 'b9c35781-9f75-44b6-98ca-0c928fb993a9', eligibility: { eligible }, notices: { verification: { version: 'fixture', text: 'I agree to verification.' } } };
         else if (endpoint.includes('/methods/')) data = { methods: [{ methodType: 'email', isAvailable: false }, { methodType: 'registration', isAvailable: true }] };
         else if (endpoint.endsWith('/initiate')) data = { processingGrantId: 'fixture-grant' };
         else {
@@ -189,5 +189,39 @@ for (const completed of [false, true]) {
         const callsAtDeadline = calls;
         await page.clock.runFor(30_000);
         expect(calls).toBe(callsAtDeadline);
+    });
+}
+
+test('renewal disables email when the current domain is not approved despite institutional availability', async ({ page }) => {
+    await installSyntheticApi(page); await seedSession(page, 'student');
+    let requestCalls = 0;
+    await page.route(`${apiOrigin}/api/verification/status`, (route) => route.fulfill({ json: { data: {
+        emailDomainApproved: false, mailboxConfirmed: false, email: 'student@removed.test', universityId: 'fixture-school', eligibility: { eligible: false }, notices: { verification: { version: 'fixture', text: 'I agree to verification.' } },
+    } }, headers: { 'access-control-allow-origin': '*' } }));
+    await page.route(`${apiOrigin}/api/verification/methods/*`, (route) => route.fulfill({ json: { data: { methods: [{ methodType: 'email', isAvailable: true }] } }, headers: { 'access-control-allow-origin': '*' } }));
+    await page.route(`${apiOrigin}/api/verification/email/request`, (route) => { requestCalls += 1; return route.fulfill({ status: 400, json: {} }); });
+    await page.goto('/student/verification'); await page.getByRole('checkbox').check();
+    await expect(page.getByRole('button', { name: 'Send verification code' })).toBeDisabled();
+    await expect(page.getByText('School email verification is currently unavailable. Please contact support.')).toBeVisible();
+    expect(requestCalls).toBe(0);
+});
+
+for (const suffix of ['', '.pdf']) {
+    test(`private document download accepts an authorized UUID path with suffix '${suffix}'`, async ({ page }) => {
+        await installSyntheticApi(page); await seedSession(page, 'vendor');
+        const documentPath = `/uploads/private-vendors/b4e5c64e-c7ab-4f0d-8c12-0d8eeaf269dc${suffix}`;
+        await page.route(`${apiOrigin}/api/vendors/profile`, (route) => route.fulfill({ json: { data: { vendor: { company_name: 'Synthetic vendor', document_front_url: documentPath } } }, headers: { 'access-control-allow-origin': '*' } }));
+        let authenticated = false;
+        await page.route(`${apiOrigin}${documentPath}`, (route) => {
+            if (route.request().method() === 'OPTIONS') return route.fulfill({ status: 204, headers: { 'access-control-allow-origin': '*', 'access-control-allow-headers': 'authorization,content-type' } });
+            authenticated = Boolean(route.request().headers().authorization?.startsWith('Bearer '));
+            return route.fulfill({ contentType: 'application/pdf', body: '%PDF-1.4 synthetic fixture', headers: { 'access-control-allow-origin': '*' } });
+        });
+        await page.goto('/vendor/settings');
+        await page.getByRole('button', { name: /Files/i }).click();
+        const download = page.waitForEvent('download');
+        await page.getByRole('button', { name: 'Download current document' }).click();
+        expect((await download).suggestedFilename()).toMatch(/^document(?:\.pdf)?$/);
+        expect(authenticated).toBe(true);
     });
 }

@@ -1649,3 +1649,15 @@ test('status recognizes persisted proof only for the current account mailbox', a
         assert.equal((await flow.status(fixture.userId)).mailboxConfirmed, false);
     });
 });
+
+test('status checks the actual mailbox domain when another approved domain remains', async () => {
+    await withPool(async (pool) => {
+        const fixture = await createFixture(pool);
+        const flow = createVerificationFlowService({ pool, isEmailConfigured: () => true, deliverOtp: async () => { throw new Error('Status must not send email'); } });
+        assert.equal((await flow.status(fixture.userId)).emailDomainApproved, true);
+        await pool.query(`INSERT INTO approved_student_email_domains (university_id,domain,approved_by)
+            SELECT university_id,'other.flow.example',approved_by FROM approved_student_email_domains WHERE university_id=$1 LIMIT 1`, [fixture.universityId]);
+        await pool.query("UPDATE approved_student_email_domains SET is_active=false WHERE university_id=$1 AND domain='students.flow.example'", [fixture.universityId]);
+        assert.equal((await flow.status(fixture.userId)).emailDomainApproved, false);
+    });
+});

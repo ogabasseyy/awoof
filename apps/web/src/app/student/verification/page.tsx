@@ -7,6 +7,7 @@ import ProtectedRoute from '@/components/ProtectedRoute';
 import apiClient from '@/lib/api-client';
 
 type VerificationStatus = {
+    emailDomainApproved: boolean;
     mailboxConfirmed: boolean;
     email: string;
     universityId: string | null;
@@ -54,7 +55,7 @@ function VerificationForm() {
         const id: string = response.data.data.processingGrantId;
         setGrant(id); return id;
     }
-    const emailAvailable = methods?.some((method) => method.methodType === 'email' && method.isAvailable) === true;
+    const emailAvailable = status?.emailDomainApproved === true && methods?.some((method) => method.methodType === 'email' && method.isAvailable) === true;
     const registrationAvailable = methods?.some((method) => method.methodType === 'registration' && method.isAvailable) === true;
     return <main className="mx-auto max-w-lg space-y-5 p-6">
         <Link href="/student/profile" className="underline">Back to profile</Link>

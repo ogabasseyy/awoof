@@ -9,13 +9,13 @@ export function PrivateDocumentDownload({ path }: { path: string }) {
     async function download() {
         setBusy(true); setError('');
         try {
-            if (!/^\/uploads\/(?:private-vendors|vendors)\/[a-f0-9-]{36}\.[a-zA-Z0-9]+$/.test(path)) throw new Error();
+            if (!/^\/uploads\/(?:private-vendors|vendors)\/[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}(?:\.[a-zA-Z0-9]+)?$/.test(path)) throw new Error();
             const response = await apiClient.get<Blob>(path, {
                 baseURL: apiClient.defaults.baseURL?.replace(/\/api$/, ''), responseType: 'blob',
             });
             const url = URL.createObjectURL(response.data);
             const link = document.createElement('a');
-            link.href = url; link.download = `document.${path.split('.').pop()}`; link.click();
+            link.href = url; link.download = path.includes('.') ? `document.${path.split('.').pop()}` : 'document'; link.click();
             setTimeout(() => URL.revokeObjectURL(url), 30_000);
         } catch { setError('Unable to download this document. Please try again.'); }
         finally { setBusy(false); }
