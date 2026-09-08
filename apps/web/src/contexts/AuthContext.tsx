@@ -283,9 +283,18 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         const role = user?.role;
         const operation = ++operationRef.current;
         const revocation = revokeLogoutSession(publicApiClient.defaults.baseURL!, captured.accessToken, captured.refreshToken);
-        clearTokens();
-        const cleared = getSessionSnapshot();
-        const blocked = isSessionStorageQuarantined();
+        // This operation owns its local clear. Its synchronous notification must
+        // not supersede the completion that reports revocation and navigates.
+        ownCommitRef.current = true;
+        let cleared: ReturnType<typeof getSessionSnapshot>;
+        let blocked: boolean;
+        try {
+            clearTokens();
+            cleared = getSessionSnapshot();
+            blocked = isSessionStorageQuarantined();
+        } finally {
+            ownCommitRef.current = false;
+        }
         if (mountedRef.current) {
             setUser(null);
             setIsLoading(blocked);
