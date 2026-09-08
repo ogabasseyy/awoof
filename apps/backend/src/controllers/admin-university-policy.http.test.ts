@@ -8,6 +8,7 @@ import adminRouter from '../routes/admin.routes.js';
 import { jwtService } from '../services/auth/jwt.service.js';
 
 test('policy approval rejects incomplete, wildcard and caller-authority payloads before acquiring a connection', async (t) => {
+    t.mock.method(db, 'query', async () => ({ rows: [{ role: 'admin', deleted_at: null }] }));
     t.mock.method(db, 'getPool', () => { throw new Error('Invalid input must not acquire a database connection'); });
     const app = express();
     app.use(express.json());

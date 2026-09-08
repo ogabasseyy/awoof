@@ -2034,3 +2034,19 @@ for (const authority of ['current', 'demoted', 'deleted'] as const) {
         });
     });
 }
+
+for (const authority of ['current', 'demoted', 'deleted'] as const) {
+    test(`vendor suspension requires live admin authority: ${authority}`, async () => {
+        const { adminVendorController } = await import('../../controllers/admin-vendor.controller.js');
+        await withTestClient(async (client) => {
+            const fixture = await createFixture(client); const merchant = await createMerchantFixture(client);
+            if (authority === 'demoted') await client.query("UPDATE users SET role='vendor' WHERE id=$1", [fixture.adminId]);
+            if (authority === 'deleted') await client.query('UPDATE users SET deleted_at=clock_timestamp() WHERE id=$1', [fixture.adminId]);
+            const req = { user: { userId: fixture.adminId, role: 'admin' }, params: { id: merchant.vendorId }, body: { status: 'suspended' } } as unknown as AuthRequest;
+            const res = { status: () => res, json: () => res } as unknown as Response;
+            if (authority === 'current') await adminVendorController.updateVendorStatus(req, res);
+            else await assert.rejects(adminVendorController.updateVendorStatus(req, res), /Current administrator authority required/);
+            assert.equal((await client.query('SELECT status FROM vendors WHERE id=$1', [merchant.vendorId])).rows[0].status, authority === 'current' ? 'suspended' : 'active');
+        });
+    });
+}

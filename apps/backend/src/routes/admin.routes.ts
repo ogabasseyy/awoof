@@ -8,6 +8,7 @@ import { readInstitutionVerificationPolicy, replaceInstitutionVerificationPolicy
 import { Router } from 'express';
 import { asyncHandler } from '../common/middleware/errorHandler.js';
 import { authenticate } from '../middleware/auth.middleware.js';
+import { requireCurrentAdmin } from '../middleware/current-admin.js';
 import { requireRole } from '../middleware/auth.middleware.js';
 import { adminController } from '../controllers/admin.controller.js';
 import { adminUniversityController } from '../controllers/admin-university.controller.js';
@@ -23,6 +24,7 @@ const router = Router();
 // All admin routes require authentication and admin role
 router.use(authenticate);
 router.use(requireRole('admin'));
+router.use(requireCurrentAdmin);
 
 // Admin universities - order matters: segment-stats and csv-sample before :id
 router.get('/universities', asyncHandler(adminUniversityController.getUniversities.bind(adminUniversityController)));

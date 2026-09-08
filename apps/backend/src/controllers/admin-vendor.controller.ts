@@ -7,7 +7,7 @@
 import type { Request, Response } from 'express';
 import { z } from 'zod';
 import { db } from '../config/database.js';
-import { BadRequestError, NotFoundError } from '../common/errors/AppError.js';
+import { BadRequestError, ForbiddenError, NotFoundError } from '../common/errors/AppError.js';
 import { success } from '../common/utils/response.js';
 
 const updateVendorStatusSchema = z.object({
@@ -129,6 +129,12 @@ export class AdminVendorController {
         const result = await (async () => {
             try {
                 await client.query('BEGIN');
+                const actor = await client.query<{ role: string; deleted_at: Date | null }>(
+                    'SELECT role, deleted_at FROM users WHERE id = $1 FOR UPDATE', [req.user?.userId],
+                );
+                if (actor.rows[0]?.role !== 'admin' || actor.rows[0].deleted_at !== null) {
+                    throw new ForbiddenError('Current administrator authority required');
+                }
                 const vendor = await client.query('SELECT user_id FROM vendors WHERE id = $1 AND deleted_at IS NULL', [id]);
                 const userId = vendor.rows[0]?.user_id;
                 if (!userId) throw new NotFoundError('Vendor not found');
