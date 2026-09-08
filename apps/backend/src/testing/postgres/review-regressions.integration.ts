@@ -116,3 +116,16 @@ test('Paystack references cannot cross vendors or checkout paths, including fail
         }
     });
 });
+
+test('vendors cannot activate external payments while verification token issuance is unavailable', async () => {
+    const { PaymentController } = await import('../../controllers/payment.controller.js');
+    await withTestClient(async (client) => {
+        const id = randomUUID();
+        await client.query(`INSERT INTO users (id, email, role) VALUES ($1, $2, 'vendor')`, [id, `${id}@example.invalid`]);
+        const vendor = (await client.query(`INSERT INTO vendors (user_id, name, status) VALUES ($1, 'Synthetic', 'active') RETURNING id`, [id])).rows[0];
+        const response = { status() { return this; }, json() { return this; } } as unknown as Response;
+        const controller = new PaymentController();
+        await assert.rejects(controller.updatePaymentMethod({ user: { userId: id, role: 'vendor' }, body: { paymentMethod: 'vendor_website' } } as unknown as AuthRequest, response), /Vendor-site checkout is unavailable/);
+        assert.notEqual((await client.query('SELECT payment_method FROM vendors WHERE id = $1', [vendor.id])).rows[0].payment_method, 'vendor_website');
+    });
+});

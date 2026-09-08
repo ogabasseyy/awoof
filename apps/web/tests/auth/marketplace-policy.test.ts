@@ -12,6 +12,11 @@ test('external payment never makes a finite product unlimited', () => {
     assert.equal(dealUnavailable({ deal_type: 'product', stock: 0 }), true);
     assert.equal(dealUnavailable({ deal_type: 'product', stock: 1 }), false);
     assert.equal(dealUnavailable({ deal_type: 'voucher', stock: 0 }), true);
-    assert.equal(dealUnavailable({ deal_type: 'voucher', stock: 1 }), false);
+    assert.equal(dealUnavailable({ deal_type: 'voucher', stock: 1 }), true);
     assert.equal(dealUnavailable({ stock: NaN }), true);
+});
+
+test('vendor-site checkout is unavailable while widget assertions are retired', () => {
+    assert.equal(dealUnavailable({ stock: 10, vendor_payment_method: 'vendor_website' }), true);
+    assert.equal(dealUnavailable({ stock: 10, vendor_payment_method: 'awoof' }), false);
 });

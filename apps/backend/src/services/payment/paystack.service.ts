@@ -8,7 +8,7 @@
 import axios from 'axios';
 import crypto from 'crypto';
 import { config } from '../../config/env.js';
-import { BadRequestError } from '../../common/errors/AppError.js';
+import { BadRequestError, ServiceUnavailableError } from '../../common/errors/AppError.js';
 
 /**
  * Verify a Paystack payment reference
@@ -111,6 +111,20 @@ export function generatePaystackReference(): string {
     return `awoof-${Date.now()}-${crypto.randomBytes(16).toString('hex')}`;
 }
 
+export class PaystackInitializationRejectedError extends BadRequestError {
+    constructor() { super('Payment initialization was rejected. Correct the payment configuration before retrying.'); }
+}
+
+export function isDefinitiveInitializationRejection(error: unknown): boolean {
+    if (!axios.isAxiosError(error)) return false;
+    const response = error.response;
+    const detail = response?.data;
+    // A reused reference may describe an existing accepted initialization.
+    const message = `${detail?.code ?? ''} ${detail?.message ?? ''}`;
+    if (/duplicate|already|in.use|used|exists/i.test(message)) return false;
+    return [400, 401, 403, 404, 422].includes(response?.status ?? 0) && detail?.status === false;
+}
+
 export async function initializePaystackTransaction(params: {
     email: string;
     amountKobo: number;
@@ -148,7 +162,10 @@ export async function initializePaystackTransaction(params: {
                 Authorization: `Bearer ${config.paystack.secretKey}`,
             },
         }
-    );
+    ).catch((error: unknown) => {
+        if (isDefinitiveInitializationRejection(error)) throw new PaystackInitializationRejectedError();
+        throw error;
+    });
 
     const data = response.data?.data;
     if (!data?.authorization_url) {
@@ -183,6 +200,8 @@ function paystackErrorMessage(error: unknown, fallback: string): string {
 export async function listPaystackBanks(): Promise<{ name: string; code: string }[]> {
     try {
         const response = await axios.get('https://api.paystack.co/bank', {
+            timeout: 15000,
+            signal: AbortSignal.timeout(15000),
             headers: paystackAuthHeaders(),
             params: { country: 'nigeria', currency: 'NGN' },
         });
@@ -209,6 +228,8 @@ export async function resolvePaystackAccount(
 ): Promise<{ accountNumber: string; accountName: string }> {
     try {
         const response = await axios.get('https://api.paystack.co/bank/resolve', {
+            timeout: 15000,
+            signal: AbortSignal.timeout(15000),
             headers: paystackAuthHeaders(),
             params: {
                 bank_code: bankCode,
@@ -225,6 +246,9 @@ export async function resolvePaystackAccount(
         };
     } catch (error: unknown) {
         if (error instanceof BadRequestError) throw error;
+        if (axios.isAxiosError(error) && (!error.response || error.code === 'ERR_CANCELED')) {
+            throw new ServiceUnavailableError('Bank account resolution is temporarily unavailable. Please retry.');
+        }
         throw new BadRequestError(paystackErrorMessage(error, 'Could not resolve bank account'));
     }
 }

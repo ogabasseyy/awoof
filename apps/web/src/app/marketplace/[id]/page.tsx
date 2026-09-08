@@ -346,7 +346,7 @@ export default function ProductDetailPage() {
                             >
                                 <ShoppingCart className="mr-2 h-5 w-5" />
                                 {isUnavailable
-                                    ? 'Out of stock'
+                                    ? (isExternal ? 'Checkout unavailable' : 'Out of stock')
                                     : isPurchasing
                                       ? 'Starting checkout…'
                                       : isExternal
@@ -391,7 +391,7 @@ export default function ProductDetailPage() {
                         className="h-12 flex-1 rounded-full bg-[#1D4ED8] font-bold hover:bg-[#1E40AF]"
                     >
                         {isUnavailable
-                            ? 'Out of stock'
+                            ? (isExternal ? 'Checkout unavailable' : 'Out of stock')
                             : isPurchasing
                               ? '…'
                               : isExternal

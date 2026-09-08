@@ -670,14 +670,13 @@ export default function VendorPaymentPage() {
                                             name="paymentMethod"
                                             value="vendor_website"
                                             checked={settings?.paymentMethod === 'vendor_website'}
-                                            onChange={() => handlePaymentMethodChange('vendor_website')}
-                                            disabled={isUpdatingPaymentMethod}
+                                            disabled
                                             className="mt-1 h-4 w-4 text-blue-600"
                                         />
                                         <div className="flex-1">
                                             <div className="font-semibold text-slate-900">Vendor Website</div>
                                             <p className="mt-1 text-sm text-slate-600">
-                                                Process payments on your website using the Awoof verification widget. Requires integration setup.
+                                                Unavailable while merchant verification is being replaced. Select Awoof Platform to accept marketplace payments.
                                             </p>
                                         </div>
                                     </label>

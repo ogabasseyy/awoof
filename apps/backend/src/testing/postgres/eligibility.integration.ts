@@ -1878,3 +1878,38 @@ test('payment fulfillment reconciles a vendor switched to external checkout with
         assert.equal((await client.query('SELECT count(*)::int AS count FROM payment_reconciliation_queue WHERE transaction_id = $1', [tx.id])).rows[0].count, 1);
     });
 });
+
+test('definitively rejected initialization releases the checkout for a corrected retry', async () => {
+    const { default: axios } = await import('axios');
+    const { config } = await import('../../config/env.js');
+    const originalPost = axios.post;
+    const oldKey = config.paystack.secretKey;
+    Object.assign(config.paystack, { secretKey: 'synthetic-test-key' });
+    let calls = 0;
+    axios.post = (async () => {
+        if (++calls === 1) throw { isAxiosError: true, response: { status: 400, data: { status: false, message: 'Invalid subaccount' } } };
+        return { data: { data: { authorization_url: 'https://checkout.paystack.com/synthetic', access_code: 'synthetic' } } };
+    }) as typeof axios.post;
+    try {
+        await withTestClient(async (client) => {
+            const fixture = await createFixture(client);
+            const vendor = await createMerchantFixture(client);
+            const product = (await client.query(`INSERT INTO products (vendor_id, name, price, student_price, stock, status)
+                VALUES ($1, 'Synthetic retry', 100, 80, 10, 'active') RETURNING id`, [vendor.vendorId])).rows[0];
+            const request = { user: { userId: fixture.userId, role: 'student' }, body: { productId: product.id } } as unknown as AuthRequest;
+            const response = { status() { return this; }, json() { return this; } } as unknown as Response;
+            const controller = new CheckoutController();
+            await assert.rejects(controller.createCheckout(request, response), /initialization was rejected/);
+            const failed = (await client.query('SELECT status, checkout_initialization_state FROM transactions WHERE student_id = $1', [fixture.studentId])).rows[0];
+            assert.equal(failed.status, 'failed');
+            assert.equal(failed.checkout_initialization_state, null);
+            await controller.createCheckout(request, response);
+            await controller.createCheckout(request, response);
+            assert.equal(calls, 2); // The successful retry is reused on repeated clicks.
+            assert.equal((await client.query('SELECT count(*)::int AS count FROM transactions WHERE student_id = $1', [fixture.studentId])).rows[0].count, 2);
+        });
+    } finally {
+        axios.post = originalPost;
+        Object.assign(config.paystack, { secretKey: oldKey });
+    }
+});

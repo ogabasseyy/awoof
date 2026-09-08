@@ -23,6 +23,7 @@ import {
 } from '../services/payment/checkout.service.js';
 import {
     generatePaystackReference,
+    PaystackInitializationRejectedError,
     initializePaystackTransaction,
     verifyPaystackPayment,
 } from '../services/payment/paystack.service.js';
@@ -188,7 +189,12 @@ export class CheckoutController {
                     reference,
                 },
             });
-        } catch {
+        } catch (error) {
+            if (error instanceof PaystackInitializationRejectedError) {
+                await db.query(`UPDATE transactions SET status = 'failed', checkout_initialization_state = NULL,
+                    updated_at = CURRENT_TIMESTAMP WHERE id = $1 AND status = 'pending'`, [transactionId]);
+                throw error;
+            }
             await db.query(
                 `UPDATE transactions SET checkout_initialization_state = 'unknown', updated_at = CURRENT_TIMESTAMP WHERE id = $1 AND status IN ('pending', 'failed')`,
                 [transactionId]

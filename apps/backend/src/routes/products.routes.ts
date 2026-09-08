@@ -41,7 +41,7 @@ router.get(
             FROM products p
             LEFT JOIN categories c ON p.category_id = c.id
             LEFT JOIN vendors v ON p.vendor_id = v.id
-            WHERE p.status = 'active' AND p.deleted_at IS NULL AND v.deleted_at IS NULL AND v.status = 'active'
+            WHERE p.status = 'active' AND p.deleted_at IS NULL AND v.deleted_at IS NULL AND v.status = 'active' AND COALESCE(v.payment_method, 'awoof') = 'awoof' AND COALESCE(p.deal_type, 'product') = 'product'
         `;
         const values: (string | number)[] = [];
         let paramCount = 1;
@@ -149,7 +149,7 @@ router.get(
             FROM products p
             LEFT JOIN categories c ON p.category_id = c.id
             LEFT JOIN vendors v ON p.vendor_id = v.id
-            WHERE p.id = $1 AND p.status = 'active' AND p.deleted_at IS NULL AND v.deleted_at IS NULL AND v.status = 'active'`,
+            WHERE p.id = $1 AND p.status = 'active' AND p.deleted_at IS NULL AND v.deleted_at IS NULL AND v.status = 'active' AND COALESCE(v.payment_method, 'awoof') = 'awoof' AND COALESCE(p.deal_type, 'product') = 'product'`,
             [productId]
         );
 

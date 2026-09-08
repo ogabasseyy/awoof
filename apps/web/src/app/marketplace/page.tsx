@@ -623,9 +623,8 @@ export default function MarketplacePage() {
                                                         {formatCurrency(product.student_price)}
                                                     </span>
                                                     <span className="text-xs font-semibold text-slate-500">
-                                                        {product.deal_type === 'voucher' ||
-                                                        product.vendor_payment_method === 'vendor_website'
-                                                            ? 'Visit site'
+                                                        {product.vendor_payment_method === 'vendor_website' || product.deal_type === 'voucher'
+                                                            ? 'Unavailable'
                                                             : 'Buy'}
                                                     </span>
                                                 </div>

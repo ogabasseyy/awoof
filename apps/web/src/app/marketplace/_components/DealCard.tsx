@@ -33,8 +33,8 @@ export function DealCard({
     const reduce = useReducedMotion();
     const discount = discountPct(product.price, product.student_price);
     const cta =
-        product.deal_type === 'voucher' || product.vendor_payment_method === 'vendor_website'
-            ? 'Visit site'
+        product.vendor_payment_method === 'vendor_website' || product.deal_type === 'voucher'
+            ? 'Unavailable'
             : 'View deal';
 
     const inner = (

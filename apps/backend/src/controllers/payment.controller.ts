@@ -492,6 +492,9 @@ export class PaymentController {
 
         // Validate request body
         const validated = updatePaymentMethodSchema.parse(req.body);
+        if (validated.paymentMethod === 'vendor_website') {
+            throw new BadRequestError('Vendor-site checkout is unavailable until merchant verification is restored');
+        }
 
         // Update payment method in vendors table
         // Note: We'll need to add payment_method column if it doesn't exist

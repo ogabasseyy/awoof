@@ -9,6 +9,7 @@ import express, { type Express, type Request, type Response, type NextFunction }
 import cors from 'cors';
 import helmet from 'helmet';
 import rateLimit from 'express-rate-limit';
+import { paystackWebhookLimiter } from './middleware/paystack-webhook-limit.js';
 import swaggerUi from 'swagger-ui-express';
 import { config } from './config/env.js';
 import { db } from './config/database.js';
@@ -40,13 +41,8 @@ class App {
   private initializeWebhookRoute(): void {
     this.app.post(
       '/api/webhooks/paystack',
-      rateLimit({
-        windowMs: config.rateLimit.windowMs,
-        max: config.rateLimit.maxRequests,
-        standardHeaders: true,
-        legacyHeaders: false,
-      }),
-      express.raw({ type: 'application/json' }),
+      express.raw({ type: 'application/json', limit: '100kb' }),
+      paystackWebhookLimiter,
       async (req: Request, res: Response, next: NextFunction) => {
         try {
           const { handlePaystackWebhook } = await import('./controllers/webhook.controller.js');

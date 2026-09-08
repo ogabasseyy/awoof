@@ -7,6 +7,6 @@ export function redemptionUrl(value: string | null | undefined): string | null {
     } catch { return null; }
 }
 
-export function dealUnavailable(deal: { deal_type?: string; stock: number } | null): boolean {
-    return Boolean(deal && (!Number.isFinite(deal.stock) || deal.stock <= 0));
+export function dealUnavailable(deal: { deal_type?: string; vendor_payment_method?: string; stock: number } | null): boolean {
+    return Boolean(deal && (deal.vendor_payment_method === 'vendor_website' || deal.deal_type === 'voucher' || !Number.isFinite(deal.stock) || deal.stock <= 0));
 }
