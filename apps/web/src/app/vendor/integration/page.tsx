@@ -56,6 +56,7 @@ interface PaymentSettings {
 interface WidgetConfig {
     vendorId: string;
     allowedDomains: string[];
+    allowedOrigins?: string[];
     apiKey: string;
     status: string;
 }
@@ -387,7 +388,7 @@ export default function VendorIntegrationPage() {
                             <div className="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm">
                                 <h2 className="mb-2 text-lg font-semibold text-slate-900">Widget settings</h2>
                                 <p className="mb-4 text-sm text-slate-600">
-                                    Add the domains where your widget will run. Only these domains can use your widget API key.
+                                    Add the HTTPS hostnames where your widget will run (standard port 443). Saving also authorizes those exact HTTPS origins for student disclosure consent.
                                 </p>
                                 {widgetConfigLoading ? (
                                     <p className="text-slate-500 text-sm">Loading...</p>
@@ -409,6 +410,17 @@ export default function VendorIntegrationPage() {
                                         </div>
                                         <div>
                                             <Label className="mb-2 block">Allowed domains</Label>
+                                            {widgetConfig.allowedDomains.length > 0 && !widgetConfig.allowedOrigins?.length && (
+                                                <Button variant="outline" disabled={savingWidgetConfig} onClick={async () => {
+                                                    setSavingWidgetConfig(true);
+                                                    try {
+                                                        await apiClient.put('/vendors/widget-config', { allowedDomains: widgetConfig.allowedDomains });
+                                                        await fetchWidgetConfig();
+                                                        toast.success('HTTPS disclosure origins saved');
+                                                    } catch (error) { toast.error(getApiErrorMessage(error, 'Unable to save disclosure origins')); }
+                                                    finally { setSavingWidgetConfig(false); }
+                                                }}>Save HTTPS disclosure origins</Button>
+                                            )}
                                             <ul className="mb-2 rounded-lg border border-slate-200 divide-y divide-slate-200">
                                                 {(widgetConfig.allowedDomains || []).map((d) => (
                                                     <li key={d} className="flex items-center justify-between px-3 py-2 text-sm">

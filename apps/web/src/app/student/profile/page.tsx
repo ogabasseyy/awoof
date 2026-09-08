@@ -40,6 +40,16 @@ export default function StudentProfilePage() {
     const confirm = useConfirm();
     const [darkMode, setDarkMode] = useState(false);
     const [unreadCount, setUnreadCount] = useState(0);
+    const [eligibility, setEligibility] = useState<{ userId: string; eligible: boolean } | null>(null);
+    useEffect(() => {
+        if (!user?.id) return;
+        let cancelled = false;
+        const userId = user.id;
+        void apiClient.get('/verification/status').then((response) => {
+            if (!cancelled) setEligibility({ userId, eligible: response.data.data.eligibility.eligible === true });
+        }).catch(() => { if (!cancelled) setEligibility(null); });
+        return () => { cancelled = true; };
+    }, [user?.id]);
 
     useEffect(() => {
         apiClient
@@ -75,7 +85,8 @@ export default function StudentProfilePage() {
         return name.split(' ')[0] || 'there';
     };
 
-    const isVerified = user?.verificationStatus === 'verified';
+    const eligibilityKnown = eligibility !== null && eligibility.userId === user?.id;
+    const isVerified = eligibilityKnown && eligibility.eligible;
 
     const handleSignOut = async () => {
         const ok = await confirm({
@@ -251,14 +262,14 @@ export default function StudentProfilePage() {
                                             </span>
                                         ) : (
                                             <span className="inline-flex items-center gap-1 bg-white/20 text-white text-[11px] font-bold px-2 py-0.5 rounded-full">
-                                                Unverified
+                                                {eligibilityKnown ? 'Unverified' : 'Verification unavailable'}
                                             </span>
                                         )}
                                     </div>
                                     <p className="text-sm text-blue-100 truncate">{user?.email}</p>
                                 </div>
                             </div>
-                            {!isVerified && (
+                            {eligibilityKnown && !isVerified && (
                                 <p className="relative mt-5 text-sm text-blue-100 leading-relaxed flex items-start gap-2">
                                     <Sparkles className="h-4 w-4 mt-0.5 shrink-0" />
                                     Hey {getFirstName()} — verify your student status so deals unlock the moment they

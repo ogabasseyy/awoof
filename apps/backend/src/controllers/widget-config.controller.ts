@@ -6,7 +6,7 @@
 
 import type { Response } from 'express';
 import { db } from '../config/database.js';
-import { NotFoundError, UnauthorizedError } from '../common/errors/AppError.js';
+import { BadRequestError, NotFoundError, UnauthorizedError } from '../common/errors/AppError.js';
 import { success } from '../common/utils/response.js';
 import type { AuthRequest } from '../middleware/auth.middleware.js';
 import { z } from 'zod';
@@ -38,7 +38,7 @@ export async function getWidgetConfig(req: AuthRequest, res: Response): Promise<
     const vendorId = vendorResult.rows[0].id;
 
     let row = await db.query(
-        `SELECT id, allowed_domains, api_key, status, created_at, updated_at
+        `SELECT id, allowed_domains, allowed_origins, api_key, status, created_at, updated_at
          FROM widget_configs WHERE vendor_id = $1`,
         [vendorId]
     );
@@ -46,12 +46,12 @@ export async function getWidgetConfig(req: AuthRequest, res: Response): Promise<
     if (row.rows.length === 0) {
         const apiKey = generateWidgetApiKey();
         await db.query(
-            `INSERT INTO widget_configs (vendor_id, allowed_domains, api_key, status)
-             VALUES ($1, $2, $3, 'active')`,
-            [vendorId, ['localhost'], apiKey]
+            `INSERT INTO widget_configs (vendor_id, allowed_domains, allowed_origins, api_key, status)
+             VALUES ($1, $2, $3, $4, 'active')`,
+            [vendorId, ['localhost'], ['https://localhost'], apiKey]
         );
         row = await db.query(
-            `SELECT id, allowed_domains, api_key, status, created_at, updated_at
+            `SELECT id, allowed_domains, allowed_origins, api_key, status, created_at, updated_at
              FROM widget_configs WHERE vendor_id = $1`,
             [vendorId]
         );
@@ -63,6 +63,7 @@ export async function getWidgetConfig(req: AuthRequest, res: Response): Promise<
         data: {
             vendorId,
             allowedDomains: c.allowed_domains || [],
+            allowedOrigins: c.allowed_origins || [],
             apiKey: c.api_key,
             status: c.status,
             createdAt: c.created_at,
@@ -89,19 +90,17 @@ export async function updateWidgetConfig(req: AuthRequest, res: Response): Promi
     const vendorId = vendorResult.rows[0].id;
 
     const validated = updateWidgetConfigSchema.parse(req.body);
-    const domains = validated.allowedDomains
-        .map((value) => {
-            const trimmed = value.trim();
-            try {
-                return new URL(trimmed.includes('://') ? trimmed : `https://${trimmed}`).hostname.toLowerCase();
-            } catch {
-                return '';
-            }
-        })
-        .filter(Boolean);
-    if (domains.length === 0) {
-        throw new Error('At least one valid domain is required');
-    }
+    const domains = [...new Set(validated.allowedDomains.map((value) => {
+        let parsed: URL;
+        try { parsed = new URL(value.trim().includes('://') ? value.trim() : `https://${value.trim()}`); }
+        catch { throw new BadRequestError('Enter a valid HTTPS hostname'); }
+        if (parsed.protocol !== 'https:' || parsed.port || parsed.username || parsed.password
+            || parsed.pathname !== '/' || parsed.search || parsed.hash || parsed.hostname.includes('*')) {
+            throw new BadRequestError('Widget domains must be HTTPS hostnames without ports, paths or credentials');
+        }
+        return parsed.hostname.toLowerCase();
+    }))];
+    const origins = domains.map((hostname) => `https://${hostname}`);
 
     const regenerateKey = Boolean(req.body.regenerateApiKey);
 
@@ -114,15 +113,15 @@ export async function updateWidgetConfig(req: AuthRequest, res: Response): Promi
     if (row.rows.length === 0) {
         apiKey = generateWidgetApiKey();
         await db.query(
-            `INSERT INTO widget_configs (vendor_id, allowed_domains, api_key, status)
-             VALUES ($1, $2, $3, 'active')`,
-            [vendorId, domains, apiKey]
+            `INSERT INTO widget_configs (vendor_id, allowed_domains, allowed_origins, api_key, status)
+             VALUES ($1, $2, $3, $4, 'active')`,
+            [vendorId, domains, origins, apiKey]
         );
     } else {
         apiKey = regenerateKey ? generateWidgetApiKey() : row.rows[0].api_key;
         await db.query(
-            `UPDATE widget_configs SET allowed_domains = $1, api_key = $2, updated_at = CURRENT_TIMESTAMP WHERE vendor_id = $3`,
-            [domains, apiKey, vendorId]
+            `UPDATE widget_configs SET allowed_domains = $1, allowed_origins = $2, api_key = $3, updated_at = CURRENT_TIMESTAMP WHERE vendor_id = $4`,
+            [domains, origins, apiKey, vendorId]
         );
     }
 
@@ -131,6 +130,7 @@ export async function updateWidgetConfig(req: AuthRequest, res: Response): Promi
         data: {
             vendorId,
             allowedDomains: domains,
+            allowedOrigins: origins,
             apiKey: regenerateKey ? apiKey : undefined,
             status: 'active',
         },

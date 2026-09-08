@@ -15,6 +15,7 @@ test('an existing student renews eligibility with the current notice and email c
             email: 'student@approved.test', universityId: 'b9c35781-9f75-44b6-98ca-0c928fb993a9',
             eligibility: { eligible }, notices: { verification: { version: 'current-fixture-notice', text: 'I agree to school email verification.' } },
         };
+        else if (endpoint.includes('/methods/')) data = { methods: [{ methodType: 'email', isAvailable: true }, { methodType: 'registration', isAvailable: false }] };
         else if (endpoint.endsWith('/initiate')) {
             expect(body).toEqual({ universityId: 'b9c35781-9f75-44b6-98ca-0c928fb993a9', accepted: true, noticeVersion: 'current-fixture-notice' });
             data = { processingGrantId: 'fixture-grant' };
@@ -30,6 +31,8 @@ test('an existing student renews eligibility with the current notice and email c
     });
     await page.goto('/student/verification');
     await expect(page.getByRole('button', { name: 'Send verification code' })).toBeDisabled();
+    await expect(page.getByText('Enrollment verification is not currently available for your school.')).toBeVisible();
+    await expect(page.getByRole('button', { name: 'Check enrollment' })).toHaveCount(0);
     await page.getByRole('checkbox').check();
     await page.getByRole('button', { name: 'Send verification code' }).click();
     await page.getByLabel('Email code').fill('123456');
@@ -63,3 +66,17 @@ test('checkout waits for an outstanding status request before scheduling the nex
     await page.clock.fastForward(15_000);
     expect(calls).toBe(2);
 });
+
+for (const eligible of [true, false]) {
+    test(`profile follows effective eligibility ${eligible} despite the opposite legacy flag`, async ({ page }) => {
+        await installSyntheticApi(page);
+        await seedSession(page, 'student');
+        await page.route(`${apiOrigin}/api/auth/me`, (route) => route.fulfill({ json: { success: true, data: {
+            id: '00000000-0000-4000-8000-000000000001', email: 'student@approved.test', role: 'student', verificationStatus: eligible ? 'unverified' : 'verified',
+        } }, headers: { 'access-control-allow-origin': '*' } }));
+        await page.route(`${apiOrigin}/api/verification/status`, (route) => route.fulfill({ json: { data: { eligibility: { eligible } } }, headers: { 'access-control-allow-origin': '*' } }));
+        await page.goto('/student/profile');
+        await expect(page.getByText(eligible ? 'Verified' : 'Unverified', { exact: true })).toBeVisible();
+        await expect(page.getByText(eligible ? 'Unverified' : 'Verified', { exact: true })).toHaveCount(0);
+    });
+}
