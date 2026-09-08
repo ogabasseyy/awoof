@@ -20,6 +20,11 @@ export function calculateMarketplaceCommission(
     return { commission, vendorNet };
 }
 
+export function effectiveVendorCommissionRate(value: unknown, platformRate: number): number {
+    const rate = Number(value);
+    return Number.isFinite(rate) && rate > 0 && rate <= 100 ? rate : platformRate;
+}
+
 export async function getPlatformFeePercent(database: { query(text: string): Promise<{ rows: { value: string }[] }> } = db): Promise<number> {
     const result = await database.query(
         `SELECT value FROM platform_settings WHERE key = 'platform_fee_percent'`
@@ -28,7 +33,7 @@ export async function getPlatformFeePercent(database: { query(text: string): Pro
         return 10;
     }
     const configuredFee = Number.parseFloat(result.rows[0]?.value ?? '');
-    return Number.isFinite(configuredFee) ? configuredFee : 10;
+    return Number.isFinite(configuredFee) && configuredFee >= 0 && configuredFee <= 100 ? configuredFee : 10;
 }
 
 async function emitCommerceNotifications(transactionId: string): Promise<void> {
@@ -206,8 +211,9 @@ export async function completeMarketplaceTransactionWithClient(
             `SELECT t.*, COALESCE(t.list_price_snapshot, p.price) AS list_price
              FROM transactions t
              JOIN products p ON p.id = t.product_id
+             JOIN vendors v ON v.id = p.vendor_id
              WHERE t.paystack_reference = $1
-             FOR UPDATE OF t`,
+             FOR UPDATE OF t, v`,
             [paystackReference]
         );
 
@@ -261,6 +267,7 @@ export async function completeMarketplaceTransactionWithClient(
                AND p.status = 'active'
                AND COALESCE(p.deal_type, 'product') = 'product'
                AND v.status = 'active'
+               AND COALESCE(v.payment_method, 'awoof') = 'awoof'
                AND v.deleted_at IS NULL
              RETURNING p.id`,
             [tx.product_id]

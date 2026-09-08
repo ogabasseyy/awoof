@@ -58,9 +58,6 @@ jobs:
 
       - name: Sync files to VPS
         run: |
-          ssh -i ~/.ssh/deploy_key -o StrictHostKeyChecking=yes \
-            ${{ steps.vps.outputs.user }}@${{ steps.vps.outputs.host }} \
-            "sg docker -c 'sh -s'" < scripts/check-upload-migration.sh
           rsync -avz --delete \
             -e "ssh -i ~/.ssh/deploy_key -o StrictHostKeyChecking=yes -o ServerAliveInterval=60 -o ServerAliveCountMax=10" \
             --exclude 'node_modules' \
@@ -72,6 +69,7 @@ jobs:
             --exclude '*.log' \
             --exclude '.env' \
             --exclude 'backups' \
+            --exclude '.upload-deploy.lock' \
             ./ ${{ steps.vps.outputs.user }}@${{ steps.vps.outputs.host }}:~/awoof/
 
       - name: Back up production database
@@ -87,7 +85,7 @@ jobs:
           node scripts/deployment-gate.mjs
           ssh -i ~/.ssh/deploy_key -o StrictHostKeyChecking=yes -o ServerAliveInterval=60 -o ServerAliveCountMax=10 \
             ${{ steps.vps.outputs.user }}@${{ steps.vps.outputs.host }} \
-            "cd ~/awoof && sg docker -c 'docker compose -f docker-compose.hostinger.yml up -d --build'"
+            "cd ~/awoof && sg docker -c 'python3 scripts/deploy-with-uploads.py'"
         env:
           GH_TOKEN: ${{ github.token }}
 

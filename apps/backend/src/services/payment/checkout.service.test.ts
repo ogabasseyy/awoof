@@ -157,3 +157,14 @@ describe('completeMarketplaceTransactionWithClient', () => {
         assert.equal(statements[5], 'COMMIT');
     });
 });
+
+describe('vendor commission policy', () => {
+    it('uses the global fallback and rounds fractional commissions to kobo', async () => {
+        const { effectiveVendorCommissionRate, calculateMarketplaceCommission } = await import('./checkout.service.js');
+        for (const value of [0, null, undefined, 'invalid', -1, 101]) {
+            assert.equal(effectiveVendorCommissionRate(value, 10), 10);
+        }
+        assert.equal(effectiveVendorCommissionRate('7.5', 10), 7.5);
+        assert.deepEqual(calculateMarketplaceCommission(99.99, 7.5), { commission: 7.5, vendorNet: 92.49 });
+    });
+});

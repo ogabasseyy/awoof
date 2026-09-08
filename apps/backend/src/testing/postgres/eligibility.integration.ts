@@ -1821,3 +1821,60 @@ test('checkout uses current evidence even when legacy verification flags disagre
         await assert.rejects(controller.createCheckout(request, response), /Current student eligibility is required/);
     });
 });
+
+test('uncertain provider initialization survives retries and expiry without a second charge attempt', async () => {
+    const { default: axios } = await import('axios');
+    const { config } = await import('../../config/env.js');
+    const oldKey = config.paystack.secretKey;
+    const originalPost = axios.post;
+    let calls = 0;
+    Object.assign(config.paystack, { secretKey: 'synthetic-test-key' });
+    axios.post = (async (_url: unknown, _body: unknown, options: { timeout?: number; signal?: AbortSignal }) => {
+        calls++;
+        assert.equal(options.timeout, 15000);
+        assert.ok(options.signal);
+        throw new Error('Synthetic indeterminate provider timeout');
+    }) as typeof axios.post;
+    try {
+        await withTestClient(async (client) => {
+            const fixture = await createFixture(client);
+            const vendor = await createMerchantFixture(client);
+            const product = (await client.query(`INSERT INTO products (vendor_id, name, price, student_price, stock, status)
+                VALUES ($1, 'Synthetic checkout', 100, 80, 10, 'active') RETURNING id`, [vendor.vendorId])).rows[0];
+            const request = { user: { userId: fixture.userId, role: 'student' }, body: { productId: product.id } } as unknown as AuthRequest;
+            const controller = new CheckoutController();
+            await assert.rejects(controller.createCheckout(request, {} as Response), /could not be confirmed/);
+            let rows = (await client.query('SELECT * FROM transactions WHERE student_id = $1', [fixture.studentId])).rows;
+            assert.equal(rows.length, 1);
+            assert.equal(rows[0].checkout_initialization_state, 'unknown');
+            assert.equal(rows[0].status, 'pending');
+            await client.query(`UPDATE transactions SET status = 'failed' WHERE id = $1`, [rows[0].id]);
+            await assert.rejects(controller.createCheckout(request, {} as Response), /awaiting payment reconciliation/);
+            rows = (await client.query('SELECT * FROM transactions WHERE student_id = $1', [fixture.studentId])).rows;
+            assert.equal(rows.length, 1);
+            assert.equal(calls, 1);
+        });
+    } finally {
+        axios.post = originalPost;
+        Object.assign(config.paystack, { secretKey: oldKey });
+    }
+});
+
+test('payment fulfillment reconciles a vendor switched to external checkout without consuming stock', async () => {
+    const { completeMarketplaceTransactionWithClient } = await import('../../services/payment/checkout.service.js');
+    await withTestClient(async (client) => {
+        const fixture = await createFixture(client);
+        const vendor = await createMerchantFixture(client);
+        const product = (await client.query(`INSERT INTO products (vendor_id, name, price, student_price, stock, status)
+            VALUES ($1, 'Synthetic checkout', 100, 80, 10, 'active') RETURNING id`, [vendor.vendorId])).rows[0];
+        const reference = `synthetic-${randomUUID()}`;
+        const tx = (await client.query(`INSERT INTO transactions (student_id, vendor_id, product_id, amount, commission, status, paystack_reference)
+            VALUES ($1, $2, $3, 80, 8, 'pending', $4) RETURNING id`, [fixture.studentId, vendor.vendorId, product.id, reference])).rows[0];
+        await client.query(`UPDATE vendors SET payment_method = 'vendor_website' WHERE id = $1`, [vendor.vendorId]);
+        const result = await completeMarketplaceTransactionWithClient(client, reference, 80);
+        assert.equal(result.completed, false);
+        assert.equal((await client.query('SELECT stock FROM products WHERE id = $1', [product.id])).rows[0].stock, 10);
+        assert.equal((await client.query('SELECT status FROM transactions WHERE id = $1', [tx.id])).rows[0].status, 'requires_refund');
+        assert.equal((await client.query('SELECT count(*)::int AS count FROM payment_reconciliation_queue WHERE transaction_id = $1', [tx.id])).rows[0].count, 1);
+    });
+});

@@ -85,3 +85,34 @@ test('forward ticket repair restores retained internal notes once and permits ve
         }
     });
 });
+
+test('Paystack references cannot cross vendors or checkout paths, including failed attempts', async () => {
+    await withTestClient(async (client) => {
+        const schema = `payments_${randomUUID().replaceAll('-', '')}`;
+        await client.query('BEGIN');
+        try {
+            await client.query(`CREATE SCHEMA ${schema}; SET LOCAL search_path TO ${schema};
+                CREATE TABLE transactions (id text, payment_source text, paystack_reference text,
+                    vendor_payment_reference text, status text);
+                INSERT INTO transactions VALUES ('old', 'awoof', 'reserved', NULL, 'pending');`);
+            await client.query(readFileSync(new URL('../../database/migrations/033_payment_reference_and_initialization.sql', import.meta.url), 'utf8'));
+            assert.equal((await client.query('SELECT checkout_initialization_state FROM transactions')).rows[0].checkout_initialization_state, 'unknown');
+            for (const sql of [
+                `INSERT INTO transactions (payment_source, vendor_payment_reference) VALUES ('vendor_paystack', 'reserved')`,
+                `INSERT INTO transactions (payment_source, paystack_reference, status) VALUES ('awoof', 'reserved', 'failed')`,
+                `INSERT INTO transactions (payment_source, paystack_reference, vendor_payment_reference) VALUES ('vendor_paystack', 'different', 'another')`,
+            ]) {
+                await client.query('SAVEPOINT attempted');
+                await assert.rejects(client.query(sql), (error: { code?: string }) => ['23505', '23514'].includes(error.code ?? ''));
+                await client.query('ROLLBACK TO SAVEPOINT attempted');
+            }
+            await client.query(`INSERT INTO transactions (payment_source, vendor_payment_reference) VALUES ('vendor_paystack', 'external')`);
+            await client.query('SAVEPOINT attempted');
+            await assert.rejects(client.query(`INSERT INTO transactions (payment_source, paystack_reference) VALUES ('awoof', 'external')`), { code: '23505' });
+            await client.query('ROLLBACK TO SAVEPOINT attempted');
+            await client.query(`INSERT INTO transactions (payment_source, vendor_payment_reference) VALUES ('vendor_other', 'external')`);
+        } finally {
+            await client.query('ROLLBACK');
+        }
+    });
+});

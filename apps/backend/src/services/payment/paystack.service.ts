@@ -32,8 +32,10 @@ export async function verifyPaystackPayment(
 
     try {
         const response = await axios.get(
-            `https://api.paystack.co/transaction/verify/${paymentReference}`,
+            `https://api.paystack.co/transaction/verify/${encodeURIComponent(paymentReference)}`,
             {
+                timeout: 15000,
+                signal: AbortSignal.timeout(15000),
                 headers: {
                     Authorization: `Bearer ${config.paystack.secretKey}`,
                 },
@@ -106,7 +108,7 @@ export function verifyPaystackWebhookSignature(
 }
 
 export function generatePaystackReference(): string {
-    return `awoof_${Date.now()}_${crypto.randomBytes(4).toString('hex')}`;
+    return `awoof-${Date.now()}-${crypto.randomBytes(16).toString('hex')}`;
 }
 
 export async function initializePaystackTransaction(params: {
@@ -140,6 +142,8 @@ export async function initializePaystackTransaction(params: {
         'https://api.paystack.co/transaction/initialize',
         body,
         {
+            timeout: 15000,
+            signal: AbortSignal.timeout(15000),
             headers: {
                 Authorization: `Bearer ${config.paystack.secretKey}`,
             },

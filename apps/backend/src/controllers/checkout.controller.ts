@@ -9,6 +9,8 @@ import { getEffectiveEligibility } from '../services/verification/eligibility-re
 import { config } from '../config/env.js';
 import {
     BadRequestError,
+    ConflictError,
+    ServiceUnavailableError,
     NotFoundError,
     UnauthorizedError,
 } from '../common/errors/AppError.js';
@@ -38,7 +40,7 @@ export class CheckoutController {
         const validated = createCheckoutSchema.parse(req.body);
         const userId = req.user.userId;
 
-        const { student, product, amount, commission, settlementMode, reference, transactionId } = await (async () => {
+        const { student, product, amount, commission, settlementMode, reference, transactionId, existingAuthorizationUrl } = await (async () => {
             const client = await db.getPool().connect();
             try {
                 await client.query('BEGIN');
@@ -94,6 +96,25 @@ export class CheckoutController {
                     throw new BadRequestError('Out of stock');
                 }
 
+                // Eligibility locks serialize checkout reservations for this student.
+                // A timeout is not proof that Paystack rejected the request.
+                const prior = await client.query(
+                    `SELECT id, paystack_reference, checkout_authorization_url, amount, commission, settlement_mode
+                     FROM transactions WHERE student_id = $1 AND product_id = $2 AND payment_source = 'awoof'
+                     AND (status = 'pending' OR (status = 'failed' AND checkout_initialization_state IN ('initializing', 'unknown')))
+                     ORDER BY created_at DESC LIMIT 1 FOR UPDATE`, [student.id, product.id]);
+                if (prior.rows.length) {
+                    const previous = prior.rows[0];
+                    if (!previous.checkout_authorization_url) {
+                        throw new ConflictError('Your earlier checkout is awaiting payment reconciliation. Check its status before trying again.',
+                            { transactionId: previous.id, reference: previous.paystack_reference });
+                    }
+                    await client.query('COMMIT');
+                    return { student, product, amount: Number(previous.amount), commission: Number(previous.commission),
+                        settlementMode: previous.settlement_mode, reference: previous.paystack_reference,
+                        transactionId: previous.id, existingAuthorizationUrl: String(previous.checkout_authorization_url) };
+                }
+                if (!config.paystack.secretKey) throw new ServiceUnavailableError('Payments are not configured');
                 const amount = parseFloat(product.student_price);
                 const platformFeePercent = await getPlatformFeePercent(client);
                 const { commission } = calculateMarketplaceCommission(amount, platformFeePercent);
@@ -103,9 +124,9 @@ export class CheckoutController {
                 const insert = await client.query(
                     `INSERT INTO transactions (
                         student_id, product_id, vendor_id, amount, commission, list_price_snapshot,
-                        status, paystack_reference, payment_source, settlement_mode
+                        status, paystack_reference, payment_source, settlement_mode, checkout_initialization_state
                      )
-                     VALUES ($1, $2, $3, $4, $5, $6, 'pending', $7, 'awoof', $8)
+                     VALUES ($1, $2, $3, $4, $5, $6, 'pending', $7, 'awoof', $8, 'initializing')
                      RETURNING id`,
                     [
                         student.id,
@@ -121,7 +142,7 @@ export class CheckoutController {
 
                 const transactionId = insert.rows[0].id;
                 await client.query('COMMIT');
-                return { student, product, amount, commission, settlementMode, reference, transactionId };
+                return { student, product, amount, commission, settlementMode, reference, transactionId, existingAuthorizationUrl: undefined };
             } catch (error) {
                 await client.query('ROLLBACK');
                 throw error;
@@ -129,6 +150,11 @@ export class CheckoutController {
                 client.release();
             }
         })();
+
+        if (existingAuthorizationUrl) {
+            success(res, { message: 'Existing checkout retrieved', data: { authorizationUrl: existingAuthorizationUrl, transactionId, reference } });
+            return;
+        }
 
         try {
             const initParams: Parameters<typeof initializePaystackTransaction>[0] = {
@@ -151,6 +177,9 @@ export class CheckoutController {
 
             const { authorizationUrl } = await initializePaystackTransaction(initParams);
 
+            await db.query(`UPDATE transactions SET checkout_initialization_state = 'initialized',
+                checkout_authorization_url = $2, updated_at = CURRENT_TIMESTAMP WHERE id = $1`, [transactionId, authorizationUrl]);
+
             success(res, {
                 message: 'Checkout initialized',
                 data: {
@@ -159,12 +188,12 @@ export class CheckoutController {
                     reference,
                 },
             });
-        } catch (error) {
+        } catch {
             await db.query(
-                `UPDATE transactions SET status = 'failed', updated_at = CURRENT_TIMESTAMP WHERE id = $1`,
+                `UPDATE transactions SET checkout_initialization_state = 'unknown', updated_at = CURRENT_TIMESTAMP WHERE id = $1 AND status IN ('pending', 'failed')`,
                 [transactionId]
             );
-            throw error;
+            throw new ServiceUnavailableError('Payment initialization could not be confirmed. Check this checkout before retrying.', { transactionId, reference });
         }
     }
 

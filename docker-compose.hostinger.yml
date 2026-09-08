@@ -126,3 +126,4 @@ volumes:
   db_data:
   redis_data:
   backend_uploads:
+    name: ${AWOOF_UPLOADS_VOLUME:-awoof_backend_uploads}

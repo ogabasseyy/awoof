@@ -24,7 +24,7 @@ import {
     updatePaystackSubaccount,
     verifyPaystackPayment,
 } from '../services/payment/paystack.service.js';
-import { getPlatformFeePercent } from '../services/payment/checkout.service.js';
+import { getPlatformFeePercent, effectiveVendorCommissionRate, calculateMarketplaceCommission } from '../services/payment/checkout.service.js';
 import { NotificationService } from '../services/notification/notification.service.js';
 
 /**
@@ -89,7 +89,7 @@ export class PaymentController {
 
         // Marketplace checkout uses platform_fee_percent; vendor.commission_rate may be unset (0)
         const platformFeePercent = await getPlatformFeePercent();
-        const commissionRate = platformFeePercent;
+        const commissionRate = vendor.payment_method === 'awoof' ? platformFeePercent : effectiveVendorCommissionRate(vendor.commission_rate, platformFeePercent);
 
         // Get payment statistics
         const statsResult = await db.query(
@@ -402,7 +402,7 @@ export class PaymentController {
 
         // Get vendor ID
         const vendorResult = await db.query(
-            `SELECT id, commission_rate
+            `SELECT id, commission_rate, COALESCE(payment_method, 'awoof') AS payment_method
              FROM vendors 
              WHERE user_id = $1 AND deleted_at IS NULL`,
             [req.user.userId]
@@ -415,7 +415,7 @@ export class PaymentController {
         const vendorId = vendorResult.rows[0].id;
         const vendorRate = parseFloat(vendorResult.rows[0].commission_rate || '0');
         const platformFeePercent = await getPlatformFeePercent();
-        const commissionRate = vendorRate > 0 ? vendorRate : platformFeePercent;
+        const commissionRate = vendorResult.rows[0].payment_method === 'awoof' ? platformFeePercent : effectiveVendorCommissionRate(vendorRate, platformFeePercent);
 
         // Get commission breakdown by status
         const breakdownResult = await db.query(
@@ -677,19 +677,18 @@ export class PaymentController {
             }
 
             // Verify payment amount matches
-            if (paymentVerification.amount && Math.abs(paymentVerification.amount - reportedAmount) > allowedVariance) {
+            if (paymentVerification.amount == null || !Number.isFinite(paymentVerification.amount) || Math.abs(paymentVerification.amount - reportedAmount) > allowedVariance) {
                 throw new BadRequestError(
                     `Paystack payment amount (${paymentVerification.amount}) does not match reported amount (${reportedAmount})`
                 );
             }
         }
 
-        const commissionRate = parseFloat(
+        const commissionRate = effectiveVendorCommissionRate(
             (await db.query('SELECT commission_rate FROM vendors WHERE id = $1', [vendorId])).rows[0]
-                ?.commission_rate || '0'
+                ?.commission_rate, await getPlatformFeePercent()
         );
-        const commission = (reportedAmount * commissionRate) / 100;
-        const earnings = reportedAmount - commission;
+        const { commission, vendorNet: earnings } = calculateMarketplaceCommission(reportedAmount, commissionRate);
         const discountAmount = parseFloat(product.price.toString()) - reportedAmount;
 
         const client = await getPool().connect();
