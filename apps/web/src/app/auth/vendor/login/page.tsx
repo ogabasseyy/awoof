@@ -4,7 +4,7 @@
 
 'use client';
 
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { useForm } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { z } from 'zod';
@@ -24,6 +24,7 @@ type LoginFormData = z.infer<typeof loginSchema>;
 
 export default function VendorLoginPage() {
     const { login } = useAuth();
+    const [accountCreated, setAccountCreated] = useState(false);
     const [error, setError] = useState<string | null>(null);
     const [isLoading, setIsLoading] = useState(false);
     const [showPassword, setShowPassword] = useState(false);
@@ -31,11 +32,20 @@ export default function VendorLoginPage() {
 
     const {
         register,
+        setValue,
         handleSubmit,
         formState: { errors },
     } = useForm<LoginFormData>({
         resolver: zodResolver(loginSchema),
     });
+
+    useEffect(() => {
+        const params = new URLSearchParams(window.location.search);
+        if (params.get('accountCreated') === '1') {
+            setAccountCreated(true);
+            setValue('email', params.get('email') ?? '');
+        }
+    }, [setValue]);
 
     const onSubmit = async (data: LoginFormData) => {
         try {
@@ -65,6 +75,7 @@ export default function VendorLoginPage() {
                 </p>
             }
         >
+            {accountCreated && <p role="status" className="mb-4 rounded-xl bg-blue-50 p-3 text-sm">Your account was created. Sign in to continue verification and complete your business profile.</p>}
             {error && (
                 <div className="mb-4 p-3 bg-red-50 border border-red-200 text-red-700 rounded-xl text-sm">
                     {error}

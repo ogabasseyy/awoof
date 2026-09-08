@@ -64,3 +64,12 @@ export async function replaceInstitutionVerificationPolicy(req: Request, res: Re
         (tx, actorId, id) => updateInstitutionPolicy(tx, actorId, id, input));
     success(res, { message: 'Institution verification policy updated', data: { policy } });
 }
+
+export async function deactivateInstitution(req: Request, res: Response): Promise<void> {
+    const id = institutionIdSchema.parse(req.params.id);
+    await withCurrentAdmin(req, id, async (tx, actorId, universityId) => {
+        const current = await getInstitutionPolicy(tx, universityId);
+        return updateInstitutionPolicy(tx, actorId, universityId, { ...current, isActive: false });
+    });
+    success(res, { message: 'University deactivated; verification history retained', data: {} });
+}

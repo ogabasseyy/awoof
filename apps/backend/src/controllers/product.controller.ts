@@ -241,6 +241,7 @@ export class ProductController {
 
         // Validate request body
         const validated = createProductSchema.parse(req.body);
+        if (validated.dealType === 'voucher') throw new BadRequestError('Voucher creation is unavailable while external redemption is suspended');
 
         // Validate category if provided
         if (validated.categoryId) {
@@ -328,6 +329,7 @@ export class ProductController {
 
         // Validate request body
         const validated = updateProductSchema.parse(req.body);
+        if (validated.dealType === 'voucher') throw new BadRequestError('Voucher publishing is unavailable while external redemption is suspended');
 
         // Validate category if provided
         if (validated.categoryId !== undefined && validated.categoryId !== null) {

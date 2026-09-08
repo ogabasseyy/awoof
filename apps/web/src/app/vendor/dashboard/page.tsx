@@ -180,8 +180,8 @@ function VendorDashboardContent() {
         },
         {
             href: '/vendor/deals/voucher/new',
-            title: 'Add a voucher',
-            body: 'Codes students can claim on campus',
+            title: 'Voucher availability',
+            body: 'External redemption is currently suspended',
             icon: TicketPercent,
             accent: 'bg-[#EEF2FF] text-[#1D4ED8]',
         },

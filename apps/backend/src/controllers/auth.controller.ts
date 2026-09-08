@@ -73,12 +73,14 @@ const refreshTokenSchema = z.object({
 export class AuthController {
     private readonly studentSignupService: StudentSignupService;
     private readonly studentEmailPreflight: (universityId: string, email: string) => Promise<StudentEmailPreflight>;
+    private readonly sendVendorVerification: typeof sendEmailVerificationOTP;
     private readonly issueStudentSession: typeof issueSession;
 
     constructor(dependencies: {
         studentSignupService?: StudentSignupService;
         studentEmailPreflight?: (universityId: string, email: string) => Promise<StudentEmailPreflight>;
         issueSession?: typeof issueSession;
+        sendVendorVerification?: typeof sendEmailVerificationOTP;
     } = {}) {
         this.studentSignupService = dependencies.studentSignupService ?? createStudentSignupService({
             pool: { connect: () => db.getPool().connect() },
@@ -90,6 +92,7 @@ export class AuthController {
         });
         this.studentEmailPreflight = dependencies.studentEmailPreflight ?? preflightStudentEmail;
         this.issueStudentSession = dependencies.issueSession ?? issueSession;
+        this.sendVendorVerification = dependencies.sendVendorVerification ?? sendEmailVerificationOTP;
     }
 
     /**
@@ -131,6 +134,7 @@ export class AuthController {
         const passwordHash = await passwordService.hashPassword(validated.password);
 
         // Start transaction (in case we need to rollback)
+        let committed = false;
         const client = await db.getPool().connect();
 
         try {
@@ -168,7 +172,7 @@ export class AuthController {
                 );
 
                 // Send verification email (don't await to avoid blocking response)
-                sendEmailVerificationOTP(normalizedEmail, emailOTP, validated.name, validated.role)
+                this.sendVendorVerification(normalizedEmail, emailOTP, validated.name, validated.role)
                     .then((result) => {
                         if (!result.success) {
                             appLogger.error('Failed to send email verification OTP:', result.error);
@@ -180,13 +184,18 @@ export class AuthController {
             }
 
             await client.query('COMMIT');
+            committed = true;
 
-            // Generate tokens
-            const tokens = await issueSession({
-                userId: user.id,
-                email: user.email,
-                role: user.role,
-            }, false, passwordHash);
+            let tokens;
+            try {
+                tokens = await this.issueStudentSession({
+                    userId: user.id,
+                    email: user.email,
+                    role: user.role,
+                }, false, passwordHash);
+            } catch {
+                throw new AppError('Your account was created, but we could not start a session. Please sign in with your email and password.', 503, 'SESSION_ISSUANCE_UNAVAILABLE');
+            }
 
             success(res, {
                 message: validated.role === 'vendor'
@@ -204,7 +213,7 @@ export class AuthController {
                 },
             }, 201);
         } catch (error) {
-            await client.query('ROLLBACK');
+            if (!committed) await client.query('ROLLBACK');
             throw error;
         } finally {
             client.release();

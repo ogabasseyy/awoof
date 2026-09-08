@@ -30,6 +30,7 @@ interface University {
     country?: string;
     emailDomains?: string[];
     isActive: boolean;
+    policyConfigured?: boolean;
 }
 
 interface SegmentStats {
@@ -41,6 +42,7 @@ interface SegmentStats {
 export default function AdminUniversitiesPage() {
     const { user, logout } = useAuth();
     const confirm = useConfirm();
+    const [policyQueue, setPolicyQueue] = useState<University[]>([]);
     const [policyUniversity, setPolicyUniversity] = useState<University | null>(null);
     const [universities, setUniversities] = useState<University[]>([]);
     const [total, setTotal] = useState(0);
@@ -154,9 +156,9 @@ export default function AdminUniversitiesPage() {
 
     const handleDelete = async (id: string) => {
         const ok = await confirm({
-            title: 'Delete university?',
-            description: 'This will remove the university from the platform.',
-            confirmLabel: 'Delete',
+            title: 'Deactivate university?',
+            description: 'Student verification will be disabled. Existing accounts, consents and audit history will be retained.',
+            confirmLabel: 'Deactivate',
             variant: 'destructive',
         });
         if (!ok) return;
@@ -164,7 +166,7 @@ export default function AdminUniversitiesPage() {
             await apiClient.delete(`/admin/universities/${id}`);
             fetchUniversities();
             fetchSegmentStats();
-            toast.success('University deleted');
+            toast.success('University deactivated');
         } catch (err) {
             const e = err as { response?: { data?: { error?: { message?: string } } } };
             toast.error(e.response?.data?.error?.message || 'Failed to delete');
@@ -197,11 +199,14 @@ export default function AdminUniversitiesPage() {
             setImporting(true);
             const formDataUpload = new FormData();
             formDataUpload.append('file', csvFile);
-            await apiClient.post('/admin/universities/import-csv', formDataUpload);
+            const imported = await apiClient.post('/admin/universities/import-csv', formDataUpload);
+            const review = imported.data.data.policyReview as University[];
+            setPolicyQueue(review);
+            setPolicyUniversity(review[0] ?? null);
             setCsvFile(null);
             fetchUniversities();
             fetchSegmentStats();
-            toast.success('CSV imported successfully');
+            toast.success('Directory imported. Review the listed verification policies before enabling signup.');
         } catch (err) {
             const e = err as { response?: { data?: { error?: { message?: string } } } };
             toast.error(e.response?.data?.error?.message || 'Failed to import CSV');
@@ -317,11 +322,11 @@ export default function AdminUniversitiesPage() {
                                                 <td className="px-6 py-4 text-sm">{u.isActive ? 'Yes' : 'No'}</td>
                                                 <td className="px-6 py-4 text-right">
                                                     <div className="flex justify-end gap-2">
-                                                        <Button variant="outline" size="sm" onClick={() => setPolicyUniversity(u)}>Verification policy</Button>
+                                                        <Button variant="outline" size="sm" onClick={() => setPolicyUniversity(u)}>{u.policyConfigured ? 'Verification policy' : 'Approve domains'}</Button>
                                                         <Button variant="ghost" size="sm" onClick={() => handleOpenModal(u)}>
                                                             <Edit2 className="h-4 w-4" />
                                                         </Button>
-                                                        <Button variant="ghost" size="sm" className="text-red-600" onClick={() => handleDelete(u.id)}>
+                                                        <Button variant="ghost" size="sm" disabled={!u.isActive} title="Deactivate university" className="text-red-600" onClick={() => handleDelete(u.id)}>
                                                             <Trash2 className="h-4 w-4" />
                                                         </Button>
                                                     </div>
@@ -352,7 +357,17 @@ export default function AdminUniversitiesPage() {
                 </div>
 
                 {/* Modal */}
-                {policyUniversity && <VerificationPolicyEditor key={policyUniversity.id} institution={policyUniversity} onClose={() => setPolicyUniversity(null)} />}
+                {policyQueue.length > 0 && <section className="my-4 rounded-xl border p-4" aria-label="Imported schools awaiting policy review">
+                    <h2 className="font-semibold">Imported schools: verification approval required</h2>
+                    <p>Directory import does not enable signup. Review each school below; closing an editor keeps it in this list.</p>
+                    <div className="mt-2 flex flex-wrap gap-2">{policyQueue.map((school) => <Button key={school.id} variant="outline" onClick={() => setPolicyUniversity(school)}>{school.name}</Button>)}</div>
+                </section>}
+                {policyUniversity && <VerificationPolicyEditor key={policyUniversity.id} institution={policyUniversity} onClose={() => setPolicyUniversity(null)} onSaved={() => {
+                    const remaining = policyQueue.filter((school) => school.id !== policyUniversity.id);
+                    setPolicyQueue(remaining);
+                    setPolicyUniversity(remaining[0] ?? null);
+                    void fetchUniversities();
+                }} />}
                 {isModalOpen && (
                     <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/50 p-4">
                         <div className="w-full max-w-md rounded-lg bg-white p-6 shadow-lg">

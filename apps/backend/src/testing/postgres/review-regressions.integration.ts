@@ -148,3 +148,29 @@ test('inventory migration preserves the distinction between legacy marketplace a
         } finally { await client.query('ROLLBACK'); }
     });
 });
+
+test('CSV import returns an explicit approval queue and never auto-approves directory domains', async () => {
+    const { AdminUniversityController } = await import('../../controllers/admin-university.controller.js');
+    await withTestClient(async (client) => {
+        const label = randomUUID();
+        const csv = `name,domain,email_domains,segment,country\nSchool ${label},${label}.example,[],private,Nigeria`;
+        let body: { data: { policyReview: Array<{ id: string; name: string }> } } | undefined;
+        const response = { status() { return this; }, json(value: typeof body) { body = value; return this; } } as unknown as Response;
+        await new AdminUniversityController().importCsv({ file: { buffer: Buffer.from(csv) } } as unknown as Request, response);
+        assert.equal(body?.data.policyReview.length, 1);
+        const id = body!.data.policyReview[0]!.id;
+        assert.equal((await client.query('SELECT 1 FROM universities WHERE id = $1', [id])).rowCount, 1);
+        assert.equal((await client.query('SELECT 1 FROM approved_student_email_domains WHERE university_id = $1', [id])).rowCount, 0);
+    });
+});
+
+test('voucher creation is rejected while external redemption is disabled', async () => {
+    await withTestClient(async (client) => {
+        const id = randomUUID();
+        await client.query(`INSERT INTO users (id, email, role) VALUES ($1, $2, 'vendor')`, [id, `${id}@example.invalid`]);
+        await client.query(`INSERT INTO vendors (user_id, name, status) VALUES ($1, 'Synthetic', 'active')`, [id]);
+        await assert.rejects(new ProductController().createProduct({ user: { userId: id, role: 'vendor' }, body: {
+            name: 'Synthetic voucher', price: 100, studentPrice: 80, stock: 5, dealType: 'voucher',
+        } } as unknown as AuthRequest, {} as Response), /Voucher creation is unavailable/);
+    });
+});

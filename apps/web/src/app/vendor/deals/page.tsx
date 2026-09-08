@@ -258,7 +258,7 @@ function VendorDealsContent() {
                             <Button asChild className="flex items-center gap-2 bg-blue-600 hover:bg-blue-700">
                                 <Link href="/vendor/deals/voucher/new">
                                     <Plus className="h-4 w-4" />
-                                    Add Voucher
+                                    Vouchers unavailable
                                 </Link>
                             </Button>
                         )}
@@ -280,14 +280,14 @@ function VendorDealsContent() {
                             {searchQuery || statusFilter !== 'all'
                                 ? 'Try adjusting your filters'
                                 : activeTab === 'vouchers'
-                                    ? 'Create a voucher to show in the students vouchers area'
+                                    ? 'Voucher creation and external redemption are currently unavailable'
                                     : 'Get started by adding your first product'}
                         </p>
                         {!searchQuery && statusFilter === 'all' && (
                             <Button asChild className="mt-6 bg-blue-600 hover:bg-blue-700">
                                 <Link href={activeTab === 'vouchers' ? '/vendor/deals/voucher/new' : '/vendor/deals/new'}>
                                     <Plus className="mr-2 h-4 w-4" />
-                                    {activeTab === 'vouchers' ? 'Add Voucher' : 'Add Product'}
+                                    {activeTab === 'vouchers' ? 'Vouchers unavailable' : 'Add Product'}
                                 </Link>
                             </Button>
                         )}

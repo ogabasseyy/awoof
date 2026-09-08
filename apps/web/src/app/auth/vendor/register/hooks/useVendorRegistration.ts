@@ -180,6 +180,12 @@ export function useVendorRegistration() {
                 window.location.href = `/auth/vendor/verify-email?${params.toString()}`;
             }
         } catch (err: unknown) {
+            const recovery = err as { response?: { data?: { error?: { code?: string } } } };
+            if (recovery.response?.data?.error?.code === 'SESSION_ISSUANCE_UNAVAILABLE') {
+                const email = registrationData.step1.companyEmail;
+                window.location.assign(`/auth/vendor/login?accountCreated=1&email=${encodeURIComponent(email)}`);
+                return;
+            }
             // Reach here if registerUser() failed OR we rethrew after upload/logo error (to stay on form)
             const error = err as {
                 response?: { data?: { error?: { message?: string }; message?: string } };

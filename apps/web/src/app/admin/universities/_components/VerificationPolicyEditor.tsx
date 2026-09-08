@@ -14,9 +14,10 @@ type Policy = {
     isActive: boolean;
 };
 
-export function VerificationPolicyEditor({ institution, onClose }: {
+export function VerificationPolicyEditor({ institution, onClose, onSaved }: {
     institution: { id: string; name: string; emailDomains?: string[] };
     onClose: () => void;
+    onSaved?: () => void;
 }) {
     const panel = useRef<HTMLElement>(null);
     useEffect(() => { panel.current?.focus(); }, []);
@@ -49,7 +50,7 @@ export function VerificationPolicyEditor({ institution, onClose }: {
                 registrationNormalization: policy.registrationNormalization,
                 isActive: policy.isActive,
             });
-            onClose();
+            (onSaved ?? onClose)();
         } catch {
             setError('Policy was not saved. Check the exact domains and your administrator access, then retry.');
         } finally { setSaving(false); }
@@ -68,6 +69,7 @@ export function VerificationPolicyEditor({ institution, onClose }: {
                         <p className="text-sm">An empty list disables student email signup. Removing a domain revokes eligibility based on it.</p></div>
                     <div><Label htmlFor="email-validity">Email evidence validity (days)</Label>
                         <Input id="email-validity" type="number" min={1} max={365} required disabled={saving} value={policy.emailEvidenceValidityDays} onChange={(event) => { setPolicy({ ...policy, emailEvidenceValidityDays: Number(event.target.value) }); setConfirmed(false); }} /></div>
+                    <label className="flex items-start gap-2"><input type="checkbox" checked={policy.isActive} disabled={saving} onChange={(event) => { setPolicy({ ...policy, isActive: event.target.checked }); setConfirmed(false); }} />Institution active for student verification</label>
                     <label className="flex items-start gap-2"><input type="checkbox" checked={confirmed} disabled={saving} onChange={(event) => setConfirmed(event.target.checked)} />
                         I have verified these student domains and approve this policy change. My administrator identity will be recorded.</label>
                     <Button type="submit" disabled={!confirmed || saving}>{saving ? 'Saving…' : 'Approve and save policy'}</Button>

@@ -294,6 +294,12 @@ export class OrderController {
         const client = await getPool().connect();
         try {
             await client.query('BEGIN');
+            const owner = await client.query(`SELECT id FROM users WHERE id = $1 AND role = 'vendor' AND deleted_at IS NULL FOR UPDATE`, [req.user.userId]);
+            if (!owner.rows.length) throw new BadRequestError('Only active vendors can change orders');
+            const authority = await client.query(`SELECT id FROM vendors
+                WHERE id = $1 AND user_id = $2 AND status = 'active' AND deleted_at IS NULL FOR UPDATE`,
+                [vendorId, req.user.userId]);
+            if (!authority.rows.length) throw new BadRequestError('Only active vendors can change orders');
             const orderCheck = await client.query(
                 `SELECT id, status, payment_source, paystack_reference, product_id, inventory_consumed
                  FROM transactions WHERE id = $1 AND vendor_id = $2 FOR UPDATE`,

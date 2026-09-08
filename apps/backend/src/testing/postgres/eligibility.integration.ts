@@ -1934,3 +1934,19 @@ test('refunds restore only inventory actually consumed, and never restore twice'
         }
     });
 });
+
+test('a suspended vendor cannot mutate a completed external order or restore its inventory', async () => {
+    const { OrderController } = await import('../../controllers/order.controller.js');
+    await withTestClient(async (client) => {
+        const student = await createFixture(client);
+        const vendor = await createMerchantFixture(client);
+        const product = (await client.query(`INSERT INTO products (vendor_id, name, price, student_price, stock)
+            VALUES ($1, 'Synthetic suspension', 100, 80, 5) RETURNING id`, [vendor.vendorId])).rows[0];
+        const tx = (await client.query(`INSERT INTO transactions (student_id, vendor_id, product_id, amount, status, payment_source, inventory_consumed)
+            VALUES ($1, $2, $3, 80, 'completed', 'vendor_other', true) RETURNING id`, [student.studentId, vendor.vendorId, product.id])).rows[0];
+        await client.query(`UPDATE vendors SET status = 'suspended' WHERE id = $1`, [vendor.vendorId]);
+        await assert.rejects(new OrderController().updateOrderStatus({ user: { userId: vendor.ownerId, role: 'vendor' }, params: { id: tx.id }, body: { status: 'refunded' } } as unknown as AuthRequest, {} as Response), /Only active vendors/);
+        assert.equal((await client.query('SELECT status FROM transactions WHERE id = $1', [tx.id])).rows[0].status, 'completed');
+        assert.equal((await client.query('SELECT stock FROM products WHERE id = $1', [product.id])).rows[0].stock, 5);
+    });
+});

@@ -96,6 +96,13 @@ test('admin policy HTTP approval is explicit, audited, reversible and checks cur
         assert.equal(removed.status, 200);
         assert.deepEqual((await policyBody(removed)).domains, []);
         assert.equal((await client.query('SELECT 1 FROM approved_student_email_domains WHERE university_id = $1 AND is_active', [school])).rowCount, 0);
+        assert.equal((await put(policy)).status, 200);
+        const deactivated = await fetch(endpoint.replace('/verification-policy', ''), { method: 'DELETE', headers });
+        assert.equal(deactivated.status, 200);
+        assert.equal((await client.query('SELECT is_active FROM universities WHERE id = $1', [school])).rows[0].is_active, false);
+        assert.equal((await client.query('SELECT 1 FROM approved_student_email_domains WHERE university_id = $1', [school])).rowCount, 1);
+        assert.equal((await preflightStudentEmail(school, 'student@students.school.example')).supported, false);
+
     } finally {
         server.close();
         await once(server, 'close');
