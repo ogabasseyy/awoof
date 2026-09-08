@@ -876,6 +876,12 @@ export async function installSyntheticApi(page: Page, options: ApiFixtureOptions
       return;
     }
 
+    if (path === '/verification/status' && method === 'GET') {
+      record('verification-status', 1, route, roleFromAuthorization(route) ?? 'unauthenticated');
+      await respond(route, 200, { success: true, data: { mailboxConfirmed: true, eligibility: { eligible: true } } });
+      return;
+    }
+
     if (path === '/students/savings' && method === 'GET') {
       record('student-savings', 1, route, 'student');
       await respond(route, 200, { success: true, data: { summary: { totalSavings: 0, totalPurchases: 0 } } });

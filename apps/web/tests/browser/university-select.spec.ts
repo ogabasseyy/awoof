@@ -172,21 +172,13 @@ test('keyboard navigation keeps the active long-directory option visible before 
   await assertCleanFixture(api, faults);
 });
 
-test('widget selection follows controlled identity without entering verification', async ({ page }) => {
+test('retired widget does not collect student identity or verification proof', async ({ page }) => {
   const api = await installSyntheticApi(page);
   const faults = collectBrowserFaults(page, api);
   await page.goto('/widget/verify?apiKey=synthetic-public-key&vendorId=synthetic-vendor&origin=https%3A%2F%2Fmerchant.approved.test');
-  await page.getByRole('checkbox').check();
-  await page.getByRole('button', { name: 'Continue', exact: true }).click();
-  await expect(page.getByRole('button', { name: 'Continue', exact: true })).toBeDisabled();
-  const input = page.getByLabel(/^University/);
-  await input.fill('aau');
-  await input.press('ArrowDown');
-  await input.press('Enter');
-  await expect(page.getByRole('button', { name: 'Continue', exact: true })).toBeEnabled();
-  await input.fill('different school');
-  await expect(page.getByRole('button', { name: 'Continue', exact: true })).toBeDisabled();
-  await input.press('Tab');
-  await expect(input).toHaveValue('');
+  await expect(page.getByRole('heading', { name: 'Merchant verification is unavailable' })).toBeVisible();
+  await expect(page.getByRole('textbox')).toHaveCount(0);
+  await expect(page.getByRole('checkbox')).toHaveCount(0);
+  await expect(page.getByRole('button', { name: 'Continue', exact: true })).toHaveCount(0);
   await assertCleanFixture(api, faults);
 });

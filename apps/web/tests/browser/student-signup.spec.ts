@@ -146,7 +146,8 @@ async function pasteOtp(page: Page, value = validOtp): Promise<void> {
   await page.evaluate(async (code) => { await navigator.clipboard.writeText(code); }, value);
   const input = page.getByLabel('Verification Code', { exact: true });
   await input.focus();
-  await page.keyboard.press('Meta+V');
+  await page.keyboard.press(process.platform === 'darwin' ? 'Meta+V' : 'Control+V');
+  await expect(input).toHaveValue(value);
 }
 
 async function hasActiveSession(page: Page): Promise<boolean> {
