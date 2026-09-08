@@ -663,7 +663,7 @@ for (const scenario of [
     waitsForServerDeadline: false,
   },
 ] as const) {
-  test(`failed resend after ${scenario.name} discards proof and recovers only through an explicit new request`, async ({ page }) => {
+  test(`failed resend after ${scenario.name} preserves proof only for a definite rejection`, async ({ page }) => {
     const testTime = Date.now();
     await page.clock.setFixedTime(testTime);
     const failedResponse = scenario.failedResponse();
@@ -675,7 +675,7 @@ for (const scenario of [
           { response: failedResponse, expectedBody: requestBody() },
           { response: { status: 200, body: signupReceipt(replacementChallengeId) }, expectedBody: requestBody() },
         ],
-        confirm: [{ response: { status: 401, body: { success: false, error: { code: 'INVALID_PROOF' } } }, expectedBody: confirmationBody(replacementChallengeId) }],
+        confirm: [{ response: { status: 401, body: { success: false, error: { code: 'INVALID_PROOF' } } }, expectedBody: confirmationBody(scenario.waitsForServerDeadline ? challengeId : replacementChallengeId) }],
       },
     });
     const faults = collectBrowserFaults(page, api);
@@ -688,17 +688,25 @@ for (const scenario of [
     await resend.click();
     await expect(page.locator('#signup-flow-error')).toContainText(/could not|wait/i);
     await expect.poll(async () => (await otp.inputValue()) === '').toBe(true);
-    await expect(confirmation).toBeDisabled();
+    if (scenario.waitsForServerDeadline) await expect(confirmation).toBeEnabled();
+    else await expect(confirmation).toBeDisabled();
     await expect(page.getByText('A new verification code was sent. Check your email.', { exact: true })).toHaveCount(0);
     await expect(page.locator('#signup-recovery-error')).toHaveCount(0);
     expect(api.signupRequests.filter((request) => request.endpoint === 'request')).toHaveLength(2);
     if (scenario.waitsForServerDeadline) {
       await expect(resend).toBeDisabled();
-      await page.clock.setFixedTime(testTime + 5_000);
-      await expect(resend).toBeEnabled();
-    } else {
-      await expect(resend).toBeEnabled();
+      await otp.fill(validOtp);
+      await confirmation.click();
+      await expect(page.locator('#otp-error')).toContainText(/code|proof/i);
+      const confirmations = api.signupRequests.filter((request) => request.endpoint === 'confirm');
+      expect(confirmations).toHaveLength(1);
+      expect(confirmations[0].matchesExpectedBody).toBe(true);
+      expect(api.signupRequests.filter((request) => request.endpoint === 'request')).toHaveLength(2);
+      expectSafePublicRequests(api);
+      await assertCleanFixture(api, faults);
+      return;
     }
+    await expect(resend).toBeEnabled();
     expect(api.signupRequests.filter((request) => request.endpoint === 'confirm')).toHaveLength(0);
     await resend.click();
     await expect(page.getByText('A new verification code was sent. Check your email.', { exact: true })).toBeVisible();

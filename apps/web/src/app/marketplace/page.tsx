@@ -157,7 +157,7 @@ export default function MarketplacePage() {
     }, [fetchData]);
 
     useEffect(() => {
-        if (!user) {
+        if (user?.role !== 'student') {
             setSavingsStats({ totalSavings: 0, totalPurchases: 0 });
             return;
         }
@@ -179,7 +179,7 @@ export default function MarketplacePage() {
         return () => {
             cancelled = true;
         };
-    }, [user?.id]);
+    }, [user?.id, user?.role]);
 
     useEffect(() => {
         if (selectedCategory) {

@@ -314,136 +314,154 @@ export class ProductController {
             throw new UnauthorizedError('Only vendors can update their products');
         }
 
-        // Get vendor ID
-        const vendorResult = await db.query(
-            'SELECT id, status FROM vendors WHERE user_id = $1 AND deleted_at IS NULL',
-            [req.user.userId]
-        );
+        const client = await db.getPool().connect();
+        const result = await (async () => {
+            try {
+                await client.query('BEGIN');
+                const owner = await client.query<{ role: string; deleted_at: Date | null }>(
+                    'SELECT role, deleted_at FROM users WHERE id = $1 FOR UPDATE', [req.user!.userId],
+                );
+                if (owner.rows[0]?.role !== 'vendor' || owner.rows[0].deleted_at !== null) {
+                    throw new UnauthorizedError('Current vendor authority required');
+                }
+                // Get vendor ID
+                const vendorResult = await client.query(
+                    'SELECT id, status FROM vendors WHERE user_id = $1 AND deleted_at IS NULL FOR UPDATE',
+                    [req.user!.userId]
+                );
 
-        if (vendorResult.rows.length === 0) {
-            throw new NotFoundError('Vendor profile not found');
-        }
+                if (vendorResult.rows.length === 0) {
+                    throw new NotFoundError('Vendor profile not found');
+                }
 
-        if (vendorResult.rows[0].status !== 'active') {
-            throw new BadRequestError('Your vendor account must be approved before managing deals');
-        }
+                if (vendorResult.rows[0].status !== 'active') {
+                    throw new BadRequestError('Your vendor account must be approved before managing deals');
+                }
 
-        const vendorId = vendorResult.rows[0].id as string;
-        const productId = req.params.id as string;
+                const vendorId = vendorResult.rows[0].id as string;
+                const productId = req.params.id as string;
 
-        if (!productId) {
-            throw new BadRequestError('Product ID is required');
-        }
+                if (!productId) {
+                    throw new BadRequestError('Product ID is required');
+                }
 
-        // Check if product exists and belongs to vendor
-        const productCheck = await db.query(
-            'SELECT id FROM products WHERE id = $1 AND vendor_id = $2 AND deleted_at IS NULL',
-            [productId, vendorId]
-        );
+                // Check if product exists and belongs to vendor
+                const productCheck = await client.query(
+                    'SELECT id FROM products WHERE id = $1 AND vendor_id = $2 AND deleted_at IS NULL',
+                    [productId, vendorId]
+                );
 
-        if (productCheck.rows.length === 0) {
-            throw new NotFoundError('Product not found');
-        }
+                if (productCheck.rows.length === 0) {
+                    throw new NotFoundError('Product not found');
+                }
 
-        // Validate request body
-        const validated = updateProductSchema.parse(req.body);
-        if (validated.dealType === 'voucher') throw new BadRequestError('Voucher publishing is unavailable while external redemption is suspended');
+                // Validate request body
+                const validated = updateProductSchema.parse(req.body);
+                if (validated.dealType === 'voucher') throw new BadRequestError('Voucher publishing is unavailable while external redemption is suspended');
 
-        // Validate category if provided
-        if (validated.categoryId !== undefined && validated.categoryId !== null) {
-            const categoryResult = await db.query(
-                'SELECT id FROM categories WHERE id = $1',
-                [validated.categoryId]
-            );
-            if (categoryResult.rows.length === 0) {
-                throw new BadRequestError('Category not found');
-            }
-        }
+                // Validate category if provided
+                if (validated.categoryId !== undefined && validated.categoryId !== null) {
+                    const categoryResult = await client.query(
+                        'SELECT id FROM categories WHERE id = $1',
+                        [validated.categoryId]
+                    );
+                    if (categoryResult.rows.length === 0) {
+                        throw new BadRequestError('Category not found');
+                    }
+                }
 
-        // Handle image upload
-        const file = req.file as Express.Multer.File | undefined;
-        let imageUrl: string | null | undefined = undefined;
-        if (file) {
-            imageUrl = getFileUrl(file.filename);
-        }
+                // Handle image upload
+                const file = req.file as Express.Multer.File | undefined;
+                let imageUrl: string | null | undefined = undefined;
+                if (file) {
+                    imageUrl = getFileUrl(file.filename);
+                }
 
-        // Build update query
-        const updates: string[] = [];
-        const values: (string | number | null)[] = [];
-        let paramCount = 1;
+                // Build update query
+                const updates: string[] = [];
+                const values: (string | number | null)[] = [];
+                let paramCount = 1;
 
-        if (validated.name !== undefined) {
-            updates.push(`name = $${paramCount}`);
-            values.push(validated.name);
-            paramCount++;
-        }
+                if (validated.name !== undefined) {
+                    updates.push(`name = $${paramCount}`);
+                    values.push(validated.name);
+                    paramCount++;
+                }
 
-        if (validated.description !== undefined) {
-            updates.push(`description = $${paramCount}`);
-            values.push(validated.description || null);
-            paramCount++;
-        }
+                if (validated.description !== undefined) {
+                    updates.push(`description = $${paramCount}`);
+                    values.push(validated.description || null);
+                    paramCount++;
+                }
 
-        if (validated.price !== undefined) {
-            updates.push(`price = $${paramCount}`);
-            values.push(validated.price);
-            paramCount++;
-        }
+                if (validated.price !== undefined) {
+                    updates.push(`price = $${paramCount}`);
+                    values.push(validated.price);
+                    paramCount++;
+                }
 
-        if (validated.studentPrice !== undefined) {
-            updates.push(`student_price = $${paramCount}`);
-            values.push(validated.studentPrice);
-            paramCount++;
-        }
+                if (validated.studentPrice !== undefined) {
+                    updates.push(`student_price = $${paramCount}`);
+                    values.push(validated.studentPrice);
+                    paramCount++;
+                }
 
-        if (validated.categoryId !== undefined) {
-            updates.push(`category_id = $${paramCount}`);
-            values.push(validated.categoryId || null);
-            paramCount++;
-        }
+                if (validated.categoryId !== undefined) {
+                    updates.push(`category_id = $${paramCount}`);
+                    values.push(validated.categoryId || null);
+                    paramCount++;
+                }
 
-        if (validated.stock !== undefined) {
-            updates.push(`stock = $${paramCount}`);
-            values.push(validated.stock);
-            paramCount++;
-        }
+                if (validated.stock !== undefined) {
+                    updates.push(`stock = $${paramCount}`);
+                    values.push(validated.stock);
+                    paramCount++;
+                }
 
-        if (validated.status !== undefined) {
-            updates.push(`status = $${paramCount}`);
-            values.push(validated.status);
-            paramCount++;
-        }
+                if (validated.status !== undefined) {
+                    updates.push(`status = $${paramCount}`);
+                    values.push(validated.status);
+                    paramCount++;
+                }
 
-        if (validated.dealType !== undefined) {
-            updates.push(`deal_type = $${paramCount}`);
-            values.push(validated.dealType);
-            paramCount++;
-        }
+                if (validated.dealType !== undefined) {
+                    updates.push(`deal_type = $${paramCount}`);
+                    values.push(validated.dealType);
+                    paramCount++;
+                }
 
-        if (imageUrl !== undefined) {
-            updates.push(`image_url = $${paramCount}`);
-            values.push(imageUrl);
-            paramCount++;
-        }
+                if (imageUrl !== undefined) {
+                    updates.push(`image_url = $${paramCount}`);
+                    values.push(imageUrl);
+                    paramCount++;
+                }
 
-        if (updates.length === 0) {
-            throw new BadRequestError('No fields to update');
-        }
+                if (updates.length === 0) {
+                    throw new BadRequestError('No fields to update');
+                }
 
-        values.push(productId, vendorId, validated.price ?? null, validated.studentPrice ?? null);
-        const result = await db.query(
-            `UPDATE products 
-             SET ${updates.join(', ')}, updated_at = CURRENT_TIMESTAMP
-             WHERE id = $${paramCount} AND vendor_id = $${paramCount + 1} AND deleted_at IS NULL
-               AND COALESCE($${paramCount + 3}::numeric, student_price) <= COALESCE($${paramCount + 2}::numeric, price)
-             RETURNING id, name, description, price, student_price, category_id, 
-                       image_url, api_id, stock, status, deal_type, created_at, updated_at`,
-            values
-        );
+                values.push(productId, vendorId, validated.price ?? null, validated.studentPrice ?? null);
+                const result = await client.query(
+                    `UPDATE products
+                     SET ${updates.join(', ')}, updated_at = CURRENT_TIMESTAMP
+                     WHERE id = $${paramCount} AND vendor_id = $${paramCount + 1} AND deleted_at IS NULL
+                       AND COALESCE($${paramCount + 3}::numeric, student_price) <= COALESCE($${paramCount + 2}::numeric, price)
+                     RETURNING id, name, description, price, student_price, category_id,
+                               image_url, api_id, stock, status, deal_type, created_at, updated_at`,
+                    values
+                );
 
-        if (result.rows.length === 0) {
-            throw new BadRequestError('Product changed or student price exceeds the regular price');
-        }
+                if (result.rows.length === 0) {
+                    throw new BadRequestError('Product changed or student price exceeds the regular price');
+                }
+
+                await client.query('COMMIT');
+                return result;
+            } catch (error) {
+                await client.query('ROLLBACK').catch(() => undefined);
+                throw error;
+            } finally { client.release(); }
+        })();
 
         success(res, {
             message: 'Product updated successfully',
@@ -459,38 +477,56 @@ export class ProductController {
             throw new UnauthorizedError('Only vendors can delete their products');
         }
 
-        // Get vendor ID
-        const vendorResult = await db.query(
-            'SELECT id, status FROM vendors WHERE user_id = $1 AND deleted_at IS NULL',
-            [req.user.userId]
-        );
+        const client = await db.getPool().connect();
+        await (async () => {
+            try {
+                await client.query('BEGIN');
+                const owner = await client.query<{ role: string; deleted_at: Date | null }>(
+                    'SELECT role, deleted_at FROM users WHERE id = $1 FOR UPDATE', [req.user!.userId],
+                );
+                if (owner.rows[0]?.role !== 'vendor' || owner.rows[0].deleted_at !== null) {
+                    throw new UnauthorizedError('Current vendor authority required');
+                }
+                // Get vendor ID
+                const vendorResult = await client.query(
+                    'SELECT id, status FROM vendors WHERE user_id = $1 AND deleted_at IS NULL FOR UPDATE',
+                    [req.user!.userId]
+                );
 
-        if (vendorResult.rows.length === 0) {
-            throw new NotFoundError('Vendor profile not found');
-        }
+                if (vendorResult.rows.length === 0) {
+                    throw new NotFoundError('Vendor profile not found');
+                }
 
-        if (vendorResult.rows[0].status !== 'active') {
-            throw new BadRequestError('Your vendor account must be approved before managing deals');
-        }
+                if (vendorResult.rows[0].status !== 'active') {
+                    throw new BadRequestError('Your vendor account must be approved before managing deals');
+                }
 
-        const vendorId = vendorResult.rows[0].id as string;
-        const productId = req.params.id as string;
+                const vendorId = vendorResult.rows[0].id as string;
+                const productId = req.params.id as string;
 
-        if (!productId) {
-            throw new BadRequestError('Product ID is required');
-        }
+                if (!productId) {
+                    throw new BadRequestError('Product ID is required');
+                }
 
-        const result = await db.query(
-            `UPDATE products 
-             SET deleted_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP
-             WHERE id = $1 AND vendor_id = $2 AND deleted_at IS NULL
-             RETURNING id`,
-            [productId, vendorId]
-        );
+                const result = await client.query(
+                    `UPDATE products
+                     SET deleted_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP
+                     WHERE id = $1 AND vendor_id = $2 AND deleted_at IS NULL
+                     RETURNING id`,
+                    [productId, vendorId]
+                );
 
-        if (result.rows.length === 0) {
-            throw new NotFoundError('Product not found');
-        }
+                if (result.rows.length === 0) {
+                    throw new NotFoundError('Product not found');
+                }
+
+                await client.query('COMMIT');
+                return result;
+            } catch (error) {
+                await client.query('ROLLBACK').catch(() => undefined);
+                throw error;
+            } finally { client.release(); }
+        })();
 
         success(res, {
             message: 'Product deleted successfully',

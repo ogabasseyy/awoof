@@ -282,3 +282,21 @@ test('vendor notification page clears prior identity and ignores its late respon
         await expect(page.getByText('Vendor A private notice')).toHaveCount(0);
     } finally { release(); }
 });
+
+for (const role of ['vendor', 'admin'] as const) {
+    test(`${role} browses marketplace without requesting student savings or losing the session`, async ({ page }) => {
+        await installSyntheticApi(page); await seedSession(page, role);
+        let savingsCalls = 0; let refreshCalls = 0;
+        await page.route(`${apiOrigin}/api/students/savings`, (route) => {
+            savingsCalls += 1; return route.fulfill({ status: 401, json: {} });
+        });
+        await page.route(`${apiOrigin}/api/auth/refresh`, (route) => {
+            refreshCalls += 1; return route.fulfill({ status: 401, json: {} });
+        });
+        await page.goto('/marketplace');
+        await expect(page.getByRole('link', { name: 'Open profile' })).toHaveAttribute('href', `/${role}/dashboard`);
+        await expect(page.getByRole('button', { name: 'Notifications', exact: true })).toBeVisible();
+        expect(savingsCalls).toBe(0); expect(refreshCalls).toBe(0);
+        expect(await page.evaluate(() => localStorage.getItem('awoof.session.v1'))).not.toBeNull();
+    });
+}

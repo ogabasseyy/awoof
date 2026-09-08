@@ -2078,3 +2078,39 @@ test('deal creation waits behind vendor suspension and cannot publish after auth
         writer.release(); creator.release(); observer.release(); await pool.end();
     }
 });
+
+for (const action of ['updateProduct', 'deleteProduct'] as const) {
+    test(`${action} waits behind vendor suspension and rejects the revoked authority`, async (t) => {
+        const { ProductController } = await import('../../controllers/product.controller.js');
+        const pool = createTestPool();
+        const writer = await pool.connect(); const editor = await pool.connect(); const observer = await pool.connect();
+        try {
+            const vendor = await createMerchantFixture(writer);
+            const product = await writer.query(`INSERT INTO products (vendor_id, name, price, student_price, stock)
+                VALUES ($1, 'Synthetic protected deal', 100, 80, 1) RETURNING id`, [vendor.vendorId]);
+            const productId = product.rows[0].id;
+            const editorPid = await clientPid(editor); const writerPid = await clientPid(writer);
+            t.mock.method(db, 'getPool', () => ({ connect: async () => ({ query: editor.query.bind(editor), release: () => undefined }) }) as never);
+            await writer.query('BEGIN');
+            await writer.query('SELECT id FROM users WHERE id=$1 FOR UPDATE', [vendor.ownerId]);
+            await writer.query("UPDATE vendors SET status='suspended' WHERE id=$1", [vendor.vendorId]);
+            const req = { user: { userId: vendor.ownerId, role: 'vendor' }, params: { id: productId }, body: { stock: 2 } } as unknown as AuthRequest;
+            const res = { status: () => res, json: () => res } as unknown as Response;
+            const controller = new ProductController();
+            const pending = controller[action](req, res).then(() => null, (error: Error) => error);
+            await waitForBlockedBy(observer, editorPid, writerPid, `${action} behind vendor suspension`);
+            await writer.query('COMMIT');
+            assert.match((await pending)?.message ?? '', /must be approved/);
+            const unchanged = (await observer.query('SELECT stock, deleted_at FROM products WHERE id=$1', [productId])).rows[0];
+            assert.equal(unchanged.stock, 1); assert.equal(unchanged.deleted_at, null);
+            await writer.query("UPDATE vendors SET status='active' WHERE id=$1", [vendor.vendorId]);
+            await controller[action](req, res);
+            const changed = (await observer.query('SELECT stock, deleted_at FROM products WHERE id=$1', [productId])).rows[0];
+            if (action === 'updateProduct') assert.equal(changed.stock, 2);
+            else assert.notEqual(changed.deleted_at, null);
+        } finally {
+            await writer.query('ROLLBACK').catch(() => undefined);
+            writer.release(); editor.release(); observer.release(); await pool.end();
+        }
+    });
+}

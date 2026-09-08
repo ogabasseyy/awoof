@@ -434,6 +434,8 @@ function StudentRegisterInner() {
         } catch (error: unknown) {
             if (!isCurrent()) return;
             const response = axios.isAxiosError(error) ? error.response : undefined;
+            // A definite cooldown rejection does not supersede the previous challenge.
+            if (response?.status === 429) updatePending(frozen);
             const deadline = response?.status === 429
                 ? signupRetryAt(response.data, response.headers?.['retry-after'], Date.now())
                 : null;
