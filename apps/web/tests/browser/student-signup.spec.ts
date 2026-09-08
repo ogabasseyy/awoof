@@ -622,7 +622,9 @@ test('resend replaces the receipt, clears old proof, and honors the server coold
 });
 
 test('a server-provided resend deadline re-enables the control without another interaction', async ({ page }) => {
-  const serverCooldown = new Date(Date.now() + 4_000).toISOString();
+  const testTime = Date.now();
+  await page.clock.setFixedTime(testTime);
+  const serverCooldown = new Date(testTime + 4_000).toISOString();
   const api = await installSyntheticApi(page, {
     signup: {
       preflight: [preflightResponse()],
@@ -634,7 +636,8 @@ test('a server-provided resend deadline re-enables the control without another i
   await enterOtp(page);
   const resend = page.getByRole('button', { name: 'Resend code', exact: true });
   await expect(resend).toBeDisabled();
-  await expect(resend).toBeEnabled({ timeout: 7_000 });
+  await page.clock.setFixedTime(testTime + 5_000);
+  await expect(resend).toBeEnabled();
   expect(api.signupRequests.filter((request) => request.endpoint === 'request')).toHaveLength(1);
   expect(api.refreshCalls).toBe(0);
   await assertCleanFixture(api, faults);
@@ -661,6 +664,8 @@ for (const scenario of [
   },
 ] as const) {
   test(`failed resend after ${scenario.name} discards proof and recovers only through an explicit new request`, async ({ page }) => {
+    const testTime = Date.now();
+    await page.clock.setFixedTime(testTime);
     const failedResponse = scenario.failedResponse();
     const api = await installSyntheticApi(page, {
       signup: {
@@ -689,7 +694,8 @@ for (const scenario of [
     expect(api.signupRequests.filter((request) => request.endpoint === 'request')).toHaveLength(2);
     if (scenario.waitsForServerDeadline) {
       await expect(resend).toBeDisabled();
-      await expect(resend).toBeEnabled({ timeout: 5_000 });
+      await page.clock.setFixedTime(testTime + 5_000);
+      await expect(resend).toBeEnabled();
     } else {
       await expect(resend).toBeEnabled();
     }
