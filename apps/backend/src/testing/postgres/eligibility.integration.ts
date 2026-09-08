@@ -2050,3 +2050,31 @@ for (const authority of ['current', 'demoted', 'deleted'] as const) {
         });
     });
 }
+
+test('deal creation waits behind vendor suspension and cannot publish after authority is revoked', async (t) => {
+    const { ProductController } = await import('../../controllers/product.controller.js');
+    const pool = createTestPool();
+    const writer = await pool.connect(); const creator = await pool.connect(); const observer = await pool.connect();
+    try {
+        const vendor = await createMerchantFixture(writer);
+        const creatorPid = await clientPid(creator); const writerPid = await clientPid(writer);
+        t.mock.method(db, 'getPool', () => ({ connect: async () => ({ query: creator.query.bind(creator), release: () => undefined }) }) as never);
+        await writer.query('BEGIN');
+        await writer.query('SELECT id FROM users WHERE id=$1 FOR UPDATE', [vendor.ownerId]);
+        await writer.query("UPDATE vendors SET status='suspended' WHERE id=$1", [vendor.vendorId]);
+        const req = { user: { userId: vendor.ownerId, role: 'vendor' }, body: { name: 'Synthetic race deal', price: 100, studentPrice: 80, stock: 1 } } as unknown as AuthRequest;
+        const res = { status: () => res, json: () => res } as unknown as Response;
+        const controller = new ProductController();
+        const pending = controller.createProduct(req, res).then(() => null, (error: Error) => error);
+        await waitForBlockedBy(observer, creatorPid, writerPid, 'deal creation behind vendor suspension');
+        await writer.query('COMMIT');
+        assert.match((await pending)?.message ?? '', /must be approved/);
+        assert.equal((await observer.query('SELECT count(*)::int AS count FROM products WHERE vendor_id=$1', [vendor.vendorId])).rows[0].count, 0);
+        await writer.query("UPDATE vendors SET status='active' WHERE id=$1", [vendor.vendorId]);
+        await controller.createProduct(req, res);
+        assert.equal((await observer.query('SELECT count(*)::int AS count FROM products WHERE vendor_id=$1', [vendor.vendorId])).rows[0].count, 1);
+    } finally {
+        await writer.query('ROLLBACK').catch(() => undefined);
+        writer.release(); creator.release(); observer.release(); await pool.end();
+    }
+});

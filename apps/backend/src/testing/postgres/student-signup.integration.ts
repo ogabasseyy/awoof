@@ -730,7 +730,7 @@ test('keeps a committed account usable by ordinary login after controller sessio
                 password: 'StrongPass123!',
             };
             const requested = await fetch(`${baseUrl}/student/register-request`, {
-                method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(input),
+                method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(requestInput(fixture)),
             });
             assert.equal(requested.status, 200);
             const request = (await requested.json() as { data: { challengeId: string } }).data;

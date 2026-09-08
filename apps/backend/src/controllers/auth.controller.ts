@@ -759,7 +759,6 @@ export class AuthController {
     public async studentRegisterRequest(req: Request, res: Response): Promise<void> {
         const schema = z.object({
             email: z.string().email('Invalid email address'),
-            password: z.string().min(8, 'Password must be at least 8 characters'),
             name: z.string().min(2, 'Name must be at least 2 characters'),
             universityId: z.string().uuid('Invalid university ID'),
             matricNumber: z.string().max(100, 'Matric number must be at most 100 characters').nullable().optional(),
@@ -768,11 +767,6 @@ export class AuthController {
         }).strict();
 
         const validated = schema.parse(req.body);
-
-        const passwordValidation = passwordService.validatePassword(validated.password);
-        if (!passwordValidation.valid) {
-            throw new BadRequestError(passwordValidation.errors.join(', '));
-        }
 
         try {
             const request = await this.studentSignupService.request({

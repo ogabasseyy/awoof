@@ -1,5 +1,5 @@
 import { expect, test } from '@playwright/test';
-import { apiOrigin, installSyntheticApi, seedSession } from './fixtures';
+import { apiOrigin, installSyntheticApi, seedSession, appOrigin, storageTabPath, replaceSession } from './fixtures';
 
 test('an existing student renews eligibility with the current notice and email code', async ({ page }) => {
     await installSyntheticApi(page);
@@ -225,3 +225,30 @@ for (const suffix of ['', '.pdf']) {
         expect(authenticated).toBe(true);
     });
 }
+
+test('notification contents and late responses cannot cross an account replacement', async ({ page, context }) => {
+    await installSyntheticApi(page); await seedSession(page, 'student');
+    const other = await context.newPage();
+    await other.goto(`${appOrigin}${storageTabPath}`);
+    let studentLoads = 0; let release!: () => void;
+    const held = new Promise<void>((resolve) => { release = resolve; });
+    await page.route((url) => url.origin === apiOrigin && url.pathname === '/api/support/notifications', async (route) => {
+        const student = route.request().headers().authorization?.includes('student');
+        if (student && ++studentLoads > 1) await held;
+        await route.fulfill({ json: { data: { notifications: student ? [{ id: 'old-notice', title: 'Private student notice', message: 'Old account only', read: false, createdAt: new Date().toISOString() }] : [] } }, headers: { 'access-control-allow-origin': '*' } });
+    });
+    try {
+        await page.goto('/marketplace');
+        await expect.poll(() => studentLoads).toBe(1);
+        await page.getByRole('button', { name: 'Notifications', exact: true }).click();
+        await expect(page.getByText('Private student notice')).toBeVisible();
+        await expect.poll(() => studentLoads).toBe(2);
+        await replaceSession(other, 'vendor');
+        await expect(page.getByRole('link', { name: 'Open profile' })).toHaveAttribute('href', '/vendor/dashboard');
+        await expect(page.getByText('Private student notice')).toHaveCount(0);
+        release();
+        await page.getByRole('button', { name: 'Notifications', exact: true }).click();
+        await expect(page.getByText('No notifications', { exact: true })).toBeVisible();
+        await expect(page.getByText('Private student notice')).toHaveCount(0);
+    } finally { release(); }
+});

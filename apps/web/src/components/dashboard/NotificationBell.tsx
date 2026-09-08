@@ -5,6 +5,7 @@ import Link from 'next/link';
 import { Bell } from 'lucide-react';
 import { useAuth } from '@/contexts/AuthContext';
 import apiClient from '@/lib/api-client';
+import { getSessionSnapshot } from '@/lib/auth';
 
 interface BellNotification {
     id: string;
@@ -36,18 +37,24 @@ function deepLink(n: BellNotification, role: string | undefined): string | null 
 
 export function NotificationBell() {
     const { user } = useAuth();
-    const role = user?.role;
+    return user ? <AccountNotificationBell key={`${user.id}:${user.role}`} role={user.role} /> : null;
+}
+
+function AccountNotificationBell({ role }: { role: string }) {
     const [open, setOpen] = useState(false);
     const [unreadCount, setUnreadCount] = useState(0);
     const [items, setItems] = useState<BellNotification[]>([]);
     const ref = useRef<HTMLDivElement | null>(null);
 
     const refresh = useCallback(async () => {
+        const started = getSessionSnapshot();
+        if (!started.accessToken) return;
         try {
             const [countRes, listRes] = await Promise.all([
                 apiClient.get('/support/notifications/unread-count'),
                 apiClient.get('/support/notifications', { params: { limit: 8 } }),
             ]);
+            if (getSessionSnapshot().generation !== started.generation) return;
             setUnreadCount(countRes?.data?.data?.unreadCount ?? 0);
             setItems(listRes?.data?.data?.notifications ?? []);
         } catch {
@@ -56,9 +63,9 @@ export function NotificationBell() {
     }, []);
 
     useEffect(() => {
-        void refresh();
+        const startup = window.setTimeout(() => void refresh(), 0);
         const id = window.setInterval(() => void refresh(), 45000);
-        return () => window.clearInterval(id);
+        return () => { window.clearTimeout(startup); window.clearInterval(id); };
     }, [refresh]);
 
     useEffect(() => {
@@ -71,8 +78,10 @@ export function NotificationBell() {
     }, [open]);
 
     const markOne = async (id: string) => {
+        const started = getSessionSnapshot();
         try {
             await apiClient.put(`/support/notifications/${id}/read`);
+            if (getSessionSnapshot().generation !== started.generation) return;
             setItems((prev) => prev.map((n) => (n.id === id ? { ...n, read: true } : n)));
             await refresh();
         } catch {

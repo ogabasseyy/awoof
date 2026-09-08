@@ -364,7 +364,6 @@ function StudentRegisterInner() {
         try {
             const response = await publicApiClient.post('/auth/student/register-request', {
                 ...claims,
-                password: values.password,
             }, { signal: controller.signal });
             const receipt = parseSignupReceipt(response.data, claims.email);
             if (!isCurrent()) return;
@@ -422,7 +421,6 @@ function StudentRegisterInner() {
         try {
             const response = await publicApiClient.post('/auth/student/register-request', {
                 ...frozen.claims,
-                password: frozen.password,
             }, { signal: controller.signal });
             const receipt = parseSignupReceipt(response.data, frozen.claims.email);
             if (!isCurrent()) return;

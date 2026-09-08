@@ -76,7 +76,7 @@ test('uses the production student handlers for preflight, request, confirm, and 
         const request = await fetch(`${baseUrl}/student/register-request`, {
             method: 'POST', headers: { 'content-type': 'application/json' },
             body: JSON.stringify({
-                universityId, email: 'ada@students.school.example', name: 'Ada Student', password: 'StrongPass123!',
+                universityId, email: 'ada@students.school.example', name: 'Ada Student',
                 verificationConsent: true, noticeVersion: VERIFICATION_NOTICE_VERSION,
             }),
         });
@@ -131,7 +131,7 @@ test('rejects stale notice data before confirmation and maps a service cooldown 
         const cooldown = await fetch(`${baseUrl}/student/register-request`, {
             method: 'POST', headers: { 'content-type': 'application/json' },
             body: JSON.stringify({
-                universityId, email: 'ada@students.school.example', name: 'Ada Student', password: 'StrongPass123!',
+                universityId, email: 'ada@students.school.example', name: 'Ada Student',
                 verificationConsent: true, noticeVersion: VERIFICATION_NOTICE_VERSION,
             }),
         });

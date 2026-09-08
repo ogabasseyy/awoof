@@ -58,7 +58,6 @@ function preflightResponse(verificationNotice = notice, supported = true) {
 
 type SignupRequestBody = {
   email: string;
-  password: string;
   name: string;
   universityId: string;
   matricNumber: string | null;
@@ -93,7 +92,6 @@ function signupReceipt(
 function requestBody(overrides: Partial<SignupRequestBody> = {}): SignupRequestBody {
   return {
     email,
-    password,
     name,
     universityId,
     matricNumber: null,
@@ -104,7 +102,7 @@ function requestBody(overrides: Partial<SignupRequestBody> = {}): SignupRequestB
 }
 
 function confirmationBody(challenge = challengeId, proof = validOtp, overrides: Partial<SignupRequestBody> = {}) {
-  return { ...requestBody(overrides), challengeId: challenge, otp: proof };
+  return { ...requestBody(overrides), password, challengeId: challenge, otp: proof };
 }
 
 function confirmationResponse() {
@@ -164,6 +162,7 @@ async function hasActiveSession(page: Page): Promise<boolean> {
 
 function expectSafePublicRequests(api: Awaited<ReturnType<typeof installSyntheticApi>>): void {
   expect(api.signupRequests.every((request) => !request.authorizationPresent)).toBe(true);
+  expect(api.signupRequests.filter((request) => request.endpoint === 'request').every((request) => !request.bodyKeys.includes('password'))).toBe(true);
   expect(api.signupRequests.every((request) => request.bodyKeys.every((key) => key !== 'confirmPassword'))).toBe(true);
 }
 

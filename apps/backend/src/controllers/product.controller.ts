@@ -223,64 +223,82 @@ export class ProductController {
             throw new UnauthorizedError('Only vendors can create products');
         }
 
-        // Get vendor ID
-        const vendorResult = await db.query(
-            'SELECT id, status FROM vendors WHERE user_id = $1 AND deleted_at IS NULL',
-            [req.user.userId]
-        );
+        const client = await db.getPool().connect();
+        const result = await (async () => {
+            try {
+                await client.query('BEGIN');
+                const owner = await client.query<{ role: string; deleted_at: Date | null }>(
+                    'SELECT role, deleted_at FROM users WHERE id = $1 FOR UPDATE', [req.user!.userId],
+                );
+                if (owner.rows[0]?.role !== 'vendor' || owner.rows[0].deleted_at !== null) {
+                    throw new UnauthorizedError('Current vendor authority required');
+                }
+                // Get vendor ID
+                const vendorResult = await client.query(
+                    'SELECT id, status FROM vendors WHERE user_id = $1 AND deleted_at IS NULL FOR UPDATE',
+                    [req.user!.userId]
+                );
 
-        if (vendorResult.rows.length === 0) {
-            throw new NotFoundError('Vendor profile not found');
-        }
+                if (vendorResult.rows.length === 0) {
+                    throw new NotFoundError('Vendor profile not found');
+                }
 
-        if (vendorResult.rows[0].status !== 'active') {
-            throw new BadRequestError('Your vendor account must be approved before managing deals');
-        }
+                if (vendorResult.rows[0].status !== 'active') {
+                    throw new BadRequestError('Your vendor account must be approved before managing deals');
+                }
 
-        const vendorId = vendorResult.rows[0].id;
+                const vendorId = vendorResult.rows[0].id;
 
-        // Validate request body
-        const validated = createProductSchema.parse(req.body);
-        if (validated.dealType === 'voucher') throw new BadRequestError('Voucher creation is unavailable while external redemption is suspended');
+                // Validate request body
+                const validated = createProductSchema.parse(req.body);
+                if (validated.dealType === 'voucher') throw new BadRequestError('Voucher creation is unavailable while external redemption is suspended');
 
-        // Validate category if provided
-        if (validated.categoryId) {
-            const categoryResult = await db.query(
-                'SELECT id FROM categories WHERE id = $1',
-                [validated.categoryId]
-            );
-            if (categoryResult.rows.length === 0) {
-                throw new BadRequestError('Category not found');
-            }
-        }
+                // Validate category if provided
+                if (validated.categoryId) {
+                    const categoryResult = await client.query(
+                        'SELECT id FROM categories WHERE id = $1',
+                        [validated.categoryId]
+                    );
+                    if (categoryResult.rows.length === 0) {
+                        throw new BadRequestError('Category not found');
+                    }
+                }
 
-        // Handle image upload
-        let imageUrl: string | null = null;
-        const file = req.file as Express.Multer.File | undefined;
-        if (file) {
-            imageUrl = getFileUrl(file.filename);
-        }
+                // Handle image upload
+                let imageUrl: string | null = null;
+                const file = req.file as Express.Multer.File | undefined;
+                if (file) {
+                    imageUrl = getFileUrl(file.filename);
+                }
 
-        // Insert product
-        const result = await db.query(
-            `INSERT INTO products (vendor_id, name, description, price, student_price, 
-                                  category_id, image_url, stock, status, deal_type)
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
-             RETURNING id, name, description, price, student_price, category_id, 
-                       image_url, api_id, stock, status, deal_type, created_at, updated_at`,
-            [
-                vendorId,
-                validated.name,
-                validated.description || null,
-                validated.price,
-                validated.studentPrice,
-                validated.categoryId || null,
-                imageUrl,
-                validated.stock,
-                validated.status,
-                validated.dealType ?? 'product',
-            ]
-        );
+                // Insert product
+                const inserted = await client.query(
+                    `INSERT INTO products (vendor_id, name, description, price, student_price,
+                                          category_id, image_url, stock, status, deal_type)
+                     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+                     RETURNING id, name, description, price, student_price, category_id,
+                               image_url, api_id, stock, status, deal_type, created_at, updated_at`,
+                    [
+                        vendorId,
+                        validated.name,
+                        validated.description || null,
+                        validated.price,
+                        validated.studentPrice,
+                        validated.categoryId || null,
+                        imageUrl,
+                        validated.stock,
+                        validated.status,
+                        validated.dealType ?? 'product',
+                    ]
+                );
+
+                await client.query('COMMIT');
+                return inserted;
+            } catch (error) {
+                await client.query('ROLLBACK').catch(() => undefined);
+                throw error;
+            } finally { client.release(); }
+        })();
 
         success(res, {
             message: 'Product created successfully',
