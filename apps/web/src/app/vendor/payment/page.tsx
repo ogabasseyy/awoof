@@ -168,9 +168,7 @@ export default function VendorPaymentPage() {
             try {
                 setResolveStatus('loading');
                 setResolveError(null);
-                const res = await apiClient.get('/vendors/payment/resolve-account', {
-                    params: { bankCode, accountNumber: digits },
-                });
+                const res = await apiClient.post('/vendors/payment/resolve-account', { bankCode, accountNumber: digits });
                 if (cancelled) return;
                 setAccountName(res.data?.data?.accountName ?? '');
                 setResolveStatus('resolved');

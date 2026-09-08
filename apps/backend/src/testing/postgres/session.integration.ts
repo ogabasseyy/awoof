@@ -4,7 +4,7 @@ import test from 'node:test';
 import { setTimeout as delay } from 'node:timers/promises';
 import type { PoolClient } from 'pg';
 import { db } from '../../config/database.js';
-import { issueSession, refreshSession, revokeSession } from '../../services/auth/session.service.js';
+import { issueSession, refreshSession, revokeSessionByRefreshToken } from '../../services/auth/session.service.js';
 import { jwtService, type TokenPayload } from '../../services/auth/jwt.service.js';
 import { assertFixtureDatabase, createTestPool, withTestClient } from './test-database.js';
 
@@ -64,7 +64,9 @@ test('uses durable profile authority, stored hashes, and current database claims
         const second = await issueSession(student, false, student.passwordHash);
         await assert.rejects(refreshSession(studentTokens.refreshToken), /Refresh token not found or invalid/);
         assert.equal(jwtService.verifyAccessToken(await refreshSession(second.refreshToken)).role, 'student');
-        await revokeSession(student.userId);
+        await revokeSessionByRefreshToken(studentTokens.refreshToken);
+        assert.equal(jwtService.verifyAccessToken(await refreshSession(second.refreshToken)).role, 'student');
+        await revokeSessionByRefreshToken(second.refreshToken);
         await assert.rejects(refreshSession(second.refreshToken), /Refresh token not found or invalid/);
         const revoked = await client.query<{ refresh_token_hash: string | null; refresh_token_expires_at: Date | null }>('SELECT refresh_token_hash, refresh_token_expires_at FROM users WHERE id = $1', [student.userId]);
         assert.equal(revoked.rows[0]?.refresh_token_hash, null);

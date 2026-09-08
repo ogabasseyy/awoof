@@ -20,7 +20,9 @@ function PurchaseCallbackContent() {
         if (!tx) return;
 
         let cancelled = false;
-        let intervalId: ReturnType<typeof setInterval> | null = null;
+        terminalRef.current = false;
+        const deadline = Date.now() + 120_000;
+        let intervalId: ReturnType<typeof setTimeout> | null = null;
 
         const poll = async () => {
             if (terminalRef.current || cancelled) return;
@@ -36,24 +38,27 @@ function PurchaseCallbackContent() {
                     next === 'requires_refund'
                 ) {
                     terminalRef.current = true;
-                    if (intervalId) clearInterval(intervalId);
+                    if (intervalId) clearTimeout(intervalId);
                 }
             } catch {
-                // Keep polling while webhook / verify processes
+                // Retry only after this request settles.
+            } finally {
+                if (!cancelled && !terminalRef.current && Date.now() < deadline) intervalId = setTimeout(poll, 3000);
             }
         };
 
-        poll();
-        intervalId = setInterval(poll, 3000);
+        // Defer startup so an effect cleanup can cancel it before opening a request.
+        intervalId = setTimeout(poll, 0);
 
         // Safety stop after ~2 minutes
         const timeoutId = setTimeout(() => {
-            if (intervalId) clearInterval(intervalId);
+            cancelled = true;
+            if (intervalId) clearTimeout(intervalId);
         }, 120_000);
 
         return () => {
             cancelled = true;
-            if (intervalId) clearInterval(intervalId);
+            if (intervalId) clearTimeout(intervalId);
             clearTimeout(timeoutId);
         };
     }, [tx]);

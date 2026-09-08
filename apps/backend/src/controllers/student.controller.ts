@@ -339,9 +339,9 @@ export class StudentController {
         const statsResult = await db.query(
             `SELECT 
                 COUNT(*) as total_purchases,
-                COALESCE(SUM(p.price - p.student_price), 0) as total_savings,
+                COALESCE(SUM(COALESCE(t.list_price_snapshot, t.amount) - t.amount), 0) as total_savings,
                 COALESCE(SUM(t.amount), 0) as total_spent,
-                COALESCE(SUM(p.price), 0) as total_value
+                COALESCE(SUM(COALESCE(t.list_price_snapshot, t.amount)), 0) as total_value
              FROM transactions t
              JOIN students s ON t.student_id = s.id
              JOIN users u ON s.user_id = u.id
@@ -359,7 +359,7 @@ export class StudentController {
             `SELECT 
                 c.name as category_name,
                 COUNT(*) as purchase_count,
-                COALESCE(SUM(p.price - p.student_price), 0) as savings
+                COALESCE(SUM(COALESCE(t.list_price_snapshot, t.amount) - t.amount), 0) as savings
              FROM transactions t
              JOIN students s ON t.student_id = s.id
              JOIN users u ON s.user_id = u.id

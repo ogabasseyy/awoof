@@ -9,7 +9,7 @@ import type { Request, Response } from 'express';
 import { db } from '../config/database.js';
 import { redis } from '../config/redis.js';
 import { jwtService } from '../services/auth/jwt.service.js';
-import { issueSession, refreshSession, revokeSession } from '../services/auth/session.service.js';
+import { issueSession, refreshSession, revokeSession, revokeSessionByRefreshToken } from '../services/auth/session.service.js';
 import { passwordService } from '../services/auth/password.service.js';
 import { generateOTP, getOTPExpiryDate, isOTPExpired } from '../services/auth/otp.service.js';
 import { isEmailConfigured, sendPasswordResetOTP, sendEmailVerificationOTP } from '../services/email/email.service.js';
@@ -308,11 +308,13 @@ export class AuthController {
      * Logout user
      */
     public async logout(req: AuthRequest, res: Response): Promise<void> {
-        if (!req.user) {
-            throw new UnauthorizedError('User not authenticated');
+        if (req.body?.refreshToken !== undefined) {
+            const body = z.object({ refreshToken: z.string().min(1).max(4096) }).strict().parse(req.body);
+            await revokeSessionByRefreshToken(body.refreshToken);
+        } else {
+            if (!req.user) throw new UnauthorizedError('User not authenticated');
+            await revokeSession(req.user.userId);
         }
-
-        await revokeSession(req.user.userId);
 
         success(res, {
             message: 'Logged out successfully',

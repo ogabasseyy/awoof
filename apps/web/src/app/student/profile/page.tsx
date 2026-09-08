@@ -90,6 +90,7 @@ export default function StudentProfilePage() {
     };
 
     const generalItems: MenuItem[] = [
+        { href: '/student/verification', label: 'Student verification', icon: ShieldCheck },
         { href: '/student/profile/notifications', label: 'Notifications', icon: Bell },
         { href: '/student/profile/websites', label: 'Websites visited', icon: FileText },
         { label: 'Dark mode', icon: Moon, trailing: 'toggle' },

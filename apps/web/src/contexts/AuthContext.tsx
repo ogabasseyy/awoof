@@ -282,7 +282,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         const captured = getSessionSnapshot();
         const role = user?.role;
         const operation = ++operationRef.current;
-        const revocation = revokeLogoutSession(publicApiClient.defaults.baseURL!, captured.accessToken);
+        const revocation = revokeLogoutSession(publicApiClient.defaults.baseURL!, captured.accessToken, captured.refreshToken);
         clearTokens();
         const cleared = getSessionSnapshot();
         const blocked = isSessionStorageQuarantined();

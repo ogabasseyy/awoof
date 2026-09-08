@@ -9,6 +9,7 @@ import express, { type Express, type Request, type Response, type NextFunction }
 import cors from 'cors';
 import helmet from 'helmet';
 import rateLimit from 'express-rate-limit';
+import { uploadedFile } from './middleware/uploaded-file.js';
 import { paystackWebhookLimiter } from './middleware/paystack-webhook-limit.js';
 import swaggerUi from 'swagger-ui-express';
 import { config } from './config/env.js';
@@ -149,7 +150,7 @@ class App {
     }
 
     // Static file serving for uploads
-    this.app.use('/uploads', express.static('uploads'));
+    this.app.use('/uploads', uploadedFile);
   }
 
   /**
@@ -317,6 +318,8 @@ class App {
 
       const { startCommerceNotificationDispatcher } = await import('./services/payment/checkout.service.js');
       startCommerceNotificationDispatcher();
+      const { startChallengeRetentionDispatcher } = await import('./services/verification/challenge-retention.service.js');
+      startChallengeRetentionDispatcher();
 
       // Initialize routes (must be after database is ready)
       await this.initializeRoutes();

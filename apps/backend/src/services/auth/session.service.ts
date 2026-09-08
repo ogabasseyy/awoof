@@ -116,3 +116,12 @@ export async function revokeSession(userId: string): Promise<void> {
         [userId],
     );
 }
+
+/** A captured refresh credential can revoke itself, never a replacement login. */
+export async function revokeSessionByRefreshToken(refreshToken: string): Promise<void> {
+    let decoded: TokenPayload;
+    try { decoded = jwtService.verifyRefreshToken(refreshToken); }
+    catch { throw new UnauthorizedError('Invalid or expired refresh token'); }
+    await db.query(`UPDATE users SET refresh_token_hash = NULL, refresh_token_expires_at = NULL
+        WHERE id = $1 AND refresh_token_hash = $2`, [decoded.userId, refreshTokenHash(refreshToken)]);
+}

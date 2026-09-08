@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { passwordService } from '../../services/auth/password.service.js';
 import { randomUUID } from 'node:crypto';
 import { once } from 'node:events';
 import test from 'node:test';
@@ -186,7 +187,8 @@ async function withHttpServer(controller: AuthController, operation: (baseUrl: s
     }
 }
 
-test('request records only an immutable signup challenge and wrong confirmation commits one guess without an account', async () => {
+test('request records only an immutable signup challenge and wrong confirmation commits one guess without an account', async (t) => {
+    const hash = t.mock.method(passwordService, 'hashPassword', async () => { throw new Error('Invalid proof must not hash passwords'); });
     await withPool(async (pool) => {
         const client = await pool.connect();
         const fixture = await createFixture(client);
@@ -224,6 +226,7 @@ test('request records only an immutable signup challenge and wrong confirmation 
             service.confirm({ ...requestInput(fixture), challengeId: request.challengeId, otp: wrongOtp, password: 'StrongPass123!' }),
             UnauthorizedError,
         );
+        assert.equal(hash.mock.callCount(), 0);
         const after = await pool.query<{ failed_attempts: number; users: string; grants: string; proofs: string; evidence: string }>(
             `SELECT budgets.failed_attempts,
                     (SELECT count(*) FROM users WHERE lower(btrim(email)) = $1) AS users,

@@ -111,6 +111,10 @@ export function generatePaystackReference(): string {
     return `awoof-${Date.now()}-${crypto.randomBytes(16).toString('hex')}`;
 }
 
+export class PaystackMutationRejectedError extends BadRequestError {
+    constructor() { super('Paystack rejected the payout configuration. Correct it and retry.'); }
+}
+
 export class PaystackInitializationRejectedError extends BadRequestError {
     constructor() { super('Payment initialization was rejected. Correct the payment configuration before retrying.'); }
 }
@@ -277,6 +281,7 @@ export async function createPaystackSubaccount(params: {
         return { subaccountCode: String(code) };
     } catch (error: unknown) {
         if (error instanceof BadRequestError) throw error;
+        if (isDefinitiveInitializationRejection(error)) throw new PaystackMutationRejectedError();
         throw new BadRequestError(paystackErrorMessage(error, 'Failed to create Paystack subaccount'));
     }
 }
@@ -306,6 +311,7 @@ export async function updatePaystackSubaccount(
         return { subaccountCode: String(code) };
     } catch (error: unknown) {
         if (error instanceof BadRequestError) throw error;
+        if (isDefinitiveInitializationRejection(error)) throw new PaystackMutationRejectedError();
         throw new BadRequestError(paystackErrorMessage(error, 'Failed to update Paystack subaccount'));
     }
 }

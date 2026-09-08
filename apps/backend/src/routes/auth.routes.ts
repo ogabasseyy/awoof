@@ -101,7 +101,7 @@ router.post(
  */
 router.post(
     '/logout',
-    authenticate,
+    (req, res, next) => req.body?.refreshToken !== undefined ? next() : authenticate(req, res, next),
     asyncHandler(authController.logout.bind(authController))
 );
 

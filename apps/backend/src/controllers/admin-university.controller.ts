@@ -20,7 +20,7 @@ const createUniversitySchema = z.object({
     is_active: z.boolean().optional().default(true),
 });
 
-const updateUniversitySchema = createUniversitySchema.partial();
+const updateUniversitySchema = createUniversitySchema.omit({ is_active: true }).partial().strict();
 
 function parseEmailDomains(val: string | string[] | undefined): string[] {
     if (!val) return [];
@@ -202,10 +202,7 @@ export class AdminUniversityController {
             updates.push(`country = $${idx++}`);
             values.push(parsed.country);
         }
-        if (parsed.is_active !== undefined) {
-            updates.push(`is_active = $${idx++}`);
-            values.push(parsed.is_active);
-        }
+
 
         values.push(id);
         const result = await db.query(

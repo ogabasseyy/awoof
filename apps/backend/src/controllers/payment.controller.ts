@@ -19,6 +19,7 @@ import { rotateReportingKey } from '../services/auth/reporting-key.service.js';
 import { validateAndConsumeToken } from '../services/verification/verification-token.service.js';
 import {
     createPaystackSubaccount,
+    PaystackMutationRejectedError,
     listPaystackBanks,
     resolvePaystackAccount,
     updatePaystackSubaccount,
@@ -156,8 +157,8 @@ export class PaymentController {
             throw new UnauthorizedError('Only vendors can resolve accounts');
         }
 
-        const bankCode = String(req.query.bankCode || '').trim();
-        const accountNumber = String(req.query.accountNumber || '').trim();
+        const bankCode = String(req.body?.bankCode || '').trim();
+        const accountNumber = String(req.body?.accountNumber || '').trim();
 
         if (!bankCode || !accountNumber) {
             throw new BadRequestError('bankCode and accountNumber are required');
@@ -242,6 +243,10 @@ export class PaymentController {
                 subaccountCode = created.subaccountCode;
             }
         } catch (error: unknown) {
+            if (error instanceof PaystackMutationRejectedError) {
+                await db.query(`UPDATE payout_change_requests SET status = 'failed', error = 'Provider rejected the request', updated_at = CURRENT_TIMESTAMP WHERE id = $1 AND status = 'pending'`, [payoutChangeId]);
+                throw error;
+            }
             await db.query(
                 // An HTTP timeout can follow a successful remote mutation. Keep the
                 // guard pending until reconciled instead of allowing a duplicate.

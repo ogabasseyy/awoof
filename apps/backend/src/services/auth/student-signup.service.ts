@@ -214,7 +214,6 @@ export function createStudentSignupService(dependencies: StudentSignupDependenci
 
     async function confirm(input: StudentSignupConfirmationInput): Promise<StudentSignupCompletion> {
         const identity = normalizeStudentSignupRequest(input);
-        const expectedPasswordHash = await passwordHashFor(input.password);
         const outcome = await inTransaction(dependencies.pool, async (tx) => {
             // This locks the canonical institution before the signup budget. The
             // account is deliberately absent until a verified proof is consumed.
@@ -232,6 +231,7 @@ export function createStudentSignupService(dependencies: StudentSignupDependenci
                 throw new BadRequestError('Signup details do not match the requested proof');
             }
 
+            const expectedPasswordHash = await passwordHashFor(input.password);
             const university = await tx.query<{ name: string }>(
                 `SELECT name FROM universities WHERE id = $1`,
                 [identity.universityId],
@@ -259,13 +259,13 @@ export function createStudentSignupService(dependencies: StudentSignupDependenci
                 challengeId: consumed.challengeId,
                 processingGrantId,
             });
-            return { status: 'completed' as const, user, eligibility };
+            return { status: 'completed' as const, user, eligibility, expectedPasswordHash };
         });
         if ('user' in outcome) {
             return {
                 user: outcome.user,
                 eligibility: outcome.eligibility,
-                expectedPasswordHash,
+                expectedPasswordHash: outcome.expectedPasswordHash,
             };
         }
         if (outcome.status === 'invalid') {

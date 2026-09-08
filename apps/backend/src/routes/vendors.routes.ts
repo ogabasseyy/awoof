@@ -201,11 +201,11 @@ router.get(
 );
 
 /**
- * @route   GET /api/vendors/payment/resolve-account
+ * @route   POST /api/vendors/payment/resolve-account
  * @desc    Resolve bank account name (Paystack)
  * @access  Private (Vendor)
  */
-router.get(
+router.post(
     '/payment/resolve-account',
     authenticate,
     asyncHandler(paymentController.resolveAccount.bind(paymentController))

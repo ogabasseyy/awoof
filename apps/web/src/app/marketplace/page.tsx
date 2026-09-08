@@ -311,7 +311,7 @@ export default function MarketplacePage() {
                                 </p>
                                 {!isVerified && user && (
                                     <Link
-                                        href="/student/profile"
+                                        href="/student/verification"
                                         className="inline-flex items-center gap-2 mt-2 rounded-full bg-white text-[#1D4ED8] text-sm font-bold px-5 py-2.5 hover:bg-blue-50 transition-colors"
                                     >
                                         Finish verification

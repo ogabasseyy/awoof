@@ -82,7 +82,7 @@ export class VendorController {
             if (fileArray && fileArray.length > 0) {
                 const file = fileArray[0];
                 if (file && file.filename) {
-                    const fileUrl = getFileUrl(file.filename);
+                    const fileUrl = getFileUrl(file.filename, fileType === 'documentFront' || fileType === 'documentBack');
                     fileUrls[fileType] = fileUrl;
 
                     // Update database

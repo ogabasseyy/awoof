@@ -6,6 +6,7 @@
 
 'use client';
 
+import { PrivateDocumentDownload } from '@/components/PrivateDocumentDownload';
 import { useState, useEffect } from 'react';
 import { BarChart3, CreditCard, LayoutDashboard, LifeBuoy, Puzzle, Settings, ShoppingBag, Tag, Save, Upload, Image as ImageIcon, FileText, Building2, Phone, Globe, Tag as TagIcon, FileEdit } from 'lucide-react';
 import ProtectedRoute from '@/components/ProtectedRoute';
@@ -521,14 +522,7 @@ export default function VendorSettingsPage() {
                                                 <Label className="text-sm">Document Front</Label>
                                                 {profile?.document_front_url && (
                                                     <div className="mt-2 mb-2">
-                                                        <a
-                                                            href={getImageUrl(profile.document_front_url) || '#'}
-                                                            target="_blank"
-                                                            rel="noopener noreferrer"
-                                                            className="text-sm text-[#1D4ED8] hover:underline"
-                                                        >
-                                                            View current document
-                                                        </a>
+                                                        <PrivateDocumentDownload path={profile.document_front_url} />
                                                     </div>
                                                 )}
                                                 <FileUploadField
@@ -544,14 +538,7 @@ export default function VendorSettingsPage() {
                                                 <Label className="text-sm">Document Back</Label>
                                                 {profile?.document_back_url && (
                                                     <div className="mt-2 mb-2">
-                                                        <a
-                                                            href={getImageUrl(profile.document_back_url) || '#'}
-                                                            target="_blank"
-                                                            rel="noopener noreferrer"
-                                                            className="text-sm text-[#1D4ED8] hover:underline"
-                                                        >
-                                                            View current document
-                                                        </a>
+                                                        <PrivateDocumentDownload path={profile.document_back_url} />
                                                     </div>
                                                 )}
                                                 <FileUploadField
