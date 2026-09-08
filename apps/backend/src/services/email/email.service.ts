@@ -125,7 +125,7 @@ export const sendEmailVerificationOTP = async (
         ? 'Verify your email - Awoof Student Registration'
         : 'Verify your email - Awoof Vendor Registration';
 
-    const greeting = name ? `Hello ${name},` : 'Hello,';
+    const greeting = name ? `Hello ${escapeHtml(name)},` : 'Hello,';
     const registrationText = isStudent
         ? 'Thank you for registering as a student on Awoof.'
         : 'Thank you for registering as a vendor on Awoof.';
@@ -161,7 +161,7 @@ export const sendWelcomeEmail = async (
     email: string,
     name?: string
 ): Promise<{ success: boolean; messageId?: string; error?: string }> => {
-    const greeting = name ? `Hello ${name},` : 'Hello,';
+    const greeting = name ? `Hello ${escapeHtml(name)},` : 'Hello,';
     const subject = 'Welcome to Awoof!';
     const frontendUrl = process.env.FRONTEND_URL || 'http://localhost:3000';
     const html = `

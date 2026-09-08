@@ -132,3 +132,39 @@ test('persisted mailbox proof allows enrollment while email delivery is unavaila
     await page.getByRole('button', { name: 'Check enrollment' }).click();
     await expect(page.getByText('Your student eligibility is current.')).toBeVisible();
 });
+
+for (const eligible of [true, false]) {
+    test(`marketplace banner follows effective eligibility ${eligible} despite the opposite legacy flag`, async ({ page }) => {
+        await installSyntheticApi(page); await seedSession(page, 'student');
+        await page.route(`${apiOrigin}/api/auth/me`, (route) => route.fulfill({ json: { data: {
+            id: '00000000-0000-4000-8000-000000000001', email: 'student@approved.test', role: 'student', verificationStatus: eligible ? 'unverified' : 'verified',
+        } }, headers: { 'access-control-allow-origin': '*' } }));
+        await page.route(`${apiOrigin}/api/verification/status`, (route) => route.fulfill({ json: { data: { eligibility: { eligible } } }, headers: { 'access-control-allow-origin': '*' } }));
+        await page.goto('/marketplace');
+        if (eligible) {
+            await expect(page.getByText('You’re verified and ready.', { exact: false })).toBeVisible();
+            await expect(page.getByRole('link', { name: 'Finish verification' })).toHaveCount(0);
+        } else {
+            await expect(page.getByRole('link', { name: 'Finish verification' })).toBeVisible();
+            await expect(page.getByText('You’re verified and ready.', { exact: false })).toHaveCount(0);
+        }
+    });
+}
+
+for (const role of ['vendor', 'admin'] as const) {
+    test(`${role} returns to their dashboard without student checkout or session refresh`, async ({ page }) => {
+        await installSyntheticApi(page); await seedSession(page, role);
+        let checkoutCalls = 0; let refreshCalls = 0;
+        await page.route(`${apiOrigin}/api/products/synthetic-product`, (route) => route.fulfill({ json: { data: { product: {
+            id: 'synthetic-product', name: 'Synthetic student deal', description: 'Test product', price: 100, student_price: 80,
+            stock: 10, image_url: null, deal_type: 'product', vendor_payment_method: 'awoof', vendor_name: 'Test vendor',
+        } } }, headers: { 'access-control-allow-origin': '*' } }));
+        await page.route(`${apiOrigin}/api/checkout`, (route) => { checkoutCalls += 1; return route.fulfill({ status: 401, json: {} }); });
+        await page.route(`${apiOrigin}/api/auth/refresh`, (route) => { refreshCalls += 1; return route.fulfill({ status: 401, json: {} }); });
+        await page.goto('/marketplace/synthetic-product');
+        await page.getByRole('button', { name: 'Claim student price' }).click();
+        await expect(page).toHaveURL(new RegExp(`/${role}/dashboard$`));
+        expect(checkoutCalls).toBe(0); expect(refreshCalls).toBe(0);
+        expect(await page.evaluate(() => localStorage.getItem('awoof.session.v1'))).not.toBeNull();
+    });
+}

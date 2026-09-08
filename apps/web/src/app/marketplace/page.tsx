@@ -83,7 +83,20 @@ export default function MarketplacePage() {
     const [searchQuery, setSearchQuery] = useState('');
 
     const firstName = getFirstName(user as { email?: string; profile?: { name?: string } } | null);
-    const isVerified = user?.verificationStatus === 'verified';
+    const [eligibility, setEligibility] = useState<{ userId: string; eligible: boolean } | null>(null);
+    const isVerified = user?.role === 'student' && eligibility?.userId === user.id && eligibility.eligible;
+
+    useEffect(() => {
+        if (user?.role !== 'student') return;
+        const userId = user.id;
+        let cancelled = false;
+        apiClient.get('/verification/status').then((response) => {
+            if (!cancelled) setEligibility({ userId, eligible: response.data.data?.eligibility?.eligible === true });
+        }).catch(() => {
+            if (!cancelled) setEligibility({ userId, eligible: false });
+        });
+        return () => { cancelled = true; };
+    }, [user?.id, user?.role]);
     const hasAnyDeals = featuredProducts.length > 0 || voucherProducts.length > 0;
 
     const fetchCategoryProducts = useCallback(async (categoryId: string) => {
@@ -309,7 +322,7 @@ export default function MarketplacePage() {
                                           ? 'You’re verified and ready. Merchants are onboarding — your first exclusive offers will land here.'
                                           : 'Verify once, then unlock student prices the moment new deals go live.'}
                                 </p>
-                                {!isVerified && user && (
+                                {!isVerified && user?.role === 'student' && (
                                     <Link
                                         href="/student/verification"
                                         className="inline-flex items-center gap-2 mt-2 rounded-full bg-white text-[#1D4ED8] text-sm font-bold px-5 py-2.5 hover:bg-blue-50 transition-colors"

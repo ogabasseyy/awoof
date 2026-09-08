@@ -105,6 +105,11 @@ export default function ProductDetailPage() {
             return;
         }
 
+        if (user.role !== 'student') {
+            router.push(user.role === 'vendor' ? '/vendor/dashboard' : '/admin/dashboard');
+            return;
+        }
+
         // The checkout endpoint authorizes from current evidence and consent;
         // cached profile verification flags are not eligibility authority.
 
