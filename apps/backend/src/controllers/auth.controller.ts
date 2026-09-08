@@ -135,6 +135,7 @@ export class AuthController {
 
         // Start transaction (in case we need to rollback)
         let committed = false;
+        let released = false;
         const client = await db.getPool().connect();
 
         try {
@@ -185,6 +186,8 @@ export class AuthController {
 
             await client.query('COMMIT');
             committed = true;
+            client.release();
+            released = true;
 
             let tokens;
             try {
@@ -216,7 +219,7 @@ export class AuthController {
             if (!committed) await client.query('ROLLBACK');
             throw error;
         } finally {
-            client.release();
+            if (!released) client.release();
         }
     }
 
