@@ -87,7 +87,7 @@ test('enrollment becomes actionable only after school email confirmation', async
     await page.route(`${apiOrigin}/api/verification/**`, async (route) => {
         const endpoint = new URL(route.request().url()).pathname;
         let data: unknown;
-        if (endpoint.endsWith('/status')) data = { email: 'student@approved.test', universityId: 'b9c35781-9f75-44b6-98ca-0c928fb993a9', eligibility: { eligible }, notices: { verification: { version: 'fixture', text: 'I agree to verification.' } } };
+        if (endpoint.endsWith('/status')) data = { mailboxConfirmed: emailConfirmed, email: 'student@approved.test', universityId: 'b9c35781-9f75-44b6-98ca-0c928fb993a9', eligibility: { eligible }, notices: { verification: { version: 'fixture', text: 'I agree to verification.' } } };
         else if (endpoint.includes('/methods/')) data = { methods: [{ methodType: 'email', isAvailable: true }, { methodType: 'registration', isAvailable: true }] };
         else if (endpoint.endsWith('/initiate')) data = { processingGrantId: 'fixture-grant' };
         else if (endpoint.endsWith('/email/request')) data = { challengeId: 'fixture-challenge', resendAvailableAt: new Date().toISOString() };
@@ -105,6 +105,29 @@ test('enrollment becomes actionable only after school email confirmation', async
     await page.getByRole('button', { name: 'Send verification code' }).click();
     await page.getByLabel('Email code').fill('123456');
     await page.getByRole('button', { name: 'Confirm email', exact: true }).click();
+    await page.getByLabel('Registration number').fill('SYNTHETIC-123');
+    await page.getByRole('button', { name: 'Check enrollment' }).click();
+    await expect(page.getByText('Your student eligibility is current.')).toBeVisible();
+});
+
+test('persisted mailbox proof allows enrollment while email delivery is unavailable', async ({ page }) => {
+    await installSyntheticApi(page); await seedSession(page, 'student');
+    let eligible = false;
+    await page.route(`${apiOrigin}/api/verification/**`, async (route) => {
+        const endpoint = new URL(route.request().url()).pathname;
+        let data: unknown;
+        if (endpoint.endsWith('/status')) data = { mailboxConfirmed: true, email: 'student@approved.test', universityId: 'b9c35781-9f75-44b6-98ca-0c928fb993a9', eligibility: { eligible }, notices: { verification: { version: 'fixture', text: 'I agree to verification.' } } };
+        else if (endpoint.includes('/methods/')) data = { methods: [{ methodType: 'email', isAvailable: false }, { methodType: 'registration', isAvailable: true }] };
+        else if (endpoint.endsWith('/initiate')) data = { processingGrantId: 'fixture-grant' };
+        else {
+            expect(endpoint).toBe('/api/verification/registration');
+            eligible = true; data = { eligibility: { eligible } };
+        }
+        await route.fulfill({ json: { data }, headers: { 'access-control-allow-origin': '*' } });
+    });
+    await page.goto('/student/verification');
+    await page.getByRole('checkbox').check();
+    await expect(page.getByRole('button', { name: 'Send verification code' })).toBeDisabled();
     await page.getByLabel('Registration number').fill('SYNTHETIC-123');
     await page.getByRole('button', { name: 'Check enrollment' }).click();
     await expect(page.getByText('Your student eligibility is current.')).toBeVisible();

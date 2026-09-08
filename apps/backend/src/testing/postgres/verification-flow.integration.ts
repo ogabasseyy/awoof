@@ -388,6 +388,7 @@ test('reports an owned inactive institution as current unverified status without
         });
 
         const current = await flow.status(fixture.userId);
+        assert.equal(current.mailboxConfirmed, false);
         assert.equal(current.email, fixture.email);
         assert.equal(current.universityId, fixture.universityId);
         assert.deepEqual(current.eligibility, { eligible: false, reason: 'inactive' });
@@ -603,6 +604,7 @@ test('reports expired assurance, permits a bounded re-verification, and rejects 
             [firstEvidence.studentId, fixture.universityId, expired.rows[0]!.id],
         );
         assert.deepEqual((await flow.status(fixture.userId)).eligibility, { eligible: false, reason: 'expired' });
+        assert.equal((await flow.status(fixture.userId)).mailboxConfirmed, true);
 
         await pool.query(
             `UPDATE verification_challenge_budgets
@@ -1631,5 +1633,19 @@ test('actual authenticated confirmation returns 400 and commits exactly one wron
             [requested.challengeId],
         );
         assert.deepEqual(budget.rows, [{ failed_attempts: 1 }]);
+    });
+});
+
+test('status recognizes persisted proof only for the current account mailbox', async () => {
+    await withPool(async (pool) => {
+        const fixture = await createFixture(pool); let otp = '';
+        const flow = createVerificationFlowService({ pool, isEmailConfigured: () => true, deliverOtp: async (_email, code) => { otp = code; return { success: true }; } });
+        assert.equal((await flow.status(fixture.userId)).mailboxConfirmed, false);
+        const initiated = await flow.initiate(fixture.userId, { universityId: fixture.universityId, accepted: true, noticeVersion: VERIFICATION_NOTICE_VERSION });
+        const request = await flow.requestEmail(fixture.userId, { processingGrantId: initiated.processingGrantId });
+        await flow.confirmEmail(fixture.userId, { challengeId: request.challengeId, otp });
+        assert.equal((await flow.status(fixture.userId)).mailboxConfirmed, true);
+        await pool.query('UPDATE users SET email=$2 WHERE id=$1', [fixture.userId, `changed-${randomUUID()}@students.flow.example`]);
+        assert.equal((await flow.status(fixture.userId)).mailboxConfirmed, false);
     });
 });

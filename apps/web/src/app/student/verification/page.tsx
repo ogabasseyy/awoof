@@ -7,6 +7,7 @@ import ProtectedRoute from '@/components/ProtectedRoute';
 import apiClient from '@/lib/api-client';
 
 type VerificationStatus = {
+    mailboxConfirmed: boolean;
     email: string;
     universityId: string | null;
     eligibility: { eligible: boolean; reason?: string };
@@ -29,6 +30,7 @@ function VerificationForm() {
     function loadStatus() {
         return apiClient.get<{ data: VerificationStatus }>('/verification/status').then(async (response) => {
             setStatus(response.data.data);
+            setMailboxConfirmed(response.data.data.mailboxConfirmed === true);
             if (response.data.data.universityId) {
                 const available = await apiClient.get(`/verification/methods/${response.data.data.universityId}`).catch(() => null);
                 setMethods(available?.data.data.methods ?? []);

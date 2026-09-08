@@ -94,6 +94,7 @@ export type VerificationEmailRequest = {
 };
 
 export type VerificationStatus = {
+    mailboxConfirmed: boolean;
     email: string;
     universityId: string | null;
     eligibility: EligibilityResult;
@@ -479,7 +480,11 @@ export function createVerificationFlowService(dependencies: VerificationFlowDepe
                         throw new BadRequestError('Active student context required');
                     }
                 }
+                const proof = await tx.query(
+                    'SELECT 1 FROM user_email_proofs WHERE user_id = $1 AND email = $2 LIMIT 1',
+                    [userId, context.email]);
                 return {
+                    mailboxConfirmed: proof.rowCount === 1,
                     email: context.email,
                     universityId: context.universityId,
                     eligibility: await getEffectiveEligibility(tx, userId),
@@ -499,6 +504,7 @@ export function createVerificationFlowService(dependencies: VerificationFlowDepe
                     throw new BadRequestError('Active student context required');
                 }
                 return {
+                    mailboxConfirmed: false,
                     email: user.email,
                     universityId: null,
                     eligibility: { eligible: false, reason: 'unverified' },

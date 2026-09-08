@@ -7,7 +7,7 @@
 
 import type { Request, Response } from 'express';
 import { db } from '../config/database.js';
-import { NotFoundError } from '../common/errors/AppError.js';
+import { AppError } from '../common/errors/AppError.js';
 import { success } from '../common/utils/response.js';
 
 /**
@@ -83,59 +83,7 @@ export class UniversityController {
     /**
      * Get available verification methods for a university
      */
-    public async getVerificationMethods(req: Request, res: Response): Promise<void> {
-        const { id } = req.params;
-
-        // Check if university exists and is active
-        const universityResult = await db.query(
-            `SELECT id, name, is_active FROM universities WHERE id = $1`,
-            [id]
-        );
-
-        if (universityResult.rows.length === 0) {
-            throw new NotFoundError('University not found');
-        }
-
-        const university = universityResult.rows[0];
-
-        if (!university.is_active) {
-            throw new NotFoundError('University is not active');
-        }
-
-        // Get verification methods for this university
-        const methodsResult = await db.query(
-            `SELECT 
-                id,
-                method_type,
-                api_endpoint,
-                api_config,
-                is_active,
-                priority_order
-            FROM university_verification_methods
-            WHERE university_id = $1 AND is_active = true
-            ORDER BY priority_order ASC`,
-            [id]
-        );
-
-        const methods = methodsResult.rows.map(m => ({
-            id: m.id,
-            methodType: m.method_type,
-            apiEndpoint: m.api_endpoint,
-            apiConfig: m.api_config,
-            isActive: m.is_active,
-            priorityOrder: m.priority_order,
-        }));
-
-        success(res, {
-            message: 'Verification methods retrieved successfully',
-            data: {
-                university: {
-                    id: university.id,
-                    name: university.name,
-                },
-                verificationMethods: methods,
-            },
-        });
+    public async getVerificationMethods(): Promise<void> {
+        throw new AppError('Use the sanitized verification availability endpoint at /api/verification/methods/:universityId.', 410, 'VERIFICATION_ROUTE_RETIRED');
     }
 }
-

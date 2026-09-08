@@ -1,15 +1,23 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
+import type { getEffectiveEligibility } from '../verification/eligibility-read.service.js';
 import type { PoolClient, QueryResult } from 'pg';
 import {
     completeMarketplaceTransactionWithClient,
 } from './checkout.service.js';
 
 type QueryReply = Pick<QueryResult, 'rows'>;
+const eligibleStudent: typeof getEffectiveEligibility = async () => ({
+    eligible: true, studentId: 'student-1', universityId: 'school-1', evidenceId: 'evidence-1',
+    processingGrantId: 'grant-1', method: 'student_email', verifiedAt: new Date('2026-01-01'), expiresAt: new Date('2100-01-01'),
+});
 
 function fakeClient(replies: QueryReply[]) {
     const statements: string[] = [];
     const query = async (text: string): Promise<QueryReply> => {
+        // Authority acquisition is exercised against PostgreSQL; these cases isolate settlement writes.
+        if (text.includes('SELECT t.student_id, s.user_id')) return { rows: [{ student_id: 'student-1', user_id: 'user-1' }] };
+        if (text === 'SELECT clock_timestamp() AS now') return { rows: [{ now: new Date('2026-01-02') }] };
         statements.push(text.trim());
         const reply = replies.shift();
         if (!reply) throw new Error(`Unexpected query: ${text}`);
@@ -47,7 +55,7 @@ describe('completeMarketplaceTransactionWithClient', () => {
         const result = await completeMarketplaceTransactionWithClient(
             client,
             'awoof_reference',
-            900
+            900, eligibleStudent
         );
 
         assert.deepEqual(result, {
@@ -87,7 +95,7 @@ describe('completeMarketplaceTransactionWithClient', () => {
         const result = await completeMarketplaceTransactionWithClient(
             client,
             'awoof_reference',
-            899
+            899, eligibleStudent
         );
 
         assert.deepEqual(result, { completed: false, transactionId: 'tx-1' });
@@ -114,7 +122,7 @@ describe('completeMarketplaceTransactionWithClient', () => {
         const result = await completeMarketplaceTransactionWithClient(
             client,
             'awoof_reference',
-            900
+            900, eligibleStudent
         );
 
         assert.deepEqual(result, {
@@ -148,7 +156,7 @@ describe('completeMarketplaceTransactionWithClient', () => {
         const result = await completeMarketplaceTransactionWithClient(
             client,
             'awoof_reference',
-            900
+            900, eligibleStudent
         );
 
         assert.deepEqual(result, { completed: false, transactionId: 'tx-1' });

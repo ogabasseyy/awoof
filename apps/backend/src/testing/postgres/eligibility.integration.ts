@@ -1952,3 +1952,62 @@ test('a suspended vendor cannot mutate a completed external order or restore its
         assert.equal((await client.query('SELECT stock FROM products WHERE id = $1', [product.id])).rows[0].stock, 5);
     });
 });
+
+for (const mutation of ['none', 'withdrawn', 'policy', 'expired', 'inactive'] as const) {
+    test(`delayed successful checkout requires current eligibility: ${mutation}`, async () => {
+        const { completeMarketplaceTransactionWithClient } = await import('../../services/payment/checkout.service.js');
+        await withTestClient(async (client) => {
+            const fixture = await createFixture(client);
+            assert.equal((await inTransaction(client, () => getEffectiveEligibility(client, fixture.userId))).eligible, true);
+            const vendor = await createMerchantFixture(client);
+            const product = (await client.query(`INSERT INTO products(vendor_id,name,price,student_price,stock,status)
+                VALUES($1,'Synthetic delayed payment',100,80,10,'active') RETURNING id`, [vendor.vendorId])).rows[0];
+            const reference = `synthetic-${randomUUID()}`;
+            const transaction = (await client.query(`INSERT INTO transactions(student_id,vendor_id,product_id,amount,commission,status,paystack_reference,payment_source,checkout_initialization_state)
+                VALUES($1,$2,$3,80,8,'pending',$4,'awoof','initialized') RETURNING id`, [fixture.studentId,vendor.vendorId,product.id,reference])).rows[0];
+            if (mutation === 'withdrawn') await inTransaction(client, () => withdrawConsent(client, fixture.userId, fixture.grantId));
+            if (mutation === 'policy') await client.query('UPDATE universities SET verification_policy_version=verification_policy_version+1 WHERE id=$1', [fixture.universityId]);
+            if (mutation === 'inactive') await client.query("UPDATE students SET status='suspended' WHERE id=$1", [fixture.studentId]);
+            if (mutation === 'expired') {
+                const expired = (await client.query(`INSERT INTO eligibility_evidence(student_id,university_id,email_proof_id,processing_grant_id,method,outcome,identity_version,policy_version,source,expires_at)
+                    SELECT student_id,university_id,email_proof_id,processing_grant_id,'enrollment','verified',identity_version,policy_version,'synthetic-expiry',clock_timestamp()-interval '1 second'
+                    FROM eligibility_evidence WHERE student_id=$1 ORDER BY verified_at DESC LIMIT 1 RETURNING id`, [fixture.studentId])).rows[0];
+                await client.query('UPDATE student_eligibility_state SET current_evidence_id=$1 WHERE student_id=$2', [expired.id,fixture.studentId]);
+            }
+            const result = await completeMarketplaceTransactionWithClient(client, reference, 80);
+            assert.equal(result.completed, mutation === 'none');
+            assert.equal((await client.query('SELECT stock FROM products WHERE id=$1', [product.id])).rows[0].stock, mutation === 'none' ? 9 : 10);
+            assert.equal((await client.query('SELECT status FROM transactions WHERE id=$1', [transaction.id])).rows[0].status, mutation === 'none' ? 'completed' : 'requires_refund');
+            const queue = await client.query('SELECT reason FROM payment_reconciliation_queue WHERE transaction_id=$1', [transaction.id]);
+            assert.equal(queue.rows[0]?.reason, mutation === 'none' ? undefined : 'eligibility_not_current');
+            await completeMarketplaceTransactionWithClient(client, reference, 80);
+            assert.equal((await client.query('SELECT stock FROM products WHERE id=$1', [product.id])).rows[0].stock, mutation === 'none' ? 9 : 10);
+        });
+    });
+}
+
+test('consent withdrawal holding authority locks wins over delayed payment completion', async () => {
+    const { completeMarketplaceTransactionWithClient } = await import('../../services/payment/checkout.service.js');
+    const pool = createTestPool();
+    const writer = await pool.connect(); const completion = await pool.connect(); const observer = await pool.connect();
+    try {
+        const fixture = await createFixture(writer); const vendor = await createMerchantFixture(writer);
+        const product = (await writer.query(`INSERT INTO products(vendor_id,name,price,student_price,stock,status)
+            VALUES($1,'Synthetic withdrawal race',100,80,10,'active') RETURNING id`, [vendor.vendorId])).rows[0];
+        const reference = `synthetic-${randomUUID()}`;
+        await writer.query(`INSERT INTO transactions(student_id,vendor_id,product_id,amount,commission,status,paystack_reference,payment_source)
+            VALUES($1,$2,$3,80,8,'pending',$4,'awoof')`, [fixture.studentId,vendor.vendorId,product.id,reference]);
+        const writerPid = await clientPid(writer); const completionPid = await clientPid(completion);
+        await writer.query('BEGIN');
+        await withdrawConsent(writer, fixture.userId, fixture.grantId);
+        const pending = completeMarketplaceTransactionWithClient(completion, reference, 80);
+        await waitForBlockedBy(observer, completionPid, writerPid, 'payment completion behind consent withdrawal');
+        await writer.query('COMMIT');
+        assert.equal((await pending).completed, false);
+        assert.equal((await observer.query('SELECT stock FROM products WHERE id=$1', [product.id])).rows[0].stock, 10);
+        assert.equal((await observer.query('SELECT status FROM transactions WHERE paystack_reference=$1', [reference])).rows[0].status, 'requires_refund');
+    } finally {
+        await writer.query('ROLLBACK').catch(() => undefined);
+        writer.release(); completion.release(); observer.release(); await pool.end();
+    }
+});

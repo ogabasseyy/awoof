@@ -2,6 +2,7 @@
  * Marketplace checkout helpers — commission math and transaction completion.
  */
 
+import { getEffectiveEligibility } from '../verification/eligibility-read.service.js';
 import { db } from '../../config/database.js';
 import type { PoolClient } from 'pg';
 import { appLogger } from '../../common/logger.js';
@@ -194,12 +195,21 @@ export async function completeMarketplaceTransaction(
 export async function completeMarketplaceTransactionWithClient(
     client: Pick<PoolClient, 'query'>,
     paystackReference: string,
-    paidAmountNaira: number
+    paidAmountNaira: number,
+    readEligibility: typeof getEffectiveEligibility = getEffectiveEligibility,
 ): Promise<{ completed: boolean; transactionId?: string; newlyCompleted?: boolean }> {
     let transactionOpen = false;
     try {
         await client.query('BEGIN');
         transactionOpen = true;
+
+        // Discover without locks, then take student authority locks before transaction/vendor
+        // locks, matching checkout creation and consent withdrawal lock ordering.
+        const candidate = await client.query(
+            `SELECT t.student_id, s.user_id FROM transactions t
+             JOIN students s ON s.id = t.student_id WHERE t.paystack_reference = $1`, [paystackReference]);
+        if (!candidate.rows[0]) { await client.query('ROLLBACK'); return { completed: false }; }
+        const eligibility = await readEligibility(client as PoolClient, candidate.rows[0].user_id);
 
         const txResult = await client.query(
             `SELECT t.*, COALESCE(t.list_price_snapshot, p.price) AS list_price
@@ -207,7 +217,7 @@ export async function completeMarketplaceTransactionWithClient(
              JOIN products p ON p.id = t.product_id
              JOIN vendors v ON v.id = p.vendor_id
              WHERE t.paystack_reference = $1
-             FOR UPDATE OF t, v`,
+             FOR UPDATE OF t, v, p`,
             [paystackReference]
         );
 
@@ -246,6 +256,20 @@ export async function completeMarketplaceTransactionWithClient(
                  ON CONFLICT (transaction_id) DO NOTHING`,
                 [tx.id, paystackReference, paidAmountNaira]
             );
+            await client.query('COMMIT');
+            return { completed: false, transactionId: tx.id };
+        }
+
+        // Recheck the deadline at fulfillment: eligibility may expire while vendor locks wait.
+        const now = await client.query<{ now: Date }>('SELECT clock_timestamp() AS now');
+        if (!eligibility.eligible || eligibility.studentId !== tx.student_id
+            || candidate.rows[0].student_id !== tx.student_id || eligibility.expiresAt <= now.rows[0]!.now) {
+            await client.query(`UPDATE transactions SET status = 'requires_refund', updated_at = CURRENT_TIMESTAMP
+                WHERE id = $1 AND status IN ('pending', 'failed')`, [tx.id]);
+            await client.query(`INSERT INTO payment_reconciliation_queue
+                (transaction_id, paystack_reference, paid_amount, reason)
+                VALUES ($1, $2, $3, 'eligibility_not_current') ON CONFLICT (transaction_id) DO NOTHING`,
+                [tx.id, paystackReference, paidAmountNaira]);
             await client.query('COMMIT');
             return { completed: false, transactionId: tx.id };
         }
