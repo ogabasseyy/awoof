@@ -13,6 +13,8 @@ after(() => db.close());
 
 test('admin activation requires a live vendor owner with a confirmed email', async () => {
     await withTestClient(async (client) => {
+        const adminId = randomUUID();
+        await client.query("INSERT INTO users (id, email, role) VALUES ($1, $2, 'admin')", [adminId, `${adminId}@example.invalid`]);
         const userId = randomUUID();
         await client.query(`INSERT INTO users (id, email, role, verification_status)
             VALUES ($1, $2, 'vendor', 'unverified')`, [userId, `${userId}@example.invalid`]);
@@ -21,7 +23,7 @@ test('admin activation requires a live vendor owner with a confirmed email', asy
         const id = vendor.rows[0].id;
         const response = { status() { return this; }, json() { return this; } } as unknown as Response;
         const controller = new AdminVendorController();
-        const update = (status: string) => controller.updateVendorStatus({ params: { id }, body: { status } } as unknown as Request, response);
+        const update = (status: string) => controller.updateVendorStatus({ user: { userId: adminId, role: 'admin' }, params: { id }, body: { status } } as unknown as Request, response);
         await assert.rejects(update('active'), /confirm their email/);
         assert.equal((await client.query('SELECT status FROM vendors WHERE id = $1', [id])).rows[0].status, 'pending');
         await client.query(`UPDATE users SET verification_status = 'verified' WHERE id = $1`, [userId]);
