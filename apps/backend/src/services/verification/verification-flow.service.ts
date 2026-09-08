@@ -130,7 +130,6 @@ async function inTransaction<T>(pool: PoolLike, operation: (tx: PoolClient) => P
         active = true;
         const result = await operation(tx);
         await tx.query('COMMIT');
-        active = false;
         return result;
     } catch (error) {
         if (active) await tx.query('ROLLBACK').catch(() => undefined);

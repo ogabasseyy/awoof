@@ -96,12 +96,11 @@ router.post(
 
 /**
  * @route   POST /api/auth/logout
- * @desc    Logout user (invalidate refresh token)
- * @access  Private
+ * @desc    Logout user (invalidate the matching refresh token)
+ * @access  Requires a valid refreshToken in the JSON body
  */
 router.post(
     '/logout',
-    (req, res, next) => req.body?.refreshToken !== undefined ? next() : authenticate(req, res, next),
     asyncHandler(authController.logout.bind(authController))
 );
 

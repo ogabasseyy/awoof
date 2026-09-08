@@ -23,5 +23,7 @@ test('logout authenticates the refresh credential even when access authenticatio
         const send = (token: string) => fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: 'Bearer expired-access-token' }, body: JSON.stringify({ refreshToken: token }) });
         assert.equal((await send(refreshToken)).status, 200); assert.equal(writes, 1);
         assert.equal((await send('invalid-refresh-token')).status, 401); assert.equal(writes, 1);
+        const missing = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
+        assert.equal(missing.status, 422); assert.equal(writes, 1);
     } finally { db.query = original; server.closeAllConnections(); await new Promise<void>((resolve) => server.close(() => resolve())); }
 });

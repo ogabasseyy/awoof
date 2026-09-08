@@ -71,7 +71,6 @@ async function runBoundedMutation<T>(
         await client.query(`SET LOCAL statement_timeout = '${timeoutMs}ms'`);
         const result = await mutation(client);
         await client.query('COMMIT');
-        transactionOpen = false;
         return result;
     } catch (error) {
         if (transactionOpen) await settleWithin(settle(client.query('ROLLBACK')), 'bounded mutation rollback', timeoutMs);

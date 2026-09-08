@@ -16,13 +16,7 @@
     const WEB_APP_URL = 'http://localhost:3000'; // your Awoof frontend origin
     const API_KEY = 'your-vendor-widget-api-key'; // from Awoof vendor dashboard
 
-    window.addEventListener('message', function (event) {
-      if (event.data && event.data.type === 'AWOOF_VERIFICATION_SUCCESS') {
-        console.log('Verification success:', event.data);
-        alert('Verified! Token: ' + (event.data.token || '').slice(0, 20) + '...');
-      }
-    });
-
+    // Use the SDK callback: it validates message origin and source.
     Awoof.init({
       apiKey: API_KEY,
       apiBaseUrl: API_BASE,
