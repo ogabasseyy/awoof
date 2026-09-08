@@ -5,7 +5,7 @@ import { jwtService } from '../services/auth/jwt.service.js';
 
 /** No catch-all static server: even legacy documents in vendors/ require auth. */
 export async function uploadedFile(req: Request, res: Response): Promise<void> {
-    const match = /^\/(vendors|private-vendors)\/([a-f0-9-]{36}\.[a-zA-Z0-9]+)$/.exec(req.path);
+    const match = /^\/(vendors|private-vendors)\/([a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}(?:\.[a-zA-Z0-9]+)?)$/.exec(req.path);
     if (!match || !['GET', 'HEAD'].includes(req.method)) { res.sendStatus(404); return; }
     const fileUrl = `/uploads${req.path}`;
     const documents = await db.query<{ user_id: string; deleted_at: Date | null }>(

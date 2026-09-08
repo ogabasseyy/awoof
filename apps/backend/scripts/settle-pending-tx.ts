@@ -17,7 +17,7 @@ async function main() {
     }
 
     const verified = await verifyPaystackPayment(ref);
-    console.log('verify:', verified);
+    console.log('verify:', { verified: verified.verified, amount: verified.amount });
     if (!verified.verified || verified.amount == null) {
         console.error('Payment not verified as success; aborting');
         process.exit(1);
@@ -34,7 +34,7 @@ async function main() {
     process.exit(0);
 }
 
-main().catch((err) => {
-    console.error(err);
+main().catch(() => {
+    console.error('Settlement failed; reconcile transaction state before retrying.');
     process.exit(1);
 });

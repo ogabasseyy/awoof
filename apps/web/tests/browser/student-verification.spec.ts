@@ -168,3 +168,26 @@ for (const role of ['vendor', 'admin'] as const) {
         expect(await page.evaluate(() => localStorage.getItem('awoof.session.v1'))).not.toBeNull();
     });
 }
+
+for (const completed of [false, true]) {
+    test(`payment polling deadline preserves completed=${completed} and stops requesting status`, async ({ page }) => {
+        await installSyntheticApi(page); await seedSession(page, 'student'); await page.clock.install();
+        let calls = 0;
+        await page.route(`${apiOrigin}/api/checkout/fixture-timeout`, (route) => {
+            calls += 1;
+            return route.fulfill({ json: { data: { transaction: { status: completed ? 'completed' : 'pending' } } }, headers: { 'access-control-allow-origin': '*' } });
+        });
+        await page.goto('/marketplace/purchase/callback?tx=fixture-timeout');
+        await expect.poll(() => calls).toBe(1);
+        if (completed) await expect(page.getByRole('heading', { name: 'Payment successful' })).toBeVisible();
+        await page.clock.runFor(121_000);
+        await expect(page.getByRole('heading', { name: completed ? 'Payment successful' : 'Payment confirmation delayed' })).toBeVisible();
+        if (!completed) {
+            await expect(page.getByText('Do not pay again.', { exact: false })).toBeVisible();
+            await expect(page.getByRole('button', { name: 'Check again' })).toBeVisible();
+        }
+        const callsAtDeadline = calls;
+        await page.clock.runFor(30_000);
+        expect(calls).toBe(callsAtDeadline);
+    });
+}

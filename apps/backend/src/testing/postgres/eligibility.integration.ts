@@ -2011,3 +2011,26 @@ test('consent withdrawal holding authority locks wins over delayed payment compl
         writer.release(); completion.release(); observer.release(); await pool.end();
     }
 });
+
+for (const authority of ['current', 'demoted', 'deleted'] as const) {
+    test(`platform fee mutation requires live admin authority: ${authority}`, async () => {
+        const { updatePlatformSettings } = await import('../../controllers/admin-platform-settings.controller.js');
+        await withTestClient(async (client) => {
+            const fixture = await createFixture(client);
+            const before = await client.query("SELECT value FROM platform_settings WHERE key='platform_fee_percent'");
+            if (authority === 'demoted') await client.query("UPDATE users SET role='vendor' WHERE id=$1", [fixture.adminId]);
+            if (authority === 'deleted') await client.query('UPDATE users SET deleted_at=clock_timestamp() WHERE id=$1', [fixture.adminId]);
+            const req = { user: { userId: fixture.adminId, role: 'admin' }, body: { platform_fee_percent: 19 } } as AuthRequest;
+            const res = { status: () => res, json: () => res } as unknown as Response;
+            try {
+                if (authority === 'current') await updatePlatformSettings(req, res);
+                else await assert.rejects(updatePlatformSettings(req, res), /Current administrator authority required/);
+                const after = await client.query("SELECT value FROM platform_settings WHERE key='platform_fee_percent'");
+                assert.equal(after.rows[0]?.value, authority === 'current' ? '19' : before.rows[0]?.value);
+            } finally {
+                if (before.rows.length) await client.query("UPDATE platform_settings SET value=$1 WHERE key='platform_fee_percent'", [before.rows[0].value]);
+                else await client.query("DELETE FROM platform_settings WHERE key='platform_fee_percent'");
+            }
+        });
+    });
+}

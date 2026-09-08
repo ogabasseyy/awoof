@@ -52,6 +52,7 @@ function PurchaseCallbackContent() {
 
         // Safety stop after ~2 minutes
         const timeoutId = setTimeout(() => {
+            if (!terminalRef.current) setStatus('timed_out');
             cancelled = true;
             if (intervalId) clearTimeout(intervalId);
         }, 120_000);
@@ -66,6 +67,10 @@ function PurchaseCallbackContent() {
     const title =
         status === 'completed'
             ? 'Payment successful'
+            : status === 'timed_out'
+              ? 'Payment confirmation delayed'
+            : status === 'refunded'
+              ? 'Payment refunded'
             : status === 'requires_refund'
               ? 'Payment received — refund required'
             : status === 'failed'
@@ -80,6 +85,13 @@ function PurchaseCallbackContent() {
                     <p className="text-sm text-slate-500">
                         This may take a few seconds while we confirm your payment.
                     </p>
+                )}
+                {status === 'timed_out' && (
+                    <div className="space-y-3 text-sm text-slate-600">
+                        <p>We could not confirm the outcome yet. Do not pay again. Reload this page to check again, or contact support with your transaction ID.</p>
+                        <p>Transaction ID: {tx}</p>
+                        <Button onClick={() => window.location.reload()}>Check again</Button>
+                    </div>
                 )}
                 {status === 'completed' && (
                     <Link href="/student/profile/receipts">
