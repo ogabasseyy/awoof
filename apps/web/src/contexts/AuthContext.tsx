@@ -28,6 +28,7 @@ import {
     type AuthenticationResponse,
 } from '@/lib/auth-response';
 import { resolveStudentReturn } from '@/lib/student-return';
+import { revokeLogoutSession } from '@/lib/logout-revocation';
 import {
     parseSignupAuthentication,
     type ConfirmSignupResult,
@@ -280,8 +281,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     const logout = useCallback(async (): Promise<void> => {
         const captured = getSessionSnapshot();
         const role = user?.role;
-        operationRef.current += 1;
+        const operation = ++operationRef.current;
+        const revocation = revokeLogoutSession(publicApiClient.defaults.baseURL!, captured.accessToken);
         clearTokens();
+        const cleared = getSessionSnapshot();
         const blocked = isSessionStorageQuarantined();
         if (mountedRef.current) {
             setUser(null);
@@ -289,21 +292,17 @@ export function AuthProvider({ children }: { children: ReactNode }) {
             setError(blocked ? STORAGE_FAILURE_MESSAGE : null);
         }
 
+        const revoked = await revocation;
+        if (!mountedRef.current || operation !== operationRef.current
+            || getSessionSnapshot().generation !== cleared.generation) return;
+        if (!revoked) {
+            setError('Signed out on this device, but server revocation could not be confirmed.');
+        }
         if (!blocked) {
             if (role === 'admin') redirectAfterAuth('/auth/admin/login');
             else if (role === 'vendor') redirectAfterAuth('/auth/vendor/login');
             else if (role === 'student') redirectAfterAuth('/auth/student/login');
             else redirectAfterAuth('/');
-        }
-
-        if (!captured.accessToken) return;
-        try {
-            await publicApiClient.post('/auth/logout', undefined, {
-                headers: { Authorization: `Bearer ${captured.accessToken}` },
-            });
-        } catch {
-            // Local authority was already fenced. This best-effort server call
-            // must never refresh, clear, or navigate a newer browser session.
         }
     }, [user]);
 

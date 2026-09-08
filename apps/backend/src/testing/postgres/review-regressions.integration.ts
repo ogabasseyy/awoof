@@ -2,13 +2,36 @@ import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import test, { after } from 'node:test';
-import type { Response } from 'express';
+import type { Request, Response } from 'express';
 import { ProductController } from '../../controllers/product.controller.js';
+import { AdminVendorController } from '../../controllers/admin-vendor.controller.js';
 import type { AuthRequest } from '../../middleware/auth.middleware.js';
 import { db } from '../../config/database.js';
 import { withTestClient } from './test-database.js';
 
 after(() => db.close());
+
+test('admin activation requires a live vendor owner with a confirmed email', async () => {
+    await withTestClient(async (client) => {
+        const userId = randomUUID();
+        await client.query(`INSERT INTO users (id, email, role, verification_status)
+            VALUES ($1, $2, 'vendor', 'unverified')`, [userId, `${userId}@example.invalid`]);
+        const vendor = await client.query(`INSERT INTO vendors (user_id, name, status)
+            VALUES ($1, 'Synthetic Vendor', 'pending') RETURNING id`, [userId]);
+        const id = vendor.rows[0].id;
+        const response = { status() { return this; }, json() { return this; } } as unknown as Response;
+        const controller = new AdminVendorController();
+        const update = (status: string) => controller.updateVendorStatus({ params: { id }, body: { status } } as unknown as Request, response);
+        await assert.rejects(update('active'), /confirm their email/);
+        assert.equal((await client.query('SELECT status FROM vendors WHERE id = $1', [id])).rows[0].status, 'pending');
+        await client.query(`UPDATE users SET verification_status = 'verified' WHERE id = $1`, [userId]);
+        await update('active');
+        assert.equal((await client.query('SELECT status FROM vendors WHERE id = $1', [id])).rows[0].status, 'active');
+        await client.query(`UPDATE users SET deleted_at = now() WHERE id = $1`, [userId]);
+        await assert.rejects(update('active'), /confirm their email/);
+        await update('suspended');
+    });
+});
 
 test('partial and concurrent price edits preserve the student discount', async () => {
     await withTestClient(async (client) => {

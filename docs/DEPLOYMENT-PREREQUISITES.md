@@ -15,3 +15,7 @@ The deployment preflight refuses to replace an existing backend without a named 
 Back up and verify restoration before upgrades. If preflight reports duplicate vendor payment references, reconcile those records without deleting paid-order history before applying026; it must not silently deduplicate financial records. Migration032 repairs legacy internal notes for databases that already recorded022, if retained source tables still exist. Dropped legacy data requires recovery from a backup. Large tables may require a maintenance window for validating constraints; no live table size or migration history was inspected here.
 
 Migration031 revokes all but the newest existing active reporting key per vendor (created_at then id), establishes a unique active-key constraint, and starts hourly quota windows. Notify affected integrations through the normal rollout process. Lifetime usage is retained separately from each rolling one-hour window. Revoked keys require replacement; plaintext keys cannot be reconstructed.
+
+## Deferred payment review
+
+Codex review of 00fc47a additionally identified unbounded Paystack initialization and uncertain provider outcomes after a stalled request. This remains unresolved alongside the existing payment-reference, commission and reconciliation findings. The review loop is blocked on the deferred payment scope; the integration is not clean or merge-ready. Logout revocation transport and vendor email-before-activation repairs do not clear this payment finding.
