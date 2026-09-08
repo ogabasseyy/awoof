@@ -1913,3 +1913,24 @@ test('definitively rejected initialization releases the checkout for a corrected
         Object.assign(config.paystack, { secretKey: oldKey });
     }
 });
+
+test('refunds restore only inventory actually consumed, and never restore twice', async () => {
+    const { OrderController } = await import('../../controllers/order.controller.js');
+    await withTestClient(async (client) => {
+        const student = await createFixture(client);
+        const vendor = await createMerchantFixture(client);
+        const product = (await client.query(`INSERT INTO products (vendor_id, name, price, student_price, stock)
+            VALUES ($1, 'Synthetic refund', 100, 80, 5) RETURNING id`, [vendor.vendorId])).rows[0];
+        const controller = new OrderController();
+        const response = { status() { return this; }, json() { return this; } } as unknown as Response;
+        for (const consumed of [false, true]) {
+            const tx = (await client.query(`INSERT INTO transactions (student_id, vendor_id, product_id, amount, status, payment_source, inventory_consumed)
+                VALUES ($1, $2, $3, 80, 'completed', 'vendor_other', $4) RETURNING id`, [student.studentId, vendor.vendorId, product.id, consumed])).rows[0];
+            const request = { user: { userId: vendor.ownerId, role: 'vendor' }, params: { id: tx.id }, body: { status: 'refunded' } } as unknown as AuthRequest;
+            await controller.updateOrderStatus(request, response);
+            assert.equal((await client.query('SELECT stock FROM products WHERE id = $1', [product.id])).rows[0].stock, consumed ? 6 : 5);
+            assert.equal((await client.query('SELECT inventory_consumed FROM transactions WHERE id = $1', [tx.id])).rows[0].inventory_consumed, false);
+            await assert.rejects(controller.updateOrderStatus(request, response), /Refunded orders cannot change status/);
+        }
+    });
+});

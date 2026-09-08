@@ -4,6 +4,7 @@
  * Handles admin-only endpoints
  */
 
+import { readInstitutionVerificationPolicy, replaceInstitutionVerificationPolicy } from '../controllers/admin-institution-policy.controller.js';
 import { Router } from 'express';
 import { asyncHandler } from '../common/middleware/errorHandler.js';
 import { authenticate } from '../middleware/auth.middleware.js';
@@ -28,6 +29,8 @@ router.get('/universities', asyncHandler(adminUniversityController.getUniversiti
 router.get('/universities/segment-stats', asyncHandler(adminUniversityController.getSegmentStats.bind(adminUniversityController)));
 router.get('/universities/csv-sample', asyncHandler(adminUniversityController.getCsvSample.bind(adminUniversityController)));
 router.post('/universities/import-csv', csvUpload.single('file'), asyncHandler(adminUniversityController.importCsv.bind(adminUniversityController)));
+router.get('/universities/:id/verification-policy', asyncHandler(readInstitutionVerificationPolicy));
+router.put('/universities/:id/verification-policy', asyncHandler(replaceInstitutionVerificationPolicy));
 router.get('/universities/:id', asyncHandler(adminUniversityController.getUniversity.bind(adminUniversityController)));
 router.post('/universities', asyncHandler(adminUniversityController.createUniversity.bind(adminUniversityController)));
 router.put('/universities/:id', asyncHandler(adminUniversityController.updateUniversity.bind(adminUniversityController)));

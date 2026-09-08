@@ -127,7 +127,7 @@ export class AdminUniversityController {
             [
                 parsed.name,
                 parsed.domain,
-                JSON.stringify(emailDomains.length ? emailDomains : [parsed.domain]),
+                JSON.stringify(emailDomains),
                 parsed.segment || null,
                 shortcode,
                 parsed.country || null,

@@ -703,9 +703,9 @@ export class PaymentController {
             const transactionResult = await client.query(
                 `INSERT INTO transactions (
                     student_id, product_id, vendor_id, amount, commission, list_price_snapshot,
-                    status, verification_token, payment_source, vendor_payment_reference, verified_at
+                    status, verification_token, payment_source, vendor_payment_reference, verified_at, inventory_consumed
                 )
-                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, CURRENT_TIMESTAMP)
+                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, CURRENT_TIMESTAMP, true)
                 RETURNING id, status, created_at`,
                 [
                     tokenData.studentId,

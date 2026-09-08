@@ -129,3 +129,22 @@ test('vendors cannot activate external payments while verification token issuanc
         assert.notEqual((await client.query('SELECT payment_method FROM vendors WHERE id = $1', [vendor.id])).rows[0].payment_method, 'vendor_website');
     });
 });
+
+test('inventory migration preserves the distinction between legacy marketplace and vendor-site sales', async () => {
+    await withTestClient(async (client) => {
+        const schema = `inventory_${randomUUID().replaceAll('-', '')}`;
+        await client.query('BEGIN');
+        try {
+            await client.query(`CREATE SCHEMA ${schema}; SET LOCAL search_path TO ${schema};
+                CREATE TABLE transactions (id text, payment_source text, paystack_reference text, status text);
+                INSERT INTO transactions VALUES ('vendor', 'vendor_paystack', NULL, 'completed'),
+                    ('marketplace', 'awoof', 'synthetic', 'completed'), ('pending', 'awoof', 'pending', 'pending');`);
+            await client.query(readFileSync(new URL('../../database/migrations/034_transaction_inventory_consumed.sql', import.meta.url), 'utf8'));
+            assert.deepEqual((await client.query('SELECT id, inventory_consumed FROM transactions ORDER BY id')).rows, [
+                { id: 'marketplace', inventory_consumed: true },
+                { id: 'pending', inventory_consumed: false },
+                { id: 'vendor', inventory_consumed: false },
+            ]);
+        } finally { await client.query('ROLLBACK'); }
+    });
+});

@@ -295,7 +295,7 @@ export async function completeMarketplaceTransactionWithClient(
 
         const completed = await client.query(
             `UPDATE transactions
-             SET status = 'completed', updated_at = CURRENT_TIMESTAMP
+             SET status = 'completed', inventory_consumed = true, updated_at = CURRENT_TIMESTAMP
              WHERE id = $1 AND status IN ('pending', 'failed')
              RETURNING id`,
             [tx.id]

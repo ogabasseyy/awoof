@@ -6,6 +6,7 @@
 
 'use client';
 
+import { VerificationPolicyEditor } from './_components/VerificationPolicyEditor';
 import { useState, useEffect, useCallback } from 'react';
 import { GraduationCap, Plus, Edit2, Trash2, Download } from 'lucide-react';
 import ProtectedRoute from '@/components/ProtectedRoute';
@@ -40,6 +41,7 @@ interface SegmentStats {
 export default function AdminUniversitiesPage() {
     const { user, logout } = useAuth();
     const confirm = useConfirm();
+    const [policyUniversity, setPolicyUniversity] = useState<University | null>(null);
     const [universities, setUniversities] = useState<University[]>([]);
     const [total, setTotal] = useState(0);
     const [page, setPage] = useState(1);
@@ -128,15 +130,17 @@ export default function AdminUniversitiesPage() {
             const payload = {
                 name: formData.name,
                 domain: formData.domain,
-                email_domains: emailDomains.length ? emailDomains : [formData.domain],
+                email_domains: emailDomains,
                 segment: formData.segment || undefined,
                 country: formData.country || undefined,
             };
             if (editingUniversity) {
-                await apiClient.put(`/admin/universities/${editingUniversity.id}`, payload);
+                const saved = await apiClient.put(`/admin/universities/${editingUniversity.id}`, payload);
+                setPolicyUniversity(saved.data.data as University);
                 toast.success('University updated');
             } else {
-                await apiClient.post('/admin/universities', payload);
+                const saved = await apiClient.post('/admin/universities', payload);
+                setPolicyUniversity(saved.data.data as University);
                 toast.success('University created');
             }
             handleCloseModal();
@@ -313,6 +317,7 @@ export default function AdminUniversitiesPage() {
                                                 <td className="px-6 py-4 text-sm">{u.isActive ? 'Yes' : 'No'}</td>
                                                 <td className="px-6 py-4 text-right">
                                                     <div className="flex justify-end gap-2">
+                                                        <Button variant="outline" size="sm" onClick={() => setPolicyUniversity(u)}>Verification policy</Button>
                                                         <Button variant="ghost" size="sm" onClick={() => handleOpenModal(u)}>
                                                             <Edit2 className="h-4 w-4" />
                                                         </Button>
@@ -347,6 +352,7 @@ export default function AdminUniversitiesPage() {
                 </div>
 
                 {/* Modal */}
+                {policyUniversity && <VerificationPolicyEditor key={policyUniversity.id} institution={policyUniversity} onClose={() => setPolicyUniversity(null)} />}
                 {isModalOpen && (
                     <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/50 p-4">
                         <div className="w-full max-w-md rounded-lg bg-white p-6 shadow-lg">
@@ -363,7 +369,7 @@ export default function AdminUniversitiesPage() {
                                     <Input id="domain" value={formData.domain} onChange={(e) => setFormData({ ...formData, domain: e.target.value })} required placeholder="e.g. unilag.edu.ng" />
                                 </div>
                                 <div>
-                                    <Label htmlFor="emailDomains">Email Domains (comma-separated)</Label>
+                                    <Label htmlFor="emailDomains">Candidate student domains (requires separate policy approval)</Label>
                                     <Input id="emailDomains" value={formData.emailDomains} onChange={(e) => setFormData({ ...formData, emailDomains: e.target.value })} placeholder="unilag.edu.ng, live.unilag.edu.ng" />
                                 </div>
                                 <div>

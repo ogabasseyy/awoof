@@ -295,7 +295,7 @@ export class OrderController {
         try {
             await client.query('BEGIN');
             const orderCheck = await client.query(
-                `SELECT id, status, payment_source, paystack_reference, product_id
+                `SELECT id, status, payment_source, paystack_reference, product_id, inventory_consumed
                  FROM transactions WHERE id = $1 AND vendor_id = $2 FOR UPDATE`,
                 [orderId, vendorId]
             );
@@ -317,7 +317,7 @@ export class OrderController {
 
             const result = await client.query(
                 `UPDATE transactions
-                 SET status = $1, updated_at = CURRENT_TIMESTAMP
+                 SET status = $1, inventory_consumed = CASE WHEN $1 = 'refunded' THEN false ELSE inventory_consumed END, updated_at = CURRENT_TIMESTAMP
                  WHERE id = $2 AND vendor_id = $3
                  RETURNING id, status, updated_at`,
                 [validated.status, orderId, vendorId]
@@ -327,7 +327,7 @@ export class OrderController {
                 throw new NotFoundError('Order not found');
             }
 
-            if (order.status === 'completed' && validated.status === 'refunded') {
+            if (order.status === 'completed' && validated.status === 'refunded' && order.inventory_consumed) {
                 await client.query(
                     `UPDATE products
                      SET stock = stock + 1, updated_at = CURRENT_TIMESTAMP
