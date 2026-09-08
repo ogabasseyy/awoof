@@ -20,14 +20,14 @@ export function calculateMarketplaceCommission(
     return { commission, vendorNet };
 }
 
-export async function getPlatformFeePercent(database: Pick<PoolClient, 'query'> = db): Promise<number> {
+export async function getPlatformFeePercent(database: { query(text: string): Promise<{ rows: { value: string }[] }> } = db): Promise<number> {
     const result = await database.query(
         `SELECT value FROM platform_settings WHERE key = 'platform_fee_percent'`
     );
     if (result.rows.length === 0) {
         return 10;
     }
-    const configuredFee = Number.parseFloat(result.rows[0].value);
+    const configuredFee = Number.parseFloat(result.rows[0]?.value ?? '');
     return Number.isFinite(configuredFee) ? configuredFee : 10;
 }
 
