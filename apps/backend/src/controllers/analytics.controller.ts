@@ -76,7 +76,7 @@ export class AnalyticsController {
         // Get time-based analytics (last 30 days)
         const timeBasedResult = await db.query(
             `SELECT 
-                DATE(t.created_at) as date,
+                TO_CHAR(t.created_at AT TIME ZONE 'UTC', 'YYYY-MM-DD') as date,
                 COUNT(DISTINCT t.id) as orders,
                 COUNT(DISTINCT CASE WHEN t.status = 'completed' THEN t.id END) as completed_orders,
                 COALESCE(SUM(CASE WHEN t.status = 'completed' THEN t.amount ELSE 0 END), 0) as revenue,
@@ -84,7 +84,7 @@ export class AnalyticsController {
              FROM transactions t
              WHERE t.vendor_id = $1 
              AND t.created_at >= NOW() - INTERVAL '30 days'
-             GROUP BY DATE(t.created_at)
+             GROUP BY TO_CHAR(t.created_at AT TIME ZONE 'UTC', 'YYYY-MM-DD')
              ORDER BY date ASC`,
             [vendorId]
         );

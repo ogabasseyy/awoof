@@ -1,7 +1,13 @@
 import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
 import { readFileSync } from 'node:fs';
-import test from 'node:test';
+import test, { after } from 'node:test';
+import type { Response } from 'express';
+import { CheckoutController } from '../../controllers/checkout.controller.js';
+import type { AuthRequest } from '../../middleware/auth.middleware.js';
+import { db } from '../../config/database.js';
+
+after(() => db.close());
 import type { PoolClient } from 'pg';
 import { consumeChallenge, requestChallenge } from '../../services/verification/challenge.service.js';
 import {
@@ -1796,5 +1802,22 @@ test('serializes method mutation behind applyEnrollmentDecision without a lock c
             mutator.release();
             await pool.end();
         }
+    });
+});
+
+
+test('checkout uses current evidence even when legacy verification flags disagree', async () => {
+    await withTestClient(async (client) => {
+        const fixture = await createFixture(client);
+        const controller = new CheckoutController();
+        // Missing product proves authority admission without calling a provider.
+        const request = { user: { userId: fixture.userId, role: 'student' },
+            body: { productId: randomUUID() } } as unknown as AuthRequest;
+        const response = {} as Response;
+        await client.query(`UPDATE users SET verification_status = 'unverified' WHERE id = $1`, [fixture.userId]);
+        await assert.rejects(controller.createCheckout(request, response), /Product not found/);
+        await inTransaction(client, () => withdrawConsent(client, fixture.userId, fixture.grantId));
+        await client.query(`UPDATE users SET verification_status = 'verified' WHERE id = $1`, [fixture.userId]);
+        await assert.rejects(controller.createCheckout(request, response), /Current student eligibility is required/);
     });
 });

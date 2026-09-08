@@ -8,5 +8,5 @@ export function redemptionUrl(value: string | null | undefined): string | null {
 }
 
 export function dealUnavailable(deal: { deal_type?: string; stock: number } | null): boolean {
-    return Boolean(deal && deal.deal_type !== 'voucher' && deal.stock <= 0);
+    return Boolean(deal && (!Number.isFinite(deal.stock) || deal.stock <= 0));
 }

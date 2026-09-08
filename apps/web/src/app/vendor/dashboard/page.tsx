@@ -4,6 +4,7 @@
 
 'use client';
 
+import { sevenDaySeries } from '@/lib/dashboard-dates';
 import { useEffect, useState, Suspense } from 'react';
 import { useSearchParams } from 'next/navigation';
 import {
@@ -166,27 +167,7 @@ function VendorDashboardContent() {
     const completedOrders = overall?.completedOrders ?? 0;
     const isQuiet = !isLoading && completedOrders === 0;
 
-    const last7 = (() => {
-        const byDay = new Map<string, TimeBasedPoint>();
-        for (const point of timeBased) {
-            const key = new Date(point.date).toISOString().slice(0, 10);
-            byDay.set(key, point);
-        }
-        const days: { label: string; orders: number; revenue: number }[] = [];
-        for (let i = 6; i >= 0; i--) {
-            const d = new Date();
-            d.setHours(0, 0, 0, 0);
-            d.setDate(d.getDate() - i);
-            const key = d.toISOString().slice(0, 10);
-            const point = byDay.get(key);
-            days.push({
-                label: d.toLocaleDateString(undefined, { weekday: 'short' }),
-                orders: point?.completedOrders ?? point?.orders ?? 0,
-                revenue: point?.revenue ?? 0,
-            });
-        }
-        return days;
-    })();
+    const last7 = sevenDaySeries(timeBased);
     const maxChart = Math.max(1, ...last7.map((d) => d.orders));
 
     const quickActions = [
@@ -363,7 +344,7 @@ function VendorDashboardContent() {
                                         <p className="text-xs text-slate-500 mt-0.5">Completed purchases by day</p>
                                     </div>
                                     <span className="rounded-full bg-slate-100 px-3 py-1 text-xs font-semibold text-slate-600">
-                                        Last 7 days
+                                        Last 7 days (UTC)
                                     </span>
                                 </div>
                                 {isQuiet ? (

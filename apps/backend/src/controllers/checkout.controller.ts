@@ -5,6 +5,7 @@
 import type { Response } from 'express';
 import { z } from 'zod';
 import { db } from '../config/database.js';
+import { getEffectiveEligibility } from '../services/verification/eligibility-read.service.js';
 import { config } from '../config/env.js';
 import {
     BadRequestError,
@@ -35,84 +36,99 @@ export class CheckoutController {
         }
 
         const validated = createCheckoutSchema.parse(req.body);
+        const userId = req.user.userId;
 
-        const studentRow = await db.query(
-            `SELECT s.id, u.email, u.verification_status
-             FROM students s
-             JOIN users u ON u.id = s.user_id
-             WHERE s.user_id = $1 AND u.deleted_at IS NULL
-               AND (s.status IS NULL OR s.status = 'active')`,
-            [req.user.userId]
-        );
+        const { student, product, amount, commission, settlementMode, reference, transactionId } = await (async () => {
+            const client = await db.getPool().connect();
+            try {
+                await client.query('BEGIN');
+                // Keep current evidence, identity, policy and consent locks until
+                // checkout creation commits. Legacy profile flags grant no authority.
+                const eligibility = await getEffectiveEligibility(client, userId);
+                if (!eligibility.eligible) throw new BadRequestError('Current student eligibility is required to purchase');
+                const studentRow = await client.query(
+                    `SELECT s.id, u.email
+                     FROM students s
+                     JOIN users u ON u.id = s.user_id
+                     WHERE s.user_id = $1 AND u.deleted_at IS NULL
+                       AND (s.status IS NULL OR s.status = 'active')`,
+                    [userId]
+                );
 
-        if (studentRow.rows.length === 0) {
-            throw new NotFoundError('Student profile not found');
-        }
+                if (studentRow.rows.length === 0) {
+                    throw new NotFoundError('Student profile not found');
+                }
 
-        const student = studentRow.rows[0];
-        if (student.verification_status !== 'verified') {
-            throw new BadRequestError('Student must be verified to purchase');
-        }
+                const student = studentRow.rows[0];
 
-        const productRow = await db.query(
-            `SELECT p.*,
-                    v.status AS vendor_status,
-                    v.paystack_subaccount_code,
-                    COALESCE(v.payment_method, 'awoof') AS payment_method
-             FROM products p
-             JOIN vendors v ON v.id = p.vendor_id
-             WHERE p.id = $1 AND p.deleted_at IS NULL AND v.deleted_at IS NULL`,
-            [validated.productId]
-        );
+                const productRow = await client.query(
+                    `SELECT p.*,
+                            v.status AS vendor_status,
+                            v.paystack_subaccount_code,
+                            COALESCE(v.payment_method, 'awoof') AS payment_method
+                     FROM products p
+                     JOIN vendors v ON v.id = p.vendor_id
+                     WHERE p.id = $1 AND p.deleted_at IS NULL AND v.deleted_at IS NULL`,
+                    [validated.productId]
+                );
 
-        if (productRow.rows.length === 0) {
-            throw new NotFoundError('Product not found');
-        }
+                if (productRow.rows.length === 0) {
+                    throw new NotFoundError('Product not found');
+                }
 
-        const product = productRow.rows[0];
+                const product = productRow.rows[0];
 
-        if (product.status !== 'active') {
-            throw new BadRequestError('Product not available');
-        }
-        if ((product.deal_type ?? 'product') !== 'product') {
-            throw new BadRequestError('This deal must be purchased on the vendor website');
-        }
-        if (product.payment_method !== 'awoof') {
-            throw new BadRequestError('This deal must be purchased on the vendor website');
-        }
-        if (product.vendor_status !== 'active') {
-            throw new BadRequestError('Vendor is not approved to sell');
-        }
-        if (product.stock <= 0) {
-            throw new BadRequestError('Out of stock');
-        }
+                if (product.status !== 'active') {
+                    throw new BadRequestError('Product not available');
+                }
+                if ((product.deal_type ?? 'product') !== 'product') {
+                    throw new BadRequestError('This deal must be purchased on the vendor website');
+                }
+                if (product.payment_method !== 'awoof') {
+                    throw new BadRequestError('This deal must be purchased on the vendor website');
+                }
+                if (product.vendor_status !== 'active') {
+                    throw new BadRequestError('Vendor is not approved to sell');
+                }
+                if (product.stock <= 0) {
+                    throw new BadRequestError('Out of stock');
+                }
 
-        const amount = parseFloat(product.student_price);
-        const platformFeePercent = await getPlatformFeePercent();
-        const { commission } = calculateMarketplaceCommission(amount, platformFeePercent);
-        const settlementMode = product.paystack_subaccount_code ? 'split' : 'manual';
-        const reference = generatePaystackReference();
+                const amount = parseFloat(product.student_price);
+                const platformFeePercent = await getPlatformFeePercent(client);
+                const { commission } = calculateMarketplaceCommission(amount, platformFeePercent);
+                const settlementMode = product.paystack_subaccount_code ? 'split' : 'manual';
+                const reference = generatePaystackReference();
 
-        const insert = await db.query(
-            `INSERT INTO transactions (
-                student_id, product_id, vendor_id, amount, commission, list_price_snapshot,
-                status, paystack_reference, payment_source, settlement_mode
-             )
-             VALUES ($1, $2, $3, $4, $5, $6, 'pending', $7, 'awoof', $8)
-             RETURNING id`,
-            [
-                student.id,
-                product.id,
-                product.vendor_id,
-                amount,
-                commission,
-                parseFloat(product.price),
-                reference,
-                settlementMode,
-            ]
-        );
+                const insert = await client.query(
+                    `INSERT INTO transactions (
+                        student_id, product_id, vendor_id, amount, commission, list_price_snapshot,
+                        status, paystack_reference, payment_source, settlement_mode
+                     )
+                     VALUES ($1, $2, $3, $4, $5, $6, 'pending', $7, 'awoof', $8)
+                     RETURNING id`,
+                    [
+                        student.id,
+                        product.id,
+                        product.vendor_id,
+                        amount,
+                        commission,
+                        parseFloat(product.price),
+                        reference,
+                        settlementMode,
+                    ]
+                );
 
-        const transactionId = insert.rows[0].id;
+                const transactionId = insert.rows[0].id;
+                await client.query('COMMIT');
+                return { student, product, amount, commission, settlementMode, reference, transactionId };
+            } catch (error) {
+                await client.query('ROLLBACK');
+                throw error;
+            } finally {
+                client.release();
+            }
+        })();
 
         try {
             const initParams: Parameters<typeof initializePaystackTransaction>[0] = {

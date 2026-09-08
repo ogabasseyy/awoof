@@ -82,7 +82,7 @@ export default function ProductDetailPage() {
     };
 
     const handlePurchase = async () => {
-        if (!product) return;
+        if (!product || dealUnavailable(product)) return;
 
         if (product.deal_type === 'voucher' || product.vendor_payment_method === 'vendor_website') {
             const website = redemptionUrl(product.vendor_website);
@@ -105,11 +105,8 @@ export default function ProductDetailPage() {
             return;
         }
 
-        if (user.verificationStatus !== 'verified') {
-            toast.error('Please verify your student status to purchase products.');
-            router.push('/marketplace');
-            return;
-        }
+        // The checkout endpoint authorizes from current evidence and consent;
+        // cached profile verification flags are not eligibility authority.
 
         try {
             setIsPurchasing(true);

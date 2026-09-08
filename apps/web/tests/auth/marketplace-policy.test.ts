@@ -11,5 +11,7 @@ test('redemption accepts web URLs and rejects executable schemes and embedded cr
 test('external payment never makes a finite product unlimited', () => {
     assert.equal(dealUnavailable({ deal_type: 'product', stock: 0 }), true);
     assert.equal(dealUnavailable({ deal_type: 'product', stock: 1 }), false);
-    assert.equal(dealUnavailable({ deal_type: 'voucher', stock: 0 }), false);
+    assert.equal(dealUnavailable({ deal_type: 'voucher', stock: 0 }), true);
+    assert.equal(dealUnavailable({ deal_type: 'voucher', stock: 1 }), false);
+    assert.equal(dealUnavailable({ stock: NaN }), true);
 });
