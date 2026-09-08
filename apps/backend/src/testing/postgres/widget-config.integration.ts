@@ -19,8 +19,9 @@ test('new and existing widget configs persist canonical HTTPS origins accepted b
             await tx.query("INSERT INTO users(id,email,role) VALUES ($1,$2,'vendor')", [owner, `${owner}@example.invalid`]);
             await tx.query("INSERT INTO vendors(id,user_id,name,status) VALUES ($1,$2,'Synthetic','active')", [vendorId, owner]);
             const req = { user: { userId: owner, role: 'vendor' }, body: { allowedDomains: ['SHOP.example', 'https://shop.example/', 'other.example'] } } as Request;
-            if (existing) await getWidgetConfig(req, res);
-            await updateWidgetConfig(req, res);
+            if (existing) await Promise.all(Array.from({ length: 10 }, () => getWidgetConfig(req, res)));
+            await Promise.all(Array.from({ length: 10 }, () => updateWidgetConfig(req, res)));
+            assert.equal((await tx.query('SELECT count(*)::int AS count FROM widget_configs WHERE vendor_id=$1', [vendorId])).rows[0].count, 1);
             const config = (await tx.query('SELECT allowed_domains, allowed_origins FROM widget_configs WHERE vendor_id=$1', [vendorId])).rows[0];
             assert.deepEqual(config.allowed_domains, ['shop.example', 'other.example']);
             assert.deepEqual(config.allowed_origins, ['https://shop.example', 'https://other.example']);

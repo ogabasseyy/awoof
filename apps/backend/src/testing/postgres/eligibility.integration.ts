@@ -1905,6 +1905,8 @@ test('definitively rejected initialization releases the checkout for a corrected
             assert.equal(failed.checkout_initialization_state, null);
             await controller.createCheckout(request, response);
             await controller.createCheckout(request, response);
+            await client.query(`UPDATE transactions SET status = 'failed', created_at = CURRENT_TIMESTAMP - INTERVAL '2 days' WHERE student_id = $1 AND checkout_initialization_state = 'initialized'`, [fixture.studentId]);
+            await controller.createCheckout(request, response);
             assert.equal(calls, 2); // The successful retry is reused on repeated clicks.
             assert.equal((await client.query('SELECT count(*)::int AS count FROM transactions WHERE student_id = $1', [fixture.studentId])).rows[0].count, 2);
         });

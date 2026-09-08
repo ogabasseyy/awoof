@@ -4,6 +4,7 @@
  * Handles payment settings and history for vendors
  */
 
+import type { PoolClient } from 'pg';
 import type { Response } from 'express';
 import { db, getPool } from '../config/database.js';
 import {
@@ -231,53 +232,47 @@ export class PaymentController {
         }
 
         let subaccountCode: string;
+        let tx: PoolClient | undefined;
+        let providerAttempted = false;
         try {
-            // Read again after acquiring the durable per-vendor pending-change guard.
-            const currentVendor = await db.query('SELECT paystack_subaccount_code FROM vendors WHERE id = $1', [vendor.id]);
-            const currentCode = currentVendor.rows[0].paystack_subaccount_code;
-            if (currentCode) {
-                const updated = await updatePaystackSubaccount(currentCode, subaccountParams);
-                subaccountCode = updated.subaccountCode;
-            } else {
-                const created = await createPaystackSubaccount(subaccountParams);
-                subaccountCode = created.subaccountCode;
+            tx = await db.getPool().connect();
+            await tx.query('BEGIN');
+            await tx.query("SET LOCAL lock_timeout = '15s'");
+            // Serialize with suspension/deletion: user first, then the vendor row.
+            // Keep these locks across the bounded remote mutation and local apply.
+            const actor = await tx.query('SELECT role, deleted_at FROM users WHERE id = $1 FOR UPDATE', [req.user.userId]);
+            if (actor.rows[0]?.role !== 'vendor' || actor.rows[0]?.deleted_at !== null) {
+                throw new UnauthorizedError('Active vendor account required');
             }
+            const currentVendor = await tx.query(
+                'SELECT paystack_subaccount_code, user_id, status, deleted_at FROM vendors WHERE id = $1 FOR UPDATE', [vendor.id]);
+            const current = currentVendor.rows[0];
+            if (!current || current.user_id !== req.user.userId || current.status !== 'active' || current.deleted_at !== null) {
+                throw new BadRequestError('Only approved vendors can update payout settings');
+            }
+            providerAttempted = true;
+            const result = current.paystack_subaccount_code
+                ? await updatePaystackSubaccount(current.paystack_subaccount_code, subaccountParams)
+                : await createPaystackSubaccount(subaccountParams);
+            subaccountCode = result.subaccountCode;
+            await tx.query(
+                `UPDATE vendors SET bank_name = $1, bank_code = $2, account_number = $3,
+                    account_name = $4, paystack_subaccount_code = $5, updated_at = CURRENT_TIMESTAMP
+                 WHERE id = $6 AND user_id = $7 AND status = 'active' AND deleted_at IS NULL`,
+                [validated.bankName, validated.bankCode, validated.accountNumber, resolved.accountName,
+                    subaccountCode, vendor.id, req.user.userId]);
+            await tx.query(`UPDATE payout_change_requests SET status = 'applied', updated_at = CURRENT_TIMESTAMP WHERE id = $1`, [payoutChangeId]);
+            await tx.query('COMMIT');
         } catch (error: unknown) {
-            if (error instanceof PaystackMutationRejectedError) {
-                await db.query(`UPDATE payout_change_requests SET status = 'failed', error = 'Provider rejected the request', updated_at = CURRENT_TIMESTAMP WHERE id = $1 AND status = 'pending'`, [payoutChangeId]);
-                throw error;
+            if (tx) await tx.query('ROLLBACK').catch(() => undefined);
+            if (!providerAttempted || error instanceof PaystackMutationRejectedError) {
+                await db.query(`UPDATE payout_change_requests SET status = 'failed', error = 'Payout change was not applied', updated_at = CURRENT_TIMESTAMP WHERE id = $1 AND status = 'pending'`, [payoutChangeId]);
+            } else {
+                // Remote success may precede a timeout or local commit failure.
+                await db.query(`UPDATE payout_change_requests SET error = 'Provider outcome requires reconciliation', updated_at = CURRENT_TIMESTAMP WHERE id = $1 AND status = 'pending'`, [payoutChangeId]);
             }
-            await db.query(
-                // An HTTP timeout can follow a successful remote mutation. Keep the
-                // guard pending until reconciled instead of allowing a duplicate.
-                `UPDATE payout_change_requests SET error = $2, updated_at = CURRENT_TIMESTAMP WHERE id = $1`,
-                [payoutChangeId, 'Provider outcome requires reconciliation']
-            );
             throw error;
-        }
-
-        await db.query(
-            `WITH updated_vendor AS (
-                UPDATE vendors
-                SET bank_name = $1, bank_code = $2, account_number = $3,
-                    account_name = $4, paystack_subaccount_code = $5,
-                    updated_at = CURRENT_TIMESTAMP
-                WHERE id = $6
-                RETURNING id
-             )
-             UPDATE payout_change_requests
-             SET status = 'applied', updated_at = CURRENT_TIMESTAMP
-             WHERE id = $7 AND EXISTS (SELECT 1 FROM updated_vendor)`,
-            [
-                validated.bankName,
-                validated.bankCode,
-                validated.accountNumber,
-                resolved.accountName,
-                subaccountCode,
-                vendor.id,
-                payoutChangeId,
-            ]
-        );
+        } finally { tx?.release(); }
 
         try {
             await NotificationService.notifyVendorPayoutEnabled(req.user.userId);

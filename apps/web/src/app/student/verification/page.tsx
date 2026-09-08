@@ -17,6 +17,7 @@ function VerificationForm() {
     const [status, setStatus] = useState<VerificationStatus | null>(null);
     const [methods, setMethods] = useState<Array<{ methodType: string; isAvailable: boolean }> | null>(null);
     const [accepted, setAccepted] = useState(false);
+    const [mailboxConfirmed, setMailboxConfirmed] = useState(false);
     const [grant, setGrant] = useState('');
     const [challenge, setChallenge] = useState('');
     const [otp, setOtp] = useState('');
@@ -75,12 +76,12 @@ function VerificationForm() {
             {methods !== null && !emailAvailable && <p>School email verification is currently unavailable. Please contact support.</p>}
             {challenge && <form className="space-y-3" onSubmit={(event) => { event.preventDefault(); void run(async () => {
                 await apiClient.post('/verification/email/confirm', { challengeId: challenge, otp });
-                setChallenge(''); setOtp(''); await loadStatus(); setMessage('School email confirmed.');
+                setMailboxConfirmed(true); setChallenge(''); setOtp(''); await loadStatus(); setMessage('School email confirmed.');
             }); }}>
                 <label className="block">Email code<input className="block rounded border p-2" value={otp} onChange={(event) => setOtp(event.target.value.replace(/\D/g, '').slice(0, 6))} inputMode="numeric" autoComplete="one-time-code" pattern="[0-9]{6}" required /></label>
                 <button disabled={busy || otp.length !== 6} className="underline">Confirm email</button>
             </form>}
-            {registrationAvailable ? <form className="space-y-3" onSubmit={(event) => { event.preventDefault(); void run(async () => {
+            {registrationAvailable && mailboxConfirmed ? <form className="space-y-3" onSubmit={(event) => { event.preventDefault(); void run(async () => {
                 const processingGrantId = await processingGrant();
                 const response = await apiClient.post('/verification/registration', { processingGrantId, registrationNumber: registration });
                 await loadStatus();
@@ -89,7 +90,7 @@ function VerificationForm() {
                 <h2 className="font-semibold">Enrollment check</h2>
                 <label className="block">Registration number<input className="block rounded border p-2" value={registration} maxLength={100} required onChange={(event) => setRegistration(event.target.value)} /></label>
                 <button disabled={busy || !accepted || !registration.trim()} className="underline">Check enrollment</button>
-            </form> : <p>Enrollment verification is not currently available for your school.</p>}
+            </form> : <p>{registrationAvailable ? 'Confirm your school email above before checking enrollment.' : 'Enrollment verification is not currently available for your school.'}</p>}
         </>}
     </main>;
 }

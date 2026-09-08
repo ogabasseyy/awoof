@@ -37,25 +37,13 @@ export async function getWidgetConfig(req: AuthRequest, res: Response): Promise<
     }
     const vendorId = vendorResult.rows[0].id;
 
-    let row = await db.query(
+    await db.query(
+        `INSERT INTO widget_configs (vendor_id, allowed_domains, allowed_origins, api_key, status)
+         VALUES ($1, $2, $3, $4, 'active') ON CONFLICT (vendor_id) DO NOTHING`,
+        [vendorId, ['localhost'], ['https://localhost'], generateWidgetApiKey()]);
+    const row = await db.query(
         `SELECT id, allowed_domains, allowed_origins, api_key, status, created_at, updated_at
-         FROM widget_configs WHERE vendor_id = $1`,
-        [vendorId]
-    );
-
-    if (row.rows.length === 0) {
-        const apiKey = generateWidgetApiKey();
-        await db.query(
-            `INSERT INTO widget_configs (vendor_id, allowed_domains, allowed_origins, api_key, status)
-             VALUES ($1, $2, $3, $4, 'active')`,
-            [vendorId, ['localhost'], ['https://localhost'], apiKey]
-        );
-        row = await db.query(
-            `SELECT id, allowed_domains, allowed_origins, api_key, status, created_at, updated_at
-             FROM widget_configs WHERE vendor_id = $1`,
-            [vendorId]
-        );
-    }
+         FROM widget_configs WHERE vendor_id = $1`, [vendorId]);
 
     const c = row.rows[0];
     success(res, {
@@ -104,26 +92,16 @@ export async function updateWidgetConfig(req: AuthRequest, res: Response): Promi
 
     const regenerateKey = Boolean(req.body.regenerateApiKey);
 
-    let row = await db.query(
-        `SELECT id, api_key FROM widget_configs WHERE vendor_id = $1`,
-        [vendorId]
-    );
-
-    let apiKey: string;
-    if (row.rows.length === 0) {
-        apiKey = generateWidgetApiKey();
-        await db.query(
-            `INSERT INTO widget_configs (vendor_id, allowed_domains, allowed_origins, api_key, status)
-             VALUES ($1, $2, $3, $4, 'active')`,
-            [vendorId, domains, origins, apiKey]
-        );
-    } else {
-        apiKey = regenerateKey ? generateWidgetApiKey() : row.rows[0].api_key;
-        await db.query(
-            `UPDATE widget_configs SET allowed_domains = $1, allowed_origins = $2, api_key = $3, updated_at = CURRENT_TIMESTAMP WHERE vendor_id = $4`,
-            [domains, origins, apiKey, vendorId]
-        );
-    }
+    const row = await db.query(
+        `INSERT INTO widget_configs (vendor_id, allowed_domains, allowed_origins, api_key, status)
+         VALUES ($1, $2, $3, $4, 'active')
+         ON CONFLICT (vendor_id) DO UPDATE
+         SET allowed_domains = EXCLUDED.allowed_domains, allowed_origins = EXCLUDED.allowed_origins,
+             api_key = CASE WHEN $5 THEN EXCLUDED.api_key ELSE widget_configs.api_key END,
+             updated_at = CURRENT_TIMESTAMP
+         RETURNING api_key, status`,
+        [vendorId, domains, origins, generateWidgetApiKey(), regenerateKey]);
+    const apiKey = row.rows[0].api_key;
 
     success(res, {
         message: 'Widget config updated',
@@ -132,7 +110,7 @@ export async function updateWidgetConfig(req: AuthRequest, res: Response): Promi
             allowedDomains: domains,
             allowedOrigins: origins,
             apiKey: regenerateKey ? apiKey : undefined,
-            status: 'active',
+            status: row.rows[0].status,
         },
     });
 }

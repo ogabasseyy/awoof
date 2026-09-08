@@ -150,13 +150,7 @@ export async function drainCommerceNotificationOutbox(limit = 25): Promise<void>
 
 export function startCommerceNotificationDispatcher(): void {
     const run = () => {
-        // Expired attempts remain recoverable if a verified payment arrives late.
-        void db.query(
-            `UPDATE transactions SET status = 'failed', updated_at = CURRENT_TIMESTAMP
-             WHERE status = 'pending' AND payment_source = 'awoof'
-               AND paystack_reference IS NOT NULL
-               AND created_at < CURRENT_TIMESTAMP - INTERVAL '24 hours'`
-        ).catch(error => appLogger.error('Checkout expiry failed', error));
+        // Local age cannot invalidate a provider authorization; retain unpaid reservations.
         void drainCommerceNotificationOutbox().catch((error) => {
             appLogger.error('Commerce notification outbox dispatcher failed', error);
         });

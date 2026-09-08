@@ -102,7 +102,7 @@ export class CheckoutController {
                 const prior = await client.query(
                     `SELECT id, paystack_reference, checkout_authorization_url, amount, commission, settlement_mode
                      FROM transactions WHERE student_id = $1 AND product_id = $2 AND payment_source = 'awoof'
-                     AND (status = 'pending' OR (status = 'failed' AND checkout_initialization_state IN ('initializing', 'unknown')))
+                     AND (status = 'pending' OR (status = 'failed' AND checkout_initialization_state IN ('initializing', 'initialized', 'unknown')))
                      ORDER BY created_at DESC LIMIT 1 FOR UPDATE`, [student.id, product.id]);
                 if (prior.rows.length) {
                     const previous = prior.rows[0];

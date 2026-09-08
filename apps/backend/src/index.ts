@@ -9,6 +9,7 @@ import express, { type Express, type Request, type Response, type NextFunction }
 import cors from 'cors';
 import helmet from 'helmet';
 import rateLimit from 'express-rate-limit';
+import { skipCorsPreflight } from './middleware/cors-preflight.js';
 import { uploadedFile } from './middleware/uploaded-file.js';
 import { paystackWebhookLimiter } from './middleware/paystack-webhook-limit.js';
 import swaggerUi from 'swagger-ui-express';
@@ -75,6 +76,7 @@ class App {
     this.app.use(rateLimit({
       windowMs: config.rateLimit.windowMs,
       max: config.rateLimit.maxRequests,
+      skip: skipCorsPreflight,
       standardHeaders: true,
       legacyHeaders: false,
     }));
