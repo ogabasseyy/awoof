@@ -317,7 +317,7 @@ export class OrderController {
 
             const result = await client.query(
                 `UPDATE transactions
-                 SET status = $1, inventory_consumed = CASE WHEN $1 = 'refunded' THEN false ELSE inventory_consumed END, updated_at = CURRENT_TIMESTAMP
+                 SET status = $1::varchar, inventory_consumed = CASE WHEN $1::varchar = 'refunded' THEN false ELSE inventory_consumed END, updated_at = CURRENT_TIMESTAMP
                  WHERE id = $2 AND vendor_id = $3
                  RETURNING id, status, updated_at`,
                 [validated.status, orderId, vendorId]
