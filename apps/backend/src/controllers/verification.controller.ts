@@ -139,6 +139,13 @@ export class VerificationController {
         success(res, { message: 'Verification consent withdrawn', data: { grantId } });
     }
 
+    public async listConsents(req: AuthRequest, res: Response): Promise<void> {
+        const cursor = consentIdSchema.optional().parse(req.query.cursor);
+        const result = await this.flow.listConsents(authenticatedUserId(req), cursor);
+        res.set('Cache-Control', 'no-store');
+        success(res, { message: 'Your verification consents retrieved', data: result });
+    }
+
     public async verifyRegistration(req: AuthRequest, res: Response): Promise<void> {
         const input = registrationSchema.parse(req.body);
         const result = await this.flow.verifyRegistration(authenticatedUserId(req), input);

@@ -10,6 +10,9 @@ test('an existing student renews eligibility with the current notice and email c
         const endpoint = new URL(route.request().url()).pathname;
         calls.push(endpoint);
         const body = route.request().method() === 'POST' ? route.request().postDataJSON() : null;
+        if (endpoint.endsWith('/consents')) {
+            await route.fulfill({ json: { data: { items: [], nextCursor: null } }, headers: { 'access-control-allow-origin': '*' } }); return;
+        }
         let data: unknown;
         if (endpoint.endsWith('/status')) data = {
             emailDomainApproved: true, email: 'student@approved.test', universityId: 'b9c35781-9f75-44b6-98ca-0c928fb993a9',
@@ -86,6 +89,9 @@ test('enrollment becomes actionable only after school email confirmation', async
     let emailConfirmed = false; let eligible = false;
     await page.route(`${apiOrigin}/api/verification/**`, async (route) => {
         const endpoint = new URL(route.request().url()).pathname;
+        if (endpoint.endsWith('/consents')) {
+            await route.fulfill({ json: { data: { items: [], nextCursor: null } }, headers: { 'access-control-allow-origin': '*' } }); return;
+        }
         let data: unknown;
         if (endpoint.endsWith('/status')) data = { mailboxConfirmed: emailConfirmed, emailDomainApproved: true, email: 'student@approved.test', universityId: 'b9c35781-9f75-44b6-98ca-0c928fb993a9', eligibility: { eligible }, notices: { verification: { version: 'fixture', text: 'I agree to verification.' } } };
         else if (endpoint.includes('/methods/')) data = { methods: [{ methodType: 'email', isAvailable: true }, { methodType: 'registration', isAvailable: true }] };
@@ -115,6 +121,9 @@ test('persisted mailbox proof allows enrollment while email delivery is unavaila
     let eligible = false;
     await page.route(`${apiOrigin}/api/verification/**`, async (route) => {
         const endpoint = new URL(route.request().url()).pathname;
+        if (endpoint.endsWith('/consents')) {
+            await route.fulfill({ json: { data: { items: [], nextCursor: null } }, headers: { 'access-control-allow-origin': '*' } }); return;
+        }
         let data: unknown;
         if (endpoint.endsWith('/status')) data = { mailboxConfirmed: true, emailDomainApproved: true, email: 'student@approved.test', universityId: 'b9c35781-9f75-44b6-98ca-0c928fb993a9', eligibility: { eligible }, notices: { verification: { version: 'fixture', text: 'I agree to verification.' } } };
         else if (endpoint.includes('/methods/')) data = { methods: [{ methodType: 'email', isAvailable: false }, { methodType: 'registration', isAvailable: true }] };

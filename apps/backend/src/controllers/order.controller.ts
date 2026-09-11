@@ -301,7 +301,8 @@ export class OrderController {
                 [vendorId, req.user.userId]);
             if (!authority.rows.length) throw new BadRequestError('Only active vendors can change orders');
             const orderCheck = await client.query(
-                `SELECT id, status, payment_source, paystack_reference, product_id, inventory_consumed
+                `SELECT id, status, payment_source, paystack_reference, product_id, inventory_consumed,
+                        student_id, amount, list_price_snapshot
                  FROM transactions WHERE id = $1 AND vendor_id = $2 FOR UPDATE`,
                 [orderId, vendorId]
             );
@@ -339,6 +340,19 @@ export class OrderController {
                      SET stock = stock + 1, updated_at = CURRENT_TIMESTAMP
                      WHERE id = $1`,
                     [order.product_id]
+                );
+            }
+
+            if (order.status === 'completed' && validated.status === 'refunded') {
+                // The locked completed -> refunded transition is the idempotency
+                // gate. Reverse the purchase snapshot, independently of restocking.
+                await client.query(
+                    `UPDATE savings_stats
+                     SET total_savings = total_savings - (COALESCE($2::numeric, $3::numeric) - $3::numeric),
+                         total_purchases = GREATEST(total_purchases - 1, 0),
+                         last_updated = CURRENT_TIMESTAMP
+                     WHERE student_id = $1`,
+                    [order.student_id, order.list_price_snapshot, order.amount]
                 );
             }
 

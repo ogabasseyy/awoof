@@ -529,7 +529,25 @@ export function createVerificationFlowService(dependencies: VerificationFlowDepe
         await inTransaction(dependencies.pool, (tx) => withdrawEligibilityConsent(tx, userId, grantId));
     }
 
-    return { initiate, requestEmail, confirmEmail, verifyRegistration, status, grantDisclosure, withdrawConsent };
+    async function listConsents(userId: string, cursor?: string) {
+        return inTransaction(dependencies.pool, async (tx) => {
+            // Privacy controls remain available independently of current
+            // eligibility, institution activity, and student-profile completeness.
+            const result = await tx.query<{
+                id: string; kind: 'processing' | 'disclosure'; accepted_at: Date; withdrawn_at: Date | null; origin: string | null; purpose: string | null;
+            }>(`SELECT id, kind, accepted_at, withdrawn_at, origin, purpose
+                FROM verification_consents
+                WHERE user_id = $1 AND ($2::uuid IS NULL OR id > $2::uuid)
+                ORDER BY id ASC LIMIT 21`, [userId, cursor ?? null]);
+            const page = result.rows.slice(0, 20);
+            return {
+                items: page.map((row) => ({ id: row.id, kind: row.kind, acceptedAt: row.accepted_at, withdrawnAt: row.withdrawn_at, origin: row.origin, purpose: row.purpose })),
+                nextCursor: result.rows.length > 20 ? page[19]!.id : null,
+            };
+        });
+    }
+
+    return { initiate, requestEmail, confirmEmail, verifyRegistration, status, grantDisclosure, withdrawConsent, listConsents };
 }
 
 export type VerificationFlowService = ReturnType<typeof createVerificationFlowService>;

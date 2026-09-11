@@ -15,6 +15,7 @@ export function createVerificationRouter(controller: VerificationController = ne
     router.get('/status', authenticate, asyncHandler(controller.getCurrentStatus.bind(controller)));
     router.post('/disclosures', authenticate, asyncHandler(controller.grantMerchantDisclosure.bind(controller)));
     router.delete('/consents/:id', authenticate, asyncHandler(controller.withdrawConsent.bind(controller)));
+    router.get('/consents', authenticate, asyncHandler(controller.listConsents.bind(controller)));
 
     // Identity comes only from the access token. The strict body carries the
     // registration identifier and a current processing grant, never a mailbox

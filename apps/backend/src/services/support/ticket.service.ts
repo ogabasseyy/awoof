@@ -48,13 +48,13 @@ function mapTicket(row: Record<string, unknown>) {
     };
 }
 
-function mapMessage(row: Record<string, unknown>) {
+function mapMessage(row: Record<string, unknown>, includeStaffEmail = false) {
     return {
         id: row.id,
         ticketId: row.ticket_id,
         authorUserId: row.author_user_id,
         authorRole: row.author_role,
-        authorEmail: row.author_email ?? null,
+        authorEmail: row.author_role === 'admin' && !includeStaffEmail ? null : row.author_email ?? null,
         body: row.body,
         isInternal: row.is_internal === true,
         createdAt: row.created_at,
@@ -281,7 +281,7 @@ export class TicketService {
 
         return {
             ticket: mapTicket(ticket),
-            messages: messagesResult.rows.map(mapMessage),
+            messages: messagesResult.rows.map((row) => mapMessage(row, includeInternal)),
         };
     }
 

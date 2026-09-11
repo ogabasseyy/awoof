@@ -45,10 +45,35 @@ export class CheckoutController {
             const client = await db.getPool().connect();
             try {
                 await client.query('BEGIN');
+                // Resolve candidates without locks, then acquire all participant
+                // users in the same UUID order as merchant disclosure flows.
+                const candidate = await client.query(
+                    `SELECT p.vendor_id, v.user_id FROM products p
+                     JOIN vendors v ON v.id = p.vendor_id WHERE p.id = $1`,
+                    [validated.productId]
+                );
+                const merchant = candidate.rows[0];
+                const participants = await client.query(
+                    `SELECT id, role, deleted_at FROM users
+                     WHERE id = ANY($1::uuid[]) ORDER BY id FOR UPDATE`,
+                    [[...new Set([userId, ...(merchant ? [merchant.user_id] : [])])].sort()]
+                );
+                // Eligibility precedes merchant locks, matching payment settlement.
                 // Keep current evidence, identity, policy and consent locks until
                 // checkout creation commits. Legacy profile flags grant no authority.
                 const eligibility = await getEffectiveEligibility(client, userId);
                 if (!eligibility.eligible) throw new BadRequestError('Current student eligibility is required to purchase');
+                if (!merchant) throw new NotFoundError('Product not found');
+                const owner = participants.rows.find((row) => row.id === merchant.user_id);
+                if (!owner || owner.role !== 'vendor' || owner.deleted_at !== null) {
+                    throw new BadRequestError('Vendor is not approved to sell');
+                }
+                const vendor = await client.query(
+                    `SELECT id FROM vendors WHERE id = $1 AND user_id = $2
+                     AND status = 'active' AND deleted_at IS NULL FOR UPDATE`,
+                    [merchant.vendor_id, merchant.user_id]
+                );
+                if (!vendor.rows.length) throw new BadRequestError('Vendor is not approved to sell');
                 const studentRow = await client.query(
                     `SELECT s.id, u.email
                      FROM students s
@@ -71,8 +96,10 @@ export class CheckoutController {
                             COALESCE(v.payment_method, 'awoof') AS payment_method
                      FROM products p
                      JOIN vendors v ON v.id = p.vendor_id
-                     WHERE p.id = $1 AND p.deleted_at IS NULL AND v.deleted_at IS NULL`,
-                    [validated.productId]
+                     WHERE p.id = $1 AND p.vendor_id = $2
+                       AND p.deleted_at IS NULL AND v.deleted_at IS NULL
+                     FOR UPDATE OF p`,
+                    [validated.productId, merchant.vendor_id]
                 );
 
                 if (productRow.rows.length === 0) {

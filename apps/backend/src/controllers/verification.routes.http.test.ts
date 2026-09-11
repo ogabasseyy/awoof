@@ -49,8 +49,21 @@ function flow(calls: string[]): VerificationFlowService {
         }),
         grantDisclosure: async () => ({ grantId }),
         withdrawConsent: async () => undefined,
+        listConsents: async (subject) => ({ items: [{ id: subject === userId ? grantId : 'wrong-owner', kind: 'processing' as const, acceptedAt: new Date('2026-09-01T00:00:00Z'), withdrawnAt: null, origin: null, purpose: null }], nextCursor: null }),
     };
 }
+
+test('discovers only authenticated owner consents without requiring eligibility and rejects invalid cursors', async () => {
+    await withServer(new VerificationController({ flow: flow([]) }), async (baseUrl) => {
+        assert.equal((await fetch(`${baseUrl}/consents`)).status, 401);
+        const headers = { authorization: `Bearer ${token()}` };
+        const response = await fetch(`${baseUrl}/consents?userId=other`, { headers });
+        assert.equal(response.status, 200);
+        const body = await response.json() as { data: { items: Array<{ id: string }> } };
+        assert.equal(body.data.items[0]?.id, grantId);
+        assert.equal((await fetch(`${baseUrl}/consents?cursor=not-a-uuid`, { headers })).status, 422);
+    });
+});
 
 async function withServer(controller: VerificationController, operation: (baseUrl: string) => Promise<void>): Promise<void> {
     const app = express();

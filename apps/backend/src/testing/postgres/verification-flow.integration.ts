@@ -81,6 +81,38 @@ async function createFixture(pool: pg.Pool): Promise<Fixture> {
     return { adminId, userId, universityId, email };
 }
 
+test('owner consent history pages real SQL and remains withdrawable when school becomes inactive', async () => {
+    await withPool(async (pool) => {
+        const owner = await createFixture(pool);
+        const stranger = await createFixture(pool);
+        const flow = createVerificationFlowService({ pool, isEmailConfigured: () => false, deliverOtp: async () => ({ success: false }) });
+        const ids: string[] = [];
+        for (let index = 0; index < 21; index++) {
+            const result = await flow.initiate(owner.userId, { universityId: owner.universityId, accepted: true, noticeVersion: VERIFICATION_NOTICE_VERSION });
+            ids.push(result.processingGrantId);
+        }
+        const foreign = await flow.initiate(stranger.userId, { universityId: stranger.universityId, accepted: true, noticeVersion: VERIFICATION_NOTICE_VERSION });
+        await pool.query('UPDATE universities SET is_active = false WHERE id = $1', [owner.universityId]);
+        const withdrawnId = ids[0]!;
+        await flow.withdrawConsent(owner.userId, withdrawnId);
+        await withVerificationServer(async (baseUrl) => {
+            const headers = { authorization: `Bearer ${accessToken(owner.userId, owner.email)}` };
+            const response = await fetch(`${baseUrl}/consents?userId=${stranger.userId}`, { headers });
+            assert.equal(response.status, 200);
+            assert.equal(response.headers.get('cache-control'), 'no-store');
+            const first = (await response.json() as { data: { items: Array<{ id: string; withdrawnAt: string | null }>; nextCursor: string } }).data;
+            assert.equal(first.items.length, 20);
+            const secondResponse = await fetch(`${baseUrl}/consents?cursor=${first.nextCursor}`, { headers });
+            const second = (await secondResponse.json() as { data: { items: Array<{ id: string; withdrawnAt: string | null }>; nextCursor: string | null } }).data;
+            assert.equal(second.items.length, 1); assert.equal(second.nextCursor, null);
+            const items = [...first.items, ...second.items];
+            assert.deepEqual(items.map((item) => item.id).sort(), ids.sort());
+            assert.ok(items.find((item) => item.id === withdrawnId)?.withdrawnAt);
+            assert.equal(items.some((item) => item.id === foreign.processingGrantId), false);
+        }, new VerificationController({ flow }));
+    });
+});
+
 async function createMerchantFixture(pool: pg.Pool): Promise<MerchantFixture> {
     const label = randomUUID();
     const ownerId = (await pool.query<{ id: string }>(
