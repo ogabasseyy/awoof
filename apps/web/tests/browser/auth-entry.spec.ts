@@ -21,8 +21,9 @@ async function expectKeyboardPasswordToggle(input: Locator): Promise<void> {
   await expect(show).toBeFocused();
   const box = await show.boundingBox();
   expect(box).not.toBeNull();
-  expect(box!.width).toBeGreaterThanOrEqual(24);
-  expect(box!.height).toBeGreaterThanOrEqual(24);
+  // Browser transforms can report 24 CSS px as 23.99997; ignore sub-millipixel rounding.
+  expect(Math.round(box!.width * 1000) / 1000).toBeGreaterThanOrEqual(24);
+  expect(Math.round(box!.height * 1000) / 1000).toBeGreaterThanOrEqual(24);
   const focus = await show.evaluate((element) => {
     const style = getComputedStyle(element);
     return {

@@ -19,8 +19,8 @@ interface ReceiptItem {
     transactionId: string;
     productName: string;
     vendorName: string;
-    amount: number;
-    discount: number;
+    amount: number | null;
+    discount: number | null;
     finalAmount: number;
     date: string;
     status: 'completed' | 'pending' | 'failed' | 'refunded' | 'requires_refund';
@@ -59,9 +59,9 @@ export default function ReceiptsPage() {
                 const formattedReceipts: ReceiptItem[] = transactions.map((transaction: {
                     id: string;
                     transactionId: string;
-                    amount: number;
-                    discountAmount: number;
-                    finalAmount?: number;
+                    amount: number | null;
+                    discountAmount: number | null;
+                    finalAmount: number;
                     status: string;
                     createdAt: string;
                     product?: {
@@ -73,9 +73,9 @@ export default function ReceiptsPage() {
                     transactionId: transaction.transactionId || transaction.id,
                     productName: transaction.product?.name || 'Product',
                     vendorName: transaction.product?.vendorName || 'Vendor',
-                    amount: transaction.amount || 0,
-                    discount: transaction.discountAmount || 0,
-                    finalAmount: transaction.finalAmount || (transaction.amount - transaction.discountAmount),
+                    amount: transaction.amount ?? null,
+                    discount: transaction.discountAmount ?? null,
+                    finalAmount: transaction.finalAmount,
                     date: transaction.createdAt || new Date().toISOString(),
                     status: ['completed', 'pending', 'failed', 'refunded', 'requires_refund'].includes(transaction.status)
                         ? transaction.status as ReceiptItem['status']
@@ -161,11 +161,11 @@ export default function ReceiptsPage() {
                                         <div className="space-y-2 mb-3 pt-3 border-t border-gray-100">
                                             <div className="flex justify-between text-sm">
                                                 <span className="text-gray-600">Original Price:</span>
-                                                <span className="text-gray-900">{formatCurrency(receipt.amount)}</span>
+                                                <span className="text-gray-900">{receipt.amount == null ? 'Unknown' : formatCurrency(receipt.amount)}</span>
                                             </div>
                                             <div className="flex justify-between text-sm">
                                                 <span className="text-gray-600">Discount:</span>
-                                                <span className="text-green-600">-{formatCurrency(receipt.discount)}</span>
+                                                <span className="text-green-600">{receipt.discount == null ? 'Unknown' : `-${formatCurrency(receipt.discount)}`}</span>
                                             </div>
                                             <div className="flex justify-between text-sm font-semibold pt-2 border-t border-gray-100">
                                                 <span className="text-gray-900">Total Paid:</span>
@@ -265,11 +265,11 @@ export default function ReceiptsPage() {
                                             <div className="grid grid-cols-3 gap-4 pt-4 border-t border-gray-100">
                                                 <div>
                                                     <p className="text-sm text-gray-600 mb-1">Original Price</p>
-                                                    <p className="text-gray-900 font-medium">{formatCurrency(receipt.amount)}</p>
+                                                    <p className="text-gray-900 font-medium">{receipt.amount == null ? 'Unknown' : formatCurrency(receipt.amount)}</p>
                                                 </div>
                                                 <div>
                                                     <p className="text-sm text-gray-600 mb-1">Discount</p>
-                                                    <p className="text-green-600 font-medium">-{formatCurrency(receipt.discount)}</p>
+                                                    <p className="text-green-600 font-medium">{receipt.discount == null ? 'Unknown' : `-${formatCurrency(receipt.discount)}`}</p>
                                                 </div>
                                                 <div>
                                                     <p className="text-sm text-gray-600 mb-1">Total Paid</p>

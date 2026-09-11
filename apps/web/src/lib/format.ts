@@ -31,6 +31,12 @@ export function formatCurrency(amount: number | string, showSymbol: boolean = tr
     return showSymbol ? `₦${formatted}` : formatted;
 }
 
+/** Totals with unrecorded historical credits must not look complete. */
+export function formatSavings(total: number | null | undefined, recorded?: number): string {
+    if (total != null) return formatCurrency(total);
+    return recorded ? `${formatCurrency(recorded)} recorded · partial` : 'Unknown';
+}
+
 /**
  * Format currency using Intl.NumberFormat (alternative method)
  * @param amount - The amount to format

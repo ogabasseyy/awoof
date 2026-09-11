@@ -58,7 +58,8 @@ export class AdminStudentController {
                 u.email,
                 univ.name AS university_name,
                 COALESCE(stats.total_spent, 0)::numeric(12,2) AS total_spent,
-                COALESCE(stats.total_savings, 0)::numeric(12,2) AS total_savings
+                COALESCE(stats.total_savings, 0)::numeric(12,2) AS total_savings,
+                COALESCE(stats.unknown_savings_count, 0) AS unknown_savings_count
             FROM students s
             JOIN users u ON u.id = s.user_id
             LEFT JOIN universities univ ON univ.id = s.university_id
@@ -66,9 +67,9 @@ export class AdminStudentController {
                 SELECT
                     t.student_id,
                     SUM(t.amount) AS total_spent,
-                    SUM(p.price - p.student_price) AS total_savings
+                    SUM(t.recorded_savings_delta) AS total_savings,
+                    COUNT(*) FILTER (WHERE t.recorded_savings_delta IS NULL) AS unknown_savings_count
                 FROM transactions t
-                JOIN products p ON p.id = t.product_id
                 WHERE t.status = 'completed'
                 GROUP BY t.student_id
             ) stats ON stats.student_id = s.id
@@ -90,7 +91,9 @@ export class AdminStudentController {
             verificationDate: row.verification_date || null,
             createdAt: row.created_at,
             totalSpent: parseFloat(row.total_spent ?? '0'),
-            totalSavings: parseFloat(row.total_savings ?? '0'),
+            totalSavings: Number(row.unknown_savings_count) > 0 ? null : parseFloat(row.total_savings ?? '0'),
+            recordedSavings: parseFloat(row.total_savings ?? '0'),
+            unknownSavingsCount: Number(row.unknown_savings_count),
         }));
 
         success(res, {

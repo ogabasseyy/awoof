@@ -318,12 +318,13 @@ export async function completeMarketplaceTransactionWithClient(
             return { completed: false, transactionId: tx.id };
         }
 
+        const savingsDelta = parseFloat(tx.list_price) - parseFloat(tx.amount);
         const completed = await client.query(
             `UPDATE transactions
-             SET status = 'completed', inventory_consumed = true, updated_at = CURRENT_TIMESTAMP
+             SET status = 'completed', inventory_consumed = true, recorded_savings_delta = $2, updated_at = CURRENT_TIMESTAMP
              WHERE id = $1 AND status IN ('pending', 'failed')
              RETURNING id`,
-            [tx.id]
+            [tx.id, savingsDelta]
         );
 
         if (completed.rows.length === 0) {
@@ -338,7 +339,6 @@ export async function completeMarketplaceTransactionWithClient(
             return { completed: true, transactionId: tx.id, newlyCompleted: false };
         }
 
-        const savingsDelta = parseFloat(tx.list_price) - parseFloat(tx.amount);
         await client.query(
             `INSERT INTO savings_stats (student_id, total_savings, total_purchases, last_updated)
              VALUES ($1, $2, 1, CURRENT_TIMESTAMP)

@@ -25,7 +25,7 @@ import { useAuth } from '@/contexts/AuthContext';
 import { DashboardLayout } from '@/components/dashboard';
 import type { User } from '@/lib/auth';
 import apiClient from '@/lib/api-client';
-import { formatCurrency } from '@/lib/format';
+import { formatCurrency, formatSavings } from '@/lib/format';
 import { InfoTooltip } from '@/components/ui/InfoTooltip';
 import { primaryNavItems, secondaryNavItems } from '../adminNav';
 
@@ -45,7 +45,8 @@ interface AnalyticsData {
         conversionRate: number;
     };
     studentImpact: {
-        totalStudentSavings: number;
+        totalStudentSavings: number | null;
+        recordedSavings?: number;
     };
     support: {
         openTickets: number;
@@ -281,12 +282,12 @@ export default function AdminAnalyticsPage() {
                         <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
                             <MetricCard
                                 label="Total Student Savings"
-                                value={formatCurrency(studentImpact.totalStudentSavings)}
+                                value={formatSavings(studentImpact.totalStudentSavings, studentImpact.recordedSavings)}
                                 icon={Heart}
                                 iconBg="bg-rose-100"
                                 iconColor="text-rose-600"
                                 tooltipTitle="Total Student Savings"
-                                tooltipDescription="Total amount students have saved from discounts. Calculated as the sum of (product price − student price) for every completed transaction. Comes from transactions joined with products, status = 'completed'. Shows the value delivered to students."
+                                tooltipDescription="Savings recorded when completed purchases were settled. Partial totals exclude purchases whose historical savings are unknown."
                             />
                             <MetricCard
                                 label="Open Support Tickets"

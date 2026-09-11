@@ -19,6 +19,8 @@ test('later consent pages do not duplicate a locally granted consent', async ({ 
     await page.getByRole('checkbox').check();
     await page.getByRole('button', { name: 'Send verification code' }).click();
     await expect(page.getByRole('button', { name: 'Withdraw verification consent' })).toHaveCount(2);
+    await page.getByRole('button', { name: 'Refresh consent history' }).click();
+    await expect(page.getByRole('button', { name: 'Withdraw verification consent' })).toHaveCount(2);
     await page.getByRole('button', { name: 'Load more consents' }).click();
     await expect(page.getByRole('button', { name: 'Load more consents' })).toHaveCount(0);
     await expect(page.getByRole('button', { name: 'Withdraw verification consent' })).toHaveCount(2);
@@ -41,7 +43,7 @@ for (const heldRead of ['status', 'methods'] as const) {
                 if (heldRead === 'methods' && !wasWithdrawn) { arrived = true; await held; }
                 data = { methods: [{ methodType: 'email', isAvailable: !wasWithdrawn }] };
             } else if (path.endsWith('/consents/grant-a')) { withdrawn = true; data = { grantId: 'grant-a' }; }
-            else data = { items: [{ id: 'grant-a', kind: 'processing', acceptedAt: '2026-09-01T00:00:00.000Z', withdrawnAt: null }], nextCursor: null };
+            else data = { items: [{ id: 'grant-a', kind: 'processing', acceptedAt: '2026-09-01T00:00:00.000Z', withdrawnAt: withdrawn ? '2026-09-11T00:00:00.000Z' : null }], nextCursor: null };
             await route.fulfill({ json: { data }, headers: { 'access-control-allow-origin': '*' } });
         });
         try {
@@ -59,7 +61,8 @@ for (const heldRead of ['status', 'methods'] as const) {
     });
 }
 
-test('an older consent history response cannot erase a newly granted consent', async ({ page }) => {
+for (const hasHistory of [false, true]) {
+test(`an older consent history response preserves new and existing grants (history=${hasHistory})`, async ({ page }) => {
     await installSyntheticApi(page); await seedSession(page, 'student');
     let release!: () => void;
     const held = new Promise<void>((resolve) => { release = resolve; });
@@ -68,7 +71,7 @@ test('an older consent history response cannot erase a newly granted consent', a
         let data: unknown;
         if (path.endsWith('/status')) data = { email: 'student@approved.test', emailDomainApproved: true, universityId: 'school', eligibility: { eligible: false }, notices: { verification: { version: 'v1', text: 'Consent notice' } } };
         else if (path.includes('/methods/')) data = { methods: [{ methodType: 'email', isAvailable: true }] };
-        else if (path.endsWith('/consents')) { await held; data = { items: [], nextCursor: null }; }
+        else if (path.endsWith('/consents')) { await held; data = { items: hasHistory ? [{ id: 'old-grant', kind: 'processing', acceptedAt: '2026-09-01T00:00:00Z', withdrawnAt: null }] : [], nextCursor: hasHistory ? 'old-grant' : null }; }
         else if (path.endsWith('/initiate')) data = { processingGrantId: 'new-grant' };
         else data = { challengeId: 'challenge', resendAvailableAt: new Date().toISOString() };
         await route.fulfill({ json: { data }, headers: { 'access-control-allow-origin': '*' } });
@@ -80,7 +83,43 @@ test('an older consent history response cannot erase a newly granted consent', a
         const settled = page.waitForResponse(`${apiOrigin}/api/verification/consents`);
         release(); await settled;
         await page.evaluate(() => new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve()))));
-        await expect(page.getByRole('button', { name: 'Withdraw verification consent' })).toBeVisible();
+        await expect(page.getByRole('button', { name: 'Withdraw verification consent' })).toHaveCount(hasHistory ? 2 : 1);
+        if (hasHistory) await expect(page.getByRole('button', { name: 'Load more consents' })).toBeVisible();
+    } finally { release(); }
+});
+}
+
+test('withdrawing a new grant reloads history and ignores the superseded initial page', async ({ page }) => {
+    await installSyntheticApi(page); await seedSession(page, 'student');
+    let release!: () => void;
+    const held = new Promise<void>((resolve) => { release = resolve; });
+    let reads = 0;
+    const entry = (id: string, withdrawnAt: string | null = null) => ({ id, kind: 'processing', acceptedAt: '2026-09-01T00:00:00Z', withdrawnAt });
+    await page.route(`${apiOrigin}/api/verification/**`, async (route) => {
+        const path = new URL(route.request().url()).pathname;
+        let data: unknown;
+        if (path.endsWith('/status')) data = { email: 'student@approved.test', emailDomainApproved: true, universityId: 'school', eligibility: { eligible: false }, notices: { verification: { version: 'v1', text: 'Consent notice' } } };
+        else if (path.includes('/methods/')) data = { methods: [{ methodType: 'email', isAvailable: true }] };
+        else if (path.endsWith('/consents')) {
+            if (++reads === 1) { await held; data = { items: [], nextCursor: null }; }
+            else data = { items: [entry('old-grant'), entry('new-grant', '2026-09-11T00:00:00Z')], nextCursor: 'new-grant' };
+        } else if (path.endsWith('/consents/new-grant')) data = { grantId: 'new-grant' };
+        else if (path.endsWith('/initiate')) data = { processingGrantId: 'new-grant' };
+        else data = { challengeId: 'challenge', resendAvailableAt: new Date().toISOString() };
+        await route.fulfill({ json: { data }, headers: { 'access-control-allow-origin': '*' } });
+    });
+    try {
+        await page.goto('/student/verification');
+        await page.getByRole('checkbox').check();
+        await page.getByRole('button', { name: 'Send verification code' }).click();
+        await page.getByRole('button', { name: 'Withdraw verification consent' }).click();
+        await expect(page.getByText('Withdrawn', { exact: true })).toBeVisible();
+        await expect(page.getByRole('button', { name: 'Load more consents' })).toBeVisible();
+        const settled = page.waitForResponse(`${apiOrigin}/api/verification/consents`);
+        release(); await settled;
+        await page.evaluate(() => new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve()))));
+        await expect(page.getByRole('button', { name: 'Withdraw verification consent' })).toHaveCount(1);
+        await expect(page.getByRole('button', { name: 'Load more consents' })).toBeVisible();
     } finally { release(); }
 });
 

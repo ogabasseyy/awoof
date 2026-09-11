@@ -26,6 +26,7 @@ function VerificationForm() {
     const mounted = useRef(false);
     const statusRead = useRef(0);
     const consentRead = useRef(0);
+    const pendingConsents = useRef(new Map<string, Consent>());
     const isCurrent = () => mounted.current && isCurrentSession(session);
     async function currentRequest<T>(request: () => Promise<T>): Promise<T> {
         if (!isCurrent()) throw new Error('Session changed');
@@ -54,10 +55,13 @@ function VerificationForm() {
         try {
             const response = await currentRequest(() => apiClient.get<{ data: { items: Consent[]; nextCursor: string | null } }>('/verification/consents', { params: cursor ? { cursor } : undefined }));
             if (read !== consentRead.current) return;
+            for (const consent of response.data.data.items) pendingConsents.current.delete(consent.id);
+            const localConsents = [...pendingConsents.current.values()];
             setConsents((previous) => {
                 // A locally created grant can also occur on a later UUID page.
                 // Keep one control per grant, using the latest server value.
                 const byId = new Map((cursor ? previous : []).map((consent) => [consent.id, consent]));
+                for (const consent of localConsents) byId.set(consent.id, consent);
                 for (const consent of response.data.data.items) byId.set(consent.id, consent);
                 return [...byId.values()];
             });
@@ -111,9 +115,11 @@ function VerificationForm() {
             universityId: status.universityId, accepted: true, noticeVersion: status.notices.verification.version,
         }));
         const id: string = response.data.data.processingGrantId;
-        ++consentRead.current;
-        setConsentsLoaded(true); setConsentError('');
-        setConsents((previous) => [{ id, kind: 'processing', acceptedAt: new Date().toISOString(), withdrawnAt: null }, ...previous]);
+        const consent: Consent = { id, kind: 'processing', acceptedAt: new Date().toISOString(), withdrawnAt: null };
+        // Keep the pending first page and its pagination cursor authoritative.
+        // Retain this grant until a server page acknowledges it by ID.
+        pendingConsents.current.set(id, consent);
+        setConsents((previous) => [consent, ...previous.filter((item) => item.id !== id)]);
         setGrant(id); return id;
     }
     const emailAvailable = status?.emailDomainApproved === true && methods?.some((method) => method.methodType === 'email' && method.isAvailable) === true;
@@ -169,11 +175,12 @@ function VerificationForm() {
                     await currentRequest(() => apiClient.delete(`/verification/consents/${consent.id}`));
                     ++statusRead.current;
                     ++consentRead.current;
-                    setConsentsLoaded(true); setConsentError('');
+                    pendingConsents.current.delete(consent.id);
                     setConsents((previous) => previous.map((item) => item.id === consent.id ? { ...item, withdrawnAt: new Date().toISOString() } : item));
                     setGrant(''); setChallenge(''); setOtp(''); setRegistration(''); setAccepted(false); setRetryAt(0);
                     setStatus(null); setMailboxConfirmed(false); setMethods(null);
                     setMessage('Consent withdrawn.');
+                    void loadConsents().catch(() => undefined);
                     await loadStatus();
                 })}>{consent.kind === 'processing' ? 'Withdraw verification consent' : 'Withdraw merchant disclosure consent'}</button>}
             </div>)}

@@ -6,6 +6,8 @@
 
 'use client';
 
+import { formatSavings } from '@/lib/format';
+
 import { useState, useEffect, useCallback } from 'react';
 import { Users } from 'lucide-react';
 import ProtectedRoute from '@/components/ProtectedRoute';
@@ -29,7 +31,8 @@ interface Student {
     verificationDate: string | null;
     createdAt: string;
     totalSpent: number;
-    totalSavings: number;
+    totalSavings: number | null;
+    recordedSavings?: number;
 }
 
 function formatCurrency(n: number): string {
@@ -132,7 +135,7 @@ export default function AdminStudentsPage() {
                                                 <td className="px-6 py-4 text-sm text-slate-600">{s.registrationNumber || '-'}</td>
                                                 <td className="px-6 py-4 text-sm capitalize text-slate-600">{s.status}</td>
                                                 <td className="px-6 py-4 text-sm text-right font-medium text-slate-900">{formatCurrency(s.totalSpent)}</td>
-                                                <td className="px-6 py-4 text-sm text-right font-medium text-green-600">{formatCurrency(s.totalSavings)}</td>
+                                                <td className="px-6 py-4 text-sm text-right font-medium text-green-600">{formatSavings(s.totalSavings, s.recordedSavings)}</td>
                                                 <td className="px-6 py-4 text-sm text-slate-600">{formatDate(s.createdAt)}</td>
                                             </tr>
                                         ))}

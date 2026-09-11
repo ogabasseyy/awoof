@@ -39,9 +39,9 @@ export class AdminAnalyticsController {
                 FROM transactions
             `),
             db.query(`
-                SELECT COALESCE(SUM(COALESCE(t.list_price_snapshot, p.price) - t.amount), 0)::numeric(14,2) AS total_student_savings
+                SELECT COALESCE(SUM(t.recorded_savings_delta), 0)::numeric(14,2) AS total_student_savings,
+                    COUNT(*) FILTER (WHERE t.recorded_savings_delta IS NULL) AS unknown_savings_count
                 FROM transactions t
-                JOIN products p ON p.id = t.product_id
                 WHERE t.status = 'completed'
             `),
             db.query(`
@@ -97,7 +97,9 @@ export class AdminAnalyticsController {
                     conversionRate: Math.round(conversionRate * 100) / 100,
                 },
                 studentImpact: {
-                    totalStudentSavings: parseFloat(savings?.total_student_savings ?? '0'),
+                    totalStudentSavings: Number(savings?.unknown_savings_count) > 0 ? null : parseFloat(savings?.total_student_savings ?? '0'),
+                    recordedSavings: parseFloat(savings?.total_student_savings ?? '0'),
+                    unknownSavingsCount: Number(savings?.unknown_savings_count ?? 0),
                 },
                 support: {
                     openTickets: parseInt(support?.open_tickets ?? '0'),

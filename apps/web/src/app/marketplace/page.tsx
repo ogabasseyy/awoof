@@ -22,7 +22,7 @@ import apiClient, { getImageUrl } from '@/lib/api-client';
 import Image from 'next/image';
 import Link from 'next/link';
 import { useAuth } from '@/contexts/AuthContext';
-import { formatCurrency } from '@/lib/format';
+import { formatCurrency, formatSavings } from '@/lib/format';
 import { DealSkeletonRail, ExpectancyEmpty, FadeIn } from './_components/ExpectancyUI';
 import { StudentHeaderActions } from '@/components/student/StudentHeaderActions';
 
@@ -50,7 +50,8 @@ interface Category {
 }
 
 interface SavingsStats {
-    totalSavings: number;
+    totalSavings: number | null;
+    recordedSavings?: number;
     totalPurchases: number;
 }
 
@@ -78,7 +79,7 @@ export default function MarketplacePage() {
     const [featuredProducts, setFeaturedProducts] = useState<Product[]>([]);
     const [categoryProducts, setCategoryProducts] = useState<Product[]>([]);
     const [selectedCategory, setSelectedCategory] = useState<string | null>(null);
-    const [savingsStats, setSavingsStats] = useState<SavingsStats>({ totalSavings: 0, totalPurchases: 0 });
+    const [savingsStats, setSavingsStats] = useState<SavingsStats>({ totalSavings: null, totalPurchases: 0 });
     const [isLoading, setIsLoading] = useState(true);
     const [searchQuery, setSearchQuery] = useState('');
 
@@ -168,7 +169,8 @@ export default function MarketplacePage() {
                 if (cancelled) return;
                 if (savingsRes?.data?.data?.summary) {
                     setSavingsStats({
-                        totalSavings: savingsRes.data.data.summary.totalSavings || 0,
+                        totalSavings: savingsRes.data.data.summary.totalSavings ?? null,
+                        recordedSavings: savingsRes.data.data.summary.recordedSavings,
                         totalPurchases: savingsRes.data.data.summary.totalPurchases || 0,
                     });
                 }
@@ -360,7 +362,7 @@ export default function MarketplacePage() {
                                 Money saved
                             </p>
                             <p className="text-2xl md:text-3xl font-extrabold text-[#1D4ED8] tracking-tight">
-                                {formatCurrency(savingsStats.totalSavings)}
+                                {formatSavings(savingsStats.totalSavings, savingsStats.recordedSavings)}
                             </p>
                             {savingsStats.totalSavings === 0 && (
                                 <p className="mt-2 text-xs text-slate-500 leading-snug">
