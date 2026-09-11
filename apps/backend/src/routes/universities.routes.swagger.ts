@@ -78,7 +78,9 @@
  * @swagger
  * /api/universities/{id}/verification-methods:
  *   get:
- *     summary: Get available verification methods for a university
+ *     summary: Retired verification methods endpoint
+ *     deprecated: true
+ *     description: Use /api/verification/methods/{universityId} for sanitized availability.
  *     tags: [Universities]
  *     security: []
  *     parameters:
@@ -88,50 +90,7 @@
  *         schema:
  *           type: string
  *           format: uuid
- *         description: University ID
  *     responses:
- *       200:
- *         description: Verification methods retrieved successfully
- *         content:
- *           application/json:
- *             schema:
- *               allOf:
- *                 - $ref: '#/components/schemas/SuccessResponse'
- *                 - type: object
- *                   properties:
- *                     data:
- *                       type: object
- *                       properties:
- *                         university:
- *                           type: object
- *                           properties:
- *                             id:
- *                               type: string
- *                               format: uuid
- *                             name:
- *                               type: string
- *                         verificationMethods:
- *                           type: array
- *                           items:
- *                             type: object
- *                             properties:
- *                               id:
- *                                 type: string
- *                                 format: uuid
- *                               methodType:
- *                                 type: string
- *                                 enum: [portal, email, registration, whatsapp]
- *                               apiEndpoint:
- *                                 type: string
- *                                 nullable: true
- *                               apiConfig:
- *                                 type: object
- *                                 nullable: true
- *                               isActive:
- *                                 type: boolean
- *                               priorityOrder:
- *                                 type: integer
- *       404:
- *         description: University not found
+ *       410:
+ *         description: Verification route retired
  */
-

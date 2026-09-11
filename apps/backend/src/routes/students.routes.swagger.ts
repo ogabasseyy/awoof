@@ -185,15 +185,40 @@
  *                               type: integer
  *                             totalSavings:
  *                               type: number
+ *                               nullable: true
+ *                               description: Complete recorded savings, or null when any completed purchase has an unknown historical credit.
+ *                             recordedSavings:
+ *                               type: number
+ *                               description: Subtotal of known recorded credits; may be partial when unknownSavingsCount is positive.
+ *                             unknownSavingsCount:
+ *                               type: integer
+ *                               minimum: 0
+ *                               description: Number of completed purchases without a recorded savings credit.
  *                             totalSpent:
  *                               type: number
  *                             totalValue:
  *                               type: number
+ *                               nullable: true
+ *                               description: Total paid plus recorded savings, or null when historical savings are incomplete.
  *                         byCategory:
  *                           type: array
  *                           items:
  *                             type: object
+ *                             properties:
+ *                               categoryName:
+ *                                 type: string
+ *                               purchaseCount:
+ *                                 type: integer
+ *                               savings:
+ *                                 type: number
+ *                                 nullable: true
+ *                                 description: Complete category savings, or null when any included credit is unknown.
+ *                               recordedSavings:
+ *                                 type: number
+ *                                 description: Subtotal of known recorded credits for this category.
+ *                               unknownSavingsCount:
+ *                                 type: integer
+ *                                 minimum: 0
  *       401:
  *         $ref: '#/components/responses/Unauthorized'
  */
-

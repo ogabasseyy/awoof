@@ -273,8 +273,8 @@ export class StudentController {
                 t.created_at,
                 p.id as product_id,
                 p.name as product_name,
-                p.price as product_price,
-                p.student_price,
+                t.recorded_savings_delta,
+                t.amount as student_price,
                 p.category_id,
                 v.id as vendor_id,
                 v.name as vendor_name,
@@ -290,15 +290,15 @@ export class StudentController {
         );
 
         const transactions = transactionsResult.rows.map(t => {
-            const originalPrice = parseFloat(t.product_price || t.amount || '0');
             const studentPrice = parseFloat(t.student_price || t.amount || '0');
-            const discountAmount = originalPrice - studentPrice;
+            const discountAmount = t.recorded_savings_delta == null ? null : parseFloat(t.recorded_savings_delta);
+            const originalPrice = discountAmount === null ? null : studentPrice + discountAmount;
 
             return {
                 id: t.id,
                 transactionId: t.id, // Use transaction id as transaction_id
                 amount: originalPrice,
-                discountAmount: discountAmount > 0 ? discountAmount : 0,
+                discountAmount,
                 finalAmount: studentPrice,
                 status: t.status,
                 createdAt: t.created_at,
@@ -335,17 +335,17 @@ export class StudentController {
         }
 
         // Get savings stats from transactions
-        // Join through students table to get to users, and calculate discount from product prices
+        // Only settlement-recorded credits are authoritative; legacy snapshots may be synthetic.
         const statsResult = await db.query(
             `SELECT 
                 COUNT(*) as total_purchases,
-                COALESCE(SUM(p.price - p.student_price), 0) as total_savings,
+                COALESCE(SUM(t.recorded_savings_delta), 0) as total_savings,
+                COUNT(*) FILTER (WHERE t.recorded_savings_delta IS NULL) as unknown_savings_count,
                 COALESCE(SUM(t.amount), 0) as total_spent,
-                COALESCE(SUM(p.price), 0) as total_value
+                COALESCE(SUM(t.amount + t.recorded_savings_delta), 0) as total_value
              FROM transactions t
              JOIN students s ON t.student_id = s.id
              JOIN users u ON s.user_id = u.id
-             JOIN products p ON t.product_id = p.id
              WHERE u.id = $1 
                AND u.deleted_at IS NULL 
                AND t.status = 'completed'`,
@@ -359,7 +359,8 @@ export class StudentController {
             `SELECT 
                 c.name as category_name,
                 COUNT(*) as purchase_count,
-                COALESCE(SUM(p.price - p.student_price), 0) as savings
+                COALESCE(SUM(t.recorded_savings_delta), 0) as savings,
+                COUNT(*) FILTER (WHERE t.recorded_savings_delta IS NULL) as unknown_savings_count
              FROM transactions t
              JOIN students s ON t.student_id = s.id
              JOIN users u ON s.user_id = u.id
@@ -376,7 +377,9 @@ export class StudentController {
         const categoryStats = categoryStatsResult.rows.map(c => ({
             categoryName: c.category_name || 'Uncategorized',
             purchaseCount: parseInt(c.purchase_count),
-            savings: parseFloat(c.savings || '0'),
+            savings: Number(c.unknown_savings_count) > 0 ? null : parseFloat(c.savings || '0'),
+            recordedSavings: parseFloat(c.savings || '0'),
+            unknownSavingsCount: Number(c.unknown_savings_count),
         }));
 
         success(res, {
@@ -384,13 +387,14 @@ export class StudentController {
             data: {
                 summary: {
                     totalPurchases: parseInt(stats.total_purchases),
-                    totalSavings: parseFloat(stats.total_savings),
+                    totalSavings: Number(stats.unknown_savings_count) > 0 ? null : parseFloat(stats.total_savings),
+                    recordedSavings: parseFloat(stats.total_savings),
+                    unknownSavingsCount: Number(stats.unknown_savings_count),
                     totalSpent: parseFloat(stats.total_spent),
-                    totalValue: parseFloat(stats.total_value),
+                    totalValue: Number(stats.unknown_savings_count) > 0 ? null : parseFloat(stats.total_value),
                 },
                 byCategory: categoryStats,
             },
         });
     }
 }
-

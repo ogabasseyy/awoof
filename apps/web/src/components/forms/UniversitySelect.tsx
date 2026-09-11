@@ -1,15 +1,11 @@
-/**
- * University Select Component with Type-to-Search
- *
- * Fetches universities from GET /api/universities and filters by name or shortcode
- */
+/** Public university directory combobox. */
 
 'use client';
 
-import React, { useState, useEffect, useRef, useCallback } from 'react';
+import React, { useCallback, useEffect, useId, useRef, useState } from 'react';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
-import apiClient from '@/lib/api-client';
+import { publicApiClient } from '@/lib/api-client';
 
 interface University {
     id: string;
@@ -26,218 +22,193 @@ interface UniversitySelectProps {
     required?: boolean;
 }
 
-export function UniversitySelect({
-    value,
-    onChange,
-    error,
-    required = false,
-}: UniversitySelectProps) {
+type SearchState = { value: string; draft: string | null; clearingFrom: string | null };
+
+function normalizeUniversity(value: unknown): University | null {
+    if (!value || typeof value !== 'object') return null;
+    const record = value as Record<string, unknown>;
+    if (typeof record.id !== 'string' || record.id.trim().length === 0) return null;
+    if (typeof record.name !== 'string' || record.name.trim().length === 0) return null;
+    return {
+        id: record.id,
+        name: record.name,
+        shortcode: typeof record.shortcode === 'string' ? record.shortcode : undefined,
+        domain: typeof record.domain === 'string' ? record.domain : undefined,
+        country: typeof record.country === 'string' ? record.country : undefined,
+    };
+}
+
+export function UniversitySelect({ value, onChange, error, required = false }: UniversitySelectProps) {
     const [universities, setUniversities] = useState<University[]>([]);
-    const [loading, setLoading] = useState(false);
-    const [searchTerm, setSearchTerm] = useState('');
-    const [filteredUniversities, setFilteredUniversities] = useState<University[]>([]);
-    const [selectedUniversity, setSelectedUniversity] = useState<University | null>(null);
-    const [isOpen, setIsOpen] = useState(false);
-    const [showNotFoundMessage, setShowNotFoundMessage] = useState(false);
+    const [loading, setLoading] = useState(true);
     const [fetchError, setFetchError] = useState<string | null>(null);
-    const dropdownRef = useRef<HTMLDivElement>(null);
-    const inputRef = useRef<HTMLInputElement>(null);
+    const [open, setOpen] = useState(false);
+    const [activeIndex, setActiveIndex] = useState(-1);
+    const normalizedValue = value ?? '';
+    const selected = universities.find((entry) => entry.id === normalizedValue) ?? null;
+    const [search, setSearch] = useState<SearchState>({ value: normalizedValue, draft: null, clearingFrom: null });
+    const requestRef = useRef(0);
+    const abortRef = useRef<AbortController | null>(null);
+    const fieldId = useId();
+    const listboxId = `${fieldId}-listbox`;
+    const directoryErrorId = `${fieldId}-directory-error`;
+    const fieldErrorId = `${fieldId}-field-error`;
+    const statusId = `${fieldId}-status`;
+
+    let currentSearch = search;
+    if (search.value !== normalizedValue) {
+        const ownClear = normalizedValue === '' && search.clearingFrom === search.value;
+        currentSearch = { value: normalizedValue, draft: ownClear ? search.draft : null, clearingFrom: null };
+        setSearch(currentSearch);
+        if (!ownClear) {
+            setOpen(false);
+            setActiveIndex(-1);
+        }
+    }
+
+    const query = currentSearch.draft ?? selected?.name ?? '';
+    const term = query.trim().toLowerCase();
+    const matches = term ? universities.filter((entry) => [entry.name, entry.shortcode, entry.domain]
+        .some((part) => part?.toLowerCase().includes(term))) : [];
+    const noMatches = Boolean(term) && !loading && !fetchError && matches.length === 0;
+    const popupVisible = open && matches.length > 0;
+    const activeUniversity = open && activeIndex >= 0 ? matches[activeIndex] : undefined;
+    const activeUniversityId = activeUniversity?.id;
 
     const fetchUniversities = useCallback(async () => {
+        abortRef.current?.abort();
+        const controller = new AbortController();
+        abortRef.current = controller;
+        const request = ++requestRef.current;
+        setLoading(true);
+        setFetchError(null);
         try {
-            setLoading(true);
-            setFetchError(null);
-            const res = await apiClient.get('/universities');
-            const raw = res.data?.data?.universities ?? res.data?.universities ?? [];
-            const list = Array.isArray(raw)
-                ? raw.map((u: Record<string, unknown>) => ({
-                    id: String(u.id ?? ''),
-                    name: String(u.name ?? ''),
-                    domain: u.domain != null ? String(u.domain) : undefined,
-                    shortcode: u.shortcode != null ? String(u.shortcode) : undefined,
-                    country: u.country != null ? String(u.country) : undefined,
-                }))
-                : [];
-            setUniversities(list);
-        } catch (err: unknown) {
+            const response = await publicApiClient.get('/universities', { signal: controller.signal });
+            const raw = response.data?.data?.universities;
+            if (!Array.isArray(raw)) throw new Error('Malformed university directory response.');
+            const directory = raw.map(normalizeUniversity).filter((entry): entry is University => entry !== null);
+            if (request !== requestRef.current || controller.signal.aborted) return;
+            setUniversities(directory);
+        } catch {
+            if (request !== requestRef.current || controller.signal.aborted) return;
             setUniversities([]);
-            const message =
-                (err as { response?: { status?: number } })?.response?.status === 404
-                    ? 'Universities API not found. Is the backend running?'
-                    : 'Could not load universities. Check your connection and try again.';
-            setFetchError(message);
+            setFetchError('Could not load universities. Check your connection and try again.');
         } finally {
-            setLoading(false);
+            if (request === requestRef.current && !controller.signal.aborted) setLoading(false);
         }
     }, []);
 
     useEffect(() => {
-        fetchUniversities();
+        let active = true;
+        void Promise.resolve().then(() => {
+            if (active) return fetchUniversities();
+        });
+        return () => {
+            active = false;
+            abortRef.current?.abort();
+        };
     }, [fetchUniversities]);
 
     useEffect(() => {
-        if (searchTerm.length < 1) {
-            setFilteredUniversities([]);
-            setIsOpen(false);
-            setShowNotFoundMessage(false);
-            return;
-        }
+        if (!open || !activeUniversityId) return;
+        document.getElementById(`${listboxId}-${activeUniversityId}`)?.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+    }, [activeUniversityId, listboxId, open]);
 
-        const term = searchTerm.toLowerCase().trim();
-        const filtered = universities.filter(
-            (uni) =>
-                (uni.name ?? '').toLowerCase().includes(term) ||
-                (uni.shortcode ?? '').toLowerCase().includes(term) ||
-                (uni.domain ?? '').toLowerCase().includes(term)
-        );
+    function closePopup(): void {
+        setOpen(false);
+        setActiveIndex(-1);
+    }
 
-        setFilteredUniversities(filtered);
-        setIsOpen(filtered.length > 0);
-        setShowNotFoundMessage(filtered.length === 0 && searchTerm.length > 0);
-    }, [searchTerm, universities]);
+    function changeQuery(text: string): void {
+        setSearch({ value: normalizedValue, draft: text, clearingFrom: normalizedValue || null });
+        setActiveIndex(-1);
+        setOpen(true);
+        if (value) onChange(null, null);
+    }
 
-    useEffect(() => {
-        if (value && selectedUniversity?.id !== value) {
-            const university = universities.find((u) => u.id === value);
-            if (university) {
-                setSelectedUniversity(university);
-                setSearchTerm(university.name);
-            }
-        } else if (!value) {
-            setSelectedUniversity(null);
-            setSearchTerm('');
-        }
-    }, [value, selectedUniversity, universities]);
-
-    useEffect(() => {
-        const handleClickOutside = (event: MouseEvent) => {
-            if (
-                dropdownRef.current &&
-                !dropdownRef.current.contains(event.target as Node) &&
-                inputRef.current &&
-                !inputRef.current.contains(event.target as Node)
-            ) {
-                setIsOpen(false);
-                setShowNotFoundMessage(false);
-                if (!selectedUniversity) {
-                    setSearchTerm('');
-                    onChange(null, null);
-                } else {
-                    setSearchTerm(selectedUniversity.name);
-                }
-            }
-        };
-
-        document.addEventListener('mousedown', handleClickOutside);
-        return () => document.removeEventListener('mousedown', handleClickOutside);
-    }, [selectedUniversity, onChange]);
-
-    const handleSelect = (university: University) => {
-        setSelectedUniversity(university);
-        setSearchTerm(university.name);
-        setIsOpen(false);
+    function selectUniversity(university: University): void {
+        setSearch({ value: normalizedValue, draft: null, clearingFrom: null });
+        closePopup();
         onChange(university.id, university);
-    };
+    }
 
-    const handleInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-        const newValue = e.target.value;
-        setSearchTerm(newValue);
-        setShowNotFoundMessage(false);
-        if (selectedUniversity && newValue !== selectedUniversity.name) {
-            setSelectedUniversity(null);
-            onChange(null, null);
+    function handleKeyDown(event: React.KeyboardEvent<HTMLInputElement>): void {
+        if ((event.key === 'ArrowDown' || event.key === 'ArrowUp') && matches.length) {
+            event.preventDefault();
+            setOpen(true);
+            setActiveIndex((current) => event.key === 'ArrowDown'
+                ? Math.min(current + 1, matches.length - 1)
+                : (current < 0 ? matches.length - 1 : Math.max(current - 1, 0)));
+        } else if (event.key === 'Enter' && open && activeIndex >= 0 && matches[activeIndex]) {
+            event.preventDefault();
+            selectUniversity(matches[activeIndex]);
+        } else if (event.key === 'Escape' && open) {
+            event.preventDefault();
+            closePopup();
         }
-    };
+    }
 
-    const handleInputBlur = (e: React.FocusEvent<HTMLInputElement>) => {
-        if (dropdownRef.current?.contains(e.relatedTarget as Node)) return;
-        setTimeout(() => {
-            if (!selectedUniversity && searchTerm) {
-                setSearchTerm('');
-                onChange(null, null);
-                setShowNotFoundMessage(false);
-            }
-        }, 200);
-    };
-
-    const handleInputFocus = () => {
-        if (searchTerm.length > 0 && filteredUniversities.length > 0) {
-            setIsOpen(true);
-        }
-    };
+    const describedBy = [fetchError ? directoryErrorId : null, error ? fieldErrorId : null, noMatches ? statusId : null]
+        .filter(Boolean).join(' ') || undefined;
 
     return (
         <div className="relative">
-            <Label htmlFor="university" className="text-left block mb-2">
+            <Label htmlFor={fieldId} className="text-left block mb-2">
                 University
-                {required ? (
-                    <span className="text-red-500 ml-1">*</span>
-                ) : (
-                    <span className="text-gray-400 ml-1 text-xs">(Optional)</span>
-                )}
+                {required ? <span className="text-red-500 ml-1">*</span> : <span className="text-gray-400 ml-1 text-xs">(Optional)</span>}
             </Label>
             <div className="relative">
                 <Input
-                    ref={inputRef}
-                    id="university"
+                    id={fieldId}
                     type="text"
+                    role="combobox"
                     placeholder={loading ? 'Loading universities...' : 'Type to search by name or shortcode...'}
-                    value={searchTerm}
-                    onChange={handleInputChange}
-                    onFocus={handleInputFocus}
-                    onBlur={handleInputBlur}
+                    value={query}
+                    onChange={(event) => changeQuery(event.target.value)}
+                    onFocus={() => { if (matches.length > 0) setOpen(true); }}
+                    onBlur={() => {
+                        setSearch({ value: normalizedValue, draft: null, clearingFrom: null });
+                        closePopup();
+                    }}
+                    onKeyDown={handleKeyDown}
                     className="w-full"
                     aria-invalid={error ? 'true' : 'false'}
                     aria-autocomplete="list"
-                    aria-expanded={isOpen}
+                    aria-controls={listboxId}
+                    aria-activedescendant={activeUniversity ? `${listboxId}-${activeUniversity.id}` : undefined}
+                    aria-expanded={popupVisible}
+                    aria-required={required || undefined}
+                    aria-describedby={describedBy}
                     disabled={loading}
                 />
-                {isOpen && filteredUniversities.length > 0 && (
-                    <div
-                        ref={dropdownRef}
-                        className="absolute z-50 w-full mt-1 bg-white border border-gray-200 rounded-md shadow-lg max-h-60 overflow-auto"
-                    >
-                        {filteredUniversities.map((university) => (
-                            <button
+                {popupVisible && (
+                    <div id={listboxId} role="listbox" className="absolute z-50 w-full mt-1 bg-white border border-gray-200 rounded-md shadow-lg max-h-60 overflow-auto">
+                        {matches.map((university, index) => (
+                            <div
                                 key={university.id}
-                                type="button"
-                                onMouseDown={(e) => {
-                                    e.preventDefault();
-                                    handleSelect(university);
-                                }}
-                                className="w-full text-left px-4 py-2 hover:bg-gray-100 focus:bg-gray-100 focus:outline-none transition-colors"
+                                id={`${listboxId}-${university.id}`}
+                                role="option"
+                                aria-selected={index === activeIndex}
+                                tabIndex={-1}
+                                onPointerDown={(event) => event.preventDefault()}
+                                onClick={() => selectUniversity(university)}
+                                className={`w-full text-left px-4 py-2 cursor-pointer transition-colors ${index === activeIndex ? 'bg-gray-100' : 'hover:bg-gray-100'}`}
                             >
                                 <div className="font-medium">{university.name}</div>
-                                {(university.shortcode || university.country) && (
-                                    <div className="text-sm text-gray-500">
-                                        {[university.shortcode, university.country].filter(Boolean).join(' • ')}
-                                    </div>
-                                )}
-                            </button>
+                                {(university.shortcode || university.country) && <div className="text-sm text-gray-500">{[university.shortcode, university.country].filter(Boolean).join(' • ')}</div>}
+                            </div>
                         ))}
                     </div>
                 )}
-                {showNotFoundMessage && !fetchError && (
-                    <div className="absolute z-50 w-full mt-1 bg-white border border-slate-200 rounded-md shadow-lg p-4 text-sm text-slate-600">
-                        University not covered on Awoof portal
-                    </div>
-                )}
             </div>
+            {noMatches && <p id={statusId} role="status" className="mt-1 text-sm text-slate-600">No matching university. Try another name or shortcode.</p>}
             {fetchError && (
-                <p className="mt-1 text-sm text-red-600 flex items-center gap-2">
+                <p id={directoryErrorId} role="alert" className="mt-1 text-sm text-red-600 flex items-center gap-2">
                     {fetchError}
-                    <button
-                        type="button"
-                        onClick={() => fetchUniversities()}
-                        className="text-sm underline hover:no-underline"
-                    >
-                        Retry
-                    </button>
+                    <button type="button" onClick={() => void fetchUniversities()} className="text-sm underline hover:no-underline">Retry</button>
                 </p>
             )}
-            {error && (
-                <p className="mt-1 text-sm text-red-600 flex items-center gap-1">{error}</p>
-            )}
+            {error && <p id={fieldErrorId} className="mt-1 text-sm text-red-600 flex items-center gap-1">{error}</p>}
         </div>
     );
 }

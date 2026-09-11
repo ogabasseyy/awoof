@@ -2,7 +2,6 @@
 -- Date: 2025-01-XX
 -- Description: Adds verification token system for widget integration and updates transactions table
 
-BEGIN;
 
 -- Create verification_tokens table for widget verification
 CREATE TABLE IF NOT EXISTS verification_tokens (
@@ -36,6 +35,4 @@ CREATE INDEX IF NOT EXISTS idx_transactions_vendor_payment_reference ON transact
 -- Add foreign key constraint for verification_token in transactions
 -- Note: This references verification_tokens.token, but we'll handle validation in application code
 -- since we can't create a foreign key on a non-primary key column directly
-
-COMMIT;
 

@@ -27,9 +27,31 @@ const createProductSchema = z.object({
     categoryId: z.string().uuid('Invalid category ID').optional().nullable(),
     stock: z.coerce.number().int().min(0, 'Stock cannot be negative').default(0),
     status: z.enum(['active', 'inactive', 'out_of_stock']).default('active'),
+    dealType: z.enum(['product', 'voucher']).optional().default('product'),
+}).refine((data) => data.studentPrice <= data.price, {
+    message: 'Student price cannot exceed the regular price',
+    path: ['studentPrice'],
 });
 
-const updateProductSchema = createProductSchema.partial();
+const updateProductSchema = z.object({
+    name: z.string().min(1, 'Product name is required').max(255, 'Product name too long').optional(),
+    description: z.string().optional(),
+    price: z.coerce.number().positive('Price must be positive').optional(),
+    studentPrice: z.coerce.number().positive('Student price must be positive').optional(),
+    categoryId: z.string().uuid('Invalid category ID').optional().nullable(),
+    stock: z.coerce.number().int().min(0, 'Stock cannot be negative').optional(),
+    status: z.enum(['active', 'inactive', 'out_of_stock']).optional(),
+    dealType: z.enum(['product', 'voucher']).optional(),
+}).refine(
+    (data) =>
+        data.price === undefined
+        || data.studentPrice === undefined
+        || data.studentPrice <= data.price,
+    {
+        message: 'Student price cannot exceed the regular price',
+        path: ['studentPrice'],
+    }
+);
 
 /**
  * Product Controller
@@ -61,12 +83,13 @@ export class ProductController {
         const offset = (page - 1) * limit;
         const status = req.query.status as string | undefined;
         const search = req.query.search as string | undefined;
+        const dealType = req.query.deal_type as string | undefined;
 
         // Build query
         let query = `
             SELECT p.id, p.name, p.description, p.price, p.student_price, 
                    p.category_id, p.image_url, p.api_id, p.stock, p.status,
-                   p.created_at, p.updated_at,
+                   p.deal_type, p.created_at, p.updated_at,
                    c.name as category_name
             FROM products p
             LEFT JOIN categories c ON p.category_id = c.id
@@ -74,6 +97,12 @@ export class ProductController {
         `;
         const values: (string | number)[] = [vendorId];
         let paramCount = 2;
+
+        if (dealType === 'product' || dealType === 'voucher') {
+            query += ` AND p.deal_type = $${paramCount}`;
+            values.push(dealType);
+            paramCount++;
+        }
 
         if (status) {
             query += ` AND p.status = $${paramCount}`;
@@ -104,6 +133,12 @@ export class ProductController {
         if (status) {
             countQuery += ` AND p.status = $${countParamCount}`;
             countValues.push(status);
+            countParamCount++;
+        }
+
+        if (dealType === 'product' || dealType === 'voucher') {
+            countQuery += ` AND p.deal_type = $${countParamCount}`;
+            countValues.push(dealType);
             countParamCount++;
         }
 
@@ -140,12 +175,16 @@ export class ProductController {
 
         // Get vendor ID
         const vendorResult = await db.query(
-            'SELECT id FROM vendors WHERE user_id = $1 AND deleted_at IS NULL',
+            'SELECT id, status FROM vendors WHERE user_id = $1 AND deleted_at IS NULL',
             [req.user.userId]
         );
 
         if (vendorResult.rows.length === 0) {
             throw new NotFoundError('Vendor profile not found');
+        }
+
+        if (vendorResult.rows[0].status !== 'active') {
+            throw new BadRequestError('Your vendor account must be approved before managing deals');
         }
 
         const vendorId = vendorResult.rows[0].id as string;
@@ -158,7 +197,7 @@ export class ProductController {
         const result = await db.query(
             `SELECT p.id, p.name, p.description, p.price, p.student_price, 
                     p.category_id, p.image_url, p.api_id, p.stock, p.status,
-                    p.created_at, p.updated_at,
+                    p.deal_type, p.created_at, p.updated_at,
                     c.name as category_name
              FROM products p
              LEFT JOIN categories c ON p.category_id = c.id
@@ -184,58 +223,82 @@ export class ProductController {
             throw new UnauthorizedError('Only vendors can create products');
         }
 
-        // Get vendor ID
-        const vendorResult = await db.query(
-            'SELECT id FROM vendors WHERE user_id = $1 AND deleted_at IS NULL',
-            [req.user.userId]
-        );
+        const client = await db.getPool().connect();
+        const result = await (async () => {
+            try {
+                await client.query('BEGIN');
+                const owner = await client.query<{ role: string; deleted_at: Date | null }>(
+                    'SELECT role, deleted_at FROM users WHERE id = $1 FOR UPDATE', [req.user!.userId],
+                );
+                if (owner.rows[0]?.role !== 'vendor' || owner.rows[0].deleted_at !== null) {
+                    throw new UnauthorizedError('Current vendor authority required');
+                }
+                // Get vendor ID
+                const vendorResult = await client.query(
+                    'SELECT id, status FROM vendors WHERE user_id = $1 AND deleted_at IS NULL FOR UPDATE',
+                    [req.user!.userId]
+                );
 
-        if (vendorResult.rows.length === 0) {
-            throw new NotFoundError('Vendor profile not found');
-        }
+                if (vendorResult.rows.length === 0) {
+                    throw new NotFoundError('Vendor profile not found');
+                }
 
-        const vendorId = vendorResult.rows[0].id;
+                if (vendorResult.rows[0].status !== 'active') {
+                    throw new BadRequestError('Your vendor account must be approved before managing deals');
+                }
 
-        // Validate request body
-        const validated = createProductSchema.parse(req.body);
+                const vendorId = vendorResult.rows[0].id;
 
-        // Validate category if provided
-        if (validated.categoryId) {
-            const categoryResult = await db.query(
-                'SELECT id FROM categories WHERE id = $1',
-                [validated.categoryId]
-            );
-            if (categoryResult.rows.length === 0) {
-                throw new BadRequestError('Category not found');
-            }
-        }
+                // Validate request body
+                const validated = createProductSchema.parse(req.body);
+                if (validated.dealType === 'voucher') throw new BadRequestError('Voucher creation is unavailable while external redemption is suspended');
 
-        // Handle image upload
-        let imageUrl: string | null = null;
-        const file = req.file as Express.Multer.File | undefined;
-        if (file) {
-            imageUrl = getFileUrl(file.filename);
-        }
+                // Validate category if provided
+                if (validated.categoryId) {
+                    const categoryResult = await client.query(
+                        'SELECT id FROM categories WHERE id = $1',
+                        [validated.categoryId]
+                    );
+                    if (categoryResult.rows.length === 0) {
+                        throw new BadRequestError('Category not found');
+                    }
+                }
 
-        // Insert product
-        const result = await db.query(
-            `INSERT INTO products (vendor_id, name, description, price, student_price, 
-                                  category_id, image_url, stock, status)
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
-             RETURNING id, name, description, price, student_price, category_id, 
-                       image_url, api_id, stock, status, created_at, updated_at`,
-            [
-                vendorId,
-                validated.name,
-                validated.description || null,
-                validated.price,
-                validated.studentPrice,
-                validated.categoryId || null,
-                imageUrl,
-                validated.stock,
-                validated.status,
-            ]
-        );
+                // Handle image upload
+                let imageUrl: string | null = null;
+                const file = req.file as Express.Multer.File | undefined;
+                if (file) {
+                    imageUrl = getFileUrl(file.filename);
+                }
+
+                // Insert product
+                const inserted = await client.query(
+                    `INSERT INTO products (vendor_id, name, description, price, student_price,
+                                          category_id, image_url, stock, status, deal_type)
+                     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+                     RETURNING id, name, description, price, student_price, category_id,
+                               image_url, api_id, stock, status, deal_type, created_at, updated_at`,
+                    [
+                        vendorId,
+                        validated.name,
+                        validated.description || null,
+                        validated.price,
+                        validated.studentPrice,
+                        validated.categoryId || null,
+                        imageUrl,
+                        validated.stock,
+                        validated.status,
+                        validated.dealType ?? 'product',
+                    ]
+                );
+
+                await client.query('COMMIT');
+                return inserted;
+            } catch (error) {
+                await client.query('ROLLBACK').catch(() => undefined);
+                throw error;
+            } finally { client.release(); }
+        })();
 
         success(res, {
             message: 'Product created successfully',
@@ -251,124 +314,154 @@ export class ProductController {
             throw new UnauthorizedError('Only vendors can update their products');
         }
 
-        // Get vendor ID
-        const vendorResult = await db.query(
-            'SELECT id FROM vendors WHERE user_id = $1 AND deleted_at IS NULL',
-            [req.user.userId]
-        );
+        const client = await db.getPool().connect();
+        const result = await (async () => {
+            try {
+                await client.query('BEGIN');
+                const owner = await client.query<{ role: string; deleted_at: Date | null }>(
+                    'SELECT role, deleted_at FROM users WHERE id = $1 FOR UPDATE', [req.user!.userId],
+                );
+                if (owner.rows[0]?.role !== 'vendor' || owner.rows[0].deleted_at !== null) {
+                    throw new UnauthorizedError('Current vendor authority required');
+                }
+                // Get vendor ID
+                const vendorResult = await client.query(
+                    'SELECT id, status FROM vendors WHERE user_id = $1 AND deleted_at IS NULL FOR UPDATE',
+                    [req.user!.userId]
+                );
 
-        if (vendorResult.rows.length === 0) {
-            throw new NotFoundError('Vendor profile not found');
-        }
+                if (vendorResult.rows.length === 0) {
+                    throw new NotFoundError('Vendor profile not found');
+                }
 
-        const vendorId = vendorResult.rows[0].id as string;
-        const productId = req.params.id as string;
+                if (vendorResult.rows[0].status !== 'active') {
+                    throw new BadRequestError('Your vendor account must be approved before managing deals');
+                }
 
-        if (!productId) {
-            throw new BadRequestError('Product ID is required');
-        }
+                const vendorId = vendorResult.rows[0].id as string;
+                const productId = req.params.id as string;
 
-        // Check if product exists and belongs to vendor
-        const productCheck = await db.query(
-            'SELECT id FROM products WHERE id = $1 AND vendor_id = $2 AND deleted_at IS NULL',
-            [productId, vendorId]
-        );
+                if (!productId) {
+                    throw new BadRequestError('Product ID is required');
+                }
 
-        if (productCheck.rows.length === 0) {
-            throw new NotFoundError('Product not found');
-        }
+                // Check if product exists and belongs to vendor
+                const productCheck = await client.query(
+                    'SELECT id FROM products WHERE id = $1 AND vendor_id = $2 AND deleted_at IS NULL',
+                    [productId, vendorId]
+                );
 
-        // Validate request body
-        const validated = updateProductSchema.parse(req.body);
+                if (productCheck.rows.length === 0) {
+                    throw new NotFoundError('Product not found');
+                }
 
-        // Validate category if provided
-        if (validated.categoryId !== undefined && validated.categoryId !== null) {
-            const categoryResult = await db.query(
-                'SELECT id FROM categories WHERE id = $1',
-                [validated.categoryId]
-            );
-            if (categoryResult.rows.length === 0) {
-                throw new BadRequestError('Category not found');
-            }
-        }
+                // Validate request body
+                const validated = updateProductSchema.parse(req.body);
+                if (validated.dealType === 'voucher') throw new BadRequestError('Voucher publishing is unavailable while external redemption is suspended');
 
-        // Handle image upload
-        const file = req.file as Express.Multer.File | undefined;
-        let imageUrl: string | null | undefined = undefined;
-        if (file) {
-            imageUrl = getFileUrl(file.filename);
-        }
+                // Validate category if provided
+                if (validated.categoryId !== undefined && validated.categoryId !== null) {
+                    const categoryResult = await client.query(
+                        'SELECT id FROM categories WHERE id = $1',
+                        [validated.categoryId]
+                    );
+                    if (categoryResult.rows.length === 0) {
+                        throw new BadRequestError('Category not found');
+                    }
+                }
 
-        // Build update query
-        const updates: string[] = [];
-        const values: (string | number | null)[] = [];
-        let paramCount = 1;
+                // Handle image upload
+                const file = req.file as Express.Multer.File | undefined;
+                let imageUrl: string | null | undefined = undefined;
+                if (file) {
+                    imageUrl = getFileUrl(file.filename);
+                }
 
-        if (validated.name !== undefined) {
-            updates.push(`name = $${paramCount}`);
-            values.push(validated.name);
-            paramCount++;
-        }
+                // Build update query
+                const updates: string[] = [];
+                const values: (string | number | null)[] = [];
+                let paramCount = 1;
 
-        if (validated.description !== undefined) {
-            updates.push(`description = $${paramCount}`);
-            values.push(validated.description || null);
-            paramCount++;
-        }
+                if (validated.name !== undefined) {
+                    updates.push(`name = $${paramCount}`);
+                    values.push(validated.name);
+                    paramCount++;
+                }
 
-        if (validated.price !== undefined) {
-            updates.push(`price = $${paramCount}`);
-            values.push(validated.price);
-            paramCount++;
-        }
+                if (validated.description !== undefined) {
+                    updates.push(`description = $${paramCount}`);
+                    values.push(validated.description || null);
+                    paramCount++;
+                }
 
-        if (validated.studentPrice !== undefined) {
-            updates.push(`student_price = $${paramCount}`);
-            values.push(validated.studentPrice);
-            paramCount++;
-        }
+                if (validated.price !== undefined) {
+                    updates.push(`price = $${paramCount}`);
+                    values.push(validated.price);
+                    paramCount++;
+                }
 
-        if (validated.categoryId !== undefined) {
-            updates.push(`category_id = $${paramCount}`);
-            values.push(validated.categoryId || null);
-            paramCount++;
-        }
+                if (validated.studentPrice !== undefined) {
+                    updates.push(`student_price = $${paramCount}`);
+                    values.push(validated.studentPrice);
+                    paramCount++;
+                }
 
-        if (validated.stock !== undefined) {
-            updates.push(`stock = $${paramCount}`);
-            values.push(validated.stock);
-            paramCount++;
-        }
+                if (validated.categoryId !== undefined) {
+                    updates.push(`category_id = $${paramCount}`);
+                    values.push(validated.categoryId || null);
+                    paramCount++;
+                }
 
-        if (validated.status !== undefined) {
-            updates.push(`status = $${paramCount}`);
-            values.push(validated.status);
-            paramCount++;
-        }
+                if (validated.stock !== undefined) {
+                    updates.push(`stock = $${paramCount}`);
+                    values.push(validated.stock);
+                    paramCount++;
+                }
 
-        if (imageUrl !== undefined) {
-            updates.push(`image_url = $${paramCount}`);
-            values.push(imageUrl);
-            paramCount++;
-        }
+                if (validated.status !== undefined) {
+                    updates.push(`status = $${paramCount}`);
+                    values.push(validated.status);
+                    paramCount++;
+                }
 
-        if (updates.length === 0) {
-            throw new BadRequestError('No fields to update');
-        }
+                if (validated.dealType !== undefined) {
+                    updates.push(`deal_type = $${paramCount}`);
+                    values.push(validated.dealType);
+                    paramCount++;
+                }
 
-        values.push(productId, vendorId);
-        const result = await db.query(
-            `UPDATE products 
-             SET ${updates.join(', ')}, updated_at = CURRENT_TIMESTAMP
-             WHERE id = $${paramCount} AND vendor_id = $${paramCount + 1} AND deleted_at IS NULL
-             RETURNING id, name, description, price, student_price, category_id, 
-                       image_url, api_id, stock, status, created_at, updated_at`,
-            values
-        );
+                if (imageUrl !== undefined) {
+                    updates.push(`image_url = $${paramCount}`);
+                    values.push(imageUrl);
+                    paramCount++;
+                }
 
-        if (result.rows.length === 0) {
-            throw new NotFoundError('Product not found');
-        }
+                if (updates.length === 0) {
+                    throw new BadRequestError('No fields to update');
+                }
+
+                values.push(productId, vendorId, validated.price ?? null, validated.studentPrice ?? null);
+                const result = await client.query(
+                    `UPDATE products
+                     SET ${updates.join(', ')}, updated_at = CURRENT_TIMESTAMP
+                     WHERE id = $${paramCount} AND vendor_id = $${paramCount + 1} AND deleted_at IS NULL
+                       AND COALESCE($${paramCount + 3}::numeric, student_price) <= COALESCE($${paramCount + 2}::numeric, price)
+                     RETURNING id, name, description, price, student_price, category_id,
+                               image_url, api_id, stock, status, deal_type, created_at, updated_at`,
+                    values
+                );
+
+                if (result.rows.length === 0) {
+                    throw new BadRequestError('Product changed or student price exceeds the regular price');
+                }
+
+                await client.query('COMMIT');
+                return result;
+            } catch (error) {
+                await client.query('ROLLBACK').catch(() => undefined);
+                throw error;
+            } finally { client.release(); }
+        })();
 
         success(res, {
             message: 'Product updated successfully',
@@ -384,34 +477,56 @@ export class ProductController {
             throw new UnauthorizedError('Only vendors can delete their products');
         }
 
-        // Get vendor ID
-        const vendorResult = await db.query(
-            'SELECT id FROM vendors WHERE user_id = $1 AND deleted_at IS NULL',
-            [req.user.userId]
-        );
+        const client = await db.getPool().connect();
+        await (async () => {
+            try {
+                await client.query('BEGIN');
+                const owner = await client.query<{ role: string; deleted_at: Date | null }>(
+                    'SELECT role, deleted_at FROM users WHERE id = $1 FOR UPDATE', [req.user!.userId],
+                );
+                if (owner.rows[0]?.role !== 'vendor' || owner.rows[0].deleted_at !== null) {
+                    throw new UnauthorizedError('Current vendor authority required');
+                }
+                // Get vendor ID
+                const vendorResult = await client.query(
+                    'SELECT id, status FROM vendors WHERE user_id = $1 AND deleted_at IS NULL FOR UPDATE',
+                    [req.user!.userId]
+                );
 
-        if (vendorResult.rows.length === 0) {
-            throw new NotFoundError('Vendor profile not found');
-        }
+                if (vendorResult.rows.length === 0) {
+                    throw new NotFoundError('Vendor profile not found');
+                }
 
-        const vendorId = vendorResult.rows[0].id as string;
-        const productId = req.params.id as string;
+                if (vendorResult.rows[0].status !== 'active') {
+                    throw new BadRequestError('Your vendor account must be approved before managing deals');
+                }
 
-        if (!productId) {
-            throw new BadRequestError('Product ID is required');
-        }
+                const vendorId = vendorResult.rows[0].id as string;
+                const productId = req.params.id as string;
 
-        const result = await db.query(
-            `UPDATE products 
-             SET deleted_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP
-             WHERE id = $1 AND vendor_id = $2 AND deleted_at IS NULL
-             RETURNING id`,
-            [productId, vendorId]
-        );
+                if (!productId) {
+                    throw new BadRequestError('Product ID is required');
+                }
 
-        if (result.rows.length === 0) {
-            throw new NotFoundError('Product not found');
-        }
+                const result = await client.query(
+                    `UPDATE products
+                     SET deleted_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP
+                     WHERE id = $1 AND vendor_id = $2 AND deleted_at IS NULL
+                     RETURNING id`,
+                    [productId, vendorId]
+                );
+
+                if (result.rows.length === 0) {
+                    throw new NotFoundError('Product not found');
+                }
+
+                await client.query('COMMIT');
+                return result;
+            } catch (error) {
+                await client.query('ROLLBACK').catch(() => undefined);
+                throw error;
+            } finally { client.release(); }
+        })();
 
         success(res, {
             message: 'Product deleted successfully',

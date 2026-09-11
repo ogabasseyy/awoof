@@ -5,6 +5,7 @@
 'use client';
 
 import { useState, useEffect } from 'react';
+import { useRouter } from 'next/navigation';
 import { Headphones, ChevronLeft, Send, MessageCircle, Mail, Phone } from 'lucide-react';
 import ProtectedRoute from '@/components/ProtectedRoute';
 import { useAuth } from '@/contexts/AuthContext';
@@ -13,11 +14,11 @@ import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import apiClient from '@/lib/api-client';
+import toast from 'react-hot-toast';
 
 interface SupportTicket {
     id: string;
     subject: string;
-    message: string;
     status: 'open' | 'in-progress' | 'resolved' | 'closed';
     createdAt: string;
     updatedAt: string;
@@ -25,6 +26,7 @@ interface SupportTicket {
 
 export default function CustomerSupportPage() {
     const { } = useAuth();
+    const router = useRouter();
     const [showForm, setShowForm] = useState(false);
     const [formData, setFormData] = useState({
         subject: '',
@@ -45,14 +47,12 @@ export default function CustomerSupportPage() {
                 const formattedTickets: SupportTicket[] = response.data.data.tickets.map((ticket: {
                     id: string;
                     subject: string;
-                    message: string;
                     status: string;
                     createdAt: string;
                     updatedAt: string;
                 }) => ({
                     id: ticket.id,
                     subject: ticket.subject,
-                    message: ticket.message,
                     status: ticket.status as 'open' | 'in-progress' | 'resolved' | 'closed',
                     createdAt: ticket.createdAt,
                     updatedAt: ticket.updatedAt,
@@ -71,22 +71,12 @@ export default function CustomerSupportPage() {
         try {
             const response = await apiClient.post('/students/support-tickets', formData);
             if (response?.data?.data?.ticket) {
-                const newTicket: SupportTicket = {
-                    id: response.data.data.ticket.id,
-                    subject: response.data.data.ticket.subject,
-                    message: response.data.data.ticket.message,
-                    status: response.data.data.ticket.status as 'open' | 'in-progress' | 'resolved' | 'closed',
-                    createdAt: response.data.data.ticket.createdAt,
-                    updatedAt: response.data.data.ticket.createdAt,
-                };
-                setTickets([newTicket, ...tickets]);
-                setFormData({ subject: '', message: '', category: 'general' });
-                setShowForm(false);
-                alert('Support ticket submitted successfully!');
+                toast.success('Support ticket submitted successfully');
+                router.push(`/student/profile/support/${response.data.data.ticket.id}`);
             }
         } catch (error) {
             console.error('Error submitting ticket:', error);
-            alert('Failed to submit ticket. Please try again.');
+            toast.error('Failed to submit ticket. Please try again.');
         } finally {
             setIsSubmitting(false);
         }
@@ -243,16 +233,19 @@ export default function CustomerSupportPage() {
                                 <h2 className="font-semibold text-gray-900 mb-3">Your Tickets</h2>
                                 <div className="space-y-3">
                                     {tickets.map((ticket) => (
-                                        <div key={ticket.id} className="bg-white rounded-lg p-4 border border-gray-200">
+                                        <Link
+                                            key={ticket.id}
+                                            href={`/student/profile/support/${ticket.id}`}
+                                            className="block bg-white rounded-lg p-4 border border-gray-200 hover:border-blue-200"
+                                        >
                                             <div className="flex items-start justify-between mb-2">
                                                 <h3 className="font-semibold text-gray-900">{ticket.subject}</h3>
                                                 <span className={`text-xs font-medium px-2 py-1 rounded ${getStatusColor(ticket.status)}`}>
                                                     {ticket.status}
                                                 </span>
                                             </div>
-                                            <p className="text-sm text-gray-600 mb-3 line-clamp-2">{ticket.message}</p>
                                             <p className="text-xs text-gray-500">{formatDate(ticket.createdAt)}</p>
-                                        </div>
+                                        </Link>
                                     ))}
                                 </div>
                             </div>
@@ -388,16 +381,19 @@ export default function CustomerSupportPage() {
                                         <h2 className="font-semibold text-gray-900 mb-4">Your Support Tickets</h2>
                                         <div className="space-y-4">
                                             {tickets.map((ticket) => (
-                                                <div key={ticket.id} className="p-4 border border-gray-200 rounded-lg hover:bg-gray-50 transition-colors">
+                                                <Link
+                                                    key={ticket.id}
+                                                    href={`/student/profile/support/${ticket.id}`}
+                                                    className="block p-4 border border-gray-200 rounded-lg hover:bg-gray-50 transition-colors"
+                                                >
                                                     <div className="flex items-start justify-between mb-2">
                                                         <h3 className="font-semibold text-gray-900">{ticket.subject}</h3>
                                                         <span className={`text-xs font-medium px-2 py-1 rounded ${getStatusColor(ticket.status)}`}>
                                                             {ticket.status}
                                                         </span>
                                                     </div>
-                                                    <p className="text-sm text-gray-600 mb-3">{ticket.message}</p>
                                                     <p className="text-xs text-gray-500">Created: {formatDate(ticket.createdAt)}</p>
-                                                </div>
+                                                </Link>
                                             ))}
                                         </div>
                                     </div>

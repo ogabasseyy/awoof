@@ -6,33 +6,45 @@ on:
   pull_request:
     branches: [main, master]
 
+permissions:
+  contents: read
+
 jobs:
   lint-and-typecheck:
     name: Lint & Type Check
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
 
       - name: Setup Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
         with:
-          node-version: '20'
+          node-version: '24'
           cache: 'npm'
           cache-dependency-path: |
-            package-lock.json
             apps/web/package-lock.json
             apps/backend/package-lock.json
+            apps/widget/package-lock.json
 
-      - name: Install root dependencies
-        run: npm ci --ignore-scripts || npm install
+      - name: Test deployment safeguards
+        run: |
+          node --test scripts/deployment-gate.test.mjs
+          docker pull alpine:3.21
+          AWOOF_TEST_UPLOAD_DOCKER=1 python3 -m unittest discover -s scripts -p 'test_upload_migration.py'
 
       - name: Install web dependencies
         working-directory: apps/web
-        run: npm ci || npm install
+        run: npm ci
 
       - name: Install backend dependencies
         working-directory: apps/backend
-        run: npm ci || npm install
+        run: npm ci
+
+      - name: Install widget dependencies
+        working-directory: apps/widget
+        run: npm ci
 
       - name: Lint web
         working-directory: apps/web
@@ -46,26 +58,62 @@ jobs:
         working-directory: apps/backend
         run: npx tsc --noEmit
 
+      - name: Lint backend
+        working-directory: apps/backend
+        run: npm run lint
+
+      - name: Test backend
+        working-directory: apps/backend
+        run: npm test
+
+      - name: Test PostgreSQL authority and migration regressions
+        working-directory: apps/backend
+        run: POSTGRES_BIN_DIR="$(pg_config --bindir)" npm run test:postgres
+
+      - name: Test web session and marketplace policies
+        working-directory: apps/web
+        run: npm run test:auth
+
+      - name: Type check browser suites
+        working-directory: apps/web
+        run: npm run test:browser:typecheck
+
+      - name: Install Chrome and browser dependencies
+        working-directory: apps/web
+        run: npx playwright install --with-deps chrome
+
+      - name: Test browser flows
+        working-directory: apps/web
+        run: npm run test:browser
+        env:
+          AWOOF_BROWSER_MODE: dev
+          PLAYWRIGHT_NO_COPY_PROMPT: '1'
+
+      - name: Build widget
+        working-directory: apps/widget
+        run: npm run build
+
   build-web:
     name: Build Web
     runs-on: ubuntu-latest
     needs: lint-and-typecheck
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
 
       - name: Setup Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
         with:
-          node-version: '20'
+          node-version: '24'
           cache: 'npm'
           cache-dependency-path: |
-            package-lock.json
             apps/web/package-lock.json
             apps/backend/package-lock.json
 
       - name: Install dependencies
         working-directory: apps/web
-        run: npm ci || npm install
+        run: npm ci
 
       - name: Build
         working-directory: apps/web
@@ -78,21 +126,22 @@ jobs:
     runs-on: ubuntu-latest
     needs: lint-and-typecheck
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
 
       - name: Setup Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
         with:
-          node-version: '20'
+          node-version: '24'
           cache: 'npm'
           cache-dependency-path: |
-            package-lock.json
             apps/web/package-lock.json
             apps/backend/package-lock.json
 
       - name: Install dependencies
         working-directory: apps/backend
-        run: npm ci || npm install
+        run: npm ci
 
       - name: Build
         working-directory: apps/backend

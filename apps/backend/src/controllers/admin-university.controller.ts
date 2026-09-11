@@ -4,6 +4,7 @@
  * CRUD, pagination, search, CSV import, segment stats for universities
  */
 
+import { deactivateInstitution } from './admin-institution-policy.controller.js';
 import type { Request, Response } from 'express';
 import { db } from '../config/database.js';
 import { NotFoundError, BadRequestError } from '../common/errors/AppError.js';
@@ -19,7 +20,7 @@ const createUniversitySchema = z.object({
     is_active: z.boolean().optional().default(true),
 });
 
-const updateUniversitySchema = createUniversitySchema.partial();
+const updateUniversitySchema = createUniversitySchema.omit({ is_active: true }).partial().strict();
 
 function parseEmailDomains(val: string | string[] | undefined): string[] {
     if (!val) return [];
@@ -45,7 +46,8 @@ export class AdminUniversityController {
 
         let countQuery = `SELECT COUNT(*)::int FROM universities WHERE 1=1`;
         let listQuery = `
-            SELECT id, name, domain, email_domains, segment, shortcode, country, is_active, created_at
+            SELECT id, name, domain, email_domains, segment, shortcode, country, is_active, created_at,
+                EXISTS (SELECT 1 FROM approved_student_email_domains d WHERE d.university_id = universities.id AND d.is_active) AS policy_configured
             FROM universities
             WHERE 1=1
         `;
@@ -72,6 +74,7 @@ export class AdminUniversityController {
             name: u.name,
             domain: u.domain,
             emailDomains: u.email_domains || [],
+            policyConfigured: Boolean(u.policy_configured),
             segment: u.segment,
             shortcode: u.shortcode,
             country: u.country,
@@ -127,7 +130,7 @@ export class AdminUniversityController {
             [
                 parsed.name,
                 parsed.domain,
-                JSON.stringify(emailDomains.length ? emailDomains : [parsed.domain]),
+                JSON.stringify(emailDomains),
                 parsed.segment || null,
                 shortcode,
                 parsed.country || null,
@@ -199,10 +202,7 @@ export class AdminUniversityController {
             updates.push(`country = $${idx++}`);
             values.push(parsed.country);
         }
-        if (parsed.is_active !== undefined) {
-            updates.push(`is_active = $${idx++}`);
-            values.push(parsed.is_active);
-        }
+
 
         values.push(id);
         const result = await db.query(
@@ -230,12 +230,7 @@ export class AdminUniversityController {
     }
 
     async deleteUniversity(req: Request, res: Response): Promise<void> {
-        const { id } = req.params;
-        const result = await db.query('DELETE FROM universities WHERE id = $1 RETURNING id', [id]);
-        if (result.rows.length === 0) {
-            throw new NotFoundError('University not found');
-        }
-        success(res, { message: 'University deleted successfully', data: {} });
+        await deactivateInstitution(req, res);
     }
 
     async getSegmentStats(_req: Request, res: Response): Promise<void> {
@@ -283,6 +278,7 @@ export class AdminUniversityController {
 
         const header = lines[0].toLowerCase();
         const rows = lines.slice(1);
+        const policyReview: Array<{ id: string; name: string; emailDomains: string[]; isActive: boolean }> = [];
         let inserted = 0;
         let updated = 0;
 
@@ -315,26 +311,28 @@ export class AdminUniversityController {
             const country = getCol('country') || cols[4] || 'Nigeria';
             const shortcode = domainToShortcode(domain);
 
-            const existing = await db.query('SELECT id FROM universities WHERE name = $1', [name]);
+            const existing = await db.query('SELECT id, is_active FROM universities WHERE name = $1', [name]);
             if (existing.rows.length > 0) {
                 await db.query(
                     `UPDATE universities SET domain = $1, email_domains = $2::jsonb, segment = $3, shortcode = $4, country = $5, updated_at = CURRENT_TIMESTAMP WHERE id = $6`,
                     [domain, JSON.stringify(emailDomains), validSegment, shortcode, country, existing.rows[0].id]
                 );
+                policyReview.push({ id: existing.rows[0].id, name, emailDomains, isActive: existing.rows[0].is_active });
                 updated++;
             } else {
-                await db.query(
+                const created = await db.query(
                     `INSERT INTO universities (name, domain, email_domains, segment, shortcode, country, is_active)
-                     VALUES ($1, $2, $3::jsonb, $4, $5, $6, true)`,
+                     VALUES ($1, $2, $3::jsonb, $4, $5, $6, true) RETURNING id`,
                     [name, domain, JSON.stringify(emailDomains), validSegment, shortcode, country]
                 );
+                policyReview.push({ id: created.rows[0].id, name, emailDomains, isActive: true });
                 inserted++;
             }
         }
 
         success(res, {
-            message: 'CSV import completed',
-            data: { inserted, updated },
+            message: 'Directory imported. Review verification policies before enabling student signup.',
+            data: { inserted, updated, policyReview: [...new Map(policyReview.map((school) => [school.id, school])).values()] },
         });
     }
 

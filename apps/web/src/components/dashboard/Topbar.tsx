@@ -1,8 +1,10 @@
 import { useEffect, useRef, useState, type ReactNode } from 'react';
 import Image from 'next/image';
 import Link from 'next/link';
-import { Bell, ChevronDown, Menu, X } from 'lucide-react';
+import { usePathname } from 'next/navigation';
+import { ChevronDown, Menu, X } from 'lucide-react';
 import type { DashboardUserSummary } from './types';
+import { NotificationBell } from './NotificationBell';
 
 interface DashboardTopbarProps {
     actions?: ReactNode;
@@ -17,6 +19,12 @@ export function DashboardTopbar({
     onToggleSidebar,
     isSidebarOpen,
 }: DashboardTopbarProps) {
+    const pathname = usePathname();
+    const homeHref = pathname?.startsWith('/admin')
+        ? '/admin/dashboard'
+        : pathname?.startsWith('/vendor')
+          ? '/vendor/dashboard'
+          : '/';
     const [isMenuOpen, setIsMenuOpen] = useState(false);
     const menuRef = useRef<HTMLDivElement | null>(null);
 
@@ -38,32 +46,31 @@ export function DashboardTopbar({
     const profileSecondary = user?.secondaryText ?? user?.roleLabel ?? user?.email ?? '';
 
     return (
-        <header className="sticky top-0 z-20 flex items-center justify-between border-b border-slate-200 bg-white/80 px-6 py-4 backdrop-blur">
-            <div className="flex items-center gap-4">
+        <header className="sticky top-0 z-20 flex items-center justify-between border-b border-slate-200/80 bg-white/75 px-4 py-3 backdrop-blur-md sm:px-6 sm:py-4">
+            <div className="flex items-center gap-3">
                 <button
                     type="button"
                     onClick={onToggleSidebar}
-                    className="inline-flex items-center justify-center rounded-lg border border-slate-200 p-2 text-slate-600 transition-colors hover:bg-slate-100 lg:hidden"
+                    className="inline-flex items-center justify-center rounded-xl border border-slate-200 p-2 text-slate-600 transition-colors hover:bg-slate-100 lg:hidden"
                     aria-label="Toggle navigation"
                 >
                     {isSidebarOpen ? <X className="h-5 w-5" /> : <Menu className="h-5 w-5" />}
                 </button>
+                <Link href={homeHref} className="lg:hidden">
+                    <Image
+                        src="/images/awoofLogoMain.png"
+                        alt="Awoof"
+                        width={96}
+                        height={28}
+                        className="object-contain"
+                    />
+                </Link>
             </div>
 
             <div className="flex items-center gap-4">
                 {actions && <div className="hidden md:block">{actions}</div>}
 
-                <button
-                    type="button"
-                    className="relative inline-flex h-10 w-10 items-center justify-center rounded-full border border-slate-200 text-slate-500 transition-colors hover:bg-slate-100"
-                    aria-label="Notifications"
-                >
-                    <Bell className="h-5 w-5" />
-                    <span className="absolute right-2 top-2 inline-flex h-2 w-2">
-                        <span className="absolute inline-flex h-full w-full animate-ping rounded-full opacity-75" style={{ backgroundColor: '#1D4ED8' }}></span>
-                        <span className="relative inline-flex h-2 w-2 rounded-full" style={{ backgroundColor: '#1D4ED8' }}></span>
-                    </span>
-                </button>
+                <NotificationBell />
 
                 <div className="relative" ref={menuRef}>
                     <button

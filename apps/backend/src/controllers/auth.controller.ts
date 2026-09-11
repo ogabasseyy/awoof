@@ -9,12 +9,20 @@ import type { Request, Response } from 'express';
 import { db } from '../config/database.js';
 import { redis } from '../config/redis.js';
 import { jwtService } from '../services/auth/jwt.service.js';
+import { issueSession, refreshSession, revokeSessionByRefreshToken } from '../services/auth/session.service.js';
 import { passwordService } from '../services/auth/password.service.js';
 import { generateOTP, getOTPExpiryDate, isOTPExpired } from '../services/auth/otp.service.js';
-import { sendPasswordResetOTP, sendEmailVerificationOTP, sendWelcomeEmail } from '../services/email/email.service.js';
-import { verifyStudentEmail as verifyStudentEmailService } from '../services/verification/student-email-verification.service.js';
-import { storeStudentSignupOTP, verifyStudentSignupOTP } from '../services/verification/student-signup-otp.service.js';
+import { isEmailConfigured, sendPasswordResetOTP, sendEmailVerificationOTP } from '../services/email/email.service.js';
+import { preflightStudentEmail, type StudentEmailPreflight } from '../services/verification/student-email-verification.service.js';
 import {
+    createStudentSignupService,
+    StudentSignupRateLimitError,
+    type StudentSignupService,
+} from '../services/auth/student-signup.service.js';
+import { normalizeMailbox } from '../services/verification/eligibility-policy.service.js';
+import { VERIFICATION_NOTICE_TEXT, VERIFICATION_NOTICE_VERSION } from '../services/verification/verification-notices.js';
+import {
+    AppError,
     BadRequestError,
     UnauthorizedError,
     ConflictError,
@@ -63,12 +71,44 @@ const refreshTokenSchema = z.object({
  * Authentication Controller
  */
 export class AuthController {
+    private readonly studentSignupService: StudentSignupService;
+    private readonly studentEmailPreflight: (universityId: string, email: string) => Promise<StudentEmailPreflight>;
+    private readonly sendVendorVerification: typeof sendEmailVerificationOTP;
+    private readonly issueStudentSession: typeof issueSession;
+
+    constructor(dependencies: {
+        studentSignupService?: StudentSignupService;
+        studentEmailPreflight?: (universityId: string, email: string) => Promise<StudentEmailPreflight>;
+        issueSession?: typeof issueSession;
+        sendVendorVerification?: typeof sendEmailVerificationOTP;
+    } = {}) {
+        this.studentSignupService = dependencies.studentSignupService ?? createStudentSignupService({
+            pool: { connect: () => db.getPool().connect() },
+            isEmailConfigured,
+            deliverOtp: async (email, code, name) => {
+                const result = await sendEmailVerificationOTP(email, code, name, 'student');
+                return { success: result.success };
+            },
+        });
+        this.studentEmailPreflight = dependencies.studentEmailPreflight ?? preflightStudentEmail;
+        this.issueStudentSession = dependencies.issueSession ?? issueSession;
+        this.sendVendorVerification = dependencies.sendVendorVerification ?? sendEmailVerificationOTP;
+    }
+
     /**
      * Register a new user
      */
     public async register(req: Request, res: Response): Promise<void> {
+        if (req.body?.role === 'student') {
+            throw new AppError(
+                'Student registration now requires school-email proof. Use /auth/student/register-request.',
+                410,
+                'STUDENT_SIGNUP_RETIRED',
+            );
+        }
         // Validate input
         const validated = registerSchema.parse(req.body);
+        const normalizedEmail = normalizeMailbox(validated.email);
 
         // Validate password strength
         const passwordValidation = passwordService.validatePassword(
@@ -82,33 +122,20 @@ export class AuthController {
 
         // Check if user already exists
         const existingUser = await db.query(
-            'SELECT id FROM users WHERE email = $1 AND deleted_at IS NULL',
-            [validated.email]
+            'SELECT id FROM users WHERE lower(btrim(email)) = $1',
+            [normalizedEmail]
         );
 
         if (existingUser.rows.length > 0) {
             throw new ConflictError('User with this email already exists');
         }
 
-        // For students, verify email against university database before registration
-        if (validated.role === 'student') {
-            const universityId = validated.university && validated.university.trim() !== '' ? validated.university : null;
-            if (!universityId) {
-                throw new BadRequestError('University is required for student registration');
-            }
-
-            const emailVerification = await verifyStudentEmailService(universityId, validated.email);
-            if (!emailVerification.verified) {
-                throw new BadRequestError(
-                    emailVerification.error || 'Email verification failed. Please ensure you are using your official university email.'
-                );
-            }
-        }
-
         // Hash password
         const passwordHash = await passwordService.hashPassword(validated.password);
 
         // Start transaction (in case we need to rollback)
+        let committed = false;
+        let released = false;
         const client = await db.getPool().connect();
 
         try {
@@ -119,34 +146,12 @@ export class AuthController {
                 `INSERT INTO users (email, password_hash, role, verification_status)
                  VALUES ($1, $2, $3, $4)
                  RETURNING id, email, role, verification_status, created_at`,
-                [validated.email, passwordHash, validated.role, 'unverified']
+                [normalizedEmail, passwordHash, validated.role, 'unverified']
             );
 
             const user = userResult.rows[0];
 
-            // Create student or vendor profile if needed
-            if (validated.role === 'student') {
-                // Get university name if university ID is provided
-                let universityName: string | null = null;
-                const universityId = validated.university && validated.university.trim() !== '' ? validated.university : null;
-                if (universityId) {
-                    const universityResult = await client.query(
-                        `SELECT name FROM universities WHERE id = $1 AND is_active = true`,
-                        [universityId]
-                    );
-                    if (universityResult.rows.length > 0) {
-                        universityName = universityResult.rows[0].name;
-                    }
-                }
-
-                const matricNumber = validated.matricNumber && validated.matricNumber.trim() !== '' ? validated.matricNumber : null;
-
-                await client.query(
-                    `INSERT INTO students (user_id, name, university, registration_number, status)
-                     VALUES ($1, $2, $3, $4, 'active')`,
-                    [user.id, validated.name, universityName, matricNumber]
-                );
-            } else if (validated.role === 'vendor') {
+            if (validated.role === 'vendor') {
                 await client.query(
                     `INSERT INTO vendors (user_id, name, status)
                      VALUES ($1, $2, 'pending')`,
@@ -154,8 +159,8 @@ export class AuthController {
                 );
             }
 
-            // For vendors and students, generate and send email verification OTP
-            if (validated.role === 'vendor' || validated.role === 'student') {
+            // Vendor verification remains on its established route. Student signup returns above.
+            if (validated.role === 'vendor') {
                 const emailOTP = generateOTP(6);
                 const otpExpiresAt = getOTPExpiryDate();
 
@@ -168,7 +173,7 @@ export class AuthController {
                 );
 
                 // Send verification email (don't await to avoid blocking response)
-                sendEmailVerificationOTP(validated.email, emailOTP, validated.name, validated.role)
+                this.sendVendorVerification(normalizedEmail, emailOTP, validated.name, validated.role)
                     .then((result) => {
                         if (!result.success) {
                             appLogger.error('Failed to send email verification OTP:', result.error);
@@ -180,22 +185,19 @@ export class AuthController {
             }
 
             await client.query('COMMIT');
+            committed = true;
+            client.release();
+            released = true;
 
-            // Generate tokens
-            const tokens = jwtService.generateTokenPair({
-                userId: user.id,
-                email: user.email,
-                role: user.role,
-            });
-
-            // Store refresh token in Redis (optional, for token invalidation)
-            const redisClient = redis.getClient();
-            if (redis.isConnected()) {
-                await redisClient.setex(
-                    `refresh_token:${user.id}`,
-                    7 * 24 * 60 * 60, // 7 days in seconds
-                    tokens.refreshToken
-                );
+            let tokens;
+            try {
+                tokens = await this.issueStudentSession({
+                    userId: user.id,
+                    email: user.email,
+                    role: user.role,
+                }, false, passwordHash);
+            } catch {
+                throw new AppError('Your account was created, but we could not start a session. Please sign in with your email and password.', 503, 'SESSION_ISSUANCE_UNAVAILABLE');
             }
 
             success(res, {
@@ -214,10 +216,10 @@ export class AuthController {
                 },
             }, 201);
         } catch (error) {
-            await client.query('ROLLBACK');
+            if (!committed) await client.query('ROLLBACK');
             throw error;
         } finally {
-            client.release();
+            if (!released) client.release();
         }
     }
 
@@ -227,13 +229,14 @@ export class AuthController {
     public async login(req: Request, res: Response): Promise<void> {
         // Validate input
         const validated = loginSchema.parse(req.body);
+        const normalizedEmail = normalizeMailbox(validated.email);
 
         // Find user
         const userResult = await db.query(
             `SELECT id, email, password_hash, role, verification_status, deleted_at
              FROM users
-             WHERE email = $1`,
-            [validated.email]
+             WHERE lower(btrim(email)) = $1`,
+            [normalizedEmail]
         );
 
         if (userResult.rows.length === 0) {
@@ -264,23 +267,11 @@ export class AuthController {
 
         // Generate tokens (with rememberMe option)
         const rememberMe = validated.rememberMe ?? false;
-        const tokens = jwtService.generateTokenPair({
+        const tokens = await issueSession({
             userId: user.id,
             email: user.email,
             role: user.role,
-        }, rememberMe);
-
-        // Store refresh token in Redis
-        // If remember me is checked, store for 30 days, otherwise 7 days
-        const redisExpiry = rememberMe ? 30 * 24 * 60 * 60 : 7 * 24 * 60 * 60;
-        const redisClient = redis.getClient();
-        if (redis.isConnected()) {
-            await redisClient.setex(
-                `refresh_token:${user.id}`,
-                redisExpiry,
-                tokens.refreshToken
-            );
-        }
+        }, rememberMe, user.password_hash);
 
         success(res, {
             message: 'Login successful',
@@ -303,29 +294,7 @@ export class AuthController {
         // Validate input
         const validated = refreshTokenSchema.parse(req.body);
 
-        // Verify refresh token
-        let decoded;
-        try {
-            decoded = jwtService.verifyRefreshToken(validated.refreshToken);
-        } catch (error) {
-            throw new UnauthorizedError('Invalid or expired refresh token');
-        }
-
-        // Check if refresh token exists in Redis (optional validation)
-        const redisClient = redis.getClient();
-        if (redis.isConnected()) {
-            const storedToken = await redisClient.get(`refresh_token:${decoded.userId}`);
-            if (storedToken !== validated.refreshToken) {
-                throw new UnauthorizedError('Refresh token not found or invalid');
-            }
-        }
-
-        // Generate new access token
-        const accessToken = jwtService.generateAccessToken({
-            userId: decoded.userId,
-            email: decoded.email,
-            role: decoded.role,
-        });
+        const accessToken = await refreshSession(validated.refreshToken);
 
         success(res, {
             message: 'Token refreshed successfully',
@@ -339,15 +308,8 @@ export class AuthController {
      * Logout user
      */
     public async logout(req: AuthRequest, res: Response): Promise<void> {
-        if (!req.user) {
-            throw new UnauthorizedError('User not authenticated');
-        }
-
-        // Remove refresh token from Redis
-        const redisClient = redis.getClient();
-        if (redis.isConnected()) {
-            await redisClient.del(`refresh_token:${req.user.userId}`);
-        }
+        const body = z.object({ refreshToken: z.string().min(1).max(4096) }).strict().parse(req.body);
+        await revokeSessionByRefreshToken(body.refreshToken);
 
         success(res, {
             message: 'Logged out successfully',
@@ -415,11 +377,12 @@ export class AuthController {
         if (!email) {
             throw new BadRequestError('Email is required');
         }
+        const normalizedEmail = normalizeMailbox(email);
 
         // Find user
         const userResult = await db.query(
-            `SELECT id, email, role FROM users WHERE email = $1 AND deleted_at IS NULL`,
-            [email]
+            `SELECT id, email, role FROM users WHERE lower(btrim(email)) = $1 AND deleted_at IS NULL`,
+            [normalizedEmail]
         );
 
         // Don't reveal if email exists (security best practice)
@@ -480,15 +443,16 @@ export class AuthController {
         });
 
         const validated = schema.parse(req.body);
+        const normalizedEmail = normalizeMailbox(validated.email);
 
         // Find user with valid OTP
         const userResult = await db.query(
             `SELECT id, email, password_reset_otp, password_reset_otp_expires_at
              FROM users 
-             WHERE email = $1 
+             WHERE lower(btrim(email)) = $1
                AND password_reset_otp = $2 
                AND deleted_at IS NULL`,
-            [validated.email, validated.otp]
+            [normalizedEmail, validated.otp]
         );
 
         if (userResult.rows.length === 0) {
@@ -539,6 +503,7 @@ export class AuthController {
         });
 
         const validated = schema.parse(req.body);
+        const normalizedEmail = normalizeMailbox(validated.email);
 
         // Validate password strength
         const passwordValidation = passwordService.validatePassword(validated.newPassword);
@@ -550,10 +515,10 @@ export class AuthController {
         const userResult = await db.query(
             `SELECT id, email, password_reset_otp, password_reset_otp_expires_at
              FROM users 
-             WHERE email = $1 
+             WHERE lower(btrim(email)) = $1
                AND password_reset_otp = $2 
                AND deleted_at IS NULL`,
-            [validated.email, validated.otp]
+            [normalizedEmail, validated.otp]
         );
 
         if (userResult.rows.length === 0) {
@@ -576,15 +541,16 @@ export class AuthController {
              SET password_hash = $1, 
                  password_reset_otp = NULL, 
                  password_reset_otp_expires_at = NULL,
+                 refresh_token_hash = NULL,
+                 refresh_token_expires_at = NULL,
                  updated_at = CURRENT_TIMESTAMP
              WHERE id = $2`,
             [passwordHash, user.id]
         );
 
-        // Invalidate all refresh tokens (force re-login)
+        // Clear the password-reset cache entry; refresh-session authority is durable.
         const redisClient = redis.getClient();
         if (redis.isConnected()) {
-            await redisClient.del(`refresh_token:${user.id}`);
             await redisClient.del(`password_reset:${user.id}`);
         }
 
@@ -645,16 +611,12 @@ export class AuthController {
         await db.query(
             `UPDATE users 
              SET password_hash = $1, 
+                 refresh_token_hash = NULL,
+                 refresh_token_expires_at = NULL,
                  updated_at = CURRENT_TIMESTAMP
              WHERE id = $2`,
             [passwordHash, user.id]
         );
-
-        // Invalidate all refresh tokens (force re-login with new password)
-        const redisClient = redis.getClient();
-        if (redis.isConnected()) {
-            await redisClient.del(`refresh_token:${req.user.userId}`);
-        }
 
         success(res, {
             message: 'Password updated successfully',
@@ -672,14 +634,15 @@ export class AuthController {
         });
 
         const validated = schema.parse(req.body);
+        const normalizedEmail = normalizeMailbox(validated.email);
 
         // Get user by email
         const userResult = await db.query(
             `SELECT id, email, email_verification_otp, email_verification_otp_expires_at, 
                     verification_status, role
              FROM users 
-             WHERE email = $1 AND deleted_at IS NULL`,
-            [validated.email]
+             WHERE lower(btrim(email)) = $1 AND deleted_at IS NULL`,
+            [normalizedEmail]
         );
 
         if (userResult.rows.length === 0) {
@@ -741,13 +704,14 @@ export class AuthController {
         });
 
         const validated = schema.parse(req.body);
+        const normalizedEmail = normalizeMailbox(validated.email);
 
         // Get user by email
         const userResult = await db.query(
             `SELECT id, email, verification_status, role
              FROM users 
-             WHERE email = $1 AND deleted_at IS NULL`,
-            [validated.email]
+             WHERE lower(btrim(email)) = $1 AND deleted_at IS NULL`,
+            [normalizedEmail]
         );
 
         if (userResult.rows.length === 0) {
@@ -792,17 +756,56 @@ export class AuthController {
         });
     }
 
-    /**
-     * Student register request - validate data, verify email domain, send OTP (no user created)
-     */
     public async studentRegisterRequest(req: Request, res: Response): Promise<void> {
         const schema = z.object({
             email: z.string().email('Invalid email address'),
+            name: z.string().min(2, 'Name must be at least 2 characters'),
+            universityId: z.string().uuid('Invalid university ID'),
+            matricNumber: z.string().max(100, 'Matric number must be at most 100 characters').nullable().optional(),
+            verificationConsent: z.literal(true),
+            noticeVersion: z.literal(VERIFICATION_NOTICE_VERSION),
+        }).strict();
+
+        const validated = schema.parse(req.body);
+
+        try {
+            const request = await this.studentSignupService.request({
+                email: validated.email,
+                name: validated.name,
+                universityId: validated.universityId,
+                matricNumber: validated.matricNumber ?? null,
+                verificationConsent: validated.verificationConsent,
+                noticeVersion: validated.noticeVersion,
+            });
+            success(res, {
+                message: 'Signup code sent. Please enter it to complete registration.',
+                data: {
+                    email: request.email,
+                    challengeId: request.challengeId,
+                    expiresAt: request.expiresAt.toISOString(),
+                    resendAvailableAt: request.resendAvailableAt.toISOString(),
+                },
+            });
+        } catch (error) {
+            if (error instanceof StudentSignupRateLimitError) {
+                res.setHeader('Retry-After', String(Math.max(1, Math.ceil((error.retryAt.getTime() - Date.now()) / 1000))));
+            }
+            throw error;
+        }
+    }
+
+    public async studentRegisterConfirm(req: Request, res: Response): Promise<void> {
+        const schema = z.object({
+            email: z.string().email('Invalid email address'),
+            otp: z.string().regex(/^\d{6}$/, 'OTP must be six digits'),
             password: z.string().min(8, 'Password must be at least 8 characters'),
             name: z.string().min(2, 'Name must be at least 2 characters'),
             universityId: z.string().uuid('Invalid university ID'),
-            matricNumber: z.string().optional().or(z.literal('')),
-        });
+            matricNumber: z.string().max(100, 'Matric number must be at most 100 characters').nullable().optional(),
+            challengeId: z.string().uuid('Invalid signup challenge ID'),
+            verificationConsent: z.literal(true),
+            noticeVersion: z.literal(VERIFICATION_NOTICE_VERSION),
+        }).strict();
 
         const validated = schema.parse(req.body);
 
@@ -811,149 +814,57 @@ export class AuthController {
             throw new BadRequestError(passwordValidation.errors.join(', '));
         }
 
-        const existingUser = await db.query(
-            'SELECT id FROM users WHERE email = $1 AND deleted_at IS NULL',
-            [validated.email]
-        );
-        if (existingUser.rows.length > 0) {
-            throw new ConflictError('User with this email already exists');
-        }
-
-        const emailVerification = await verifyStudentEmailService(validated.universityId, validated.email);
-        if (!emailVerification.verified) {
-            throw new BadRequestError(
-                emailVerification.error || 'Email verification failed. Please ensure you are using your official university email.'
-            );
-        }
-
-        const otp = await storeStudentSignupOTP(validated.email);
-        await sendEmailVerificationOTP(validated.email, otp, validated.name, 'student');
-
-        success(res, {
-            message: 'OTP sent to your email. Please enter it to complete registration.',
-            data: { email: validated.email },
-        });
-    }
-
-    /**
-     * Student register confirm - verify OTP, create user + student, return JWT, send welcome email
-     */
-    public async studentRegisterConfirm(req: Request, res: Response): Promise<void> {
-        const schema = z.object({
-            email: z.string().email('Invalid email address'),
-            otp: z.string().length(6, 'OTP must be 6 digits'),
-            password: z.string().min(8, 'Password must be at least 8 characters'),
-            name: z.string().min(2, 'Name must be at least 2 characters'),
-            universityId: z.string().uuid('Invalid university ID'),
-            matricNumber: z.string().optional().or(z.literal('')),
-        });
-
-        const validated = schema.parse(req.body);
-
-        const valid = await verifyStudentSignupOTP(validated.email, validated.otp);
-        if (!valid) {
-            throw new UnauthorizedError('Invalid or expired OTP. Please request a new one.');
-        }
-
-        const existingUser = await db.query(
-            'SELECT id FROM users WHERE email = $1 AND deleted_at IS NULL',
-            [validated.email]
-        );
-        if (existingUser.rows.length > 0) {
-            throw new ConflictError('User with this email already exists');
-        }
-
-        const passwordHash = await passwordService.hashPassword(validated.password);
-
-        const client = await db.getPool().connect();
-        try {
-            await client.query('BEGIN');
-
-            const userResult = await client.query(
-                `INSERT INTO users (email, password_hash, role, verification_status)
-                 VALUES ($1, $2, 'student', 'verified')
-                 RETURNING id, email, role, verification_status, created_at`,
-                [validated.email, passwordHash]
-            );
-            const user = userResult.rows[0];
-
-            const universityResult = await client.query(
-                'SELECT name FROM universities WHERE id = $1 AND is_active = true',
-                [validated.universityId]
-            );
-            const universityName = universityResult.rows[0]?.name || null;
-            const matricNumber = validated.matricNumber?.trim() || null;
-
-            await client.query(
-                `INSERT INTO students (user_id, name, university, university_id, registration_number, status)
-                 VALUES ($1, $2, $3, $4, $5, 'active')`,
-                [user.id, validated.name, universityName, validated.universityId, matricNumber]
-            );
-
-            await client.query('COMMIT');
-
-            const tokens = jwtService.generateTokenPair({
-                userId: user.id,
-                email: user.email,
-                role: user.role,
+        const completion = await this.studentSignupService.confirm({
+                email: validated.email,
+                name: validated.name,
+                universityId: validated.universityId,
+                matricNumber: validated.matricNumber ?? null,
+                verificationConsent: validated.verificationConsent,
+                noticeVersion: validated.noticeVersion,
+                challengeId: validated.challengeId,
+                otp: validated.otp,
+                password: validated.password,
             });
-
-            const redisClient = redis.getClient();
-            if (redis.isConnected()) {
-                await redisClient.setex(
-                    `refresh_token:${user.id}`,
-                    7 * 24 * 60 * 60,
-                    tokens.refreshToken
-                );
-            }
-
-            sendWelcomeEmail(validated.email, validated.name).catch((err) =>
-                appLogger.error('Failed to send welcome email:', err)
+        let tokens;
+        try {
+            tokens = await this.issueStudentSession({
+                userId: completion.user.id,
+                email: completion.user.email,
+                role: completion.user.role,
+            }, false, completion.expectedPasswordHash);
+        } catch {
+            throw new AppError(
+                'Your account was created, but we could not start a session. Please sign in with your email and password.',
+                503,
+                'SESSION_ISSUANCE_UNAVAILABLE',
             );
-
-            success(res, {
-                message: 'Registration successful',
-                data: {
-                    user: { id: user.id, email: user.email, role: user.role, verificationStatus: user.verification_status },
-                    tokens,
-                    redirectTo: '/marketplace',
-                },
-            }, 201);
-        } catch (error) {
-            await client.query('ROLLBACK');
-            throw error;
-        } finally {
-            client.release();
         }
+        success(res, {
+            message: 'Registration successful',
+            data: {
+                user: { ...completion.user, eligibility: completion.eligibility },
+                tokens,
+                redirectTo: '/marketplace',
+            },
+        }, 201);
     }
 
-    /**
-     * Verify student email against university database
-     * Used during registration to ensure email belongs to the selected university
-     */
     public async verifyStudentEmail(req: Request, res: Response): Promise<void> {
         const schema = z.object({
             universityId: z.string().uuid('Invalid university ID'),
             email: z.string().email('Invalid email address'),
-        });
+        }).strict();
 
         const validated = schema.parse(req.body);
-
-        const verification = await verifyStudentEmailService(validated.universityId, validated.email);
-
-        if (!verification.verified) {
-            throw new BadRequestError(
-                verification.error || 'Email verification failed. Please ensure you are using your official university email.'
-            );
-        }
-
+        const preflight = await this.studentEmailPreflight(validated.universityId, validated.email);
         success(res, {
-            message: 'Email verified successfully',
             data: {
-                verified: true,
-                studentData: verification.studentData,
+                ...preflight,
+                verificationNotice: {
+                    version: VERIFICATION_NOTICE_VERSION,
+                    text: VERIFICATION_NOTICE_TEXT,
+                },
             },
         });
     }
 }
-

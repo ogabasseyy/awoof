@@ -6,6 +6,7 @@
 
 'use client';
 
+import { VerificationPolicyEditor } from './_components/VerificationPolicyEditor';
 import { useState, useEffect, useCallback } from 'react';
 import { GraduationCap, Plus, Edit2, Trash2, Download } from 'lucide-react';
 import ProtectedRoute from '@/components/ProtectedRoute';
@@ -17,6 +18,8 @@ import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import apiClient from '@/lib/api-client';
 import { primaryNavItems, secondaryNavItems } from '../adminNav';
+import toast from 'react-hot-toast';
+import { useConfirm } from '@/components/ui/ConfirmDialog';
 
 interface University {
     id: string;
@@ -27,6 +30,7 @@ interface University {
     country?: string;
     emailDomains?: string[];
     isActive: boolean;
+    policyConfigured?: boolean;
 }
 
 interface SegmentStats {
@@ -37,6 +41,9 @@ interface SegmentStats {
 
 export default function AdminUniversitiesPage() {
     const { user, logout } = useAuth();
+    const confirm = useConfirm();
+    const [policyQueue, setPolicyQueue] = useState<University[]>([]);
+    const [policyUniversity, setPolicyUniversity] = useState<University | null>(null);
     const [universities, setUniversities] = useState<University[]>([]);
     const [total, setTotal] = useState(0);
     const [page, setPage] = useState(1);
@@ -125,33 +132,44 @@ export default function AdminUniversitiesPage() {
             const payload = {
                 name: formData.name,
                 domain: formData.domain,
-                email_domains: emailDomains.length ? emailDomains : [formData.domain],
+                email_domains: emailDomains,
                 segment: formData.segment || undefined,
                 country: formData.country || undefined,
             };
             if (editingUniversity) {
-                await apiClient.put(`/admin/universities/${editingUniversity.id}`, payload);
+                const saved = await apiClient.put(`/admin/universities/${editingUniversity.id}`, payload);
+                setPolicyUniversity(saved.data.data as University);
+                toast.success('University updated');
             } else {
-                await apiClient.post('/admin/universities', payload);
+                const saved = await apiClient.post('/admin/universities', payload);
+                setPolicyUniversity(saved.data.data as University);
+                toast.success('University created');
             }
             handleCloseModal();
             fetchUniversities();
             fetchSegmentStats();
         } catch (err) {
             const e = err as { response?: { data?: { error?: { message?: string } } } };
-            alert(e.response?.data?.error?.message || 'Failed to save university');
+            toast.error(e.response?.data?.error?.message || 'Failed to save university');
         }
     };
 
     const handleDelete = async (id: string) => {
-        if (!confirm('Are you sure you want to delete this university?')) return;
+        const ok = await confirm({
+            title: 'Deactivate university?',
+            description: 'Student verification will be disabled. Existing accounts, consents and audit history will be retained.',
+            confirmLabel: 'Deactivate',
+            variant: 'destructive',
+        });
+        if (!ok) return;
         try {
             await apiClient.delete(`/admin/universities/${id}`);
             fetchUniversities();
             fetchSegmentStats();
+            toast.success('University deactivated');
         } catch (err) {
             const e = err as { response?: { data?: { error?: { message?: string } } } };
-            alert(e.response?.data?.error?.message || 'Failed to delete');
+            toast.error(e.response?.data?.error?.message || 'Failed to delete');
         }
     };
 
@@ -165,30 +183,33 @@ export default function AdminUniversitiesPage() {
             a.download = 'universities_sample.csv';
             a.click();
             URL.revokeObjectURL(url);
+            toast.success('Sample CSV downloaded');
         } catch {
-            alert('Failed to download sample CSV');
+            toast.error('Failed to download sample CSV');
         }
     };
 
     const handleImportCsv = async (e: React.FormEvent) => {
         e.preventDefault();
         if (!csvFile) {
-            alert('Please select a CSV file');
+            toast.error('Please select a CSV file');
             return;
         }
         try {
             setImporting(true);
             const formDataUpload = new FormData();
             formDataUpload.append('file', csvFile);
-            await apiClient.post('/admin/universities/import-csv', formDataUpload, {
-                headers: { 'Content-Type': 'multipart/form-data' },
-            });
+            const imported = await apiClient.post('/admin/universities/import-csv', formDataUpload);
+            const review = imported.data.data.policyReview as University[];
+            setPolicyQueue(review);
+            setPolicyUniversity(review[0] ?? null);
             setCsvFile(null);
             fetchUniversities();
             fetchSegmentStats();
+            toast.success('Directory imported. Review the listed verification policies before enabling signup.');
         } catch (err) {
             const e = err as { response?: { data?: { error?: { message?: string } } } };
-            alert(e.response?.data?.error?.message || 'Failed to import CSV');
+            toast.error(e.response?.data?.error?.message || 'Failed to import CSV');
         } finally {
             setImporting(false);
         }
@@ -301,10 +322,11 @@ export default function AdminUniversitiesPage() {
                                                 <td className="px-6 py-4 text-sm">{u.isActive ? 'Yes' : 'No'}</td>
                                                 <td className="px-6 py-4 text-right">
                                                     <div className="flex justify-end gap-2">
+                                                        <Button variant="outline" size="sm" onClick={() => setPolicyUniversity(u)}>{u.policyConfigured ? 'Verification policy' : 'Approve domains'}</Button>
                                                         <Button variant="ghost" size="sm" onClick={() => handleOpenModal(u)}>
                                                             <Edit2 className="h-4 w-4" />
                                                         </Button>
-                                                        <Button variant="ghost" size="sm" className="text-red-600" onClick={() => handleDelete(u.id)}>
+                                                        <Button variant="ghost" size="sm" disabled={!u.isActive} title="Deactivate university" className="text-red-600" onClick={() => handleDelete(u.id)}>
                                                             <Trash2 className="h-4 w-4" />
                                                         </Button>
                                                     </div>
@@ -335,6 +357,17 @@ export default function AdminUniversitiesPage() {
                 </div>
 
                 {/* Modal */}
+                {policyQueue.length > 0 && <section className="my-4 rounded-xl border p-4" aria-label="Imported schools awaiting policy review">
+                    <h2 className="font-semibold">Imported schools: verification approval required</h2>
+                    <p>Directory import does not enable signup. Review each school below; closing an editor keeps it in this list.</p>
+                    <div className="mt-2 flex flex-wrap gap-2">{policyQueue.map((school) => <Button key={school.id} variant="outline" onClick={() => setPolicyUniversity(school)}>{school.name}</Button>)}</div>
+                </section>}
+                {policyUniversity && <VerificationPolicyEditor key={policyUniversity.id} institution={policyUniversity} onClose={() => setPolicyUniversity(null)} onSaved={() => {
+                    const remaining = policyQueue.filter((school) => school.id !== policyUniversity.id);
+                    setPolicyQueue(remaining);
+                    setPolicyUniversity(remaining[0] ?? null);
+                    void fetchUniversities();
+                }} />}
                 {isModalOpen && (
                     <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/50 p-4">
                         <div className="w-full max-w-md rounded-lg bg-white p-6 shadow-lg">
@@ -351,7 +384,7 @@ export default function AdminUniversitiesPage() {
                                     <Input id="domain" value={formData.domain} onChange={(e) => setFormData({ ...formData, domain: e.target.value })} required placeholder="e.g. unilag.edu.ng" />
                                 </div>
                                 <div>
-                                    <Label htmlFor="emailDomains">Email Domains (comma-separated)</Label>
+                                    <Label htmlFor="emailDomains">Candidate student domains (requires separate policy approval)</Label>
                                     <Input id="emailDomains" value={formData.emailDomains} onChange={(e) => setFormData({ ...formData, emailDomains: e.target.value })} placeholder="unilag.edu.ng, live.unilag.edu.ng" />
                                 </div>
                                 <div>

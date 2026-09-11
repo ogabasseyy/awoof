@@ -5,9 +5,10 @@
  */
 
 import type { Response } from 'express';
-import { db } from '../config/database.js';
+import { db, getPool } from '../config/database.js';
 import {
     BadRequestError,
+    ConflictError,
     NotFoundError,
     UnauthorizedError,
 } from '../common/errors/AppError.js';
@@ -61,6 +62,7 @@ export class OrderController {
                 t.commission,
                 t.status,
                 t.paystack_reference,
+                t.payment_source,
                 t.created_at,
                 t.updated_at,
                 p.id as product_id,
@@ -68,8 +70,7 @@ export class OrderController {
                 p.image_url as product_image,
                 s.id as student_id,
                 s.name as student_name,
-                s.email as student_email,
-                u.email as user_email
+                u.email as student_email
             FROM transactions t
             JOIN products p ON t.product_id = p.id
             JOIN students s ON t.student_id = s.id
@@ -89,7 +90,7 @@ export class OrderController {
             query += ` AND (
                 p.name ILIKE $${paramCount} OR 
                 s.name ILIKE $${paramCount} OR 
-                s.email ILIKE $${paramCount} OR
+                u.email ILIKE $${paramCount} OR
                 t.paystack_reference ILIKE $${paramCount} OR
                 t.id::text ILIKE $${paramCount}
             )`;
@@ -121,10 +122,11 @@ export class OrderController {
             countQuery += ` AND EXISTS (
                 SELECT 1 FROM products p
                 JOIN students s ON t.student_id = s.id
+                JOIN users u ON s.user_id = u.id
                 WHERE t.product_id = p.id AND (
                     p.name ILIKE $${countParamCount} OR 
                     s.name ILIKE $${countParamCount} OR 
-                    s.email ILIKE $${countParamCount} OR
+                    u.email ILIKE $${countParamCount} OR
                     t.paystack_reference ILIKE $${countParamCount} OR
                     t.id::text ILIKE $${countParamCount}
                 )
@@ -143,6 +145,7 @@ export class OrderController {
             commission: parseFloat(row.commission),
             status: row.status,
             paystackReference: row.paystack_reference,
+            managedPayment: row.payment_source === 'awoof' && Boolean(row.paystack_reference),
             createdAt: row.created_at,
             updatedAt: row.updated_at,
             product: {
@@ -153,7 +156,7 @@ export class OrderController {
             student: {
                 id: row.student_id,
                 name: row.student_name,
-                email: row.student_email || row.user_email,
+                email: row.student_email,
             },
         }));
 
@@ -203,6 +206,7 @@ export class OrderController {
                 t.commission,
                 t.status,
                 t.paystack_reference,
+                t.payment_source,
                 t.created_at,
                 t.updated_at,
                 p.id as product_id,
@@ -213,9 +217,8 @@ export class OrderController {
                 p.student_price as product_student_price,
                 s.id as student_id,
                 s.name as student_name,
-                s.email as student_email,
                 s.phone_number as student_phone,
-                u.email as user_email
+                u.email as student_email
             FROM transactions t
             JOIN products p ON t.product_id = p.id
             JOIN students s ON t.student_id = s.id
@@ -236,6 +239,7 @@ export class OrderController {
             commission: parseFloat(row.commission),
             status: row.status,
             paystackReference: row.paystack_reference,
+            managedPayment: row.payment_source === 'awoof' && Boolean(row.paystack_reference),
             createdAt: row.created_at,
             updatedAt: row.updated_at,
             product: {
@@ -243,13 +247,13 @@ export class OrderController {
                 name: row.product_name,
                 description: row.product_description,
                 imageUrl: row.product_image,
-                price: parseFloat(row.price),
-                studentPrice: parseFloat(row.student_price),
+                price: parseFloat(row.product_price),
+                studentPrice: parseFloat(row.product_student_price),
             },
             student: {
                 id: row.student_id,
                 name: row.student_name,
-                email: row.student_email || row.user_email,
+                email: row.student_email,
                 phoneNumber: row.student_phone,
             },
         };
@@ -288,39 +292,95 @@ export class OrderController {
         // Validate request body
         const validated = updateOrderStatusSchema.parse(req.body);
 
-        // Check if order exists and belongs to vendor
-        const orderCheck = await db.query(
-            'SELECT id, status FROM transactions WHERE id = $1 AND vendor_id = $2',
-            [orderId, vendorId]
-        );
+        const client = await getPool().connect();
+        try {
+            await client.query('BEGIN');
+            const owner = await client.query(`SELECT id FROM users WHERE id = $1 AND role = 'vendor' AND deleted_at IS NULL FOR UPDATE`, [req.user.userId]);
+            if (!owner.rows.length) throw new BadRequestError('Only active vendors can change orders');
+            const authority = await client.query(`SELECT id FROM vendors
+                WHERE id = $1 AND user_id = $2 AND status = 'active' AND deleted_at IS NULL FOR UPDATE`,
+                [vendorId, req.user.userId]);
+            if (!authority.rows.length) throw new BadRequestError('Only active vendors can change orders');
+            const orderCheck = await client.query(
+                `SELECT id, status, payment_source, paystack_reference, product_id, inventory_consumed,
+                        student_id, recorded_savings_delta
+                 FROM transactions WHERE id = $1 AND vendor_id = $2 FOR UPDATE`,
+                [orderId, vendorId]
+            );
 
-        if (orderCheck.rows.length === 0) {
-            throw new NotFoundError('Order not found');
-        }
+            if (orderCheck.rows.length === 0) {
+                throw new NotFoundError('Order not found');
+            }
 
-        // Update order status
-        const result = await db.query(
-            `UPDATE transactions 
-             SET status = $1, updated_at = CURRENT_TIMESTAMP
-             WHERE id = $2 AND vendor_id = $3
-             RETURNING id, status, updated_at`,
-            [validated.status, orderId, vendorId]
-        );
+            const order = orderCheck.rows[0];
+            if (order.payment_source === 'awoof' && order.paystack_reference) {
+                throw new BadRequestError('Awoof-managed payment states cannot be changed by vendors');
+            }
+            if (order.status === 'refunded') {
+                throw new BadRequestError('Refunded orders cannot change status');
+            }
+            if (validated.status === 'refunded' && order.status !== 'completed') {
+                throw new BadRequestError('Only completed orders can be refunded');
+            }
+            if (validated.status === 'refunded' && order.recorded_savings_delta === null) {
+                throw new ConflictError('Savings reconciliation is required before refunding this legacy order',
+                    { reason: 'savings_reconciliation_required', transactionId: order.id });
+            }
 
-        if (result.rows.length === 0) {
-            throw new NotFoundError('Order not found');
-        }
+            const result = await client.query(
+                `UPDATE transactions
+                 SET status = $1::varchar, inventory_consumed = CASE WHEN $1::varchar = 'refunded' THEN false ELSE inventory_consumed END, updated_at = CURRENT_TIMESTAMP
+                 WHERE id = $2 AND vendor_id = $3
+                 RETURNING id, status, updated_at`,
+                [validated.status, orderId, vendorId]
+            );
 
-        success(res, {
-            message: 'Order status updated successfully',
-            data: {
-                order: {
-                    id: result.rows[0].id,
-                    status: result.rows[0].status,
-                    updatedAt: result.rows[0].updated_at,
+            if (result.rows.length === 0) {
+                throw new NotFoundError('Order not found');
+            }
+
+            if (order.status === 'completed' && validated.status === 'refunded' && order.inventory_consumed) {
+                await client.query(
+                    `UPDATE products
+                     SET stock = stock + 1, updated_at = CURRENT_TIMESTAMP
+                     WHERE id = $1`,
+                    [order.product_id]
+                );
+            }
+
+            if (order.status === 'completed' && validated.status === 'refunded') {
+                // The locked completed -> refunded transition is the idempotency
+                // gate. Only reverse the exact credit, never a backfilled price.
+                const reversed = await client.query(
+                    `UPDATE savings_stats
+                     SET total_savings = total_savings - $2::numeric,
+                         total_purchases = total_purchases - 1,
+                         last_updated = CURRENT_TIMESTAMP
+                     WHERE student_id = $1 AND total_purchases > 0
+                     RETURNING student_id`,
+                    [order.student_id, order.recorded_savings_delta]
+                );
+                if (!reversed.rows.length) throw new ConflictError('Savings reconciliation is required before refunding this order',
+                    { reason: 'savings_reconciliation_required', transactionId: order.id });
+            }
+
+            await client.query('COMMIT');
+
+            success(res, {
+                message: 'Order status updated successfully',
+                data: {
+                    order: {
+                        id: result.rows[0].id,
+                        status: result.rows[0].status,
+                        updatedAt: result.rows[0].updated_at,
+                    },
                 },
-            },
-        });
+            });
+        } catch (error) {
+            await client.query('ROLLBACK');
+            throw error;
+        } finally {
+            client.release();
+        }
     }
 }
-

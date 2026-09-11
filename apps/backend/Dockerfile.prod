@@ -1,4 +1,4 @@
-FROM node:20-alpine AS builder
+FROM node:24-alpine AS builder
 
 # Create app directory
 WORKDIR /usr/src/app
@@ -11,7 +11,7 @@ COPY . .
 
 RUN npm run build
 
-FROM node:20-alpine
+FROM node:24-alpine
 
 ENV NODE_ENV=production
 ENV PORT=5000
@@ -21,6 +21,9 @@ WORKDIR /usr/src/app
 
 RUN addgroup -g 1001 -S nodejs && \
     adduser -S nodejs -u 1001
+
+# su-exec: switch user in entrypoint so uploads volume can be chowned (Alpine su often lacks suid)
+RUN apk add --no-cache su-exec
 
 # Install app dependencies (production only; longer timeout/retries for VPS npm)
 COPY package*.json ./
@@ -32,15 +35,18 @@ COPY --from=builder --chown=nodejs:nodejs /usr/src/app/dist ./dist
 # Copy migration SQL files (run.js reads them from same dir)
 COPY --from=builder --chown=nodejs:nodejs /usr/src/app/src/database/migrations/*.sql ./dist/database/migrations/
 
-# Create uploads directory for vendor files (node user needs write access)
-RUN mkdir -p /usr/src/app/uploads/vendors && chown -R nodejs:nodejs /usr/src/app/uploads
+# Create uploads directory for vendor files (ownership set by entrypoint when volume is used)
+RUN mkdir -p /usr/src/app/uploads/vendors
 
-USER nodejs
+# Entrypoint runs as root to chown uploads when volume is mounted, then runs app as nodejs
+COPY docker-entrypoint.prod.sh /usr/src/app/docker-entrypoint.prod.sh
+RUN chmod +x /usr/src/app/docker-entrypoint.prod.sh
 
 EXPOSE 5000
 
-# Health check
+# Health check (runs as root; entrypoint will have set up app to run as nodejs)
 HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
   CMD node -e "require('http').get('http://localhost:5000/health', (r) => {process.exit(r.statusCode === 200 ? 0 : 1)})"
 
+ENTRYPOINT ["/usr/src/app/docker-entrypoint.prod.sh"]
 CMD [ "node", "dist/index.js" ]

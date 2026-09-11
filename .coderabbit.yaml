@@ -1,0 +1,41 @@
+# yaml-language-server: $schema=https://coderabbit.ai/integrations/schema.v2.json
+language: en-US
+reviews:
+  profile: assertive
+  request_changes_workflow: true
+  high_level_summary: true
+  auto_review:
+    enabled: true
+    drafts: false
+    base_branches: [main]
+  path_filters:
+    - "!**/package-lock.json"
+    - "!**/.next/**"
+    - "!**/dist/**"
+    - "!**/node_modules/**"
+    - "!**/*.png"
+    - "!**/*.jpg"
+    - "!**/*.svg"
+  instructions: |
+    Review Awoof as an Express 5, PostgreSQL, Next.js 15, React 19, and
+    embeddable JavaScript widget repository.
+
+    Prioritize payment correctness, webhook authenticity and idempotency,
+    database transaction isolation, authorization, student/vendor data
+    boundaries, upload safety, deployment rollback, and missing tests.
+
+    PostgreSQL migrations are append-only. Flag transaction code that uses
+    pool-level queries between BEGIN and COMMIT instead of one checked-out
+    client. Payment completion must validate the stored reference and amount,
+    serialize concurrent callbacks, and provide a durable retry path.
+
+    Widget postMessage receivers must validate both event.origin and source;
+    token messages must use an exact targetOrigin. Treat API keys and URLs from
+    query parameters as untrusted input.
+
+    For frontend changes, check WCAG 2.2 AA fundamentals: accessible names,
+    form labels, keyboard operation, visible focus, semantic landmarks, and
+    reduced-motion support.
+
+    Findings must cite a concrete changed file and line. Do not invent missing
+    controls without checking the complete changed file.

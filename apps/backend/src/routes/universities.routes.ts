@@ -23,7 +23,7 @@ router.get(
 
 /**
  * @route   GET /api/universities/:id/verification-methods
- * @desc    Get available verification methods for a university
+ * @desc    Retired (410); use /api/verification/methods/:universityId
  * @access  Public
  */
 router.get(

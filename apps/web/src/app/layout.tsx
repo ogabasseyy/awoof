@@ -1,8 +1,14 @@
-import { Inter } from 'next/font/google'
+import { Plus_Jakarta_Sans } from 'next/font/google'
 import './globals.css'
 import { AuthProvider } from '@/contexts/AuthContext'
+import { ConfirmProvider } from '@/components/ui/ConfirmDialog'
+import { AppToaster } from '@/components/ui/AppToaster'
 
-const inter = Inter({ subsets: ['latin'] })
+const plusJakarta = Plus_Jakarta_Sans({
+  subsets: ['latin'],
+  variable: '--font-sans',
+  display: 'swap',
+})
 
 export const metadata = {
   title: 'Awoof - Student Discounts',
@@ -24,9 +30,12 @@ export const metadata = {
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
     <html lang="en">
-      <body className={inter.className}>
+      <body className={`${plusJakarta.variable} ${plusJakarta.className} antialiased`}>
         <AuthProvider>
-          {children}
+          <ConfirmProvider>
+            {children}
+            <AppToaster />
+          </ConfirmProvider>
         </AuthProvider>
       </body>
     </html>

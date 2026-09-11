@@ -10,6 +10,7 @@ import { useForm } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { z } from 'zod';
 import apiClient from '@/lib/api-client';
+import { AuthShell } from '@/components/auth/AuthShell';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
@@ -26,7 +27,6 @@ const resetPasswordSchema = z.object({
 
 type ResetPasswordFormData = z.infer<typeof resetPasswordSchema>;
 
-// Helper function to mask email
 function maskEmail(email: string): string {
     if (!email || !email.includes('@')) return email;
     const [localPart, domain] = email.split('@');
@@ -57,7 +57,6 @@ function AdminResetPasswordContent() {
         },
     });
 
-    // Get email from query params
     useEffect(() => {
         const emailFromQuery = searchParams.get('email');
         if (emailFromQuery) {
@@ -71,7 +70,6 @@ function AdminResetPasswordContent() {
         try {
             setIsLoading(true);
             setError(null);
-            // Use email from state if data.email is empty (from hidden input)
             const emailToUse = email || data.email;
 
             if (!emailToUse) {
@@ -105,12 +103,10 @@ function AdminResetPasswordContent() {
     const handleFormSubmit = (e: React.FormEvent) => {
         e.preventDefault();
 
-        // Get form data manually
         const formData = new FormData(e.currentTarget as HTMLFormElement);
         const otp = formData.get('otp') as string;
         const formEmail = formData.get('email') as string;
 
-        // Use email from state if available, otherwise from form
         const emailToUse = email || formEmail;
 
         if (!emailToUse) {
@@ -123,7 +119,6 @@ function AdminResetPasswordContent() {
             return;
         }
 
-        // Call verifyOTP directly
         verifyOTP({ email: emailToUse, otp });
     };
 
@@ -132,7 +127,6 @@ function AdminResetPasswordContent() {
             setIsLoading(true);
             setError(null);
 
-            // Use stored email and OTP from verification step
             const emailToUse = email || data.email;
             const otpToUse = verifiedOTP || data.otp;
 
@@ -160,7 +154,6 @@ function AdminResetPasswordContent() {
     const handleResetFormSubmit = (e: React.FormEvent) => {
         e.preventDefault();
 
-        // Get form data manually
         const formData = new FormData(e.currentTarget as HTMLFormElement);
         const password = formData.get('password') as string;
         const confirmPassword = formData.get('confirmPassword') as string;
@@ -175,7 +168,6 @@ function AdminResetPasswordContent() {
             return;
         }
 
-        // Call resetPassword directly
         resetPassword({
             email: email || '',
             otp: verifiedOTP || '',
@@ -186,150 +178,122 @@ function AdminResetPasswordContent() {
 
     if (step === 'verify') {
         return (
-            <div className="min-h-screen flex bg-white">
-                <div className="flex-2 flex items-center justify-center px-8 lg:px-16">
-                    <div className="w-full max-w-md">
-                        <h1 className="text-2xl font-bold mb-2 text-left">Verify OTP</h1>
-                        <p className="text-gray-600 mb-8 text-left">
-                            {email ? (
-                                <>
-                                    Enter the 6-digit OTP sent to <span className="font-medium">{maskEmail(email)}</span>.
-                                </>
-                            ) : (
-                                'Enter the 6-digit OTP sent to your email address.'
-                            )}
-                        </p>
-
-                        {error && (
-                            <div className="mb-4 p-3 bg-red-50 border border-red-200 text-red-700 rounded-md text-sm">
-                                {error}
-                            </div>
-                        )}
-
-                        <form onSubmit={handleFormSubmit} className="space-y-5">
-                            {email && <input type="hidden" name="email" value={email} />}
-
-                            {!email && (
-                                <div>
-                                    <Label htmlFor="email" className="text-left block mb-2">Email</Label>
-                                    <Input
-                                        id="email"
-                                        name="email"
-                                        type="email"
-                                        placeholder="you@example.com"
-                                        aria-invalid={errors.email ? 'true' : 'false'}
-                                        className="w-full"
-                                    />
-                                    {errors.email && (
-                                        <p className="mt-1 text-sm text-red-600 text-left">{errors.email.message}</p>
-                                    )}
-                                </div>
-                            )}
-
-                            <div>
-                                <Label htmlFor="otp" className="text-left block mb-2">OTP</Label>
-                                <Input
-                                    id="otp"
-                                    name="otp"
-                                    type="text"
-                                    placeholder="000000"
-                                    maxLength={6}
-                                    aria-invalid={errors.otp ? 'true' : 'false'}
-                                    className="w-full"
-                                />
-                                {errors.otp && (
-                                    <p className="mt-1 text-sm text-red-600 text-left">{errors.otp.message}</p>
-                                )}
-                            </div>
-
-                            <Button type="submit" className="w-full" disabled={isLoading}>
-                                {isLoading ? 'Verifying...' : 'Verify OTP'}
-                            </Button>
-                        </form>
+            <AuthShell
+                role="admin"
+                title="Verify OTP"
+                subtitle={
+                    email
+                        ? `Enter the 6-digit OTP sent to ${maskEmail(email)}.`
+                        : 'Enter the 6-digit OTP sent to your email address.'
+                }
+            >
+                {error && (
+                    <div className="mb-4 p-3 bg-red-50 border border-red-200 text-red-700 rounded-xl text-sm">
+                        {error}
                     </div>
-                </div>
-                <div className="hidden lg:block flex-3 bg-cover bg-center bg-no-repeat min-h-screen" style={{ backgroundImage: 'url(/images/auth.png)' }}>
-                    <div className="h-full flex items-center justify-end p-8">
-                        <div className="text-black text-right">
-                            <h2 className="text-3xl font-bold mb-4">Awoof</h2>
-                            <p className="text-lg">Admin Portal</p>
+                )}
+
+                <form onSubmit={handleFormSubmit} className="space-y-5">
+                    {email && <input type="hidden" name="email" value={email} />}
+
+                    {!email && (
+                        <div>
+                            <Label htmlFor="email" className="text-left block mb-2">Email</Label>
+                            <Input
+                                id="email"
+                                name="email"
+                                type="email"
+                                placeholder="you@example.com"
+                                aria-invalid={errors.email ? 'true' : 'false'}
+                                className="w-full"
+                            />
+                            {errors.email && (
+                                <p className="mt-1 text-sm text-red-600 text-left">{errors.email.message}</p>
+                            )}
                         </div>
+                    )}
+
+                    <div>
+                        <Label htmlFor="otp" className="text-left block mb-2">OTP</Label>
+                        <Input
+                            id="otp"
+                            name="otp"
+                            type="text"
+                            placeholder="000000"
+                            maxLength={6}
+                            aria-invalid={errors.otp ? 'true' : 'false'}
+                            className="w-full"
+                        />
+                        {errors.otp && (
+                            <p className="mt-1 text-sm text-red-600 text-left">{errors.otp.message}</p>
+                        )}
                     </div>
-                </div>
-            </div>
+
+                    <Button type="submit" className="w-full rounded-full h-11 font-semibold" disabled={isLoading}>
+                        {isLoading ? 'Verifying...' : 'Verify OTP'}
+                    </Button>
+                </form>
+            </AuthShell>
         );
     }
 
     return (
-        <div className="min-h-screen flex bg-white">
-            <div className="flex-2 flex items-center justify-center px-8 lg:px-16">
-                <div className="w-full max-w-md">
-                    <h1 className="text-2xl font-bold mb-2 text-left">Reset Password</h1>
-                    <p className="text-gray-600 mb-8 text-left">
-                        Enter your new password below.
-                    </p>
+        <AuthShell
+            role="admin"
+            title="Reset Password"
+            subtitle="Enter your new password below."
+        >
+            {error && (
+                <div className="mb-4 p-3 bg-red-50 border border-red-200 text-red-700 rounded-xl text-sm">
+                    {error}
+                </div>
+            )}
 
-                    {error && (
-                        <div className="mb-4 p-3 bg-red-50 border border-red-200 text-red-700 rounded-md text-sm">
-                            {error}
-                        </div>
+            <form onSubmit={handleResetFormSubmit} className="space-y-5">
+                <input type="hidden" name="email" value={email} />
+                <input type="hidden" name="otp" value={verifiedOTP} />
+
+                <div>
+                    <Label htmlFor="password" className="text-left block mb-2">New Password</Label>
+                    <Input
+                        id="password"
+                        name="password"
+                        type="password"
+                        placeholder="At least 8 characters"
+                        aria-invalid={errors.password ? 'true' : 'false'}
+                        className="w-full"
+                    />
+                    {errors.password && (
+                        <p className="mt-1 text-sm text-red-600 text-left">{errors.password.message}</p>
                     )}
-
-                    <form onSubmit={handleResetFormSubmit} className="space-y-5">
-                        <input type="hidden" name="email" value={email} />
-                        <input type="hidden" name="otp" value={verifiedOTP} />
-
-                        <div>
-                            <Label htmlFor="password" className="text-left block mb-2">New Password</Label>
-                            <Input
-                                id="password"
-                                name="password"
-                                type="password"
-                                placeholder="At least 8 characters"
-                                aria-invalid={errors.password ? 'true' : 'false'}
-                                className="w-full"
-                            />
-                            {errors.password && (
-                                <p className="mt-1 text-sm text-red-600 text-left">{errors.password.message}</p>
-                            )}
-                        </div>
-
-                        <div>
-                            <Label htmlFor="confirmPassword" className="text-left block mb-2">Confirm New Password</Label>
-                            <Input
-                                id="confirmPassword"
-                                name="confirmPassword"
-                                type="password"
-                                placeholder="Re-enter your new password"
-                                aria-invalid={errors.confirmPassword ? 'true' : 'false'}
-                                className="w-full"
-                            />
-                            {errors.confirmPassword && (
-                                <p className="mt-1 text-sm text-red-600 text-left">{errors.confirmPassword.message}</p>
-                            )}
-                        </div>
-
-                        <Button type="submit" className="w-full" disabled={isLoading}>
-                            {isLoading ? 'Resetting...' : 'Reset Password'}
-                        </Button>
-                    </form>
                 </div>
-            </div>
-            <div className="hidden lg:block flex-3 bg-cover bg-center bg-no-repeat min-h-screen" style={{ backgroundImage: 'url(/images/auth.png)' }}>
-                <div className="h-full flex items-center justify-end p-8">
-                    <div className="text-black text-right">
-                        <h2 className="text-3xl font-bold mb-4">Awoof</h2>
-                        <p className="text-lg">Admin Portal</p>
-                    </div>
+
+                <div>
+                    <Label htmlFor="confirmPassword" className="text-left block mb-2">Confirm New Password</Label>
+                    <Input
+                        id="confirmPassword"
+                        name="confirmPassword"
+                        type="password"
+                        placeholder="Re-enter your new password"
+                        aria-invalid={errors.confirmPassword ? 'true' : 'false'}
+                        className="w-full"
+                    />
+                    {errors.confirmPassword && (
+                        <p className="mt-1 text-sm text-red-600 text-left">{errors.confirmPassword.message}</p>
+                    )}
                 </div>
-            </div>
-        </div>
+
+                <Button type="submit" className="w-full rounded-full h-11 font-semibold" disabled={isLoading}>
+                    {isLoading ? 'Resetting...' : 'Reset Password'}
+                </Button>
+            </form>
+        </AuthShell>
     );
 }
 
 export default function AdminResetPasswordPage() {
     return (
-        <Suspense fallback={<div className="min-h-screen flex items-center justify-center bg-white">Loading...</div>}>
+        <Suspense fallback={<AuthShell role="admin" title="Loading..." subtitle="Please wait."><div /></AuthShell>}>
             <AdminResetPasswordContent />
         </Suspense>
     );

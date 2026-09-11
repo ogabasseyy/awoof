@@ -7,7 +7,7 @@
 'use client';
 
 import { useState, useEffect } from 'react';
-import { BarChart3, CreditCard, LayoutDashboard, LifeBuoy, Puzzle, Settings, ShoppingBag, Tag, Code, Key, Copy, Check, BookOpen, Webhook, CheckCircle2, AlertCircle } from 'lucide-react';
+import { BarChart3, CreditCard, LayoutDashboard, LifeBuoy, Puzzle, Settings, ShoppingBag, Tag, Code, Key, Copy, Check, Webhook, CheckCircle2, AlertCircle } from 'lucide-react';
 import ProtectedRoute from '@/components/ProtectedRoute';
 import { useAuth } from '@/contexts/AuthContext';
 import { Button } from '@/components/ui/button';
@@ -16,6 +16,9 @@ import { Label } from '@/components/ui/label';
 import { DashboardLayout } from '@/components/dashboard';
 import type { User } from '@/lib/auth';
 import apiClient from '@/lib/api-client';
+import toast from 'react-hot-toast';
+import { useConfirm } from '@/components/ui/ConfirmDialog';
+import { getApiErrorMessage } from '@/lib/api-error';
 
 const iconProps = { className: 'h-5 w-5', strokeWidth: 1.5, fill: 'currentColor' as const };
 
@@ -50,8 +53,17 @@ interface PaymentSettings {
     paystackSubaccountCode: string | null;
 }
 
+interface WidgetConfig {
+    vendorId: string;
+    allowedDomains: string[];
+    allowedOrigins?: string[];
+    apiKey: string;
+    status: string;
+}
+
 export default function VendorIntegrationPage() {
     const { user, logout } = useAuth();
+    const confirm = useConfirm();
     const [apiKey, setApiKey] = useState<string | null>(null);
     const [apiKeyInfo, setApiKeyInfo] = useState<ApiKeyInfo | null>(null);
     const [isGeneratingApiKey, setIsGeneratingApiKey] = useState(false);
@@ -59,6 +71,10 @@ export default function VendorIntegrationPage() {
     const [copiedText, setCopiedText] = useState<string | null>(null);
     const [paymentSettings, setPaymentSettings] = useState<PaymentSettings | null>(null);
     const [activeTab, setActiveTab] = useState<'overview' | 'widget' | 'api' | 'webhook'>('overview');
+    const [widgetConfig, setWidgetConfig] = useState<WidgetConfig | null>(null);
+    const [widgetConfigLoading, setWidgetConfigLoading] = useState(false);
+    const [newDomain, setNewDomain] = useState('');
+    const [savingWidgetConfig, setSavingWidgetConfig] = useState(false);
 
     type VendorProfile = { companyName?: string | null; name?: string | null };
     const extendedUser = user as (User & { profile?: VendorProfile }) | null;
@@ -66,13 +82,29 @@ export default function VendorIntegrationPage() {
     const displayName = companyName ?? extendedUser?.profile?.name ?? extendedUser?.email ?? 'Vendor';
 
     // Get API base URL
-    const apiBaseUrl = typeof window !== 'undefined'
-        ? window.location.origin.replace('3000', '5001')
-        : 'https://api.awoof.com';
+    const apiBaseUrl = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:5001';
 
     useEffect(() => {
         fetchIntegrationData();
     }, []);
+
+    useEffect(() => {
+        if (activeTab === 'widget') {
+            fetchWidgetConfig();
+        }
+    }, [activeTab]);
+
+    const fetchWidgetConfig = async () => {
+        try {
+            setWidgetConfigLoading(true);
+            const res = await apiClient.get('/vendors/widget-config');
+            setWidgetConfig(res.data?.data ?? null);
+        } catch {
+            setWidgetConfig(null);
+        } finally {
+            setWidgetConfigLoading(false);
+        }
+    };
 
     const fetchIntegrationData = async () => {
         try {
@@ -103,21 +135,24 @@ export default function VendorIntegrationPage() {
     };
 
     const handleGenerateApiKey = async () => {
-        if (!confirm('Generating a new API key will revoke your existing key. Continue?')) {
-            return;
-        }
+        const ok = await confirm({
+            title: 'Generate new API key?',
+            description: 'This will revoke your existing key. Copy the new key immediately — it will not be shown again.',
+            confirmLabel: 'Generate key',
+            variant: 'destructive',
+        });
+        if (!ok) return;
 
         try {
             setIsGeneratingApiKey(true);
             const response = await apiClient.post('/vendors/payment/api-key');
             const newApiKey = response.data.data.apiKey;
             setApiKey(newApiKey);
-            alert('API key generated successfully! Make sure to copy it now - it will not be shown again.');
+            toast.success('API key generated — copy it now');
             await fetchIntegrationData();
         } catch (error: unknown) {
             console.error('Error generating API key:', error);
-            const errorMessage = (error as { response?: { data?: { message?: string } } })?.response?.data?.message;
-            alert(errorMessage || 'Failed to generate API key');
+            toast.error(getApiErrorMessage(error, 'Failed to generate API key'));
         } finally {
             setIsGeneratingApiKey(false);
         }
@@ -349,168 +384,117 @@ export default function VendorIntegrationPage() {
                     {/* Widget Integration Tab */}
                     {activeTab === 'widget' && (
                         <div className="space-y-6">
+                            {/* Widget config: allowed domains + API key */}
                             <div className="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm">
-                                <h2 className="mb-4 text-lg font-semibold text-slate-900">Widget Integration</h2>
-                                <p className="mb-6 text-sm text-slate-600">
-                                    Add the Awoof verification widget to your website to verify students and apply discounts.
+                                <h2 className="mb-2 text-lg font-semibold text-slate-900">Widget settings</h2>
+                                <p className="mb-4 text-sm text-slate-600">
+                                    Add the HTTPS hostnames where your widget will run (standard port 443). Saving also authorizes those exact HTTPS origins for student disclosure consent.
                                 </p>
-
-                                <div className="space-y-6">
-                                    <div>
-                                        <h3 className="mb-2 font-semibold text-slate-900">Step 1: Add Widget Script</h3>
-                                        <p className="mb-3 text-sm text-slate-600">
-                                            Add this script tag to your website&apos;s HTML, preferably in the <code className="rounded bg-slate-100 px-1 py-0.5 text-xs">&lt;head&gt;</code> section:
-                                        </p>
-                                        <div className="flex gap-2">
-                                            <Input
-                                                value='<script src="https://widget.awoof.com/awoof.js"></script>'
-                                                readOnly
-                                                className="flex-1 font-mono text-xs"
-                                            />
-                                            <Button
-                                                type="button"
-                                                variant="outline"
-                                                size="sm"
-                                                onClick={() => copyToClipboard(
-                                                    '<script src="https://widget.awoof.com/awoof.js"></script>',
-                                                    'widget-script'
-                                                )}
-                                            >
-                                                {copiedText === 'widget-script' ? (
-                                                    <Check className="h-4 w-4" />
-                                                ) : (
-                                                    <Copy className="h-4 w-4" />
-                                                )}
-                                            </Button>
+                                {widgetConfigLoading ? (
+                                    <p className="text-slate-500 text-sm">Loading...</p>
+                                ) : widgetConfig ? (
+                                    <div className="space-y-4">
+                                        <div>
+                                            <Label className="mb-2 block">Widget API key</Label>
+                                            <div className="flex gap-2">
+                                                <Input
+                                                    value={widgetConfig.apiKey}
+                                                    readOnly
+                                                    className="flex-1 font-mono text-sm"
+                                                />
+                                                <Button type="button" variant="outline" size="sm" onClick={() => copyToClipboard(widgetConfig.apiKey, 'widget-api-key')}>
+                                                    {copiedText === 'widget-api-key' ? <Check className="h-4 w-4" /> : <Copy className="h-4 w-4" />}
+                                                </Button>
+                                            </div>
+                                            <p className="mt-1 text-xs text-slate-500">Use this in Awoof.init(&#123; apiKey: &quot;...&quot; &#125;). Keep it secret.</p>
                                         </div>
-                                    </div>
-
-                                    <div>
-                                        <h3 className="mb-2 font-semibold text-slate-900">Step 2: Verify Student</h3>
-                                        <p className="mb-3 text-sm text-slate-600">
-                                            Call the widget to verify a student before applying discount:
-                                        </p>
-                                        <div className="relative">
-                                            <pre className="overflow-x-auto rounded-lg bg-slate-900 p-4 text-xs text-slate-100">
-                                                {`Awoof.verify({
-  onSuccess: (token) => {
-    // Student verified successfully
-    // token: verification token (valid for 30 minutes)
-    // Apply student discount to cart
-    applyStudentDiscount();
-    
-    // Store token for transaction reporting
-    window.verificationToken = token;
-  },
-  onError: (error) => {
-    // Verification failed
-    console.error('Verification error:', error);
-    alert('Student verification failed');
-  }
-});`}
-                                            </pre>
-                                            <Button
-                                                type="button"
-                                                variant="outline"
-                                                size="sm"
-                                                className="absolute right-2 top-2"
-                                                onClick={() => copyToClipboard(
-                                                    `Awoof.verify({
-  onSuccess: (token) => {
-    // Student verified successfully
-    // token: verification token (valid for 30 minutes)
-    // Apply student discount to cart
-    applyStudentDiscount();
-    
-    // Store token for transaction reporting
-    window.verificationToken = token;
-  },
-  onError: (error) => {
-    // Verification failed
-    console.error('Verification error:', error);
-    alert('Student verification failed');
-  }
-});`,
-                                                    'widget-code'
-                                                )}
-                                            >
-                                                {copiedText === 'widget-code' ? (
-                                                    <Check className="h-4 w-4" />
-                                                ) : (
-                                                    <Copy className="h-4 w-4" />
-                                                )}
-                                            </Button>
-                                        </div>
-                                    </div>
-
-                                    <div>
-                                        <h3 className="mb-2 font-semibold text-slate-900">Step 3: Apply Discount</h3>
-                                        <p className="mb-3 text-sm text-slate-600">
-                                            After successful verification, apply the student discount:
-                                        </p>
-                                        <div className="relative">
-                                            <pre className="overflow-x-auto rounded-lg bg-slate-900 p-4 text-xs text-slate-100">
-                                                {`function applyStudentDiscount() {
-  // Calculate discount (e.g., 10% off)
-  const discountPercent = 10;
-  const originalPrice = getCartTotal();
-  const discountAmount = originalPrice * (discountPercent / 100);
-  const finalPrice = originalPrice - discountAmount;
-  
-  // Update cart with discounted price
-  updateCartPrice(finalPrice);
-  
-  // Show discount message
-  showMessage('Student discount applied!');
-}`}
-                                            </pre>
-                                            <Button
-                                                type="button"
-                                                variant="outline"
-                                                size="sm"
-                                                className="absolute right-2 top-2"
-                                                onClick={() => copyToClipboard(
-                                                    `function applyStudentDiscount() {
-  // Calculate discount (e.g., 10% off)
-  const discountPercent = 10;
-  const originalPrice = getCartTotal();
-  const discountAmount = originalPrice * (discountPercent / 100);
-  const finalPrice = originalPrice - discountAmount;
-  
-  // Update cart with discounted price
-  updateCartPrice(finalPrice);
-  
-  // Show discount message
-  showMessage('Student discount applied!');
-}`,
-                                                    'discount-code'
-                                                )}
-                                            >
-                                                {copiedText === 'discount-code' ? (
-                                                    <Check className="h-4 w-4" />
-                                                ) : (
-                                                    <Copy className="h-4 w-4" />
-                                                )}
-                                            </Button>
-                                        </div>
-                                    </div>
-
-                                    <div className="rounded-lg bg-blue-50 p-4">
-                                        <div className="flex items-start gap-2">
-                                            <BookOpen className="mt-0.5 h-5 w-5 text-blue-600" />
-                                            <div>
-                                                <h3 className="font-semibold text-blue-900">Need More Help?</h3>
-                                                <p className="mt-1 text-sm text-blue-800">
-                                                    Check out our{' '}
-                                                    <a href="/docs/widget" className="underline hover:text-blue-900">
-                                                        widget documentation
-                                                    </a>{' '}
-                                                    for advanced configuration options and examples.
-                                                </p>
+                                        <div>
+                                            <Label className="mb-2 block">Allowed domains</Label>
+                                            {widgetConfig.allowedDomains.length > 0 && !widgetConfig.allowedOrigins?.length && (
+                                                <Button variant="outline" disabled={savingWidgetConfig} onClick={async () => {
+                                                    setSavingWidgetConfig(true);
+                                                    try {
+                                                        await apiClient.put('/vendors/widget-config', { allowedDomains: widgetConfig.allowedDomains });
+                                                        await fetchWidgetConfig();
+                                                        toast.success('HTTPS disclosure origins saved');
+                                                    } catch (error) { toast.error(getApiErrorMessage(error, 'Unable to save disclosure origins')); }
+                                                    finally { setSavingWidgetConfig(false); }
+                                                }}>Save HTTPS disclosure origins</Button>
+                                            )}
+                                            <ul className="mb-2 rounded-lg border border-slate-200 divide-y divide-slate-200">
+                                                {(widgetConfig.allowedDomains || []).map((d) => (
+                                                    <li key={d} className="flex items-center justify-between px-3 py-2 text-sm">
+                                                        <span className="font-mono">{d}</span>
+                                                        <Button
+                                                            type="button"
+                                                            variant="ghost"
+                                                            size="sm"
+                                                            className="text-red-600 hover:text-red-700"
+                                                            onClick={async () => {
+                                                                const next = (widgetConfig.allowedDomains || []).filter((x) => x !== d);
+                                                                if (next.length === 0) return;
+                                                                setSavingWidgetConfig(true);
+                                                                try {
+                                                                    await apiClient.put('/vendors/widget-config', { allowedDomains: next });
+                                                                    await fetchWidgetConfig();
+                                                                } finally {
+                                                                    setSavingWidgetConfig(false);
+                                                                }
+                                                            }}
+                                                            disabled={savingWidgetConfig || (widgetConfig.allowedDomains?.length ?? 0) <= 1}
+                                                        >
+                                                            Remove
+                                                        </Button>
+                                                    </li>
+                                                ))}
+                                            </ul>
+                                            <div className="flex gap-2">
+                                                <Input
+                                                    placeholder="example.com"
+                                                    value={newDomain}
+                                                    onChange={(e) => setNewDomain(e.target.value)}
+                                                    onKeyDown={(e) => e.key === 'Enter' && (e.preventDefault(), document.getElementById('add-domain-btn')?.click())}
+                                                    className="font-mono"
+                                                />
+                                                <Button
+                                                    id="add-domain-btn"
+                                                    type="button"
+                                                    variant="outline"
+                                                    disabled={savingWidgetConfig || !newDomain.trim()}
+                                                    onClick={async () => {
+                                                        const domain = newDomain.replace(/^https?:\/\//, '').split('/')[0].toLowerCase().trim();
+                                                        if (!domain) return;
+                                                        const current = widgetConfig.allowedDomains || [];
+                                                        if (current.includes(domain)) {
+                                                            setNewDomain('');
+                                                            return;
+                                                        }
+                                                        setSavingWidgetConfig(true);
+                                                        try {
+                                                            await apiClient.put('/vendors/widget-config', { allowedDomains: [...current, domain] });
+                                                            setNewDomain('');
+                                                            await fetchWidgetConfig();
+                                                        } finally {
+                                                            setSavingWidgetConfig(false);
+                                                        }
+                                                    }}
+                                                >
+                                                    Add domain
+                                                </Button>
                                             </div>
                                         </div>
                                     </div>
-                                </div>
+                                ) : (
+                                    <p className="text-slate-500 text-sm">Could not load widget config.</p>
+                                )}
+                            </div>
+
+                            <div className="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm">
+                                <h2 className="mb-4 text-lg font-semibold text-slate-900">Widget Integration</h2>
+                                <p className="text-sm text-slate-600">
+                                    Widget integration is not yet available. Installation instructions will appear here
+                                    when student verification and discount redemption are ready for merchant use.
+                                </p>
                             </div>
                         </div>
                     )}
@@ -807,4 +791,3 @@ export default function VendorIntegrationPage() {
         </ProtectedRoute>
     );
 }
-

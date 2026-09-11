@@ -1,0 +1,178 @@
+import assert from 'node:assert/strict';
+import { describe, it } from 'node:test';
+import type { getEffectiveEligibility } from '../verification/eligibility-read.service.js';
+import type { PoolClient, QueryResult } from 'pg';
+import {
+    completeMarketplaceTransactionWithClient,
+} from './checkout.service.js';
+
+type QueryReply = Pick<QueryResult, 'rows'>;
+const eligibleStudent: typeof getEffectiveEligibility = async () => ({
+    eligible: true, studentId: 'student-1', universityId: 'school-1', evidenceId: 'evidence-1',
+    processingGrantId: 'grant-1', method: 'student_email', verifiedAt: new Date('2026-01-01'), expiresAt: new Date('2100-01-01'),
+});
+
+function fakeClient(replies: QueryReply[]) {
+    const statements: string[] = [];
+    const query = async (text: string): Promise<QueryReply> => {
+        // Authority acquisition is exercised against PostgreSQL; these cases isolate settlement writes.
+        if (text.includes('SELECT t.student_id, s.user_id')) return { rows: [{ student_id: 'student-1', user_id: 'user-1' }] };
+        if (text === 'SELECT clock_timestamp() AS now') return { rows: [{ now: new Date('2026-01-02') }] };
+        statements.push(text.trim());
+        const reply = replies.shift();
+        if (!reply) throw new Error(`Unexpected query: ${text}`);
+        return reply;
+    };
+
+    return {
+        client: { query } as unknown as Pick<PoolClient, 'query'>,
+        statements,
+    };
+}
+
+describe('completeMarketplaceTransactionWithClient', () => {
+    for (const initialStatus of ['pending', 'failed']) {
+    it(`settles a ${initialStatus} checkout atomically when a verified payment arrives`, async () => {
+        const { client, statements } = fakeClient([
+            { rows: [] }, // BEGIN
+            {
+                rows: [{
+                    id: 'tx-1',
+                    status: initialStatus,
+                    amount: '900',
+                    list_price: '1000',
+                    product_id: 'product-1',
+                    student_id: 'student-1',
+                }],
+            },
+            { rows: [{ id: 'product-1' }] },
+            { rows: [{ id: 'tx-1' }] },
+            { rows: [] }, // savings upsert
+            { rows: [] }, // notification outbox
+            { rows: [] }, // COMMIT
+        ]);
+
+        const result = await completeMarketplaceTransactionWithClient(
+            client,
+            'awoof_reference',
+            900, eligibleStudent
+        );
+
+        assert.deepEqual(result, {
+            completed: true,
+            transactionId: 'tx-1',
+            newlyCompleted: true,
+        });
+        assert.equal(statements[0], 'BEGIN');
+        assert.match(statements[1] ?? '', /FOR UPDATE OF t/);
+        assert.match(statements[2] ?? '', /SET stock = stock - 1/);
+        assert.match(statements[3] ?? '', /SET status = 'completed'/);
+        assert.match(statements[4] ?? '', /INSERT INTO savings_stats/);
+        assert.match(statements[5] ?? '', /INSERT INTO commerce_notification_outbox/);
+        assert.equal(statements[6], 'COMMIT');
+    });
+
+    }
+
+    it('queues a verified underpayment for reconciliation without changing stock', async () => {
+        const { client, statements } = fakeClient([
+            { rows: [] }, // BEGIN
+            {
+                rows: [{
+                    id: 'tx-1',
+                    status: 'pending',
+                    amount: '900',
+                    list_price: '1000',
+                    product_id: 'product-1',
+                    student_id: 'student-1',
+                }],
+            },
+            { rows: [] }, // requires_refund update
+            { rows: [] }, // reconciliation queue insert
+            { rows: [] }, // COMMIT
+        ]);
+
+        const result = await completeMarketplaceTransactionWithClient(
+            client,
+            'awoof_reference',
+            899, eligibleStudent
+        );
+
+        assert.deepEqual(result, { completed: false, transactionId: 'tx-1' });
+        assert.deepEqual(statements, [
+            'BEGIN',
+            statements[1],
+            statements[2],
+            statements[3],
+            'COMMIT',
+        ]);
+        assert.match(statements[1] ?? '', /FOR UPDATE OF t/);
+        assert.match(statements[2] ?? '', /status = 'requires_refund'/);
+        assert.match(statements[3] ?? '', /reason/);
+        assert.equal(statements.some((text) => text.includes('stock = stock - 1')), false);
+    });
+
+    it('is idempotent when the transaction is already complete', async () => {
+        const { client, statements } = fakeClient([
+            { rows: [] }, // BEGIN
+            { rows: [{ id: 'tx-1', status: 'completed' }] },
+            { rows: [] }, // COMMIT
+        ]);
+
+        const result = await completeMarketplaceTransactionWithClient(
+            client,
+            'awoof_reference',
+            900, eligibleStudent
+        );
+
+        assert.deepEqual(result, {
+            completed: true,
+            transactionId: 'tx-1',
+            newlyCompleted: false,
+        });
+        assert.equal(statements.at(-1), 'COMMIT');
+        assert.equal(statements.some((text) => text.includes('stock = stock - 1')), false);
+    });
+
+    it('queues a verified payment for refund when stock is unavailable', async () => {
+        const { client, statements } = fakeClient([
+            { rows: [] }, // BEGIN
+            {
+                rows: [{
+                    id: 'tx-1',
+                    status: 'pending',
+                    amount: '900',
+                    list_price: '1000',
+                    product_id: 'product-1',
+                    student_id: 'student-1',
+                }],
+            },
+            { rows: [] }, // stock update
+            { rows: [] }, // requires_refund update
+            { rows: [] }, // reconciliation queue insert
+            { rows: [] }, // COMMIT
+        ]);
+
+        const result = await completeMarketplaceTransactionWithClient(
+            client,
+            'awoof_reference',
+            900, eligibleStudent
+        );
+
+        assert.deepEqual(result, { completed: false, transactionId: 'tx-1' });
+        assert.match(statements[3] ?? '', /status = 'requires_refund'/);
+        assert.match(statements[4] ?? '', /INSERT INTO payment_reconciliation_queue/);
+        assert.equal(statements[5], 'COMMIT');
+    });
+});
+
+describe('vendor commission policy', () => {
+    it('uses the global fallback and rounds fractional commissions to kobo', async () => {
+        const { effectiveVendorCommissionRate, calculateMarketplaceCommission } = await import('./checkout.service.js');
+        for (const value of [0, null, undefined, 'invalid', -1, 101]) {
+            assert.equal(effectiveVendorCommissionRate(value, 10), 10);
+        }
+        assert.equal(effectiveVendorCommissionRate('7.5', 10), 7.5);
+        assert.deepEqual(calculateMarketplaceCommission(99.99, 7.5), { commission: 7.5, vendorNet: 92.49 });
+    });
+});

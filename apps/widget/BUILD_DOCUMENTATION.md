@@ -6,6 +6,29 @@ This document outlines the specific requirements for building the **Awoof Vendor
 
 ---
 
+## Current implementation status (as of build)
+
+- **Backend**
+  - `GET /api/widget/domain-check?domain=hostname&apiKey=xxx` – validates that the request origin’s domain is in the vendor’s `widget_configs.allowed_domains`. Returns `{ allowed: true, vendorId }` or 403.
+  - `POST /api/verification/widget/token` (authenticated student) – generates a verification token for the widget; widget can use this after the user has verified (e.g. logged in as student).
+  - `GET /api/vendors/widget-config` (authenticated vendor) – returns widget config (allowedDomains, apiKey). Creates default config if none.
+  - `PUT /api/vendors/widget-config` (authenticated vendor) – update allowed domains; optional `regenerateApiKey`.
+- **Widget package** (`apps/widget`)
+  - Scaffold: Rollup UMD build, `Awoof` global, `dist/awoof.js`.
+  - `Awoof.init({ apiKey, apiBaseUrl, webAppUrl, onSuccess, onError })` – calls domain-check, stores config. `webAppUrl` is required for the verification iframe.
+  - `Awoof.verify()` – opens modal with iframe to `webAppUrl/widget/verify?apiKey=...&vendorId=...&origin=...`. Listens for `postMessage` type `AWOOF_VERIFICATION_SUCCESS`; on receipt closes modal and calls `onSuccess` / postMessage to parent.
+  - Modal component and postMessage contract in place.
+- **Web app** (`apps/web`)
+  - `/widget/verify` – embeddable page (for iframe): NDPR consent → university select → method (registration number or WhatsApp OTP) → verify via API → store tokens → `POST /api/verification/widget/token` → postMessage to parent with token. Used by the widget when the user clicks Verify.
+- **Vendor dashboard**
+  - Integration → Widget tab: Widget settings card with Widget API key (copy), Allowed domains (list, add/remove). Init/verify code example includes apiKey, apiBaseUrl, webAppUrl.
+- **Still to do**
+  - Email verification in widget flow (magic link redirect back to iframe or dedicated callback).
+  - Portal login method in widget flow.
+  - CDN deploy and script tag URL.
+
+---
+
 ## Application Purpose
 
 The widget serves as:

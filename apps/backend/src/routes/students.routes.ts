@@ -61,24 +61,22 @@ router.get(
 );
 
 // Import additional controllers
-import { NotificationController } from '../controllers/notification.controller.js';
+import { notificationController } from '../controllers/notification.controller.js';
 import { WebsiteVisitController } from '../controllers/website-visit.controller.js';
-import { SupportTicketController } from '../controllers/support-ticket.controller.js';
+import { ticketController } from '../controllers/ticket.controller.js';
 
-const notificationController = new NotificationController();
 const websiteVisitController = new WebsiteVisitController();
-const supportTicketController = new SupportTicketController();
 
 /**
  * @route   GET /api/students/notifications
- * @desc    Get student notifications
+ * @desc    Get student notifications (alias of /api/support/notifications)
  * @access  Private (Student only)
  */
 router.get(
     '/notifications',
     authenticate,
     requireRole('student'),
-    asyncHandler(notificationController.getNotifications.bind(notificationController))
+    asyncHandler(notificationController.list.bind(notificationController))
 );
 
 /**
@@ -90,19 +88,19 @@ router.put(
     '/notifications/read',
     authenticate,
     requireRole('student'),
-    asyncHandler(notificationController.markAsRead.bind(notificationController))
+    asyncHandler(notificationController.markRead.bind(notificationController))
 );
 
 /**
- * @route   DELETE /api/students/notifications
- * @desc    Delete notifications
+ * @route   DELETE /api/students/notifications/:id
+ * @desc    Delete a notification
  * @access  Private (Student only)
  */
 router.delete(
-    '/notifications',
+    '/notifications/:id',
     authenticate,
     requireRole('student'),
-    asyncHandler(notificationController.deleteNotifications.bind(notificationController))
+    asyncHandler(notificationController.remove.bind(notificationController))
 );
 
 /**
@@ -130,51 +128,41 @@ router.get(
 );
 
 /**
- * @route   POST /api/students/support-tickets
- * @desc    Create a support ticket
- * @access  Private (Student only)
+ * Support tickets (aliases → unified ticket controller)
  */
 router.post(
     '/support-tickets',
     authenticate,
     requireRole('student'),
-    asyncHandler(supportTicketController.createTicket.bind(supportTicketController))
+    asyncHandler(ticketController.create.bind(ticketController))
 );
 
-/**
- * @route   GET /api/students/support-tickets
- * @desc    Get support tickets
- * @access  Private (Student only)
- */
 router.get(
     '/support-tickets',
     authenticate,
     requireRole('student'),
-    asyncHandler(supportTicketController.getTickets.bind(supportTicketController))
+    asyncHandler(ticketController.listOwn.bind(ticketController))
 );
 
-/**
- * @route   GET /api/students/support-tickets/:id
- * @desc    Get a single support ticket with responses
- * @access  Private (Student only)
- */
 router.get(
     '/support-tickets/:id',
     authenticate,
     requireRole('student'),
-    asyncHandler(supportTicketController.getTicket.bind(supportTicketController))
+    asyncHandler(ticketController.getOwn.bind(ticketController))
 );
 
-/**
- * @route   POST /api/students/support-tickets/:id/responses
- * @desc    Add a response to a support ticket
- * @access  Private (Student only)
- */
 router.post(
     '/support-tickets/:id/responses',
     authenticate,
     requireRole('student'),
-    asyncHandler(supportTicketController.addResponse.bind(supportTicketController))
+    asyncHandler(ticketController.replyOwn.bind(ticketController))
+);
+
+router.post(
+    '/support-tickets/:id/messages',
+    authenticate,
+    requireRole('student'),
+    asyncHandler(ticketController.replyOwn.bind(ticketController))
 );
 
 export default router;

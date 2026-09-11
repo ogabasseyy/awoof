@@ -68,7 +68,7 @@ export default function NotificationsPage() {
 
     const deleteNotification = async (id: string) => {
         try {
-            await apiClient.delete('/students/notifications', { data: { notificationIds: [id] } });
+            await apiClient.delete(`/students/notifications/${id}`);
             const notification = notifications.find(n => n.id === id);
             setNotifications(notifications.filter(n => n.id !== id));
             if (notification && !notification.read) {

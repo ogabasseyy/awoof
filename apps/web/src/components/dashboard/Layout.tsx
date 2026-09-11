@@ -25,9 +25,16 @@ export function DashboardLayout({
     };
 
     return (
-        <div className="h-screen overflow-hidden bg-slate-50">
+        <div className="h-screen overflow-hidden bg-[#F4F7FD]">
+            <div
+                aria-hidden
+                className="pointer-events-none fixed inset-0 -z-10"
+                style={{
+                    background:
+                        'radial-gradient(ellipse 60% 40% at 80% 0%, rgba(29,78,216,0.08), transparent 50%)',
+                }}
+            />
             <div className="flex h-full">
-                {/* Desktop sidebar */}
                 <div className="hidden lg:block">
                     <DashboardSidebar
                         navItems={navItems}
@@ -37,7 +44,6 @@ export function DashboardLayout({
                     />
                 </div>
 
-                {/* Mobile sidebar */}
                 <div
                     className={cn(
                         'fixed inset-y-0 left-0 z-30 w-64 transition-transform duration-300 lg:hidden',
@@ -53,9 +59,11 @@ export function DashboardLayout({
                     />
                 </div>
 
-                {/* Overlay for mobile nav */}
                 {mobileNavOpen && (
-                    <div className="fixed inset-0 z-20 bg-slate-900/40 backdrop-blur-sm lg:hidden" onClick={closeMobileNav} />
+                    <div
+                        className="fixed inset-0 z-20 bg-slate-900/40 backdrop-blur-sm lg:hidden"
+                        onClick={closeMobileNav}
+                    />
                 )}
 
                 <div className="flex min-h-0 flex-1 flex-col">
@@ -67,11 +75,17 @@ export function DashboardLayout({
                     />
 
                     <main className="flex-1 overflow-y-auto">
-                        <div className="mx-auto w-full max-w-7xl px-6 py-8">
+                        <div className="mx-auto w-full max-w-7xl px-4 py-6 sm:px-6 sm:py-8">
                             {(pageTitle || subtitle) && (
-                                <div className="mb-8">
-                                    {pageTitle && <h1 className="text-2xl font-semibold text-slate-900">{pageTitle}</h1>}
-                                    {/* {subtitle && <p className="mt-1 text-sm text-slate-500">{subtitle}</p>} */}
+                                <div className="mb-6 md:mb-8">
+                                    {pageTitle && (
+                                        <h1 className="text-2xl md:text-3xl font-extrabold tracking-tight text-slate-900">
+                                            {pageTitle}
+                                        </h1>
+                                    )}
+                                    {subtitle && (
+                                        <p className="mt-1 text-sm text-slate-500">{subtitle}</p>
+                                    )}
                                 </div>
                             )}
                             {children}
@@ -82,5 +96,3 @@ export function DashboardLayout({
         </div>
     );
 }
-
-

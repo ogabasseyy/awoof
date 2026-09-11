@@ -6,6 +6,7 @@
 
 'use client';
 
+import { PrivateDocumentDownload } from '@/components/PrivateDocumentDownload';
 import { useState, useEffect } from 'react';
 import { BarChart3, CreditCard, LayoutDashboard, LifeBuoy, Puzzle, Settings, ShoppingBag, Tag, Save, Upload, Image as ImageIcon, FileText, Building2, Phone, Globe, Tag as TagIcon, FileEdit } from 'lucide-react';
 import ProtectedRoute from '@/components/ProtectedRoute';
@@ -81,7 +82,7 @@ export default function VendorSettingsPage() {
         getFile,
         getError,
     } = useFileUpload({
-        maxSize: 5 * 1024 * 1024, // 5MB
+        maxSize: 2 * 1024 * 1024, // 2MB
     });
 
     // Business categories (you can fetch these from backend if available)
@@ -198,11 +199,7 @@ export default function VendorSettingsPage() {
                 return;
             }
 
-            await apiClient.post('/vendors/upload', formData, {
-                headers: {
-                    'Content-Type': 'multipart/form-data',
-                },
-            });
+            await apiClient.post('/vendors/upload', formData);
 
             setSuccessMessage('Files uploaded successfully');
 
@@ -292,8 +289,8 @@ export default function VendorSettingsPage() {
                             <button
                                 onClick={() => setActiveTab('profile')}
                                 className={`whitespace-nowrap border-b-2 px-1 py-4 text-sm font-medium ${activeTab === 'profile'
-                                        ? 'border-[#1D4ED8] text-[#1D4ED8]'
-                                        : 'border-transparent text-slate-500 hover:border-slate-300 hover:text-slate-700'
+                                    ? 'border-[#1D4ED8] text-[#1D4ED8]'
+                                    : 'border-transparent text-slate-500 hover:border-slate-300 hover:text-slate-700'
                                     }`}
                             >
                                 <FileEdit className="inline h-4 w-4 mr-2" />
@@ -302,8 +299,8 @@ export default function VendorSettingsPage() {
                             <button
                                 onClick={() => setActiveTab('files')}
                                 className={`whitespace-nowrap border-b-2 px-1 py-4 text-sm font-medium ${activeTab === 'files'
-                                        ? 'border-[#1D4ED8] text-[#1D4ED8]'
-                                        : 'border-transparent text-slate-500 hover:border-slate-300 hover:text-slate-700'
+                                    ? 'border-[#1D4ED8] text-[#1D4ED8]'
+                                    : 'border-transparent text-slate-500 hover:border-slate-300 hover:text-slate-700'
                                     }`}
                             >
                                 <Upload className="inline h-4 w-4 mr-2" />
@@ -474,10 +471,10 @@ export default function VendorSettingsPage() {
                                             onChange={(file) => setFile('logoImage', file)}
                                             accept="image/*"
                                             error={getError('logoImage') || undefined}
-                                            maxSize={5 * 1024 * 1024} // 5MB
+                                            maxSize={2 * 1024 * 1024} // 2MB
                                         />
                                         <p className="mt-2 text-sm text-slate-500">
-                                            Logo is required. Max file size: 5MB. Recommended: Square image (e.g., 512x512px)
+                                            Logo is required. Max file size: 2MB. Recommended: Square image (e.g., 512x512px)
                                         </p>
                                     </div>
 
@@ -507,10 +504,10 @@ export default function VendorSettingsPage() {
                                             onChange={(file) => setFile('bannerImage', file)}
                                             accept="image/*"
                                             error={getError('bannerImage') || undefined}
-                                            maxSize={5 * 1024 * 1024} // 5MB
+                                            maxSize={2 * 1024 * 1024} // 2MB
                                         />
                                         <p className="mt-2 text-sm text-slate-500">
-                                            Optional. Max file size: 5MB. Recommended: 1920x600px
+                                            Optional. Max file size: 2MB. Recommended: 1920x600px
                                         </p>
                                     </div>
 
@@ -525,14 +522,7 @@ export default function VendorSettingsPage() {
                                                 <Label className="text-sm">Document Front</Label>
                                                 {profile?.document_front_url && (
                                                     <div className="mt-2 mb-2">
-                                                        <a
-                                                            href={getImageUrl(profile.document_front_url) || '#'}
-                                                            target="_blank"
-                                                            rel="noopener noreferrer"
-                                                            className="text-sm text-[#1D4ED8] hover:underline"
-                                                        >
-                                                            View current document
-                                                        </a>
+                                                        <PrivateDocumentDownload path={profile.document_front_url} />
                                                     </div>
                                                 )}
                                                 <FileUploadField
@@ -541,21 +531,14 @@ export default function VendorSettingsPage() {
                                                     onChange={(file) => setFile('documentFront', file)}
                                                     accept="image/*,.pdf"
                                                     error={getError('documentFront') || undefined}
-                                                    maxSize={5 * 1024 * 1024} // 5MB
+                                                    maxSize={2 * 1024 * 1024} // 2MB
                                                 />
                                             </div>
                                             <div>
                                                 <Label className="text-sm">Document Back</Label>
                                                 {profile?.document_back_url && (
                                                     <div className="mt-2 mb-2">
-                                                        <a
-                                                            href={getImageUrl(profile.document_back_url) || '#'}
-                                                            target="_blank"
-                                                            rel="noopener noreferrer"
-                                                            className="text-sm text-[#1D4ED8] hover:underline"
-                                                        >
-                                                            View current document
-                                                        </a>
+                                                        <PrivateDocumentDownload path={profile.document_back_url} />
                                                     </div>
                                                 )}
                                                 <FileUploadField
@@ -564,12 +547,12 @@ export default function VendorSettingsPage() {
                                                     onChange={(file) => setFile('documentBack', file)}
                                                     accept="image/*,.pdf"
                                                     error={getError('documentBack') || undefined}
-                                                    maxSize={5 * 1024 * 1024} // 5MB
+                                                    maxSize={2 * 1024 * 1024} // 2MB
                                                 />
                                             </div>
                                         </div>
                                         <p className="mt-2 text-sm text-slate-500">
-                                            Optional. Upload business certificate or ID. Max file size: 5MB per file.
+                                            Optional. Upload business certificate or ID. Max file size: 2MB per file.
                                         </p>
                                     </div>
 

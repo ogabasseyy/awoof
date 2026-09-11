@@ -1,6 +1,6 @@
 # syntax=docker.io/docker/dockerfile:1
 
-FROM node:18-alpine AS base
+FROM node:24-alpine AS base
 
 # Install dependencies only when needed
 FROM base AS deps
@@ -25,8 +25,9 @@ COPY --from=deps /app/node_modules ./node_modules
 COPY . .
 
 # NEXT_PUBLIC_* must be set at build time so they are baked into the client bundle
-ARG NEXT_PUBLIC_API_URL=http://localhost:5001
+ARG NEXT_PUBLIC_API_URL
 ENV NEXT_PUBLIC_API_URL=${NEXT_PUBLIC_API_URL}
+RUN node -e 'const u = new URL(process.env.NEXT_PUBLIC_API_URL); if (u.protocol !== "https:" || u.username || u.password) throw new Error("Production API URL must use HTTPS without credentials")'
 
 # Next.js collects completely anonymous telemetry data about general usage.
 # Learn more here: https://nextjs.org/telemetry

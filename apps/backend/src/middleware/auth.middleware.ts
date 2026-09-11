@@ -9,6 +9,8 @@
 import type { Request, Response, NextFunction } from 'express';
 import { jwtService } from '../services/auth/jwt.service.js';
 import { UnauthorizedError } from '../common/errors/AppError.js';
+import { getPool } from '../config/database.js';
+import { authenticateReportingKey } from '../services/auth/reporting-key.service.js';
 
 /**
  * Extended Express Request with user data
@@ -77,5 +79,33 @@ export const requireRole = (...allowedRoles: string[]) => {
 
         next();
     };
+};
+
+/**
+ * Vendor JWT or hashed reporting API key (`awoof_...`).
+ */
+export const authenticateVendorJwtOrApiKey = async (
+    req: AuthRequest,
+    res: Response,
+    next: NextFunction
+): Promise<void> => {
+    const token = getBearerToken(req);
+    if (!token.startsWith('awoof_')) {
+        authenticate(req, res, next);
+        return;
+    }
+
+    try {
+        const row = await authenticateReportingKey(getPool(), token);
+        req.user = {
+            id: row.user_id,
+            userId: row.user_id,
+            email: row.email,
+            role: 'vendor',
+        };
+        next();
+    } catch (error) {
+        next(error);
+    }
 };
 

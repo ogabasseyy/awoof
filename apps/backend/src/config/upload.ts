@@ -15,10 +15,13 @@ if (!fs.existsSync(uploadsDir)) {
     fs.mkdirSync(uploadsDir, { recursive: true });
 }
 
+const privateDir = path.join(process.cwd(), 'uploads', 'private-vendors');
+fs.mkdirSync(privateDir, { recursive: true, mode: 0o700 });
+
 // Configure storage
 const storage = multer.diskStorage({
-    destination: (_req, _file, cb) => {
-        cb(null, uploadsDir);
+    destination: (_req, file, cb) => {
+        cb(null, ['documentFront', 'documentBack'].includes(file.fieldname) ? privateDir : uploadsDir);
     },
     filename: (_req, file, cb) => {
         const uniqueName = `${randomUUID()}${path.extname(file.originalname)}`;
@@ -48,7 +51,7 @@ export const upload = multer({
     storage,
     fileFilter,
     limits: {
-        fileSize: 5 * 1024 * 1024, // 5MB max file size
+        fileSize: 2 * 1024 * 1024, // 2MB max file size
     },
 });
 
@@ -75,8 +78,8 @@ export const csvUpload = multer({
 
 // Helper to get file URL
 // Returns relative path - frontend should construct full URL using NEXT_PUBLIC_API_URL
-export function getFileUrl(filename: string): string {
-    return `/uploads/vendors/${filename}`;
+export function getFileUrl(filename: string, privateDocument = false): string {
+    return `/uploads/${privateDocument ? 'private-vendors' : 'vendors'}/${filename}`;
 }
 
 // Magic byte signatures for file type validation

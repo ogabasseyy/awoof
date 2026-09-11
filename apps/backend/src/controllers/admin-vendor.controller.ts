@@ -5,8 +5,14 @@
  */
 
 import type { Request, Response } from 'express';
+import { z } from 'zod';
 import { db } from '../config/database.js';
+import { BadRequestError, ForbiddenError, NotFoundError } from '../common/errors/AppError.js';
 import { success } from '../common/utils/response.js';
+
+const updateVendorStatusSchema = z.object({
+    status: z.enum(['active', 'suspended', 'rejected']),
+});
 
 export class AdminVendorController {
     /**
@@ -17,6 +23,7 @@ export class AdminVendorController {
         const page = Math.max(1, parseInt(req.query.page as string) || 1);
         const limit = Math.min(100, Math.max(1, parseInt(req.query.limit as string) || 20));
         const search = (req.query.search as string)?.trim();
+        const statusFilter = (req.query.status as string)?.trim();
         const offset = (page - 1) * limit;
 
         const params: unknown[] = [];
@@ -31,6 +38,11 @@ export class AdminVendorController {
                 v.business_category ILIKE $${paramIdx}
             )`;
             params.push(pattern);
+            paramIdx++;
+        }
+        if (statusFilter && ['pending', 'active', 'suspended', 'rejected'].includes(statusFilter)) {
+            whereClause += ` AND v.status = $${paramIdx}`;
+            params.push(statusFilter);
             paramIdx++;
         }
 
@@ -103,6 +115,62 @@ export class AdminVendorController {
             message: 'Vendors retrieved successfully',
             data: { vendors, total, page, limit },
             meta: { page, limit, total, totalPages: Math.ceil(total / limit) },
+        });
+    }
+
+    /**
+     * PATCH /api/admin/vendors/:id/status
+     */
+    async updateVendorStatus(req: Request, res: Response): Promise<void> {
+        const { id } = req.params;
+        const { status } = updateVendorStatusSchema.parse(req.body);
+
+        const client = await db.getPool().connect();
+        const result = await (async () => {
+            try {
+                await client.query('BEGIN');
+                const actor = await client.query<{ role: string; deleted_at: Date | null }>(
+                    'SELECT role, deleted_at FROM users WHERE id = $1 FOR UPDATE', [req.user?.userId],
+                );
+                if (actor.rows[0]?.role !== 'admin' || actor.rows[0].deleted_at !== null) {
+                    throw new ForbiddenError('Current administrator authority required');
+                }
+                const vendor = await client.query('SELECT user_id FROM vendors WHERE id = $1 AND deleted_at IS NULL', [id]);
+                const userId = vendor.rows[0]?.user_id;
+                if (!userId) throw new NotFoundError('Vendor not found');
+                // Match reporting-key rotation's user-before-vendor lock order.
+                const owner = await client.query(`SELECT role, verification_status, deleted_at FROM users
+                    WHERE id = $1 FOR UPDATE`, [userId]);
+                const account = owner.rows[0];
+                if (status === 'active' && (!account || account.deleted_at !== null
+                    || account.role !== 'vendor' || account.verification_status !== 'verified')) {
+                    throw new BadRequestError('The vendor must confirm their email before activation');
+                }
+                const updated = await client.query(
+                    `UPDATE vendors SET status = $1, updated_at = CURRENT_TIMESTAMP
+                     WHERE id = $2 AND user_id = $3 AND deleted_at IS NULL RETURNING id, status`,
+                    [status, id, userId],
+                );
+                await client.query('COMMIT');
+                return updated;
+            } catch (error) {
+                await client.query('ROLLBACK');
+                throw error;
+            } finally {
+                client.release();
+            }
+        })();
+
+        if (result.rows.length === 0) {
+            throw new NotFoundError('Vendor not found');
+        }
+
+        success(res, {
+            message: 'Vendor status updated',
+            data: {
+                id: result.rows[0].id,
+                status: result.rows[0].status,
+            },
         });
     }
 }

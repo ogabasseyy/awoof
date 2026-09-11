@@ -1,0 +1,47 @@
+# Release and widget delivery repair notes
+
+Read-only source investigation by /root/terra_release_design, with controller rulings below. This is not a deployment or proof of VPS state. It supplies a future bounded implementation plan for audit A10/A17.
+
+## Exact-release deployment
+
+Root source refresh during signup implementation: ci.yml currently runs only npm test, not the guarded real-PostgreSQL integration suite or the separate harness lifecycle tests in apps/backend/scripts/test-postgres.test.mjs. Its root install/cache references package-lock.json even though the root package has no dependencies or tracked lockfile, and several installs fall back from npm ci to npm install. Future CI repair must remove the unnecessary root install/cache entry, enforce existing per-app lockfiles without fallback mutation, provide an explicit PostgreSQL binary directory compatible with the declared production major, run the guarded integration runner plus actual lifecycle tests, and inspect the resulting job outcomes. Do not replace the runner's unique local fixture/guard with an arbitrary environment database. Browser CI additions remain subject to the unanswered test-harness decision.
+
+The source deploy workflow currently permits manual dispatch without an exact successful-CI gate, embeds old VPS/user defaults, uses in-place rsync --delete, then sleeps and prints compose ps. These remain source defects; no remote command was executed while inspecting them. Configuration must fail closed when operator targets are absent, rather than silently choosing the developer's old account or moving to a different Compose project/volume.
+
+Files: .github/workflows/deploy.yml, .github/workflows/ci.yml, docker-compose.hostinger.yml, apps/backend/Dockerfile.prod, apps/web/Dockerfile.prod, apps/backend/src/index.ts, docs/HANDOVER.md. Add scripts/verify-deployment.sh and scripts/rollback-release.sh when the complete task is planned.
+
+- Resolve a full40hex chosenSHA from successful main-branch workflow_run or explicit manual input. Manual deploy must query Actions with actions:read and require successful repository/main/push CI for that sameSHA; checkout and verify HEAD before any remote operation. Do not treat workflow dispatch github.sha as deployment proof. Consider whether a newer CI run for sameSHA is in progress/failed rather than accepting any old success; gate on latest relevant run.
+- Serialize production deployment with cancel-in-progress:false. Use immutable releases/<SHA> staging and an explicit current pointer, previous verified release/image IDs retained. Avoid current in-place rsync --delete (especially legacyuploads). Initial VPS layout/project/volume cutover requires a separately authorized inventory; never silently select new empty volumes.
+- SHA-tag backend/web images, bake nonsecret release metadata, backend readiness checks actual PostgreSQL and required Redis, web metadata/health present. Bounded verify script checks migrate exit0, healthy services, internal/backend and external/web exactSHA, and widget artifact. A healthy old deployment is not success.
+- Rollback restores a previously verified application release and reruns proof. Never automatically restore database data or assume schema rollback compatibility; require explicit compatibility acknowledgement. Current migration sequence is additive but that is not permission to guess a production rollback.
+
+## Widget artifact
+
+- Web production Docker context must include repo root so a pinned-lockfile widget builder can copy Rollup output into the actual web image. No new widget.awoof.com infrastructure should be assumed.
+- Controller ruling: use a release-SHA/content-hash-qualified artifact path, not a fixed semver URL rebuilt with changed bytes under immutable cache. For example `/widget/<releaseSHA>/awoof.js`, plus a no-cache release manifest containing version, SHA and content hash. Dashboard snippets derive actual web origin and current validated release manifest. SDK contract is being modernized by the verification flow task, so packaging must use its reviewed result rather than freeze old leaked-studentID callbacks.
+- Publish or explicitly disable source maps without dangling references. Remove dashboard/docs unmanaged widget.awoof.com references and stale planned-feature claims. CI must inspect the actual production image/artifact, not only a standalone Rollup build.
+- Browser validation from a synthetic separate origin should exercise allow/deny origins, script loading, iframe/popup flow and minimum callback. A real public-host smoke check remains separately unverified until deployment is authorized; don't confuse local simulation with live delivery.
+
+## Recovery artifacts
+
+Files: scripts/backup-awoof-postgres.sh, env.deployment.example, docs/HANDOVER.md and deploy.yml. Add synthetic test-backup-restore script in a separate owned task.
+
+- Preserve existing entrypoint but create paired custom-format DB dump and persisted uploads archive with one manifest, releaseSHA, timestamps, hashes and mode-safe metadata. Uploads come from the actual mounted backend_uploads volume, not image filesystem. Ensure a consistent write-quiesced snapshot or fail clearly; always resume writes/clean up after any failure.
+- Rotate whole backup sets together. Backup presence/nonempty/pg_restore --list is not successful restore. Synthetic test creates uniquely named fixture DB/volume/files, backs up, restores to a distinct disposable target and asserts SQL values and file hashes. Never normal-env DB fallback, production container/volume names or broad deletion. A native PostgreSQL variant can reuse the guarded test harness if Docker is unavailable, but must test actual dump/restore and uploads artifact behavior.
+- Off-host target/configuration and transport verification require an explicit operator choice and secret setup; do not invent credentials, remote path or successful replication. Source can enforce a configured transfer+checksum contract, but no live off-host/production restore claim is possible in this task.
+
+Root inspected the current backup entrypoint: it rotates individual dump files and labels a nonempty dump with pg_restore --list as verified. The repair must distinguish archive readability from restore proof and retain paired upload/DB/manifest sets. Native synthetic validation can use pg_dump/pg_restore from the same explicit PostgreSQL binary directory as the already-reviewed fixture harness. Do not execute the current script with default production container names for a local test.
+
+## Evidence boundary
+
+Exact current VPS layout, ownership, Compose project/volume names, reverse proxy, migration parity, external readiness URLs and recovery store remain unverified. No source hardening task is a migration/deployment authorization. Paystack feature work remains deferred.
+
+## Refreshed local-browser/CI boundary,2026-09-07
+
+The earlier unanswered-browser-harness statement is superseded: the owner approved it, Playwright1.63.0 is installed in the isolated source checkout, and root independently passed34development/34production browser cases plus25auth tests at accepted9c8fab2. Student-signup consumer work is now in flight and adds further tests; its intermediate counts are not release acceptance. Local tests use installed Chrome, a fail-closed synthetic API router at127.0.0.1:3108 and app at3107, with a real fresh standalone Webpack artifact and graceful SIGTERM cleanup. That Mac-specific evidence is not default build, Linux CI, Docker image or VPS parity.
+
+Root refreshed `.github/workflows/ci.yml`, `.github/workflows/deploy.yml`, `apps/web/Dockerfile.prod` and the widget Rollup configuration read-only. CI still does not invoke web test:auth, test:browser:typecheck or test:browser, and it still omits the guarded PostgreSQL integration/lifecycle tests. Current successful local tests therefore cannot be assumed to protect a pushed PR until the separate CI repair wires them into exact-head jobs. That repair should explicitly provision its chosen browser/channel and preserve synthetic-only API isolation, per-app lockfiles, telemetry settings and artifact cleanup. Do not silently change the global default build to Webpack based solely on this Mac's Turbopack worker-port restriction; verify the supported default in the actual target CI environment and document any deliberate fallback.
+
+During signup RED, root also discovered Playwright's automatic failure error-context snapshot can include submitted form values despite screenshots/video/traces being off. The current signup task is correcting test-only capture controls and protected-value assertions. Release/CI artifact policy must consume the reviewed result and verify that intentional failures do not upload captured passwords/OTP/account values; the runtime's version-specific PLAYWRIGHT_NO_COPY_PROMPT suppresses automatic DOM snapshots but not copied source frames. No raw browser fixture state or real credentials in CI attachments.
+
+The web Dockerfile still builds only its own app context and copies public/standalone/static; the separate widget output is not proven packaged by the independent Rollup build. Rollup currently emits a source map, so a future release-qualified widget artifact must deliberately include it or remove its reference. Existing deployment defaults/manual-gate/rsync/compose-ps defects above remain unchanged. No workflow was edited or run, no browser downloaded, no remote GitHub/VPS state checked and no deployment action occurred during this refresh.

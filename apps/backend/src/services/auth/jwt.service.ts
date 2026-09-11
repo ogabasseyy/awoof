@@ -6,6 +6,7 @@
  */
 
 import jwt, { type SignOptions } from 'jsonwebtoken';
+import { randomUUID } from 'node:crypto';
 import { config } from '../../config/env.js';
 
 /**
@@ -65,6 +66,7 @@ class JWTService {
         }
         const options: SignOptions = {
             expiresIn: expiry as any,
+            jwtid: randomUUID(),
         };
         return jwt.sign(payload, secret, options);
     }
@@ -116,4 +118,3 @@ class JWTService {
 }
 
 export const jwtService = new JWTService();
-

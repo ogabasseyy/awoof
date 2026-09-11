@@ -12,17 +12,31 @@ import Link from 'next/link';
 import { Button } from '@/components/ui/button';
 import apiClient from '@/lib/api-client';
 import { formatCurrency } from '@/lib/format';
+import toast from 'react-hot-toast';
 
 interface ReceiptItem {
     id: string;
     transactionId: string;
     productName: string;
     vendorName: string;
-    amount: number;
-    discount: number;
+    amount: number | null;
+    discount: number | null;
     finalAmount: number;
     date: string;
-    status: 'completed' | 'pending' | 'failed';
+    status: 'completed' | 'pending' | 'failed' | 'refunded' | 'requires_refund';
+}
+
+function receiptStatusStyle(status: ReceiptItem['status']): string {
+    if (status === 'completed') return 'bg-green-100 text-green-800';
+    if (status === 'pending') return 'bg-yellow-100 text-yellow-800';
+    if (status === 'requires_refund') return 'bg-amber-100 text-amber-900';
+    if (status === 'refunded') return 'bg-slate-100 text-slate-700';
+    return 'bg-red-100 text-red-800';
+}
+
+function receiptStatusLabel(status: ReceiptItem['status']): string {
+    if (status === 'requires_refund') return 'refund required';
+    return status;
 }
 
 export default function ReceiptsPage() {
@@ -38,16 +52,16 @@ export default function ReceiptsPage() {
         try {
             setIsLoading(true);
             // Fetch from API
-            const response = await apiClient.get('/students/purchases').catch(() => null);
+            const response = await apiClient.get('/students/purchases');
 
             if (response?.data?.data?.transactions) {
                 const transactions = response.data.data.transactions;
                 const formattedReceipts: ReceiptItem[] = transactions.map((transaction: {
                     id: string;
                     transactionId: string;
-                    amount: number;
-                    discountAmount: number;
-                    finalAmount?: number;
+                    amount: number | null;
+                    discountAmount: number | null;
+                    finalAmount: number;
                     status: string;
                     createdAt: string;
                     product?: {
@@ -59,44 +73,22 @@ export default function ReceiptsPage() {
                     transactionId: transaction.transactionId || transaction.id,
                     productName: transaction.product?.name || 'Product',
                     vendorName: transaction.product?.vendorName || 'Vendor',
-                    amount: transaction.amount || 0,
-                    discount: transaction.discountAmount || 0,
-                    finalAmount: transaction.finalAmount || (transaction.amount - transaction.discountAmount),
+                    amount: transaction.amount ?? null,
+                    discount: transaction.discountAmount ?? null,
+                    finalAmount: transaction.finalAmount,
                     date: transaction.createdAt || new Date().toISOString(),
-                    status: (transaction.status === 'completed' ? 'completed' :
-                        transaction.status === 'pending' ? 'pending' :
-                            transaction.status === 'failed' ? 'failed' : 'completed') as 'completed' | 'pending' | 'failed',
+                    status: ['completed', 'pending', 'failed', 'refunded', 'requires_refund'].includes(transaction.status)
+                        ? transaction.status as ReceiptItem['status']
+                        : 'failed',
                 }));
                 setReceipts(formattedReceipts);
             } else {
-                // Mock data for development
-                setReceipts([
-                    {
-                        id: '1',
-                        transactionId: 'TXN-001',
-                        productName: 'Travel Package Deal',
-                        vendorName: 'Travel Agency',
-                        amount: 50000,
-                        discount: 5000,
-                        finalAmount: 45000,
-                        date: new Date(Date.now() - 1000 * 60 * 60 * 24).toISOString(),
-                        status: 'completed',
-                    },
-                    {
-                        id: '2',
-                        transactionId: 'TXN-002',
-                        productName: 'Restaurant Meal',
-                        vendorName: 'Food Place',
-                        amount: 5000,
-                        discount: 500,
-                        finalAmount: 4500,
-                        date: new Date(Date.now() - 1000 * 60 * 60 * 48).toISOString(),
-                        status: 'completed',
-                    },
-                ]);
+                setReceipts([]);
             }
         } catch (error) {
             console.error('Error fetching receipts:', error);
+            setReceipts([]);
+            toast.error('Unable to load receipts. Please try again.');
         } finally {
             setIsLoading(false);
         }
@@ -114,14 +106,12 @@ export default function ReceiptsPage() {
         });
     };
 
-    const handleDownload = (receipt: ReceiptItem) => {
-        // In a real app, this would download a PDF receipt
-        alert(`Downloading receipt for ${receipt.productName}`);
+    const handleDownload = (_receipt: ReceiptItem) => {
+        toast('Receipt download will be available soon');
     };
 
-    const handleView = (receipt: ReceiptItem) => {
-        // In a real app, this would open a receipt detail modal or page
-        alert(`Viewing receipt for ${receipt.productName}`);
+    const handleView = (_receipt: ReceiptItem) => {
+        toast('Receipt details will be available soon');
     };
 
     return (
@@ -164,21 +154,18 @@ export default function ReceiptsPage() {
                                                 <p className="text-sm text-gray-600">{receipt.vendorName}</p>
                                                 <p className="text-xs text-gray-500 mt-1">Transaction: {receipt.transactionId}</p>
                                             </div>
-                                            <span className={`text-xs font-medium px-2 py-1 rounded ${receipt.status === 'completed' ? 'bg-green-100 text-green-800' :
-                                                receipt.status === 'pending' ? 'bg-yellow-100 text-yellow-800' :
-                                                    'bg-red-100 text-red-800'
-                                                }`}>
-                                                {receipt.status}
+                                            <span className={`text-xs font-medium px-2 py-1 rounded ${receiptStatusStyle(receipt.status)}`}>
+                                                {receiptStatusLabel(receipt.status)}
                                             </span>
                                         </div>
                                         <div className="space-y-2 mb-3 pt-3 border-t border-gray-100">
                                             <div className="flex justify-between text-sm">
                                                 <span className="text-gray-600">Original Price:</span>
-                                                <span className="text-gray-900">{formatCurrency(receipt.amount)}</span>
+                                                <span className="text-gray-900">{receipt.amount == null ? 'Unknown' : formatCurrency(receipt.amount)}</span>
                                             </div>
                                             <div className="flex justify-between text-sm">
                                                 <span className="text-gray-600">Discount:</span>
-                                                <span className="text-green-600">-{formatCurrency(receipt.discount)}</span>
+                                                <span className="text-green-600">{receipt.discount == null ? 'Unknown' : `-${formatCurrency(receipt.discount)}`}</span>
                                             </div>
                                             <div className="flex justify-between text-sm font-semibold pt-2 border-t border-gray-100">
                                                 <span className="text-gray-900">Total Paid:</span>
@@ -251,11 +238,8 @@ export default function ReceiptsPage() {
                                                 <div className="flex-1">
                                                     <div className="flex items-center gap-3 mb-2">
                                                         <h3 className="text-lg font-semibold text-gray-900">{receipt.productName}</h3>
-                                                        <span className={`text-xs font-medium px-2 py-1 rounded ${receipt.status === 'completed' ? 'bg-green-100 text-green-800' :
-                                                            receipt.status === 'pending' ? 'bg-yellow-100 text-yellow-800' :
-                                                                'bg-red-100 text-red-800'
-                                                            }`}>
-                                                            {receipt.status}
+                                                        <span className={`text-xs font-medium px-2 py-1 rounded ${receiptStatusStyle(receipt.status)}`}>
+                                                            {receiptStatusLabel(receipt.status)}
                                                         </span>
                                                     </div>
                                                     <p className="text-gray-600 mb-1">{receipt.vendorName}</p>
@@ -281,11 +265,11 @@ export default function ReceiptsPage() {
                                             <div className="grid grid-cols-3 gap-4 pt-4 border-t border-gray-100">
                                                 <div>
                                                     <p className="text-sm text-gray-600 mb-1">Original Price</p>
-                                                    <p className="text-gray-900 font-medium">{formatCurrency(receipt.amount)}</p>
+                                                    <p className="text-gray-900 font-medium">{receipt.amount == null ? 'Unknown' : formatCurrency(receipt.amount)}</p>
                                                 </div>
                                                 <div>
                                                     <p className="text-sm text-gray-600 mb-1">Discount</p>
-                                                    <p className="text-green-600 font-medium">-{formatCurrency(receipt.discount)}</p>
+                                                    <p className="text-green-600 font-medium">{receipt.discount == null ? 'Unknown' : `-${formatCurrency(receipt.discount)}`}</p>
                                                 </div>
                                                 <div>
                                                     <p className="text-sm text-gray-600 mb-1">Total Paid</p>

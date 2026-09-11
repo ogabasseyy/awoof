@@ -16,6 +16,9 @@ import { DashboardLayout } from '@/components/dashboard';
 import type { User } from '@/lib/auth';
 import apiClient, { getImageUrl } from '@/lib/api-client';
 import Image from 'next/image';
+import toast from 'react-hot-toast';
+import { useConfirm } from '@/components/ui/ConfirmDialog';
+import { getApiErrorMessage } from '@/lib/api-error';
 
 const iconProps = { className: 'h-5 w-5', strokeWidth: 1.5, fill: 'currentColor' as const };
 
@@ -39,6 +42,7 @@ interface Order {
     commission: number;
     status: 'pending' | 'completed' | 'failed' | 'refunded';
     paystackReference: string | null;
+    managedPayment: boolean;
     createdAt: string;
     updatedAt: string;
     product: {
@@ -62,6 +66,7 @@ export default function OrderDetailsPage() {
     const params = useParams();
     const orderId = params.id as string;
     const { user, logout } = useAuth();
+    const confirm = useConfirm();
     const [order, setOrder] = useState<Order | null>(null);
     const [isLoading, setIsLoading] = useState(true);
     const [isUpdating, setIsUpdating] = useState(false);
@@ -79,8 +84,7 @@ export default function OrderDetailsPage() {
                 setOrder(response.data.data.order);
             } catch (error: unknown) {
                 console.error('Error fetching order:', error);
-                const errorMessage = (error as { response?: { data?: { message?: string } } })?.response?.data?.message;
-                alert(errorMessage || 'Failed to load order');
+                toast.error(getApiErrorMessage(error, 'Failed to load order'));
                 router.push('/vendor/orders');
             } finally {
                 setIsLoading(false);
@@ -93,9 +97,12 @@ export default function OrderDetailsPage() {
     }, [orderId, router]);
 
     const handleStatusUpdate = async (newStatus: 'pending' | 'completed' | 'failed' | 'refunded') => {
-        if (!confirm(`Are you sure you want to update the order status to "${newStatus}"?`)) {
-            return;
-        }
+        const ok = await confirm({
+            title: 'Update order status?',
+            description: `Change this order's status to "${newStatus}".`,
+            confirmLabel: 'Update status',
+        });
+        if (!ok) return;
 
         try {
             setIsUpdating(true);
@@ -104,10 +111,10 @@ export default function OrderDetailsPage() {
             // Refresh order data
             const response = await apiClient.get(`/vendors/orders/${orderId}`);
             setOrder(response.data.data.order);
+            toast.success('Order status updated');
         } catch (error: unknown) {
             console.error('Error updating order status:', error);
-            const errorMessage = (error as { response?: { data?: { message?: string } } })?.response?.data?.message;
-            alert(errorMessage || 'Failed to update order status');
+            toast.error(getApiErrorMessage(error, 'Failed to update order status'));
         } finally {
             setIsUpdating(false);
         }
@@ -354,6 +361,7 @@ export default function OrderDetailsPage() {
                             </div>
 
                             {/* Status Update */}
+                            {!order.managedPayment && (
                             <div className="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm">
                                 <h2 className="mb-4 text-lg font-semibold text-slate-900">Update Status</h2>
                                 <div className="space-y-2">
@@ -370,6 +378,7 @@ export default function OrderDetailsPage() {
                                     ))}
                                 </div>
                             </div>
+                            )}
                         </div>
                     </div>
                 </div>
@@ -377,4 +386,3 @@ export default function OrderDetailsPage() {
         </ProtectedRoute>
     );
 }
-

@@ -4,15 +4,19 @@
  * Handles admin-only endpoints
  */
 
+import { readInstitutionVerificationPolicy, replaceInstitutionVerificationPolicy } from '../controllers/admin-institution-policy.controller.js';
 import { Router } from 'express';
 import { asyncHandler } from '../common/middleware/errorHandler.js';
 import { authenticate } from '../middleware/auth.middleware.js';
+import { requireCurrentAdmin } from '../middleware/current-admin.js';
 import { requireRole } from '../middleware/auth.middleware.js';
 import { adminController } from '../controllers/admin.controller.js';
 import { adminUniversityController } from '../controllers/admin-university.controller.js';
 import { adminStudentController } from '../controllers/admin-student.controller.js';
 import { adminVendorController } from '../controllers/admin-vendor.controller.js';
 import { adminAnalyticsController } from '../controllers/admin-analytics.controller.js';
+import { getPlatformSettings, updatePlatformSettings } from '../controllers/admin-platform-settings.controller.js';
+import { ticketController } from '../controllers/ticket.controller.js';
 import { csvUpload } from '../config/upload.js';
 
 const router = Router();
@@ -20,12 +24,15 @@ const router = Router();
 // All admin routes require authentication and admin role
 router.use(authenticate);
 router.use(requireRole('admin'));
+router.use(requireCurrentAdmin);
 
 // Admin universities - order matters: segment-stats and csv-sample before :id
 router.get('/universities', asyncHandler(adminUniversityController.getUniversities.bind(adminUniversityController)));
 router.get('/universities/segment-stats', asyncHandler(adminUniversityController.getSegmentStats.bind(adminUniversityController)));
 router.get('/universities/csv-sample', asyncHandler(adminUniversityController.getCsvSample.bind(adminUniversityController)));
 router.post('/universities/import-csv', csvUpload.single('file'), asyncHandler(adminUniversityController.importCsv.bind(adminUniversityController)));
+router.get('/universities/:id/verification-policy', asyncHandler(readInstitutionVerificationPolicy));
+router.put('/universities/:id/verification-policy', asyncHandler(replaceInstitutionVerificationPolicy));
 router.get('/universities/:id', asyncHandler(adminUniversityController.getUniversity.bind(adminUniversityController)));
 router.post('/universities', asyncHandler(adminUniversityController.createUniversity.bind(adminUniversityController)));
 router.put('/universities/:id', asyncHandler(adminUniversityController.updateUniversity.bind(adminUniversityController)));
@@ -33,7 +40,25 @@ router.delete('/universities/:id', asyncHandler(adminUniversityController.delete
 
 router.get('/students', asyncHandler(adminStudentController.getStudents.bind(adminStudentController)));
 router.get('/vendors', asyncHandler(adminVendorController.getVendors.bind(adminVendorController)));
+router.patch(
+    '/vendors/:id/status',
+    asyncHandler(adminVendorController.updateVendorStatus.bind(adminVendorController))
+);
 router.get('/analytics', asyncHandler(adminAnalyticsController.getAnalytics.bind(adminAnalyticsController)));
+
+/**
+ * @route   GET /api/admin/settings/platform
+ * @desc    Get platform settings (e.g. platform fee %)
+ * @access  Admin
+ */
+router.get('/settings/platform', asyncHandler(getPlatformSettings));
+
+/**
+ * @route   PUT /api/admin/settings/platform
+ * @desc    Update platform settings
+ * @access  Admin
+ */
+router.put('/settings/platform', asyncHandler(updatePlatformSettings));
 
 /**
  * @route   GET /api/admin/categories
@@ -83,6 +108,18 @@ router.put(
 router.delete(
     '/categories/:id',
     asyncHandler(adminController.deleteCategory.bind(adminController))
+);
+
+// Unified support inbox
+router.get('/support/tickets', asyncHandler(ticketController.listAdmin.bind(ticketController)));
+router.get('/support/tickets/:id', asyncHandler(ticketController.getAdmin.bind(ticketController)));
+router.post(
+    '/support/tickets/:id/messages',
+    asyncHandler(ticketController.replyAdmin.bind(ticketController))
+);
+router.patch(
+    '/support/tickets/:id',
+    asyncHandler(ticketController.patchAdmin.bind(ticketController))
 );
 
 export default router;

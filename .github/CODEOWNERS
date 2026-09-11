@@ -1,0 +1,12 @@
+# Default ownership for the handed-over Awoof repository.
+*                                           @ogabasseyy
+
+# Money, identity, and deployment paths require explicit owner review.
+/apps/backend/src/services/payment/          @ogabasseyy
+/apps/backend/src/controllers/webhook.controller.ts @ogabasseyy
+/apps/backend/src/database/migrations/       @ogabasseyy
+/apps/backend/src/services/verification/     @ogabasseyy
+/apps/widget/                                @ogabasseyy
+/.github/                                    @ogabasseyy
+/docker-compose.hostinger.yml                @ogabasseyy
+/scripts/backup-awoof-postgres.sh            @ogabasseyy

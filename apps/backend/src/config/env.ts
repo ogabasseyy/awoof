@@ -58,9 +58,7 @@ const envSchema = z.object({
     BREVO_API_KEY: z.string().optional(),
     BREVO_FROM_NAME: z.string().optional(),
     EMAIL_FROM: z.string().email().optional(),
-
-    // Monitoring
-    SENTRY_DSN: z.string().url().optional().or(z.literal('')),
+    SUPPORT_EMAIL: z.string().email().optional(),
 
     // Security
     CORS_ORIGIN: z.string().default('http://localhost:3000'),
@@ -161,11 +159,6 @@ export const config = {
         secretAccessKey: env.AWS_SECRET_ACCESS_KEY,
     },
 
-    // Monitoring
-    sentry: {
-        dsn: env.SENTRY_DSN || undefined,
-    },
-
     // Security
     cors: {
         origin: env.CORS_ORIGIN.split(','),
@@ -182,4 +175,3 @@ export const config = {
 } as const;
 
 export default config;
-

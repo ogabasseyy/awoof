@@ -10,11 +10,11 @@ import { useForm } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { z } from 'zod';
 import apiClient from '@/lib/api-client';
+import { AuthShell } from '@/components/auth/AuthShell';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 
-// Separate schemas for each step
 const verifyOTPSchema = z.object({
     email: z.string().email('Invalid email address'),
     otp: z.string().length(6, 'OTP must be 6 digits'),
@@ -39,7 +39,6 @@ export default function ResetPasswordPage() {
     const [email, setEmail] = useState('');
     const [otp, setOtp] = useState('');
 
-    // Separate form instances for each step
     const verifyForm = useForm<VerifyOTPFormData>({
         resolver: zodResolver(verifyOTPSchema),
     });
@@ -48,7 +47,6 @@ export default function ResetPasswordPage() {
         resolver: zodResolver(resetPasswordSchema),
     });
 
-    // Destructure with aliases for clarity
     const { handleSubmit: handleVerifySubmit, formState: { errors: verifyErrors } } = verifyForm;
     const { handleSubmit: handleResetSubmit, formState: { errors: resetErrors } } = resetForm;
 
@@ -60,7 +58,6 @@ export default function ResetPasswordPage() {
                 email: data.email,
                 otp: data.otp,
             });
-            // Store email and OTP in state for password reset step
             setEmail(data.email);
             setOtp(data.otp);
             setStep('reset');
@@ -76,7 +73,6 @@ export default function ResetPasswordPage() {
         try {
             setIsLoading(true);
             setError(null);
-            // Use email and OTP from state
             await apiClient.post('/auth/reset-password', {
                 email,
                 otp,
@@ -92,110 +88,104 @@ export default function ResetPasswordPage() {
 
     if (step === 'verify') {
         return (
-            <div className="min-h-screen flex items-center justify-center bg-gray-50 px-4">
-                <div className="w-full max-w-md">
-                    <h1 className="text-2xl font-bold mb-2 text-left">Verify OTP</h1>
-                    <p className="text-gray-600 mb-6 text-left">
-                        Enter the 6-digit OTP sent to your email.
-                    </p>
-
-                    {error && (
-                        <div className="mb-4 p-3 bg-red-50 border border-red-200 text-red-700 rounded-md text-sm">
-                            {error}
-                        </div>
-                    )}
-
-                    <form onSubmit={handleVerifySubmit(verifyOTP)} className="space-y-4">
-                        <div>
-                            <Label htmlFor="email" className="text-left block mb-2">Email</Label>
-                            <Input
-                                id="email"
-                                type="email"
-                                placeholder="you@example.com"
-                                {...verifyForm.register('email')}
-                                aria-invalid={verifyErrors.email ? 'true' : 'false'}
-                                className="w-full"
-                            />
-                            {verifyErrors.email && (
-                                <p className="mt-1 text-sm text-red-600 text-left">{verifyErrors.email.message}</p>
-                            )}
-                        </div>
-
-                        <div>
-                            <Label htmlFor="otp" className="text-left block mb-2">OTP</Label>
-                            <Input
-                                id="otp"
-                                type="text"
-                                placeholder="000000"
-                                maxLength={6}
-                                {...verifyForm.register('otp')}
-                                aria-invalid={verifyErrors.otp ? 'true' : 'false'}
-                                className="w-full"
-                            />
-                            {verifyErrors.otp && (
-                                <p className="mt-1 text-sm text-red-600 text-left">{verifyErrors.otp.message}</p>
-                            )}
-                        </div>
-
-                        <Button type="submit" className="w-full" disabled={isLoading}>
-                            {isLoading ? 'Verifying...' : 'Verify OTP'}
-                        </Button>
-                    </form>
-                </div>
-            </div>
-        );
-    }
-
-    return (
-        <div className="min-h-screen flex items-center justify-center bg-gray-50 px-4">
-            <div className="w-full max-w-md">
-                <h1 className="text-2xl font-bold mb-2 text-left">Reset Password</h1>
-                <p className="text-gray-600 mb-6 text-left">
-                    Enter your new password below.
-                </p>
-
+            <AuthShell
+                role="generic"
+                title="Verify OTP"
+                subtitle="Enter the 6-digit OTP sent to your email."
+            >
                 {error && (
-                    <div className="mb-4 p-3 bg-red-50 border border-red-200 text-red-700 rounded-md text-sm">
+                    <div className="mb-4 p-3 bg-red-50 border border-red-200 text-red-700 rounded-xl text-sm">
                         {error}
                     </div>
                 )}
 
-                <form onSubmit={handleResetSubmit(resetPassword)} className="space-y-4">
+                <form onSubmit={handleVerifySubmit(verifyOTP)} className="space-y-4">
                     <div>
-                        <Label htmlFor="password" className="text-left block mb-2">New Password</Label>
+                        <Label htmlFor="email" className="text-left block mb-2">Email</Label>
                         <Input
-                            id="password"
-                            type="password"
-                            placeholder="At least 8 characters"
-                            {...resetForm.register('password')}
-                            aria-invalid={resetErrors.password ? 'true' : 'false'}
+                            id="email"
+                            type="email"
+                            placeholder="you@example.com"
+                            {...verifyForm.register('email')}
+                            aria-invalid={verifyErrors.email ? 'true' : 'false'}
                             className="w-full"
                         />
-                        {resetErrors.password && (
-                            <p className="mt-1 text-sm text-red-600 text-left">{resetErrors.password.message}</p>
+                        {verifyErrors.email && (
+                            <p className="mt-1 text-sm text-red-600 text-left">{verifyErrors.email.message}</p>
                         )}
                     </div>
 
                     <div>
-                        <Label htmlFor="confirmPassword" className="text-left block mb-2">Confirm Password</Label>
+                        <Label htmlFor="otp" className="text-left block mb-2">OTP</Label>
                         <Input
-                            id="confirmPassword"
-                            type="password"
-                            placeholder="Re-enter your password"
-                            {...resetForm.register('confirmPassword')}
-                            aria-invalid={resetErrors.confirmPassword ? 'true' : 'false'}
+                            id="otp"
+                            type="text"
+                            placeholder="000000"
+                            maxLength={6}
+                            {...verifyForm.register('otp')}
+                            aria-invalid={verifyErrors.otp ? 'true' : 'false'}
                             className="w-full"
                         />
-                        {resetErrors.confirmPassword && (
-                            <p className="mt-1 text-sm text-red-600 text-left">{resetErrors.confirmPassword.message}</p>
+                        {verifyErrors.otp && (
+                            <p className="mt-1 text-sm text-red-600 text-left">{verifyErrors.otp.message}</p>
                         )}
                     </div>
 
-                    <Button type="submit" className="w-full" disabled={isLoading}>
-                        {isLoading ? 'Resetting...' : 'Reset Password'}
+                    <Button type="submit" className="w-full rounded-full h-11 font-semibold" disabled={isLoading}>
+                        {isLoading ? 'Verifying...' : 'Verify OTP'}
                     </Button>
                 </form>
-            </div>
-        </div>
+            </AuthShell>
+        );
+    }
+
+    return (
+        <AuthShell
+            role="generic"
+            title="Reset Password"
+            subtitle="Enter your new password below."
+        >
+            {error && (
+                <div className="mb-4 p-3 bg-red-50 border border-red-200 text-red-700 rounded-xl text-sm">
+                    {error}
+                </div>
+            )}
+
+            <form onSubmit={handleResetSubmit(resetPassword)} className="space-y-4">
+                <div>
+                    <Label htmlFor="password" className="text-left block mb-2">New Password</Label>
+                    <Input
+                        id="password"
+                        type="password"
+                        placeholder="At least 8 characters"
+                        {...resetForm.register('password')}
+                        aria-invalid={resetErrors.password ? 'true' : 'false'}
+                        className="w-full"
+                    />
+                    {resetErrors.password && (
+                        <p className="mt-1 text-sm text-red-600 text-left">{resetErrors.password.message}</p>
+                    )}
+                </div>
+
+                <div>
+                    <Label htmlFor="confirmPassword" className="text-left block mb-2">Confirm Password</Label>
+                    <Input
+                        id="confirmPassword"
+                        type="password"
+                        placeholder="Re-enter your password"
+                        {...resetForm.register('confirmPassword')}
+                        aria-invalid={resetErrors.confirmPassword ? 'true' : 'false'}
+                        className="w-full"
+                    />
+                    {resetErrors.confirmPassword && (
+                        <p className="mt-1 text-sm text-red-600 text-left">{resetErrors.confirmPassword.message}</p>
+                    )}
+                </div>
+
+                <Button type="submit" className="w-full rounded-full h-11 font-semibold" disabled={isLoading}>
+                    {isLoading ? 'Resetting...' : 'Reset Password'}
+                </Button>
+            </form>
+        </AuthShell>
     );
 }

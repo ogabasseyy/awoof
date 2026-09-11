@@ -132,3 +132,26 @@
     display: none;
   }
 }
+
+@keyframes shimmer {
+  100% {
+    transform: translateX(100%);
+  }
+}
+
+@keyframes float {
+  0%,
+  100% {
+    transform: translateY(0);
+  }
+  50% {
+    transform: translateY(-6px);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .animate-\[shimmer_1\.8s_ease-in-out_infinite\],
+  .animate-\[float_4s_ease-in-out_infinite\] {
+    animation: none !important;
+  }
+}

@@ -93,7 +93,7 @@ export default function VendorOrdersPage() {
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [page, statusFilter]);
 
-    // Debounced search
+    // Debounced search — skip initial empty query (mount already fetched)
     useEffect(() => {
         const timer = setTimeout(() => {
             if (page === 1) {
@@ -351,4 +351,3 @@ export default function VendorOrdersPage() {
         </ProtectedRoute>
     );
 }
-
