@@ -63,15 +63,20 @@ export function TicketThread({
     const [body, setBody] = useState('');
     const [isInternal, setIsInternal] = useState(false);
     const [sending, setSending] = useState(false);
+    const [replyError, setReplyError] = useState('');
 
     const handleSubmit = async (e: React.FormEvent) => {
         e.preventDefault();
-        if (!body.trim()) return;
+        if (sending || !body.trim()) return;
         setSending(true);
+        setReplyError('');
         try {
             await onReply(body.trim(), showInternalToggle ? isInternal : false);
             setBody('');
             setIsInternal(false);
+        } catch {
+            // A lost network response does not prove the message was never saved.
+            setReplyError('Unable to confirm your reply was sent. Your draft is preserved. Check the thread before trying again.');
         } finally {
             setSending(false);
         }
@@ -132,6 +137,7 @@ export function TicketThread({
             {canReply && (
                 <form onSubmit={handleSubmit} className="rounded-xl border border-slate-200 bg-white p-4 space-y-3">
                     <Label htmlFor="reply">Reply</Label>
+                    {replyError && <p role="alert" className="text-sm text-red-700">{replyError}</p>}
                     <Textarea
                         id="reply"
                         value={body}
@@ -139,12 +145,14 @@ export function TicketThread({
                         rows={4}
                         placeholder="Write your reply…"
                         required
+                        disabled={sending}
                     />
                     {showInternalToggle && (
                         <label className="flex items-center gap-2 text-sm text-slate-600">
                             <input
                                 type="checkbox"
                                 checked={isInternal}
+                                disabled={sending}
                                 onChange={(e) => setIsInternal(e.target.checked)}
                             />
                             Internal note (hidden from requester)
