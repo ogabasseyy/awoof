@@ -8,6 +8,7 @@ import type { Response } from 'express';
 import { db, getPool } from '../config/database.js';
 import {
     BadRequestError,
+    ConflictError,
     NotFoundError,
     UnauthorizedError,
 } from '../common/errors/AppError.js';
@@ -302,7 +303,7 @@ export class OrderController {
             if (!authority.rows.length) throw new BadRequestError('Only active vendors can change orders');
             const orderCheck = await client.query(
                 `SELECT id, status, payment_source, paystack_reference, product_id, inventory_consumed,
-                        student_id, amount, list_price_snapshot
+                        student_id, recorded_savings_delta
                  FROM transactions WHERE id = $1 AND vendor_id = $2 FOR UPDATE`,
                 [orderId, vendorId]
             );
@@ -320,6 +321,10 @@ export class OrderController {
             }
             if (validated.status === 'refunded' && order.status !== 'completed') {
                 throw new BadRequestError('Only completed orders can be refunded');
+            }
+            if (validated.status === 'refunded' && order.recorded_savings_delta === null) {
+                throw new ConflictError('Savings reconciliation is required before refunding this legacy order',
+                    { reason: 'savings_reconciliation_required', transactionId: order.id });
             }
 
             const result = await client.query(
@@ -345,15 +350,18 @@ export class OrderController {
 
             if (order.status === 'completed' && validated.status === 'refunded') {
                 // The locked completed -> refunded transition is the idempotency
-                // gate. Reverse the purchase snapshot, independently of restocking.
-                await client.query(
+                // gate. Only reverse the exact credit, never a backfilled price.
+                const reversed = await client.query(
                     `UPDATE savings_stats
-                     SET total_savings = total_savings - (COALESCE($2::numeric, $3::numeric) - $3::numeric),
-                         total_purchases = GREATEST(total_purchases - 1, 0),
+                     SET total_savings = total_savings - $2::numeric,
+                         total_purchases = total_purchases - 1,
                          last_updated = CURRENT_TIMESTAMP
-                     WHERE student_id = $1`,
-                    [order.student_id, order.list_price_snapshot, order.amount]
+                     WHERE student_id = $1 AND total_purchases > 0
+                     RETURNING student_id`,
+                    [order.student_id, order.recorded_savings_delta]
                 );
+                if (!reversed.rows.length) throw new ConflictError('Savings reconciliation is required before refunding this order',
+                    { reason: 'savings_reconciliation_required', transactionId: order.id });
             }
 
             await client.query('COMMIT');

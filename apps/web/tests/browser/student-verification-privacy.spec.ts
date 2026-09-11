@@ -1,6 +1,29 @@
 import { expect, test } from '@playwright/test';
 import { apiOrigin, appOrigin, installSyntheticApi, seedSession, storageTabPath } from './fixtures';
 
+test('later consent pages do not duplicate a locally granted consent', async ({ page }) => {
+    await installSyntheticApi(page); await seedSession(page, 'student');
+    const entry = (id: string) => ({ id, kind: 'processing', acceptedAt: '2026-09-01T00:00:00Z', withdrawnAt: null });
+    await page.route(`${apiOrigin}/api/verification/**`, async (route) => {
+        const url = new URL(route.request().url());
+        let data: unknown;
+        if (url.pathname.endsWith('/status')) data = { email: 'student@approved.test', emailDomainApproved: true, universityId: 'school', eligibility: { eligible: false }, notices: { verification: { version: 'v1', text: 'Consent notice' } } };
+        else if (url.pathname.includes('/methods/')) data = { methods: [{ methodType: 'email', isAvailable: true }] };
+        else if (url.pathname.endsWith('/consents')) data = url.searchParams.has('cursor') ? { items: [entry('new-grant')], nextCursor: null } : { items: [entry('old-grant')], nextCursor: 'old-grant' };
+        else if (url.pathname.endsWith('/initiate')) data = { processingGrantId: 'new-grant' };
+        else data = { challengeId: 'challenge', resendAvailableAt: new Date().toISOString() };
+        await route.fulfill({ json: { data }, headers: { 'access-control-allow-origin': '*' } });
+    });
+    await page.goto('/student/verification');
+    await expect(page.getByRole('button', { name: 'Load more consents' })).toBeVisible();
+    await page.getByRole('checkbox').check();
+    await page.getByRole('button', { name: 'Send verification code' }).click();
+    await expect(page.getByRole('button', { name: 'Withdraw verification consent' })).toHaveCount(2);
+    await page.getByRole('button', { name: 'Load more consents' }).click();
+    await expect(page.getByRole('button', { name: 'Load more consents' })).toHaveCount(0);
+    await expect(page.getByRole('button', { name: 'Withdraw verification consent' })).toHaveCount(2);
+});
+
 for (const heldRead of ['status', 'methods'] as const) {
     test(`withdrawal supersedes an older ${heldRead} response in the same session`, async ({ page }) => {
         await installSyntheticApi(page); await seedSession(page, 'student');

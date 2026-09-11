@@ -6,6 +6,7 @@ import type { PoolClient } from 'pg';
 import { db } from '../../config/database.js';
 import { CheckoutController } from '../../controllers/checkout.controller.js';
 import { OrderController } from '../../controllers/order.controller.js';
+import { PaymentController } from '../../controllers/payment.controller.js';
 import type { AuthRequest } from '../../middleware/auth.middleware.js';
 import { grantVerificationProcessing } from '../../services/verification/eligibility-consent.service.js';
 import { lockStudentContext } from '../../services/verification/eligibility-context.service.js';
@@ -74,21 +75,57 @@ test('checkout retains owner, vendor and product authority until its reservation
     });
 });
 
-for (const inventoryConsumed of [true, false]) {
-test(`concurrent external refunds reverse recorded savings once (inventory consumed: ${inventoryConsumed})`, async () => {
+test('external reporting records the exact credited delta for a later refund', async () => {
+    await withTestClient(async (client) => {
+        const f = await fixture(client);
+        const token = randomUUID();
+        await client.query(`INSERT INTO verification_tokens(token, student_id, vendor_id, product_id, expires_at)
+            VALUES ($1, $2, $3, $4, now() + interval '10 minutes')`, [token, f.student, f.vendor, f.product]);
+        await new PaymentController().reportTransaction({ user: { userId: f.owner, role: 'vendor' }, body: {
+            verificationToken: token, productId: f.product, paymentReference: randomUUID(), amount: 8000, paymentGateway: 'other',
+        } } as AuthRequest, response);
+        const order = (await client.query('SELECT id, recorded_savings_delta FROM transactions WHERE student_id = $1', [f.student])).rows[0];
+        assert.equal(Number(order.recorded_savings_delta), 20);
+        await client.query('UPDATE products SET price = 500 WHERE id = $1', [f.product]);
+        await new OrderController().updateOrderStatus({ user: { userId: f.owner, role: 'vendor' }, params: { id: order.id }, body: { status: 'refunded' } } as unknown as AuthRequest, response);
+        const stats = (await client.query('SELECT total_savings, total_purchases FROM savings_stats WHERE student_id = $1', [f.student])).rows[0];
+        assert.equal(Number(stats.total_savings), 0);
+        assert.equal(stats.total_purchases, 0);
+        assert.equal((await client.query('SELECT stock FROM products WHERE id = $1', [f.product])).rows[0].stock, 4);
+    });
+});
+
+test('legacy external refund requires reconciliation instead of reversing a backfilled price', async () => {
     await withTestClient(async (client) => {
         const f = await fixture(client);
         const order = (await client.query(`INSERT INTO transactions(student_id, product_id, vendor_id, amount, commission, list_price_snapshot, status, payment_source, inventory_consumed)
-            VALUES ($1, $2, $3, 80, 4, 100, 'completed', 'vendor_other', $4) RETURNING id`, [f.student, f.product, f.vendor, inventoryConsumed])).rows[0].id;
+            VALUES ($1, $2, $3, 80, 4, 500, 'completed', 'vendor_other', true) RETURNING id`, [f.student, f.product, f.vendor])).rows[0].id;
+        await client.query(`INSERT INTO savings_stats(student_id, total_savings, total_purchases) VALUES ($1, 70, 3)`, [f.student]);
+        await assert.rejects(new OrderController().updateOrderStatus({ user: { userId: f.owner, role: 'vendor' }, params: { id: order }, body: { status: 'refunded' } } as unknown as AuthRequest, response), /reconciliation/i);
+        assert.equal((await client.query('SELECT status FROM transactions WHERE id = $1', [order])).rows[0].status, 'completed');
+        assert.equal(Number((await client.query('SELECT total_savings FROM savings_stats WHERE student_id = $1', [f.student])).rows[0].total_savings), 70);
+        assert.equal((await client.query('SELECT total_purchases FROM savings_stats WHERE student_id = $1', [f.student])).rows[0].total_purchases, 3);
+        assert.equal((await client.query('SELECT stock FROM products WHERE id = $1', [f.product])).rows[0].stock, 4);
+    });
+});
+
+for (const inventoryConsumed of [true, false]) {
+for (const [recordedDelta, remainingSavings] of [[20, 50], [0, 70]] as const) {
+test(`concurrent external refunds reverse recorded savings ${recordedDelta} once (inventory consumed: ${inventoryConsumed})`, async () => {
+    await withTestClient(async (client) => {
+        const f = await fixture(client);
+        const order = (await client.query(`INSERT INTO transactions(student_id, product_id, vendor_id, amount, commission, list_price_snapshot, status, payment_source, inventory_consumed, recorded_savings_delta)
+            VALUES ($1, $2, $3, 80, 4, 500, 'completed', 'vendor_other', $4, $5) RETURNING id`, [f.student, f.product, f.vendor, inventoryConsumed, recordedDelta])).rows[0].id;
         await client.query(`INSERT INTO savings_stats(student_id, total_savings, total_purchases) VALUES ($1, 70, 3)`, [f.student]);
         await client.query('UPDATE products SET price = 500 WHERE id = $1', [f.product]);
         const refund = () => new OrderController().updateOrderStatus({ user: { userId: f.owner, role: 'vendor' }, params: { id: order }, body: { status: 'refunded' } } as unknown as AuthRequest, response);
         const attempts = await Promise.allSettled([refund(), refund()]);
         assert.equal(attempts.filter((attempt) => attempt.status === 'fulfilled').length, 1);
         const stats = (await client.query('SELECT total_savings, total_purchases FROM savings_stats WHERE student_id = $1', [f.student])).rows[0];
-        assert.equal(Number(stats.total_savings), 50);
+        assert.equal(Number(stats.total_savings), remainingSavings);
         assert.equal(Number(stats.total_purchases), 2);
         assert.equal((await client.query('SELECT stock FROM products WHERE id = $1', [f.product])).rows[0].stock, inventoryConsumed ? 5 : 4);
     });
 });
+}
 }

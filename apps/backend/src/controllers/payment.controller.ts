@@ -703,9 +703,9 @@ export class PaymentController {
             const transactionResult = await client.query(
                 `INSERT INTO transactions (
                     student_id, product_id, vendor_id, amount, commission, list_price_snapshot,
-                    status, verification_token, payment_source, vendor_payment_reference, verified_at, inventory_consumed
+                    status, verification_token, payment_source, vendor_payment_reference, verified_at, inventory_consumed, recorded_savings_delta
                 )
-                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, CURRENT_TIMESTAMP, true)
+                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, CURRENT_TIMESTAMP, true, $11)
                 RETURNING id, status, created_at`,
                 [
                     tokenData.studentId,
@@ -718,6 +718,7 @@ export class PaymentController {
                     validated.verificationToken,
                     validated.paymentGateway === 'paystack' ? 'vendor_paystack' : 'vendor_other',
                     validated.paymentReference,
+                    discountAmount,
                 ]
             );
             transaction = transactionResult.rows[0];

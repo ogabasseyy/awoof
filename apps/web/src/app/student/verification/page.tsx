@@ -54,7 +54,13 @@ function VerificationForm() {
         try {
             const response = await currentRequest(() => apiClient.get<{ data: { items: Consent[]; nextCursor: string | null } }>('/verification/consents', { params: cursor ? { cursor } : undefined }));
             if (read !== consentRead.current) return;
-            setConsents((previous) => cursor ? [...previous, ...response.data.data.items] : response.data.data.items);
+            setConsents((previous) => {
+                // A locally created grant can also occur on a later UUID page.
+                // Keep one control per grant, using the latest server value.
+                const byId = new Map((cursor ? previous : []).map((consent) => [consent.id, consent]));
+                for (const consent of response.data.data.items) byId.set(consent.id, consent);
+                return [...byId.values()];
+            });
             setNextCursor(response.data.data.nextCursor);
             setConsentsLoaded(true); setConsentError('');
         } catch (cause) {

@@ -1926,8 +1926,10 @@ test('refunds restore only inventory actually consumed, and never restore twice'
         const controller = new OrderController();
         const response = { status() { return this; }, json() { return this; } } as unknown as Response;
         for (const consumed of [false, true]) {
-            const tx = (await client.query(`INSERT INTO transactions (student_id, vendor_id, product_id, amount, status, payment_source, inventory_consumed)
-                VALUES ($1, $2, $3, 80, 'completed', 'vendor_other', $4) RETURNING id`, [student.studentId, vendor.vendorId, product.id, consumed])).rows[0];
+            const tx = (await client.query(`INSERT INTO transactions (student_id, vendor_id, product_id, amount, status, payment_source, inventory_consumed, recorded_savings_delta)
+                VALUES ($1, $2, $3, 80, 'completed', 'vendor_other', $4, 20) RETURNING id`, [student.studentId, vendor.vendorId, product.id, consumed])).rows[0];
+            await client.query(`INSERT INTO savings_stats(student_id, total_savings, total_purchases) VALUES ($1, 20, 1)
+                ON CONFLICT (student_id) DO UPDATE SET total_savings = 20, total_purchases = 1`, [student.studentId]);
             const request = { user: { userId: vendor.ownerId, role: 'vendor' }, params: { id: tx.id }, body: { status: 'refunded' } } as unknown as AuthRequest;
             await controller.updateOrderStatus(request, response);
             assert.equal((await client.query('SELECT stock FROM products WHERE id = $1', [product.id])).rows[0].stock, consumed ? 6 : 5);
