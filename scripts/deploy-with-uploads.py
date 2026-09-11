@@ -58,6 +58,16 @@ def deploy():
         return
     # Build before stopping writes; archive the stopped container, including bind mounts.
     docker('compose', '-f', 'docker-compose.hostinger.yml', 'build')
+    # The running container may outlive its image in Docker's image store.
+    # Resolve and pin the freshly built backend image before stopping writes.
+    # Capture Compose output privately: its resolved config contains secrets.
+    config = json.loads(docker('compose', '-f', 'docker-compose.hostinger.yml',
+                               'config', '--format', 'json', capture_output=True, text=True).stdout)
+    image_ref = config['services']['backend']['image']
+    helper_image = docker('image', 'inspect', '--format', '{{.Id}}', image_ref,
+                          capture_output=True, text=True).stdout.strip()
+    if not helper_image:
+        raise RuntimeError('Built backend image unavailable; original container retained')
     backup_dir = Path('backups/uploads')
     backup_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
     os.chmod(backup_dir, 0o700)
@@ -73,7 +83,7 @@ def deploy():
         docker('volume', 'create', volume, stdout=subprocess.DEVNULL)
         docker('create', '--name', helper, '--network', 'none', '--user', '0',
                '--mount', f'type=volume,source={volume},target=/uploads,volume-nocopy',
-               '--entrypoint', 'sh', state['Image'], '-c', 'sleep 3600', stdout=subprocess.DEVNULL)
+               '--entrypoint', 'sh', helper_image, '-c', 'sleep 3600', stdout=subprocess.DEVNULL)
         helper_created = True
         docker('start', helper, stdout=subprocess.DEVNULL)
         with tempfile.TemporaryDirectory() as temporary:
