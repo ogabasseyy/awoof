@@ -2,7 +2,12 @@
 -- existing institution email-verification policy version.
 CREATE OR REPLACE FUNCTION microsoft_scopes_are_canonical(input_scopes TEXT[]) RETURNS BOOLEAN
 LANGUAGE sql IMMUTABLE AS $$
-    SELECT input_scopes = ARRAY(SELECT DISTINCT scope FROM unnest(input_scopes) scope ORDER BY scope)
+    SELECT input_scopes IS NOT NULL
+       AND NOT EXISTS (
+           SELECT 1 FROM unnest(input_scopes) scope
+           WHERE scope IS NULL OR scope = '' OR scope ~ '[[:space:]]'
+       )
+       AND input_scopes = ARRAY(SELECT DISTINCT scope FROM unnest(input_scopes) scope ORDER BY scope)
 $$;
 
 CREATE TABLE institution_microsoft_policies (
@@ -18,7 +23,7 @@ CREATE TABLE institution_microsoft_policies (
     scopes TEXT[] NOT NULL DEFAULT '{}',
     notice_version TEXT NOT NULL CHECK (length(btrim(notice_version)) > 0),
     CHECK (microsoft_scopes_are_canonical(scopes)),
-    CHECK (mode <> 'graph_enrollment' OR (term_ends_at IS NOT NULL AND term_ends_at <= approved_until))
+    CHECK (mode <> 'graph_enrollment' OR term_ends_at IS NOT NULL)
 );
 
 CREATE OR REPLACE FUNCTION microsoft_policy_validate_and_version() RETURNS trigger LANGUAGE plpgsql AS $$
@@ -50,6 +55,8 @@ CREATE TABLE microsoft_identities (
     revoked_at TIMESTAMPTZ,
     UNIQUE (tenant_id, object_id)
 );
+ALTER TABLE microsoft_identities
+    ADD CONSTRAINT microsoft_identities_id_user_institution_unique UNIQUE (id, user_id, university_id);
 CREATE UNIQUE INDEX microsoft_identities_active_user_institution_unique
     ON microsoft_identities (user_id, university_id) WHERE revoked_at IS NULL;
 
@@ -57,7 +64,7 @@ CREATE TABLE microsoft_verification_consents (
     id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
     user_id UUID NOT NULL REFERENCES users(id),
     university_id UUID NOT NULL REFERENCES universities(id),
-    processing_grant_id UUID NOT NULL REFERENCES verification_consents(id),
+    processing_grant_id UUID NOT NULL,
     provider_policy_version INTEGER NOT NULL CHECK (provider_policy_version >= 1),
     notice_version TEXT NOT NULL CHECK (length(btrim(notice_version)) > 0),
     mode TEXT NOT NULL CHECK (mode IN ('identity_only', 'graph_enrollment')),
@@ -66,6 +73,15 @@ CREATE TABLE microsoft_verification_consents (
     withdrawn_at TIMESTAMPTZ,
     CHECK (microsoft_scopes_are_canonical(scopes))
 );
+ALTER TABLE verification_consents
+    ADD CONSTRAINT verification_consents_id_user_institution_unique UNIQUE (id, user_id, university_id);
+ALTER TABLE microsoft_verification_consents
+    ADD CONSTRAINT microsoft_consents_parent_subject_fk
+        FOREIGN KEY (processing_grant_id, user_id, university_id)
+        REFERENCES verification_consents (id, user_id, university_id),
+    ADD CONSTRAINT microsoft_consents_id_subject_parent_unique
+        UNIQUE (id, user_id, university_id, processing_grant_id),
+    ADD CONSTRAINT microsoft_consents_id_subject_unique UNIQUE (id, user_id, university_id);
 CREATE INDEX microsoft_verification_consents_live_idx
     ON microsoft_verification_consents (user_id, university_id, id) WHERE withdrawn_at IS NULL;
 
@@ -76,8 +92,8 @@ CREATE TABLE microsoft_verification_attempts (
     institution_policy_version INTEGER NOT NULL CHECK (institution_policy_version >= 1),
     provider_policy_version INTEGER NOT NULL CHECK (provider_policy_version >= 1),
     identity_version INTEGER NOT NULL CHECK (identity_version >= 1),
-    processing_grant_id UUID NOT NULL REFERENCES verification_consents(id),
-    provider_consent_id UUID NOT NULL REFERENCES microsoft_verification_consents(id),
+    processing_grant_id UUID NOT NULL,
+    provider_consent_id UUID NOT NULL,
     server_session_id UUID NOT NULL,
     state_hash TEXT NOT NULL UNIQUE,
     browser_secret_hash TEXT NOT NULL,
@@ -91,6 +107,13 @@ CREATE TABLE microsoft_verification_attempts (
     CHECK ((status IN ('pending', 'processing') AND encrypted_verifier IS NOT NULL AND nonce IS NOT NULL)
         OR status IN ('ready', 'completed', 'failed'))
 );
+ALTER TABLE microsoft_verification_attempts
+    ADD CONSTRAINT microsoft_attempts_parent_subject_fk
+        FOREIGN KEY (processing_grant_id, user_id, university_id)
+        REFERENCES verification_consents (id, user_id, university_id),
+    ADD CONSTRAINT microsoft_attempts_provider_subject_parent_fk
+        FOREIGN KEY (provider_consent_id, user_id, university_id, processing_grant_id)
+        REFERENCES microsoft_verification_consents (id, user_id, university_id, processing_grant_id);
 CREATE INDEX microsoft_verification_attempts_expiry_idx ON microsoft_verification_attempts (expires_at);
 
 CREATE OR REPLACE FUNCTION microsoft_policy_cancel_pending_attempts() RETURNS trigger LANGUAGE plpgsql AS $$
@@ -110,12 +133,19 @@ CREATE TABLE microsoft_provider_proofs (
     id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
     user_id UUID NOT NULL REFERENCES users(id),
     university_id UUID NOT NULL REFERENCES universities(id),
-    provider_consent_id UUID NOT NULL REFERENCES microsoft_verification_consents(id),
-    identity_id UUID NOT NULL REFERENCES microsoft_identities(id),
+    provider_consent_id UUID NOT NULL,
+    identity_id UUID NOT NULL,
     provider_policy_version INTEGER NOT NULL CHECK (provider_policy_version >= 1),
     created_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp(),
     revoked_at TIMESTAMPTZ
 );
+ALTER TABLE microsoft_provider_proofs
+    ADD CONSTRAINT microsoft_proofs_consent_subject_fk
+        FOREIGN KEY (provider_consent_id, user_id, university_id)
+        REFERENCES microsoft_verification_consents (id, user_id, university_id),
+    ADD CONSTRAINT microsoft_proofs_identity_subject_fk
+        FOREIGN KEY (identity_id, user_id, university_id)
+        REFERENCES microsoft_identities (id, user_id, university_id);
 CREATE INDEX microsoft_provider_proofs_live_consent_idx
     ON microsoft_provider_proofs (provider_consent_id) WHERE revoked_at IS NULL;
 
