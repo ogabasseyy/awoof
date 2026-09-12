@@ -61,10 +61,10 @@ export async function assertMicrosoftSession(
 }
 
 /**
- * Lock an attempt only after the caller locks its canonical university,
- * identity/policy/consent state and then calls assertMicrosoftSession. Task 2b
- * supplies those participant locks; this helper must not be used as a shortcut
- * that treats user/student locks as sufficient attempt authority.
+ * Lock an attempt last: assertMicrosoftSession locks user then student first;
+ * Task 2b then locks canonical institution/state/consent participants before
+ * this attempt lock. This helper must not be used as a shortcut that treats
+ * user/student locks as sufficient attempt authority.
  */
 export async function lockMicrosoftAttempt(tx: PoolClient, attemptId: string): Promise<void> {
     await tx.query('SELECT id FROM microsoft_verification_attempts WHERE id = $1 FOR UPDATE', [attemptId]);
