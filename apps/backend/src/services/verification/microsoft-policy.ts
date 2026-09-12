@@ -12,3 +12,12 @@ export function sameConsentSnapshot(a: MicrosoftConsentSnapshot, b: MicrosoftCon
         && a.scopes.length === b.scopes.length
         && a.scopes.every((scope, index) => scope === b.scopes[index]);
 }
+
+export function hasSupportedMicrosoftScopes(
+    mode: MicrosoftConsentSnapshot['mode'], scopes: readonly string[],
+): boolean {
+    const expected = mode === 'graph_enrollment'
+        ? ['https://graph.microsoft.com/EduRoster.ReadBasic', 'openid', 'profile']
+        : ['openid', 'profile'];
+    return scopes.length === expected.length && scopes.every((scope, index) => scope === expected[index]);
+}

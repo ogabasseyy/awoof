@@ -34,8 +34,13 @@ test('mounted app keeps merchant CORS while isolating Microsoft CORS and redacts
         assert.equal(hostileMicrosoft.headers.get('access-control-allow-origin'), null);
 
         const hostilePost = await fetch(`${fixture.baseUrl}/api/verification/microsoft/start`, { method: 'POST', headers: { Origin: merchant, 'Content-Type': 'application/json' }, body: '{}' });
+        const hostilePostBody = await hostilePost.json() as { error: { code: string; message?: string } };
         assert.equal(hostilePost.status, 400);
         assert.equal(hostilePost.headers.get('access-control-allow-origin'), null);
+        // The originating BadRequestError has code BAD_REQUEST and a detailed
+        // message; neither may be exposed from the Microsoft namespace.
+        assert.equal(hostilePostBody.error.code, 'MICROSOFT_REQUEST_REJECTED');
+        assert.equal(hostilePostBody.error.message, undefined);
 
         const merchantWidget = await fetch(`${fixture.baseUrl}/api/widget/domain-check`, { method: 'OPTIONS', headers: { Origin: frontend, 'Access-Control-Request-Method': 'GET' } });
         assert.equal(merchantWidget.status, 204);

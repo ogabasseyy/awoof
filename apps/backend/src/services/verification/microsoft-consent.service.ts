@@ -1,9 +1,9 @@
 import { randomUUID } from 'node:crypto';
 import type { PoolClient } from 'pg';
-import { AppError, BadRequestError, ForbiddenError, NotFoundError } from '../../common/errors/AppError.js';
+import { AppError, BadRequestError, ForbiddenError, NotFoundError, ServiceUnavailableError } from '../../common/errors/AppError.js';
 import { lockStudentContext } from './eligibility-context.service.js';
-import { sameConsentSnapshot } from './microsoft-policy.js';
-import type { AcceptMicrosoftConsent, MicrosoftConsentSnapshot } from './microsoft.types.js';
+import { hasSupportedMicrosoftScopes, sameConsentSnapshot } from './microsoft-policy.js';
+import type { AcceptMicrosoftConsent, MicrosoftConsentHistoryItem, MicrosoftConsentNotice, MicrosoftConsentSnapshot } from './microsoft.types.js';
 import { VERIFICATION_NOTICE_VERSION } from './verification-notices.js';
 
 type PolicyRow = {
@@ -41,6 +41,12 @@ function snapshotFrom(row: PolicyRow): MicrosoftConsentSnapshot {
     };
 }
 
+function validCurrentPolicy(policy: PolicyRow, now: Date): boolean {
+    return policy.enabled && policy.approved_until > now
+        && (policy.mode !== 'graph_enrollment' || (policy.term_ends_at !== null && policy.term_ends_at > now))
+        && hasSupportedMicrosoftScopes(policy.mode, policy.scopes);
+}
+
 async function lockPolicy(tx: PoolClient, universityId: string): Promise<PolicyRow> {
     const result = await tx.query<PolicyRow>(
         `SELECT university_id, version, enabled, mode, approved_until, term_ends_at, scopes, notice_version
@@ -70,7 +76,8 @@ export async function acceptMicrosoftConsent(
     if (parent.rowCount !== 1) throw new BadRequestError('Current verification processing consent required');
     const policy = await lockPolicy(tx, context.universityId);
     const current = snapshotFrom(policy);
-    if (!policy.enabled || policy.approved_until <= new Date() || (policy.mode === 'graph_enrollment' && (!policy.term_ends_at || policy.term_ends_at <= new Date()))) {
+    const now = (await tx.query<{ now: Date }>('SELECT clock_timestamp() AS now')).rows[0]!.now;
+    if (!validCurrentPolicy(policy, now)) {
         consentNoticeChanged();
     }
     if (!sameConsentSnapshot(input.snapshot, current)) consentNoticeChanged();
@@ -88,6 +95,62 @@ export async function acceptMicrosoftConsent(
         [userId, context.universityId, current.providerPolicyVersion],
     );
     return id;
+}
+
+/**
+ * Returns the immutable version the caller must render. v1/v2 are retained
+ * for historical grants, but cannot be used for new HTTP acceptance because
+ * they predate the approved retention/withdrawal explanation.
+ */
+export async function getMicrosoftConsentNotice(tx: PoolClient, userId: string): Promise<MicrosoftConsentNotice> {
+    const context = await lockStudentContext(tx, userId);
+    if (!context.active) throw new ServiceUnavailableError('Microsoft verification is unavailable');
+    const result = await tx.query<PolicyRow & { content: string }>(
+        `SELECT policy.university_id, policy.version, policy.enabled, policy.mode, policy.approved_until,
+                policy.term_ends_at, policy.scopes, policy.notice_version, notice.content
+         FROM institution_microsoft_policies policy
+         JOIN microsoft_published_notices notice ON notice.version = policy.notice_version
+         WHERE policy.university_id = $1 FOR UPDATE OF policy`, [context.universityId],
+    );
+    const policy = result.rows[0];
+    const now = (await tx.query<{ now: Date }>('SELECT clock_timestamp() AS now')).rows[0]?.now;
+    if (!policy || !now || !validCurrentPolicy(policy, now) || policy.notice_version !== 'microsoft-v3') {
+        throw new ServiceUnavailableError('Microsoft verification is unavailable');
+    }
+    return { snapshot: snapshotFrom(policy), copy: { text: policy.content } };
+}
+
+export async function listMicrosoftConsents(
+    tx: PoolClient, userId: string, cursor: string | undefined,
+): Promise<{ items: MicrosoftConsentHistoryItem[]; nextCursor: string | null }> {
+    const result = await tx.query<{
+        id: string; university_id: string; provider_policy_version: number; notice_version: string;
+        mode: 'identity_only' | 'graph_enrollment'; scopes: string[]; accepted_at: Date; withdrawn_at: Date | null;
+    }>(
+        `WITH cursor_row AS (
+             SELECT accepted_at, id FROM microsoft_verification_consents WHERE id = $2 AND user_id = $1
+         )
+         SELECT id, university_id, provider_policy_version, notice_version, mode, scopes, accepted_at, withdrawn_at
+         FROM microsoft_verification_consents
+         WHERE user_id = $1
+           AND ($2::uuid IS NULL OR (accepted_at, id) < (SELECT accepted_at, id FROM cursor_row))
+         ORDER BY accepted_at DESC, id DESC
+         LIMIT 21`, [userId, cursor ?? null],
+    );
+    if (cursor && result.rows.length === 0) {
+        const valid = await tx.query('SELECT 1 FROM microsoft_verification_consents WHERE id=$1 AND user_id=$2', [cursor, userId]);
+        if (valid.rowCount !== 1) throw new BadRequestError('Invalid Microsoft consent cursor');
+    }
+    const page = result.rows.slice(0, 20);
+    return {
+        items: page.map((row) => ({
+            id: row.id,
+            snapshot: { universityId: row.university_id, providerPolicyVersion: row.provider_policy_version,
+                noticeVersion: row.notice_version, mode: row.mode, scopes: row.scopes },
+            acceptedAt: row.accepted_at, withdrawnAt: row.withdrawn_at,
+        })),
+        nextCursor: result.rows.length > 20 ? page.at(-1)!.id : null,
+    };
 }
 
 export async function withdrawMicrosoftConsent(tx: PoolClient, userId: string, consentId: string): Promise<void> {

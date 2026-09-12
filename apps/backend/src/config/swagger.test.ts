@@ -26,3 +26,20 @@ test('published savings schema describes nullable totals and partial-history met
     }
     assert.equal(data.properties.byCategory.items.properties.savings.nullable, true);
 });
+
+test('publishes the strict Microsoft consent notice, history, acceptance, and withdrawal contract', () => {
+    type Endpoint = { requestBody?: { content: Record<string, { schema: { additionalProperties?: boolean; properties?: Record<string, unknown> } }> } };
+    const spec = swaggerSpec as { paths: Record<string, Record<string, Endpoint>> };
+    const notice = spec.paths['/api/verification/microsoft/notice'];
+    const start = spec.paths['/api/verification/microsoft/start'];
+    const finish = spec.paths['/api/verification/microsoft/finish'];
+    const consents = spec.paths['/api/verification/microsoft/consents'];
+    const withdrawal = spec.paths['/api/verification/microsoft/consents/{id}/withdraw'];
+    assert.ok(notice?.get);
+    assert.equal(start?.post?.requestBody?.content['application/json']?.schema.additionalProperties, false);
+    assert.equal(finish?.post?.requestBody?.content['application/json']?.schema.additionalProperties, false);
+    assert.ok(consents?.get);
+    assert.equal(consents?.post?.requestBody?.content['application/json']?.schema.additionalProperties, false);
+    assert.ok(consents?.post?.requestBody?.content['application/json']?.schema.properties?.snapshot);
+    assert.equal(withdrawal?.post?.requestBody?.content['application/json']?.schema.additionalProperties, false);
+});

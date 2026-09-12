@@ -997,6 +997,87 @@ test('mounted Microsoft start returns only the finish secret and sets the state-
     } finally { await new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve())); }
 });
 
+test('mounted Microsoft consent routes bind the rendered snapshot, preserve owner withdrawal, and keep history available with issuance off', async () => {
+    const data = await fixture();
+    const sid = randomUUID();
+    const otherUser = await withTestClient((client) => inTransaction(client, async () => {
+        await client.query(`UPDATE institution_microsoft_policies SET notice_version='microsoft-v3' WHERE university_id=$1`, [data.universityId]);
+        await client.query(`UPDATE users SET active_session_id=$2,refresh_token_hash='consent-route',refresh_token_expires_at=clock_timestamp()+interval '1 hour' WHERE id=$1`, [data.userId, sid]);
+        const other = (await client.query<{ id: string }>(`INSERT INTO users (email,role,active_session_id,refresh_token_hash,refresh_token_expires_at)
+            VALUES ($1,'student',$2,'other-consent-route',clock_timestamp()+interval '1 hour') RETURNING id`, [`other-${randomUUID()}@example.invalid`, randomUUID()])).rows[0]!.id;
+        await client.query(`INSERT INTO students (user_id,name,university_id) VALUES($1,'Other',$2)`, [other, data.universityId]);
+        return other;
+    }));
+    const app = await createApp({ microsoftIssuanceEnabled: () => true });
+    const server = http.createServer(app);
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+    const address = server.address();
+    if (!address || typeof address === 'string') throw new Error('Expected a loopback test port');
+    const base = `http://127.0.0.1:${address.port}/api/verification/microsoft`;
+    const token = jwtService.generateAccessToken({ userId:data.userId, email:'student@example.invalid', role:'student', sid });
+    const headers = { authorization:`Bearer ${token}`, origin:'http://localhost:3000', 'content-type':'application/json' };
+    const mutableConfig = config as unknown as { microsoftOidc: { enabled: boolean }; microsoftVerification: { attemptEncryptionKey?: string } };
+    const originalOidc = mutableConfig.microsoftOidc;
+    const originalKey = mutableConfig.microsoftVerification.attemptEncryptionKey;
+    try {
+        const disabledMethods = await fetch(`${base.replace('/microsoft', '')}/methods/${data.universityId}`);
+        const disabledMethodBody = await disabledMethods.json() as { data: { methods: Array<{ methodType: string; isAvailable: boolean }> } };
+        const disabledEmail = disabledMethodBody.data.methods.find((method) => method.methodType === 'email');
+        assert.equal(disabledMethodBody.data.methods.find((method) => method.methodType === 'microsoft')?.isAvailable, false);
+        mutableConfig.microsoftOidc = { enabled: true };
+        mutableConfig.microsoftVerification.attemptEncryptionKey = randomBytes(32).toString('base64url');
+        const enabledMethods = await fetch(`${base.replace('/microsoft', '')}/methods/${data.universityId}`);
+        const enabledMethodBody = await enabledMethods.json() as { data: { methods: Array<{ methodType: string; isAvailable: boolean }> } };
+        assert.equal(enabledMethodBody.data.methods.find((method) => method.methodType === 'microsoft')?.isAvailable, true);
+        assert.equal(enabledMethodBody.data.methods.find((method) => method.methodType === 'email')?.isAvailable, disabledEmail?.isAvailable);
+
+        const noticeResponse = await fetch(`${base}/notice`, { headers:{ authorization: headers.authorization } });
+        const noticeBody = await noticeResponse.json() as { data: { snapshot: { universityId: string; providerPolicyVersion: number; noticeVersion: string; mode: string; scopes: string[] }; copy: { text: string } } };
+        assert.equal(noticeResponse.status, 200);
+        assert.equal(noticeBody.data.snapshot.universityId, data.universityId);
+        assert.equal(noticeBody.data.snapshot.noticeVersion, 'microsoft-v3');
+        assert.match(noticeBody.data.copy.text, /10 minutes/i);
+        assert.match(noticeBody.data.copy.text, /30 days/i);
+
+        const accepted = await fetch(`${base}/consents`, { method:'POST', headers, body:JSON.stringify({ accepted:true, processingGrantId:data.processingGrantId, snapshot:noticeBody.data.snapshot }) });
+        const acceptedBody = await accepted.json() as { data: { providerConsentId: string } };
+        assert.equal(accepted.status, 201);
+        assert.match(acceptedBody.data.providerConsentId, /^[0-9a-f-]{36}$/i);
+
+        const extra = await fetch(`${base}/consents`, { method:'POST', headers, body:JSON.stringify({ accepted:true, processingGrantId:data.processingGrantId, snapshot:noticeBody.data.snapshot, userId:otherUser }) });
+        assert.equal(extra.status, 400);
+        const hostile = await fetch(`${base}/consents/${acceptedBody.data.providerConsentId}/withdraw`, { method:'POST', headers:{ ...headers, origin:'https://merchant.example.invalid' }, body:'{}' });
+        assert.equal(hostile.status, 400);
+
+        await withTestClient((client) => client.query(`UPDATE institution_microsoft_policies SET max_evidence_hours=max_evidence_hours-1 WHERE university_id=$1`, [data.universityId]));
+        const stale = await fetch(`${base}/consents`, { method:'POST', headers, body:JSON.stringify({ accepted:true, processingGrantId:data.processingGrantId, snapshot:noticeBody.data.snapshot }) });
+        const staleBody = await stale.json() as { error: { code: string } };
+        assert.equal(stale.status, 409); assert.equal(staleBody.error.code, 'consent_notice_changed');
+
+        // Student status has no "inactive" enum value; suspended is the
+        // supported non-active owner state that must still reach history and
+        // withdrawal through the owner-session guard.
+        await withTestClient((client) => client.query(`UPDATE students SET status='suspended' WHERE user_id=$1`, [data.userId]));
+        const history = await fetch(`${base}/consents`, { headers:{ authorization:headers.authorization } });
+        const historyBody = await history.json() as { data: { items: Array<{ id: string }>; nextCursor: string | null } };
+        assert.equal(history.status, 200); assert.deepEqual(historyBody.data.items.map((item) => item.id), [acceptedBody.data.providerConsentId]);
+
+        const withdraw = await fetch(`${base}/consents/${acceptedBody.data.providerConsentId}/withdraw`, { method:'POST', headers, body:'{}' });
+        assert.equal(withdraw.status, 200);
+        const repeatedWithdraw = await fetch(`${base}/consents/${acceptedBody.data.providerConsentId}/withdraw`, { method:'POST', headers, body:'{}' });
+        assert.equal(repeatedWithdraw.status, 200);
+        const otherSid = (await withTestClient(async (client) => (await client.query<{ active_session_id: string }>('SELECT active_session_id FROM users WHERE id=$1', [otherUser])).rows[0]!)).active_session_id;
+        const otherToken = jwtService.generateAccessToken({ userId:otherUser, email:'other@example.invalid', role:'student', sid:otherSid });
+        const wrongOwner = await fetch(`${base}/consents/${acceptedBody.data.providerConsentId}/withdraw`, { method:'POST', headers:{ authorization:`Bearer ${otherToken}`, origin:'http://localhost:3000', 'content-type':'application/json' }, body:'{}' });
+        assert.equal(wrongOwner.status, 403);
+    } finally {
+        mutableConfig.microsoftOidc = originalOidc;
+        if (originalKey === undefined) delete mutableConfig.microsoftVerification.attemptEncryptionKey;
+        else mutableConfig.microsoftVerification.attemptEncryptionKey = originalKey;
+        await new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
+    }
+});
+
 test('mounted Microsoft rejects expired callbacks and stale live sessions without writes', async () => {
     const expired = await pendingDurableAttempt();
     const app = await createApp({ microsoftFlowFactory: () => expired.service }); const server = http.createServer(app);

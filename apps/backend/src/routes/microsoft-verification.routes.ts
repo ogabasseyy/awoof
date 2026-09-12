@@ -4,13 +4,19 @@ import { asyncHandler } from '../common/middleware/errorHandler.js';
 import { config } from '../config/env.js';
 import { getPool } from '../config/database.js';
 import { requireMicrosoftSession } from '../middleware/microsoft-session.js';
+import { withMicrosoftSession } from '../services/verification/microsoft-session.service.js';
+import { acceptMicrosoftConsent, getMicrosoftConsentNotice, listMicrosoftConsents, withdrawMicrosoftConsent } from '../services/verification/microsoft-consent.service.js';
 import { MicrosoftFlowService } from '../services/verification/microsoft-flow.service.js';
 import { MicrosoftOidcService, type MicrosoftOidc } from '../services/verification/microsoft-oidc.service.js';
 import { forApprovedMicrosoftTenant } from '../services/verification/microsoft-oidc.config.js';
 import { MicrosoftEducationService } from '../services/verification/microsoft-education.service.js';
+import { hasValidMicrosoftAttemptEncryptionKey } from '../services/verification/microsoft-attempt-crypto.js';
 
 type Flow = Pick<MicrosoftFlowService, 'start' | 'callback' | 'finish'> & Partial<Pick<MicrosoftFlowService, 'callbackCookieNameForState'>>;
 type FlowFactory = () => Flow;
+type RouterOptions = { isIssuanceEnabled?: () => boolean };
+
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
 function exactJson(req: Request, _res: Response, next: NextFunction): void {
     if (!req.is('application/json')) return next(new BadRequestError('Microsoft verification requires JSON'));
@@ -33,6 +39,39 @@ function bodyIds(req: Request, names: readonly string[]): Record<string, string>
     return body as Record<string, string>;
 }
 
+function consentBody(req: Request): { processingGrantId: string; snapshot: { universityId: string; providerPolicyVersion: number; noticeVersion: string; mode: 'identity_only' | 'graph_enrollment'; scopes: string[] }; accepted: true } {
+    const body = req.body;
+    if (!body || typeof body !== 'object' || Array.isArray(body)
+        || Object.keys(body).length !== 3 || body.accepted !== true || typeof body.processingGrantId !== 'string' || !UUID.test(body.processingGrantId)
+        || !body.snapshot || typeof body.snapshot !== 'object' || Array.isArray(body.snapshot)) {
+        throw new BadRequestError('Microsoft consent request is invalid');
+    }
+    const snapshot = body.snapshot as Record<string, unknown>;
+    if (Object.keys(snapshot).length !== 5 || typeof snapshot.universityId !== 'string' || !UUID.test(snapshot.universityId)
+        || !Number.isInteger(snapshot.providerPolicyVersion) || (typeof snapshot.noticeVersion !== 'string' || !snapshot.noticeVersion.trim())
+        || (snapshot.mode !== 'identity_only' && snapshot.mode !== 'graph_enrollment') || !Array.isArray(snapshot.scopes)
+        || snapshot.scopes.some((scope) => typeof scope !== 'string' || !scope.trim())) {
+        throw new BadRequestError('Microsoft consent request is invalid');
+    }
+    return { processingGrantId: body.processingGrantId, accepted: true, snapshot: {
+        universityId: snapshot.universityId as string, providerPolicyVersion: snapshot.providerPolicyVersion as number,
+        noticeVersion: snapshot.noticeVersion as string, mode: snapshot.mode as 'identity_only' | 'graph_enrollment', scopes: [...snapshot.scopes] as string[],
+    } };
+}
+
+function emptyBody(req: Request): void {
+    const body = req.body;
+    if (!body || typeof body !== 'object' || Array.isArray(body) || Object.keys(body).length !== 0) {
+        throw new BadRequestError('Microsoft withdrawal request is invalid');
+    }
+}
+
+function consentId(value: string | string[] | undefined): string {
+    const id = Array.isArray(value) ? value[0] : value;
+    if (!id || !UUID.test(id)) throw new BadRequestError('Microsoft consent ID is invalid');
+    return id;
+}
+
 function responseHeaders(res: Response): void {
     res.setHeader('Cache-Control', 'no-store');
     res.setHeader('Referrer-Policy', 'no-referrer');
@@ -41,7 +80,7 @@ function responseHeaders(res: Response): void {
 function defaultFlow(): Flow {
     const oidcConfig = config.microsoftOidc;
     const key = config.microsoftVerification.attemptEncryptionKey;
-    if (!oidcConfig.enabled || !key) throw new ServiceUnavailableError('Microsoft verification is unavailable');
+    if (!oidcConfig.enabled || !hasValidMicrosoftAttemptEncryptionKey(key)) throw new ServiceUnavailableError('Microsoft verification is unavailable');
     // The OIDC client is configured from server-held approved configuration.
     // The lifecycle service supplies the locked policy tenant; the reviewed
     // transport rejects any tenant other than this configured adapter tenant.
@@ -56,8 +95,13 @@ function defaultFlow(): Flow {
     });
 }
 
-export function createMicrosoftVerificationRouter(factory: FlowFactory = defaultFlow): Router {
+export function createMicrosoftVerificationRouter(factory: FlowFactory = defaultFlow, options: RouterOptions = {}): Router {
     const router = Router();
+    const issuanceEnabled = options.isIssuanceEnabled ?? (() => config.microsoftOidc.enabled
+        && hasValidMicrosoftAttemptEncryptionKey(config.microsoftVerification.attemptEncryptionKey));
+    const assertIssuanceEnabled = (): void => {
+        if (!issuanceEnabled()) throw new ServiceUnavailableError('Microsoft verification is unavailable');
+    };
 
     router.post('/start', exactOrigin, exactJson, requireMicrosoftSession('issuance'), asyncHandler(async (req, res) => {
         const body = bodyIds(req, ['processingGrantId', 'providerConsentId']);
@@ -68,6 +112,57 @@ export function createMicrosoftVerificationRouter(factory: FlowFactory = default
             httpOnly: true, secure: true, sameSite: result.callbackCookie.sameSite,
         });
         res.status(201).json({ success: true, data: result.publicResult });
+    }));
+
+    router.get('/notice', requireMicrosoftSession('issuance'), asyncHandler(async (req, res) => {
+        const result = await withMicrosoftSession(getPool(), { userId: req.user!.id, sid: req.user!.sid, use: 'issuance' }, async (tx) => {
+            assertIssuanceEnabled();
+            const notice = await getMicrosoftConsentNotice(tx, req.user!.id);
+            // Recheck after canonical user/student/policy locks so a runtime
+            // feature disable cannot yield a newly actionable notice.
+            assertIssuanceEnabled();
+            return notice;
+        });
+        responseHeaders(res);
+        res.json({ success: true, data: result });
+    }));
+
+    router.post('/consents', exactOrigin, exactJson, requireMicrosoftSession('issuance'), asyncHandler(async (req, res) => {
+        const input = consentBody(req);
+        const providerConsentId = await withMicrosoftSession(getPool(), { userId: req.user!.id, sid: req.user!.sid, use: 'issuance' }, async (tx) => {
+            assertIssuanceEnabled();
+            const id = await acceptMicrosoftConsent(tx, req.user!.id, input);
+            // acceptMicrosoftConsent has already locked parent consent before
+            // policy. Keep that canonical order; a legacy notice causes the
+            // enclosing transaction (including this new grant) to roll back.
+            await getMicrosoftConsentNotice(tx, req.user!.id);
+            assertIssuanceEnabled();
+            return id;
+        });
+        responseHeaders(res);
+        res.status(201).json({ success: true, data: { providerConsentId } });
+    }));
+
+    router.get('/consents', requireMicrosoftSession('owner'), asyncHandler(async (req, res) => {
+        const rawCursor = Array.isArray(req.query.cursor) ? req.query.cursor[0] : req.query.cursor;
+        if (rawCursor !== undefined && (typeof rawCursor !== 'string' || !UUID.test(rawCursor))) {
+            throw new BadRequestError('Microsoft consent cursor is invalid');
+        }
+        const result = await withMicrosoftSession(getPool(), { userId: req.user!.id, sid: req.user!.sid, use: 'owner' }, (tx) =>
+            listMicrosoftConsents(tx, req.user!.id, rawCursor),
+        );
+        responseHeaders(res);
+        res.json({ success: true, data: result });
+    }));
+
+    router.post('/consents/:id/withdraw', exactOrigin, exactJson, requireMicrosoftSession('owner'), asyncHandler(async (req, res) => {
+        emptyBody(req);
+        const id = consentId(req.params.id);
+        await withMicrosoftSession(getPool(), { userId: req.user!.id, sid: req.user!.sid, use: 'owner' }, async (tx) => {
+            await withdrawMicrosoftConsent(tx, req.user!.id, id);
+        });
+        responseHeaders(res);
+        res.json({ success: true, data: { providerConsentId: id, withdrawn: true } });
     }));
 
     router.get('/callback', asyncHandler(async (req, res) => {
@@ -105,3 +200,124 @@ export function createMicrosoftVerificationRouter(factory: FlowFactory = default
 }
 
 export default createMicrosoftVerificationRouter;
+
+/**
+ * @swagger
+ * /api/verification/microsoft/start:
+ *   post:
+ *     summary: Begin a two-stage Microsoft account connection
+ *     description: Strict JSON with server-held consent IDs only. Returns an opaque attempt ID, authorization URL, and bounded finish secret; never returns or logs Microsoft tokens, codes, PKCE material, or client secrets.
+ *     tags: [Microsoft verification]
+ *     security: [{ bearerAuth: [] }]
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             additionalProperties: false
+ *             required: [processingGrantId, providerConsentId]
+ *             properties:
+ *               processingGrantId: { type: string, format: uuid }
+ *               providerConsentId: { type: string, format: uuid }
+ *     responses:
+ *       201: { description: Pending account-link attempt; completion remains a separate finish call }
+ *       400: { description: Invalid exact-Origin JSON body }
+ *       401: { description: Current issuance session is required }
+ *       503: { description: Microsoft issuance is unavailable }
+ * /api/verification/microsoft/finish:
+ *   post:
+ *     summary: Finalize a ready Microsoft account-link attempt
+ *     description: "Strict JSON. The result distinguishes account linking from enrollment assurance: enrollment is not_checked, verified, or unknown. Never send provider credentials in this request or response."
+ *     tags: [Microsoft verification]
+ *     security: [{ bearerAuth: [] }]
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             additionalProperties: false
+ *             required: [attemptId, finishSecret]
+ *             properties:
+ *               attemptId: { type: string, format: uuid }
+ *               finishSecret: { type: string }
+ *     responses:
+ *       200: { description: Minimal account-link and enrollment-assurance receipt }
+ *       400: { description: Invalid exact-Origin JSON body }
+ *       401: { description: Current issuance session is required }
+ *       409: { description: Attempt is stale, revoked, expired, or not ready }
+ * /api/verification/microsoft/notice:
+ *   get:
+ *     summary: Read the exact immutable Microsoft consent notice for the signed-in student
+ *     tags: [Microsoft verification]
+ *     security: [{ bearerAuth: [] }]
+ *     responses:
+ *       200:
+ *         description: Server-selected snapshot and the immutable text that must be rendered before acceptance
+ *       401: { description: A current live student session is required }
+ *       503: { description: Microsoft issuance is unavailable; no tenant or provider detail is disclosed }
+ * /api/verification/microsoft/consents:
+ *   get:
+ *     summary: List the signed-in owner's Microsoft consent history
+ *     tags: [Microsoft verification]
+ *     security: [{ bearerAuth: [] }]
+ *     parameters:
+ *       - in: query
+ *         name: cursor
+ *         schema: { type: string, format: uuid }
+ *     responses:
+ *       200: { description: Owner-scoped keyset page with items and nullable nextCursor }
+ *       401: { description: A current live owner session is required }
+ *   post:
+ *     summary: Explicitly accept the exact Microsoft notice snapshot that was rendered
+ *     description: Strict JSON only. Client snapshot values are comparison values, never provider authority. A 409 requires a fresh render and explicit action; tokens, authorization codes, and client secrets are never accepted or logged.
+ *     tags: [Microsoft verification]
+ *     security: [{ bearerAuth: [] }]
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             additionalProperties: false
+ *             required: [accepted, processingGrantId, snapshot]
+ *             properties:
+ *               accepted: { type: boolean, enum: [true] }
+ *               processingGrantId: { type: string, format: uuid }
+ *               snapshot:
+ *                 type: object
+ *                 additionalProperties: false
+ *                 required: [universityId, providerPolicyVersion, noticeVersion, mode, scopes]
+ *                 properties:
+ *                   universityId: { type: string, format: uuid }
+ *                   providerPolicyVersion: { type: integer, minimum: 1 }
+ *                   noticeVersion: { type: string }
+ *                   mode: { type: string, enum: [identity_only, graph_enrollment] }
+ *                   scopes: { type: array, items: { type: string } }
+ *     responses:
+ *       201: { description: Provider consent recorded; response data contains providerConsentId }
+ *       400: { description: Invalid origin, JSON, strict body, or processing grant }
+ *       409: { description: consent_notice_changed; no consent was created }
+ *       503: { description: Microsoft issuance is unavailable }
+ * /api/verification/microsoft/consents/{id}/withdraw:
+ *   post:
+ *     summary: Idempotently withdraw an owner-scoped Microsoft provider consent
+ *     description: Requires exact configured Origin and an empty JSON object. It remains available with Microsoft issuance disabled and does not withdraw independent email evidence or merchant disclosure. Account linking is distinct from the enrollment assurance label returned by finish.
+ *     tags: [Microsoft verification]
+ *     security: [{ bearerAuth: [] }]
+ *     parameters:
+ *       - in: path
+ *         name: id
+ *         required: true
+ *         schema: { type: string, format: uuid }
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema: { type: object, additionalProperties: false }
+ *     responses:
+ *       200: { description: Withdrawal completed or was already completed }
+ *       401: { description: A current live owner session is required }
+ *       403: { description: Consent belongs to another owner }
+ */

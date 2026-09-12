@@ -1,0 +1,4 @@
+-- The original Microsoft notices remain immutable historical records. This
+-- fuller copy is selected only by an explicit institution-policy update.
+INSERT INTO microsoft_published_notices (version, content, content_digest) VALUES
+    ('microsoft-v3', 'We use your Microsoft school identity and, only when an approved institution policy requests it, Microsoft education enrollment information to connect your account and assess student eligibility. A Microsoft verification attempt expires after 10 minutes. Redacted operational diagnostics may remain for up to 30 days. This notice does not set a deletion deadline for consent, audit, identity, or eligibility records. You can withdraw Microsoft provider consent at any time; withdrawal stops unfinished Microsoft verification and revokes dependent Microsoft proof without withdrawing independent email verification or merchant disclosure.', 'b03fa37d0371a86a3a0ad6ba152c00dd58ae1d382e980a00b10d4ea7b3706b83');

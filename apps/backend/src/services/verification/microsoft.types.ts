@@ -24,3 +24,20 @@ export type AcceptMicrosoftConsent = {
     snapshot: MicrosoftConsentSnapshot;
     accepted: true;
 };
+
+export type MicrosoftConsentCopy = {
+    /** Immutable text for the exact published notice version in the snapshot. */
+    text: string;
+};
+
+export type MicrosoftConsentNotice = {
+    snapshot: MicrosoftConsentSnapshot;
+    copy: MicrosoftConsentCopy;
+};
+
+export type MicrosoftConsentHistoryItem = {
+    id: string;
+    snapshot: MicrosoftConsentSnapshot;
+    acceptedAt: Date;
+    withdrawnAt: Date | null;
+};

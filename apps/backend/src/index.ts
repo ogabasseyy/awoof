@@ -24,7 +24,11 @@ import { appLogger } from './common/logger.js';
 import { swaggerSpec } from './config/swagger.js';
 import type { MicrosoftFlowService } from './services/verification/microsoft-flow.service.js';
 
-export type AppOptions = { microsoftFlowFactory?: () => Pick<MicrosoftFlowService, 'start' | 'callback' | 'finish' | 'callbackCookieNameForState'> };
+export type AppOptions = {
+  microsoftFlowFactory?: () => Pick<MicrosoftFlowService, 'start' | 'callback' | 'finish' | 'callbackCookieNameForState'>;
+  /** Local integration harness only; production keeps server-held config. */
+  microsoftIssuanceEnabled?: () => boolean;
+};
 
 /**
  * Application class
@@ -216,7 +220,9 @@ export class App {
 
     try {
       const microsoftVerificationRoutes = await import('./routes/microsoft-verification.routes.js');
-      this.app.use('/api/verification/microsoft', microsoftVerificationRoutes.default(this.options.microsoftFlowFactory));
+      this.app.use('/api/verification/microsoft', microsoftVerificationRoutes.default(this.options.microsoftFlowFactory, {
+        ...(this.options.microsoftIssuanceEnabled ? { isIssuanceEnabled: this.options.microsoftIssuanceEnabled } : {}),
+      }));
       appLogger.info('Microsoft verification routes registered');
     } catch (error) {
       appLogger.error('Failed to register Microsoft verification routes:', error);
@@ -321,7 +327,11 @@ export class App {
       const typed = err as { status?: unknown; statusCode?: unknown; code?: unknown };
       const candidate = typed.status ?? typed.statusCode;
       const status = typeof candidate === 'number' && candidate >= 400 && candidate < 600 ? candidate : 500;
-      const safeCode = typed.code === 'reauthentication_required' ? typed.code : 'MICROSOFT_REQUEST_REJECTED';
+      // Only client-recoverable protocol states are exposed. Keep every other
+      // error's message/code generic so provider, SQL, and request details
+      // cannot cross the Microsoft boundary.
+      const safeCode = typed.code === 'reauthentication_required' || typed.code === 'consent_notice_changed'
+        ? typed.code : 'MICROSOFT_REQUEST_REJECTED';
       res.status(status).json({ success: false, error: { code: safeCode, statusCode: status } });
     });
     // 404 handler

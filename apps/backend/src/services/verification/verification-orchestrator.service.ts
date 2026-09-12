@@ -1,8 +1,11 @@
 import { db } from '../../config/database.js';
+import { config } from '../../config/env.js';
 import { isEmailConfigured } from '../email/email.service.js';
 import { parseConfiguredEnrollmentAdapter } from './registration-lookup.service.js';
+import { hasSupportedMicrosoftScopes } from './microsoft-policy.js';
+import { hasValidMicrosoftAttemptEncryptionKey } from './microsoft-attempt-crypto.js';
 
-export type VerificationMethod = 'portal' | 'email' | 'registration' | 'whatsapp';
+export type VerificationMethod = 'portal' | 'email' | 'registration' | 'whatsapp' | 'microsoft';
 
 export interface VerificationMethodInfo {
     methodType: VerificationMethod;
@@ -15,6 +18,12 @@ type InstitutionAvailability = {
     is_active: boolean;
     has_approved_email_domain: boolean;
     registration_normalization: 'exact' | 'trim_upper' | null;
+    microsoft_enabled: boolean | null;
+    microsoft_tenant_id: string | null;
+    microsoft_mode: 'identity_only' | 'graph_enrollment' | null;
+    microsoft_scopes: string[] | null;
+    microsoft_notice_version: string | null;
+    microsoft_current: boolean | null;
 };
 
 type MethodPriority = {
@@ -25,7 +34,7 @@ type MethodPriority = {
     api_config: unknown;
 };
 
-const methods: VerificationMethod[] = ['portal', 'email', 'registration', 'whatsapp'];
+const methods: VerificationMethod[] = ['portal', 'email', 'registration', 'microsoft', 'whatsapp'];
 
 function unavailable(methodType: VerificationMethod, priority: number, reason: string): VerificationMethodInfo {
     return { methodType, isAvailable: false, priority, reason };
@@ -45,8 +54,16 @@ export async function getAvailableVerificationMethods(universityId: string): Pro
                     FROM approved_student_email_domains domains
                     WHERE domains.university_id = institutions.id
                       AND domains.is_active
-                ) AS has_approved_email_domain
+                ) AS has_approved_email_domain,
+                microsoft.enabled AS microsoft_enabled,
+                microsoft.tenant_id AS microsoft_tenant_id,
+                microsoft.mode AS microsoft_mode,
+                microsoft.scopes AS microsoft_scopes,
+                microsoft.notice_version AS microsoft_notice_version,
+                (microsoft.approved_until > clock_timestamp()
+                    AND (microsoft.mode <> 'graph_enrollment' OR microsoft.term_ends_at > clock_timestamp())) AS microsoft_current
          FROM universities institutions
+         LEFT JOIN institution_microsoft_policies microsoft ON microsoft.university_id = institutions.id
          WHERE institutions.id = $1`,
         [universityId],
     );
@@ -88,6 +105,17 @@ export async function getAvailableVerificationMethods(universityId: string): Pro
             }
             if (!registrationAdapter) {
                 return unavailable(methodType, priority, 'Registration verification is unavailable pending the configured institution adapter.');
+            }
+            return { methodType, isAvailable: true, priority };
+        }
+        if (methodType === 'microsoft') {
+            const configured = config.microsoftOidc.enabled
+                && hasValidMicrosoftAttemptEncryptionKey(config.microsoftVerification.attemptEncryptionKey);
+            const policySupported = institution.microsoft_mode !== null && institution.microsoft_scopes !== null
+                && hasSupportedMicrosoftScopes(institution.microsoft_mode, institution.microsoft_scopes);
+            if (!configured || institution.microsoft_enabled !== true || !institution.microsoft_tenant_id
+                || institution.microsoft_current !== true || !policySupported || institution.microsoft_notice_version !== 'microsoft-v3') {
+                return unavailable(methodType, priority, 'Microsoft verification is not currently available.');
             }
             return { methodType, isAvailable: true, priority };
         }

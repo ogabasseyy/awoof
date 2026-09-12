@@ -196,7 +196,7 @@ Access tokens expire in 15 minutes. Use the refresh token endpoint to get a new 
                     properties: {
                         methodType: {
                             type: 'string',
-                            enum: ['portal', 'email', 'registration', 'whatsapp'],
+                            enum: ['portal', 'email', 'registration', 'microsoft', 'whatsapp'],
                             example: 'email',
                         },
                         isAvailable: {
@@ -251,4 +251,3 @@ Access tokens expire in 15 minutes. Use the refresh token endpoint to get a new 
 };
 
 export const swaggerSpec = swaggerJsdoc(options);
-

@@ -9,6 +9,11 @@ function keyFrom(value: string): Buffer {
     return key;
 }
 
+/** Safe readiness check; encryption/decryption still validate again at use. */
+export function hasValidMicrosoftAttemptEncryptionKey(value: unknown): value is string {
+    try { keyFrom(value as string); return true; } catch { return false; }
+}
+
 export function hashMicrosoftAttemptSecret(value: string): string {
     return createHash('sha256').update(value, 'utf8').digest('base64url');
 }
