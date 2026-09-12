@@ -99,6 +99,16 @@ test('rejects a chunked provider response larger than the transport limit', asyn
     await assert.rejects(() => redeem(service(() => token(), () => [{ ...jwk, kid: 'key-1', use: 'sig', alg: 'RS256' }], {}, false, true)), MicrosoftOidcOperationalError);
 });
 
+test('cancels the locked stream when chunked provider data exceeds the limit', async () => {
+    let cancellations = 0;
+    const fetch: import('openid-client').CustomFetch = async () => new Response(new ReadableStream({
+        start(controller) { controller.enqueue(new Uint8Array(262_145)); },
+        cancel() { cancellations += 1; },
+    }));
+    await assert.rejects(() => serviceWithFetch(fetch).authorize({ tenantId, state: 'state-1', nonce: 'nonce-1', verifier: 'A'.repeat(64), scopes: ['openid', 'profile'] }), MicrosoftOidcOperationalError);
+    assert.equal(cancellations, 1);
+});
+
 function cancellationProbe(status: number, headers: HeadersInit = {}): { fetch: import('openid-client').CustomFetch; cancelled: () => number } {
     let cancellations = 0;
     const fetch: import('openid-client').CustomFetch = async () => new Response(new ReadableStream({ cancel() { cancellations += 1; } }), { status, headers });

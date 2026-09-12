@@ -74,7 +74,9 @@ async function boundedBody(response: Response, signal: AbortSignal): Promise<Res
             chunks.push(next.value);
         }
     } catch (error) {
-        discardResponseBody(response);
+        // `getReader()` locks `response.body`, so cancellation must use this
+        // reader rather than the pre-lock response-body helper.
+        void reader.cancel().catch(() => undefined);
         throw error;
     }
     const body = new Uint8Array(bytes);
