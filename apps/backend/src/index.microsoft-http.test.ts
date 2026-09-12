@@ -37,14 +37,14 @@ test('mounted app keeps merchant CORS while isolating Microsoft CORS and redacts
         assert.equal(hostilePost.status, 400);
         assert.equal(hostilePost.headers.get('access-control-allow-origin'), null);
 
-        const merchantWidget = await fetch(`${fixture.baseUrl}/api/widget/config`, { method: 'OPTIONS', headers: { Origin: frontend, 'Access-Control-Request-Method': 'GET' } });
+        const merchantWidget = await fetch(`${fixture.baseUrl}/api/widget/domain-check`, { method: 'OPTIONS', headers: { Origin: frontend, 'Access-Control-Request-Method': 'GET' } });
         assert.equal(merchantWidget.status, 204);
         assert.equal(merchantWidget.headers.get('access-control-allow-origin'), frontend);
 
-        const registeredMerchantWidget = await fetch(`${fixture.baseUrl}/api/widget/config`, { method: 'OPTIONS', headers: { Origin: merchant, 'Access-Control-Request-Method': 'GET' } });
+        const registeredMerchantWidget = await fetch(`${fixture.baseUrl}/api/widget/domain-check`, { method: 'OPTIONS', headers: { Origin: merchant, 'Access-Control-Request-Method': 'GET' } });
         assert.equal(registeredMerchantWidget.status, 204);
         assert.equal(registeredMerchantWidget.headers.get('access-control-allow-origin'), merchant);
-        const unknownWidget = await fetch(`${fixture.baseUrl}/api/widget/config`, { method: 'OPTIONS', headers: { Origin: 'https://unknown.example', 'Access-Control-Request-Method': 'GET' } });
+        const unknownWidget = await fetch(`${fixture.baseUrl}/api/widget/domain-check`, { method: 'OPTIONS', headers: { Origin: 'https://unknown.example', 'Access-Control-Request-Method': 'GET' } });
         assert.equal(unknownWidget.headers.get('access-control-allow-origin'), null);
 
         const malformed = await fetch(`${fixture.baseUrl}/api/verification/microsoft/finish`, { method: 'POST', headers: { Origin: frontend, 'Content-Type': 'application/json' }, body: '{"finishSecret":"MALFORMED_FINISH_SECRET_CANARY"' });
