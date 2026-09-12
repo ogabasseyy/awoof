@@ -498,6 +498,28 @@ test('wrong finish secret and logout fence ready finalization', async () => {
     await assert.rejects(()=>flow.service.finish({userId:flow.data.userId,serverSessionId:flow.sid,attemptId:flow.started.publicResult.attemptId,finishSecret:flow.started.publicResult.finishSecret}));
 });
 
+test('synthetic aged fixture isolates the ten-outstanding-attempt guard from the five-start window', async () => {
+    const flow = await pendingDurableAttempt();
+    await withTestClient(async (client) => inTransaction(client, async () => {
+        for (let index = 0; index < 9; index += 1) {
+            await client.query(
+                `INSERT INTO microsoft_verification_attempts
+                     (id,user_id,university_id,institution_policy_version,provider_policy_version,identity_version,processing_grant_id,provider_consent_id,server_session_id,state_hash,browser_secret_hash,finish_secret_hash,encrypted_verifier,nonce,expires_at,status,created_at)
+                 SELECT $2,user_id,university_id,institution_policy_version,provider_policy_version,identity_version,processing_grant_id,provider_consent_id,server_session_id,$3,$4,$5,encrypted_verifier,nonce,expires_at,status,clock_timestamp()-interval '11 minutes'
+                 FROM microsoft_verification_attempts WHERE id=$1`,
+                [flow.started.publicResult.attemptId, randomUUID(), `synthetic-state-${randomUUID()}`, `synthetic-browser-${randomUUID()}`, `synthetic-finish-${randomUUID()}`],
+            );
+        }
+    }));
+    const ids = await withTestClient(async (client) => (await client.query<{ processing_grant_id: string; provider_consent_id: string }>('SELECT processing_grant_id,provider_consent_id FROM microsoft_verification_attempts WHERE id=$1', [flow.started.publicResult.attemptId])).rows[0]!);
+    let authorizations = 0;
+    const service = new MicrosoftFlowService({ pool: db.getPool(), verifierEncryptionKey: randomBytes(32).toString('base64url'), isEnabled: () => true, callbackUrl: new URL('https://api.example.invalid/api/verification/microsoft/callback'), completionUrl: new URL('https://app.example.invalid/student/verification/microsoft/complete'), oidc: { authorize: async () => { authorizations += 1; return 'https://provider.example.invalid/a'; }, redeem: async () => { throw new Error('unused'); } } });
+    await assert.rejects(() => service.start({ userId: flow.data.userId, serverSessionId: flow.sid, processingGrantId: ids.processing_grant_id, providerConsentId: ids.provider_consent_id }), /outstanding Microsoft verification attempts/i);
+    assert.equal(authorizations, 0);
+    assert.equal((await withTestClient(client => client.query(`SELECT 1 FROM microsoft_verification_attempts WHERE user_id=$1 AND status='pending' AND expires_at > clock_timestamp()`, [flow.data.userId]))).rowCount, 10);
+    assert.equal((await withTestClient(client => client.query(`SELECT 1 FROM microsoft_verification_attempts WHERE user_id=$1 AND created_at > clock_timestamp()-interval '10 minutes'`, [flow.data.userId]))).rowCount, 1);
+});
+
 test('persistent Microsoft start limit is shared across service instances', async () => {
     const flow = await readyDurableAttempt();
     const ids = await withTestClient(async (c) => (await c.query<{ processing_grant_id:string; provider_consent_id:string }>('SELECT processing_grant_id,provider_consent_id FROM microsoft_verification_attempts WHERE id=$1',[flow.started.publicResult.attemptId])).rows[0]!);
