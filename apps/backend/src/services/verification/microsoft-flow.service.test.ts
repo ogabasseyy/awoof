@@ -19,6 +19,7 @@ test('start keeps the browser secret exclusively in typed cookie instructions an
         if (text.includes('FROM students')) return { rowCount: 1, rows: [{ id: 'student-id', university_id: universityId, identity_version: 1, status: 'active' }] };
         if (text.includes('FROM universities')) return { rowCount: 1, rows: [{ id: universityId, is_active: true, verification_policy_version: 1 }] };
         if (text.includes('student_eligibility_state')) return { rowCount: 1, rows: [{}] };
+        if (text.includes('JOIN institution_microsoft_policies')) return { rowCount: 1, rows: [{ mode: 'identity_only' }] };
         if (text.includes('FROM verification_consents')) return { rowCount: 1, rows: [{}] };
         if (text.includes('FROM institution_microsoft_policies')) return { rowCount: 1, rows: [{ tenant_id: tenantId, version: 1, enabled: true, mode: 'identity_only', approved_until: new Date(Date.now() + 60_000), scopes: ['openid', 'profile'], notice_version: 'microsoft-v1' }] };
         if (text.includes('FROM microsoft_verification_consents')) return { rowCount: 1, rows: [{}] };

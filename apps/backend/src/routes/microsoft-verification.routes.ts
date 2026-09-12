@@ -7,6 +7,7 @@ import { requireMicrosoftSession } from '../middleware/microsoft-session.js';
 import { MicrosoftFlowService } from '../services/verification/microsoft-flow.service.js';
 import { MicrosoftOidcService, type MicrosoftOidc } from '../services/verification/microsoft-oidc.service.js';
 import { forApprovedMicrosoftTenant } from '../services/verification/microsoft-oidc.config.js';
+import { MicrosoftEducationService } from '../services/verification/microsoft-education.service.js';
 
 type Flow = Pick<MicrosoftFlowService, 'start' | 'callback' | 'finish'> & Partial<Pick<MicrosoftFlowService, 'callbackCookieNameForState'>>;
 type FlowFactory = () => Flow;
@@ -51,6 +52,7 @@ function defaultFlow(): Flow {
         pool: getPool(), oidc, verifierEncryptionKey: key,
         callbackUrl: oidcConfig.callbackUrl, completionUrl: oidcConfig.frontendCompletionUrl,
         isEnabled: () => config.microsoftOidc.enabled,
+        education: new MicrosoftEducationService(),
     });
 }
 

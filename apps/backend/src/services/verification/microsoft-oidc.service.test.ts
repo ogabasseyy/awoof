@@ -52,9 +52,9 @@ function payloadFree(category: 'invalid_identity' | 'cancelled_or_permission' | 
     };
 }
 
-test('validates a signed Microsoft identity and does not expose the access token', async () => {
+test('validates a signed Microsoft identity and returns the access token only to the internal caller', async () => {
     const result = await redeem(service(() => token(), () => [{ ...jwk, kid: 'key-1', use: 'sig', alg: 'RS256' }]));
-    assert.deepEqual(result, { identity: { tenantId, objectId: '33333333-3333-4333-8333-333333333333' } });
+    assert.deepEqual(result, { identity: { tenantId, objectId: '33333333-3333-4333-8333-333333333333' }, graphAccessToken: 'never-returned' });
 });
 
 for (const [name, changes] of [
@@ -82,11 +82,13 @@ test('reuses one transport instance across trusted JWKS rotation', async () => {
     assert.equal((result as { identity: { objectId: string } }).identity.objectId, '33333333-3333-4333-8333-333333333333');
 });
 
-test('authorization always uses code PKCE S256, query response mode, state, nonce, and identity-only scopes', async () => {
+test('authorization always uses code PKCE S256, query response mode, state, nonce, and only server-approved scopes', async () => {
     const oidc = service(() => token(), () => [{ ...jwk, kid: 'key-1', use: 'sig', alg: 'RS256' }]);
     const url = new URL(await oidc.authorize({ tenantId, state: 'state-1', nonce: 'nonce-1', verifier: 'A'.repeat(64), scopes: ['openid', 'profile'] }));
     assert.equal(url.searchParams.get('response_mode'), 'query'); assert.equal(url.searchParams.get('code_challenge_method'), 'S256');
     assert.equal(url.searchParams.get('state'), 'state-1'); assert.equal(url.searchParams.get('nonce'), 'nonce-1'); assert.equal(url.searchParams.get('scope'), 'openid profile');
+    const graphUrl = new URL(await oidc.authorize({ tenantId, state: 'state-2', nonce: 'nonce-2', verifier: 'A'.repeat(64), scopes: ['https://graph.microsoft.com/EduRoster.ReadBasic', 'openid', 'profile'] }));
+    assert.equal(graphUrl.searchParams.get('scope'), 'https://graph.microsoft.com/EduRoster.ReadBasic openid profile');
     await assert.rejects(() => oidc.authorize({ tenantId, state: 'state-1', nonce: 'nonce-1', verifier: 'A'.repeat(64), scopes: ['openid', 'profile', 'email'] }), MicrosoftOidcOperationalError);
 });
 

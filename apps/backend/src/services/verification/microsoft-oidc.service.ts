@@ -3,6 +3,7 @@ import type { ApprovedMicrosoftOidcConfiguration, MicrosoftOidcConfiguration } f
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const IDENTITY_SCOPES = ['openid', 'profile'] as const;
+const GRAPH_ENROLLMENT_SCOPES = ['https://graph.microsoft.com/EduRoster.ReadBasic', 'openid', 'profile'] as const;
 const MAX_PROVIDER_RESPONSE_BYTES = 256 * 1024;
 const REQUEST_TIMEOUT_MS = 5_000;
 
@@ -24,8 +25,9 @@ export class MicrosoftOidcOperationalError extends Error {
 
 type Dependencies = { fetch?: client.CustomFetch; issuer?: URL };
 
-function matchesIdentityScopes(scopes: readonly string[]): boolean {
-    return scopes.length === IDENTITY_SCOPES.length && scopes.every((scope, index) => scope === IDENTITY_SCOPES[index]);
+function matchesApprovedServerScopes(scopes: readonly string[]): boolean {
+    return (scopes.length === IDENTITY_SCOPES.length && scopes.every((scope, index) => scope === IDENTITY_SCOPES[index]))
+        || (scopes.length === GRAPH_ENROLLMENT_SCOPES.length && scopes.every((scope, index) => scope === GRAPH_ENROLLMENT_SCOPES[index]));
 }
 
 function failureCategory(error: unknown): MicrosoftOidcFailureCategory {
@@ -145,14 +147,14 @@ export class MicrosoftOidcService implements MicrosoftOidc {
     }
 
     async authorize(input: Parameters<MicrosoftOidc['authorize']>[0]): Promise<string> {
-        if (input.tenantId !== this.configuration.tenantId || !matchesIdentityScopes(input.scopes)) throw new MicrosoftOidcOperationalError('invalid_identity');
+        if (input.tenantId !== this.configuration.tenantId || !matchesApprovedServerScopes(input.scopes)) throw new MicrosoftOidcOperationalError('invalid_identity');
         validOpaque(input.state, 'state'); validOpaque(input.nonce, 'nonce'); validOpaque(input.verifier, 'verifier');
         try {
             const configuration = await this.discovered();
             const challenge = await client.calculatePKCECodeChallenge(input.verifier);
             return client.buildAuthorizationUrl(configuration, {
                 redirect_uri: this.configuration.callbackUrl.href,
-                response_mode: 'query', response_type: 'code', scope: IDENTITY_SCOPES.join(' '),
+                response_mode: 'query', response_type: 'code', scope: input.scopes.join(' '),
                 state: input.state, nonce: input.nonce, code_challenge: challenge, code_challenge_method: 'S256',
             }).href;
         } catch (error) { throw new MicrosoftOidcOperationalError(failureCategory(error)); }
@@ -173,7 +175,9 @@ export class MicrosoftOidcService implements MicrosoftOidc {
             const objectId = typeof claims?.oid === 'string' ? claims.oid : '';
             const subject = typeof claims?.sub === 'string' ? claims.sub : '';
             if (tenantId !== this.configuration.tenantId || !UUID.test(tenantId) || !UUID.test(objectId) || !subject) throw new MicrosoftOidcOperationalError('invalid_identity');
-            return { identity: { tenantId, objectId } };
+            // The Graph token is intentionally returned only to the in-memory
+            // lifecycle caller. It is never persisted or exposed to a route.
+            return { identity: { tenantId, objectId }, ...(typeof response.access_token === 'string' ? { graphAccessToken: response.access_token } : {}) };
         } catch (error) {
             if (error instanceof MicrosoftOidcOperationalError) throw error;
             throw new MicrosoftOidcOperationalError(failureCategory(error));
