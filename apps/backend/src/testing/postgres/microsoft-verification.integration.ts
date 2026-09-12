@@ -126,6 +126,24 @@ test('parent processing withdrawal cancels its dependent Microsoft attempt', asy
     }));
 });
 
+test('provider-only withdrawal leaves its live parent and unrelated provider consent intact', async () => {
+    const data = await fixture();
+    await withTestClient(async (client) => inTransaction(client, async () => {
+        const version = (await client.query<{ version: number }>(`SELECT version FROM institution_microsoft_policies WHERE university_id = $1`, [data.universityId])).rows[0]!.version;
+        const input = { accepted: true as const, processingGrantId: data.processingGrantId, snapshot: { universityId: data.universityId, providerPolicyVersion: version, noticeVersion: 'microsoft-v1', mode: 'identity_only' as const, scopes: ['openid', 'profile'] } };
+        const target = await acceptMicrosoftConsent(client, data.userId, input);
+        const other = await acceptMicrosoftConsent(client, data.userId, input);
+        const identity = (await client.query<{ id: string }>(`INSERT INTO microsoft_identities (user_id, university_id, tenant_id, object_id) VALUES ($1,$2,$3,$4) RETURNING id`, [data.userId, data.universityId, randomUUID(), randomUUID()])).rows[0]!.id;
+        const attempt = randomUUID();
+        await client.query(`INSERT INTO microsoft_verification_attempts (id,user_id,university_id,institution_policy_version,provider_policy_version,identity_version,processing_grant_id,provider_consent_id,server_session_id,state_hash,browser_secret_hash,finish_secret_hash,encrypted_verifier,nonce,expires_at,status) VALUES ($1,$2,$3,1,$4,1,$5,$6,$7,$8,'b','f','secret','nonce',clock_timestamp()+interval '1 hour','pending')`, [attempt, data.userId, data.universityId, version, data.processingGrantId, target, randomUUID(), `state-${randomUUID()}`]);
+        await client.query(`INSERT INTO microsoft_provider_proofs (user_id,university_id,provider_consent_id,identity_id,provider_policy_version) VALUES ($1,$2,$3,$4,$5)`, [data.userId, data.universityId, target, identity, version]);
+        await withdrawMicrosoftConsent(client, data.userId, target);
+        assert.equal((await client.query(`SELECT 1 FROM verification_consents WHERE id=$1 AND withdrawn_at IS NULL`, [data.processingGrantId])).rowCount, 1);
+        assert.equal((await client.query(`SELECT 1 FROM microsoft_verification_consents WHERE id=$1 AND withdrawn_at IS NULL`, [other])).rowCount, 1);
+        assert.deepEqual((await client.query<{ status:string; encrypted_verifier:string|null }>(`SELECT status,encrypted_verifier FROM microsoft_verification_attempts WHERE id=$1`, [attempt])).rows[0], { status: 'failed', encrypted_verifier: null });
+    }));
+});
+
 test('Microsoft tables reject cross-subject authority bindings and malformed canonical scopes', async () => {
     const first = await fixture();
     const second = await fixture();
@@ -156,6 +174,9 @@ test('Microsoft tables reject cross-subject authority bindings and malformed can
             `UPDATE institution_microsoft_policies SET scopes = ARRAY[E'openid\\n', 'profile'] WHERE university_id = $1`,
             [first.universityId],
         ), client);
+        await rejectsSql(() => client.query(`UPDATE microsoft_published_notices SET content = 'changed' WHERE version = 'microsoft-v1'`), client);
+        await rejectsSql(() => client.query(`DELETE FROM microsoft_published_notices WHERE version = 'microsoft-v1'`), client);
+        await rejectsSql(() => client.query(`UPDATE institution_microsoft_policies SET notice_version = 'unknown-microsoft-copy' WHERE university_id = $1`, [first.universityId]), client);
 
         const firstPolicy = (await client.query<{ version: number }>(`SELECT version FROM institution_microsoft_policies WHERE university_id = $1`, [first.universityId])).rows[0]!;
         const firstConsent = await acceptMicrosoftConsent(client, first.userId, { accepted: true, processingGrantId: first.processingGrantId,

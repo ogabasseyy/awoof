@@ -10,6 +10,21 @@ LANGUAGE sql IMMUTABLE AS $$
        AND input_scopes = ARRAY(SELECT DISTINCT scope FROM unnest(input_scopes) scope ORDER BY scope)
 $$;
 
+CREATE TABLE microsoft_published_notices (
+    version TEXT PRIMARY KEY CHECK (length(btrim(version)) > 0),
+    content TEXT NOT NULL CHECK (length(btrim(content)) > 0),
+    content_digest TEXT NOT NULL CHECK (content_digest ~ '^[0-9a-f]{64}$'),
+    published_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp(),
+    UNIQUE (content_digest)
+);
+INSERT INTO microsoft_published_notices (version, content, content_digest) VALUES
+    ('microsoft-v1', 'We use Microsoft school identity information to assess student eligibility. You can withdraw Microsoft provider consent.', 'e1c0286bb275402f93a40ae5326d8d84cf8ef06798cd82d1dd9f8e8c01503a55'),
+    ('microsoft-v2', 'We use Microsoft school identity and, where approved, enrollment information to assess student eligibility. You can withdraw Microsoft provider consent.', 'c89e12f29357a2858e2ad8d4540b4f8b551eb3df3a5a2d3617d939c2702c269e');
+CREATE OR REPLACE FUNCTION microsoft_published_notice_protect() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN RAISE EXCEPTION 'published Microsoft notice copies are immutable'; END $$;
+CREATE TRIGGER microsoft_published_notice_before_change BEFORE UPDATE OR DELETE ON microsoft_published_notices
+    FOR EACH ROW EXECUTE FUNCTION microsoft_published_notice_protect();
+
 CREATE TABLE institution_microsoft_policies (
     university_id UUID PRIMARY KEY REFERENCES universities(id),
     tenant_id UUID NOT NULL UNIQUE,
@@ -21,7 +36,7 @@ CREATE TABLE institution_microsoft_policies (
     term_ends_at TIMESTAMPTZ,
     max_evidence_hours INTEGER NOT NULL CHECK (max_evidence_hours BETWEEN 1 AND 24),
     scopes TEXT[] NOT NULL DEFAULT '{}',
-    notice_version TEXT NOT NULL CHECK (length(btrim(notice_version)) > 0),
+    notice_version TEXT NOT NULL REFERENCES microsoft_published_notices(version),
     CHECK (microsoft_scopes_are_canonical(scopes)),
     CHECK (mode <> 'graph_enrollment' OR term_ends_at IS NOT NULL)
 );
@@ -66,7 +81,7 @@ CREATE TABLE microsoft_verification_consents (
     university_id UUID NOT NULL REFERENCES universities(id),
     processing_grant_id UUID NOT NULL,
     provider_policy_version INTEGER NOT NULL CHECK (provider_policy_version >= 1),
-    notice_version TEXT NOT NULL CHECK (length(btrim(notice_version)) > 0),
+    notice_version TEXT NOT NULL REFERENCES microsoft_published_notices(version),
     mode TEXT NOT NULL CHECK (mode IN ('identity_only', 'graph_enrollment')),
     scopes TEXT[] NOT NULL,
     accepted_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp(),

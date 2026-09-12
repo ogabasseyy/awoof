@@ -4,7 +4,6 @@ import { AppError, BadRequestError, ForbiddenError, NotFoundError } from '../../
 import { lockStudentContext } from './eligibility-context.service.js';
 import { sameConsentSnapshot } from './microsoft-policy.js';
 import type { AcceptMicrosoftConsent, MicrosoftConsentSnapshot } from './microsoft.types.js';
-import { isPublishedMicrosoftNoticeVersion } from './microsoft-notices.js';
 import { VERIFICATION_NOTICE_VERSION } from './verification-notices.js';
 
 type PolicyRow = {
@@ -33,9 +32,6 @@ function assertSnapshot(input: MicrosoftConsentSnapshot): void {
 }
 
 function snapshotFrom(row: PolicyRow): MicrosoftConsentSnapshot {
-    if (!isPublishedMicrosoftNoticeVersion(row.notice_version)) {
-        throw new BadRequestError('Microsoft policy references an unpublished notice');
-    }
     return {
         universityId: row.university_id,
         providerPolicyVersion: row.version,
