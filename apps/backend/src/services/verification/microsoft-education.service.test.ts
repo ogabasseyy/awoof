@@ -15,12 +15,18 @@ test('classifies only a same-ID enabled Member student as a candidate observatio
     assert.deepEqual(classifyEducation(valid, 'oid-1', observedAt), { outcome: 'student', objectId: 'oid-1', observedAt });
     assert.deepEqual(classifyEducation({ ...valid, id: 'other' }, 'oid-1', observedAt), { outcome: 'unknown', reason: 'identity_mismatch' });
     assert.deepEqual(classifyEducation({ ...valid, userType: 'Guest' }, 'oid-1', observedAt), { outcome: 'unknown', reason: 'account_not_eligible' });
-    for (const body of [{ ...valid, accountEnabled: false }, { ...valid, accountEnabled: undefined }, { ...valid, accountEnabled: 'true' }, { ...valid, userType: undefined }, { ...valid, userType: 1 }]) {
+    for (const body of [{ ...valid, accountEnabled: false }, { id: 'oid-1', primaryRole: 'student', userType: 'Member' }, { id: 'oid-1', primaryRole: 'student', accountEnabled: true }]) {
         assert.deepEqual(classifyEducation(body, 'oid-1', observedAt), { outcome: 'unknown', reason: 'account_not_eligible' });
     }
-    for (const primaryRole of ['teacher', 'none', undefined, 'other', 1]) {
+    for (const primaryRole of ['teacher', 'none', 'other']) {
         assert.deepEqual(classifyEducation({ ...valid, primaryRole }, 'oid-1', observedAt), { outcome: 'unknown', reason: 'role_not_confirmed' });
     }
+    assert.deepEqual(classifyEducation({ id: 'oid-1', userType: 'Member', accountEnabled: true }, 'oid-1', observedAt), { outcome: 'unknown', reason: 'role_not_confirmed' });
+    for (const body of [{ ...valid, id: 1 }, { ...valid, primaryRole: 1 }, { ...valid, userType: 1 }, { ...valid, accountEnabled: 'true' }, { value: valid }]) {
+        assert.deepEqual(classifyEducation(body, 'oid-1', observedAt), { outcome: 'unknown', reason: 'unavailable' });
+    }
+    assert.deepEqual(classifyEducation({ primaryRole: 'student', userType: 'Member', accountEnabled: true }, undefined as unknown as string, observedAt), { outcome: 'unknown', reason: 'unavailable' });
+    assert.deepEqual(classifyEducation(valid, 'oid-1', new Date(Number.NaN)), { outcome: 'unknown', reason: 'unavailable' });
 });
 
 test('uses one fixed, bounded Graph request and server observation time', async () => {
@@ -33,6 +39,12 @@ test('uses one fixed, bounded Graph request and server observation time', async 
     assert.equal(init?.method, 'GET'); assert.equal(init?.redirect, 'manual');
     assert.equal(new Headers(init?.headers).get('authorization'), 'Bearer opaque-token');
     assert.deepEqual(result, { outcome: 'student', objectId: 'oid-1', observedAt });
+});
+
+test('fails closed when the server clock is invalid', async () => {
+    const result = await new MicrosoftEducationService({ fetch: async () => Response.json(valid), now: () => new Date(Number.NaN) })
+        .observe({ accessToken: 'opaque-token', expectedOid: 'oid-1' });
+    assert.deepEqual(result, { outcome: 'unknown', reason: 'unavailable' });
 });
 
 test('maps Graph permission and availability failures to non-positive observations without provider details', async () => {
@@ -74,4 +86,10 @@ test('deadline includes a stalled response body and cancels the stream', async (
         .observe({ accessToken: 'secret', expectedOid: 'oid-1' });
     assert.deepEqual(result, { outcome: 'unknown', reason: 'unavailable' });
     assert.equal(cancellations, 1);
+});
+
+test('deadline includes stalled response headers', async () => {
+    const result = await service(async () => await new Promise<Response>(() => undefined), 10)
+        .observe({ accessToken: 'secret', expectedOid: 'oid-1' });
+    assert.deepEqual(result, { outcome: 'unknown', reason: 'unavailable' });
 });

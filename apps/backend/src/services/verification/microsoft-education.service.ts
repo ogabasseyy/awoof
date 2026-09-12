@@ -7,9 +7,13 @@ export type EducationObservation =
     | { outcome: 'unknown'; reason: 'unavailable' | 'role_not_confirmed' | 'permission_required' | 'identity_mismatch' | 'account_not_eligible' };
 
 export function classifyEducation(body: { id?: string; primaryRole?: string; userType?: string; accountEnabled?: boolean }, expectedOid: string, now: Date): EducationObservation {
+    if (!isEducationBody(body) || typeof expectedOid !== 'string' || expectedOid.length === 0) return unavailable();
     if (body.id !== expectedOid) return { outcome: 'unknown', reason: 'identity_mismatch' };
     if (body.userType !== 'Member' || body.accountEnabled !== true) return { outcome: 'unknown', reason: 'account_not_eligible' };
-    if (body.primaryRole === 'student') return { outcome: 'student', objectId: expectedOid, observedAt: now };
+    if (body.primaryRole === 'student') {
+        if (!(now instanceof Date) || !Number.isFinite(now.getTime())) return unavailable();
+        return { outcome: 'student', objectId: expectedOid, observedAt: now };
+    }
     return { outcome: 'unknown', reason: 'role_not_confirmed' };
 }
 
@@ -62,9 +66,16 @@ async function boundedJson(response: Response, signal: AbortSignal): Promise<unk
 }
 
 function isEducationBody(value: unknown): value is { id?: string; primaryRole?: string; userType?: string; accountEnabled?: boolean } {
-    // Graph's collection wrapper is never valid for the fixed `/education/me`
-    // resource, even if it happens to contain an otherwise plausible user.
-    return typeof value === 'object' && value !== null && !Array.isArray(value) && !Object.hasOwn(value, 'value');
+    try {
+        // Graph's collection wrapper is never valid for the fixed `/education/me`
+        // resource, even if it happens to contain an otherwise plausible user.
+        if (typeof value !== 'object' || value === null || Array.isArray(value) || Object.hasOwn(value, 'value')) return false;
+        const body = value as Record<string, unknown>;
+        return (!Object.hasOwn(body, 'id') || typeof body.id === 'string')
+            && (!Object.hasOwn(body, 'primaryRole') || typeof body.primaryRole === 'string')
+            && (!Object.hasOwn(body, 'userType') || typeof body.userType === 'string')
+            && (!Object.hasOwn(body, 'accountEnabled') || typeof body.accountEnabled === 'boolean');
+    } catch { return false; }
 }
 
 export class MicrosoftEducationService {
@@ -101,7 +112,7 @@ export class MicrosoftEducationService {
             const contentLength = response.headers.get('content-length');
             if (contentLength !== null && (!/^\d+$/.test(contentLength) || Number(contentLength) > MAX_RESPONSE_BYTES)) { discard(response); return unavailable(); }
             const body = await boundedJson(response, controller.signal);
-            return isEducationBody(body) ? classifyEducation(body, input.expectedOid, this.now()) : unavailable();
+            return classifyEducation(body as { id?: string; primaryRole?: string; userType?: string; accountEnabled?: boolean }, input.expectedOid, this.now());
         } catch {
             return unavailable();
         } finally {
