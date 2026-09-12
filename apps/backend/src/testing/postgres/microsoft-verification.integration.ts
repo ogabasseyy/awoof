@@ -1,6 +1,8 @@
 import assert from 'node:assert/strict';
 import { randomBytes, randomUUID } from 'node:crypto';
 import test, { after } from 'node:test';
+import { setTimeout as delay } from 'node:timers/promises';
+import type { PoolClient } from 'pg';
 import { db } from '../../config/database.js';
 import { grantVerificationProcessing, withdrawConsent } from '../../services/verification/eligibility-consent.service.js';
 import { acceptMicrosoftConsent, withdrawMicrosoftConsent } from '../../services/verification/microsoft-consent.service.js';
@@ -11,6 +13,32 @@ import { inTransaction, withTestClient } from './test-database.js';
 after(() => db.close());
 
 type Fixture = { adminId: string; userId: string; universityId: string; processingGrantId: string };
+
+async function assertCallbacksBlockedBy(observer: PoolClient, blockerPid: number, expected: number): Promise<void> {
+    for (let attempt = 0; attempt < 40; attempt += 1) {
+        const result = await observer.query<{ count: string }>(
+            `WITH RECURSIVE blocking_chain AS (
+                 SELECT waiting.pid AS waiting_pid, blocker.pid AS blocker_pid, 1 AS depth
+                 FROM pg_stat_activity AS waiting
+                 CROSS JOIN LATERAL unnest(pg_blocking_pids(waiting.pid)) AS blocker(pid)
+                 WHERE waiting.query LIKE 'SELECT id, email FROM users%'
+                 UNION ALL
+                 SELECT chain.waiting_pid, blocker.pid, chain.depth + 1
+                 FROM blocking_chain AS chain
+                 JOIN pg_stat_activity AS waiting ON waiting.pid = chain.blocker_pid
+                 CROSS JOIN LATERAL unnest(pg_blocking_pids(waiting.pid)) AS blocker(pid)
+                 WHERE chain.depth < 8
+             )
+             SELECT count(DISTINCT waiting_pid)::text AS count
+             FROM blocking_chain
+             WHERE blocker_pid = $1`,
+            [blockerPid],
+        );
+        if (Number(result.rows[0]?.count ?? 0) >= expected) return;
+        await delay(10);
+    }
+    throw new Error(`Expected ${expected} Microsoft callback authority transactions to block on the held user lock`);
+}
 
 async function rejectsSql(operation: () => Promise<unknown>, client: Parameters<typeof inTransaction>[0]): Promise<void> {
     const savepoint = `microsoft_expected_failure_${randomUUID().replaceAll('-', '')}`;
@@ -320,6 +348,120 @@ async function readyDurableAttempt() {
     return { data,sid,service,started,callback,exchanges:()=>exchanges };
 }
 
+async function pendingDurableAttempt(options: { isEnabled?: () => boolean; beforeRedeem?: () => Promise<void> } = {}) {
+    const data = await fixture(); const sid = randomUUID(); let state = ''; let exchanges = 0;
+    const consentId = await withTestClient(async (client) => inTransaction(client, async () => {
+        await client.query(`UPDATE users SET active_session_id=$2,refresh_token_hash='h',refresh_token_expires_at=clock_timestamp()+interval '1 hour' WHERE id=$1`, [data.userId, sid]);
+        const policy = (await client.query<{ version: number }>('SELECT version FROM institution_microsoft_policies WHERE university_id=$1', [data.universityId])).rows[0]!;
+        return acceptMicrosoftConsent(client, data.userId, { accepted: true, processingGrantId: data.processingGrantId, snapshot: { universityId: data.universityId, providerPolicyVersion: policy.version, noticeVersion: 'microsoft-v1', mode: 'identity_only', scopes: ['openid', 'profile'] } });
+    }));
+    const tenantId = (await withTestClient(async (client) => (await client.query<{ tenant_id: string }>('SELECT tenant_id FROM institution_microsoft_policies WHERE university_id=$1', [data.universityId])).rows[0]!.tenant_id));
+    const service = new MicrosoftFlowService({ pool: db.getPool(), verifierEncryptionKey: randomBytes(32).toString('base64url'), isEnabled: options.isEnabled ?? (() => true), callbackUrl: new URL('https://api.example.invalid/api/verification/microsoft/callback'), completionUrl: new URL('https://app.example.invalid/student/verification/microsoft/complete'), oidc: { authorize: async (input) => { state = input.state; return 'https://provider.example.invalid/a'; }, redeem: async () => { exchanges += 1; await options.beforeRedeem?.(); return { identity: { tenantId, objectId: randomUUID() } }; } } });
+    const started = await service.start({ userId: data.userId, serverSessionId: sid, processingGrantId: data.processingGrantId, providerConsentId: consentId });
+    const callback = new URL('https://api.example.invalid/api/verification/microsoft/callback'); callback.searchParams.set('state', state); callback.searchParams.set('code', 'CANARY');
+    return { data, sid, service, started, callback, exchanges: () => exchanges };
+}
+
+test('callback expiry is rechecked after it blocks on the independent user lock', async () => {
+    const flow = await pendingDurableAttempt();
+    const lockClient = await db.getPool().connect(); const observer = await db.getPool().connect();
+    try {
+        await lockClient.query('BEGIN');
+        const blockerPid = Number((await lockClient.query<{ pid: number }>('SELECT pg_backend_pid() AS pid')).rows[0]!.pid);
+        await lockClient.query('SELECT id FROM users WHERE id=$1 FOR UPDATE', [flow.data.userId]);
+        const callback = flow.service.callback({ callbackUrl: flow.callback, browserCookie: flow.started.callbackCookie.value });
+        const settled = callback.then(() => ({ ok: true }), () => ({ ok: false }));
+        await assertCallbacksBlockedBy(observer, blockerPid, 1);
+        await lockClient.query(`UPDATE microsoft_verification_attempts SET expires_at=clock_timestamp()-interval '1 second' WHERE id=$1`, [flow.started.publicResult.attemptId]);
+        await lockClient.query('COMMIT');
+        assert.deepEqual(await settled, { ok: false });
+        assert.equal(flow.exchanges(), 0);
+        assert.equal((await withTestClient(client => client.query(`SELECT 1 FROM microsoft_verification_attempts WHERE id=$1 AND status='ready'`, [flow.started.publicResult.attemptId]))).rowCount, 0);
+    } finally {
+        await lockClient.query('ROLLBACK').catch(() => undefined); lockClient.release(); observer.release();
+    }
+});
+
+test('callback rechecks the enabled gate after its authority lock and before claim dispatch', async () => {
+    let enabled = true;
+    const flow = await pendingDurableAttempt({ isEnabled: () => enabled });
+    const lockClient = await db.getPool().connect(); const observer = await db.getPool().connect();
+    try {
+        await lockClient.query('BEGIN');
+        const blockerPid = Number((await lockClient.query<{ pid: number }>('SELECT pg_backend_pid() AS pid')).rows[0]!.pid);
+        await lockClient.query('SELECT id FROM users WHERE id=$1 FOR UPDATE', [flow.data.userId]);
+        const callback = flow.service.callback({ callbackUrl: flow.callback, browserCookie: flow.started.callbackCookie.value });
+        const settled = callback.then(() => ({ ok: true }), () => ({ ok: false }));
+        await assertCallbacksBlockedBy(observer, blockerPid, 1);
+        enabled = false; await lockClient.query('COMMIT');
+        assert.deepEqual(await settled, { ok: false });
+        assert.equal(flow.exchanges(), 0);
+        assert.equal((await withTestClient(client => client.query(`SELECT 1 FROM microsoft_verification_attempts WHERE id=$1 AND status='processing'`, [flow.started.publicResult.attemptId]))).rowCount, 0);
+    } finally {
+        await lockClient.query('ROLLBACK').catch(() => undefined); lockClient.release(); observer.release();
+    }
+});
+
+test('simultaneous callbacks make one durable claim after both block on the user lock', async () => {
+    const flow = await pendingDurableAttempt();
+    const lockClient = await db.getPool().connect(); const observer = await db.getPool().connect();
+    try {
+        await lockClient.query('BEGIN');
+        const blockerPid = Number((await lockClient.query<{ pid: number }>('SELECT pg_backend_pid() AS pid')).rows[0]!.pid);
+        await lockClient.query('SELECT id FROM users WHERE id=$1 FOR UPDATE', [flow.data.userId]);
+        const first = flow.service.callback({ callbackUrl: flow.callback, browserCookie: flow.started.callbackCookie.value });
+        const second = flow.service.callback({ callbackUrl: flow.callback, browserCookie: flow.started.callbackCookie.value });
+        const settled = [first, second].map((promise) => promise.then(() => ({ ok: true }), () => ({ ok: false })));
+        await assertCallbacksBlockedBy(observer, blockerPid, 2);
+        await lockClient.query('COMMIT');
+        const results = await Promise.all(settled);
+        assert.equal(results.filter((result) => result.ok).length, 1);
+        assert.equal(results.filter((result) => !result.ok).length, 1);
+        assert.equal(flow.exchanges(), 1);
+        assert.equal((await withTestClient(client => client.query(`SELECT 1 FROM microsoft_verification_attempts WHERE id=$1 AND status='ready'`, [flow.started.publicResult.attemptId]))).rowCount, 1);
+        assert.equal((await withTestClient(client => client.query('SELECT 1 FROM microsoft_identities WHERE user_id=$1', [flow.data.userId]))).rowCount, 0);
+    } finally {
+        await lockClient.query('ROLLBACK').catch(() => undefined); lockClient.release(); observer.release();
+    }
+});
+
+test('disabling during held redeem scrubs the attempt, and disabling after an awaited lock rejects completed retry', async () => {
+    let enabled = true; let releaseRedeem: (() => void) | undefined; let enteredRedeem: (() => void) | undefined;
+    const heldRedeem = new Promise<void>((resolve) => { releaseRedeem = resolve; });
+    const redeemEntered = new Promise<void>((resolve) => { enteredRedeem = resolve; });
+    const flow = await pendingDurableAttempt({ isEnabled: () => enabled, beforeRedeem: async () => { enteredRedeem!(); await heldRedeem; } });
+    const callback = flow.service.callback({ callbackUrl: flow.callback, browserCookie: flow.started.callbackCookie.value });
+    const settledCallback = callback.then(() => ({ ok: true }), () => ({ ok: false }));
+    await redeemEntered; enabled = false; releaseRedeem!();
+    assert.deepEqual(await settledCallback, { ok: false });
+    const scrubbed = await withTestClient(async (client) => (await client.query<{ status: string; encrypted_verifier: string | null; nonce: string | null }>('SELECT status,encrypted_verifier,nonce FROM microsoft_verification_attempts WHERE id=$1', [flow.started.publicResult.attemptId])).rows[0]!);
+    assert.deepEqual(scrubbed, { status: 'failed', encrypted_verifier: null, nonce: null });
+
+    const completed = await readyDurableAttempt();
+    await completed.service.finish({ userId: completed.data.userId, serverSessionId: completed.sid, attemptId: completed.started.publicResult.attemptId, finishSecret: completed.started.publicResult.finishSecret });
+    let retryEnabled = true;
+    const retryService = new MicrosoftFlowService({ pool: db.getPool(), verifierEncryptionKey: randomBytes(32).toString('base64url'), isEnabled: () => retryEnabled, callbackUrl: new URL('https://api.example.invalid/api/verification/microsoft/callback'), completionUrl: new URL('https://app.example.invalid/student/verification/microsoft/complete'), oidc: { authorize: async () => 'unused', redeem: async () => { throw new Error('unused'); } } });
+    const lockClient = await db.getPool().connect(); const observer = await db.getPool().connect();
+    try {
+        await lockClient.query('BEGIN'); const blockerPid = Number((await lockClient.query<{ pid: number }>('SELECT pg_backend_pid() AS pid')).rows[0]!.pid);
+        await lockClient.query('SELECT id FROM users WHERE id=$1 FOR UPDATE', [completed.data.userId]);
+        const retry = retryService.finish({ userId: completed.data.userId, serverSessionId: completed.sid, attemptId: completed.started.publicResult.attemptId, finishSecret: completed.started.publicResult.finishSecret });
+        const settledRetry = retry.then(() => ({ ok: true }), () => ({ ok: false }));
+        await assertCallbacksBlockedBy(observer, blockerPid, 1); retryEnabled = false; await lockClient.query('COMMIT');
+        assert.deepEqual(await settledRetry, { ok: false });
+    } finally { await lockClient.query('ROLLBACK').catch(() => undefined); lockClient.release(); observer.release(); }
+});
+
+test('callback accepts only the fixed configured HTTPS origin and path before token exchange', async () => {
+    const flow = await pendingDurableAttempt();
+    const wrongOrigin = new URL(flow.callback); wrongOrigin.hostname = 'evil.example.invalid';
+    const wrongPath = new URL(flow.callback); wrongPath.pathname = '/api/verification/microsoft/other';
+    await assert.rejects(() => flow.service.callback({ callbackUrl: wrongOrigin, browserCookie: flow.started.callbackCookie.value }));
+    await assert.rejects(() => flow.service.callback({ callbackUrl: wrongPath, browserCookie: flow.started.callbackCookie.value }));
+    assert.equal(flow.exchanges(), 0);
+    assert.equal((await withTestClient(client => client.query(`SELECT 1 FROM microsoft_verification_attempts WHERE id=$1 AND status='pending'`, [flow.started.publicResult.attemptId]))).rowCount, 1);
+});
+
 test('callback replay redeems once and parallel finish creates one identity with bounded retry', async () => {
     const flow = await readyDurableAttempt();
     await assert.rejects(() => flow.service.callback({callbackUrl:flow.callback,browserCookie:flow.started.callbackCookie.value}));
@@ -336,4 +478,35 @@ test('session replacement and policy drift reject a ready attempt', async () => 
     const drifted = await readyDurableAttempt();
     await withTestClient(c=>inTransaction(c,()=>c.query('UPDATE institution_microsoft_policies SET max_evidence_hours=23 WHERE university_id=$1',[drifted.data.universityId])));
     await assert.rejects(()=>drifted.service.finish({userId:drifted.data.userId,serverSessionId:drifted.sid,attemptId:drifted.started.publicResult.attemptId,finishSecret:drifted.started.publicResult.finishSecret}));
+});
+
+test('completed retry is bound to its original live identity, not another link', async () => {
+    const flow = await readyDurableAttempt();
+    const input={userId:flow.data.userId,serverSessionId:flow.sid,attemptId:flow.started.publicResult.attemptId,finishSecret:flow.started.publicResult.finishSecret};
+    await flow.service.finish(input);
+    await withTestClient(c=>inTransaction(c,async()=>{
+        await c.query(`UPDATE microsoft_identities SET revoked_at=clock_timestamp() WHERE user_id=$1`,[flow.data.userId]);
+        await c.query(`INSERT INTO microsoft_identities(user_id,university_id,tenant_id,object_id) VALUES($1,$2,$3,$4)`,[flow.data.userId,flow.data.universityId,randomUUID(),randomUUID()]);
+    }));
+    await assert.rejects(()=>flow.service.finish(input));
+});
+
+test('wrong finish secret and logout fence ready finalization', async () => {
+    const flow=await readyDurableAttempt();
+    await assert.rejects(()=>flow.service.finish({userId:flow.data.userId,serverSessionId:flow.sid,attemptId:flow.started.publicResult.attemptId,finishSecret:randomUUID()}));
+    await withTestClient(c=>inTransaction(c,()=>c.query(`UPDATE users SET active_session_id=NULL,refresh_token_hash=NULL WHERE id=$1`,[flow.data.userId])));
+    await assert.rejects(()=>flow.service.finish({userId:flow.data.userId,serverSessionId:flow.sid,attemptId:flow.started.publicResult.attemptId,finishSecret:flow.started.publicResult.finishSecret}));
+});
+
+test('persistent Microsoft start limit is shared across service instances', async () => {
+    const flow = await readyDurableAttempt();
+    const ids = await withTestClient(async (c) => (await c.query<{ processing_grant_id:string; provider_consent_id:string }>('SELECT processing_grant_id,provider_consent_id FROM microsoft_verification_attempts WHERE id=$1',[flow.started.publicResult.attemptId])).rows[0]!);
+    const input = { userId: flow.data.userId, serverSessionId: flow.sid, processingGrantId: ids.processing_grant_id, providerConsentId: ids.provider_consent_id };
+    let authorizations = flow.exchanges();
+    const make = () => new MicrosoftFlowService({ pool: db.getPool(), verifierEncryptionKey: randomBytes(32).toString('base64url'), isEnabled: () => true, callbackUrl: new URL('https://api.example.invalid/api/verification/microsoft/callback'), completionUrl: new URL('https://app.example.invalid/student/verification/microsoft/complete'), oidc: { authorize: async () => { authorizations++; return 'https://provider.example.invalid/a'; }, redeem: async () => { throw new Error('unused'); } } });
+    for (let index = 0; index < 4; index += 1) await make().start(input);
+    const before = authorizations;
+    await assert.rejects(() => make().start(input));
+    assert.equal(authorizations, before);
+    assert.equal((await withTestClient(async c => c.query(`SELECT 1 FROM microsoft_verification_attempts WHERE user_id=$1 AND created_at > clock_timestamp()-interval '10 minutes'`, [flow.data.userId]))).rowCount, 5);
 });

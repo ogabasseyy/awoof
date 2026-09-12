@@ -38,6 +38,11 @@ export type MicrosoftFlowDependencies = {
 function secret(bytes = 32): string { return randomBytes(bytes).toString('base64url'); }
 function cookieName(attemptId: string): string { return `awoof_ms_${attemptId}`; }
 function invalidAttempt(): ConflictError { return new ConflictError('Microsoft verification attempt is no longer valid'); }
+function fixedCallback(actual: URL, configured: URL): boolean {
+    return actual.protocol === 'https:' && !actual.username && !actual.password && !actual.hash
+        && actual.origin === configured.origin && actual.pathname === configured.pathname
+        && actual.searchParams.getAll('state').length === 1;
+}
 
 /**
  * Database authority section. Caller has the live session lock first, then
@@ -118,7 +123,9 @@ export class MicrosoftFlowService {
             const locked = await tx.query<Attempt>('SELECT * FROM microsoft_verification_attempts WHERE id=$1', [attempt.id]);
             const clock = await tx.query<{ now: Date }>('SELECT clock_timestamp() AS now');
             if (!locked.rows[0] || locked.rows[0].status !== 'pending' || locked.rows[0].expires_at <= clock.rows[0]!.now) throw invalidAttempt();
+            this.assertEnabled();
         }).catch(async (error) => { await this.fail(prepared.attemptId); throw error; });
+        if (this.deps.isEnabled?.() !== true) { await this.fail(prepared.attemptId); throw invalidAttempt(); }
         return { publicResult: { attemptId: prepared.attemptId, authorizationUrl, finishSecret: prepared.finishSecret }, callbackCookie: { name: cookieName(prepared.attemptId), value: prepared.browserSecret, maxAgeSeconds: ATTEMPT_LIFETIME_SECONDS, path: '/api/verification/microsoft/callback', httpOnly: true, secure: true, sameSite: 'lax' } };
     }
 
@@ -128,6 +135,7 @@ export class MicrosoftFlowService {
 
     async callback(input: { callbackUrl: URL; browserCookie: string }): Promise<MicrosoftCallbackResult> {
         this.assertEnabled();
+        if (!fixedCallback(input.callbackUrl, this.deps.callbackUrl)) throw invalidAttempt();
         const state = input.callbackUrl.searchParams.get('state');
         if (!state || !input.browserCookie) throw invalidAttempt();
         const claimed = await this.transaction(async (tx) => {
@@ -139,8 +147,10 @@ export class MicrosoftFlowService {
             const authority = await assertAuthority(tx, { userId: attempt.user_id, sid: attempt.server_session_id, use: 'issuance', processingGrantId: attempt.processing_grant_id, providerConsentId: attempt.provider_consent_id, expected: attempt });
             await lockMicrosoftAttempt(tx, attempt.id);
             const locked = await tx.query<Attempt>('SELECT * FROM microsoft_verification_attempts WHERE id=$1', [attempt.id]);
-            if (!locked.rows[0] || locked.rows[0].status !== 'pending') throw invalidAttempt();
+            const clock = await tx.query<{ now: Date }>('SELECT clock_timestamp() AS now');
+            if (!locked.rows[0] || locked.rows[0].status !== 'pending' || locked.rows[0].expires_at <= clock.rows[0]!.now) throw invalidAttempt();
             if (authority.policy.tenant_id.length === 0 || !attempt.encrypted_verifier || !attempt.nonce) throw invalidAttempt();
+            this.assertEnabled();
             const updated = await tx.query(`UPDATE microsoft_verification_attempts SET status='processing' WHERE id=$1 AND status='pending'`, [attempt.id]);
             if (updated.rowCount !== 1) throw invalidAttempt();
             return { attempt, tenantId: authority.policy.tenant_id, state, verifier: decryptMicrosoftAttemptVerifier(attempt.encrypted_verifier, this.deps.verifierEncryptionKey, attempt.id), nonce: attempt.nonce };
@@ -148,21 +158,25 @@ export class MicrosoftFlowService {
         let identity: MicrosoftIdentity;
         try { identity = (await this.deps.oidc.redeem({ tenantId: claimed.tenantId, callback: input.callbackUrl, state: claimed.state, nonce: claimed.nonce, verifier: claimed.verifier })).identity; }
         catch (error) { await this.fail(claimed.attempt.id); throw error; }
-        await this.transaction(async (tx) => {
+        try {
             this.assertEnabled();
-            const preliminary = await tx.query<Attempt>('SELECT * FROM microsoft_verification_attempts WHERE id=$1', [claimed.attempt.id]);
-            const preAttempt = preliminary.rows[0];
-            if (!preAttempt) throw invalidAttempt();
-            await assertAuthority(tx, { userId: preAttempt.user_id, sid: preAttempt.server_session_id, use: 'issuance', processingGrantId: preAttempt.processing_grant_id, providerConsentId: preAttempt.provider_consent_id, expected: preAttempt });
-            await lockMicrosoftAttempt(tx, claimed.attempt.id);
-            const row = await tx.query<Attempt>('SELECT * FROM microsoft_verification_attempts WHERE id=$1', [claimed.attempt.id]);
-            const attempt = row.rows[0];
-            const clock = await tx.query<{ now: Date }>('SELECT clock_timestamp() AS now');
-            if (!attempt || attempt.status !== 'processing' || attempt.expires_at <= clock.rows[0]!.now) throw invalidAttempt();
-            await assertAuthority(tx, { userId: attempt.user_id, sid: attempt.server_session_id, use: 'issuance', processingGrantId: attempt.processing_grant_id, providerConsentId: attempt.provider_consent_id, expected: attempt });
-            const updated = await tx.query(`UPDATE microsoft_verification_attempts SET status='ready', encrypted_verifier=NULL, nonce=NULL, result=$2::jsonb WHERE id=$1 AND status='processing'`, [attempt.id, JSON.stringify(identity)]);
-            if (updated.rowCount !== 1) throw invalidAttempt();
-        }).catch(async (error) => { await this.fail(claimed.attempt.id); throw error; });
+            await this.transaction(async (tx) => {
+                this.assertEnabled();
+                const preliminary = await tx.query<Attempt>('SELECT * FROM microsoft_verification_attempts WHERE id=$1', [claimed.attempt.id]);
+                const preAttempt = preliminary.rows[0];
+                if (!preAttempt) throw invalidAttempt();
+                await assertAuthority(tx, { userId: preAttempt.user_id, sid: preAttempt.server_session_id, use: 'issuance', processingGrantId: preAttempt.processing_grant_id, providerConsentId: preAttempt.provider_consent_id, expected: preAttempt });
+                await lockMicrosoftAttempt(tx, claimed.attempt.id);
+                const row = await tx.query<Attempt>('SELECT * FROM microsoft_verification_attempts WHERE id=$1', [claimed.attempt.id]);
+                const attempt = row.rows[0];
+                const clock = await tx.query<{ now: Date }>('SELECT clock_timestamp() AS now');
+                if (!attempt || attempt.status !== 'processing' || attempt.expires_at <= clock.rows[0]!.now) throw invalidAttempt();
+                await assertAuthority(tx, { userId: attempt.user_id, sid: attempt.server_session_id, use: 'issuance', processingGrantId: attempt.processing_grant_id, providerConsentId: attempt.provider_consent_id, expected: attempt });
+                this.assertEnabled();
+                const updated = await tx.query(`UPDATE microsoft_verification_attempts SET status='ready', encrypted_verifier=NULL, nonce=NULL, result=$2::jsonb WHERE id=$1 AND status='processing'`, [attempt.id, JSON.stringify(identity)]);
+                if (updated.rowCount !== 1) throw invalidAttempt();
+            });
+        } catch (error) { await this.fail(claimed.attempt.id); throw error; }
         const completionUrl = new URL(this.deps.completionUrl); completionUrl.searchParams.set('attempt', claimed.attempt.id);
         return { attemptId: claimed.attempt.id, completionUrl };
     }
@@ -182,10 +196,11 @@ export class MicrosoftFlowService {
             if (!attempt || attempt.expires_at <= clock.rows[0]!.now) throw invalidAttempt();
             await assertAuthority(tx, { userId: input.userId, sid: input.serverSessionId, use: 'owner', processingGrantId: attempt.processing_grant_id, providerConsentId: attempt.provider_consent_id, expected: attempt });
             if (attempt.status === 'completed') {
-                const receipt = attempt.result as { accountLinked?: boolean; enrollment?: string } | null;
-                if (!receipt?.accountLinked || receipt.enrollment !== 'not_checked') throw invalidAttempt();
-                const linked = await tx.query('SELECT id FROM microsoft_identities WHERE user_id=$1 AND university_id=$2 AND revoked_at IS NULL', [input.userId, attempt.university_id]);
+                const receipt = attempt.result as { accountLinked?: boolean; enrollment?: string; identityId?: string } | null;
+                if (!receipt?.accountLinked || receipt.enrollment !== 'not_checked' || typeof receipt.identityId !== 'string') throw invalidAttempt();
+                const linked = await tx.query('SELECT id FROM microsoft_identities WHERE id=$1 AND user_id=$2 AND university_id=$3 AND revoked_at IS NULL', [receipt.identityId, input.userId, attempt.university_id]);
                 if (linked.rowCount !== 1) throw invalidAttempt();
+                this.assertEnabled();
                 return { accountLinked: true, enrollment: 'not_checked' };
             }
             const identity = attempt.result as MicrosoftIdentity | null;
@@ -193,8 +208,9 @@ export class MicrosoftFlowService {
             const existing = await tx.query<{ id: string; user_id: string; university_id: string; revoked_at: Date | null }>('SELECT id,user_id,university_id,revoked_at FROM microsoft_identities WHERE tenant_id=$1 AND object_id=$2 FOR UPDATE', [identity.tenantId, identity.objectId]);
             const linked = existing.rows[0];
             if (linked && (linked.user_id !== input.userId || linked.university_id !== attempt.university_id || linked.revoked_at !== null)) throw new ConflictError('Microsoft identity cannot be transferred or restored');
-            if (!linked) await tx.query('INSERT INTO microsoft_identities (user_id,university_id,tenant_id,object_id) VALUES ($1,$2,$3,$4)', [input.userId, attempt.university_id, identity.tenantId, identity.objectId]);
-            const completed = await tx.query(`UPDATE microsoft_verification_attempts SET status='completed', result=$2::jsonb WHERE id=$1 AND status='ready'`, [attempt.id, JSON.stringify({ accountLinked: true, enrollment: 'not_checked' })]);
+            const identityId = linked?.id ?? (await tx.query<{ id: string }>('INSERT INTO microsoft_identities (user_id,university_id,tenant_id,object_id) VALUES ($1,$2,$3,$4) RETURNING id', [input.userId, attempt.university_id, identity.tenantId, identity.objectId])).rows[0]!.id;
+            this.assertEnabled();
+            const completed = await tx.query(`UPDATE microsoft_verification_attempts SET status='completed', result=$2::jsonb WHERE id=$1 AND status='ready'`, [attempt.id, JSON.stringify({ accountLinked: true, enrollment: 'not_checked', identityId })]);
             if (completed.rowCount !== 1) throw invalidAttempt();
             return { accountLinked: true, enrollment: 'not_checked' };
         });
