@@ -53,3 +53,28 @@ test('validation failures contain no raw diagnostic input', () => {
         (error: unknown) => error instanceof TypeError && !error.message.includes(canary),
     );
 });
+
+test('normalizes matching-message getter errors into a fresh payload-free error', () => {
+    const canary = 'TOKEN_CANARY';
+    const providerError = Object.assign(new TypeError('Invalid diagnostic event'), { providerDetail: canary });
+    const event = { ...validEvent };
+    Object.defineProperty(event, 'correlationId', {
+        enumerable: true,
+        get: () => { throw providerError; },
+    });
+
+    assert.throws(() => serializeDiagnostic(event), (error: unknown) => {
+        assert.notEqual(error, providerError);
+        assert.ok(error instanceof TypeError);
+        assert.equal(error.message, 'Invalid diagnostic event');
+        assert.equal(JSON.stringify(error).includes(canary), false);
+        assert.equal(Object.values(error).some((value) => String(value).includes(canary)), false);
+        return true;
+    });
+});
+
+test('normalizes a revoked proxy rejected during object validation', () => {
+    const { proxy, revoke } = Proxy.revocable([], {});
+    revoke();
+    assert.throws(() => serializeDiagnostic(proxy), /Invalid diagnostic event/);
+});

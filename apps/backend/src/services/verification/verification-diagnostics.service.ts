@@ -40,9 +40,8 @@ function invalidDiagnosticEvent(): never {
 
 /** Produces a secret-free diagnostic line from the fixed event allowlist. */
 export function serializeDiagnostic(event: unknown): string {
-    if (!isRecord(event)) invalidDiagnosticEvent();
-
     try {
+        if (!isRecord(event)) invalidDiagnosticEvent();
         const { correlationId, stage, outcome, reason, httpStatus, durationMs } = event;
         if (typeof correlationId !== 'string' || !UUID.test(correlationId)
             || typeof stage !== 'string' || !STAGES.has(stage)
@@ -62,8 +61,7 @@ export function serializeDiagnostic(event: unknown): string {
             ...(httpStatus === undefined ? {} : { httpStatus }),
         };
         return JSON.stringify(diagnostic);
-    } catch (error) {
-        if (error instanceof TypeError && error.message === 'Invalid diagnostic event') throw error;
+    } catch {
         invalidDiagnosticEvent();
     }
 }
