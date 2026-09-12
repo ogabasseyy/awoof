@@ -1000,15 +1000,17 @@ test('mounted Microsoft start returns only the finish secret and sets the state-
 test('mounted Microsoft consent routes bind the rendered snapshot, preserve owner withdrawal, and keep history available with issuance off', async () => {
     const data = await fixture();
     const sid = randomUUID();
-    const otherUser = await withTestClient((client) => inTransaction(client, async () => {
+    const other = await withTestClient((client) => inTransaction(client, async () => {
         await client.query(`UPDATE institution_microsoft_policies SET notice_version='microsoft-v3' WHERE university_id=$1`, [data.universityId]);
         await client.query(`UPDATE users SET active_session_id=$2,refresh_token_hash='consent-route',refresh_token_expires_at=clock_timestamp()+interval '1 hour' WHERE id=$1`, [data.userId, sid]);
         const other = (await client.query<{ id: string }>(`INSERT INTO users (email,role,active_session_id,refresh_token_hash,refresh_token_expires_at)
             VALUES ($1,'student',$2,'other-consent-route',clock_timestamp()+interval '1 hour') RETURNING id`, [`other-${randomUUID()}@example.invalid`, randomUUID()])).rows[0]!.id;
         await client.query(`INSERT INTO students (user_id,name,university_id) VALUES($1,'Other',$2)`, [other, data.universityId]);
-        return other;
+        const processingGrantId = await grantVerificationProcessing(client, other, data.universityId, { accepted:true, noticeVersion:VERIFICATION_NOTICE_VERSION });
+        return { userId: other, processingGrantId };
     }));
-    const app = await createApp({ microsoftIssuanceEnabled: () => true });
+    let issuanceEnabled = true;
+    const app = await createApp({ microsoftIssuanceEnabled: () => issuanceEnabled });
     const server = http.createServer(app);
     await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
     const address = server.address();
@@ -1044,30 +1046,55 @@ test('mounted Microsoft consent routes bind the rendered snapshot, preserve owne
         assert.equal(accepted.status, 201);
         assert.match(acceptedBody.data.providerConsentId, /^[0-9a-f-]{36}$/i);
 
-        const extra = await fetch(`${base}/consents`, { method:'POST', headers, body:JSON.stringify({ accepted:true, processingGrantId:data.processingGrantId, snapshot:noticeBody.data.snapshot, userId:otherUser }) });
+        const displayedSnapshot = { ...noticeBody.data.snapshot, mode: noticeBody.data.snapshot.mode as 'identity_only' | 'graph_enrollment' };
+        const extra = await fetch(`${base}/consents`, { method:'POST', headers, body:JSON.stringify({ accepted:true, processingGrantId:data.processingGrantId, snapshot:displayedSnapshot, userId:other.userId }) });
         assert.equal(extra.status, 400);
         const hostile = await fetch(`${base}/consents/${acceptedBody.data.providerConsentId}/withdraw`, { method:'POST', headers:{ ...headers, origin:'https://merchant.example.invalid' }, body:'{}' });
         assert.equal(hostile.status, 400);
 
+        // Populate one full keyset page plus one additional row while the
+        // original snapshot is still current, then verify owner-only cursors.
+        const additional = await withTestClient((client) => inTransaction(client, async () => {
+            const ids: string[] = [];
+            for (let index = 0; index < 20; index += 1) {
+                ids.push(await acceptMicrosoftConsent(client, data.userId, { accepted:true, processingGrantId:data.processingGrantId, snapshot:displayedSnapshot }));
+            }
+            const foreign = await acceptMicrosoftConsent(client, other.userId, { accepted:true, processingGrantId:other.processingGrantId, snapshot:displayedSnapshot });
+            return { ids, foreign };
+        }));
+        const firstHistory = await fetch(`${base}/consents`, { headers:{ authorization:headers.authorization } });
+        const firstHistoryBody = await firstHistory.json() as { data: { items: Array<{ id: string }>; nextCursor: string | null } };
+        assert.equal(firstHistory.status, 200); assert.equal(firstHistoryBody.data.items.length, 20);
+        assert.notEqual(firstHistoryBody.data.nextCursor, null);
+        const secondHistory = await fetch(`${base}/consents?cursor=${firstHistoryBody.data.nextCursor}`, { headers:{ authorization:headers.authorization } });
+        const secondHistoryBody = await secondHistory.json() as { data: { items: Array<{ id: string }>; nextCursor: string | null } };
+        assert.equal(secondHistory.status, 200); assert.equal(secondHistoryBody.data.nextCursor, null);
+        assert.deepEqual(new Set([...firstHistoryBody.data.items, ...secondHistoryBody.data.items].map((item) => item.id)), new Set([acceptedBody.data.providerConsentId, ...additional.ids]));
+        assert.equal((await fetch(`${base}/consents?cursor=${randomUUID()}`, { headers:{ authorization:headers.authorization } })).status, 400);
+        assert.equal((await fetch(`${base}/consents?cursor=${additional.foreign}`, { headers:{ authorization:headers.authorization } })).status, 400);
+
         await withTestClient((client) => client.query(`UPDATE institution_microsoft_policies SET max_evidence_hours=max_evidence_hours-1 WHERE university_id=$1`, [data.universityId]));
-        const stale = await fetch(`${base}/consents`, { method:'POST', headers, body:JSON.stringify({ accepted:true, processingGrantId:data.processingGrantId, snapshot:noticeBody.data.snapshot }) });
+        const stale = await fetch(`${base}/consents`, { method:'POST', headers, body:JSON.stringify({ accepted:true, processingGrantId:data.processingGrantId, snapshot:displayedSnapshot }) });
         const staleBody = await stale.json() as { error: { code: string } };
         assert.equal(stale.status, 409); assert.equal(staleBody.error.code, 'consent_notice_changed');
 
+        issuanceEnabled = false;
+        assert.equal(issuanceEnabled, false);
         // Student status has no "inactive" enum value; suspended is the
         // supported non-active owner state that must still reach history and
         // withdrawal through the owner-session guard.
         await withTestClient((client) => client.query(`UPDATE students SET status='suspended' WHERE user_id=$1`, [data.userId]));
         const history = await fetch(`${base}/consents`, { headers:{ authorization:headers.authorization } });
         const historyBody = await history.json() as { data: { items: Array<{ id: string }>; nextCursor: string | null } };
-        assert.equal(history.status, 200); assert.deepEqual(historyBody.data.items.map((item) => item.id), [acceptedBody.data.providerConsentId]);
+        assert.equal(history.status, 200); assert.equal(historyBody.data.items.length, 20);
+        assert.notEqual(historyBody.data.nextCursor, null);
 
         const withdraw = await fetch(`${base}/consents/${acceptedBody.data.providerConsentId}/withdraw`, { method:'POST', headers, body:'{}' });
         assert.equal(withdraw.status, 200);
         const repeatedWithdraw = await fetch(`${base}/consents/${acceptedBody.data.providerConsentId}/withdraw`, { method:'POST', headers, body:'{}' });
         assert.equal(repeatedWithdraw.status, 200);
-        const otherSid = (await withTestClient(async (client) => (await client.query<{ active_session_id: string }>('SELECT active_session_id FROM users WHERE id=$1', [otherUser])).rows[0]!)).active_session_id;
-        const otherToken = jwtService.generateAccessToken({ userId:otherUser, email:'other@example.invalid', role:'student', sid:otherSid });
+        const otherSid = (await withTestClient(async (client) => (await client.query<{ active_session_id: string }>('SELECT active_session_id FROM users WHERE id=$1', [other.userId])).rows[0]!)).active_session_id;
+        const otherToken = jwtService.generateAccessToken({ userId:other.userId, email:'other@example.invalid', role:'student', sid:otherSid });
         const wrongOwner = await fetch(`${base}/consents/${acceptedBody.data.providerConsentId}/withdraw`, { method:'POST', headers:{ authorization:`Bearer ${otherToken}`, origin:'http://localhost:3000', 'content-type':'application/json' }, body:'{}' });
         assert.equal(wrongOwner.status, 403);
     } finally {

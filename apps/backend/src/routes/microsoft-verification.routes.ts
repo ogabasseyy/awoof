@@ -221,14 +221,16 @@ export default createMicrosoftVerificationRouter;
  *               processingGrantId: { type: string, format: uuid }
  *               providerConsentId: { type: string, format: uuid }
  *     responses:
- *       201: { description: Pending account-link attempt; completion remains a separate finish call }
- *       400: { description: Invalid exact-Origin JSON body }
- *       401: { description: Current issuance session is required }
- *       503: { description: Microsoft issuance is unavailable }
+ *       201:
+ *         description: Pending account-link attempt; completion remains a separate finish call
+ *         content: { application/json: { schema: { $ref: '#/components/schemas/MicrosoftStartResponse' } } }
+ *       400: { $ref: '#/components/responses/MicrosoftRequestError' }
+ *       401: { $ref: '#/components/responses/MicrosoftRequestError' }
+ *       503: { $ref: '#/components/responses/MicrosoftRequestError' }
  * /api/verification/microsoft/finish:
  *   post:
  *     summary: Finalize a ready Microsoft account-link attempt
- *     description: "Strict JSON. The result distinguishes account linking from enrollment assurance: enrollment is not_checked, verified, or unknown. Never send provider credentials in this request or response."
+ *     description: "Strict JSON. The result distinguishes account linking from enrollment assurance: enrollment is not_checked, eligible, unconfirmed, or denied. Never send provider credentials in this request or response."
  *     tags: [Microsoft verification]
  *     security: [{ bearerAuth: [] }]
  *     requestBody:
@@ -243,10 +245,12 @@ export default createMicrosoftVerificationRouter;
  *               attemptId: { type: string, format: uuid }
  *               finishSecret: { type: string }
  *     responses:
- *       200: { description: Minimal account-link and enrollment-assurance receipt }
- *       400: { description: Invalid exact-Origin JSON body }
- *       401: { description: Current issuance session is required }
- *       409: { description: Attempt is stale, revoked, expired, or not ready }
+ *       200:
+ *         description: Minimal account-link and enrollment-assurance receipt
+ *         content: { application/json: { schema: { $ref: '#/components/schemas/MicrosoftFinishResponse' } } }
+ *       400: { $ref: '#/components/responses/MicrosoftRequestError' }
+ *       401: { $ref: '#/components/responses/MicrosoftRequestError' }
+ *       409: { $ref: '#/components/responses/MicrosoftRequestError' }
  * /api/verification/microsoft/notice:
  *   get:
  *     summary: Read the exact immutable Microsoft consent notice for the signed-in student
@@ -255,8 +259,9 @@ export default createMicrosoftVerificationRouter;
  *     responses:
  *       200:
  *         description: Server-selected snapshot and the immutable text that must be rendered before acceptance
- *       401: { description: A current live student session is required }
- *       503: { description: Microsoft issuance is unavailable; no tenant or provider detail is disclosed }
+ *         content: { application/json: { schema: { $ref: '#/components/schemas/MicrosoftNoticeResponse' } } }
+ *       401: { $ref: '#/components/responses/MicrosoftRequestError' }
+ *       503: { $ref: '#/components/responses/MicrosoftRequestError' }
  * /api/verification/microsoft/consents:
  *   get:
  *     summary: List the signed-in owner's Microsoft consent history
@@ -267,8 +272,11 @@ export default createMicrosoftVerificationRouter;
  *         name: cursor
  *         schema: { type: string, format: uuid }
  *     responses:
- *       200: { description: Owner-scoped keyset page with items and nullable nextCursor }
- *       401: { description: A current live owner session is required }
+ *       200:
+ *         description: Owner-scoped keyset page with items and nullable nextCursor
+ *         content: { application/json: { schema: { $ref: '#/components/schemas/MicrosoftConsentHistoryResponse' } } }
+ *       400: { $ref: '#/components/responses/MicrosoftRequestError' }
+ *       401: { $ref: '#/components/responses/MicrosoftRequestError' }
  *   post:
  *     summary: Explicitly accept the exact Microsoft notice snapshot that was rendered
  *     description: Strict JSON only. Client snapshot values are comparison values, never provider authority. A 409 requires a fresh render and explicit action; tokens, authorization codes, and client secrets are never accepted or logged.
@@ -296,10 +304,12 @@ export default createMicrosoftVerificationRouter;
  *                   mode: { type: string, enum: [identity_only, graph_enrollment] }
  *                   scopes: { type: array, items: { type: string } }
  *     responses:
- *       201: { description: Provider consent recorded; response data contains providerConsentId }
- *       400: { description: Invalid origin, JSON, strict body, or processing grant }
- *       409: { description: consent_notice_changed; no consent was created }
- *       503: { description: Microsoft issuance is unavailable }
+ *       201:
+ *         description: Provider consent recorded; response data contains providerConsentId
+ *         content: { application/json: { schema: { $ref: '#/components/schemas/MicrosoftConsentAcceptanceResponse' } } }
+ *       400: { $ref: '#/components/responses/MicrosoftRequestError' }
+ *       409: { $ref: '#/components/responses/MicrosoftRequestError' }
+ *       503: { $ref: '#/components/responses/MicrosoftRequestError' }
  * /api/verification/microsoft/consents/{id}/withdraw:
  *   post:
  *     summary: Idempotently withdraw an owner-scoped Microsoft provider consent
@@ -317,7 +327,10 @@ export default createMicrosoftVerificationRouter;
  *         application/json:
  *           schema: { type: object, additionalProperties: false }
  *     responses:
- *       200: { description: Withdrawal completed or was already completed }
- *       401: { description: A current live owner session is required }
- *       403: { description: Consent belongs to another owner }
+ *       200:
+ *         description: Withdrawal completed or was already completed
+ *         content: { application/json: { schema: { $ref: '#/components/schemas/MicrosoftConsentWithdrawalResponse' } } }
+ *       400: { $ref: '#/components/responses/MicrosoftRequestError' }
+ *       401: { $ref: '#/components/responses/MicrosoftRequestError' }
+ *       403: { $ref: '#/components/responses/MicrosoftRequestError' }
  */

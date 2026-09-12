@@ -213,6 +213,126 @@ Access tokens expire in 15 minutes. Use the refresh token endpoint to get a new 
                         },
                     },
                 },
+                MicrosoftRequestError: {
+                    type: 'object',
+                    additionalProperties: false,
+                    required: ['success', 'error'],
+                    properties: {
+                        success: { type: 'boolean', enum: [false] },
+                        error: {
+                            type: 'object',
+                            additionalProperties: false,
+                            required: ['code', 'statusCode'],
+                            properties: {
+                                code: { type: 'string', enum: ['MICROSOFT_REQUEST_REJECTED', 'reauthentication_required', 'consent_notice_changed'] },
+                                statusCode: { type: 'integer', minimum: 400, maximum: 599 },
+                            },
+                        },
+                    },
+                },
+                MicrosoftConsentSnapshot: {
+                    type: 'object',
+                    additionalProperties: false,
+                    required: ['universityId', 'providerPolicyVersion', 'noticeVersion', 'mode', 'scopes'],
+                    properties: {
+                        universityId: { type: 'string', format: 'uuid' },
+                        providerPolicyVersion: { type: 'integer', minimum: 1 },
+                        noticeVersion: { type: 'string' },
+                        mode: { type: 'string', enum: ['identity_only', 'graph_enrollment'] },
+                        scopes: { type: 'array', items: { type: 'string' } },
+                    },
+                },
+                MicrosoftStartResponse: {
+                    type: 'object', additionalProperties: false, required: ['success', 'data'],
+                    properties: {
+                        success: { type: 'boolean', enum: [true] },
+                        data: {
+                            type: 'object', additionalProperties: false,
+                            required: ['attemptId', 'authorizationUrl', 'finishSecret'],
+                            properties: {
+                                attemptId: { type: 'string', format: 'uuid' },
+                                authorizationUrl: { type: 'string', format: 'uri' },
+                                finishSecret: { type: 'string' },
+                            },
+                        },
+                    },
+                },
+                MicrosoftFinishResponse: {
+                    type: 'object', additionalProperties: false, required: ['success', 'data'],
+                    properties: {
+                        success: { type: 'boolean', enum: [true] },
+                        data: {
+                            type: 'object', additionalProperties: false, required: ['accountLinked', 'enrollment'],
+                            properties: {
+                                accountLinked: { type: 'boolean', enum: [true] },
+                                enrollment: { type: 'string', enum: ['not_checked', 'eligible', 'unconfirmed', 'denied'] },
+                            },
+                        },
+                    },
+                },
+                MicrosoftNoticeResponse: {
+                    type: 'object', additionalProperties: false, required: ['success', 'data'],
+                    properties: {
+                        success: { type: 'boolean', enum: [true] },
+                        data: {
+                            type: 'object', additionalProperties: false, required: ['snapshot', 'copy'],
+                            properties: {
+                                snapshot: { $ref: '#/components/schemas/MicrosoftConsentSnapshot' },
+                                copy: {
+                                    type: 'object', additionalProperties: false, required: ['text'],
+                                    properties: { text: { type: 'string' } },
+                                },
+                            },
+                        },
+                    },
+                },
+                MicrosoftConsentHistoryResponse: {
+                    type: 'object', additionalProperties: false, required: ['success', 'data'],
+                    properties: {
+                        success: { type: 'boolean', enum: [true] },
+                        data: {
+                            type: 'object', additionalProperties: false, required: ['items', 'nextCursor'],
+                            properties: {
+                                items: {
+                                    type: 'array', items: {
+                                        type: 'object', additionalProperties: false,
+                                        required: ['id', 'snapshot', 'acceptedAt', 'withdrawnAt'],
+                                        properties: {
+                                            id: { type: 'string', format: 'uuid' },
+                                            snapshot: { $ref: '#/components/schemas/MicrosoftConsentSnapshot' },
+                                            acceptedAt: { type: 'string', format: 'date-time' },
+                                            withdrawnAt: { type: 'string', format: 'date-time', nullable: true },
+                                        },
+                                    },
+                                },
+                                nextCursor: { type: 'string', format: 'uuid', nullable: true },
+                            },
+                        },
+                    },
+                },
+                MicrosoftConsentAcceptanceResponse: {
+                    type: 'object', additionalProperties: false, required: ['success', 'data'],
+                    properties: {
+                        success: { type: 'boolean', enum: [true] },
+                        data: {
+                            type: 'object', additionalProperties: false, required: ['providerConsentId'],
+                            properties: { providerConsentId: { type: 'string', format: 'uuid' } },
+                        },
+                    },
+                },
+                MicrosoftConsentWithdrawalResponse: {
+                    type: 'object', additionalProperties: false, required: ['success', 'data'],
+                    properties: {
+                        success: { type: 'boolean', enum: [true] },
+                        data: {
+                            type: 'object', additionalProperties: false, required: ['providerConsentId', 'withdrawn'],
+                            properties: {
+                                providerConsentId: { type: 'string', format: 'uuid' },
+                                withdrawn: { type: 'boolean', enum: [true] },
+                            },
+                        },
+                    },
+                },
             },
             responses: {
                 BadRequest: {
@@ -232,6 +352,14 @@ Access tokens expire in 15 minutes. Use the refresh token endpoint to get a new 
                             schema: {
                                 $ref: '#/components/schemas/Error',
                             },
+                        },
+                    },
+                },
+                MicrosoftRequestError: {
+                    description: 'Microsoft request rejected without provider or operation detail',
+                    content: {
+                        'application/json': {
+                            schema: { $ref: '#/components/schemas/MicrosoftRequestError' },
                         },
                     },
                 },
