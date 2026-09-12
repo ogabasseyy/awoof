@@ -20,6 +20,12 @@ test('issues a distinct refresh token and persists its hash, expiry, and checked
     const second = await issueSession(student, false, 'checked-password-hash');
 
     assert.notEqual(first.refreshToken, second.refreshToken);
+    const firstSessionId = jwtService.verifyAccessToken(first.accessToken).sid;
+    const secondSessionId = jwtService.verifyAccessToken(second.accessToken).sid;
+    assert.match(firstSessionId ?? '', /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i);
+    assert.match(secondSessionId ?? '', /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i);
+    assert.notEqual(firstSessionId, secondSessionId);
+    assert.equal(jwtService.verifyRefreshToken(first.refreshToken).sid, firstSessionId);
     assert.equal(calls.length, 2);
     const firstExpiry = jwtService.verifyRefreshToken(first.refreshToken).exp;
     assert.equal(typeof firstExpiry, 'number');
@@ -31,6 +37,7 @@ test('issues a distinct refresh token and persists its hash, expiry, and checked
         new Date(firstExpiry! * 1000),
         'checked-password-hash',
         'student',
+        firstSessionId,
     ]);
 });
 
@@ -56,7 +63,8 @@ test('refuses to issue a session when the checked password no longer matches', a
 });
 
 test('refreshes from current database identity rather than stale token claims', async (t) => {
-    const token = jwtService.generateRefreshToken(student);
+    const sid = '11111111-1111-4111-8111-111111111111';
+    const token = jwtService.generateRefreshToken({ ...student, sid });
     const calls: Array<{ text: string; params: unknown[] | undefined }> = [];
     t.mock.method(db, 'query', async (text: string, params?: unknown[]) => {
         calls.push({ text, params });
@@ -72,9 +80,11 @@ test('refreshes from current database identity rather than stale token claims', 
     assert.equal(decoded.userId, userId);
     assert.equal(decoded.email, 'new-admin@example.invalid');
     assert.equal(decoded.role, 'admin');
+    assert.equal(decoded.sid, sid);
     assert.deepEqual(calls[0].params, [
         userId,
         createHash('sha256').update(token).digest('hex'),
+        sid,
     ]);
 });
 
@@ -141,4 +151,5 @@ test('clears a durable refresh session regardless of Redis availability', async 
     assert.deepEqual(calls[0].params, [userId]);
     assert.match(calls[0].text, /refresh_token_hash = NULL/);
     assert.match(calls[0].text, /refresh_token_expires_at = NULL/);
+    assert.match(calls[0].text, /active_session_id = NULL/);
 });
