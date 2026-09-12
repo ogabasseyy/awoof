@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import axios from 'axios';
-import apiClient, { publicApiClient } from '../../src/lib/api-client';
+import apiClient, { microsoftVerificationApiClient, publicApiClient } from '../../src/lib/api-client';
 import { clearTokens, getAccessToken, isSessionStorageQuarantined, storeTokens } from '../../src/lib/auth';
 
 type Deferred<T> = {
@@ -336,4 +336,55 @@ test('a successful terminal 401 on an auth path persists signed-out without navi
       clearTokens();
     }
   }, '/auth/student/login');
+});
+
+test('a Microsoft 401 refreshes and retries through the credentialed Microsoft client only', async () => {
+  await withStorage(createStorage(), async () => {
+    storeTokens({ accessToken: 'access-a', refreshToken: 'refresh-a' });
+    const oldMicrosoftAdapter = microsoftVerificationApiClient.defaults.adapter;
+    const oldApiAdapter = apiClient.defaults.adapter;
+    const oldAxiosAdapter = axios.defaults.adapter;
+    const calls: Array<{ authorization: string; credentials: boolean; url?: string }> = [];
+    try {
+      microsoftVerificationApiClient.defaults.adapter = async (config) => {
+        calls.push({ authorization: String(config.headers?.Authorization ?? ''), credentials: config.withCredentials === true, url: config.url });
+        if (calls.length === 1) return Promise.reject({ config, response: { status: 401 } });
+        return ok(config, { ok: true });
+      };
+      apiClient.defaults.adapter = async () => { throw new Error('retry escaped the Microsoft client'); };
+      axios.defaults.adapter = async (config) => ok(config, { success: true, data: { accessToken: 'access-b' } });
+      await microsoftVerificationApiClient.post('/verification/microsoft/finish', { attemptId: 'attempt', finishSecret: 'secret' });
+      assert.deepEqual(calls, [
+        { authorization: 'Bearer access-a', credentials: true, url: '/verification/microsoft/finish' },
+        { authorization: 'Bearer access-b', credentials: true, url: '/verification/microsoft/finish' },
+      ]);
+    } finally {
+      microsoftVerificationApiClient.defaults.adapter = oldMicrosoftAdapter;
+      apiClient.defaults.adapter = oldApiAdapter;
+      axios.defaults.adapter = oldAxiosAdapter;
+      clearTokens();
+    }
+  });
+});
+
+test('a stale Microsoft request never refreshes or retries', async () => {
+  await withStorage(createStorage(), async () => {
+    storeTokens({ accessToken: 'access-a', refreshToken: 'refresh-a' });
+    const oldMicrosoftAdapter = microsoftVerificationApiClient.defaults.adapter;
+    const oldAxiosAdapter = axios.defaults.adapter;
+    let refreshCalls = 0;
+    try {
+      microsoftVerificationApiClient.defaults.adapter = async (config) => {
+        storeTokens({ accessToken: 'access-b', refreshToken: 'refresh-b' });
+        return Promise.reject({ config, response: { status: 401 } });
+      };
+      axios.defaults.adapter = async () => { refreshCalls += 1; return ok({}, {}); };
+      await microsoftVerificationApiClient.post('/verification/microsoft/finish', {}).catch(() => undefined);
+      assert.equal(refreshCalls, 0);
+    } finally {
+      microsoftVerificationApiClient.defaults.adapter = oldMicrosoftAdapter;
+      axios.defaults.adapter = oldAxiosAdapter;
+      clearTokens();
+    }
+  });
 });

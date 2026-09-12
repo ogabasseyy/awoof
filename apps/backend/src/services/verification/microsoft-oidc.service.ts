@@ -1,5 +1,5 @@
 import * as client from 'openid-client';
-import type { MicrosoftOidcConfiguration } from './microsoft-oidc.config.js';
+import type { ApprovedMicrosoftOidcConfiguration, MicrosoftOidcConfiguration } from './microsoft-oidc.config.js';
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const IDENTITY_SCOPES = ['openid', 'profile'] as const;
@@ -117,12 +117,12 @@ function validOpaque(value: string, label: string): void {
 }
 
 export class MicrosoftOidcService implements MicrosoftOidc {
-    private constructor(private readonly configuration: MicrosoftOidcConfiguration & { enabled: true }, private readonly dependency: Dependencies) {}
+    private constructor(private readonly configuration: ApprovedMicrosoftOidcConfiguration, private readonly dependency: Dependencies) {}
 
-    static forConfiguration(configuration: MicrosoftOidcConfiguration, dependency: Dependencies = {}): MicrosoftOidcService {
-        if (!configuration.enabled) throw new TypeError('Microsoft OIDC is disabled');
+    static forConfiguration(configuration: MicrosoftOidcConfiguration | ApprovedMicrosoftOidcConfiguration, dependency: Dependencies = {}): MicrosoftOidcService {
+        if (!configuration.enabled || !configuration.tenantId || !configuration.issuer) throw new TypeError('Microsoft OIDC tenant adapter is unavailable');
         if (dependency.issuer && process.env.NODE_ENV !== 'test') throw new TypeError('Synthetic Microsoft issuer is test-only');
-        return new MicrosoftOidcService(configuration, dependency);
+        return new MicrosoftOidcService(configuration as ApprovedMicrosoftOidcConfiguration, dependency);
     }
 
     private async discovered(): Promise<client.Configuration> {

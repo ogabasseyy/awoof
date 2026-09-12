@@ -26,7 +26,7 @@ export type MicrosoftFinishResult = { accountLinked: true; enrollment: 'not_chec
 
 export type MicrosoftFlowDependencies = {
     pool: Pool;
-    oidc: MicrosoftOidc;
+    oidc: MicrosoftOidc | { forTenant(tenantId: string): MicrosoftOidc };
     verifierEncryptionKey: string;
     callbackUrl: URL;
     completionUrl: URL;
@@ -92,6 +92,9 @@ export class MicrosoftFlowService {
     }
 
     private assertEnabled(): void { if (this.deps.isEnabled?.() !== true) throw invalidAttempt(); }
+    private oidcForTenant(tenantId: string): MicrosoftOidc {
+        return 'forTenant' in this.deps.oidc ? this.deps.oidc.forTenant(tenantId) : this.deps.oidc;
+    }
 
     async start(input: { userId: string; serverSessionId: string; processingGrantId: string; providerConsentId: string }): Promise<MicrosoftStartResult> {
         this.assertEnabled();
@@ -111,7 +114,7 @@ export class MicrosoftFlowService {
         });
         // Authorization discovery is deliberately outside the authority transaction.
         let authorizationUrl: string;
-        try { authorizationUrl = await this.deps.oidc.authorize({ tenantId: prepared.tenantId, state: prepared.state, nonce: prepared.nonce, verifier: prepared.verifier, scopes: prepared.scopes }); }
+        try { authorizationUrl = await this.oidcForTenant(prepared.tenantId).authorize({ tenantId: prepared.tenantId, state: prepared.state, nonce: prepared.nonce, verifier: prepared.verifier, scopes: prepared.scopes }); }
         catch (error) { await this.fail(prepared.attemptId); throw error; }
         await this.transaction(async (tx) => {
             this.assertEnabled();
@@ -133,17 +136,20 @@ export class MicrosoftFlowService {
         await this.transaction(async (tx) => { await tx.query(`UPDATE microsoft_verification_attempts SET status='failed', encrypted_verifier=NULL, nonce=NULL, result=NULL WHERE id=$1 AND status IN ('pending','processing','ready')`, [attemptId]); });
     }
 
-    async callback(input: { callbackUrl: URL; browserCookie: string }): Promise<MicrosoftCallbackResult> {
+    async callback(input: { callbackUrl: URL; browserCookie?: string; browserCookies?: readonly { name: string; value: string }[] }): Promise<MicrosoftCallbackResult> {
         this.assertEnabled();
         if (!fixedCallback(input.callbackUrl, this.deps.callbackUrl)) throw invalidAttempt();
         const state = input.callbackUrl.searchParams.get('state');
-        if (!state || !input.browserCookie) throw invalidAttempt();
+        if (!state) throw invalidAttempt();
         const claimed = await this.transaction(async (tx) => {
             // State locates the per-attempt cookie, but never authorizes it.
             // Canonical authority is locked before the attempt itself.
             const row = await tx.query<Attempt>(`SELECT * FROM microsoft_verification_attempts WHERE state_hash=$1`, [hashMicrosoftAttemptSecret(state)]);
             const attempt = row.rows[0];
-            if (!attempt || attempt.status !== 'pending' || attempt.expires_at <= new Date() || hashMicrosoftAttemptSecret(input.browserCookie) !== (await tx.query<{ browser_secret_hash: string }>('SELECT browser_secret_hash FROM microsoft_verification_attempts WHERE id=$1', [attempt?.id])).rows[0]?.browser_secret_hash) throw invalidAttempt();
+            // State resolves the durable attempt first, then only that exact
+            // server-generated cookie name may supply browser continuity.
+            const browserCookie = input.browserCookies?.find((cookie) => cookie.name === cookieName(attempt?.id ?? ''))?.value ?? input.browserCookie;
+            if (!attempt || attempt.status !== 'pending' || attempt.expires_at <= new Date() || !browserCookie || hashMicrosoftAttemptSecret(browserCookie) !== (await tx.query<{ browser_secret_hash: string }>('SELECT browser_secret_hash FROM microsoft_verification_attempts WHERE id=$1', [attempt.id])).rows[0]?.browser_secret_hash) throw invalidAttempt();
             const authority = await assertAuthority(tx, { userId: attempt.user_id, sid: attempt.server_session_id, use: 'issuance', processingGrantId: attempt.processing_grant_id, providerConsentId: attempt.provider_consent_id, expected: attempt });
             await lockMicrosoftAttempt(tx, attempt.id);
             const locked = await tx.query<Attempt>('SELECT * FROM microsoft_verification_attempts WHERE id=$1', [attempt.id]);
@@ -156,7 +162,7 @@ export class MicrosoftFlowService {
             return { attempt, tenantId: authority.policy.tenant_id, state, verifier: decryptMicrosoftAttemptVerifier(attempt.encrypted_verifier, this.deps.verifierEncryptionKey, attempt.id), nonce: attempt.nonce };
         });
         let identity: MicrosoftIdentity;
-        try { identity = (await this.deps.oidc.redeem({ tenantId: claimed.tenantId, callback: input.callbackUrl, state: claimed.state, nonce: claimed.nonce, verifier: claimed.verifier })).identity; }
+        try { identity = (await this.oidcForTenant(claimed.tenantId).redeem({ tenantId: claimed.tenantId, callback: input.callbackUrl, state: claimed.state, nonce: claimed.nonce, verifier: claimed.verifier })).identity; }
         catch (error) { await this.fail(claimed.attempt.id); throw error; }
         try {
             this.assertEnabled();
@@ -179,6 +185,15 @@ export class MicrosoftFlowService {
         } catch (error) { await this.fail(claimed.attempt.id); throw error; }
         const completionUrl = new URL(this.deps.completionUrl); completionUrl.searchParams.set('attempt', claimed.attempt.id);
         return { attemptId: claimed.attempt.id, completionUrl };
+    }
+
+    /** State is hashed before lookup; callers receive a cookie name only. */
+    async callbackCookieNameForState(callbackUrl: URL): Promise<string | null> {
+        if (!fixedCallback(callbackUrl, this.deps.callbackUrl)) return null;
+        const state = callbackUrl.searchParams.get('state');
+        if (!state) return null;
+        const result = await this.deps.pool.query<{ id: string }>('SELECT id FROM microsoft_verification_attempts WHERE state_hash=$1', [hashMicrosoftAttemptSecret(state)]);
+        return result.rows[0] ? cookieName(result.rows[0].id) : null;
     }
 
     async finish(input: { userId: string; serverSessionId: string; attemptId: string; finishSecret: string }): Promise<MicrosoftFinishResult> {

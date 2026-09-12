@@ -7,13 +7,21 @@ export type MicrosoftOidcConfiguration =
     | { enabled: false }
     | {
         enabled: true;
-        tenantId: string;
+        tenantId?: string;
         clientId: string;
         clientSecret: string;
         callbackUrl: URL;
         frontendCompletionUrl: URL;
-        issuer: URL;
+        issuer?: URL;
     };
+
+export type ApprovedMicrosoftOidcConfiguration = Extract<MicrosoftOidcConfiguration, { enabled: true }> & { tenantId: string; issuer: URL };
+
+/** Builds a tenant adapter only from a policy tenant already locked by server code. */
+export function forApprovedMicrosoftTenant(configuration: MicrosoftOidcConfiguration, tenantId: string): ApprovedMicrosoftOidcConfiguration {
+    if (!configuration.enabled || !UUID.test(tenantId)) throw new TypeError('Microsoft tenant adapter is unavailable');
+    return { ...configuration, tenantId, issuer: new URL(`https://login.microsoftonline.com/${tenantId}/v2.0`) };
+}
 
 type RawMicrosoftOidcConfiguration = {
     enabled?: string | boolean | undefined;
@@ -43,7 +51,7 @@ function httpsUrl(value: string, label: string): URL {
 
 export function readMicrosoftOidcConfiguration(raw: RawMicrosoftOidcConfiguration): MicrosoftOidcConfiguration {
     if (raw.enabled !== true && raw.enabled !== 'true') return { enabled: false };
-    if (!raw.tenantId || !UUID.test(raw.tenantId)) throw new TypeError('Microsoft tenant ID must be a UUID');
+    if (raw.tenantId !== undefined && !UUID.test(raw.tenantId)) throw new TypeError('Microsoft tenant ID must be a UUID');
     if (!raw.clientId || !raw.clientSecret) throw new TypeError('Microsoft OIDC client configuration is required when enabled');
     if (!raw.callbackUrl || !raw.frontendCompletionUrl) throw new TypeError('Microsoft callback and frontend completion URLs are required when enabled');
     const callbackUrl = httpsUrl(raw.callbackUrl, 'Microsoft callback URL');
@@ -55,11 +63,10 @@ export function readMicrosoftOidcConfiguration(raw: RawMicrosoftOidcConfiguratio
     if (!sameSite(callbackUrl, frontendCompletionUrl)) throw new TypeError('Microsoft API callback and frontend completion must be same-site');
     return {
         enabled: true,
-        tenantId: raw.tenantId,
         clientId: raw.clientId,
         clientSecret: raw.clientSecret,
         callbackUrl,
         frontendCompletionUrl,
-        issuer: new URL(`https://login.microsoftonline.com/${raw.tenantId}/v2.0`),
+        ...(raw.tenantId === undefined ? {} : { tenantId: raw.tenantId, issuer: new URL(`https://login.microsoftonline.com/${raw.tenantId}/v2.0`) }),
     };
 }

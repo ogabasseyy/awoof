@@ -6,10 +6,12 @@
  */
 
 import express, { type Express, type Request, type Response, type NextFunction } from 'express';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import cors from 'cors';
 import helmet from 'helmet';
 import rateLimit from 'express-rate-limit';
 import { skipCorsPreflight } from './middleware/cors-preflight.js';
+import { isMicrosoftRoute, microsoftCors } from './middleware/microsoft-cors.js';
 import { uploadedFile } from './middleware/uploaded-file.js';
 import { paystackWebhookLimiter } from './middleware/paystack-webhook-limit.js';
 import swaggerUi from 'swagger-ui-express';
@@ -20,15 +22,20 @@ import { errorHandler } from './common/middleware/errorHandler.js';
 import { logger } from './common/middleware/logger.js';
 import { appLogger } from './common/logger.js';
 import { swaggerSpec } from './config/swagger.js';
+import type { MicrosoftFlowService } from './services/verification/microsoft-flow.service.js';
+
+export type AppOptions = { microsoftFlowFactory?: () => Pick<MicrosoftFlowService, 'start' | 'callback' | 'finish' | 'callbackCookieNameForState'> };
 
 /**
  * Application class
  * Encapsulates Express app setup following Single Responsibility Principle
  */
-class App {
-  private app: Express;
+export class App {
+    private app: Express;
+    private routesInitialized = false;
+    private errorHandlingInitialized = false;
+    constructor(private readonly options: AppOptions = {}) {
 
-  constructor() {
     this.app = express();
     // Reverse-proxied VPS deploys: honor the first proxy hop so rate limits use client IPs.
     this.app.set('trust proxy', 1);
@@ -59,7 +66,7 @@ class App {
   /**
    * Initialize middleware
    */
-  private initializeMiddlewares(): void {
+    private initializeMiddlewares(): void {
     // Security headers (Helmet). API-only: use explicit CSP (CodeQL requires no contentSecurityPolicy: false).
     // Permissive CSP for JSON API; crossOriginEmbedder off for cross-origin frontend requests.
     this.app.use(
@@ -81,9 +88,12 @@ class App {
       legacyHeaders: false,
     }));
 
-    // CORS
-    this.app.use(
-      cors({
+    // Microsoft endpoints use their own exact-origin credentialed policy. It
+    // must run before (and be excluded from) the historical merchant policy.
+    this.app.use(microsoftCors({ frontendOrigin: config.microsoftVerification.frontendOrigin }));
+
+    // Existing merchant/static CORS remains unchanged outside Microsoft.
+    const merchantCors = cors({
         origin: (origin, callback) => {
           if (!origin) {
             callback(null, true);
@@ -125,8 +135,11 @@ class App {
             });
         },
         credentials: true,
-      })
-    );
+      });
+    this.app.use((req, res, next) => {
+      if (isMicrosoftRoute(req.path)) return next();
+      merchantCors(req, res, next);
+    });
 
     // Body parser
     this.app.use(express.json({ limit: '10mb' }));
@@ -158,7 +171,9 @@ class App {
   /**
    * Initialize routes
    */
-  private async initializeRoutes(): Promise<void> {
+  public async initializeRoutes(): Promise<void> {
+    if (this.routesInitialized) return;
+    this.routesInitialized = true;
     // Root route (minimal in production)
     this.app.get('/', (_req, res) => {
       res.json({
@@ -196,6 +211,15 @@ class App {
       appLogger.info('Auth routes registered');
     } catch (error) {
       appLogger.error('Failed to register auth routes:', error);
+      throw error;
+    }
+
+    try {
+      const microsoftVerificationRoutes = await import('./routes/microsoft-verification.routes.js');
+      this.app.use('/api/verification/microsoft', microsoftVerificationRoutes.default(this.options.microsoftFlowFactory));
+      appLogger.info('Microsoft verification routes registered');
+    } catch (error) {
+      appLogger.error('Failed to register Microsoft verification routes:', error);
       throw error;
     }
 
@@ -284,7 +308,22 @@ class App {
   /**
    * Initialize error handling
    */
-  private initializeErrorHandling(): void {
+  public initializeErrorHandling(): void {
+    if (this.errorHandlingInitialized) return;
+    this.errorHandlingInitialized = true;
+    // express.json can surface a SyntaxError containing the raw submitted
+    // body. Microsoft errors never enter the general error logger/handler.
+    this.app.use((err: unknown, req: Request, res: Response, next: NextFunction) => {
+      if (!isMicrosoftRoute(req.path)) return next(err);
+      res.setHeader('Cache-Control', 'no-store');
+      res.setHeader('Referrer-Policy', 'no-referrer');
+      if (res.headersSent) return next(err);
+      const typed = err as { status?: unknown; statusCode?: unknown; code?: unknown };
+      const candidate = typed.status ?? typed.statusCode;
+      const status = typeof candidate === 'number' && candidate >= 400 && candidate < 600 ? candidate : 500;
+      const safeCode = typed.code === 'reauthentication_required' ? typed.code : 'MICROSOFT_REQUEST_REJECTED';
+      res.status(status).json({ success: false, error: { code: safeCode, statusCode: status } });
+    });
     // 404 handler
     this.app.use((_req, res) => {
       res.status(404).json({
@@ -364,24 +403,20 @@ class App {
   }
 }
 
-// Create app instance
-const app = new App();
+/** Builds the real mounted application without migrations, listeners, or schedulers. */
+export async function createApp(options: AppOptions = {}): Promise<Express> {
+  const instance = new App(options);
+  await instance.initializeRoutes();
+  instance.initializeErrorHandling();
+  return instance.getApp();
+}
 
-// Start server
-app.start();
-
-// Graceful shutdown handlers
-process.on('SIGTERM', () => app.shutdown());
-process.on('SIGINT', () => app.shutdown());
-
-// Handle unhandled errors (always log)
-process.on('unhandledRejection', (reason, promise) => {
-  appLogger.error('Unhandled Rejection at:', promise, 'reason:', reason);
-});
-
-process.on('uncaughtException', (error) => {
-  appLogger.error('Uncaught Exception:', error);
-  process.exit(1);
-});
-
-export default app;
+const isDirectExecution = process.argv[1] !== undefined && fileURLToPath(import.meta.url) === fileURLToPath(pathToFileURL(process.argv[1]));
+if (isDirectExecution) {
+  const app = new App();
+  void app.start();
+  process.on('SIGTERM', () => app.shutdown());
+  process.on('SIGINT', () => app.shutdown());
+  process.on('unhandledRejection', (reason, promise) => appLogger.error('Unhandled Rejection at:', promise, 'reason:', reason));
+  process.on('uncaughtException', (error) => { appLogger.error('Uncaught Exception:', error); process.exit(1); });
+}

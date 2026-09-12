@@ -2,12 +2,15 @@ import assert from 'node:assert/strict';
 import { randomBytes, randomUUID } from 'node:crypto';
 import test, { after } from 'node:test';
 import { setTimeout as delay } from 'node:timers/promises';
+import http from 'node:http';
 import type { PoolClient } from 'pg';
 import { db } from '../../config/database.js';
 import { grantVerificationProcessing, withdrawConsent } from '../../services/verification/eligibility-consent.service.js';
 import { acceptMicrosoftConsent, withdrawMicrosoftConsent } from '../../services/verification/microsoft-consent.service.js';
 import { VERIFICATION_NOTICE_VERSION } from '../../services/verification/verification-notices.js';
 import { MicrosoftFlowService } from '../../services/verification/microsoft-flow.service.js';
+import { createApp } from '../../index.js';
+import { jwtService } from '../../services/auth/jwt.service.js';
 import { inTransaction, withTestClient } from './test-database.js';
 
 after(() => db.close());
@@ -63,6 +66,17 @@ async function fixture(): Promise<Fixture> {
         const processingGrantId = await grantVerificationProcessing(client, userId, universityId, { accepted: true, noticeVersion: VERIFICATION_NOTICE_VERSION });
         return { adminId, userId, universityId, processingGrantId };
     }));
+}
+
+async function callbackRequest(base: string, path: string, headers: http.OutgoingHttpHeaders): Promise<{ status: number; headers: http.IncomingHttpHeaders }> {
+    const url = new URL(path, base);
+    return new Promise((resolve, reject) => {
+        const request = http.request(url, { method: 'GET', headers }, (response) => {
+            response.resume();
+            response.on('end', () => resolve({ status: response.statusCode ?? 0, headers: response.headers }));
+        });
+        request.on('error', reject); request.end();
+    });
 }
 
 test('Microsoft authority rejects duplicate identities and disabled-policy consent starts', async () => {
@@ -361,6 +375,113 @@ async function pendingDurableAttempt(options: { isEnabled?: () => boolean; befor
     const callback = new URL('https://api.example.invalid/api/verification/microsoft/callback'); callback.searchParams.set('state', state); callback.searchParams.set('code', 'CANARY');
     return { data, sid, service, started, callback, exchanges: () => exchanges };
 }
+
+test('mounted Microsoft callback and finish use the durable service with fixed redirect and redacted failure headers', async () => {
+    const flow = await pendingDurableAttempt();
+    const widget = await withTestClient(async (client) => inTransaction(client, async () => {
+        const owner = (await client.query<{ id:string }>(`INSERT INTO users(email,role) VALUES($1,'vendor') RETURNING id`, [`widget-${randomUUID()}@example.invalid`])).rows[0]!.id;
+        const vendor = (await client.query<{ id:string }>(`INSERT INTO vendors(user_id,name,status) VALUES($1,'Mounted Widget','active') RETURNING id`, [owner])).rows[0]!.id;
+        const apiKey = randomUUID();
+        await client.query(`INSERT INTO widget_configs(vendor_id,allowed_domains,allowed_origins,api_key,status) VALUES($1,ARRAY['merchant.example'],ARRAY['https://merchant.example'],$2,'active')`, [vendor, apiKey]);
+        return { vendor, apiKey };
+    }));
+    const app = await createApp({ microsoftFlowFactory: () => flow.service });
+    const server = http.createServer(app);
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+    const address = server.address();
+    if (!address || typeof address === 'string') throw new Error('Expected a loopback test port');
+    const base = `http://127.0.0.1:${address.port}`;
+    const callbackState = flow.callback.searchParams.get('state')!;
+    const callbackHeaders = { host: 'api.example.invalid', 'x-forwarded-proto': 'https', cookie: `${flow.started.callbackCookie.name}=${flow.started.callbackCookie.value}` };
+    try {
+        const noCookie = await callbackRequest(base, `/api/verification/microsoft/callback?state=${callbackState}&code=CANARY_CODE`, { host: 'api.example.invalid', 'x-forwarded-proto': 'https' });
+        assert.equal(noCookie.status, 409);
+        assert.equal((await withTestClient((client) => client.query(`SELECT count(*)::int AS count FROM microsoft_identities WHERE user_id=$1`, [flow.data.userId]))).rows[0]!.count, 0);
+        const callback = await callbackRequest(base, `/api/verification/microsoft/callback?state=${callbackState}&code=CANARY_CODE`, callbackHeaders);
+        assert.equal(callback.status, 303);
+        const location = callback.headers.location! as string;
+        assert.equal(location, `https://app.example.invalid/student/verification/microsoft/complete?attempt=${flow.started.publicResult.attemptId}`);
+        assert.equal(location.includes('CANARY_CODE'), false);
+        assert.match(String(callback.headers['set-cookie'] ?? ''), new RegExp(`${flow.started.callbackCookie.name}=;`));
+        assert.equal(callback.headers['cache-control'], 'no-store');
+        assert.equal(callback.headers['referrer-policy'], 'no-referrer');
+
+        const token = jwtService.generateAccessToken({ userId: flow.data.userId, email: 'student@example.invalid', role: 'student', sid: flow.sid });
+        const finish = await fetch(`${base}/api/verification/microsoft/finish`, { method: 'POST', headers: { origin: 'http://localhost:3000', 'content-type': 'application/json', authorization: `Bearer ${token}` }, body: JSON.stringify({ attemptId: flow.started.publicResult.attemptId, finishSecret: flow.started.publicResult.finishSecret }) });
+        assert.equal(finish.status, 200);
+        const result = await finish.json() as { data: { accountLinked: boolean; enrollment: string } };
+        assert.deepEqual(result.data, { accountLinked: true, enrollment: 'not_checked' });
+
+        const replay = await callbackRequest(base, `/api/verification/microsoft/callback?state=${callbackState}&code=CANARY_CODE`, callbackHeaders);
+        assert.equal(replay.status, 409);
+        assert.match(String(replay.headers['set-cookie'] ?? ''), new RegExp(`${flow.started.callbackCookie.name}=;`));
+
+        const widgetOrigin = 'https://merchant.example';
+        const widgetOk = await fetch(`${base}/api/widget/domain-check?domain=merchant.example&apiKey=${widget.apiKey}`, { headers: { origin: widgetOrigin } });
+        assert.equal(widgetOk.status, 200); assert.equal(widgetOk.headers.get('access-control-allow-origin'), widgetOrigin);
+        const widgetUnknown = await fetch(`${base}/api/widget/domain-check?domain=unknown.example&apiKey=${widget.apiKey}`, { headers: { origin: 'https://unknown.example' } });
+        assert.equal(widgetUnknown.status, 403); assert.equal(widgetUnknown.headers.get('access-control-allow-origin'), null);
+        await withTestClient((client) => client.query(`UPDATE widget_configs SET status='suspended' WHERE vendor_id=$1`, [widget.vendor]));
+        const widgetDisabled = await fetch(`${base}/api/widget/domain-check?domain=merchant.example&apiKey=${widget.apiKey}`, { headers: { origin: widgetOrigin } });
+        assert.equal(widgetDisabled.status, 403); assert.equal(widgetDisabled.headers.get('access-control-allow-origin'), null);
+    } finally {
+        await new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
+    }
+});
+
+test('mounted Microsoft start returns only the finish secret and sets the state-resolved HttpOnly callback cookie', async () => {
+    const data = await fixture(); const sid = randomUUID(); let authorized = 0;
+    const consentId = await withTestClient((client) => inTransaction(client, async () => {
+        await client.query(`UPDATE users SET active_session_id=$2,refresh_token_hash='h',refresh_token_expires_at=clock_timestamp()+interval '1 hour' WHERE id=$1`, [data.userId, sid]);
+        const policy = (await client.query<{ version:number }>('SELECT version FROM institution_microsoft_policies WHERE university_id=$1', [data.universityId])).rows[0]!;
+        return acceptMicrosoftConsent(client, data.userId, { accepted:true, processingGrantId:data.processingGrantId, snapshot:{ universityId:data.universityId, providerPolicyVersion:policy.version, noticeVersion:'microsoft-v1', mode:'identity_only', scopes:['openid','profile'] } });
+    }));
+    const service = new MicrosoftFlowService({ pool: db.getPool(), verifierEncryptionKey: randomBytes(32).toString('base64url'), isEnabled: () => true,
+        callbackUrl: new URL('https://api.example.invalid/api/verification/microsoft/callback'), completionUrl: new URL('https://app.example.invalid/student/verification/microsoft/complete'),
+        oidc: { authorize: async () => { authorized += 1; return 'https://provider.example.invalid/authorize'; }, redeem: async () => { throw new Error('not used'); } },
+    });
+    const app = await createApp({ microsoftFlowFactory: () => service }); const server = http.createServer(app);
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve)); const address = server.address();
+    if (!address || typeof address === 'string') throw new Error('Expected a loopback test port');
+    try {
+        const token = jwtService.generateAccessToken({ userId:data.userId, email:'student@example.invalid', role:'student', sid });
+        const response = await fetch(`http://127.0.0.1:${address.port}/api/verification/microsoft/start`, { method:'POST', headers:{ origin:'http://localhost:3000', 'content-type':'application/json', authorization:`Bearer ${token}` }, body:JSON.stringify({ processingGrantId:data.processingGrantId, providerConsentId:consentId }) });
+        const text = await response.text();
+        assert.equal(response.status, 201); assert.equal(authorized, 1);
+        assert.match(response.headers.get('set-cookie') ?? '', /HttpOnly; Secure; SameSite=Lax/i);
+        assert.match(response.headers.get('set-cookie') ?? '', /Path=\/api\/verification\/microsoft\/callback/i);
+        assert.equal(text.includes('awoof_ms_'), false);
+        assert.equal(text.includes('browserSecret'), false);
+        assert.equal(text.includes('finishSecret'), true);
+    } finally { await new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve())); }
+});
+
+test('mounted Microsoft rejects expired callbacks and stale live sessions without writes', async () => {
+    const expired = await pendingDurableAttempt();
+    const app = await createApp({ microsoftFlowFactory: () => expired.service }); const server = http.createServer(app);
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve)); const address = server.address();
+    if (!address || typeof address === 'string') throw new Error('Expected a loopback test port'); const base = `http://127.0.0.1:${address.port}`;
+    try {
+        await withTestClient((client) => client.query(`UPDATE microsoft_verification_attempts SET expires_at=clock_timestamp()-interval '1 second' WHERE id=$1`, [expired.started.publicResult.attemptId]));
+        const state = expired.callback.searchParams.get('state')!;
+        const expiredResponse = await callbackRequest(base, `/api/verification/microsoft/callback?state=${state}&code=CANARY`, { host:'api.example.invalid', 'x-forwarded-proto':'https', cookie:`${expired.started.callbackCookie.name}=${expired.started.callbackCookie.value}` });
+        assert.equal(expiredResponse.status, 409);
+        assert.equal((await withTestClient((client) => client.query(`SELECT count(*)::int AS count FROM microsoft_identities WHERE user_id=$1`, [expired.data.userId]))).rows[0]!.count, 0);
+    } finally { await new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve())); }
+
+    const stale = await readyDurableAttempt();
+    const staleApp = await createApp({ microsoftFlowFactory: () => stale.service }); const staleServer = http.createServer(staleApp);
+    await new Promise<void>((resolve) => staleServer.listen(0, '127.0.0.1', resolve)); const staleAddress = staleServer.address();
+    if (!staleAddress || typeof staleAddress === 'string') throw new Error('Expected a loopback test port');
+    try {
+        await withTestClient((client) => client.query(`UPDATE users SET active_session_id=$2 WHERE id=$1`, [stale.data.userId, randomUUID()]));
+        const token = jwtService.generateAccessToken({ userId:stale.data.userId, email:'student@example.invalid', role:'student', sid:stale.sid });
+        const response = await fetch(`http://127.0.0.1:${staleAddress.port}/api/verification/microsoft/finish`, { method:'POST', headers:{ origin:'http://localhost:3000', 'content-type':'application/json', authorization:`Bearer ${token}` }, body:JSON.stringify({ attemptId:stale.started.publicResult.attemptId, finishSecret:stale.started.publicResult.finishSecret }) });
+        const body = await response.json() as { error: { code: string } };
+        assert.equal(response.status, 401); assert.equal(body.error.code, 'reauthentication_required');
+        assert.equal((await withTestClient((client) => client.query(`SELECT count(*)::int AS count FROM microsoft_identities WHERE user_id=$1`, [stale.data.userId]))).rows[0]!.count, 0);
+    } finally { await new Promise<void>((resolve, reject) => staleServer.close((error) => error ? reject(error) : resolve())); }
+});
 
 test('callback expiry is rechecked after it blocks on the independent user lock', async () => {
     const flow = await pendingDurableAttempt();

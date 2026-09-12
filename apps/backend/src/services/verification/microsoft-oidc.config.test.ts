@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { readMicrosoftOidcConfiguration } from './microsoft-oidc.config.js';
+import { forApprovedMicrosoftTenant, readMicrosoftOidcConfiguration } from './microsoft-oidc.config.js';
 
 const base = {
     enabled: true,
@@ -24,4 +24,14 @@ test('enabled Microsoft OIDC requires a fixed callback, UUID tenant, and same-si
     assert.throws(() => readMicrosoftOidcConfiguration({ ...base, callbackUrl: 'http://localhost:5000/api/verification/microsoft/callback' }));
     assert.throws(() => readMicrosoftOidcConfiguration({ ...base, frontendCompletionUrl: 'https://app.awoof.example/student/verification/microsoft' }));
     assert.throws(() => readMicrosoftOidcConfiguration({ ...base, callbackUrl: 'https://alice.github.io/api/verification/microsoft/callback', frontendCompletionUrl: 'https://bob.github.io/student/verification/microsoft/complete' }));
+});
+
+test('a server-locked policy tenant builds the transport adapter without a global school tenant', () => {
+    const { tenantId: _ignored, ...shared } = base;
+    const configured = readMicrosoftOidcConfiguration(shared);
+    assert.equal(configured.enabled, true);
+    const adapter = forApprovedMicrosoftTenant(configured, '33333333-3333-4333-8333-333333333333');
+    assert.equal(adapter.tenantId, '33333333-3333-4333-8333-333333333333');
+    assert.equal(adapter.callbackUrl.href, base.callbackUrl);
+    assert.throws(() => forApprovedMicrosoftTenant(configured, 'browser-input'));
 });
