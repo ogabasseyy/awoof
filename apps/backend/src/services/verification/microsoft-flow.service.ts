@@ -3,16 +3,14 @@ import type { Pool, PoolClient } from 'pg';
 import { ConflictError, ForbiddenError, RateLimitError } from '../../common/errors/AppError.js';
 import { decryptMicrosoftAttemptVerifier, encryptMicrosoftAttemptVerifier, hashMicrosoftAttemptSecret } from './microsoft-attempt-crypto.js';
 import type { MicrosoftOidc, MicrosoftIdentity } from './microsoft-oidc.service.js';
-import { assertMicrosoftSession, lockMicrosoftAttempt } from './microsoft-session.service.js';
-import { lockStudentContext } from './eligibility-context.service.js';
-import { VERIFICATION_NOTICE_VERSION } from './verification-notices.js';
+import { lockMicrosoftAttempt } from './microsoft-session.service.js';
+import { assertMicrosoftAuthority, type MicrosoftAttemptAuthority } from './microsoft-authority.service.js';
 
 const ATTEMPT_LIFETIME_SECONDS = 10 * 60;
 const START_LIMIT = 5;
 const OUTSTANDING_COOKIE_LIMIT = 10;
 
-type Policy = { tenant_id: string; version: number; enabled: boolean; mode: string; approved_until: Date; scopes: string[]; notice_version: string };
-type Attempt = {
+type Attempt = MicrosoftAttemptAuthority & {
     id: string; user_id: string; university_id: string; institution_policy_version: number; provider_policy_version: number;
     identity_version: number; processing_grant_id: string; provider_consent_id: string; server_session_id: string;
     encrypted_verifier: string | null; nonce: string | null; expires_at: Date; status: 'pending' | 'processing' | 'ready' | 'completed' | 'failed'; result: unknown;
@@ -44,43 +42,6 @@ function fixedCallback(actual: URL, configured: URL): boolean {
         && actual.searchParams.getAll('state').length === 1;
 }
 
-/**
- * Database authority section. Caller has the live session lock first, then
- * user/student/institution/state, parent consent, provider policy/consent, and
- * finally the attempt. This function intentionally does no provider I/O.
- */
-async function assertAuthority(tx: PoolClient, input: { userId: string; sid: string; use: 'issuance' | 'owner'; processingGrantId: string; providerConsentId: string; expected?: Attempt }): Promise<{ policy: Policy; identityVersion: number; institutionPolicyVersion: number; universityId: string }> {
-    const session = await assertMicrosoftSession(tx, input.userId, input.sid, input.use);
-    const context = await lockStudentContext(tx, session.userId);
-    if (!context.active) throw invalidAttempt();
-    await tx.query('SELECT student_id FROM student_eligibility_state WHERE student_id = $1 AND university_id = $2 FOR UPDATE', [context.studentId, context.universityId]);
-    const parent = await tx.query(
-        `SELECT id FROM verification_consents WHERE id=$1 AND user_id=$2 AND university_id=$3
-         AND kind='processing' AND accepted AND withdrawn_at IS NULL AND notice_version=$4 FOR UPDATE`,
-        [input.processingGrantId, input.userId, context.universityId, VERIFICATION_NOTICE_VERSION],
-    );
-    if (parent.rowCount !== 1) throw invalidAttempt();
-    const policies = await tx.query<Policy>(
-        `SELECT tenant_id, version, enabled, mode, approved_until, scopes, notice_version
-         FROM institution_microsoft_policies WHERE university_id=$1 FOR UPDATE`, [context.universityId],
-    );
-    const policy = policies.rows[0];
-    const clock = await tx.query<{ now: Date }>('SELECT clock_timestamp() AS now');
-    if (!policy || !policy.enabled || policy.mode !== 'identity_only' || policy.approved_until <= clock.rows[0]!.now || policy.scopes.length !== 2 || policy.scopes[0] !== 'openid' || policy.scopes[1] !== 'profile') throw invalidAttempt();
-    const provider = await tx.query(
-        `SELECT id FROM microsoft_verification_consents WHERE id=$1 AND user_id=$2 AND university_id=$3
-         AND processing_grant_id=$4 AND provider_policy_version=$5 AND notice_version=$6
-         AND mode='identity_only' AND scopes=$7::text[] AND withdrawn_at IS NULL FOR UPDATE`,
-        [input.providerConsentId, input.userId, context.universityId, input.processingGrantId, policy.version, policy.notice_version, policy.scopes],
-    );
-    if (provider.rowCount !== 1) throw invalidAttempt();
-    if (input.expected && (input.expected.user_id !== input.userId || input.expected.university_id !== context.universityId
-        || input.expected.server_session_id !== input.sid || input.expected.identity_version !== context.identityVersion || input.expected.institution_policy_version !== context.policyVersion
-        || input.expected.provider_policy_version !== policy.version || input.expected.processing_grant_id !== input.processingGrantId
-        || input.expected.provider_consent_id !== input.providerConsentId)) throw invalidAttempt();
-    return { policy, identityVersion: context.identityVersion, institutionPolicyVersion: context.policyVersion, universityId: context.universityId };
-}
-
 export class MicrosoftFlowService {
     constructor(private readonly deps: MicrosoftFlowDependencies) {}
 
@@ -99,7 +60,7 @@ export class MicrosoftFlowService {
     async start(input: { userId: string; serverSessionId: string; processingGrantId: string; providerConsentId: string }): Promise<MicrosoftStartResult> {
         this.assertEnabled();
         const prepared = await this.transaction(async (tx) => {
-            const authority = await assertAuthority(tx, { userId: input.userId, sid: input.serverSessionId, use: 'issuance', processingGrantId: input.processingGrantId, providerConsentId: input.providerConsentId });
+            const authority = await assertMicrosoftAuthority(tx, { userId: input.userId, sid: input.serverSessionId, use: 'issuance', processingGrantId: input.processingGrantId, providerConsentId: input.providerConsentId });
             const recent = await tx.query<{ count: string }>(`SELECT count(*) FROM microsoft_verification_attempts WHERE user_id=$1 AND created_at > clock_timestamp() - interval '10 minutes'`, [input.userId]);
             if (Number(recent.rows[0]?.count ?? 0) >= START_LIMIT) throw new RateLimitError('Too many Microsoft verification starts');
             const outstanding = await tx.query<{ count: string }>(`SELECT count(*) FROM microsoft_verification_attempts WHERE user_id=$1 AND status IN ('pending','processing') AND expires_at > clock_timestamp()`, [input.userId]);
@@ -121,7 +82,7 @@ export class MicrosoftFlowService {
             const row = await tx.query<Attempt>('SELECT * FROM microsoft_verification_attempts WHERE id=$1', [prepared.attemptId]);
             const attempt = row.rows[0];
             if (!attempt) throw invalidAttempt();
-            await assertAuthority(tx, { userId: attempt.user_id, sid: attempt.server_session_id, use: 'issuance', processingGrantId: attempt.processing_grant_id, providerConsentId: attempt.provider_consent_id, expected: attempt });
+            await assertMicrosoftAuthority(tx, { userId: attempt.user_id, sid: attempt.server_session_id, use: 'issuance', processingGrantId: attempt.processing_grant_id, providerConsentId: attempt.provider_consent_id, expected: attempt });
             await lockMicrosoftAttempt(tx, attempt.id);
             const locked = await tx.query<Attempt>('SELECT * FROM microsoft_verification_attempts WHERE id=$1', [attempt.id]);
             const clock = await tx.query<{ now: Date }>('SELECT clock_timestamp() AS now');
@@ -150,7 +111,7 @@ export class MicrosoftFlowService {
             // server-generated cookie name may supply browser continuity.
             const browserCookie = input.browserCookies?.find((cookie) => cookie.name === cookieName(attempt?.id ?? ''))?.value ?? input.browserCookie;
             if (!attempt || attempt.status !== 'pending' || attempt.expires_at <= new Date() || !browserCookie || hashMicrosoftAttemptSecret(browserCookie) !== (await tx.query<{ browser_secret_hash: string }>('SELECT browser_secret_hash FROM microsoft_verification_attempts WHERE id=$1', [attempt.id])).rows[0]?.browser_secret_hash) throw invalidAttempt();
-            const authority = await assertAuthority(tx, { userId: attempt.user_id, sid: attempt.server_session_id, use: 'issuance', processingGrantId: attempt.processing_grant_id, providerConsentId: attempt.provider_consent_id, expected: attempt });
+            const authority = await assertMicrosoftAuthority(tx, { userId: attempt.user_id, sid: attempt.server_session_id, use: 'issuance', processingGrantId: attempt.processing_grant_id, providerConsentId: attempt.provider_consent_id, expected: attempt });
             await lockMicrosoftAttempt(tx, attempt.id);
             const locked = await tx.query<Attempt>('SELECT * FROM microsoft_verification_attempts WHERE id=$1', [attempt.id]);
             const clock = await tx.query<{ now: Date }>('SELECT clock_timestamp() AS now');
@@ -171,13 +132,13 @@ export class MicrosoftFlowService {
                 const preliminary = await tx.query<Attempt>('SELECT * FROM microsoft_verification_attempts WHERE id=$1', [claimed.attempt.id]);
                 const preAttempt = preliminary.rows[0];
                 if (!preAttempt) throw invalidAttempt();
-                await assertAuthority(tx, { userId: preAttempt.user_id, sid: preAttempt.server_session_id, use: 'issuance', processingGrantId: preAttempt.processing_grant_id, providerConsentId: preAttempt.provider_consent_id, expected: preAttempt });
+                await assertMicrosoftAuthority(tx, { userId: preAttempt.user_id, sid: preAttempt.server_session_id, use: 'issuance', processingGrantId: preAttempt.processing_grant_id, providerConsentId: preAttempt.provider_consent_id, expected: preAttempt });
                 await lockMicrosoftAttempt(tx, claimed.attempt.id);
                 const row = await tx.query<Attempt>('SELECT * FROM microsoft_verification_attempts WHERE id=$1', [claimed.attempt.id]);
                 const attempt = row.rows[0];
                 const clock = await tx.query<{ now: Date }>('SELECT clock_timestamp() AS now');
                 if (!attempt || attempt.status !== 'processing' || attempt.expires_at <= clock.rows[0]!.now) throw invalidAttempt();
-                await assertAuthority(tx, { userId: attempt.user_id, sid: attempt.server_session_id, use: 'issuance', processingGrantId: attempt.processing_grant_id, providerConsentId: attempt.provider_consent_id, expected: attempt });
+                await assertMicrosoftAuthority(tx, { userId: attempt.user_id, sid: attempt.server_session_id, use: 'issuance', processingGrantId: attempt.processing_grant_id, providerConsentId: attempt.provider_consent_id, expected: attempt });
                 this.assertEnabled();
                 const updated = await tx.query(`UPDATE microsoft_verification_attempts SET status='ready', encrypted_verifier=NULL, nonce=NULL, result=$2::jsonb WHERE id=$1 AND status='processing'`, [attempt.id, JSON.stringify(identity)]);
                 if (updated.rowCount !== 1) throw invalidAttempt();
@@ -204,12 +165,12 @@ export class MicrosoftFlowService {
             const attemptRow = await tx.query<Attempt>('SELECT * FROM microsoft_verification_attempts WHERE id=$1', [input.attemptId]);
             const preliminary = attemptRow.rows[0];
             if (!preliminary || preliminary.user_id !== input.userId || hashMicrosoftAttemptSecret(input.finishSecret) !== (await tx.query<{ finish_secret_hash: string }>('SELECT finish_secret_hash FROM microsoft_verification_attempts WHERE id=$1', [input.attemptId])).rows[0]?.finish_secret_hash) throw new ForbiddenError('Microsoft verification finish secret is invalid');
-            await assertAuthority(tx, { userId: input.userId, sid: input.serverSessionId, use: 'owner', processingGrantId: preliminary.processing_grant_id, providerConsentId: preliminary.provider_consent_id, expected: preliminary });
+            await assertMicrosoftAuthority(tx, { userId: input.userId, sid: input.serverSessionId, use: 'owner', processingGrantId: preliminary.processing_grant_id, providerConsentId: preliminary.provider_consent_id, expected: preliminary });
             await lockMicrosoftAttempt(tx, input.attemptId);
             const row = await tx.query<Attempt>('SELECT * FROM microsoft_verification_attempts WHERE id=$1', [input.attemptId]); const attempt = row.rows[0];
             const clock = await tx.query<{ now: Date }>('SELECT clock_timestamp() AS now');
             if (!attempt || attempt.expires_at <= clock.rows[0]!.now) throw invalidAttempt();
-            await assertAuthority(tx, { userId: input.userId, sid: input.serverSessionId, use: 'owner', processingGrantId: attempt.processing_grant_id, providerConsentId: attempt.provider_consent_id, expected: attempt });
+            await assertMicrosoftAuthority(tx, { userId: input.userId, sid: input.serverSessionId, use: 'owner', processingGrantId: attempt.processing_grant_id, providerConsentId: attempt.provider_consent_id, expected: attempt });
             if (attempt.status === 'completed') {
                 const receipt = attempt.result as { accountLinked?: boolean; enrollment?: string; identityId?: string } | null;
                 if (!receipt?.accountLinked || receipt.enrollment !== 'not_checked' || typeof receipt.identityId !== 'string') throw invalidAttempt();

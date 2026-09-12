@@ -6,6 +6,8 @@ import http from 'node:http';
 import type { PoolClient } from 'pg';
 import { db } from '../../config/database.js';
 import { grantVerificationProcessing, withdrawConsent } from '../../services/verification/eligibility-consent.service.js';
+import { applyMicrosoftEnrollment, recordMailboxProof } from '../../services/verification/eligibility-evidence.service.js';
+import { consumeChallenge, requestChallenge } from '../../services/verification/challenge.service.js';
 import { acceptMicrosoftConsent, withdrawMicrosoftConsent } from '../../services/verification/microsoft-consent.service.js';
 import { VERIFICATION_NOTICE_VERSION } from '../../services/verification/verification-notices.js';
 import { MicrosoftFlowService } from '../../services/verification/microsoft-flow.service.js';
@@ -43,6 +45,18 @@ async function assertCallbacksBlockedBy(observer: PoolClient, blockerPid: number
     throw new Error(`Expected ${expected} Microsoft callback authority transactions to block on the held user lock`);
 }
 
+async function assertWriterBlockedBy(observer: PoolClient, blockerPid: number, writerPid: number): Promise<void> {
+    for (let attempt = 0; attempt < 40; attempt += 1) {
+        const result = await observer.query<{ count: string }>(
+            `SELECT count(*)::text AS count FROM pg_stat_activity
+             WHERE pid = $2 AND $1 = ANY(pg_blocking_pids(pid))`, [blockerPid, writerPid],
+        );
+        if (Number(result.rows[0]?.count ?? 0) >= 1) return;
+        await delay(10);
+    }
+    throw new Error('Expected canonical Microsoft writer transaction to block on the held authority lock');
+}
+
 async function rejectsSql(operation: () => Promise<unknown>, client: Parameters<typeof inTransaction>[0]): Promise<void> {
     const savepoint = `microsoft_expected_failure_${randomUUID().replaceAll('-', '')}`;
     await client.query(`SAVEPOINT ${savepoint}`);
@@ -66,6 +80,36 @@ async function fixture(): Promise<Fixture> {
         const processingGrantId = await grantVerificationProcessing(client, userId, universityId, { accepted: true, noticeVersion: VERIFICATION_NOTICE_VERSION });
         return { adminId, userId, universityId, processingGrantId };
     }));
+}
+
+async function graphReadyWriterAttempt(client: PoolClient, data: Fixture, input: { mailbox?: boolean; observation?: unknown; observedAt?: string } = {}): Promise<string> {
+    const sid = randomUUID();
+    await client.query(`UPDATE users SET active_session_id=$2, refresh_token_hash='writer-test', refresh_token_expires_at=clock_timestamp()+interval '1 hour' WHERE id=$1`, [data.userId, sid]);
+    await client.query(`INSERT INTO student_eligibility_state (student_id, university_id)
+        SELECT id, university_id FROM students WHERE user_id=$1 ON CONFLICT DO NOTHING`, [data.userId]);
+    await client.query(`UPDATE institution_microsoft_policies SET mode='graph_enrollment', scopes=ARRAY['https://graph.microsoft.com/EduRoster.ReadBasic','openid','profile'], notice_version='microsoft-v2', term_ends_at=clock_timestamp()+interval '4 days', approved_until=clock_timestamp()+interval '3 days', max_evidence_hours=2 WHERE university_id=$1`, [data.universityId]);
+    const policy = (await client.query<{ version: number }>('SELECT version FROM institution_microsoft_policies WHERE university_id=$1', [data.universityId])).rows[0]!;
+    const consent = await acceptMicrosoftConsent(client, data.userId, { accepted: true, processingGrantId: data.processingGrantId,
+        snapshot: { universityId: data.universityId, providerPolicyVersion: policy.version, noticeVersion: 'microsoft-v2', mode: 'graph_enrollment', scopes: ['https://graph.microsoft.com/EduRoster.ReadBasic', 'openid', 'profile'] } });
+    const tenant = (await client.query<{ tenant_id: string }>('SELECT tenant_id FROM institution_microsoft_policies WHERE university_id=$1', [data.universityId])).rows[0]!.tenant_id;
+    const objectId = randomUUID();
+    await client.query(`INSERT INTO microsoft_identities(user_id,university_id,tenant_id,object_id) VALUES($1,$2,$3,$4)`, [data.userId, data.universityId, tenant, objectId]);
+    if (input.mailbox !== false) {
+        const email = (await client.query<{ email: string }>('SELECT email FROM users WHERE id=$1', [data.userId])).rows[0]!.email;
+        const issued = await requestChallenge(client, { purpose: 'account_email', subjectKey: data.userId, bindings: { userId: data.userId, email } });
+        assert.equal(issued.status, 'issued');
+        const consumed = await consumeChallenge(client, { purpose: 'account_email', subjectKey: data.userId, challengeId: issued.challengeId, code: issued.code });
+        assert.equal(consumed.status, 'verified');
+        await recordMailboxProof(client, data.userId, issued.challengeId);
+    }
+    const attemptId = randomUUID(); const observedAt = input.observedAt ?? new Date().toISOString();
+    const observation = input.observation ?? { identity: { tenantId: tenant, objectId }, educationObservation: { outcome: 'student', objectId, observedAt } };
+    await client.query(`INSERT INTO microsoft_verification_attempts
+      (id,user_id,university_id,institution_policy_version,provider_policy_version,identity_version,processing_grant_id,provider_consent_id,server_session_id,state_hash,browser_secret_hash,finish_secret_hash,expires_at,status,result)
+      SELECT $1,$2,$3,u.verification_policy_version,$4,s.identity_version,$5,$6,$7,$8,'browser','finish',clock_timestamp()+interval '10 minutes','ready',$9::jsonb
+      FROM universities u JOIN students s ON s.university_id=u.id WHERE u.id=$3`,
+    [attemptId, data.userId, data.universityId, policy.version, data.processingGrantId, consent, sid, `writer-${randomUUID()}`, JSON.stringify(observation)]);
+    return attemptId;
 }
 
 async function callbackRequest(base: string, path: string, headers: http.OutgoingHttpHeaders): Promise<{ status: number; headers: http.IncomingHttpHeaders }> {
@@ -101,6 +145,129 @@ test('Microsoft authority rejects duplicate identities and disabled-policy conse
         await client.query(`INSERT INTO microsoft_identities (user_id, university_id, tenant_id, object_id) VALUES ($1, $2, $3, $4)`, [data.userId, data.universityId, tenantId, objectId]);
         await assert.rejects(() => client.query(`INSERT INTO microsoft_identities (user_id, university_id, tenant_id, object_id) VALUES ($1, $2, $3, $4)`, [data.userId, data.universityId, tenantId, objectId]));
     }));
+});
+
+test('canonical Graph writer uses exact configured expiry and is idempotent', async () => {
+    const data = await fixture();
+    await withTestClient(client => inTransaction(client, async () => {
+        const attempt = await graphReadyWriterAttempt(client, data);
+        const first = await applyMicrosoftEnrollment(client, attempt, { isEnabled: () => true });
+        const second = await applyMicrosoftEnrollment(client, attempt, { isEnabled: () => true });
+        assert.equal(first.eligible, true); assert.deepEqual(second, first);
+        const row = (await client.query<{ count: string; hours: string }>(
+            `SELECT count(*)::text AS count, extract(epoch FROM (e.expires_at-p.observed_at))/3600 AS hours
+             FROM eligibility_evidence e JOIN microsoft_provider_proofs p ON p.id=e.provider_proof_id
+             WHERE p.attempt_id=$1 GROUP BY e.expires_at,p.observed_at`, [attempt],
+        )).rows[0]!;
+        assert.equal(row.count, '1'); assert.equal(Number(row.hours), 2);
+    }));
+});
+
+test('canonical Graph writer creates no positive evidence for unknown observation, missing proof, denial, or stale policy', async () => {
+    const unknown = await fixture();
+    await withTestClient(client => inTransaction(client, async () => {
+        const attempt = await graphReadyWriterAttempt(client, unknown, { observation: { identity: { tenantId: 'x', objectId: 'y' }, educationObservation: { outcome: 'unknown', reason: 'unavailable' } } });
+        assert.deepEqual(await applyMicrosoftEnrollment(client, attempt, { isEnabled: () => true }), { eligible: false, reason: 'unverified' });
+        assert.equal((await client.query(`SELECT 1 FROM eligibility_evidence WHERE student_id=(SELECT id FROM students WHERE user_id=$1) AND provider_proof_id IS NOT NULL`, [unknown.userId])).rowCount, 0);
+    }));
+    const missing = await fixture();
+    await withTestClient(client => inTransaction(client, async () => {
+        const attempt = await graphReadyWriterAttempt(client, missing, { mailbox: false });
+        assert.deepEqual(await applyMicrosoftEnrollment(client, attempt, { isEnabled: () => true }), { eligible: false, reason: 'unverified' });
+    }));
+    const denied = await fixture();
+    await withTestClient(client => inTransaction(client, async () => {
+        const attempt = await graphReadyWriterAttempt(client, denied);
+        await client.query(`UPDATE student_eligibility_state SET authoritative_denial=true WHERE student_id=(SELECT id FROM students WHERE user_id=$1)`, [denied.userId]);
+        assert.deepEqual(await applyMicrosoftEnrollment(client, attempt, { isEnabled: () => true }), { eligible: false, reason: 'enrollment_denied' });
+        assert.equal((await client.query(`SELECT 1 FROM eligibility_evidence WHERE student_id=(SELECT id FROM students WHERE user_id=$1) AND provider_proof_id IS NOT NULL`, [denied.userId])).rowCount, 0);
+    }));
+    const stale = await fixture();
+    await withTestClient(client => inTransaction(client, async () => {
+        const attempt = await graphReadyWriterAttempt(client, stale);
+        await client.query(`UPDATE institution_microsoft_policies SET max_evidence_hours=3 WHERE university_id=$1`, [stale.universityId]);
+        await assert.rejects(() => applyMicrosoftEnrollment(client, attempt, { isEnabled: () => true }));
+    }));
+});
+
+test('canonical Graph writer rejects withdrawn grant, session/identity mismatch and disabled global flag without writes', async () => {
+    const withdrawn = await fixture();
+    await withTestClient(client => inTransaction(client, async () => {
+        const attempt = await graphReadyWriterAttempt(client, withdrawn);
+        await withdrawConsent(client, withdrawn.userId, withdrawn.processingGrantId);
+        await assert.rejects(() => applyMicrosoftEnrollment(client, attempt, { isEnabled: () => true }));
+    }));
+    const session = await fixture();
+    await withTestClient(client => inTransaction(client, async () => {
+        const attempt = await graphReadyWriterAttempt(client, session);
+        await client.query(`UPDATE users SET active_session_id=$2 WHERE id=$1`, [session.userId, randomUUID()]);
+        await assert.rejects(() => applyMicrosoftEnrollment(client, attempt, { isEnabled: () => true }));
+    }));
+    const identity = await fixture();
+    await withTestClient(client => inTransaction(client, async () => {
+        const attempt = await graphReadyWriterAttempt(client, identity);
+        await client.query(`UPDATE microsoft_identities SET revoked_at=clock_timestamp() WHERE user_id=$1`, [identity.userId]);
+        assert.deepEqual(await applyMicrosoftEnrollment(client, attempt, { isEnabled: () => true }), { eligible: false, reason: 'unverified' });
+    }));
+    const flag = await fixture();
+    await withTestClient(client => inTransaction(client, async () => {
+        const attempt = await graphReadyWriterAttempt(client, flag);
+        assert.deepEqual(await applyMicrosoftEnrollment(client, attempt, { isEnabled: () => false }), { eligible: false, reason: 'unverified' });
+        assert.equal((await client.query(`SELECT 1 FROM eligibility_evidence WHERE student_id=(SELECT id FROM students WHERE user_id=$1)`, [flag.userId])).rowCount, 0);
+    }));
+});
+
+test('Microsoft provenance schema rejects partial metadata and preserves evidence revocation after proof withdrawal', async () => {
+    const data = await fixture();
+    await withTestClient(client => inTransaction(client, async () => {
+        const attempt = await graphReadyWriterAttempt(client, data);
+        const row = (await client.query<{ provider_consent_id: string; user_id: string; university_id: string; provider_policy_version: number }>(
+            `SELECT provider_consent_id,user_id,university_id,provider_policy_version FROM microsoft_verification_attempts WHERE id=$1`, [attempt],
+        )).rows[0]!;
+        const identity = (await client.query<{ id: string }>('SELECT id FROM microsoft_identities WHERE user_id=$1', [data.userId])).rows[0]!.id;
+        await rejectsSql(() => client.query(
+            `INSERT INTO microsoft_provider_proofs(user_id,university_id,provider_consent_id,identity_id,provider_policy_version,observed_at)
+             VALUES($1,$2,$3,$4,$5,clock_timestamp())`, [row.user_id, row.university_id, row.provider_consent_id, identity, row.provider_policy_version],
+        ), client);
+        const otherConsent = await acceptMicrosoftConsent(client, data.userId, { accepted: true, processingGrantId: data.processingGrantId,
+            snapshot: { universityId: data.universityId, providerPolicyVersion: row.provider_policy_version, noticeVersion: 'microsoft-v2', mode: 'graph_enrollment', scopes: ['https://graph.microsoft.com/EduRoster.ReadBasic', 'openid', 'profile'] } });
+        await rejectsSql(() => client.query(
+            `INSERT INTO microsoft_provider_proofs(user_id,university_id,provider_consent_id,identity_id,provider_policy_version,attempt_id,observed_at,outcome,source)
+             VALUES($1,$2,$3,$4,$5,$6,clock_timestamp(),'student','microsoft-education:v1')`,
+            [row.user_id, row.university_id, otherConsent, identity, row.provider_policy_version, attempt],
+        ), client);
+        const positive = await applyMicrosoftEnrollment(client, attempt, { isEnabled: () => true });
+        assert.equal(positive.eligible, true);
+        await withdrawConsent(client, data.userId, data.processingGrantId);
+        assert.equal((await client.query(`SELECT 1 FROM eligibility_evidence WHERE id=$1 AND revoked_at IS NOT NULL`, [positive.evidenceId])).rowCount, 1);
+    }));
+});
+
+test('canonical Graph writer blocks on canonical mutation authority then rejects policy drift', async () => {
+    const data = await fixture();
+    const attempt = await withTestClient(client => inTransaction(client, () => graphReadyWriterAttempt(client, data)));
+    const holder = await db.getPool().connect();
+    let writer: PoolClient | undefined;
+    try {
+        await holder.query('BEGIN');
+        await holder.query('SELECT id FROM users WHERE id=$1 FOR UPDATE', [data.userId]);
+        writer = await db.getPool().connect();
+        await writer.query('BEGIN');
+        const writerPid = (await writer.query<{ pid: number }>('SELECT pg_backend_pid() AS pid')).rows[0]!.pid;
+        const applying = applyMicrosoftEnrollment(writer, attempt, { isEnabled: () => true });
+        const blockerPid = (await holder.query<{ pid: number }>('SELECT pg_backend_pid() AS pid')).rows[0]!.pid;
+        await assertWriterBlockedBy(holder, blockerPid, writerPid);
+        await withTestClient(client => inTransaction(client, () => client.query(
+            `UPDATE institution_microsoft_policies SET max_evidence_hours=3 WHERE university_id=$1`, [data.universityId],
+        )));
+        await holder.query('ROLLBACK');
+        await assert.rejects(() => applying);
+    } finally {
+        await writer?.query('ROLLBACK').catch(() => undefined);
+        writer?.release();
+        await holder.query('ROLLBACK').catch(() => undefined);
+        holder.release();
+    }
 });
 
 test('policy changes and provider withdrawal cancel pending attempts and scrub sensitive payloads', async () => {
