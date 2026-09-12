@@ -1,10 +1,11 @@
 import assert from 'node:assert/strict';
-import { randomUUID } from 'node:crypto';
+import { randomBytes, randomUUID } from 'node:crypto';
 import test, { after } from 'node:test';
 import { db } from '../../config/database.js';
 import { grantVerificationProcessing, withdrawConsent } from '../../services/verification/eligibility-consent.service.js';
 import { acceptMicrosoftConsent, withdrawMicrosoftConsent } from '../../services/verification/microsoft-consent.service.js';
 import { VERIFICATION_NOTICE_VERSION } from '../../services/verification/verification-notices.js';
+import { MicrosoftFlowService } from '../../services/verification/microsoft-flow.service.js';
 import { inTransaction, withTestClient } from './test-database.js';
 
 after(() => db.close());
@@ -218,4 +219,121 @@ test('displayed consent cannot be accepted after policy copy or mode/scope chang
         await assert.rejects(() => acceptMicrosoftConsent(client, data.userId, { accepted: true, processingGrantId: data.processingGrantId, snapshot }), { statusCode: 409, code: 'consent_notice_changed' });
         assert.equal((await client.query(`SELECT id FROM microsoft_verification_consents WHERE user_id = $1`, [data.userId])).rowCount, 0);
     }));
+});
+
+test('durable identity-only flow hashes secrets, links only at finish, and permits bounded same-session retry', async () => {
+    const data = await fixture();
+    const sid = randomUUID();
+    const key = randomUUID().replaceAll('-', '') + randomUUID().replaceAll('-', '').slice(0, 12);
+    const consentId = await withTestClient(async (client) => inTransaction(client, async () => {
+        await client.query(`UPDATE users SET active_session_id=$2, refresh_token_hash='test-hash', refresh_token_expires_at=clock_timestamp()+interval '1 hour' WHERE id=$1`, [data.userId, sid]);
+        const policy = (await client.query<{ version: number }>('SELECT version FROM institution_microsoft_policies WHERE university_id=$1', [data.universityId])).rows[0]!;
+        return acceptMicrosoftConsent(client, data.userId, { accepted: true, processingGrantId: data.processingGrantId,
+            snapshot: { universityId: data.universityId, providerPolicyVersion: policy.version, noticeVersion: 'microsoft-v1', mode: 'identity_only', scopes: ['openid', 'profile'] } });
+    }));
+    let authorizeInput: { state: string; nonce: string; verifier: string } | undefined;
+    const tenantId = await withTestClient(async (client) => {
+        const policy = await client.query<{ tenant_id: string }>('SELECT tenant_id FROM institution_microsoft_policies WHERE university_id=$1', [data.universityId]);
+        return policy.rows[0]!.tenant_id;
+    });
+    const identity = { tenantId, objectId: randomUUID() };
+    const service = new MicrosoftFlowService({ pool: db.getPool(), verifierEncryptionKey: Buffer.from(key.slice(0, 32)).toString('base64url'),
+        callbackUrl: new URL('https://api.example.invalid/api/verification/microsoft/callback'), completionUrl: new URL('https://app.example.invalid/student/verification/microsoft/complete'),
+        isEnabled: () => true,
+        oidc: { authorize: async (input) => { authorizeInput = input; return 'https://provider.example.invalid/authorize'; }, redeem: async (input) => { assert.equal(input.verifier, authorizeInput?.verifier); return { identity }; } },
+    });
+    const started = await service.start({ userId: data.userId, serverSessionId: sid, processingGrantId: data.processingGrantId, providerConsentId: consentId });
+    assert.equal((await withTestClient(async (client) => client.query('SELECT 1 FROM microsoft_identities WHERE user_id=$1', [data.userId]))).rowCount, 0);
+    const callback = new URL('https://api.example.invalid/api/verification/microsoft/callback'); callback.searchParams.set('state', authorizeInput!.state); callback.searchParams.set('code', 'CANARY-NOT-PERSISTED');
+    const complete = await service.callback({ callbackUrl: callback, browserCookie: started.callbackCookie.value });
+    assert.equal(complete.completionUrl.searchParams.get('attempt'), started.publicResult.attemptId);
+    assert.equal(complete.completionUrl.search.includes('code'), false);
+    assert.equal((await withTestClient(async (client) => client.query('SELECT 1 FROM microsoft_identities WHERE user_id=$1', [data.userId]))).rowCount, 0);
+    assert.deepEqual(await service.finish({ userId: data.userId, serverSessionId: sid, attemptId: started.publicResult.attemptId, finishSecret: started.publicResult.finishSecret }), { accountLinked: true, enrollment: 'not_checked' });
+    assert.deepEqual(await service.finish({ userId: data.userId, serverSessionId: sid, attemptId: started.publicResult.attemptId, finishSecret: started.publicResult.finishSecret }), { accountLinked: true, enrollment: 'not_checked' });
+    await withTestClient(async (client) => inTransaction(client, async () => {
+        assert.equal((await client.query('SELECT 1 FROM microsoft_identities WHERE user_id=$1', [data.userId])).rowCount, 1);
+        assert.equal((await client.query('SELECT 1 FROM eligibility_evidence evidence JOIN students ON students.id=evidence.student_id WHERE students.user_id=$1', [data.userId])).rowCount, 0);
+        const stored = (await client.query<{ state_hash:string; browser_secret_hash:string; finish_secret_hash:string; encrypted_verifier:string|null; nonce:string|null; status:string }>('SELECT state_hash,browser_secret_hash,finish_secret_hash,encrypted_verifier,nonce,status FROM microsoft_verification_attempts WHERE id=$1', [started.publicResult.attemptId])).rows[0]!;
+        assert.equal(stored.status, 'completed'); assert.notEqual(stored.state_hash, authorizeInput!.state); assert.notEqual(stored.browser_secret_hash, started.callbackCookie.value); assert.notEqual(stored.finish_secret_hash, started.publicResult.finishSecret); assert.equal(stored.encrypted_verifier, null); assert.equal(stored.nonce, null);
+    }));
+});
+
+test('both consent withdrawals prevent dispatch before claim, prevent ready during held redeem, and reject ready finish', async () => {
+    for (const withdrawal of ['processing', 'provider'] as const) {
+        for (const phase of ['before', 'during', 'after'] as const) {
+            const data = await fixture();
+            const sid = randomUUID();
+            const consentId = await withTestClient(async (client) => inTransaction(client, async () => {
+                await client.query(`UPDATE users SET active_session_id=$2, refresh_token_hash='test-hash', refresh_token_expires_at=clock_timestamp()+interval '1 hour' WHERE id=$1`, [data.userId, sid]);
+                const policy = (await client.query<{ version: number }>('SELECT version FROM institution_microsoft_policies WHERE university_id=$1', [data.universityId])).rows[0]!;
+                return acceptMicrosoftConsent(client, data.userId, { accepted: true, processingGrantId: data.processingGrantId,
+                    snapshot: { universityId: data.universityId, providerPolicyVersion: policy.version, noticeVersion: 'microsoft-v1', mode: 'identity_only', scopes: ['openid', 'profile'] } });
+            }));
+            const tenantId = (await withTestClient(async (client) => (await client.query<{ tenant_id: string }>('SELECT tenant_id FROM institution_microsoft_policies WHERE university_id=$1', [data.universityId])).rows[0]!.tenant_id));
+            let state = ''; let dispatched = 0; let release: (() => void) | undefined; let entered: (() => void) | undefined;
+            const held = new Promise<void>((resolve) => { release = resolve; });
+            const enteredRedeem = new Promise<void>((resolve) => { entered = resolve; });
+            const service = new MicrosoftFlowService({ pool: db.getPool(), verifierEncryptionKey: randomBytes(32).toString('base64url'), isEnabled: () => true,
+                callbackUrl: new URL('https://api.example.invalid/api/verification/microsoft/callback'), completionUrl: new URL('https://app.example.invalid/student/verification/microsoft/complete'),
+                oidc: { authorize: async (input) => { state = input.state; return 'https://provider.example.invalid/authorize'; }, redeem: async () => { dispatched += 1; entered!(); await held; return { identity: { tenantId, objectId: randomUUID() } }; } },
+            });
+            const started = await service.start({ userId: data.userId, serverSessionId: sid, processingGrantId: data.processingGrantId, providerConsentId: consentId });
+            const callback = new URL('https://api.example.invalid/api/verification/microsoft/callback'); callback.searchParams.set('state', state); callback.searchParams.set('code', 'CANARY');
+            const withdraw = async () => withTestClient((client) => inTransaction(client, () => withdrawal === 'processing'
+                ? withdrawConsent(client, data.userId, data.processingGrantId)
+                : withdrawMicrosoftConsent(client, data.userId, consentId)));
+            if (phase === 'before') {
+                await withdraw();
+                await assert.rejects(() => service.callback({ callbackUrl: callback, browserCookie: started.callbackCookie.value }));
+                assert.equal(dispatched, 0, `${withdrawal} withdrawal must prevent token dispatch before claim`);
+            } else if (phase === 'during') {
+                const pending = service.callback({ callbackUrl: callback, browserCookie: started.callbackCookie.value });
+                await enteredRedeem;
+                await withdraw(); release!();
+                await assert.rejects(() => pending);
+                assert.equal((await withTestClient(async (client) => client.query(`SELECT 1 FROM microsoft_verification_attempts WHERE id=$1 AND status='ready'`, [started.publicResult.attemptId]))).rowCount, 0);
+                assert.equal((await withTestClient(async (client) => client.query(`SELECT 1 FROM microsoft_identities WHERE user_id=$1`, [data.userId]))).rowCount, 0);
+            } else {
+                const pending = service.callback({ callbackUrl: callback, browserCookie: started.callbackCookie.value });
+                await enteredRedeem; release!(); await pending;
+                await withdraw();
+                await assert.rejects(() => service.finish({ userId: data.userId, serverSessionId: sid, attemptId: started.publicResult.attemptId, finishSecret: started.publicResult.finishSecret }));
+                assert.equal((await withTestClient(async (client) => client.query(`SELECT 1 FROM microsoft_identities WHERE user_id=$1`, [data.userId]))).rowCount, 0);
+            }
+        }
+    }
+});
+
+async function readyDurableAttempt() {
+    const data = await fixture(); const sid = randomUUID(); let state = ''; let exchanges = 0;
+    const consentId = await withTestClient(async (client) => inTransaction(client, async () => {
+        await client.query(`UPDATE users SET active_session_id=$2,refresh_token_hash='h',refresh_token_expires_at=clock_timestamp()+interval '1 hour' WHERE id=$1`, [data.userId, sid]);
+        const policy = (await client.query<{ version:number }>('SELECT version FROM institution_microsoft_policies WHERE university_id=$1', [data.universityId])).rows[0]!;
+        return acceptMicrosoftConsent(client, data.userId, { accepted:true, processingGrantId:data.processingGrantId, snapshot:{ universityId:data.universityId, providerPolicyVersion:policy.version, noticeVersion:'microsoft-v1', mode:'identity_only', scopes:['openid','profile'] } });
+    }));
+    const tenantId = (await withTestClient(async (client) => (await client.query<{tenant_id:string}>('SELECT tenant_id FROM institution_microsoft_policies WHERE university_id=$1',[data.universityId])).rows[0]!.tenant_id));
+    const service = new MicrosoftFlowService({ pool:db.getPool(), verifierEncryptionKey:randomBytes(32).toString('base64url'), isEnabled:()=>true, callbackUrl:new URL('https://api.example.invalid/api/verification/microsoft/callback'), completionUrl:new URL('https://app.example.invalid/student/verification/microsoft/complete'), oidc:{ authorize:async(input)=>{state=input.state;return 'https://provider.example.invalid/a';}, redeem:async()=>{exchanges++;return {identity:{tenantId,objectId:randomUUID()}};} } });
+    const started = await service.start({userId:data.userId,serverSessionId:sid,processingGrantId:data.processingGrantId,providerConsentId:consentId});
+    const callback = new URL('https://api.example.invalid/api/verification/microsoft/callback'); callback.searchParams.set('state',state); callback.searchParams.set('code','CANARY');
+    await service.callback({callbackUrl:callback,browserCookie:started.callbackCookie.value});
+    return { data,sid,service,started,callback,exchanges:()=>exchanges };
+}
+
+test('callback replay redeems once and parallel finish creates one identity with bounded retry', async () => {
+    const flow = await readyDurableAttempt();
+    await assert.rejects(() => flow.service.callback({callbackUrl:flow.callback,browserCookie:flow.started.callbackCookie.value}));
+    assert.equal(flow.exchanges(), 1);
+    const input={userId:flow.data.userId,serverSessionId:flow.sid,attemptId:flow.started.publicResult.attemptId,finishSecret:flow.started.publicResult.finishSecret};
+    assert.deepEqual(await Promise.all([flow.service.finish(input),flow.service.finish(input)]),[{accountLinked:true,enrollment:'not_checked'},{accountLinked:true,enrollment:'not_checked'}]);
+    assert.equal((await withTestClient(async c=>c.query('SELECT 1 FROM microsoft_identities WHERE user_id=$1',[flow.data.userId]))).rowCount,1);
+});
+
+test('session replacement and policy drift reject a ready attempt', async () => {
+    const replaced = await readyDurableAttempt();
+    await withTestClient(c=>inTransaction(c,()=>c.query('UPDATE users SET active_session_id=$2 WHERE id=$1',[replaced.data.userId,randomUUID()])));
+    await assert.rejects(()=>replaced.service.finish({userId:replaced.data.userId,serverSessionId:replaced.sid,attemptId:replaced.started.publicResult.attemptId,finishSecret:replaced.started.publicResult.finishSecret}));
+    const drifted = await readyDurableAttempt();
+    await withTestClient(c=>inTransaction(c,()=>c.query('UPDATE institution_microsoft_policies SET max_evidence_hours=23 WHERE university_id=$1',[drifted.data.universityId])));
+    await assert.rejects(()=>drifted.service.finish({userId:drifted.data.userId,serverSessionId:drifted.sid,attemptId:drifted.started.publicResult.attemptId,finishSecret:drifted.started.publicResult.finishSecret}));
 });
