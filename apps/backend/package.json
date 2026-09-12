@@ -51,10 +51,12 @@
     "ioredis": "^5.4.1",
     "jsonwebtoken": "^9.0.2",
     "multer": "^2.0.2",
+    "openid-client": "6.8.8",
     "pg": "^8.13.1",
     "sib-api-v3-sdk": "^8.5.0",
     "swagger-jsdoc": "^6.2.8",
     "swagger-ui-express": "^5.0.1",
+    "tldts": "7.4.12",
     "zod": "^3.23.8",
     "zod-validation-error": "^1.5.0"
   }

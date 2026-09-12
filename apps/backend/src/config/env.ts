@@ -7,6 +7,7 @@
 
 import { z } from 'zod';
 import dotenv from 'dotenv';
+import { readMicrosoftOidcConfiguration } from '../services/verification/microsoft-oidc.config.js';
 
 // Load environment variables
 // override: false ensures docker-compose env vars take precedence
@@ -67,6 +68,14 @@ const envSchema = z.object({
 
     // Frontend URL (for magic links and redirects)
     FRONTEND_URL: z.string().url().default('http://localhost:3000'),
+
+    // Microsoft OIDC is deliberately opt-in; route wiring remains a later task.
+    MICROSOFT_OIDC_ENABLED: z.enum(['true', 'false']).default('false'),
+    MICROSOFT_OIDC_TENANT_ID: z.string().optional(),
+    MICROSOFT_OIDC_CLIENT_ID: z.string().optional(),
+    MICROSOFT_OIDC_CLIENT_SECRET: z.string().optional(),
+    MICROSOFT_OIDC_CALLBACK_URL: z.string().optional(),
+    MICROSOFT_OIDC_FRONTEND_COMPLETION_URL: z.string().optional(),
 });
 
 /**
@@ -172,6 +181,15 @@ export const config = {
     frontend: {
         url: env.FRONTEND_URL,
     },
+
+    microsoftOidc: readMicrosoftOidcConfiguration({
+        enabled: env.MICROSOFT_OIDC_ENABLED,
+        tenantId: env.MICROSOFT_OIDC_TENANT_ID,
+        clientId: env.MICROSOFT_OIDC_CLIENT_ID,
+        clientSecret: env.MICROSOFT_OIDC_CLIENT_SECRET,
+        callbackUrl: env.MICROSOFT_OIDC_CALLBACK_URL,
+        frontendCompletionUrl: env.MICROSOFT_OIDC_FRONTEND_COMPLETION_URL,
+    }),
 } as const;
 
 export default config;
