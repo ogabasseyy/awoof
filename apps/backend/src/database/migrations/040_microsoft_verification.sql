@@ -10,16 +10,17 @@ LANGUAGE sql IMMUTABLE AS $$
        AND input_scopes = ARRAY(SELECT DISTINCT scope FROM unnest(input_scopes) scope ORDER BY scope)
 $$;
 
+CREATE EXTENSION IF NOT EXISTS pgcrypto;
 CREATE TABLE microsoft_published_notices (
     version TEXT PRIMARY KEY CHECK (length(btrim(version)) > 0),
     content TEXT NOT NULL CHECK (length(btrim(content)) > 0),
-    content_digest TEXT NOT NULL CHECK (content_digest ~ '^[0-9a-f]{64}$'),
+    content_digest TEXT NOT NULL CHECK (content_digest = encode(digest(convert_to(content, 'UTF8'), 'sha256'), 'hex')),
     published_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp(),
     UNIQUE (content_digest)
 );
 INSERT INTO microsoft_published_notices (version, content, content_digest) VALUES
-    ('microsoft-v1', 'We use Microsoft school identity information to assess student eligibility. You can withdraw Microsoft provider consent.', 'e1c0286bb275402f93a40ae5326d8d84cf8ef06798cd82d1dd9f8e8c01503a55'),
-    ('microsoft-v2', 'We use Microsoft school identity and, where approved, enrollment information to assess student eligibility. You can withdraw Microsoft provider consent.', 'c89e12f29357a2858e2ad8d4540b4f8b551eb3df3a5a2d3617d939c2702c269e');
+    ('microsoft-v1', 'We use Microsoft school identity information to assess student eligibility. You can withdraw Microsoft provider consent.', 'a73bedcb922c489dd75453aefdacc5832a39a1a7df48c7c7e24d40415c681a9f'),
+    ('microsoft-v2', 'We use Microsoft school identity and, where approved, enrollment information to assess student eligibility. You can withdraw Microsoft provider consent.', 'aa51f48856164aa2dbc9b24e939431765e12f08a896185aac84cb3029dd3741f');
 CREATE OR REPLACE FUNCTION microsoft_published_notice_protect() RETURNS trigger LANGUAGE plpgsql AS $$
 BEGIN RAISE EXCEPTION 'published Microsoft notice copies are immutable'; END $$;
 CREATE TRIGGER microsoft_published_notice_before_change BEFORE UPDATE OR DELETE ON microsoft_published_notices

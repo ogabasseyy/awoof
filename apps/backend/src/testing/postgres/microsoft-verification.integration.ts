@@ -176,6 +176,8 @@ test('Microsoft tables reject cross-subject authority bindings and malformed can
         ), client);
         await rejectsSql(() => client.query(`UPDATE microsoft_published_notices SET content = 'changed' WHERE version = 'microsoft-v1'`), client);
         await rejectsSql(() => client.query(`DELETE FROM microsoft_published_notices WHERE version = 'microsoft-v1'`), client);
+        assert.equal((await client.query<{ matches: boolean }>(`SELECT content_digest = encode(digest(convert_to(content, 'UTF8'), 'sha256'), 'hex') AS matches FROM microsoft_published_notices WHERE version = 'microsoft-v1'`)).rows[0]!.matches, true);
+        await rejectsSql(() => client.query(`INSERT INTO microsoft_published_notices (version, content, content_digest) VALUES ('microsoft-invalid', 'copy', repeat('0', 64))`), client);
         await rejectsSql(() => client.query(`UPDATE institution_microsoft_policies SET notice_version = 'unknown-microsoft-copy' WHERE university_id = $1`, [first.universityId]), client);
 
         const firstPolicy = (await client.query<{ version: number }>(`SELECT version FROM institution_microsoft_policies WHERE university_id = $1`, [first.universityId])).rows[0]!;
