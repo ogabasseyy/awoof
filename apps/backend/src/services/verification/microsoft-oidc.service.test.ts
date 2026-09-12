@@ -71,11 +71,14 @@ for (const [name, changes] of [
     });
 }
 
-test('rejects a token signed by an untrusted key and accepts trusted JWKS rotation', async () => {
+test('reuses one transport instance across trusted JWKS rotation', async () => {
     const other = generateKeyPairSync('rsa', { modulusLength: 2048 });
-    await assert.rejects(() => redeem(service(() => token({}, other.privateKey, 'other'), () => [{ ...jwk, kid: 'key-1', use: 'sig', alg: 'RS256' }])), payloadFree('invalid_identity'));
+    let keySet: unknown = [{ ...jwk, kid: 'key-1', use: 'sig', alg: 'RS256' }];
+    const oidc = service(() => token({}, other.privateKey, 'other'), () => keySet);
+    await assert.rejects(() => redeem(oidc), payloadFree('invalid_identity'));
     const rotated = other.publicKey.export({ format: 'jwk' });
-    const result = await redeem(service(() => token({}, other.privateKey, 'other'), () => [{ ...rotated, kid: 'other', use: 'sig', alg: 'RS256' }]));
+    keySet = [{ ...rotated, kid: 'other', use: 'sig', alg: 'RS256' }];
+    const result = await redeem(oidc);
     assert.equal((result as { identity: { objectId: string } }).identity.objectId, '33333333-3333-4333-8333-333333333333');
 });
 
@@ -94,4 +97,42 @@ test('rejects hostile discovery endpoints and provider redirects before token ex
 
 test('rejects a chunked provider response larger than the transport limit', async () => {
     await assert.rejects(() => redeem(service(() => token(), () => [{ ...jwk, kid: 'key-1', use: 'sig', alg: 'RS256' }], {}, false, true)), MicrosoftOidcOperationalError);
+});
+
+function cancellationProbe(status: number, headers: HeadersInit = {}): { fetch: import('openid-client').CustomFetch; cancelled: () => number } {
+    let cancellations = 0;
+    const fetch: import('openid-client').CustomFetch = async () => new Response(new ReadableStream({ cancel() { cancellations += 1; } }), { status, headers });
+    return { fetch, cancelled: () => cancellations };
+}
+
+function serviceWithFetch(fetch: import('openid-client').CustomFetch): MicrosoftOidcService {
+    const configuration = readMicrosoftOidcConfiguration({ enabled: true, tenantId, clientId, clientSecret: 'test-secret', callbackUrl: callback.href, frontendCompletionUrl: 'https://app.awoof.example/student/verification/microsoft/complete' });
+    return MicrosoftOidcService.forConfiguration(configuration, { issuer, fetch });
+}
+
+test('cancels response bodies rejected by redirect and Content-Length checks', async () => {
+    for (const probe of [cancellationProbe(302, { location: 'https://attacker.invalid/' }), cancellationProbe(200, { 'content-length': '262145' })]) {
+        await assert.rejects(() => serviceWithFetch(probe.fetch).authorize({ tenantId, state: 'state-1', nonce: 'nonce-1', verifier: 'A'.repeat(64), scopes: ['openid', 'profile'] }), MicrosoftOidcOperationalError);
+        assert.equal(probe.cancelled(), 1);
+    }
+});
+
+test('removes deadline listeners after many small response chunks', async () => {
+    const metadata = JSON.stringify({ issuer: issuer.href, authorization_endpoint: new URL('/authorize', issuer).href, token_endpoint: new URL('/token', issuer).href, jwks_uri: new URL('/keys', issuer).href, response_types_supported: ['code'], subject_types_supported: ['pairwise'], id_token_signing_alg_values_supported: ['RS256'], code_challenge_methods_supported: ['S256'] });
+    let added = 0;
+    let removed = 0;
+    const fetch: import('openid-client').CustomFetch = async (_url, options) => {
+        const signal = options.signal;
+        assert.ok(signal);
+        const originalAdd = signal.addEventListener.bind(signal);
+        const originalRemove = signal.removeEventListener.bind(signal);
+        Object.assign(signal, {
+            addEventListener(...args: Parameters<AbortSignal['addEventListener']>) { added += 1; return originalAdd(...args); },
+            removeEventListener(...args: Parameters<AbortSignal['removeEventListener']>) { removed += 1; return originalRemove(...args); },
+        });
+        return new Response(new ReadableStream({ start(controller) { for (const character of metadata) controller.enqueue(new TextEncoder().encode(character)); controller.close(); } }));
+    };
+    await serviceWithFetch(fetch).authorize({ tenantId, state: 'state-1', nonce: 'nonce-1', verifier: 'A'.repeat(64), scopes: ['openid', 'profile'] });
+    assert.ok(added > 100);
+    assert.equal(removed, added);
 });

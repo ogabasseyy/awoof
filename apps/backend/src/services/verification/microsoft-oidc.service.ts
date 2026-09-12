@@ -42,10 +42,22 @@ function trustedUrl(issuer: URL, value: string | URL | undefined): void {
 
 async function readBeforeDeadline(reader: ReadableStreamDefaultReader<Uint8Array>, signal: AbortSignal): Promise<Awaited<ReturnType<ReadableStreamDefaultReader<Uint8Array>['read']>>> {
     if (signal.aborted) throw new DOMException('OIDC provider timed out', 'TimeoutError');
-    return Promise.race([
-        reader.read(),
-        new Promise<never>((_, reject) => signal.addEventListener('abort', () => reject(new DOMException('OIDC provider timed out', 'TimeoutError')), { once: true })),
-    ]);
+    let onAbort: (() => void) | undefined;
+    const deadline = new Promise<never>((_, reject) => {
+        onAbort = () => reject(new DOMException('OIDC provider timed out', 'TimeoutError'));
+        signal.addEventListener('abort', onAbort, { once: true });
+    });
+    try {
+        return await Promise.race([reader.read(), deadline]);
+    } finally {
+        if (onAbort) signal.removeEventListener('abort', onAbort);
+    }
+}
+
+function discardResponseBody(response: Response): void {
+    // Cleanup is deliberately non-blocking: a malicious stream must not extend
+    // the request deadline after it has already been rejected.
+    void response.body?.cancel().catch(() => undefined);
 }
 
 async function boundedBody(response: Response, signal: AbortSignal): Promise<Response> {
@@ -62,7 +74,7 @@ async function boundedBody(response: Response, signal: AbortSignal): Promise<Res
             chunks.push(next.value);
         }
     } catch (error) {
-        await reader.cancel().catch(() => undefined);
+        discardResponseBody(response);
         throw error;
     }
     const body = new Uint8Array(bytes);
@@ -77,9 +89,13 @@ function boundedTrustedFetch(issuer: URL, delegate: client.CustomFetch): client.
         if (url.protocol !== 'https:' || url.origin !== issuer.origin) throw new TypeError('OIDC endpoint is not trusted');
         const signal = AbortSignal.timeout(REQUEST_TIMEOUT_MS);
         const response = await delegate(url.href, { ...options, redirect: 'manual', signal });
-        if (response.status >= 300 && response.status < 400) throw new TypeError('OIDC provider redirects are not allowed');
+        if (response.status >= 300 && response.status < 400) {
+            discardResponseBody(response);
+            throw new TypeError('OIDC provider redirects are not allowed');
+        }
         const contentLength = response.headers.get('content-length');
         if (contentLength && (!/^\d+$/.test(contentLength) || Number(contentLength) > MAX_PROVIDER_RESPONSE_BYTES)) {
+            discardResponseBody(response);
             throw new RangeError('OIDC provider response exceeded the limit');
         }
         return boundedBody(response, signal);
