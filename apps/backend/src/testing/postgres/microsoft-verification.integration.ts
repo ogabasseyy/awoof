@@ -136,10 +136,14 @@ test('provider-only withdrawal leaves its live parent and unrelated provider con
         const identity = (await client.query<{ id: string }>(`INSERT INTO microsoft_identities (user_id, university_id, tenant_id, object_id) VALUES ($1,$2,$3,$4) RETURNING id`, [data.userId, data.universityId, randomUUID(), randomUUID()])).rows[0]!.id;
         const attempt = randomUUID();
         await client.query(`INSERT INTO microsoft_verification_attempts (id,user_id,university_id,institution_policy_version,provider_policy_version,identity_version,processing_grant_id,provider_consent_id,server_session_id,state_hash,browser_secret_hash,finish_secret_hash,encrypted_verifier,nonce,expires_at,status) VALUES ($1,$2,$3,1,$4,1,$5,$6,$7,$8,'b','f','secret','nonce',clock_timestamp()+interval '1 hour','pending')`, [attempt, data.userId, data.universityId, version, data.processingGrantId, target, randomUUID(), `state-${randomUUID()}`]);
-        await client.query(`INSERT INTO microsoft_provider_proofs (user_id,university_id,provider_consent_id,identity_id,provider_policy_version) VALUES ($1,$2,$3,$4,$5)`, [data.userId, data.universityId, target, identity, version]);
+        const targetProof = (await client.query<{ id: string }>(`INSERT INTO microsoft_provider_proofs (user_id,university_id,provider_consent_id,identity_id,provider_policy_version) VALUES ($1,$2,$3,$4,$5) RETURNING id`, [data.userId, data.universityId, target, identity, version])).rows[0]!.id;
+        const otherProof = (await client.query<{ id: string }>(`INSERT INTO microsoft_provider_proofs (user_id,university_id,provider_consent_id,identity_id,provider_policy_version) VALUES ($1,$2,$3,$4,$5) RETURNING id`, [data.userId, data.universityId, other, identity, version])).rows[0]!.id;
         await withdrawMicrosoftConsent(client, data.userId, target);
         assert.equal((await client.query(`SELECT 1 FROM verification_consents WHERE id=$1 AND withdrawn_at IS NULL`, [data.processingGrantId])).rowCount, 1);
         assert.equal((await client.query(`SELECT 1 FROM microsoft_verification_consents WHERE id=$1 AND withdrawn_at IS NULL`, [other])).rowCount, 1);
+        assert.notEqual((await client.query<{ withdrawn_at: Date | null }>(`SELECT withdrawn_at FROM microsoft_verification_consents WHERE id = $1`, [target])).rows[0]!.withdrawn_at, null);
+        assert.notEqual((await client.query<{ revoked_at: Date | null }>(`SELECT revoked_at FROM microsoft_provider_proofs WHERE id = $1`, [targetProof])).rows[0]!.revoked_at, null);
+        assert.equal((await client.query<{ revoked_at: Date | null }>(`SELECT revoked_at FROM microsoft_provider_proofs WHERE id = $1`, [otherProof])).rows[0]!.revoked_at, null);
         assert.deepEqual((await client.query<{ status:string; encrypted_verifier:string|null }>(`SELECT status,encrypted_verifier FROM microsoft_verification_attempts WHERE id=$1`, [attempt])).rows[0], { status: 'failed', encrypted_verifier: null });
     }));
 });
