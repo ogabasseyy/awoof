@@ -102,6 +102,7 @@ type FixtureEvidence = {
   capturedProxyLogs: string[];
   observedPaths: string[];
   observedServerSessions: Array<{ path: string; serverSessionId: string; userId: string }>;
+  identityReadEvents: Array<{ userId: string | null; received: boolean; delivered: boolean; delayed: boolean }>;
   acceptedConsentSnapshots: Array<{ providerPolicyVersion?: number; noticeVersion?: string } | null>;
   revokedServerSessions: string[];
   accounts: Record<string, { emailEvidenceEligible: boolean; microsoftEnrollmentEligible: boolean; finishCalls: number; linkedMicrosoftIdentities: number }>;
@@ -431,10 +432,75 @@ test('global Microsoft disablement hides start while owner history and school em
   await expect(page.getByRole('button', { name: 'Send verification code' })).toBeEnabled();
 });
 
+test('off-flag owner can unlink a discovered connection without changing independent email eligibility', async ({ page }) => {
+  await seedStudent(page, 'unlink-off-browser-session', 'student-access:account-b:global-off');
+  await loadAuthenticatedVerification(page);
+  await expect(page.getByRole('heading', { name: 'Microsoft connections' })).toBeVisible();
+  await page.getByRole('button', { name: 'Unlink Microsoft connection' }).click();
+  await expect(page.getByText(/Remove this Microsoft connection/)).toBeVisible();
+  await page.getByRole('button', { name: 'Unlink Microsoft' }).click();
+  await expect(page.getByText(/Microsoft connection removed\. Your independent school-email verification was not changed/)).toBeVisible();
+  await expect(page.getByText('Removed — Synthetic approved institution')).toBeVisible();
+  expect((await evidence(page)).accounts['00000000-0000-4000-8000-000000000002']).toMatchObject({ emailEvidenceEligible: false, microsoftEnrollmentEligible: false, linkedMicrosoftIdentities: 0 });
+});
+
+test('an unlink error retains the session-scoped confirmation for an explicit retry', async ({ page }) => {
+  await seedStudent(page, 'unlink-error-browser-session', 'student-access:account-b:global-off:unlink-error');
+  await loadAuthenticatedVerification(page);
+  await page.getByRole('button', { name: 'Unlink Microsoft connection' }).click();
+  await page.getByRole('button', { name: 'Unlink Microsoft' }).click();
+  await expect(page.getByText('Microsoft connection is unavailable. Please try again.')).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Unlink Microsoft' })).toBeVisible();
+  expect((await evidence(page)).accounts['00000000-0000-4000-8000-000000000002'].linkedMicrosoftIdentities).toBe(0);
+});
+
+test('a successful unlink keeps its result while a failed owner-status refresh can be retried', async ({ page }) => {
+  await seedStudent(page, 'unlink-refresh-browser-session', 'student-access:account-b:global-off:status-failure');
+  await loadAuthenticatedVerification(page);
+  await page.getByRole('button', { name: 'Unlink Microsoft connection' }).click();
+  await page.getByRole('button', { name: 'Unlink Microsoft' }).click();
+  await expect(page.getByText(/Microsoft connection removed\. Your independent school-email verification was not changed/)).toBeVisible();
+  await expect(page.getByText(/The connection was removed, but current eligibility could not be refreshed/)).toBeVisible();
+  await page.getByRole('button', { name: 'Retry current eligibility' }).click();
+  await expect(page.getByRole('button', { name: 'Retry current eligibility' })).toHaveCount(0);
+  await expect(page.getByRole('heading', { name: 'Confirm your school email' })).toBeVisible();
+});
+
+test('a delayed old-owner identity read cannot populate after account replacement while the new owner sees only its own connection', async ({ page, context }) => {
+  // Seed only the A page. A page-level init script would otherwise seed B on
+  // its first app navigation and mask the cross-tab replacement under test.
+  const replacement = await context.newPage();
+  try {
+    await page.goto('/__fixture-storage-tab');
+    await seedStudent(page, 'identity-old-browser-session', 'student-access:global-off');
+    await loadAuthenticatedVerification(page);
+    await expect(page.getByText('Connected — Synthetic approved institution A')).toBeVisible();
+    await page.getByRole('button', { name: 'Unlink Microsoft connection' }).click();
+    await expect(page.getByText(/Remove this Microsoft connection/)).toBeVisible();
+
+    await fixtureControl(page, '/api/__fixture/delay-next-identity-read');
+    await page.getByRole('button', { name: 'Refresh' }).first().click();
+    await expect.poll(async () => (await evidence(page)).identityReadEvents).toContainEqual(expect.objectContaining({ userId: '00000000-0000-4000-8000-000000000001', delayed: true, delivered: false }));
+
+    await seedStudent(replacement, 'identity-new-browser-session', 'student-access:account-b:global-off');
+    await loadAuthenticatedVerification(replacement);
+    await expect(page.getByText('student-b@approved.test').first()).toBeVisible();
+    await expect(page.getByText(/Remove this Microsoft connection/)).toHaveCount(0);
+
+    await fixtureControl(replacement, '/api/__fixture/release-delayed-identities');
+    await expect.poll(async () => (await evidence(replacement)).identityReadEvents).toContainEqual(expect.objectContaining({ userId: '00000000-0000-4000-8000-000000000001', delayed: true, delivered: true }));
+    await expect(page.getByText('Connected — Synthetic approved institution B')).toBeVisible();
+    await expect(page.getByText('Connected — Synthetic approved institution A')).toHaveCount(0);
+    await expect(page.getByText(/Remove this Microsoft connection/)).toHaveCount(0);
+  } finally {
+    await replacement.close();
+  }
+});
+
 test('notice read failure leaves Microsoft owner history available', async ({ page }) => {
   await seedStudent(page, 'notice-failure-browser-session', 'student-access:notice-failure');
   await loadAuthenticatedVerification(page);
-  await expect(page.getByText('The current Microsoft consent notice is unavailable. Your existing consent history remains available below.')).toBeVisible();
+  await expect(page.getByText('The current Microsoft consent notice is unavailable. Your existing connection controls remain available below.')).toBeVisible();
   await expect(page.getByRole('heading', { name: 'Microsoft consent history' })).toBeVisible();
   await expect(page.getByText('Active — accepted')).toBeVisible();
 });

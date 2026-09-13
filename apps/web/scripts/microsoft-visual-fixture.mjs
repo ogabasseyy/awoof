@@ -31,6 +31,7 @@ const childEnv = {
 let next;
 let closed = false;
 const sockets = new Set();
+let globalOffIdentityUnlinked = false;
 
 function linkSourceTree(source, destination) {
   mkdirSync(destination, { recursive: true });
@@ -64,7 +65,7 @@ const scenarios = {
   },
   globalOff: {
     title: 'Microsoft globally off — email and history independent',
-    detail: 'School-email verification and owner history remain available.',
+    detail: 'School-email verification, owner history, and unlinking a recorded connection remain available.',
     route: '/student/verification',
     mode: 'global-off',
   },
@@ -140,6 +141,18 @@ function finish(mode) {
     : { accountLinked: true, enrollment: 'not_checked' };
 }
 
+function ownerIdentities(mode) {
+  if (mode !== 'global-off') return [];
+  return [{
+    id: 'visual-microsoft-identity-1',
+    universityId: 'visual-university',
+    universityName: 'Synthetic approved institution',
+    linkedAt: '2026-09-01T00:00:00.000Z',
+    revokedAt: globalOffIdentityUnlinked ? '2026-09-13T00:00:00.000Z' : null,
+    status: globalOffIdentityUnlinked ? 'revoked' : 'connected',
+  }];
+}
+
 function api(request, response, url) {
   if (request.method === 'OPTIONS') { response.writeHead(204, { allow: 'GET, POST, OPTIONS' }); response.end(); return; }
   const context = authContext(request);
@@ -164,7 +177,7 @@ function api(request, response, url) {
     const enrolled = mode === 'enrollment';
     json(response, 200, { data: {
       emailDomainApproved: true, mailboxConfirmed: mode === 'global-off', email: context.user.email, universityId: 'visual-university',
-      eligibility: { eligible: enrolled, reason: enrolled ? 'Synthetic enrollment preview.' : 'Synthetic preview account is not currently eligible.' },
+      eligibility: { eligible: enrolled, reason: enrolled ? 'Synthetic enrollment preview.' : 'Synthetic preview account is not currently eligible.', microsoftIdentityLinked: ownerIdentities(mode).some((identity) => identity.status === 'connected') },
       notices: { verification: { version: 'visual-v1', text: 'Synthetic Awoof processing notice for this local preview.' } },
     } }); return;
   }
@@ -185,6 +198,14 @@ function api(request, response, url) {
     json(response, 200, { data: { items: mode === 'global-off' || mode === 'notice-failure' ? history() : [], nextCursor: null } }); return;
   }
   if (url.pathname === '/api/verification/microsoft/consents' && request.method === 'POST') { json(response, 200, { data: { providerConsentId: 'visual-provider-consent' } }); return; }
+  if (url.pathname === '/api/verification/microsoft/identities' && request.method === 'GET') {
+    json(response, 200, { data: { items: ownerIdentities(mode), nextCursor: null } }); return;
+  }
+  if (url.pathname === '/api/verification/microsoft/identities/visual-microsoft-identity-1/unlink' && request.method === 'POST') {
+    if (mode !== 'global-off') { json(response, 404, { error: { code: 'visual_identity_not_found' } }); return; }
+    globalOffIdentityUnlinked = true;
+    json(response, 200, { data: { identityId: 'visual-microsoft-identity-1', unlinked: true, recovery: 'support_required' } }); return;
+  }
   if (url.pathname === '/api/verification/microsoft/start' && request.method === 'POST') {
     // Intentional safety boundary: this preview cannot issue a real provider destination.
     json(response, 503, { error: { code: 'visual_provider_navigation_blocked', message: 'Synthetic visual preview blocks Microsoft navigation. No provider connection was started.' } }); return;

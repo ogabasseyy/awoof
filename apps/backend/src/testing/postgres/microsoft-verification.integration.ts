@@ -1370,6 +1370,35 @@ test('mounted Microsoft consent routes bind the rendered snapshot, preserve owne
         assert.equal(history.status, 200); assert.equal(historyBody.data.items.length, 20);
         assert.notEqual(historyBody.data.nextCursor, null);
 
+        // Owner recovery reads remain available after issuance is switched off.
+        // Use tombstones so the active user/institution uniqueness invariant is
+        // preserved while exercising a full bounded historical page.
+        const identityHistory = await withTestClient((client) => inTransaction(client, async () => {
+            const ids: string[] = [];
+            for (let index = 0; index < 21; index += 1) {
+                ids.push((await client.query<{ id: string }>(`INSERT INTO microsoft_identities
+                    (user_id, university_id, tenant_id, object_id, revoked_at)
+                    VALUES ($1,$2,$3,$4,clock_timestamp()) RETURNING id`, [data.userId, data.universityId, randomUUID(), randomUUID()])).rows[0]!.id);
+            }
+            const foreign = (await client.query<{ id: string }>(`INSERT INTO microsoft_identities
+                (user_id, university_id, tenant_id, object_id, revoked_at)
+                VALUES ($1,$2,$3,$4,clock_timestamp()) RETURNING id`, [other.userId, data.universityId, randomUUID(), randomUUID()])).rows[0]!.id;
+            return { ids, foreign };
+        }));
+        const identities = await fetch(`${base}/identities`, { headers:{ authorization:headers.authorization } });
+        const identityBody = await identities.json() as { data: { items: Array<Record<string, unknown>>; nextCursor: string | null } };
+        assert.equal(identities.status, 200); assert.equal(identityBody.data.items.length, 20);
+        assert.notEqual(identityBody.data.nextCursor, null);
+        assert.deepEqual(Object.keys(identityBody.data.items[0]!).sort(), ['id', 'linkedAt', 'revokedAt', 'status', 'universityId', 'universityName']);
+        assert.equal('tenantId' in identityBody.data.items[0]!, false); assert.equal('objectId' in identityBody.data.items[0]!, false);
+        const identitySecond = await fetch(`${base}/identities?cursor=${identityBody.data.nextCursor}`, { headers:{ authorization:headers.authorization } });
+        const identitySecondBody = await identitySecond.json() as { data: { items: Array<{ id: string }>; nextCursor: string | null } };
+        assert.equal(identitySecond.status, 200); assert.equal(identitySecondBody.data.nextCursor, null);
+        assert.deepEqual(new Set([...identityBody.data.items, ...identitySecondBody.data.items].map((item) => item.id)), new Set(identityHistory.ids));
+        assert.equal((await fetch(`${base}/identities?cursor=${identityHistory.foreign}`, { headers:{ authorization:headers.authorization } })).status, 400);
+        const offFlagUnlink = await fetch(`${base}/identities/${identityHistory.ids[0]}/unlink`, { method:'POST', headers, body:'{}' });
+        assert.equal(offFlagUnlink.status, 200);
+
         const withdraw = await fetch(`${base}/consents/${acceptedBody.data.providerConsentId}/withdraw`, { method:'POST', headers, body:'{}' });
         assert.equal(withdraw.status, 200);
         const repeatedWithdraw = await fetch(`${base}/consents/${acceptedBody.data.providerConsentId}/withdraw`, { method:'POST', headers, body:'{}' });

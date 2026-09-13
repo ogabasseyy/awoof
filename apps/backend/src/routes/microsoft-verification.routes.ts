@@ -6,6 +6,7 @@ import { getPool } from '../config/database.js';
 import { requireMicrosoftSession } from '../middleware/microsoft-session.js';
 import { withMicrosoftSession } from '../services/verification/microsoft-session.service.js';
 import { acceptMicrosoftConsent, getMicrosoftConsentNotice, listMicrosoftConsents, withdrawMicrosoftConsent } from '../services/verification/microsoft-consent.service.js';
+import { listMicrosoftIdentities } from '../services/verification/microsoft-identity.service.js';
 import { unlinkMicrosoftIdentity } from '../services/verification/microsoft-identity-unlink.service.js';
 import { MicrosoftFlowService } from '../services/verification/microsoft-flow.service.js';
 import { MicrosoftOidcService, type MicrosoftOidc } from '../services/verification/microsoft-oidc.service.js';
@@ -164,6 +165,20 @@ export function createMicrosoftVerificationRouter(factory: FlowFactory = default
         });
         responseHeaders(res);
         res.json({ success: true, data: { providerConsentId: id, withdrawn: true } });
+    }));
+
+    router.get('/identities', requireMicrosoftSession('owner'), asyncHandler(async (req, res) => {
+        const rawCursor = Array.isArray(req.query.cursor) ? req.query.cursor[0] : req.query.cursor;
+        if (rawCursor !== undefined && (typeof rawCursor !== 'string' || !UUID.test(rawCursor))) {
+            throw new BadRequestError('Microsoft identity cursor is invalid');
+        }
+        // Deliberately no issuance/policy gate: owner recovery reads stay
+        // available during feature or institution-policy rollback.
+        const result = await withMicrosoftSession(getPool(), { userId: req.user!.id, sid: req.user!.sid, use: 'owner' }, (tx) =>
+            listMicrosoftIdentities(tx, req.user!.id, rawCursor),
+        );
+        responseHeaders(res);
+        res.json({ success: true, data: result });
     }));
 
     router.post('/identities/:id/unlink', exactOrigin, exactJson, requireMicrosoftSession('owner'), asyncHandler(async (req, res) => {
@@ -346,6 +361,23 @@ export default createMicrosoftVerificationRouter;
  *       400: { $ref: '#/components/responses/MicrosoftRequestError' }
  *       401: { $ref: '#/components/responses/MicrosoftRequestError' }
  *       403: { $ref: '#/components/responses/MicrosoftRequestError' }
+ * /api/verification/microsoft/identities:
+ *   get:
+ *     summary: List owner-scoped Microsoft connection resources
+ *     description: Returns only opaque resource IDs, institution display details, connection/revocation timestamps, and status. It remains available when Microsoft issuance or institution policy is disabled; it never returns provider tenant, object, claims, or token data.
+ *     tags: [Microsoft verification]
+ *     security: [{ bearerAuth: [] }]
+ *     parameters:
+ *       - in: query
+ *         name: cursor
+ *         required: false
+ *         schema: { type: string, format: uuid }
+ *     responses:
+ *       200:
+ *         description: Bounded owner connection history
+ *         content: { application/json: { schema: { $ref: '#/components/schemas/MicrosoftIdentityHistoryResponse' } } }
+ *       400: { $ref: '#/components/responses/MicrosoftRequestError' }
+ *       401: { $ref: '#/components/responses/MicrosoftRequestError' }
  * /api/verification/microsoft/identities/{id}/unlink:
  *   post:
  *     summary: Explicitly unlink one owner-scoped Microsoft identity

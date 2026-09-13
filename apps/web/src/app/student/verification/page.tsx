@@ -92,6 +92,14 @@ function VerificationForm() {
             if (isLatest()) throw cause;
         }
     }
+    async function refreshAfterMicrosoftIdentityUnlink() {
+        // Do not leave a Microsoft-derived positive banner visible while the
+        // owner-status read is in flight. The server remains authoritative for
+        // independent email evidence and any other verification method.
+        ++statusRead.current;
+        setStatus(null); setMethods(null);
+        await loadStatus();
+    }
     useEffect(() => {
         mounted.current = true;
         void loadStatus().catch(() => { if (isCurrent()) setError('Unable to load verification. Please reload this page.'); });
@@ -170,6 +178,7 @@ function VerificationForm() {
             parentAccepted={accepted}
             setParentAccepted={setAccepted}
             processingGrant={processingGrant}
+            onMicrosoftIdentityUnlinked={refreshAfterMicrosoftIdentityUnlink}
         />
         <section aria-labelledby="consent-heading" className="space-y-3 border-t pt-4">
             <h2 id="consent-heading" className="text-lg font-semibold">Verification privacy and consent</h2>

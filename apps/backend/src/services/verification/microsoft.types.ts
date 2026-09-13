@@ -41,3 +41,14 @@ export type MicrosoftConsentHistoryItem = {
     acceptedAt: Date;
     withdrawnAt: Date | null;
 };
+
+/** Owner-safe display information. Provider subject and tenant identifiers are
+ * intentionally never part of this browser-facing resource. */
+export type MicrosoftIdentityHistoryItem = {
+    id: string;
+    universityId: string;
+    universityName: string;
+    linkedAt: Date;
+    revokedAt: Date | null;
+    status: 'connected' | 'revoked';
+};

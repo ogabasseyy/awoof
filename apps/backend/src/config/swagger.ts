@@ -333,6 +333,32 @@ Access tokens expire in 15 minutes. Use the refresh token endpoint to get a new 
                         },
                     },
                 },
+                MicrosoftIdentityHistoryResponse: {
+                    type: 'object', additionalProperties: false, required: ['success', 'data'],
+                    properties: {
+                        success: { type: 'boolean', enum: [true] },
+                        data: {
+                            type: 'object', additionalProperties: false, required: ['items', 'nextCursor'],
+                            properties: {
+                                items: {
+                                    type: 'array', items: {
+                                        type: 'object', additionalProperties: false,
+                                        required: ['id', 'universityId', 'universityName', 'linkedAt', 'revokedAt', 'status'],
+                                        properties: {
+                                            id: { type: 'string', format: 'uuid' },
+                                            universityId: { type: 'string', format: 'uuid' },
+                                            universityName: { type: 'string' },
+                                            linkedAt: { type: 'string', format: 'date-time' },
+                                            revokedAt: { type: 'string', format: 'date-time', nullable: true },
+                                            status: { type: 'string', enum: ['connected', 'revoked'] },
+                                        },
+                                    },
+                                },
+                                nextCursor: { type: 'string', format: 'uuid', nullable: true },
+                            },
+                        },
+                    },
+                },
                 MicrosoftIdentityUnlinkResponse: {
                     type: 'object', additionalProperties: false, required: ['success', 'data'],
                     properties: {
