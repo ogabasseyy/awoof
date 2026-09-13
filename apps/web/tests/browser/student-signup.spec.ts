@@ -37,12 +37,35 @@ const {
 } = studentSignupTestData;
 const universityId = fixtureUniversities[0]!.id;
 
+async function waitForSignupFormReadiness(page: Page): Promise<void> {
+  const university = page.getByLabel(/^University/);
+  await expect.poll(() => university.isEnabled(), {
+    timeout: Math.max(1, test.info().timeout - test.info().duration),
+  }).toBe(true);
+  await expect(university).toBeEnabled();
+}
+
+async function gotoStudentSignup(page: Page, path = '/auth/student/register'): Promise<void> {
+  await page.goto(path, { waitUntil: 'domcontentloaded' });
+  // The directory-backed combobox is enabled only after client hydration and
+  // its initial directory effect settle; this is the form's real boundary.
+  await waitForSignupFormReadiness(page);
+}
+
 async function fillDetails(page: Page): Promise<void> {
+  // UniversitySelect enables only after its hydration-owned directory effect
+  // completes. Waiting here ensures subsequent form fills reach RHF handlers,
+  // rather than only mutating pre-hydration DOM inputs.
+  const university = page.getByLabel(/^University/);
+  await waitForSignupFormReadiness(page);
   await page.getByLabel('Full Name', { exact: true }).fill(name);
   await page.getByLabel('Student Email', { exact: true }).fill(email);
-  await page.getByLabel(/^University/).fill('aau');
-  await page.getByLabel(/^University/).press('ArrowDown');
-  await page.getByLabel(/^University/).press('Enter');
+  await university.fill('aau');
+  const approvedUniversity = page.getByRole('option', { name: /^Approved Alpha University/ });
+  await expect(approvedUniversity).toBeVisible();
+  await approvedUniversity.click();
+  await expect(university).toHaveValue('Approved Alpha University');
+  await expect(university).toHaveAttribute('aria-expanded', 'false');
   await page.getByLabel('Password', { exact: true }).fill(password);
   await page.getByLabel('Confirm Password', { exact: true }).fill(password);
 }
@@ -178,7 +201,7 @@ test('supported school email still requires affirmative processing consent', asy
     },
   });
   const faults = collectBrowserFaults(page, api);
-  await page.goto('/auth/student/register');
+  await gotoStudentSignup(page);
   await fillDetails(page);
   await expect(page.getByText(notice.text, { exact: true })).toBeVisible();
   const consent = page.getByRole('checkbox', { name: 'I agree to student verification processing' });
@@ -194,7 +217,7 @@ test('supported school email still requires affirmative processing consent', asy
 test('invalid details fields expose their live associated errors', async ({ page }) => {
   const api = await installSyntheticApi(page);
   const faults = collectBrowserFaults(page, api);
-  await page.goto('/auth/student/register');
+  await gotoStudentSignup(page);
   await page.getByLabel('Full Name', { exact: true }).fill(name.slice(0, 1));
   await page.getByLabel('Student Email', { exact: true }).fill(email.slice(0, 1));
   await page.getByLabel(/^Matric Number/).fill(matricNumber.repeat(101));
@@ -221,7 +244,7 @@ test('invalid details fields expose their live associated errors', async ({ page
 test('unsupported school email reports support separately without beginning proof', async ({ page }) => {
   const api = await installSyntheticApi(page, { signup: { preflight: [preflightResponse(notice, false)] } });
   const faults = collectBrowserFaults(page, api);
-  await page.goto('/auth/student/register');
+  await gotoStudentSignup(page);
   await fillDetails(page);
   await expect(page.getByRole('status')).toContainText(/not supported/i);
   await expect(page.getByText(/Email verified/i)).toHaveCount(0);
@@ -237,7 +260,7 @@ test('preflight infrastructure failure keeps proof idle and exposes explicit ret
     },
   });
   const faults = collectBrowserFaults(page, api);
-  await page.goto('/auth/student/register');
+  await gotoStudentSignup(page);
   await fillDetails(page);
   await expect(page.locator('#signup-support-error')).toContainText(/unable to check/i);
   await expect(page.getByRole('button', { name: 'Retry', exact: true })).toBeVisible();
@@ -254,7 +277,7 @@ test('request freezes canonical claims, enters the proof step, and keeps the bro
     },
   });
   const faults = collectBrowserFaults(page, api);
-  await page.goto('/auth/student/register');
+  await gotoStudentSignup(page);
   await enterOtp(page);
   expect(api.signupRequests.filter((request) => request.endpoint === 'request')).toHaveLength(1);
   expect(api.signupRequests.filter((request) => request.endpoint === 'request').every((request) => request.matchesExpectedBody)).toBe(true);
@@ -274,7 +297,7 @@ test('committed OTP input receives focus when the original animation frame arriv
   });
   const faults = collectBrowserFaults(page, api);
   try {
-    await page.goto('/auth/student/register');
+    await gotoStudentSignup(page);
     await fillDetails(page);
     await page.getByRole('checkbox', { name: 'I agree to student verification processing' }).check();
     await page.getByRole('button', { name: 'Continue', exact: true }).click();
@@ -300,7 +323,7 @@ test('Back focuses the committed email input when the original animation frame a
     },
   });
   const faults = collectBrowserFaults(page, api);
-  await page.goto('/auth/student/register');
+  await gotoStudentSignup(page);
   await enterOtp(page);
   await runNextAnimationFrameBeforeReactCommit(page);
   await page.getByRole('button', { name: 'Back', exact: true }).click();
@@ -320,7 +343,7 @@ test('initial details support updates do not steal focus without a focus intent'
   });
   const faults = collectBrowserFaults(page, api);
   try {
-    await page.goto('/auth/student/register');
+    await gotoStudentSignup(page);
     await fillDetails(page);
     await api.waitForSignupStarted('preflight', 1);
     const passwordField = page.getByLabel('Password', { exact: true });
@@ -349,7 +372,7 @@ for (const scenario of [
       },
     });
     const faults = collectBrowserFaults(page, api);
-    await page.goto('/auth/student/register');
+    await gotoStudentSignup(page);
     await fillDetails(page);
     await page.getByRole('checkbox', { name: 'I agree to student verification processing' }).check();
     await page.getByRole('button', { name: 'Continue', exact: true }).click();
@@ -373,7 +396,7 @@ test('a pasted six-digit rejected proof stays local without refresh', async ({ p
     },
   });
   const faults = collectBrowserFaults(page, api);
-  await page.goto('/auth/student/register');
+  await gotoStudentSignup(page);
   await enterOtp(page);
   await pasteOtp(page);
   await page.getByRole('button', { name: 'Create Account', exact: true }).click();
@@ -395,7 +418,7 @@ for (const [invalidOtpIndex, invalidOtp] of invalidOtps.entries()) {
       },
     });
     const faults = collectBrowserFaults(page, api);
-    await page.goto('/auth/student/register');
+    await gotoStudentSignup(page);
     await enterOtp(page);
     await page.getByLabel('Verification Code', { exact: true }).fill(invalidOtp);
     await page.getByRole('button', { name: 'Create Account', exact: true }).click();
@@ -415,7 +438,7 @@ test('valid student completion follows only the safe requested return path', asy
     },
   });
   const faults = collectBrowserFaults(page, api);
-  await page.goto('/auth/student/register?redirect=%2Fmarketplace%3Fsource%3Dwidget');
+  await gotoStudentSignup(page, '/auth/student/register?redirect=%2Fmarketplace%3Fsource%3Dwidget');
   await enterOtp(page);
   await page.getByLabel('Verification Code', { exact: true }).fill(validOtp);
   await page.getByRole('button', { name: 'Create Account', exact: true }).click();
@@ -452,7 +475,7 @@ for (const scenario of [
       },
     });
     const faults = collectBrowserFaults(page, api);
-    await page.goto('/auth/student/register?redirect=%2Fmarketplace%3Fsource%3Dwidget');
+    await gotoStudentSignup(page, '/auth/student/register?redirect=%2Fmarketplace%3Fsource%3Dwidget');
     await enterOtp(page);
     await page.getByLabel('Verification Code', { exact: true }).fill(validOtp);
     await page.getByRole('button', { name: 'Create Account', exact: true }).click();
@@ -510,7 +533,7 @@ for (const scenario of [
       },
     });
     const faults = collectBrowserFaults(page, api);
-    await page.goto('/auth/student/register?redirect=%2Fmarketplace%3Fsource%3Dwidget');
+    await gotoStudentSignup(page, '/auth/student/register?redirect=%2Fmarketplace%3Fsource%3Dwidget');
     await enterOtp(page);
     await page.getByLabel('Verification Code', { exact: true }).fill(validOtp);
     await page.getByRole('button', { name: 'Create Account', exact: true }).click();
@@ -538,7 +561,7 @@ test('a valid committed response with local session persistence failure offers a
     },
   });
   const faults = collectBrowserFaults(page, api);
-  await page.goto('/auth/student/register');
+  await gotoStudentSignup(page);
   await enterOtp(page);
   await setActiveSessionWriteDenied(page, true);
   await page.getByLabel('Verification Code', { exact: true }).fill(validOtp);
@@ -560,7 +583,7 @@ test('an active vendor session survives a later student confirmation attempt unc
   const faults = collectBrowserFaults(page, api);
   await page.goto(`${appOrigin}${storageTabPath}`);
   const before = await page.evaluate(() => localStorage.getItem('awoof.session.v1'));
-  await page.goto('/auth/student/register');
+  await gotoStudentSignup(page);
   await enterOtp(page);
   await page.getByLabel('Verification Code', { exact: true }).fill(validOtp);
   await page.getByRole('button', { name: 'Create Account', exact: true }).click();
@@ -580,7 +603,7 @@ test('storage read denial cannot start a persistent authenticated signup session
     },
   });
   const faults = collectBrowserFaults(page, api);
-  await page.goto('/auth/student/register');
+  await gotoStudentSignup(page);
   await enterOtp(page);
   await page.getByLabel('Verification Code', { exact: true }).fill(validOtp);
   await page.getByRole('button', { name: 'Create Account', exact: true }).click();
@@ -603,7 +626,7 @@ test('resend replaces the receipt, clears old proof, and honors the server coold
     },
   });
   const faults = collectBrowserFaults(page, api);
-  await page.goto('/auth/student/register');
+  await gotoStudentSignup(page);
   await enterOtp(page);
   const otp = page.getByLabel('Verification Code', { exact: true });
   await otp.fill(validOtp);
@@ -632,7 +655,7 @@ test('a server-provided resend deadline re-enables the control without another i
     },
   });
   const faults = collectBrowserFaults(page, api);
-  await page.goto('/auth/student/register');
+  await gotoStudentSignup(page);
   await enterOtp(page);
   const resend = page.getByRole('button', { name: 'Resend code', exact: true });
   await expect(resend).toBeDisabled();
@@ -679,7 +702,7 @@ for (const scenario of [
       },
     });
     const faults = collectBrowserFaults(page, api);
-    await page.goto('/auth/student/register');
+    await gotoStudentSignup(page);
     await enterOtp(page);
     const otp = page.getByLabel('Verification Code', { exact: true });
     const resend = page.getByRole('button', { name: 'Resend code', exact: true });
@@ -736,7 +759,7 @@ for (const change of [
       },
     });
     const faults = collectBrowserFaults(page, api);
-    await page.goto('/auth/student/register');
+    await gotoStudentSignup(page);
     await fillDetails(page);
     const consent = page.getByRole('checkbox', { name: 'I agree to student verification processing' });
     await expect(consent).toBeVisible();
@@ -762,7 +785,7 @@ test('a stale supported preflight cannot restore consent for a changed identity'
   });
   const faults = collectBrowserFaults(page, api);
   try {
-    await page.goto('/auth/student/register');
+    await gotoStudentSignup(page);
     await fillDetails(page);
     await api.waitForSignupStarted('preflight', 1);
     await page.getByLabel('Student Email', { exact: true }).fill(betaEmail);
@@ -799,7 +822,7 @@ test('Back cancels a held initial proof request and restores editable identity f
   });
   const faults = collectBrowserFaults(page, api);
   try {
-    await page.goto('/auth/student/register');
+    await gotoStudentSignup(page);
     await fillDetails(page);
     await page.getByRole('checkbox', { name: 'I agree to student verification processing' }).check();
     await page.getByRole('button', { name: 'Continue', exact: true }).click();
@@ -843,7 +866,7 @@ test('Back edit and retry keeps an old request from replacing newer canonical pr
   });
   const faults = collectBrowserFaults(page, api);
   try {
-    await page.goto('/auth/student/register');
+    await gotoStudentSignup(page);
     await fillDetails(page);
     await page.getByRole('checkbox', { name: 'I agree to student verification processing' }).check();
     await page.getByRole('button', { name: 'Continue', exact: true }).click();
@@ -891,7 +914,7 @@ test('leaving through Sign in cancels a held initial proof request', async ({ pa
   });
   const faults = collectBrowserFaults(page, api);
   try {
-    await page.goto('/auth/student/register?redirect=%2Fmarketplace%3Fsource%3Dwidget');
+    await gotoStudentSignup(page, '/auth/student/register?redirect=%2Fmarketplace%3Fsource%3Dwidget');
     await fillDetails(page);
     await page.getByRole('checkbox', { name: 'I agree to student verification processing' }).check();
     await page.getByRole('button', { name: 'Continue', exact: true }).click();
@@ -920,7 +943,7 @@ test('Back cancels a held confirmation and restores a fresh details phase', asyn
   });
   const faults = collectBrowserFaults(page, api);
   try {
-    await page.goto('/auth/student/register');
+    await gotoStudentSignup(page);
     await enterOtp(page);
     await page.getByLabel('Verification Code', { exact: true }).fill(validOtp);
     await page.getByRole('button', { name: 'Create Account', exact: true }).click();
@@ -952,7 +975,7 @@ test('leaving the route cancels a held confirmation without asserting server rol
   });
   const faults = collectBrowserFaults(page, api);
   try {
-    await page.goto('/auth/student/register?redirect=%2Fmarketplace%3Fsource%3Dwidget');
+    await gotoStudentSignup(page, '/auth/student/register?redirect=%2Fmarketplace%3Fsource%3Dwidget');
     await enterOtp(page);
     await page.getByLabel('Verification Code', { exact: true }).fill(validOtp);
     await page.getByRole('button', { name: 'Create Account', exact: true }).click();
@@ -995,7 +1018,9 @@ for (const replacement of [
     const faults = collectBrowserFaults(page, api);
     const other = await context.newPage();
     try {
-      await page.goto('/auth/student/register?redirect=%2Fmarketplace%3Fsource%3Dwidget');
+      // The default document-load wait previously timed out before this flow
+      // started; the interactive OTP form below is this test's real boundary.
+      await gotoStudentSignup(page, '/auth/student/register?redirect=%2Fmarketplace%3Fsource%3Dwidget');
       await enterOtp(page);
       await page.getByLabel('Verification Code', { exact: true }).fill(validOtp);
       await page.getByRole('button', { name: 'Create Account', exact: true }).click();
@@ -1031,7 +1056,9 @@ test('a held confirmation fresh-reconciles an unobserved active-to-tagged signed
   const faults = collectBrowserFaults(page, api);
   const other = await context.newPage();
   try {
-    await page.goto('/auth/student/register?redirect=%2Fmarketplace%3Fsource%3Dwidget');
+    // This flow begins at the hydrated OTP form; document load is not a
+    // correctness boundary for confirmation reconciliation.
+    await gotoStudentSignup(page, '/auth/student/register?redirect=%2Fmarketplace%3Fsource%3Dwidget');
     await enterOtp(page);
     await page.getByLabel('Verification Code', { exact: true }).fill(validOtp);
     await page.getByRole('button', { name: 'Create Account', exact: true }).click();
@@ -1068,7 +1095,7 @@ for (const viewport of [
       },
     });
     const faults = collectBrowserFaults(page, api);
-    await page.goto('/auth/student/register');
+    await gotoStudentSignup(page);
     await fillDetails(page);
     const consent = page.getByRole('checkbox', { name: 'I agree to student verification processing' });
     await consent.focus();

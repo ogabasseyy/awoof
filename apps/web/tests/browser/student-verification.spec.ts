@@ -10,6 +10,10 @@ test('an existing student renews eligibility with the current notice and email c
         const endpoint = new URL(route.request().url()).pathname;
         calls.push(endpoint);
         const body = route.request().method() === 'POST' ? route.request().postDataJSON() : null;
+        if (endpoint.endsWith('/microsoft/identities')) {
+            expect(route.request().method()).toBe('GET');
+            await route.fulfill({ json: { data: { items: [], nextCursor: null } }, headers: { 'access-control-allow-origin': '*' } }); return;
+        }
         if (endpoint.endsWith('/consents')) {
             await route.fulfill({ json: { data: { items: [], nextCursor: null } }, headers: { 'access-control-allow-origin': '*' } }); return;
         }
@@ -36,11 +40,11 @@ test('an existing student renews eligibility with the current notice and email c
     await expect(page.getByRole('button', { name: 'Send verification code' })).toBeDisabled();
     await expect(page.getByText('Enrollment verification is not currently available for your school.')).toBeVisible();
     await expect(page.getByRole('button', { name: 'Check enrollment' })).toHaveCount(0);
-    await page.getByRole('checkbox').check();
+    await page.getByRole('checkbox', { name: 'I agree to school email verification.' }).check();
     await page.getByRole('button', { name: 'Send verification code' }).click();
     await page.getByLabel('Email code').fill('123456');
     await page.getByRole('button', { name: 'Confirm email', exact: true }).click();
-    await expect(page.getByText('Your student eligibility is current.')).toBeVisible();
+    await expect(page.getByRole('status').filter({ hasText: 'Your student eligibility is current.' })).toBeVisible();
     expect(calls.filter((value) => value.endsWith('/initiate'))).toHaveLength(1);
 });
 
@@ -89,6 +93,10 @@ test('enrollment becomes actionable only after school email confirmation', async
     let emailConfirmed = false; let eligible = false;
     await page.route(`${apiOrigin}/api/verification/**`, async (route) => {
         const endpoint = new URL(route.request().url()).pathname;
+        if (endpoint.endsWith('/microsoft/identities')) {
+            expect(route.request().method()).toBe('GET');
+            await route.fulfill({ json: { data: { items: [], nextCursor: null } }, headers: { 'access-control-allow-origin': '*' } }); return;
+        }
         if (endpoint.endsWith('/consents')) {
             await route.fulfill({ json: { data: { items: [], nextCursor: null } }, headers: { 'access-control-allow-origin': '*' } }); return;
         }
@@ -105,7 +113,7 @@ test('enrollment becomes actionable only after school email confirmation', async
         await route.fulfill({ json: { data }, headers: { 'access-control-allow-origin': '*' } });
     });
     await page.goto('/student/verification');
-    await page.getByRole('checkbox').check();
+    await page.getByRole('checkbox', { name: 'I agree to verification.' }).check();
     await expect(page.getByText('Confirm your school email above before checking enrollment.')).toBeVisible();
     await expect(page.getByRole('button', { name: 'Check enrollment' })).toHaveCount(0);
     await page.getByRole('button', { name: 'Send verification code' }).click();
@@ -113,7 +121,7 @@ test('enrollment becomes actionable only after school email confirmation', async
     await page.getByRole('button', { name: 'Confirm email', exact: true }).click();
     await page.getByLabel('Registration number').fill('SYNTHETIC-123');
     await page.getByRole('button', { name: 'Check enrollment' }).click();
-    await expect(page.getByText('Your student eligibility is current.')).toBeVisible();
+    await expect(page.getByRole('status').filter({ hasText: 'Your student eligibility is current.' })).toBeVisible();
 });
 
 test('persisted mailbox proof allows enrollment while email delivery is unavailable', async ({ page }) => {
@@ -121,6 +129,10 @@ test('persisted mailbox proof allows enrollment while email delivery is unavaila
     let eligible = false;
     await page.route(`${apiOrigin}/api/verification/**`, async (route) => {
         const endpoint = new URL(route.request().url()).pathname;
+        if (endpoint.endsWith('/microsoft/identities')) {
+            expect(route.request().method()).toBe('GET');
+            await route.fulfill({ json: { data: { items: [], nextCursor: null } }, headers: { 'access-control-allow-origin': '*' } }); return;
+        }
         if (endpoint.endsWith('/consents')) {
             await route.fulfill({ json: { data: { items: [], nextCursor: null } }, headers: { 'access-control-allow-origin': '*' } }); return;
         }
@@ -135,11 +147,11 @@ test('persisted mailbox proof allows enrollment while email delivery is unavaila
         await route.fulfill({ json: { data }, headers: { 'access-control-allow-origin': '*' } });
     });
     await page.goto('/student/verification');
-    await page.getByRole('checkbox').check();
+    await page.getByRole('checkbox', { name: 'I agree to verification.' }).check();
     await expect(page.getByRole('button', { name: 'Send verification code' })).toBeDisabled();
     await page.getByLabel('Registration number').fill('SYNTHETIC-123');
     await page.getByRole('button', { name: 'Check enrollment' }).click();
-    await expect(page.getByText('Your student eligibility is current.')).toBeVisible();
+    await expect(page.getByRole('status').filter({ hasText: 'Your student eligibility is current.' })).toBeVisible();
 });
 
 for (const eligible of [true, false]) {
@@ -208,8 +220,12 @@ test('renewal disables email when the current domain is not approved despite ins
         emailDomainApproved: false, mailboxConfirmed: false, email: 'student@removed.test', universityId: 'fixture-school', eligibility: { eligible: false }, notices: { verification: { version: 'fixture', text: 'I agree to verification.' } },
     } }, headers: { 'access-control-allow-origin': '*' } }));
     await page.route(`${apiOrigin}/api/verification/methods/*`, (route) => route.fulfill({ json: { data: { methods: [{ methodType: 'email', isAvailable: true }] } }, headers: { 'access-control-allow-origin': '*' } }));
+    await page.route(`${apiOrigin}/api/verification/microsoft/identities`, (route) => {
+        expect(route.request().method()).toBe('GET');
+        return route.fulfill({ json: { data: { items: [], nextCursor: null } }, headers: { 'access-control-allow-origin': '*' } });
+    });
     await page.route(`${apiOrigin}/api/verification/email/request`, (route) => { requestCalls += 1; return route.fulfill({ status: 400, json: {} }); });
-    await page.goto('/student/verification'); await page.getByRole('checkbox').check();
+    await page.goto('/student/verification'); await page.getByRole('checkbox', { name: 'I agree to verification.' }).check();
     await expect(page.getByRole('button', { name: 'Send verification code' })).toBeDisabled();
     await expect(page.getByText('School email verification is currently unavailable. Please contact support.')).toBeVisible();
     expect(requestCalls).toBe(0);
