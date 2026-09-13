@@ -134,7 +134,8 @@ function VerificationForm() {
             <p role="status">Your student eligibility is current.</p>
             <Link href="/marketplace" className="underline">Browse student offers</Link>
         </> : !status.universityId ? <p>Your school profile is incomplete. Contact support to update your school before verifying.</p> : <>
-            <p>Confirm your school email, {status.email}, to renew your verification. Some schools also require a current enrollment check.</p>
+            <p>Confirm your school email to renew your verification. Some schools also require a current enrollment check.</p>
+            <p className="break-words">{status.email}</p>
             <label className="flex gap-3"><input type="checkbox" checked={accepted} disabled={busy || Boolean(grant)} onChange={(event) => setAccepted(event.target.checked)} />{status.notices.verification.text}</label>
             <button type="button" className="rounded bg-blue-700 px-4 py-2 text-white disabled:opacity-50" disabled={busy || !accepted || !emailAvailable} onClick={() => void run(async () => {
                 if (Date.now() < retryAt) { setMessage('Please wait before requesting another code.'); return; }

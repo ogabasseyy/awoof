@@ -427,7 +427,7 @@ test('global Microsoft disablement hides start while owner history and school em
   await expect(page.getByText('Microsoft connections are temporarily unavailable.')).toBeVisible();
   await expect(page.getByRole('heading', { name: 'Microsoft consent history' })).toBeVisible();
   await expect(page.getByText('Active — accepted')).toBeVisible();
-  await page.locator('input[type="checkbox"]').first().check();
+  await page.getByRole('checkbox', { name: 'Synthetic Awoof processing notice.' }).check();
   await expect(page.getByRole('button', { name: 'Send verification code' })).toBeEnabled();
 });
 
