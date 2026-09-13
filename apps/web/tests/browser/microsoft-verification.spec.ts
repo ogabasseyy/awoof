@@ -483,6 +483,7 @@ test('an enabled-policy unlink keeps a successful identity refresh distinct from
   await fixtureControl(page, '/api/__fixture/release-delayed-status');
   await expect(page.getByText(/The connection was removed, but current eligibility could not be refreshed/)).toBeVisible();
   await expect(page.getByText('Microsoft connections could not be loaded. You can retry.')).toHaveCount(0);
+  await expect(page.getByText('The connection was removed, but connection history could not be refreshed. Use Refresh to check it again.')).toHaveCount(0);
   await expect(page.getByText('Removed — Synthetic approved institution A')).toBeVisible();
   await page.getByRole('button', { name: 'Retry current eligibility' }).click();
   await expect(page.getByRole('button', { name: 'Retry current eligibility' })).toHaveCount(0);
