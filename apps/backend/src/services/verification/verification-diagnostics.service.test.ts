@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { serializeDiagnostic } from './verification-diagnostics.service.js';
+import { recordDiagnosticBestEffort, serializeDiagnostic, VerificationDiagnosticsService } from './verification-diagnostics.service.js';
 
 const validEvent = {
     correlationId: 'bcbddbbc-116c-4cfa-99c0-ea901257fbd0',
@@ -77,4 +77,50 @@ test('normalizes a revoked proxy rejected during object validation', () => {
     const { proxy, revoke } = Proxy.revocable([], {});
     revoke();
     assert.throws(() => serializeDiagnostic(proxy), /Invalid diagnostic event/);
+});
+
+test('persists only the validated diagnostic allowlist and safe server context', async () => {
+    const calls: Array<{ text: string; values: unknown[] | undefined }> = [];
+    const client = {
+        query: async (text: string, values?: unknown[]) => {
+            calls.push({ text, values });
+            if (text.includes('FROM universities')) return { rowCount: 1, rows: [{ id: 'c1f7c4b1-5b7d-45a7-8d61-27f94d315e57' }] };
+            return { rowCount: 1, rows: [] };
+        },
+        release: () => undefined,
+    };
+    const service = new VerificationDiagnosticsService({
+        connect: async () => client,
+    } as never);
+
+    await service.record({ institutionId: 'c1f7c4b1-5b7d-45a7-8d61-27f94d315e57', policyVersion: 3 }, {
+        ...validEvent,
+        access_token: 'TOKEN_CANARY',
+        provider_response: { email: 'PRIVATE_CANARY' },
+    });
+
+    assert.deepEqual(calls.map((call) => call.text), [
+        'BEGIN',
+        'SELECT id FROM universities WHERE id=$1 FOR KEY SHARE',
+        `INSERT INTO verification_diagnostic_events
+                     (correlation_id, stage, outcome, reason, http_status, duration_ms, institution_id, policy_version)
+                 VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
+        'COMMIT',
+    ]);
+    assert.deepEqual(calls[2]!.values, [
+        validEvent.correlationId, validEvent.stage, validEvent.outcome, validEvent.reason,
+        null, validEvent.durationMs, 'c1f7c4b1-5b7d-45a7-8d61-27f94d315e57', 3,
+    ]);
+    assert.equal(JSON.stringify(calls).includes('CANARY'), false);
+});
+
+test('best-effort recorder keeps a secret-bearing persistence failure out of the alert', async () => {
+    const alerts: unknown[][] = [];
+    await recordDiagnosticBestEffort(
+        { record: async () => { throw new Error('TOKEN_CANARY must never reach logs'); } },
+        { institutionId: 'c1f7c4b1-5b7d-45a7-8d61-27f94d315e57', policyVersion: 3 },
+        validEvent,
+        (...args: unknown[]) => { alerts.push(args); },
+    );
+    assert.deepEqual(alerts, [['verification diagnostic persistence failed']]);
 });

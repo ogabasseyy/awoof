@@ -12,6 +12,9 @@ import { consumeChallenge, requestChallenge } from '../../services/verification/
 import { acceptMicrosoftConsent, withdrawMicrosoftConsent } from '../../services/verification/microsoft-consent.service.js';
 import { VERIFICATION_NOTICE_VERSION } from '../../services/verification/verification-notices.js';
 import { MicrosoftFlowService } from '../../services/verification/microsoft-flow.service.js';
+import { MicrosoftEducationService } from '../../services/verification/microsoft-education.service.js';
+import { MicrosoftOidcOperationalError } from '../../services/verification/microsoft-oidc.service.js';
+import type { VerificationDiagnostics } from '../../services/verification/verification-diagnostics.service.js';
 import { hashMicrosoftAttemptSecret } from '../../services/verification/microsoft-attempt-crypto.js';
 import { createApp } from '../../index.js';
 import { jwtService } from '../../services/auth/jwt.service.js';
@@ -133,7 +136,7 @@ type FinishTestHooks = {
     beforeFinishCommit?: (tx: PoolClient) => Promise<void>;
 };
 
-async function readyGraphAttempt(options: { prelinkedIdentity?: boolean; testHooks?: FinishTestHooks } = {}) {
+async function readyGraphAttempt(options: { prelinkedIdentity?: boolean; testHooks?: FinishTestHooks; education?: { observe(input: { accessToken: string; expectedOid: string }): Promise<import('../../services/verification/microsoft-education.service.js').EducationObservation> } } = {}) {
     const data = await fixture();
     const sid = randomUUID(); let state = '';
     const { consentId, tenantId, objectId, identityId } = await withTestClient((client) => inTransaction(client, async () => {
@@ -164,7 +167,7 @@ async function readyGraphAttempt(options: { prelinkedIdentity?: boolean; testHoo
         pool: db.getPool(), verifierEncryptionKey: randomBytes(32).toString('base64url'), isEnabled: () => true,
         callbackUrl: new URL('https://api.example.invalid/api/verification/microsoft/callback'), completionUrl: new URL('https://app.example.invalid/student/verification/microsoft/complete'),
         oidc: { authorize: async (input) => { state = input.state; return 'https://provider.example.invalid/authorize'; }, redeem: async () => ({ identity: { tenantId, objectId }, graphAccessToken: 'TOKEN_CANARY' }) },
-        education: { observe: async ({ expectedOid }) => ({ outcome: 'student', objectId: expectedOid, observedAt: new Date() }) },
+        education: options.education ?? { observe: async ({ expectedOid }) => ({ outcome: 'student', objectId: expectedOid, observedAt: new Date() }) },
         ...(options.testHooks ? { testHooks: options.testHooks } : {}),
     });
     const started = await service.start({ userId: data.userId, serverSessionId: sid, processingGrantId: data.processingGrantId, providerConsentId: consentId });
@@ -603,6 +606,108 @@ test('a durable claimed callback redemption failure returns only a generic termi
     await assert.rejects(() => service.callback({ callbackUrl: callback, browserCookie: started.callbackCookie.value }));
 });
 
+test('persists redacted Graph and finalization diagnostics without changing enrollment authority', async () => {
+    const valid = await readyGraphAttempt();
+    assert.deepEqual(await valid.service.finish({ userId: valid.data.userId, serverSessionId: valid.sid, attemptId: valid.started.publicResult.attemptId, finishSecret: valid.started.publicResult.finishSecret }), { accountLinked: true, enrollment: 'eligible' });
+    const validEvents = await withTestClient(async (client) => (await client.query<{ stage: string; outcome: string; reason: string; http_status: number | null; row: unknown }>(
+        `SELECT stage,outcome,reason,http_status,to_jsonb(verification_diagnostic_events) AS row
+         FROM verification_diagnostic_events WHERE correlation_id=(SELECT diagnostic_correlation_id FROM microsoft_verification_attempts WHERE id=$1)
+         ORDER BY recorded_at,id`, [valid.started.publicResult.attemptId],
+    )).rows);
+    assert.deepEqual(validEvents.map(({ stage, outcome, reason }) => ({ stage, outcome, reason })), [
+        { stage: 'started', outcome: 'success', reason: 'none' },
+        { stage: 'callback_received', outcome: 'success', reason: 'none' },
+        { stage: 'token_validated', outcome: 'success', reason: 'none' },
+        { stage: 'education_response', outcome: 'success', reason: 'none' },
+        { stage: 'policy_decision', outcome: 'success', reason: 'none' },
+        { stage: 'finished', outcome: 'success', reason: 'none' },
+    ]);
+    assert.equal(JSON.stringify(validEvents).includes(valid.objectId), false);
+
+    const graph403 = await readyGraphAttempt({ education: new MicrosoftEducationService({ fetch: async () => new Response('provider-detail-not-stored', { status: 403 }) }) });
+    assert.deepEqual(await graph403.service.finish({ userId: graph403.data.userId, serverSessionId: graph403.sid, attemptId: graph403.started.publicResult.attemptId, finishSecret: graph403.started.publicResult.finishSecret }), { accountLinked: true, enrollment: 'unconfirmed' });
+    assert.equal(await graphEvidenceCount(graph403.started.publicResult.attemptId), 0);
+    const permissionEvent = await withTestClient(async (client) => (await client.query<{ outcome: string; reason: string; http_status: number | null }>(
+        `SELECT outcome,reason,http_status FROM verification_diagnostic_events
+         WHERE correlation_id=(SELECT diagnostic_correlation_id FROM microsoft_verification_attempts WHERE id=$1)
+           AND stage='education_response'`, [graph403.started.publicResult.attemptId],
+    )).rows[0]!);
+    assert.deepEqual(permissionEvent, { outcome: 'failure', reason: 'permission_required', http_status: 403 });
+
+    const missingRole = await readyGraphAttempt({ education: { observe: async ({ accessToken, expectedOid }) => new MicrosoftEducationService({
+        fetch: async () => Response.json({ id: expectedOid, primaryRole: 'teacher', userType: 'Member', accountEnabled: true }),
+    }).observe({ accessToken, expectedOid }) } });
+    assert.deepEqual(await missingRole.service.finish({ userId: missingRole.data.userId, serverSessionId: missingRole.sid, attemptId: missingRole.started.publicResult.attemptId, finishSecret: missingRole.started.publicResult.finishSecret }), { accountLinked: true, enrollment: 'unconfirmed' });
+    assert.equal(await graphEvidenceCount(missingRole.started.publicResult.attemptId), 0);
+    const missingDataEvent = await withTestClient(async (client) => (await client.query<{ outcome: string; reason: string; http_status: number | null }>(
+        `SELECT outcome,reason,http_status FROM verification_diagnostic_events
+         WHERE correlation_id=(SELECT diagnostic_correlation_id FROM microsoft_verification_attempts WHERE id=$1)
+           AND stage='education_response'`, [missingRole.started.publicResult.attemptId],
+    )).rows[0]!);
+    assert.deepEqual(missingDataEvent, { outcome: 'failure', reason: 'missing_data', http_status: null });
+});
+
+test('diagnostic expiry and terminal events require trusted ownership and one committed finish', async () => {
+    const invalidIdentity = await pendingDurableAttempt({ redeem: async () => { throw new MicrosoftOidcOperationalError('invalid_identity'); } });
+    const invalidResult = await invalidIdentity.service.callback({ callbackUrl: invalidIdentity.callback, browserCookie: invalidIdentity.started.callbackCookie.value });
+    assert.equal(invalidResult.outcome, 'connection_not_completed');
+    assert.equal(invalidIdentity.exchanges(), 1);
+    assert.equal((await withTestClient((client) => client.query('SELECT 1 FROM microsoft_identities WHERE user_id=$1', [invalidIdentity.data.userId]))).rowCount, 0);
+    const invalidEvents = await withTestClient(async (client) => (await client.query<{ stage: string; reason: string }>(
+        `SELECT stage,reason FROM verification_diagnostic_events WHERE correlation_id=(SELECT diagnostic_correlation_id FROM microsoft_verification_attempts WHERE id=$1) ORDER BY recorded_at,id`,
+        [invalidIdentity.started.publicResult.attemptId],
+    )).rows);
+    assert.deepEqual(invalidEvents.at(-2), { stage: 'token_validated', reason: 'invalid_identity' });
+    assert.deepEqual(invalidEvents.at(-1), { stage: 'finished', reason: 'invalid_identity' });
+
+    const cancelled = await pendingDurableAttempt({ redeem: async () => { throw new MicrosoftOidcOperationalError('cancelled_or_permission'); } });
+    await cancelled.service.callback({ callbackUrl: cancelled.callback, browserCookie: cancelled.started.callbackCookie.value });
+    const cancelledReason = await withTestClient(async (client) => (await client.query<{ reason: string }>(
+        `SELECT reason FROM verification_diagnostic_events WHERE correlation_id=(SELECT diagnostic_correlation_id FROM microsoft_verification_attempts WHERE id=$1) AND stage='token_validated'`,
+        [cancelled.started.publicResult.attemptId],
+    )).rows[0]!.reason);
+    assert.equal(cancelledReason, 'cancelled');
+
+    const expired = await pendingDurableAttempt();
+    await withTestClient((client) => client.query(`UPDATE microsoft_verification_attempts SET expires_at=clock_timestamp()-interval '1 second' WHERE id=$1`, [expired.started.publicResult.attemptId]));
+    await assert.rejects(() => expired.service.callback({ callbackUrl: expired.callback, browserCookie: expired.started.callbackCookie.value }));
+    const expiryReason = await withTestClient(async (client) => (await client.query<{ reason: string }>(
+        `SELECT reason FROM verification_diagnostic_events WHERE correlation_id=(SELECT diagnostic_correlation_id FROM microsoft_verification_attempts WHERE id=$1) AND stage='finished'`,
+        [expired.started.publicResult.attemptId],
+    )).rows[0]!.reason);
+    assert.equal(expiryReason, 'expired');
+
+    const unauthorizedExpired = await readyDurableAttempt();
+    await withTestClient((client) => client.query(`UPDATE microsoft_verification_attempts SET expires_at=clock_timestamp()-interval '1 second' WHERE id=$1`, [unauthorizedExpired.started.publicResult.attemptId]));
+    await assert.rejects(() => unauthorizedExpired.service.finish({ userId: unauthorizedExpired.data.userId, serverSessionId: unauthorizedExpired.sid, attemptId: unauthorizedExpired.started.publicResult.attemptId, finishSecret: randomUUID() }));
+    assert.equal((await withTestClient((client) => client.query(
+        `SELECT 1 FROM verification_diagnostic_events WHERE correlation_id=(SELECT diagnostic_correlation_id FROM microsoft_verification_attempts WHERE id=$1) AND stage='finished' AND reason='expired'`,
+        [unauthorizedExpired.started.publicResult.attemptId],
+    ))).rowCount, 0);
+
+    const alerts: unknown[][] = [];
+    const persistenceFailure = await readyDurableAttempt({ diagnostics: { record: async () => { throw new Error('TOKEN_CANARY'); } }, diagnosticAlert: (...args: unknown[]) => { alerts.push(args); } });
+    const input = { userId: persistenceFailure.data.userId, serverSessionId: persistenceFailure.sid, attemptId: persistenceFailure.started.publicResult.attemptId, finishSecret: persistenceFailure.started.publicResult.finishSecret };
+    assert.deepEqual(await persistenceFailure.service.finish(input), { accountLinked: true, enrollment: 'not_checked' });
+    assert.deepEqual(await persistenceFailure.service.finish(input), { accountLinked: true, enrollment: 'not_checked' });
+    assert.ok(alerts.length >= 1);
+    assert.equal(JSON.stringify(alerts).includes('TOKEN_CANARY'), false);
+    assert.equal((await withTestClient((client) => client.query('SELECT status FROM microsoft_verification_attempts WHERE id=$1 AND status=\'completed\'', [input.attemptId]))).rowCount, 1);
+
+    const idempotent = await readyDurableAttempt();
+    const idempotentInput = { userId: idempotent.data.userId, serverSessionId: idempotent.sid, attemptId: idempotent.started.publicResult.attemptId, finishSecret: idempotent.started.publicResult.finishSecret };
+    await idempotent.service.finish(idempotentInput);
+    await idempotent.service.finish(idempotentInput);
+    const finalEvents = await withTestClient(async (client) => (await client.query<{ stage: string; outcome: string; reason: string }>(
+        `SELECT stage,outcome,reason FROM verification_diagnostic_events WHERE correlation_id=(SELECT diagnostic_correlation_id FROM microsoft_verification_attempts WHERE id=$1) AND stage IN ('policy_decision','finished') ORDER BY recorded_at,id`,
+        [idempotentInput.attemptId],
+    )).rows);
+    assert.deepEqual(finalEvents, [
+        { stage: 'policy_decision', outcome: 'unknown', reason: 'none' },
+        { stage: 'finished', outcome: 'success', reason: 'none' },
+    ]);
+});
+
 test('both consent withdrawals prevent dispatch before claim, prevent ready during held redeem, and reject ready finish', async () => {
     for (const withdrawal of ['processing', 'provider'] as const) {
         for (const phase of ['before', 'during', 'after'] as const) {
@@ -930,7 +1035,7 @@ test('Graph mode cancellation prevents claim dispatch, prevents Graph after held
     }
 });
 
-async function readyDurableAttempt() {
+async function readyDurableAttempt(options: { diagnostics?: VerificationDiagnostics; diagnosticAlert?: (...args: unknown[]) => void } = {}) {
     const data = await fixture(); const sid = randomUUID(); let state = ''; let exchanges = 0;
     const consentId = await withTestClient(async (client) => inTransaction(client, async () => {
         await client.query(`UPDATE users SET active_session_id=$2,refresh_token_hash='h',refresh_token_expires_at=clock_timestamp()+interval '1 hour' WHERE id=$1`, [data.userId, sid]);
@@ -938,14 +1043,14 @@ async function readyDurableAttempt() {
         return acceptMicrosoftConsent(client, data.userId, { accepted:true, processingGrantId:data.processingGrantId, snapshot:{ universityId:data.universityId, providerPolicyVersion:policy.version, noticeVersion:'microsoft-v1', mode:'identity_only', scopes:['openid','profile'] } });
     }));
     const tenantId = (await withTestClient(async (client) => (await client.query<{tenant_id:string}>('SELECT tenant_id FROM institution_microsoft_policies WHERE university_id=$1',[data.universityId])).rows[0]!.tenant_id));
-    const service = new MicrosoftFlowService({ pool:db.getPool(), verifierEncryptionKey:randomBytes(32).toString('base64url'), isEnabled:()=>true, callbackUrl:new URL('https://api.example.invalid/api/verification/microsoft/callback'), completionUrl:new URL('https://app.example.invalid/student/verification/microsoft/complete'), oidc:{ authorize:async(input)=>{state=input.state;return 'https://provider.example.invalid/a';}, redeem:async()=>{exchanges++;return {identity:{tenantId,objectId:randomUUID()}};} } });
+    const service = new MicrosoftFlowService({ pool:db.getPool(), verifierEncryptionKey:randomBytes(32).toString('base64url'), isEnabled:()=>true, callbackUrl:new URL('https://api.example.invalid/api/verification/microsoft/callback'), completionUrl:new URL('https://app.example.invalid/student/verification/microsoft/complete'), oidc:{ authorize:async(input)=>{state=input.state;return 'https://provider.example.invalid/a';}, redeem:async()=>{exchanges++;return {identity:{tenantId,objectId:randomUUID()}};} }, ...(options.diagnostics ? { diagnostics: options.diagnostics } : {}), ...(options.diagnosticAlert ? { diagnosticAlert: options.diagnosticAlert } : {}) });
     const started = await service.start({userId:data.userId,serverSessionId:sid,processingGrantId:data.processingGrantId,providerConsentId:consentId});
     const callback = new URL('https://api.example.invalid/api/verification/microsoft/callback'); callback.searchParams.set('state',state); callback.searchParams.set('code','CANARY');
     await service.callback({callbackUrl:callback,browserCookie:started.callbackCookie.value});
     return { data,sid,service,started,callback,exchanges:()=>exchanges };
 }
 
-async function pendingDurableAttempt(options: { isEnabled?: () => boolean; beforeRedeem?: () => Promise<void> } = {}) {
+async function pendingDurableAttempt(options: { isEnabled?: () => boolean; beforeRedeem?: () => Promise<void>; redeem?: (tenantId: string) => Promise<{ identity: { tenantId: string; objectId: string }; graphAccessToken?: string }> } = {}) {
     const data = await fixture(); const sid = randomUUID(); let state = ''; let exchanges = 0;
     const consentId = await withTestClient(async (client) => inTransaction(client, async () => {
         await client.query(`UPDATE users SET active_session_id=$2,refresh_token_hash='h',refresh_token_expires_at=clock_timestamp()+interval '1 hour' WHERE id=$1`, [data.userId, sid]);
@@ -953,7 +1058,7 @@ async function pendingDurableAttempt(options: { isEnabled?: () => boolean; befor
         return acceptMicrosoftConsent(client, data.userId, { accepted: true, processingGrantId: data.processingGrantId, snapshot: { universityId: data.universityId, providerPolicyVersion: policy.version, noticeVersion: 'microsoft-v1', mode: 'identity_only', scopes: ['openid', 'profile'] } });
     }));
     const tenantId = (await withTestClient(async (client) => (await client.query<{ tenant_id: string }>('SELECT tenant_id FROM institution_microsoft_policies WHERE university_id=$1', [data.universityId])).rows[0]!.tenant_id));
-    const service = new MicrosoftFlowService({ pool: db.getPool(), verifierEncryptionKey: randomBytes(32).toString('base64url'), isEnabled: options.isEnabled ?? (() => true), callbackUrl: new URL('https://api.example.invalid/api/verification/microsoft/callback'), completionUrl: new URL('https://app.example.invalid/student/verification/microsoft/complete'), oidc: { authorize: async (input) => { state = input.state; return 'https://provider.example.invalid/a'; }, redeem: async () => { exchanges += 1; await options.beforeRedeem?.(); return { identity: { tenantId, objectId: randomUUID() } }; } } });
+    const service = new MicrosoftFlowService({ pool: db.getPool(), verifierEncryptionKey: randomBytes(32).toString('base64url'), isEnabled: options.isEnabled ?? (() => true), callbackUrl: new URL('https://api.example.invalid/api/verification/microsoft/callback'), completionUrl: new URL('https://app.example.invalid/student/verification/microsoft/complete'), oidc: { authorize: async (input) => { state = input.state; return 'https://provider.example.invalid/a'; }, redeem: async () => { exchanges += 1; await options.beforeRedeem?.(); return options.redeem ? options.redeem(tenantId) : { identity: { tenantId, objectId: randomUUID() } }; } } });
     const started = await service.start({ userId: data.userId, serverSessionId: sid, processingGrantId: data.processingGrantId, providerConsentId: consentId });
     const callback = new URL('https://api.example.invalid/api/verification/microsoft/callback'); callback.searchParams.set('state', state); callback.searchParams.set('code', 'CANARY');
     return { data, sid, service, started, callback, exchanges: () => exchanges };

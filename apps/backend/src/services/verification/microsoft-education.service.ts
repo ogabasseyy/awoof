@@ -4,7 +4,7 @@ const REQUEST_TIMEOUT_MS = 5_000;
 
 export type EducationObservation =
     | { outcome: 'student'; objectId: string; observedAt: Date }
-    | { outcome: 'unknown'; reason: 'unavailable' | 'role_not_confirmed' | 'permission_required' | 'identity_mismatch' | 'account_not_eligible' };
+    | { outcome: 'unknown'; reason: 'unavailable' | 'role_not_confirmed' | 'permission_required' | 'identity_mismatch' | 'account_not_eligible'; httpStatus?: number };
 
 export function classifyEducation(body: { id?: string; primaryRole?: string; userType?: string; accountEnabled?: boolean }, expectedOid: string, now: Date): EducationObservation {
     if (!isEducationBody(body) || typeof expectedOid !== 'string' || expectedOid.length === 0) return unavailable();
@@ -107,7 +107,7 @@ export class MicrosoftEducationService {
                 new Promise<never>((_, reject) => controller.signal.addEventListener('abort', () => reject(new DOMException('Graph request timed out', 'TimeoutError')), { once: true })),
             ]);
             if (response.status >= 300 && response.status < 400) { discard(response); return unavailable(); }
-            if (response.status === 401 || response.status === 403) { discard(response); return { outcome: 'unknown', reason: 'permission_required' }; }
+            if (response.status === 401 || response.status === 403) { discard(response); return { outcome: 'unknown', reason: 'permission_required', httpStatus: response.status }; }
             if (!response.ok) { discard(response); return unavailable(); }
             const contentLength = response.headers.get('content-length');
             if (contentLength !== null && (!/^\d+$/.test(contentLength) || Number(contentLength) > MAX_RESPONSE_BYTES)) { discard(response); return unavailable(); }

@@ -50,7 +50,9 @@ test('fails closed when the server clock is invalid', async () => {
 test('maps Graph permission and availability failures to non-positive observations without provider details', async () => {
     for (const [status, expected] of [[401, 'permission_required'], [403, 'permission_required'], [404, 'unavailable'], [429, 'unavailable'], [500, 'unavailable']] as const) {
         const result = await service(async () => new Response('profile payload', { status })).observe({ accessToken: 'secret', expectedOid: 'oid-1' });
-        assert.deepEqual(result, { outcome: 'unknown', reason: expected });
+        assert.deepEqual(result, expected === 'permission_required'
+            ? { outcome: 'unknown', reason: expected, httpStatus: status }
+            : { outcome: 'unknown', reason: expected });
     }
     const network = await service(async () => { throw new Error('secret profile'); }).observe({ accessToken: 'secret', expectedOid: 'oid-1' });
     assert.deepEqual(network, { outcome: 'unknown', reason: 'unavailable' });

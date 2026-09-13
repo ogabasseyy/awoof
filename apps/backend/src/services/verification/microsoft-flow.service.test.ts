@@ -31,11 +31,22 @@ test('start keeps the browser secret exclusively in typed cookie instructions an
         }
         throw new Error(`Unexpected query ${text}`);
     }, release: () => undefined };
+    const pool = {
+        connect: async () => tx,
+        query: async (text: string) => {
+            if (text.includes('SELECT diagnostic_correlation_id')) {
+                return { rowCount: 1, rows: [{ diagnostic_correlation_id: insert?.[9], university_id: universityId, institution_policy_version: 1 }] };
+            }
+            if (text.includes('INSERT INTO verification_diagnostic_events')) return { rowCount: 1, rows: [] };
+            throw new Error(`Unexpected direct pool query ${text}`);
+        },
+    };
     const service = new MicrosoftFlowService({
-        pool: { connect: async () => tx } as never,
+        pool: pool as never,
         oidc: { authorize: async () => 'https://login.microsoftonline.com/authorize', redeem: async () => { throw new Error('not used'); } },
         verifierEncryptionKey: randomBytes(32).toString('base64url'), callbackUrl: new URL('https://api.example.test/api/verification/microsoft/callback'), completionUrl: new URL('https://app.example.test/student/verification/microsoft/complete'),
         isEnabled: () => true,
+        diagnostics: { record: async () => undefined },
     });
     const result = await service.start({ userId, serverSessionId: sid, processingGrantId, providerConsentId });
     assert.equal(result.callbackCookie.name, `awoof_ms_${result.publicResult.attemptId}`);
@@ -45,4 +56,6 @@ test('start keeps the browser secret exclusively in typed cookie instructions an
     assert.ok(insert);
     assert.equal(insert!.includes(result.callbackCookie.value), false);
     assert.equal(insert!.includes(result.publicResult.finishSecret), false);
+    assert.equal(typeof insert![9], 'string');
+    assert.notEqual(insert![9], result.publicResult.attemptId);
 });
