@@ -467,12 +467,12 @@ test('external replacement wins a pending public login without inventing an auth
   const loginGate = createGate('pending student login');
   const api = await installSyntheticApi(page, { loginGate });
   const faults = collectBrowserFaults(page, api);
-  const other = await openStorageTab(context);
 
   try {
     await gotoStudentLogin(page, '/auth/student/login', api);
     await submitStudentLogin(page);
     await api.waitForLoginStarted(1);
+    const other = await openStorageTab(context);
     await replaceSession(other, 'vendor', 'external-login-replacement');
     await api.waitForCurrentUserCompleted(1);
     loginGate.release();
