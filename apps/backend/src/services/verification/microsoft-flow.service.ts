@@ -187,10 +187,12 @@ export class MicrosoftFlowService {
     }
 
     private async emitTerminalFailure(attemptId: string, event: Omit<PendingDiagnosticEvent, 'stage'>): Promise<void> {
-        // The status transition is the durable deduplication gate. It also
-        // prevents a late retry from appending a terminal diagnostic after a
-        // successful completion.
-        if (await this.fail(attemptId)) await this.emit(attemptId, { stage: 'finished', ...event });
+        // Withdrawal services may have already committed the nonterminal to
+        // failed before this callback resumes. The database's finished-stage
+        // uniqueness gate deduplicates these after-transaction emissions, so
+        // a trusted withdrawal still receives its single cancellation record.
+        await this.fail(attemptId);
+        await this.emit(attemptId, { stage: 'finished', ...event });
     }
 
     private async postTokenFailureReason(attemptId: string, error: unknown): Promise<DiagnosticEvent['reason']> {
@@ -200,6 +202,10 @@ export class MicrosoftFlowService {
         // back/released. It reads a durable, server-owned state rather than a
         // provider value, so it cannot turn an arbitrary upstream failure into
         // a cancellation classification.
+        return (await this.durableTerminalReason(attemptId)) ?? 'upstream_unavailable';
+    }
+
+    private async durableTerminalReason(attemptId: string): Promise<'expired' | 'cancelled' | undefined> {
         const result = await this.deps.pool.query<{ status: Attempt['status']; expired: boolean }>(
             `SELECT status, expires_at <= clock_timestamp() AS expired
              FROM microsoft_verification_attempts WHERE id=$1`, [attemptId],
@@ -207,7 +213,7 @@ export class MicrosoftFlowService {
         const attempt = result.rows[0];
         if (attempt?.expired) return 'expired';
         if (attempt?.status === 'failed') return 'cancelled';
-        return 'upstream_unavailable';
+        return undefined;
     }
 
     async callback(input: { callbackUrl: URL; browserCookie?: string; browserCookies?: readonly { name: string; value: string }[] }): Promise<MicrosoftCallbackResult> {
@@ -261,7 +267,8 @@ export class MicrosoftFlowService {
             // authorize finish or evidence creation.
             const reason = oidcFailureReason(error);
             await this.emit(claimed.attempt.id, { stage: 'token_validated', outcome: 'failure', reason, durationMs: this.elapsed(startedAt) });
-            await this.emitTerminalFailure(claimed.attempt.id, { outcome: 'failure', reason, durationMs: this.elapsed(startedAt) });
+            const durableReason = await this.durableTerminalReason(claimed.attempt.id).catch(() => undefined);
+            await this.emitTerminalFailure(claimed.attempt.id, { outcome: 'failure', reason: durableReason ?? reason, durationMs: this.elapsed(startedAt) });
             const completionUrl = new URL(this.deps.completionUrl);
             completionUrl.searchParams.set('attempt', claimed.attempt.id);
             completionUrl.searchParams.set('outcome', 'connection_not_completed');

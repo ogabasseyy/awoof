@@ -108,7 +108,8 @@ export class VerificationDiagnosticsService implements VerificationDiagnostics {
             await client.query(
                 `INSERT INTO verification_diagnostic_events
                      (correlation_id, stage, outcome, reason, http_status, duration_ms, institution_id, policy_version)
-                 VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
+                 VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+                 ON CONFLICT (correlation_id) WHERE stage = 'finished' DO NOTHING`,
                 [
                     diagnostic.correlationId, diagnostic.stage, diagnostic.outcome, diagnostic.reason,
                     diagnostic.httpStatus ?? null, diagnostic.durationMs,

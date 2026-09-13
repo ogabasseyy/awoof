@@ -784,17 +784,6 @@ test('diagnostic expiry and terminal events require trusted ownership and one co
     )).rows);
     assert.deepEqual(lateFinished, [{ reason: 'none' }], 'the original 409 retry must not append an expiry terminal event after success');
 
-    const locallyCancelled = await pendingDurableAttempt({
-        beforeRedeem: async (providerConsentId) => { await withTestClient((client) => client.query(
-            `UPDATE microsoft_verification_consents SET withdrawn_at=clock_timestamp() WHERE id=$1`, [providerConsentId],
-        )); },
-    });
-    await assert.rejects(() => locallyCancelled.service.callback({ callbackUrl: locallyCancelled.callback, browserCookie: locallyCancelled.started.callbackCookie.value }));
-    const localCancellationReason = await withTestClient(async (client) => (await client.query<{ reason: string }>(
-        `SELECT reason FROM verification_diagnostic_events WHERE correlation_id=(SELECT diagnostic_correlation_id FROM microsoft_verification_attempts WHERE id=$1) AND stage='finished'`,
-        [locallyCancelled.started.publicResult.attemptId],
-    )).rows[0]!.reason);
-    assert.equal(localCancellationReason, 'cancelled');
 });
 
 test('both consent withdrawals prevent dispatch before claim, prevent ready during held redeem, and reject ready finish', async () => {
@@ -1116,6 +1105,14 @@ test('Graph mode cancellation prevents claim dispatch, prevents Graph after held
             const pending = service.callback({ callbackUrl: callback, browserCookie: started.callbackCookie.value }); await tokenEntered;
             await withdraw(); releaseToken!(); await assert.rejects(() => pending);
             assert.equal(tokenCalls, 1); assert.equal(graphCalls, 0, 'post-token authority check must fence Graph');
+            const terminalEvents = await withTestClient(async (client) => (await client.query<{ reason: string }>(
+                `SELECT reason FROM verification_diagnostic_events
+                 WHERE correlation_id=(SELECT diagnostic_correlation_id FROM microsoft_verification_attempts WHERE id=$1)
+                   AND stage='finished'`, [started.publicResult.attemptId],
+            )).rows);
+            assert.deepEqual(terminalEvents, [{ reason: 'cancelled' }], `${withdrawal} withdrawal records one durable cancellation terminal`);
+            assert.equal((await withTestClient((client) => client.query('SELECT 1 FROM microsoft_identities WHERE user_id=$1', [data.userId]))).rowCount, 0);
+            assert.equal(await graphEvidenceCount(started.publicResult.attemptId), 0);
         } else {
             await service.callback({ callbackUrl: callback, browserCookie: started.callbackCookie.value }); assert.equal(graphCalls, 1);
             await withdraw(); await assert.rejects(() => service.finish({ userId: data.userId, serverSessionId: sid, attemptId: started.publicResult.attemptId, finishSecret: started.publicResult.finishSecret }));
