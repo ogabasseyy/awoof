@@ -101,6 +101,13 @@ const scenarios = {
     mode: 'ineligible',
     attempt: { attemptId: 'visual-expired-attempt', finishSecret: 'visual-expired-secret', expired: true },
   },
+  adminDiagnostics: {
+    title: 'Admin diagnostic timeline',
+    detail: 'Redacted timeline, fixed 30-day aggregates, and incomplete-attempt wording.',
+    route: '/admin/verification-diagnostics/92d71887-18a0-4c0d-b696-138bc9d54f20',
+    mode: 'admin-diagnostics',
+    sessionToken: 'visual-admin:admin-diagnostics',
+  },
 };
 
 function json(response, status, payload) {
@@ -110,6 +117,9 @@ function json(response, status, payload) {
 
 function authContext(request) {
   const token = request.headers.authorization ?? '';
+  if (token === 'Bearer visual-admin:admin-diagnostics') {
+    return { mode: 'admin-diagnostics', user: { id: 'visual-admin-0001', email: 'synthetic.admin@approved.test', role: 'admin' } };
+  }
   const match = /^Bearer visual-student:([a-z-]+)$/.exec(token);
   return match && scenarios[Object.keys(scenarios).find((key) => scenarios[key].mode === match[1]) ?? '']
     ? { mode: match[1], user: { id: 'visual-student-0001', email: 'synthetic.student@approved.test', role: 'student', verificationStatus: 'unverified' } }
@@ -138,6 +148,18 @@ function api(request, response, url) {
   }
   if (!context) { json(response, 401, { error: { code: 'visual_fixture_auth_required', message: 'Synthetic fixture session required.' } }); return; }
   const mode = context.mode;
+  if (url.pathname === '/api/admin/verification-diagnostics/92d71887-18a0-4c0d-b696-138bc9d54f20') {
+    if (context.user.role !== 'admin') { json(response, 403, { error: { code: 'visual_admin_required' } }); return; }
+    json(response, 200, { success: true, data: {
+      timeline: [
+        { stage: 'started', outcome: 'success', reason: 'none', httpStatus: null, durationMs: 2, recordedAt: '2026-09-13T09:00:00.000Z' },
+        { stage: 'token_validated', outcome: 'success', reason: 'none', httpStatus: null, durationMs: 7, recordedAt: '2026-09-13T09:00:03.000Z' },
+        { stage: 'finished', outcome: 'failure', reason: 'permission_required', httpStatus: 403, durationMs: 18, recordedAt: '2026-09-13T09:00:05.000Z' },
+      ],
+      aggregateWindow: 'last_30_days', measuredAt: '2026-09-13T10:00:00.000Z', windowStartedAt: '2026-08-14T10:00:00.000Z',
+      aggregates: [{ institutionId: 'visual-institution', institutionName: 'Synthetic approved institution', finishedAttemptCount: 1, averageFinishedRequestDurationMs: 18, p95FinishedRequestDurationMs: 18, incompleteAttempts: 1, failureCategories: [{ category: 'permission_required', eventCount: 1 }] }],
+    } }); return;
+  }
   if (url.pathname === '/api/verification/status') {
     const enrolled = mode === 'enrollment';
     json(response, 200, { data: {
@@ -175,7 +197,7 @@ function api(request, response, url) {
 
 function landing() {
   const cards = Object.entries(scenarios).map(([key, scenario]) => `<li><a data-scenario="${key}" href="#${key}"><strong>${scenario.title}</strong><span>${scenario.detail}</span></a></li>`).join('');
-  return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Awoof Microsoft visual preview</title><style>body{font:16px/1.5 system-ui,sans-serif;margin:0;background:#f4f7fd;color:#172033}.wrap{max-width:760px;margin:48px auto;padding:0 20px}.flag{background:#fff5d7;border:1px solid #e8c466;padding:14px;border-radius:12px}ul{padding:0;display:grid;gap:12px}li{list-style:none}a{display:block;background:white;border:1px solid #dbe3f0;border-radius:14px;padding:16px;color:inherit;text-decoration:none}a:hover,a:focus{border-color:#1d4ed8;outline:3px solid #bfdbfe}strong,span{display:block}span{color:#526076;margin-top:4px;font-size:.92rem}</style></head><body><main class="wrap"><p class="flag"><strong>Local synthetic visual preview</strong>Loopback only. These links establish fixed synthetic browser state and open the real Awoof verification components. No Microsoft, database, credentials, or external API is contacted.</p><h1>Microsoft verification UI scenarios</h1><p>Choose a scenario. “Continue with Microsoft” is deliberately blocked in this fixture and will not navigate away.</p><ul>${cards}</ul></main><script>const scenarios=${JSON.stringify(scenarios)};const sessionKey=${JSON.stringify(sessionKey)};const attemptKey=${JSON.stringify(attemptKey)};document.querySelectorAll('[data-scenario]').forEach((link)=>link.addEventListener('click',(event)=>{event.preventDefault();const scenario=scenarios[link.dataset.scenario];if(!scenario)return;const sessionId='visual-browser-'+link.dataset.scenario;localStorage.setItem(sessionKey,JSON.stringify({v:1,state:'active',sessionId,accessToken:'visual-student:'+scenario.mode,refreshToken:'visual-refresh-'+scenario.mode}));sessionStorage.removeItem(attemptKey);if(scenario.attempt){sessionStorage.setItem(attemptKey,JSON.stringify({...scenario.attempt,browserSessionId:sessionId,expiresAt:scenario.attempt.expired?Date.now()-1:Date.now()+9*60*1000}));}location.assign(scenario.route);}));</script></body></html>`;
+  return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Awoof Microsoft visual preview</title><style>body{font:16px/1.5 system-ui,sans-serif;margin:0;background:#f4f7fd;color:#172033}.wrap{max-width:760px;margin:48px auto;padding:0 20px}.flag{background:#fff5d7;border:1px solid #e8c466;padding:14px;border-radius:12px}ul{padding:0;display:grid;gap:12px}li{list-style:none}a{display:block;background:white;border:1px solid #dbe3f0;border-radius:14px;padding:16px;color:inherit;text-decoration:none}a:hover,a:focus{border-color:#1d4ed8;outline:3px solid #bfdbfe}strong,span{display:block}span{color:#526076;margin-top:4px;font-size:.92rem}</style></head><body><main class="wrap"><p class="flag"><strong>Local synthetic visual preview</strong>Loopback only. These links establish fixed synthetic browser state and open real Awoof verification or administrator components. No Microsoft, database, credentials, or external API is contacted.</p><h1>Microsoft verification UI scenarios</h1><p>Choose a scenario. “Continue with Microsoft” is deliberately blocked in this fixture and will not navigate away.</p><ul>${cards}</ul></main><script>const scenarios=${JSON.stringify(scenarios)};const sessionKey=${JSON.stringify(sessionKey)};const attemptKey=${JSON.stringify(attemptKey)};document.querySelectorAll('[data-scenario]').forEach((link)=>link.addEventListener('click',(event)=>{event.preventDefault();const scenario=scenarios[link.dataset.scenario];if(!scenario)return;const sessionId='visual-browser-'+link.dataset.scenario;localStorage.setItem(sessionKey,JSON.stringify({v:1,state:'active',sessionId,accessToken:scenario.sessionToken||'visual-student:'+scenario.mode,refreshToken:'visual-refresh-'+scenario.mode}));sessionStorage.removeItem(attemptKey);if(scenario.attempt){sessionStorage.setItem(attemptKey,JSON.stringify({...scenario.attempt,browserSessionId:sessionId,expiresAt:scenario.attempt.expired?Date.now()-1:Date.now()+9*60*1000}));}location.assign(scenario.route);}));</script></body></html>`;
 }
 
 function csp(response) {

@@ -29,10 +29,14 @@ let finishCalls = 0;
 let refreshCalls = 0;
 let logoutCalls = 0;
 let delayedFinishDeliveries = 0;
+let diagnosticCalls = 0;
 const attempts = new Map();
 const observedPaths = [];
 const observedServerSessions = [];
+const capturedApplicationLogs = [];
+const capturedProxyLogs = [];
 const delayedFinishResponses = new Set();
+const delayedDiagnosticResponses = new Set();
 const noticeChanges = new Set();
 const acceptedConsentSnapshots = [];
 const revokedServerSessions = new Set();
@@ -47,10 +51,23 @@ function initialAccounts() {
 let accounts = initialAccounts();
 
 function resetFixture() {
-  startCalls = 0; callbackCookieCalls = 0; finishCalls = 0; refreshCalls = 0; logoutCalls = 0; delayedFinishDeliveries = 0;
+  startCalls = 0; callbackCookieCalls = 0; finishCalls = 0; refreshCalls = 0; logoutCalls = 0; delayedFinishDeliveries = 0; diagnosticCalls = 0;
   attempts.clear(); noticeChanges.clear(); acceptedConsentSnapshots.length = 0; revokedServerSessions.clear(); observedPaths.length = 0; observedServerSessions.length = 0;
+  capturedApplicationLogs.length = 0; capturedProxyLogs.length = 0;
   for (const release of delayedFinishResponses) release(true);
   delayedFinishResponses.clear(); accounts = initialAccounts();
+  for (const release of delayedDiagnosticResponses) release();
+  delayedDiagnosticResponses.clear();
+}
+
+// The local fixture represents both the application request logger and its
+// loopback proxy boundary. It deliberately records method + path only: never
+// authorization, cookies, query, or body. This is a local canary contract,
+// not a claim about an uninspected VPS proxy configuration.
+function captureSafeRequestLog(request, url) {
+  const line = `${request.method} ${url.pathname}`;
+  capturedApplicationLogs.push(line);
+  capturedProxyLogs.push(line);
 }
 
 function trackSocket(socket) {
@@ -92,6 +109,14 @@ function json(request, response, status, payload, headers = {}) {
 
 function authContext(request) {
   const token = request.headers.authorization ?? '';
+  if (token.startsWith('Bearer admin-access')) {
+    const modes = new Set(token.slice('Bearer admin-access'.length).split(':').filter(Boolean));
+    const id = modes.has('admin-b') ? '00000000-0000-4000-8000-000000000099' : '00000000-0000-4000-8000-000000000098';
+    return {
+      id, modes, serverSessionId: modes.has('admin-b') ? 'fixture-admin-session-b' : 'fixture-admin-session-a',
+      user: { id, email: modes.has('admin-b') ? 'admin-b@approved.test' : 'admin@approved.test', role: 'admin' },
+    };
+  }
   if (!token.startsWith('Bearer student-access')) return null;
   const modes = new Set(token.slice('Bearer student-access'.length).split(':').filter(Boolean));
   const id = modes.has('account-b')
@@ -122,6 +147,7 @@ function body(request) {
 
 const api = createHttpsServer(tls, async (request, response) => {
   const url = new URL(request.url ?? '/', `https://api.awoof.test:${apiPort}`);
+  captureSafeRequestLog(request, url);
   observedPaths.push(`${request.method} ${url.pathname}`);
   if (request.method === 'OPTIONS') { cors(request, response); response.writeHead(204); response.end(); return; }
   if (url.pathname === '/api/__fixture/reset' && request.method === 'POST') {
@@ -131,9 +157,19 @@ const api = createHttpsServer(tls, async (request, response) => {
     for (const delayed of delayedFinishResponses) delayed();
     delayedFinishResponses.clear(); json(request, response, 204, {}); return;
   }
+  if (url.pathname === '/api/__fixture/release-delayed-diagnostics' && request.method === 'POST') {
+    for (const delayed of delayedDiagnosticResponses) delayed();
+    delayedDiagnosticResponses.clear(); json(request, response, 204, {}); return;
+  }
+  if (url.pathname === '/api/__fixture/canary-mask' && request.method === 'POST') {
+    // The canaries arrive through normal request surfaces but are never read,
+    // persisted, returned, or put into the captured local logs.
+    await body(request); json(request, response, 204, {}); return;
+  }
   if (url.pathname === '/api/__fixture/evidence') {
     json(request, response, 200, { data: {
       startCalls, finishCalls, callbackCookieCalls, refreshCalls, logoutCalls, delayedFinishDeliveries, observedPaths, observedServerSessions,
+      diagnosticCalls, capturedApplicationLogs, capturedProxyLogs,
       acceptedConsentSnapshots, revokedServerSessions: [...revokedServerSessions],
       accounts: Object.fromEntries([...accounts].map(([id, account]) => [id, {
         emailEvidenceEligible: account.emailEvidenceEligible,
@@ -151,6 +187,25 @@ const api = createHttpsServer(tls, async (request, response) => {
   if (context) observedServerSessions.push({ path: url.pathname, serverSessionId: context.serverSessionId, userId: context.id });
   if (url.pathname === '/api/auth/me') {
     json(request, response, user ? 200 : 401, user ? { success: true, data: user } : { success: false }); return;
+  }
+  if (url.pathname === '/api/admin/verification-diagnostics/92d71887-18a0-4c0d-b696-138bc9d54f20') {
+    if (!context || context.user.role !== 'admin') { json(request, response, 403, { error: { code: 'fixture_admin_required' } }); return; }
+    diagnosticCalls += 1;
+    const send = () => {
+      if (hasMode(context, 'not-found') || hasMode(context, 'admin-b')) {
+        json(request, response, 404, { error: { code: 'fixture_diagnostic_not_found' } }); return;
+      }
+      json(request, response, 200, { success: true, data: {
+        timeline: [
+          { stage: 'started', outcome: 'success', reason: 'none', httpStatus: null, durationMs: 2, recordedAt: '2026-09-13T09:00:00.000Z' },
+          { stage: 'finished', outcome: 'failure', reason: 'permission_required', httpStatus: 403, durationMs: 18, recordedAt: '2026-09-13T09:01:00.000Z' },
+        ],
+        aggregateWindow: 'last_30_days', measuredAt: '2026-09-13T10:00:00.000Z', windowStartedAt: '2026-08-14T10:00:00.000Z',
+        aggregates: [{ institutionId: 'fixture-institution', institutionName: 'Synthetic approved institution', finishedAttemptCount: 1, averageFinishedRequestDurationMs: 18, p95FinishedRequestDurationMs: 18, incompleteAttempts: 1, failureCategories: [{ category: 'permission_required', eventCount: 1 }] }],
+      } });
+    };
+    if (hasMode(context, 'delay-diagnostics')) { delayedDiagnosticResponses.add(send); return; }
+    send(); return;
   }
   if (url.pathname === '/api/auth/refresh' && request.method === 'POST') {
     refreshCalls += 1;

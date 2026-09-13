@@ -21,6 +21,15 @@ async function seedStudent(page: Page, sessionId = 'fixture-browser-session', ac
   }, { app: appOrigin, key: sessionStorageKey, value: session(sessionId, accessToken, refreshToken), marker });
 }
 
+async function seedAdmin(page: Page, sessionId = 'fixture-admin-session', accessToken = 'admin-access', refreshToken = 'admin-refresh') {
+  const marker = `__awoof_microsoft_https_admin_seed_${sessionId}`;
+  await page.addInitScript(({ app, key, value, marker: once }) => {
+    if (location.origin !== app || sessionStorage.getItem(once) !== null) return;
+    localStorage.setItem(key, value);
+    sessionStorage.setItem(once, 'seeded');
+  }, { app: appOrigin, key: sessionStorageKey, value: session(sessionId, accessToken, refreshToken), marker });
+}
+
 async function installSyntheticMicrosoftDocument(context: BrowserContext, holdProviderDocument = true) {
   let resolveArrival!: () => void;
   const arrived = new Promise<void>((resolve) => { resolveArrival = resolve; });
@@ -87,6 +96,9 @@ type FixtureEvidence = {
   refreshCalls: number;
   logoutCalls: number;
   delayedFinishDeliveries: number;
+  diagnosticCalls: number;
+  capturedApplicationLogs: string[];
+  capturedProxyLogs: string[];
   observedPaths: string[];
   observedServerSessions: Array<{ path: string; serverSessionId: string; userId: string }>;
   acceptedConsentSnapshots: Array<{ providerPolicyVersion?: number; noticeVersion?: string } | null>;
@@ -138,6 +150,58 @@ function callbackAttemptId(callbackUrl: string) {
 test('HTTPS fixture forwards the Next development debug stream before authenticated verification loads', async ({ page }) => {
   await seedStudent(page);
   await loadAuthenticatedVerification(page);
+});
+
+test('admin redacted diagnostics renders a safe timeline and fixed aggregate through the isolated HTTPS fixture', async ({ page }) => {
+  await seedAdmin(page);
+  await page.goto('/admin/verification-diagnostics/92d71887-18a0-4c0d-b696-138bc9d54f20');
+  await expect(page.getByRole('heading', { name: 'Redacted verification timeline' })).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'Attempt started' })).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'Attempt finished' })).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'Synthetic approved institution' })).toBeVisible();
+  await expect(page.getByText('An incomplete attempt is an expired start with no callback; it is not an enrollment denial and does not create eligibility.')).toBeVisible();
+  await expect(page.getByText('Review the approved institution permission and retry only after it is corrected.')).toBeVisible();
+  for (const forbidden of ['fixture-institution', 'student-a@approved.test', 'TOKEN_CANARY', 'provider-profile']) {
+    await expect(page.getByText(forbidden, { exact: false })).toHaveCount(0);
+  }
+  expect((await evidence(page)).diagnosticCalls).toBeGreaterThan(0);
+});
+
+test('admin diagnostics discards a delayed old-session result after a replacement session remount', async ({ page, context }) => {
+  await seedAdmin(page, 'fixture-admin-session-a', 'admin-access:delay-diagnostics');
+  await page.goto('/admin/verification-diagnostics/92d71887-18a0-4c0d-b696-138bc9d54f20');
+  await expect.poll(async () => (await evidence(page)).diagnosticCalls).toBe(1);
+  const replacement = await context.newPage();
+  await replacement.goto(`${appOrigin}/__fixture-storage-tab`);
+  await replacement.evaluate(({ key, value }) => localStorage.setItem(key, value), {
+    key: sessionStorageKey, value: session('fixture-admin-session-b', 'admin-access:admin-b', 'admin-b-refresh'),
+  });
+  const delayedResponse = page.waitForResponse((response) => response.url().includes('/admin/verification-diagnostics/92d71887-18a0-4c0d-b696-138bc9d54f20'));
+  await fixtureControl(page, '/api/__fixture/release-delayed-diagnostics');
+  await delayedResponse;
+  await expect(page.getByRole('heading', { name: 'Attempt finished' })).toHaveCount(0);
+  await expect(page.getByText('Review the approved institution permission and retry only after it is corrected.')).toHaveCount(0);
+  await page.reload();
+  await expect(page.getByRole('heading', { name: 'Diagnostic timeline not found' })).toBeVisible();
+});
+
+test('local application/proxy request-log capture and browser state mask transport canaries', async ({ page }) => {
+  await seedAdmin(page);
+  await page.goto('/__fixture-storage-tab');
+  const canaries = ['AUTH_CANARY', 'COOKIE_CANARY', 'CALLBACK_QUERY_CANARY', 'CODE_CANARY', 'TOKEN_CANARY', 'ERROR_DESCRIPTION_CANARY', 'PROFILE_CANARY'];
+  await page.context().addCookies([{ name: 'synthetic', value: canaries[1]!, domain: 'api.awoof.test', path: '/', secure: true, sameSite: 'Lax' }]);
+  const result = await page.evaluate(async (values) => {
+    const response = await fetch(`${location.protocol}//api.awoof.test:3444/api/__fixture/canary-mask?callback=${encodeURIComponent(values[2])}&code=${encodeURIComponent(values[3])}&token=${encodeURIComponent(values[4])}&error_description=${encodeURIComponent(values[5])}`, {
+      method: 'POST', credentials: 'include',
+      headers: { Authorization: `Bearer ${values[0]}`, 'content-type': 'application/json' },
+      body: JSON.stringify({ profile: values[6] }),
+    });
+    return { status: response.status, body: document.documentElement.outerHTML, storage: JSON.stringify([localStorage.getItem('awoof.session.v1'), sessionStorage.getItem('awoof.microsoft.verification.attempt.v1')]) };
+  }, canaries);
+  expect(result.status).toBe(204);
+  const captured = await evidence(page);
+  const surfaces = JSON.stringify({ application: captured.capturedApplicationLogs, proxy: captured.capturedProxyLogs, browser: result });
+  for (const canary of canaries) expect(surfaces.includes(canary)).toBe(false);
 });
 
 test('genuine HTTPS callback carries and consumes the Secure HttpOnly SameSite cookie before the app redirect', async ({ page, context }) => {
