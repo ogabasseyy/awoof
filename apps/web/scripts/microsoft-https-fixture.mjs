@@ -26,13 +26,32 @@ let closed = false;
 let startCalls = 0;
 let callbackCookieCalls = 0;
 let finishCalls = 0;
+let refreshCalls = 0;
+let logoutCalls = 0;
+let delayedFinishDeliveries = 0;
 const attempts = new Map();
 const observedPaths = [];
+const observedServerSessions = [];
+const delayedFinishResponses = new Set();
+const noticeChanges = new Set();
+const acceptedConsentSnapshots = [];
+const revokedServerSessions = new Set();
 const appSockets = new Set();
-const accounts = new Map([
-  ['00000000-0000-4000-8000-000000000001', { email: 'student-a@approved.test', emailEvidenceEligible: true, finishCalls: 0, linkedMicrosoftIdentities: 0 }],
-  ['00000000-0000-4000-8000-000000000002', { email: 'student-b@approved.test', emailEvidenceEligible: false, finishCalls: 0, linkedMicrosoftIdentities: 0 }],
-]);
+
+function initialAccounts() {
+  return new Map([
+    ['00000000-0000-4000-8000-000000000001', { email: 'student-a@approved.test', emailEvidenceEligible: true, microsoftEnrollmentEligible: false, finishCalls: 0, linkedMicrosoftIdentities: 0 }],
+    ['00000000-0000-4000-8000-000000000002', { email: 'student-b@approved.test', emailEvidenceEligible: false, microsoftEnrollmentEligible: false, finishCalls: 0, linkedMicrosoftIdentities: 0 }],
+  ]);
+}
+let accounts = initialAccounts();
+
+function resetFixture() {
+  startCalls = 0; callbackCookieCalls = 0; finishCalls = 0; refreshCalls = 0; logoutCalls = 0; delayedFinishDeliveries = 0;
+  attempts.clear(); noticeChanges.clear(); acceptedConsentSnapshots.length = 0; revokedServerSessions.clear(); observedPaths.length = 0; observedServerSessions.length = 0;
+  for (const release of delayedFinishResponses) release(true);
+  delayedFinishResponses.clear(); accounts = initialAccounts();
+}
 
 function trackSocket(socket) {
   appSockets.add(socket);
@@ -55,7 +74,7 @@ execFileSync('openssl', [
 const tls = { key: readFileSync(keyPath), cert: readFileSync(certPath) };
 
 function cors(request, response) {
-  const origin = request.headers.origin;
+  const origin = request?.headers?.origin;
   if (origin === `https://app.awoof.test:${appPort}`) {
     response.setHeader('access-control-allow-origin', origin);
     response.setHeader('access-control-allow-credentials', 'true');
@@ -71,17 +90,24 @@ function json(request, response, status, payload, headers = {}) {
   response.end(JSON.stringify(payload));
 }
 
-function userFor(request) {
+function authContext(request) {
   const token = request.headers.authorization ?? '';
   if (!token.startsWith('Bearer student-access')) return null;
-  const id = token.includes(':account-b')
+  const modes = new Set(token.slice('Bearer student-access'.length).split(':').filter(Boolean));
+  const id = modes.has('account-b')
     ? '00000000-0000-4000-8000-000000000002'
     : '00000000-0000-4000-8000-000000000001';
-  return { id, email: accounts.get(id).email, role: 'student', verificationStatus: 'unverified' };
+  return {
+    id, modes,
+    serverSessionId: id === '00000000-0000-4000-8000-000000000002'
+      ? (modes.has('relogin') ? 'fixture-server-session-b-relogin' : 'fixture-server-session-b')
+      : (modes.has('relogin') ? 'fixture-server-session-a-relogin' : 'fixture-server-session-a'),
+    user: { id, email: accounts.get(id).email, role: 'student', verificationStatus: 'unverified' },
+  };
 }
 
-function modeFor(request) {
-  return String(request.headers.authorization ?? '').split(':')[1] ?? 'success';
+function hasMode(context, mode) {
+  return Boolean(context?.modes.has(mode));
 }
 
 function body(request) {
@@ -98,54 +124,97 @@ const api = createHttpsServer(tls, async (request, response) => {
   const url = new URL(request.url ?? '/', `https://api.awoof.test:${apiPort}`);
   observedPaths.push(`${request.method} ${url.pathname}`);
   if (request.method === 'OPTIONS') { cors(request, response); response.writeHead(204); response.end(); return; }
+  if (url.pathname === '/api/__fixture/reset' && request.method === 'POST') {
+    resetFixture(); json(request, response, 204, {}); return;
+  }
+  if (url.pathname === '/api/__fixture/release-delayed-finish' && request.method === 'POST') {
+    for (const delayed of delayedFinishResponses) delayed();
+    delayedFinishResponses.clear(); json(request, response, 204, {}); return;
+  }
   if (url.pathname === '/api/__fixture/evidence') {
     json(request, response, 200, { data: {
-      startCalls, finishCalls, callbackCookieCalls, observedPaths,
+      startCalls, finishCalls, callbackCookieCalls, refreshCalls, logoutCalls, delayedFinishDeliveries, observedPaths, observedServerSessions,
+      acceptedConsentSnapshots, revokedServerSessions: [...revokedServerSessions],
       accounts: Object.fromEntries([...accounts].map(([id, account]) => [id, {
         emailEvidenceEligible: account.emailEvidenceEligible,
+        microsoftEnrollmentEligible: account.microsoftEnrollmentEligible,
         finishCalls: account.finishCalls,
         linkedMicrosoftIdentities: account.linkedMicrosoftIdentities,
       }])),
-      attempts: [...attempts.values()].map(({ attemptId, ownerId, ready, callbackUsed, completed, callbackCookieCalls: attemptCallbackCookieCalls, finishCalls: attemptFinishCalls, finishCookieCalls, completionWrites, callbackOutcome }) => ({
-        attemptId, ownerId, ready, callbackUsed, completed, callbackCookieCalls: attemptCallbackCookieCalls, finishCalls: attemptFinishCalls, finishCookieCalls, completionWrites, callbackOutcome: callbackOutcome ?? null,
+      attempts: [...attempts.values()].map(({ attemptId, ownerId, ready, callbackUsed, completed, callbackCookieCalls: attemptCallbackCookieCalls, finishCalls: attemptFinishCalls, finishCookieCalls, completionWrites, callbackOutcome, transientFailures }) => ({
+        attemptId, ownerId, ready, callbackUsed, completed, callbackCookieCalls: attemptCallbackCookieCalls, finishCalls: attemptFinishCalls, finishCookieCalls, completionWrites, callbackOutcome: callbackOutcome ?? null, transientFailures,
       })),
     } }); return;
   }
-  const user = userFor(request);
+  const context = authContext(request);
+  const user = context?.user ?? null;
+  if (context) observedServerSessions.push({ path: url.pathname, serverSessionId: context.serverSessionId, userId: context.id });
   if (url.pathname === '/api/auth/me') {
     json(request, response, user ? 200 : 401, user ? { success: true, data: user } : { success: false }); return;
   }
+  if (url.pathname === '/api/auth/refresh' && request.method === 'POST') {
+    refreshCalls += 1;
+    const refresh = await body(request);
+    if (refresh.refreshToken === 'student-refresh-refresh') {
+      json(request, response, 200, { data: { accessToken: 'student-access:refresh-fresh', refreshToken: 'student-refresh-fresh' } }); return;
+    }
+    json(request, response, 401, { error: { code: 'fixture_refresh_rejected' } }); return;
+  }
+  if (url.pathname === '/api/auth/logout' && request.method === 'POST') {
+    if (!context) { json(request, response, 401, { error: { code: 'fixture_auth_required' } }); return; }
+    logoutCalls += 1; revokedServerSessions.add(context.serverSessionId);
+    json(request, response, 204, {}); return;
+  }
   if (url.pathname === '/api/verification/status') {
     const account = user ? accounts.get(user.id) : null;
-    const statusFailure = modeFor(request) === 'status-failure' && Boolean(account?.finishCalls);
+    const statusFailure = hasMode(context, 'status-failure') && Boolean(account?.finishCalls);
+    const refreshExpired = hasMode(context, 'refresh-expired');
+    if (refreshExpired) { json(request, response, 401, { error: { code: 'fixture_access_expired' } }); return; }
     json(request, response, statusFailure ? 503 : 200, statusFailure ? { error: { code: 'fixture_status_failure' } } : {
       success: true, data: {
         emailDomainApproved: true, mailboxConfirmed: Boolean(account?.emailEvidenceEligible), email: user?.email ?? 'unknown@approved.test', universityId: 'fixture-university',
         // Identity linking is deliberately not enrollment verification. The
         // fixture reports separate evidence sources, and only the account's
         // independent email evidence determines effective eligibility.
-        eligibility: { eligible: Boolean(account?.emailEvidenceEligible), emailEvidenceEligible: Boolean(account?.emailEvidenceEligible), microsoftIdentityLinked: Boolean(account?.linkedMicrosoftIdentities) }, notices: { verification: { version: 'fixture-v1', text: 'Synthetic Awoof processing notice.' } },
+        eligibility: { eligible: Boolean(account?.emailEvidenceEligible || account?.microsoftEnrollmentEligible), emailEvidenceEligible: Boolean(account?.emailEvidenceEligible), microsoftIdentityLinked: Boolean(account?.linkedMicrosoftIdentities) }, notices: { verification: { version: 'fixture-v1', text: 'Synthetic Awoof processing notice.' } },
       },
     }); return;
   }
   if (url.pathname === '/api/verification/methods/fixture-university') {
     json(request, response, 200, { data: { methods: [
-      { methodType: 'email', isAvailable: true }, { methodType: 'microsoft', isAvailable: true },
+      { methodType: 'email', isAvailable: true }, { methodType: 'microsoft', isAvailable: !hasMode(context, 'global-off'), reason: hasMode(context, 'global-off') ? 'Microsoft connections are temporarily unavailable.' : undefined },
     ] } }); return;
   }
   if (url.pathname === '/api/verification/consents') { json(request, response, 200, { data: { items: [], nextCursor: null } }); return; }
   if (url.pathname === '/api/verification/initiate' && request.method === 'POST') { json(request, response, 200, { data: { processingGrantId: 'fixture-processing-grant' } }); return; }
   if (url.pathname === '/api/verification/microsoft/notice') {
-    json(request, response, 200, { data: { snapshot: { universityId: 'fixture-university', providerPolicyVersion: 1, noticeVersion: 'fixture-provider-v1', mode: 'identity_only', scopes: ['openid'] }, copy: { text: 'Synthetic provider consent for this isolated browser test.' } } }); return;
+    if (hasMode(context, 'notice-failure')) { json(request, response, 503, { error: { code: 'fixture_notice_unavailable' } }); return; }
+    const changed = hasMode(context, 'notice-changed') && noticeChanges.has(context.id);
+    const graph = hasMode(context, 'graph-enrollment');
+    json(request, response, 200, { data: { snapshot: { universityId: 'fixture-university', providerPolicyVersion: changed ? 2 : 1, noticeVersion: changed ? 'fixture-provider-v2' : 'fixture-provider-v1', mode: graph ? 'graph_enrollment' : 'identity_only', scopes: graph ? ['openid', 'https://graph.microsoft.com/EduRoster.ReadBasic'] : ['openid'] }, copy: { text: changed ? 'Updated synthetic provider consent. Please accept this new notice.' : 'Synthetic provider consent for this isolated browser test.' } } }); return;
   }
-  if (url.pathname === '/api/verification/microsoft/consents' && request.method === 'GET') { json(request, response, 200, { data: { items: [], nextCursor: null } }); return; }
-  if (url.pathname === '/api/verification/microsoft/consents' && request.method === 'POST') { await body(request); json(request, response, 200, { data: { providerConsentId: 'fixture-provider-consent' } }); return; }
+  if (url.pathname === '/api/verification/microsoft/consents' && request.method === 'GET') {
+    const paginated = hasMode(context, 'history-pagination');
+    const history = hasMode(context, 'global-off') || hasMode(context, 'notice-failure') || paginated
+      ? [{ id: 'fixture-history-1', snapshot: { universityId: 'fixture-university', providerPolicyVersion: 1, noticeVersion: 'fixture-provider-v1', mode: 'identity_only', scopes: ['openid'] }, acceptedAt: '2026-09-01T00:00:00.000Z', withdrawnAt: null }]
+      : [];
+    const second = [{ id: 'fixture-history-2', snapshot: { universityId: 'fixture-university', providerPolicyVersion: 1, noticeVersion: 'fixture-provider-v1', mode: 'identity_only', scopes: ['openid'] }, acceptedAt: '2026-09-02T00:00:00.000Z', withdrawnAt: '2026-09-03T00:00:00.000Z' }];
+    json(request, response, 200, { data: { items: paginated && url.searchParams.get('cursor') === 'fixture-history-page-2' ? second : history, nextCursor: paginated && url.searchParams.get('cursor') !== 'fixture-history-page-2' ? 'fixture-history-page-2' : null } }); return;
+  }
+  if (url.pathname === '/api/verification/microsoft/consents' && request.method === 'POST') {
+    const consentBody = await body(request);
+    acceptedConsentSnapshots.push(consentBody.snapshot ?? null);
+    if (hasMode(context, 'notice-changed') && !noticeChanges.has(context.id)) {
+      noticeChanges.add(context.id); json(request, response, 409, { error: { code: 'consent_notice_changed' } }); return;
+    }
+    json(request, response, 200, { data: { providerConsentId: 'fixture-provider-consent' } }); return;
+  }
   if (url.pathname === '/api/verification/microsoft/start' && request.method === 'POST') {
     await body(request);
     if (!user) { json(request, response, 401, { error: { code: 'fixture_auth_required' } }); return; }
     const attemptId = `fixture-attempt-${++startCalls}`;
     const state = `fixture-state-${attemptId}`;
-    attempts.set(state, { attemptId, ownerId: user.id, ready: false, callbackUsed: false, completed: false, callbackCookieCalls: 0, finishCalls: 0, finishCookieCalls: 0, completionWrites: 0 });
+    attempts.set(state, { attemptId, ownerId: user.id, mode: [...context.modes], serverSessionId: context.serverSessionId, ready: false, callbackUsed: false, completed: false, callbackCookieCalls: 0, finishCalls: 0, finishCookieCalls: 0, completionWrites: 0, transientFailures: 0 });
     // Host-only, Secure, HttpOnly and Lax: the finish endpoint rejects a
     // request unless the browser returns this real response cookie.
     json(request, response, 200, { data: {
@@ -193,18 +262,40 @@ const api = createHttpsServer(tls, async (request, response) => {
     if (!attempt?.ready || requestBody?.finishSecret !== `fixture-finish-${attempt.attemptId}` || !user || attempt.ownerId !== user.id) {
       json(request, response, 401, { error: { code: 'fixture_finish_not_ready' } }); return;
     }
-    if (modeFor(request) === 'terminal') { json(request, response, 400, { error: { code: 'fixture_terminal_finish' } }); return; }
-    if (modeFor(request) === 'transient') { json(request, response, 503, { error: { code: 'fixture_transient_finish' } }); return; }
-    if (attempt.completed) {
-      json(request, response, 200, { data: { accountLinked: true, enrollment: 'not_checked' } }); return;
+    if (attempt.serverSessionId !== context.serverSessionId || revokedServerSessions.has(context.serverSessionId)) {
+      json(request, response, 401, { error: { code: 'fixture_finish_session_replaced' } }); return;
     }
-    attempt.completed = true;
-    attempt.completionWrites += 1;
-    accounts.get(user.id).linkedMicrosoftIdentities += 1;
-    json(request, response, 200, { data: { accountLinked: true, enrollment: 'not_checked' } }); return;
+    if (hasMode(context, 'terminal')) { json(request, response, 400, { error: { code: 'fixture_terminal_finish' } }); return; }
+    if (hasMode(context, 'transient') && attempt.transientFailures === 0) {
+      attempt.transientFailures += 1; json(request, response, 503, { error: { code: 'fixture_transient_finish' } }); return;
+    }
+    if (hasMode(context, 'delay-finish')) {
+      delayedFinishResponses.add((cancelled = false) => {
+        if (response.writableEnded) return;
+        if (cancelled) { json(request, response, 503, { error: { code: 'fixture_delay_cancelled' } }); return; }
+        delayedFinishDeliveries += 1;
+        finishAttempt(request, response, attempt, user.id);
+      });
+      return;
+    }
+    finishAttempt(request, response, attempt, user.id);
+    return;
   }
   json(request, response, 404, { error: { code: 'fixture_unknown_route', path: url.pathname } });
 });
+
+function finishAttempt(request, response, attempt, userId) {
+  const graphEnrollment = attempt.mode?.includes('graph-enrollment') === true;
+  if (attempt.completed) {
+    json(request, response, 200, { data: { accountLinked: true, enrollment: graphEnrollment ? 'eligible' : 'not_checked' } }); return;
+  }
+  attempt.completed = true;
+  attempt.completionWrites += 1;
+  const account = accounts.get(userId);
+  account.linkedMicrosoftIdentities += 1;
+  if (graphEnrollment) account.microsoftEnrollmentEligible = true;
+  json(request, response, 200, { data: { accountLinked: true, enrollment: graphEnrollment ? 'eligible' : 'not_checked' } });
+}
 
 const app = createHttpsServer(tls, (request, response) => {
   // Preserve the browser Host header. Next uses it when it emits its dev
