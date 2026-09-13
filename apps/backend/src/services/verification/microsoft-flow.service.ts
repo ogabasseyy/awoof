@@ -21,7 +21,12 @@ type Attempt = MicrosoftAttemptAuthority & {
 export type MicrosoftCallbackCookie = { name: string; value: string; maxAgeSeconds: number; path: '/api/verification/microsoft/callback'; httpOnly: true; secure: true; sameSite: 'lax' };
 export type MicrosoftStartPublicResult = { attemptId: string; authorizationUrl: string; finishSecret: string };
 export type MicrosoftStartResult = { publicResult: MicrosoftStartPublicResult; callbackCookie: MicrosoftCallbackCookie };
-export type MicrosoftCallbackResult = { attemptId: string; completionUrl: URL };
+export type MicrosoftCallbackResult = {
+    attemptId: string;
+    completionUrl: URL;
+    /** A bounded, non-authorizing terminal callback outcome. */
+    outcome?: 'connection_not_completed';
+};
 export type MicrosoftFinishResult = { accountLinked: true; enrollment: 'not_checked' | 'eligible' | 'unconfirmed' | 'denied' };
 
 export type MicrosoftFlowDependencies = {
@@ -148,7 +153,18 @@ export class MicrosoftFlowService {
             identity = redeemed.identity;
             graphAccessToken = redeemed.graphAccessToken;
         }
-        catch (error) { await this.fail(claimed.attempt.id); throw error; }
+        catch {
+            // Only a callback that has already passed the fixed URL, state,
+            // cookie, authority and attempt-CAS checks reaches this point.
+            // Provider denial/cancellation and redemption transport failures
+            // are deliberately indistinguishable to the browser and cannot
+            // authorize finish or evidence creation.
+            await this.fail(claimed.attempt.id);
+            const completionUrl = new URL(this.deps.completionUrl);
+            completionUrl.searchParams.set('attempt', claimed.attempt.id);
+            completionUrl.searchParams.set('outcome', 'connection_not_completed');
+            return { attemptId: claimed.attempt.id, completionUrl, outcome: 'connection_not_completed' };
+        }
         try {
             const mode = await this.transaction(async (tx) => {
                 this.assertEnabled();

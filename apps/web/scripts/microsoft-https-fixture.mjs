@@ -9,7 +9,7 @@
  * and fulfils it locally; every other provider request is aborted there.
  */
 import { execFileSync, spawn } from 'node:child_process';
-import { createServer as createHttpServer, request as httpRequest } from 'node:http';
+import { request as httpRequest } from 'node:http';
 import { createServer as createHttpsServer } from 'node:https';
 import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -106,8 +106,8 @@ const api = createHttpsServer(tls, async (request, response) => {
         finishCalls: account.finishCalls,
         linkedMicrosoftIdentities: account.linkedMicrosoftIdentities,
       }])),
-      attempts: [...attempts.values()].map(({ attemptId, ownerId, ready, callbackUsed, completed, callbackCookieCalls: attemptCallbackCookieCalls, finishCalls: attemptFinishCalls, finishCookieCalls, completionWrites }) => ({
-        attemptId, ownerId, ready, callbackUsed, completed, callbackCookieCalls: attemptCallbackCookieCalls, finishCalls: attemptFinishCalls, finishCookieCalls, completionWrites,
+      attempts: [...attempts.values()].map(({ attemptId, ownerId, ready, callbackUsed, completed, callbackCookieCalls: attemptCallbackCookieCalls, finishCalls: attemptFinishCalls, finishCookieCalls, completionWrites, callbackOutcome }) => ({
+        attemptId, ownerId, ready, callbackUsed, completed, callbackCookieCalls: attemptCallbackCookieCalls, finishCalls: attemptFinishCalls, finishCookieCalls, completionWrites, callbackOutcome: callbackOutcome ?? null,
       })),
     } }); return;
   }
@@ -159,18 +159,23 @@ const api = createHttpsServer(tls, async (request, response) => {
     const expected = attempt ? `__Host-awoof-microsoft-fixture=${attempt.attemptId}` : '';
     const hasCallbackCookie = Boolean(expected) && String(request.headers.cookie ?? '').split('; ').includes(expected);
     const callbackAccepted = Boolean(attempt) && hasCallbackCookie && !attempt.callbackUsed;
+    const terminalProviderFailure = callbackAccepted && url.searchParams.has('error');
     if (callbackAccepted) {
       callbackCookieCalls += 1;
       attempt.callbackCookieCalls += 1;
-      attempt.ready = true;
       attempt.callbackUsed = true;
+      if (terminalProviderFailure) attempt.callbackOutcome = 'connection_not_completed';
+      else attempt.ready = true;
     }
     // The callback consumes the cookie before returning to the app. Finish is
     // intentionally authorized by the stored attempt/secret, never a cookie
     // that survived this redirect.
     const callbackHeaders = { 'set-cookie': '__Host-awoof-microsoft-fixture=; Path=/; Max-Age=0; Secure; HttpOnly; SameSite=Lax' };
     if (callbackAccepted) {
-      response.writeHead(303, { ...callbackHeaders, location: `https://app.awoof.test:${appPort}/student/verification/microsoft/complete?attempt=${encodeURIComponent(attempt.attemptId)}` });
+      const completion = new URL(`https://app.awoof.test:${appPort}/student/verification/microsoft/complete`);
+      completion.searchParams.set('attempt', attempt.attemptId);
+      if (terminalProviderFailure) completion.searchParams.set('outcome', 'connection_not_completed');
+      response.writeHead(303, { ...callbackHeaders, location: completion.href });
     } else {
       response.writeHead(400, callbackHeaders);
     }

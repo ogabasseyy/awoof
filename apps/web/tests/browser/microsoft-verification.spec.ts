@@ -177,6 +177,31 @@ test('cross-tab replacement never grants Microsoft evidence to the replacement a
   expect((await evidence(page)).accounts['00000000-0000-4000-8000-000000000002'].linkedMicrosoftIdentities).toBe(0);
 });
 
+test('an untrusted different completion attempt cannot clear a current-session tab attempt', async ({ page }) => {
+  await seedStudent(page, 'current-browser-session');
+  await page.addInitScript(({ key }) => sessionStorage.setItem(key, JSON.stringify({
+    attemptId: 'current-attempt', finishSecret: 'current-secret', browserSessionId: 'current-browser-session', expiresAt: Date.now() + 60_000,
+  })), { key: attemptStorageKey });
+  await page.goto('/__fixture-storage-tab');
+  await page.goto('/student/verification/microsoft/complete?attempt=untrusted-other-attempt&outcome=connection_not_completed');
+  await expect(page.getByText('This Microsoft connection cannot be completed in the current Awoof session. Start again from student verification.')).toBeVisible();
+  expect(await page.evaluate((key) => sessionStorage.getItem(key), attemptStorageKey)).toContain('current-attempt');
+});
+
+test('a replacement browser session removes its obsolete prior-session tab attempt', async ({ page }) => {
+  await seedStudent(page, 'old-browser-session');
+  await page.goto('/__fixture-storage-tab');
+  await page.evaluate(({ attemptKey, sessionKey, replacement }) => {
+    sessionStorage.setItem(attemptKey, JSON.stringify({
+      attemptId: 'old-attempt', finishSecret: 'old-secret', browserSessionId: 'old-browser-session', expiresAt: Date.now() + 60_000,
+    }));
+    localStorage.setItem(sessionKey, replacement);
+  }, { attemptKey: attemptStorageKey, sessionKey: sessionStorageKey, replacement: session('replacement-browser-session') });
+  await page.goto('/student/verification/microsoft/complete?attempt=old-attempt&outcome=connection_not_completed');
+  await expect(page.getByText('This Microsoft connection cannot be completed in the current Awoof session. Start again from student verification.')).toBeVisible();
+  expect(await page.evaluate((key) => sessionStorage.getItem(key), attemptStorageKey)).toBeNull();
+});
+
 test('invalid callback returns a header-valid rejection without consuming an attempt', async ({ page }) => {
   await seedStudent(page);
   await page.goto('/__fixture-storage-tab');
@@ -228,10 +253,24 @@ test('a callback state is accepted once and replay is rejected without a second 
   expect(afterReplay.finishCalls).toBe(afterFirstCallback.finishCalls);
 });
 
-// These are deliberately executable regression contracts, kept skipped until
-// the frozen Task4b UI owner addresses the parent-reviewed defects. They are
-// separate from fixture transport: the passing cases above already prove the
-// real HTTPS cookie/navigation boundary.
+test('a bound provider cancellation returns to the Awoof email alternative without finishing or writing evidence', async ({ page, context }) => {
+  await seedStudent(page, 'cancel-browser-session');
+  const provider = await installSyntheticMicrosoftDocument(context);
+  await start(page);
+  await provider.arrived;
+
+  // A provider denial is an untrusted provider claim. It may end only the
+  // already state-and-cookie-bound attempt; it must never become a finish.
+  await page.goto(`${provider.callbackUrl()}&error=access_denied`);
+  await expect(page.getByRole('heading', { name: 'Connection needs attention' })).toBeVisible();
+  await expect(page.getByText('The Microsoft connection was not completed. You can still verify using your school email.')).toBeVisible();
+  await expect(page.getByRole('link', { name: 'Use school email verification' })).toBeVisible();
+  const observed = await evidence(page);
+  const attempt = observed.attempts.find((item) => item.attemptId === callbackAttemptId(provider.callbackUrl()));
+  expect(attempt).toMatchObject({ ready: false, completed: false, completionWrites: 0, finishCalls: 0 });
+  expect(await page.evaluate((key) => sessionStorage.getItem(key), attemptStorageKey)).toBeNull();
+});
+
 test('terminal finish failure clears the secret and requires restart, not completion retry', async ({ page, context }) => {
   await seedStudent(page, 'terminal-browser-session', 'student-access:terminal');
   const provider = await installSyntheticMicrosoftDocument(context);

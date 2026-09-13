@@ -561,6 +561,48 @@ test('durable identity-only flow hashes secrets, links only at finish, and permi
     }));
 });
 
+test('a durable claimed callback redemption failure returns only a generic terminal outcome and scrubs without evidence', async () => {
+    const data = await fixture();
+    const sid = randomUUID(); let state = '';
+    const consentId = await withTestClient((client) => inTransaction(client, async () => {
+        await client.query(`UPDATE users SET active_session_id=$2, refresh_token_hash='redeem-failure', refresh_token_expires_at=clock_timestamp()+interval '1 hour' WHERE id=$1`, [data.userId, sid]);
+        const policy = (await client.query<{ version: number }>('SELECT version FROM institution_microsoft_policies WHERE university_id=$1', [data.universityId])).rows[0]!;
+        return acceptMicrosoftConsent(client, data.userId, {
+            accepted: true, processingGrantId: data.processingGrantId,
+            snapshot: { universityId: data.universityId, providerPolicyVersion: policy.version, noticeVersion: 'microsoft-v1', mode: 'identity_only', scopes: ['openid', 'profile'] },
+        });
+    }));
+    const service = new MicrosoftFlowService({
+        pool: db.getPool(), verifierEncryptionKey: randomBytes(32).toString('base64url'), isEnabled: () => true,
+        callbackUrl: new URL('https://api.example.invalid/api/verification/microsoft/callback'),
+        completionUrl: new URL('https://app.example.invalid/student/verification/microsoft/complete'),
+        oidc: {
+            authorize: async (input) => { state = input.state; return 'https://provider.example.invalid/authorize'; },
+            redeem: async () => { throw new Error('SYNTHETIC_REDEMPTION_DETAIL_MUST_NOT_ESCAPE'); },
+        },
+    });
+    const started = await service.start({ userId: data.userId, serverSessionId: sid, processingGrantId: data.processingGrantId, providerConsentId: consentId });
+    const callback = new URL('https://api.example.invalid/api/verification/microsoft/callback');
+    callback.searchParams.set('state', state); callback.searchParams.set('error', 'access_denied'); callback.searchParams.set('error_description', 'SYNTHETIC_REDEMPTION_DETAIL_MUST_NOT_ESCAPE');
+    const terminal = await service.callback({ callbackUrl: callback, browserCookie: started.callbackCookie.value });
+    assert.equal(terminal.outcome, 'connection_not_completed');
+    assert.equal(terminal.completionUrl.searchParams.get('attempt'), started.publicResult.attemptId);
+    assert.equal(terminal.completionUrl.searchParams.get('outcome'), 'connection_not_completed');
+    assert.equal(terminal.completionUrl.href.includes('SYNTHETIC_REDEMPTION_DETAIL_MUST_NOT_ESCAPE'), false);
+    assert.equal(terminal.completionUrl.href.includes('access_denied'), false);
+    await withTestClient(async (client) => inTransaction(client, async () => {
+        const stored = (await client.query<{ status: string; encrypted_verifier: string | null; nonce: string | null; result: unknown }>(
+            'SELECT status,encrypted_verifier,nonce,result FROM microsoft_verification_attempts WHERE id=$1', [started.publicResult.attemptId],
+        )).rows[0]!;
+        assert.deepEqual(stored, { status: 'failed', encrypted_verifier: null, nonce: null, result: null });
+        assert.equal((await client.query('SELECT 1 FROM microsoft_identities WHERE user_id=$1', [data.userId])).rowCount, 0);
+        assert.equal((await client.query('SELECT 1 FROM microsoft_provider_proofs WHERE user_id=$1', [data.userId])).rowCount, 0);
+        assert.equal((await client.query(`SELECT 1 FROM eligibility_evidence evidence JOIN students ON students.id=evidence.student_id WHERE students.user_id=$1`, [data.userId])).rowCount, 0);
+    }));
+    await assert.rejects(() => service.finish({ userId: data.userId, serverSessionId: sid, attemptId: started.publicResult.attemptId, finishSecret: started.publicResult.finishSecret }));
+    await assert.rejects(() => service.callback({ callbackUrl: callback, browserCookie: started.callbackCookie.value }));
+});
+
 test('both consent withdrawals prevent dispatch before claim, prevent ready during held redeem, and reject ready finish', async () => {
     for (const withdrawal of ['processing', 'provider'] as const) {
         for (const phase of ['before', 'during', 'after'] as const) {

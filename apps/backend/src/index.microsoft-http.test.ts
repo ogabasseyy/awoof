@@ -2,16 +2,63 @@ import assert from 'node:assert/strict';
 import http from 'node:http';
 import test from 'node:test';
 import { db } from './config/database.js';
-import { createApp } from './index.js';
+import { createApp, type AppOptions } from './index.js';
+import { BadRequestError } from './common/errors/AppError.js';
 
-async function mountedServer(): Promise<{ baseUrl: string; close: () => Promise<void> }> {
-    const app = await createApp();
+async function mountedServer(options?: AppOptions): Promise<{ baseUrl: string; close: () => Promise<void> }> {
+    const app = await createApp(options);
     const server = http.createServer(app);
     await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
     const address = server.address();
     if (!address || typeof address === 'string') throw new Error('Server did not bind');
     return { baseUrl: `http://127.0.0.1:${address.port}`, close: () => new Promise((resolve, reject) => server.close((error) => error ? reject(error) : resolve())) };
 }
+
+test('mounted Microsoft callback redirects only a bound terminal provider failure and never finishes it', async () => {
+    const attemptId = '11111111-1111-4111-8111-111111111111';
+    const callbackCookie = `awoof_ms_${attemptId}`;
+    let finishCalls = 0;
+    const fixture = await mountedServer({
+        microsoftIssuanceEnabled: () => true,
+        microsoftFlowFactory: () => ({
+            start: async () => { throw new Error('not used'); },
+            finish: async () => { finishCalls += 1; throw new Error('not used'); },
+            callbackCookieNameForState: async (callbackUrl) => callbackUrl.searchParams.get('state') === 'bound-state' ? callbackCookie : null,
+            callback: async ({ callbackUrl, browserCookies }) => {
+                const browserCookie = browserCookies?.find((cookie) => cookie.name === callbackCookie)?.value;
+                if (callbackUrl.searchParams.get('state') !== 'bound-state' || browserCookie !== 'bound-browser-secret') {
+                    throw new BadRequestError('Microsoft verification attempt is no longer valid');
+                }
+                return {
+                    attemptId,
+                    completionUrl: new URL(`https://app.awoof.example/student/verification/microsoft/complete?attempt=${attemptId}&outcome=connection_not_completed`),
+                    outcome: 'connection_not_completed' as const,
+                };
+            },
+        }),
+    });
+    try {
+        const bound = await fetch(`${fixture.baseUrl}/api/verification/microsoft/callback?state=bound-state&error=access_denied&error_description=provider-text-must-not-leak`, {
+            redirect: 'manual', headers: { Cookie: `${callbackCookie}=bound-browser-secret` },
+        });
+        assert.equal(bound.status, 303);
+        assert.equal(bound.headers.get('location'), `https://app.awoof.example/student/verification/microsoft/complete?attempt=${attemptId}&outcome=connection_not_completed`);
+        assert.equal(bound.headers.get('location')?.includes('access_denied'), false);
+        assert.equal(bound.headers.get('location')?.includes('provider-text'), false);
+        assert.match(bound.headers.get('set-cookie') ?? '', new RegExp(`${callbackCookie}=;`));
+        assert.equal(finishCalls, 0);
+
+        const unbound = await fetch(`${fixture.baseUrl}/api/verification/microsoft/callback?state=random-state&error=access_denied`, {
+            redirect: 'manual', headers: { Cookie: `${callbackCookie}=bound-browser-secret` },
+        });
+        assert.equal(unbound.status, 400);
+        assert.equal(unbound.headers.get('location'), null);
+        assert.equal(unbound.headers.get('set-cookie'), null);
+        assert.equal(finishCalls, 0);
+    } finally {
+        await fixture.close();
+    }
+});
 
 test('mounted app keeps merchant CORS while isolating Microsoft CORS and redacts malformed JSON', async () => {
     const originalQuery = db.query.bind(db);
