@@ -1,7 +1,8 @@
 #!/usr/bin/env node
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { copyFileSync, cpSync, existsSync, mkdtempSync, mkdirSync, realpathSync, rmSync, statSync, symlinkSync } from 'node:fs';
+import { createHash } from 'node:crypto';
+import { copyFileSync, cpSync, existsSync, mkdtempSync, mkdirSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -29,6 +30,17 @@ export function artifactRuntimeEnvironment(extra = {}) {
         JWT_REFRESH_SECRET: 'artifact-runtime-refresh-secret-at-least-32-characters',
         ...extra,
     };
+}
+
+export function artifactManifestDigest(runtimeRoot) {
+    return createHash('sha256').update(readFileSync(join(runtimeRoot, 'dist/artifact-manifest.json'))).digest('hex');
+}
+
+/** Re-checks both content parity and the immutable initial manifest identity. */
+export function assertRuntimeArtifactStable(runtimeRoot, initialManifestDigest) {
+    const artifact = validateArtifactManifest(runtimeRoot);
+    assert.equal(artifactManifestDigest(runtimeRoot), initialManifestDigest, 'Source-absent runtime manifest bytes changed after probes.');
+    return artifact;
 }
 
 function runNode(args, options = {}) {
@@ -101,7 +113,8 @@ function verifyCleanupRedaction(runtimeRoot) {
 export function validateSourceAbsentRuntime({ root = backendRoot, runPostgres = false } = {}) {
     const { runtimeRoot, dependencyRoot } = copyRuntimeFixture(root);
     try {
-        const artifact = validateArtifactManifest(runtimeRoot);
+        const initialManifestDigest = artifactManifestDigest(runtimeRoot);
+        validateArtifactManifest(runtimeRoot);
         verifySwagger(runtimeRoot);
         verifyCleanupRedaction(runtimeRoot);
         if (runPostgres) {
@@ -116,7 +129,8 @@ export function validateSourceAbsentRuntime({ root = backendRoot, runPostgres = 
             process.stdout.write(postgres.stdout || '');
             process.stderr.write(postgres.stderr || '');
         }
-        return { integrationTestCount: artifact.tests.length, runtimeRoot, dependencyRoot };
+        const finalArtifact = assertRuntimeArtifactStable(runtimeRoot, initialManifestDigest);
+        return { integrationTestCount: finalArtifact.tests.length, runtimeRoot, dependencyRoot };
     } finally {
         rmSync(runtimeRoot, { recursive: true, force: true });
     }
