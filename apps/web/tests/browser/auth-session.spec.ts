@@ -60,6 +60,14 @@ async function gotoStudentLogin(page: Page, path: string, api: ApiFixture): Prom
   expect(api.loginCalls).toBe(0);
 }
 
+async function gotoGuardedLogin(page: Page, path: string, api: ApiFixture): Promise<void> {
+  await page.goto(path, { waitUntil: 'domcontentloaded' });
+  await expect(page.getByLabel(/email/i)).toBeEnabled({ timeout: remainingTestBudgetMs() });
+  await expect(page.getByLabel(/^password$/i)).toBeEnabled({ timeout: remainingTestBudgetMs() });
+  await expect(page.getByRole('button', { name: /^login$/i })).toBeEnabled({ timeout: remainingTestBudgetMs() });
+  expect(api.loginCalls).toBe(0);
+}
+
 async function submitStudentLogin(page: Page): Promise<void> {
   await page.getByLabel(/email/i).fill('student@approved.test');
   await page.getByLabel(/^password/i).fill('Synthetic-Password1!');
@@ -791,7 +799,7 @@ for (const scenario of [
     const api = await installSyntheticApi(page);
     const faults = collectBrowserFaults(page, api);
 
-    await page.goto(scenario.login);
+    await gotoGuardedLogin(page, scenario.login, api);
     await page.getByLabel(/email/i).fill(`${scenario.role}@approved.test`);
     await page.getByLabel(/^password/i).fill('Synthetic-Password1!');
     await page.getByRole('button', { name: /^login$/i }).click();

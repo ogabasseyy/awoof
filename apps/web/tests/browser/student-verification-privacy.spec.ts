@@ -58,7 +58,7 @@ for (const heldRead of ['status', 'methods'] as const) {
             const settled = page.waitForResponse((response) => response.url().includes(heldRead === 'status' ? '/verification/status' : '/verification/methods/'));
             release(); await settled;
             await page.evaluate(() => new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve()))));
-            await expect(page.getByRole('status').filter({ hasText: 'Your student eligibility is current.' })).toHaveCount(0);
+            await expect(page.getByText('Your student eligibility is current.')).toHaveCount(0);
             await page.getByRole('checkbox', { name: 'Consent notice' }).check();
             await expect(page.getByRole('button', { name: 'Send verification code' })).toBeDisabled();
         } finally { release(); }
