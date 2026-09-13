@@ -21,8 +21,10 @@ function fixture() {
     writeFileSync(join(sourceMigrations, '001_initial.sql'), 'select 1;\n');
     writeFileSync(join(sourceMigrations, '002_authority.sql'), 'select 2;\n');
     writeFileSync(join(sourceTests, 'fallback.integration.ts'), 'export {};\n');
+    writeFileSync(join(sourceTests, 'microsoft-fallback-artifact.integration.ts'), 'export {};\n');
     writeFileSync(join(artifactMigrations, 'run.js'), 'export {};\n');
     writeFileSync(join(artifactTests, 'fallback.integration.js'), 'export {};\n');
+    writeFileSync(join(root, ARTIFACT_ROOT_NAME, DISABLED_FALLBACK_SMOKE), 'export {};\n');
     writeFileSync(join(root, ARTIFACT_ROOT_NAME, 'config/openapi.json'), '{"paths":{"/api/auth/login":{}}}\n');
     writeFileSync(join(root, ARTIFACT_ROOT_NAME, 'scripts/cleanup-microsoft-attempts.js'), 'export {};\n');
     return root;
@@ -76,7 +78,7 @@ test('compiled artifact rejects missing or stale integration outputs before a da
     const root = fixture();
     try {
         stageMigrationSql(root);
-        assert.equal(assertCompiledArtifact(root).tests.length, 1);
+        assert.equal(assertCompiledArtifact(root).tests.length, 2);
         writeFileSync(join(root, ARTIFACT_ROOT_NAME, 'testing/postgres/stale.integration.js'), 'export {};\n');
         assert.throws(() => assertCompiledArtifact(root), /compiled integration tests must exactly match/);
     } finally {
@@ -89,6 +91,11 @@ test('compiled fallback selector is constrained to the dedicated smoke and canno
     try {
         stageMigrationSql(root);
         const artifact = assertCompiledArtifact(root);
+        assert.deepEqual(
+            compiledTestSelection(artifact, DISABLED_FALLBACK_SMOKE),
+            [join(root, ARTIFACT_ROOT_NAME, DISABLED_FALLBACK_SMOKE)],
+        );
+        rmSync(join(root, ARTIFACT_ROOT_NAME, DISABLED_FALLBACK_SMOKE));
         assert.throws(() => compiledTestSelection(artifact, DISABLED_FALLBACK_SMOKE), /not present/);
         assert.throws(() => compiledTestSelection(artifact, 'testing/postgres/anything.integration.js'), /only supports/);
     } finally {

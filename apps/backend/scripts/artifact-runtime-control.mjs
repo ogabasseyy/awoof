@@ -43,11 +43,44 @@ export function assertRuntimeArtifactStable(runtimeRoot, initialManifestDigest) 
     return artifact;
 }
 
+/** Keeps startup evidence and terminal TAP failures without forwarding an unbounded child log. */
+export function boundedProbeDetail(result, maximumLength = 8_000) {
+    assert.ok(Number.isInteger(maximumLength) && maximumLength >= 512, 'Probe detail limit must be a bounded positive integer.');
+    const errorMessage = String(result.error?.message ?? 'none').slice(0, 120);
+    const metadata = [
+        `exit=${result.status ?? 'null'}`,
+        `signal=${result.signal ?? 'none'}`,
+        `error=${errorMessage}`,
+    ].join(' ');
+    const stdout = String(result.stdout ?? '');
+    const stderr = String(result.stderr ?? '');
+    const prefix = `${metadata}\n--- stdout ---\n`;
+    const separator = '\n--- stderr ---\n';
+    if (prefix.length + stdout.length + separator.length + stderr.length <= maximumLength) {
+        return `${prefix}${stdout}${separator}${stderr}`;
+    }
+    const outputBudget = maximumLength - prefix.length - separator.length;
+    const stdoutBudget = Math.max(64, Math.floor(outputBudget * 0.7));
+    const stderrBudget = outputBudget - stdoutBudget;
+    const retain = (value, budget, headLimit) => {
+        if (value.length <= budget) return value;
+        const markerTemplate = (omitted) => `\n... [probe output truncated: ${omitted} chars omitted; final output retained] ...\n`;
+        let marker = markerTemplate(value.length);
+        let retained = budget - marker.length;
+        let omitted = value.length - retained;
+        marker = markerTemplate(omitted);
+        retained = budget - marker.length;
+        const headLength = Math.min(headLimit, Math.floor(retained / 3));
+        const tailLength = retained - headLength;
+        return `${value.slice(0, headLength)}${marker}${value.slice(-tailLength)}`;
+    };
+    return `${prefix}${retain(stdout, stdoutBudget, Math.min(1_000, Math.floor(stdoutBudget / 3)))}${separator}${retain(stderr, stderrBudget, 0)}`;
+}
+
 function runNode(args, options = {}) {
     const result = spawnSync(process.execPath, args, { encoding: 'utf8', timeout: 30_000, ...options });
     if (result.status !== 0 || result.error) {
-        const detail = [result.error?.message, result.stdout, result.stderr].filter(Boolean).join('\n').slice(0, 8_000);
-        throw new Error(`Source-absent artifact probe failed: ${detail}`);
+        throw new Error(`Source-absent artifact probe failed:\n${boundedProbeDetail(result)}`);
     }
     return result;
 }
@@ -110,7 +143,10 @@ function verifyCleanupRedaction(runtimeRoot) {
 }
 
 /** Creates a disposable fixture containing no source directory and validates it. */
-export function validateSourceAbsentRuntime({ root = backendRoot, runPostgres = false } = {}) {
+export function validateSourceAbsentRuntime({ root = backendRoot, runPostgres = false, disabledFallbackSmoke = false } = {}) {
+    if (disabledFallbackSmoke && !runPostgres) {
+        throw new Error('Disabled fallback smoke requires the fixed PostgreSQL runtime mode.');
+    }
     const { runtimeRoot, dependencyRoot } = copyRuntimeFixture(root);
     try {
         const initialManifestDigest = artifactManifestDigest(runtimeRoot);
@@ -124,27 +160,35 @@ export function validateSourceAbsentRuntime({ root = backendRoot, runPostgres = 
                 env: artifactRuntimeEnvironment({
                     AWOOF_POSTGRES_ARTIFACT_ROOT: 'dist',
                     AWOOF_POSTGRES_ARTIFACT_RUNTIME: '1',
+                    ...(disabledFallbackSmoke ? { AWOOF_POSTGRES_TEST_FILES: 'testing/postgres/microsoft-fallback-artifact.integration.js' } : {}),
                 }),
             });
             process.stdout.write(postgres.stdout || '');
             process.stderr.write(postgres.stderr || '');
         }
         const finalArtifact = assertRuntimeArtifactStable(runtimeRoot, initialManifestDigest);
-        return { integrationTestCount: finalArtifact.tests.length, runtimeRoot, dependencyRoot };
+        return {
+            integrationTestCount: finalArtifact.tests.length,
+            selectedIntegrationTestCount: disabledFallbackSmoke ? 1 : finalArtifact.tests.length,
+            runtimeRoot,
+            dependencyRoot,
+        };
     } finally {
         rmSync(runtimeRoot, { recursive: true, force: true });
     }
 }
 
 if (process.argv[1] && resolve(process.argv[1]) === resolve(fileURLToPath(import.meta.url))) {
-    const runPostgres = process.argv[2] === '--postgres';
+    const mode = process.argv[2];
+    const runPostgres = mode === '--postgres' || mode === '--disabled-fallback-smoke';
+    const disabledFallbackSmoke = mode === '--disabled-fallback-smoke';
     if (process.argv.length > (runPostgres ? 3 : 2)) {
-        process.stderr.write('artifact runtime control accepts only --postgres\n');
+        process.stderr.write('artifact runtime control accepts only --postgres or --disabled-fallback-smoke\n');
         process.exitCode = 1;
     } else {
         try {
-            const result = validateSourceAbsentRuntime({ runPostgres });
-            process.stdout.write(`Source-absent artifact runtime passed with ${result.integrationTestCount} compiled integration tests.\n`);
+            const result = validateSourceAbsentRuntime({ runPostgres, disabledFallbackSmoke });
+            process.stdout.write(`Source-absent artifact runtime passed with ${result.selectedIntegrationTestCount} selected compiled integration tests from ${result.integrationTestCount} manifest tests.\n`);
         } catch (error) {
             process.stderr.write(`${error instanceof Error ? error.message : String(error)}\n`);
             process.exitCode = 1;

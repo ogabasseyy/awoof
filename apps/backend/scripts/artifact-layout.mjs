@@ -94,5 +94,6 @@ export function compiledTestSelection(artifact, requestedFile) {
     if (!artifact.tests.includes(selected)) {
         throw new Error(`Dedicated compiled fallback smoke is not present: ${DISABLED_FALLBACK_SMOKE}.`);
     }
+    requireRegularFile(selected, `Dedicated compiled fallback smoke is not present: ${DISABLED_FALLBACK_SMOKE}.`);
     return [selected];
 }
