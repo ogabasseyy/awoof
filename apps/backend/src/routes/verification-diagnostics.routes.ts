@@ -39,6 +39,76 @@ import { verificationDiagnosticsErrorHandler } from '../middleware/verification-
  *         failureCategories:
  *           type: array
  *           items: { $ref: '#/components/schemas/VerificationDiagnosticFailureCategory' }
+ *     VerificationDiagnosticOuterAuthenticationError:
+ *       type: object
+ *       additionalProperties: false
+ *       required: [success, error]
+ *       properties:
+ *         success: { type: boolean, enum: [false] }
+ *         error:
+ *           type: object
+ *           additionalProperties: false
+ *           required: [message, code, statusCode]
+ *           properties:
+ *             message: { type: string, enum: [Authentication failed, Insufficient permissions] }
+ *             code: { type: string, enum: [UNAUTHORIZED] }
+ *             statusCode: { type: integer, enum: [401] }
+ *     VerificationDiagnosticForbiddenError:
+ *       type: object
+ *       additionalProperties: false
+ *       required: [success, error]
+ *       properties:
+ *         success: { type: boolean, enum: [false] }
+ *         error:
+ *           type: object
+ *           additionalProperties: false
+ *           required: [message, code, statusCode]
+ *           properties:
+ *             message: { type: string, enum: [Current administrator authority required] }
+ *             code: { type: string, enum: [FORBIDDEN] }
+ *             statusCode: { type: integer, enum: [403] }
+ *     VerificationDiagnosticNotFoundError:
+ *       type: object
+ *       additionalProperties: false
+ *       required: [success, error]
+ *       properties:
+ *         success: { type: boolean, enum: [false] }
+ *         error:
+ *           type: object
+ *           additionalProperties: false
+ *           required: [message, code, statusCode]
+ *           properties:
+ *             message: { type: string, enum: [Verification diagnostic not found] }
+ *             code: { type: string, enum: [NOT_FOUND] }
+ *             statusCode: { type: integer, enum: [404] }
+ *     VerificationDiagnosticInvalidIdentifierError:
+ *       type: object
+ *       additionalProperties: false
+ *       required: [success, error]
+ *       properties:
+ *         success: { type: boolean, enum: [false] }
+ *         error:
+ *           type: object
+ *           additionalProperties: false
+ *           required: [message, code, statusCode]
+ *           properties:
+ *             message: { type: string, enum: [Invalid verification diagnostic identifier] }
+ *             code: { type: string, enum: [VALIDATION_ERROR] }
+ *             statusCode: { type: integer, enum: [422] }
+ *     VerificationDiagnosticUnavailableError:
+ *       type: object
+ *       additionalProperties: false
+ *       required: [success, error]
+ *       properties:
+ *         success: { type: boolean, enum: [false] }
+ *         error:
+ *           type: object
+ *           additionalProperties: false
+ *           required: [message, code, statusCode]
+ *           properties:
+ *             message: { type: string, enum: [Verification diagnostics are temporarily unavailable] }
+ *             code: { type: string, enum: [INTERNAL_SERVER_ERROR] }
+ *             statusCode: { type: integer, enum: [500] }
  * /api/admin/verification-diagnostics/{correlationId}:
  *   get:
  *     summary: Read a redacted Microsoft verification diagnostic timeline
@@ -75,10 +145,31 @@ import { verificationDiagnosticsErrorHandler } from '../middleware/verification-
  *                     aggregates:
  *                       type: array
  *                       items: { $ref: '#/components/schemas/VerificationDiagnosticAggregate' }
- *       '401': { description: Authentication required }
- *       '403': { description: Current administrator authority required }
- *       '404': { description: Verification diagnostic not found }
- *       '422': { description: Invalid correlation identifier }
+ *       '401':
+ *         description: Authentication is missing/invalid, or the signed-in role is not admin. This outer middleware envelope is returned before the diagnostic boundary.
+ *         content:
+ *           application/json:
+ *             schema: { $ref: '#/components/schemas/VerificationDiagnosticOuterAuthenticationError' }
+ *       '403':
+ *         description: The signed-in administrator no longer has current durable authority.
+ *         content:
+ *           application/json:
+ *             schema: { $ref: '#/components/schemas/VerificationDiagnosticForbiddenError' }
+ *       '404':
+ *         description: The fixed redacted diagnostic is unavailable.
+ *         content:
+ *           application/json:
+ *             schema: { $ref: '#/components/schemas/VerificationDiagnosticNotFoundError' }
+ *       '422':
+ *         description: The correlation identifier is invalid without echoing its value.
+ *         content:
+ *           application/json:
+ *             schema: { $ref: '#/components/schemas/VerificationDiagnosticInvalidIdentifierError' }
+ *       '500':
+ *         description: A diagnostic operational failure was sanitized at the route boundary.
+ *         content:
+ *           application/json:
+ *             schema: { $ref: '#/components/schemas/VerificationDiagnosticUnavailableError' }
  */
 const router = Router();
 

@@ -28,7 +28,7 @@ test('published savings schema describes nullable totals and partial-history met
 });
 
 test('publishes the strict Microsoft consent notice, history, acceptance, and withdrawal contract', () => {
-    type JsonSchema = { $ref?: string; additionalProperties?: boolean; required?: string[]; properties?: Record<string, JsonSchema> };
+    type JsonSchema = { $ref?: string; type?: string; nullable?: boolean; enum?: Array<string | number | boolean>; additionalProperties?: boolean; required?: string[]; properties?: Record<string, JsonSchema>; items?: JsonSchema };
     type Endpoint = {
         requestBody?: { content: Record<string, { schema: JsonSchema }> };
         responses?: Record<string, { $ref?: string; content?: Record<string, { schema: JsonSchema }> }>;
@@ -85,4 +85,44 @@ test('publishes the strict Microsoft consent notice, history, acceptance, and wi
     assert.equal(spec.components.schemas.MicrosoftConsentSnapshot.additionalProperties, false);
     assert.deepEqual(spec.components.schemas.MicrosoftConsentHistoryResponse.properties?.data?.required, ['items', 'nextCursor']);
     assert.deepEqual(spec.components.schemas.MicrosoftConsentWithdrawalResponse.properties?.data?.required, ['providerConsentId', 'withdrawn']);
+});
+
+test('publishes exact strict error envelopes for redacted verification diagnostics', () => {
+    type JsonSchema = { $ref?: string; type?: string; nullable?: boolean; enum?: Array<string | number | boolean>; additionalProperties?: boolean; required?: string[]; properties?: Record<string, JsonSchema>; items?: JsonSchema };
+    type Endpoint = { responses?: Record<string, { content?: Record<string, { schema: JsonSchema }> }> };
+    const spec = swaggerSpec as {
+        paths: Record<string, Record<string, Endpoint>>;
+        components: { schemas: Record<string, JsonSchema> };
+    };
+    const endpoint = spec.paths['/api/admin/verification-diagnostics/{correlationId}']?.get;
+    assert.ok(endpoint);
+    const expectedErrors = {
+        '401': ['VerificationDiagnosticOuterAuthenticationError', ['Authentication failed', 'Insufficient permissions'], 'UNAUTHORIZED', 401],
+        '403': ['VerificationDiagnosticForbiddenError', ['Current administrator authority required'], 'FORBIDDEN', 403],
+        '404': ['VerificationDiagnosticNotFoundError', ['Verification diagnostic not found'], 'NOT_FOUND', 404],
+        '422': ['VerificationDiagnosticInvalidIdentifierError', ['Invalid verification diagnostic identifier'], 'VALIDATION_ERROR', 422],
+        '500': ['VerificationDiagnosticUnavailableError', ['Verification diagnostics are temporarily unavailable'], 'INTERNAL_SERVER_ERROR', 500],
+    } as const;
+    for (const [status, [name, messages, code, statusCode]] of Object.entries(expectedErrors)) {
+        const responseSchema = endpoint.responses?.[status]?.content?.['application/json']?.schema;
+        assert.equal(responseSchema?.$ref, `#/components/schemas/${name}`);
+        const envelope = spec.components.schemas[name];
+        assert.equal(envelope.additionalProperties, false);
+        assert.deepEqual(envelope.required, ['success', 'error']);
+        assert.deepEqual(envelope.properties?.success?.enum, [false]);
+        const error = envelope.properties?.error;
+        assert.equal(error?.type, 'object');
+        assert.equal(error?.additionalProperties, false);
+        assert.deepEqual(error?.required, ['message', 'code', 'statusCode']);
+        assert.deepEqual(error?.properties?.message?.enum, messages);
+        assert.deepEqual(error?.properties?.code?.enum, [code]);
+        assert.deepEqual(error?.properties?.statusCode?.enum, [statusCode]);
+    }
+    const response = endpoint.responses?.['200']?.content?.['application/json']?.schema;
+    const data = response?.properties?.data;
+    const components = spec.components.schemas;
+    assert.equal(components.VerificationDiagnosticTimelineEvent.properties?.httpStatus?.nullable, true);
+    assert.equal(components.VerificationDiagnosticAggregate.properties?.averageFinishedRequestDurationMs?.nullable, true);
+    assert.equal(components.VerificationDiagnosticAggregate.properties?.p95FinishedRequestDurationMs?.nullable, true);
+    assert.equal(data?.additionalProperties, false);
 });
