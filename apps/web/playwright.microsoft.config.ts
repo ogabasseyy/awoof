@@ -22,7 +22,7 @@ export default defineConfig({
     },
   },
   webServer: {
-    command: 'node scripts/microsoft-https-fixture.mjs',
+    command: '../backend/node_modules/.bin/tsx scripts/microsoft-https-fixture.mjs',
     // Playwright's Node-side readiness probe does not inherit Chromium's
     // resolver rules. The browser still uses app.awoof.test below.
     url: 'https://127.0.0.1:3443',

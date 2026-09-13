@@ -9,18 +9,38 @@
  * and fulfils it locally; every other provider request is aborted there.
  */
 import { execFileSync, spawn } from 'node:child_process';
-import { request as httpRequest } from 'node:http';
+import { createServer as createHttpServer, request as httpRequest } from 'node:http';
 import { createServer as createHttpsServer } from 'node:https';
 import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 
+const webRoot = dirname(dirname(fileURLToPath(import.meta.url)));
 const nextPort = 3107;
 const appPort = 3443;
 const apiPort = 3444;
+const apiUpstreamPort = 3445;
 const fixtureDir = mkdtempSync(join(tmpdir(), 'awoof-microsoft-https-'));
 const keyPath = join(fixtureDir, 'key.pem');
 const certPath = join(fixtureDir, 'cert.pem');
+// The fixture starts with only non-secret test values and changes its cwd to a
+// fresh directory before importing backend modules, so their dotenv lookup
+// cannot read a workspace .env file. Next receives its own similarly bounded
+// environment below.
+const fixturePath = process.env.PATH ?? '';
+for (const key of Object.keys(process.env)) delete process.env[key];
+Object.assign(process.env, {
+  PATH: fixturePath,
+  NODE_ENV: 'test',
+  JWT_SECRET: 'fixture-jwt-secret-at-least-32-characters',
+  JWT_REFRESH_SECRET: 'fixture-refresh-secret-at-least-32-characters',
+});
+process.chdir(fixtureDir);
+const { default: express } = await import('../../backend/node_modules/express/index.js');
+const { logger } = await import('../../backend/src/common/middleware/logger.ts');
+const { errorHandler } = await import('../../backend/src/common/middleware/errorHandler.ts');
+const { verificationDiagnosticsErrorHandler } = await import('../../backend/src/middleware/verification-diagnostics-error.middleware.ts');
 let next;
 let closed = false;
 let startCalls = 0;
@@ -30,10 +50,12 @@ let refreshCalls = 0;
 let logoutCalls = 0;
 let delayedFinishDeliveries = 0;
 let diagnosticCalls = 0;
+let diagnosticsUnavailableReleased = false;
 const attempts = new Map();
 const observedPaths = [];
 const observedServerSessions = [];
 const capturedApplicationLogs = [];
+const capturedApplicationErrors = [];
 const capturedProxyLogs = [];
 const delayedFinishResponses = new Set();
 const delayedDiagnosticResponses = new Set();
@@ -51,24 +73,18 @@ function initialAccounts() {
 let accounts = initialAccounts();
 
 function resetFixture() {
-  startCalls = 0; callbackCookieCalls = 0; finishCalls = 0; refreshCalls = 0; logoutCalls = 0; delayedFinishDeliveries = 0; diagnosticCalls = 0;
+  startCalls = 0; callbackCookieCalls = 0; finishCalls = 0; refreshCalls = 0; logoutCalls = 0; delayedFinishDeliveries = 0; diagnosticCalls = 0; diagnosticsUnavailableReleased = false;
   attempts.clear(); noticeChanges.clear(); acceptedConsentSnapshots.length = 0; revokedServerSessions.clear(); observedPaths.length = 0; observedServerSessions.length = 0;
-  capturedApplicationLogs.length = 0; capturedProxyLogs.length = 0;
+  capturedApplicationLogs.length = 0; capturedApplicationErrors.length = 0; capturedProxyLogs.length = 0;
   for (const release of delayedFinishResponses) release(true);
   delayedFinishResponses.clear(); accounts = initialAccounts();
   for (const release of delayedDiagnosticResponses) release();
   delayedDiagnosticResponses.clear();
 }
 
-// The local fixture represents both the application request logger and its
-// loopback proxy boundary. It deliberately records method + path only: never
-// authorization, cookies, query, or body. This is a local canary contract,
-// not a claim about an uninspected VPS proxy configuration.
-function captureSafeRequestLog(request, url) {
-  const line = `${request.method} ${url.pathname}`;
-  capturedApplicationLogs.push(line);
-  capturedProxyLogs.push(line);
-}
+const originalConsoleLog = console.log;
+console.log = (...args) => { capturedApplicationLogs.push(args.map(String).join(' ')); };
+console.error = (...args) => { capturedApplicationErrors.push(args.map(String).join(' ')); };
 
 function trackSocket(socket) {
   appSockets.add(socket);
@@ -145,9 +161,19 @@ function body(request) {
   });
 }
 
-const api = createHttpsServer(tls, async (request, response) => {
+async function throwCanaryThroughDiagnosticBoundary(request) {
   const url = new URL(request.url ?? '/', `https://api.awoof.test:${apiPort}`);
-  captureSafeRequestLog(request, url);
+  const payload = await body(request);
+  throw new Error([
+    request.headers.authorization,
+    request.headers.cookie,
+    url.search,
+    JSON.stringify(payload),
+  ].join('|'));
+}
+
+async function handleApiRequest(request, response) {
+  const url = new URL(request.url ?? '/', `https://api.awoof.test:${apiPort}`);
   observedPaths.push(`${request.method} ${url.pathname}`);
   if (request.method === 'OPTIONS') { cors(request, response); response.writeHead(204); response.end(); return; }
   if (url.pathname === '/api/__fixture/reset' && request.method === 'POST') {
@@ -161,15 +187,16 @@ const api = createHttpsServer(tls, async (request, response) => {
     for (const delayed of delayedDiagnosticResponses) delayed();
     delayedDiagnosticResponses.clear(); json(request, response, 204, {}); return;
   }
+  if (url.pathname === '/api/__fixture/release-diagnostics-unavailable' && request.method === 'POST') {
+    diagnosticsUnavailableReleased = true; json(request, response, 204, {}); return;
+  }
   if (url.pathname === '/api/__fixture/canary-mask' && request.method === 'POST') {
-    // The canaries arrive through normal request surfaces but are never read,
-    // persisted, returned, or put into the captured local logs.
-    await body(request); json(request, response, 204, {}); return;
+    await throwCanaryThroughDiagnosticBoundary(request);
   }
   if (url.pathname === '/api/__fixture/evidence') {
     json(request, response, 200, { data: {
       startCalls, finishCalls, callbackCookieCalls, refreshCalls, logoutCalls, delayedFinishDeliveries, observedPaths, observedServerSessions,
-      diagnosticCalls, capturedApplicationLogs, capturedProxyLogs,
+      diagnosticCalls, capturedApplicationLogs, capturedApplicationErrors, capturedProxyLogs,
       acceptedConsentSnapshots, revokedServerSessions: [...revokedServerSessions],
       accounts: Object.fromEntries([...accounts].map(([id, account]) => [id, {
         emailEvidenceEligible: account.emailEvidenceEligible,
@@ -195,13 +222,16 @@ const api = createHttpsServer(tls, async (request, response) => {
       if (hasMode(context, 'not-found') || hasMode(context, 'admin-b')) {
         json(request, response, 404, { error: { code: 'fixture_diagnostic_not_found' } }); return;
       }
+      if (hasMode(context, 'unavailable') && !diagnosticsUnavailableReleased) {
+        json(request, response, 503, { error: { code: 'fixture_diagnostic_unavailable' } }); return;
+      }
       json(request, response, 200, { success: true, data: {
-        timeline: [
+        timeline: hasMode(context, 'empty-diagnostics') ? [] : [
           { stage: 'started', outcome: 'success', reason: 'none', httpStatus: null, durationMs: 2, recordedAt: '2026-09-13T09:00:00.000Z' },
           { stage: 'finished', outcome: 'failure', reason: 'permission_required', httpStatus: 403, durationMs: 18, recordedAt: '2026-09-13T09:01:00.000Z' },
         ],
         aggregateWindow: 'last_30_days', measuredAt: '2026-09-13T10:00:00.000Z', windowStartedAt: '2026-08-14T10:00:00.000Z',
-        aggregates: [{ institutionId: 'fixture-institution', institutionName: 'Synthetic approved institution', finishedAttemptCount: 1, averageFinishedRequestDurationMs: 18, p95FinishedRequestDurationMs: 18, incompleteAttempts: 1, failureCategories: [{ category: 'permission_required', eventCount: 1 }] }],
+        aggregates: hasMode(context, 'empty-diagnostics') ? [] : [{ institutionId: 'fixture-institution', institutionName: 'Synthetic approved institution', finishedAttemptCount: 1, averageFinishedRequestDurationMs: 18, p95FinishedRequestDurationMs: 18, incompleteAttempts: 1, failureCategories: [{ category: 'permission_required', eventCount: 1 }] }],
       } });
     };
     if (hasMode(context, 'delay-diagnostics')) { delayedDiagnosticResponses.add(send); return; }
@@ -337,7 +367,7 @@ const api = createHttpsServer(tls, async (request, response) => {
     return;
   }
   json(request, response, 404, { error: { code: 'fixture_unknown_route', path: url.pathname } });
-});
+}
 
 function finishAttempt(request, response, attempt, userId) {
   const graphEnrollment = attempt.mode?.includes('graph-enrollment') === true;
@@ -351,6 +381,45 @@ function finishAttempt(request, response, attempt, userId) {
   if (graphEnrollment) account.microsoftEnrollmentEligible = true;
   json(request, response, 200, { data: { accountLinked: true, enrollment: graphEnrollment ? 'eligible' : 'not_checked' } });
 }
+
+const apiApplication = express();
+apiApplication.use((request, response, nextMiddleware) => { cors(request, response); nextMiddleware(); });
+apiApplication.use(logger);
+const diagnosticsBoundary = express.Router();
+diagnosticsBoundary.post('/api/__fixture/canary-mask', (request, _response, nextMiddleware) => {
+  observedPaths.push(`${request.method} ${request.path}`);
+  void throwCanaryThroughDiagnosticBoundary(request).catch(nextMiddleware);
+});
+diagnosticsBoundary.use(verificationDiagnosticsErrorHandler);
+apiApplication.use(diagnosticsBoundary);
+apiApplication.use((request, response, nextMiddleware) => {
+  void handleApiRequest(request, response).catch(nextMiddleware);
+});
+apiApplication.use(errorHandler);
+
+// The browser connects only to this TLS loopback proxy. It forwards into the
+// local Express application and records its own post-upstream output, so the
+// proxy and application captures are independently exercised rather than two
+// copies of a synthetic formatter.
+const apiUpstream = createHttpServer(apiApplication);
+const api = createHttpsServer(tls, (request, response) => {
+  const url = new URL(request.url ?? '/', `https://api.awoof.test:${apiPort}`);
+  const upstream = httpRequest({ hostname: '127.0.0.1', port: apiUpstreamPort, path: request.url, method: request.method, headers: request.headers }, (upstreamResponse) => {
+    const statusCode = upstreamResponse.statusCode ?? 502;
+    response.writeHead(statusCode, upstreamResponse.headers);
+    upstreamResponse.on('end', () => {
+      if (statusCode >= 400) capturedProxyLogs.push(`${request.method} ${url.pathname} ${statusCode}`);
+    });
+    upstreamResponse.pipe(response);
+  });
+  upstream.on('error', () => {
+    capturedProxyLogs.push(`${request.method} ${url.pathname} 502`);
+    cors(request, response);
+    response.writeHead(502, { 'content-type': 'application/json; charset=utf-8' });
+    response.end(JSON.stringify({ success: false, error: { message: 'Synthetic fixture upstream unavailable', code: 'fixture_upstream_unavailable', statusCode: 502 } }));
+  });
+  request.pipe(upstream);
+});
 
 const app = createHttpsServer(tls, (request, response) => {
   // Preserve the browser Host header. Next uses it when it emits its dev
@@ -370,6 +439,7 @@ app.on('connection', trackSocket);
 // so forwarding only ordinary HTTP leaves hydration pending even though every
 // document and JavaScript asset returns 200.
 app.on('upgrade', (request, socket, head) => {
+  trackSocket(socket);
   const url = new URL(request.url ?? '/', `https://app.awoof.test:${appPort}`);
   if (url.pathname !== '/_next/hmr' || request.headers.upgrade?.toLowerCase() !== 'websocket') {
     socket.destroy();
@@ -394,7 +464,7 @@ app.on('upgrade', (request, socket, head) => {
 function close() {
   if (closed) return;
   closed = true;
-  api.close(); app.close();
+  api.close(); apiUpstream.close(); app.close();
   for (const socket of appSockets) socket.destroy();
   if (next && !next.killed) next.kill('SIGTERM');
   rmSync(fixtureDir, { recursive: true, force: true });
@@ -402,12 +472,15 @@ function close() {
 process.on('SIGINT', close); process.on('SIGTERM', close); process.on('exit', close);
 
 next = spawn('npm', ['run', 'dev', '--', '--webpack', '--hostname', '127.0.0.1', '--port', String(nextPort)], {
+  cwd: webRoot,
   env: {
-    ...process.env,
+    PATH: fixturePath,
+    NODE_ENV: 'development',
     NEXT_PUBLIC_API_URL: `https://api.awoof.test:${apiPort}`,
     NEXT_TELEMETRY_DISABLED: '1',
   },
   stdio: 'inherit',
 });
+apiUpstream.listen(apiUpstreamPort, '127.0.0.1');
 api.listen(apiPort, '127.0.0.1');
-app.listen(appPort, '127.0.0.1', () => console.log(`Microsoft HTTPS fixture ready at https://app.awoof.test:${appPort}`));
+app.listen(appPort, '127.0.0.1', () => originalConsoleLog(`Microsoft HTTPS fixture ready at https://app.awoof.test:${appPort}`));

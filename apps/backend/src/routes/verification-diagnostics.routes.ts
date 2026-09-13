@@ -1,6 +1,7 @@
 import { Router } from 'express';
 import { asyncHandler } from '../common/middleware/errorHandler.js';
 import { readVerificationDiagnostics } from '../controllers/admin-verification-diagnostics.controller.js';
+import { verificationDiagnosticsErrorHandler } from '../middleware/verification-diagnostics-error.middleware.js';
 
 /**
  * @swagger
@@ -84,5 +85,8 @@ const router = Router();
 // This router is mounted only below admin.routes.ts after its authentication,
 // role, and current-admin middleware; do not mount it directly at index.ts.
 router.get('/:correlationId', asyncHandler(readVerificationDiagnostics));
+// This route boundary never forwards raw diagnostic/provider/database errors
+// into the general development error handler, which can include error detail.
+router.use(verificationDiagnosticsErrorHandler);
 
 export default router;

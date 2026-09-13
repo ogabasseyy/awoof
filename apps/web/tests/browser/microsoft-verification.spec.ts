@@ -98,6 +98,7 @@ type FixtureEvidence = {
   delayedFinishDeliveries: number;
   diagnosticCalls: number;
   capturedApplicationLogs: string[];
+  capturedApplicationErrors: string[];
   capturedProxyLogs: string[];
   observedPaths: string[];
   observedServerSessions: Array<{ path: string; serverSessionId: string; userId: string }>;
@@ -185,22 +186,53 @@ test('admin diagnostics discards a delayed old-session result after a replacemen
   await expect(page.getByRole('heading', { name: 'Diagnostic timeline not found' })).toBeVisible();
 });
 
-test('local application/proxy request-log capture and browser state mask transport canaries', async ({ page }) => {
+test('admin diagnostics renders a generic unavailable state with a session-fenced retry', async ({ page }) => {
+  await seedAdmin(page, 'fixture-admin-session', 'admin-access:unavailable');
+  await page.goto('/admin/verification-diagnostics/92d71887-18a0-4c0d-b696-138bc9d54f20');
+  await expect(page.getByRole('heading', { name: 'Diagnostic timeline is unavailable' })).toBeVisible();
+  await fixtureControl(page, '/api/__fixture/release-diagnostics-unavailable');
+  await page.getByRole('button', { name: 'Retry timeline' }).click();
+  await expect(page.getByRole('heading', { name: 'Redacted verification timeline' })).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'Attempt finished' })).toBeVisible();
+  expect((await evidence(page)).diagnosticCalls).toBeGreaterThanOrEqual(2);
+});
+
+test('admin diagnostics renders the intentionally empty safe timeline state', async ({ page }) => {
+  await seedAdmin(page, 'fixture-admin-session', 'admin-access:empty-diagnostics');
+  await page.goto('/admin/verification-diagnostics/92d71887-18a0-4c0d-b696-138bc9d54f20');
+  await expect(page.getByRole('heading', { name: 'No timeline events available' })).toBeVisible();
+  await expect(page.getByText('No redacted stages were persisted for this diagnostic.')).toBeVisible();
+});
+
+test('local Express error boundary, TLS proxy, and browser outputs mask transport canaries', async ({ page }) => {
   await seedAdmin(page);
   await page.goto('/__fixture-storage-tab');
   const canaries = ['AUTH_CANARY', 'COOKIE_CANARY', 'CALLBACK_QUERY_CANARY', 'CODE_CANARY', 'TOKEN_CANARY', 'ERROR_DESCRIPTION_CANARY', 'PROFILE_CANARY'];
   await page.context().addCookies([{ name: 'synthetic', value: canaries[1]!, domain: 'api.awoof.test', path: '/', secure: true, sameSite: 'Lax' }]);
+  const browserConsole: string[] = [];
+  const browserErrors: string[] = [];
+  page.on('console', (message) => browserConsole.push(message.text()));
+  page.on('pageerror', (error) => browserErrors.push(error.message));
   const result = await page.evaluate(async (values) => {
     const response = await fetch(`${location.protocol}//api.awoof.test:3444/api/__fixture/canary-mask?callback=${encodeURIComponent(values[2])}&code=${encodeURIComponent(values[3])}&token=${encodeURIComponent(values[4])}&error_description=${encodeURIComponent(values[5])}`, {
       method: 'POST', credentials: 'include',
       headers: { Authorization: `Bearer ${values[0]}`, 'content-type': 'application/json' },
       body: JSON.stringify({ profile: values[6] }),
     });
-    return { status: response.status, body: document.documentElement.outerHTML, storage: JSON.stringify([localStorage.getItem('awoof.session.v1'), sessionStorage.getItem('awoof.microsoft.verification.attempt.v1')]) };
+    return {
+      status: response.status,
+      responseBody: await response.text(),
+      dom: document.documentElement.outerHTML,
+      storage: JSON.stringify([localStorage.getItem('awoof.session.v1'), sessionStorage.getItem('awoof.microsoft.verification.attempt.v1')]),
+    };
   }, canaries);
-  expect(result.status).toBe(204);
+  expect(result.status).toBe(500);
+  expect(result.responseBody).toBe(JSON.stringify({ success: false, error: { message: 'Verification diagnostics are temporarily unavailable', code: 'INTERNAL_SERVER_ERROR', statusCode: 500 } }));
   const captured = await evidence(page);
-  const surfaces = JSON.stringify({ application: captured.capturedApplicationLogs, proxy: captured.capturedProxyLogs, browser: result });
+  expect(captured.capturedApplicationErrors).toContain('Verification diagnostics request failed');
+  expect(captured.capturedApplicationLogs.some((line) => line.includes('/api/__fixture/canary-mask 500'))).toBe(true);
+  expect(captured.capturedProxyLogs.some((line) => line.includes('/api/__fixture/canary-mask 500'))).toBe(true);
+  const surfaces = JSON.stringify({ application: captured.capturedApplicationLogs, applicationErrors: captured.capturedApplicationErrors, proxy: captured.capturedProxyLogs, browser: { ...result, browserConsole, browserErrors } });
   for (const canary of canaries) expect(surfaces.includes(canary)).toBe(false);
 });
 

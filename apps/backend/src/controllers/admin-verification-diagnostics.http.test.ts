@@ -15,6 +15,15 @@ function token(role: 'admin' | 'student' | 'vendor') {
     return jwtService.generateAccessToken({ userId: actorId, email: `${role}@example.invalid`, role });
 }
 
+async function assertErrorEnvelope(response: Response, statusCode: 401 | 403 | 404 | 422 | 500, message: string, code: string) {
+    assert.equal(response.status, statusCode);
+    assert.match(response.headers.get('content-type') ?? '', /^application\/json/);
+    assert.deepEqual(await response.json(), {
+        success: false,
+        error: { message, code, statusCode },
+    });
+}
+
 test('admin diagnostic read is redacted, audited, no-store, and fenced by a transaction-local current-admin check', async (t) => {
     let currentRole = 'admin';
     const queries: Array<{ text: string; params: unknown[] | undefined }> = [];
@@ -86,17 +95,15 @@ test('admin diagnostic read is redacted, audited, no-store, and fenced by a tran
         // Role-bearing JWTs other than an admin cannot reach the controller.
         for (const role of ['student', 'vendor'] as const) {
             const denied = await fetch(endpoint, { headers: { authorization: `Bearer ${token(role)}` } });
-            assert.equal(denied.status, 401);
-            assert.equal((await denied.text()).includes('student@example.invalid'), false);
+            await assertErrorEnvelope(denied, 401, 'Insufficient permissions', 'UNAUTHORIZED');
         }
-        assert.equal((await fetch(endpoint)).status, 401);
+        await assertErrorEnvelope(await fetch(endpoint), 401, 'Authentication failed', 'UNAUTHORIZED');
 
         // The outer middleware sees an older admin row, then the controller's
         // FOR UPDATE recheck sees a concurrent demotion and refuses the read.
         currentRole = 'student';
         const demoted = await fetch(endpoint, { headers: { authorization: `Bearer ${token('admin')}` } });
-        assert.equal(demoted.status, 403);
-        assert.equal((await demoted.text()).includes('student@example.invalid'), false);
+        await assertErrorEnvelope(demoted, 403, 'Current administrator authority required', 'FORBIDDEN');
         assert.ok(queries.some((query) => query.text === 'SELECT role, deleted_at FROM users WHERE id = $1 FOR UPDATE'));
     } finally { server.close(); await once(server, 'close'); }
 });
@@ -121,9 +128,36 @@ test('missing diagnostic IDs are generic and never append an administrative read
     if (!address || typeof address === 'string') throw new Error('Expected a loopback port');
     try {
         const response = await fetch(`http://127.0.0.1:${address.port}/admin/verification-diagnostics/${correlationId}`, { headers: { authorization: `Bearer ${token('admin')}` } });
-        assert.equal(response.status, 404);
-        const text = await response.text();
-        assert.equal(text.includes('student@example.invalid'), false);
+        await assertErrorEnvelope(response, 404, 'Verification diagnostic not found', 'NOT_FOUND');
         assert.equal(queries.some((query) => query.includes("'verification_diagnostics_viewed'")), false);
+        const malformed = await fetch(`http://127.0.0.1:${address.port}/admin/verification-diagnostics/not-a-correlation-id`, { headers: { authorization: `Bearer ${token('admin')}` } });
+        await assertErrorEnvelope(malformed, 422, 'Invalid verification diagnostic identifier', 'VALIDATION_ERROR');
+    } finally { server.close(); await once(server, 'close'); }
+});
+
+test('diagnostic route boundary masks an injected operational error in both the client envelope and logger', async (t) => {
+    const consoleErrors: string[] = [];
+    const client = {
+        async query(text: string) {
+            if (text === 'BEGIN' || text === 'ROLLBACK') return { rows: [], rowCount: 0 };
+            if (text === 'SELECT role, deleted_at FROM users WHERE id = $1 FOR UPDATE') return { rows: [{ role: 'admin', deleted_at: null }], rowCount: 1 };
+            if (text.includes('FROM verification_diagnostic_events')) throw new Error('DATABASE_ERROR_CANARY');
+            throw new Error(`Unexpected query: ${text}`);
+        },
+        release() {},
+    };
+    t.mock.method(console, 'error', (...args: unknown[]) => { consoleErrors.push(args.map(String).join(' ')); });
+    t.mock.method(db, 'query', async () => ({ rows: [{ role: 'admin', deleted_at: null }], rowCount: 1 }));
+    t.mock.method(db, 'getPool', () => ({ connect: async () => client }) as ReturnType<typeof db.getPool>);
+    const app = express(); app.use('/admin', adminRouter); app.use(errorHandler);
+    const server = app.listen(0, '127.0.0.1'); await once(server, 'listening');
+    const address = server.address();
+    if (!address || typeof address === 'string') throw new Error('Expected a loopback port');
+    try {
+        const response = await fetch(`http://127.0.0.1:${address.port}/admin/verification-diagnostics/${correlationId}`, { headers: { authorization: `Bearer ${token('admin')}` } });
+        await assertErrorEnvelope(response, 500, 'Verification diagnostics are temporarily unavailable', 'INTERNAL_SERVER_ERROR');
+        assert.equal(response.headers.get('cache-control'), 'no-store');
+        assert.equal(consoleErrors.some((line) => line.includes('DATABASE_ERROR_CANARY')), false);
+        assert.deepEqual(consoleErrors, ['Verification diagnostics request failed']);
     } finally { server.close(); await once(server, 'close'); }
 });
