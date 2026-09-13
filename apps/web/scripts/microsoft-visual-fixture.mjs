@@ -6,6 +6,10 @@
  */
 import { spawn } from 'node:child_process';
 import { createServer, request as httpRequest } from 'node:http';
+import { copyFileSync, mkdirSync, mkdtempSync, readdirSync, rmSync, symlinkSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 const host = '127.0.0.1';
 const port = 3455;
@@ -13,9 +17,43 @@ const nextPort = 3108;
 const origin = `http://${host}:${port}`;
 const sessionKey = 'awoof.session.v1';
 const attemptKey = 'awoof.microsoft.verification.attempt.v1';
+const realProject = fileURLToPath(new URL('..', import.meta.url));
+const fixtureProject = mkdtempSync(join(tmpdir(), 'awoof-microsoft-visual-'));
+const canaryKey = 'AWOOF_VISUAL_ENV_CANARY';
+const childEnv = {
+  LANG: process.env.LANG ?? 'C',
+  PATH: process.env.PATH ?? '',
+  TMPDIR: process.env.TMPDIR ?? tmpdir(),
+  NEXT_PUBLIC_API_URL: origin,
+  NEXT_TELEMETRY_DISABLED: '1',
+  NODE_ENV: 'development',
+};
 let next;
 let closed = false;
 const sockets = new Set();
+
+function linkSourceTree(source, destination) {
+  mkdirSync(destination, { recursive: true });
+  for (const entry of readdirSync(source, { withFileTypes: true })) {
+    const nextSource = join(source, entry.name);
+    const nextDestination = join(destination, entry.name);
+    if (entry.isDirectory()) linkSourceTree(nextSource, nextDestination);
+    else symlinkSync(nextSource, nextDestination);
+  }
+}
+
+// Next loads `.env*` from its project root. Its route scanner does not follow
+// a top-level source symlink, so this scaffold creates only directory entries
+// and symlinks every real source file; it never copies or edits source.
+linkSourceTree(join(realProject, 'src'), join(fixtureProject, 'src'));
+for (const entry of ['public', 'node_modules', 'next.config.ts', 'postcss.config.mjs', 'package.json']) {
+  symlinkSync(join(realProject, entry), join(fixtureProject, entry));
+}
+// Next may update compiler defaults in tsconfig during development. Keep that
+// write confined to this owned temporary root, never the source worktree.
+copyFileSync(join(realProject, 'tsconfig.json'), join(fixtureProject, 'tsconfig.json'));
+const fixtureEnvFiles = readdirSync(fixtureProject).filter((entry) => entry === '.env' || entry.startsWith('.env.'));
+if (fixtureEnvFiles.length || Object.hasOwn(childEnv, canaryKey)) throw new Error('Visual fixture environment isolation failed.');
 
 const scenarios = {
   ineligible: {
@@ -150,6 +188,9 @@ const server = createServer((request, response) => {
   csp(response);
   const url = new URL(request.url ?? '/', origin);
   if (url.pathname === '/__fixture/microsoft-visual') { response.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' }); response.end(landing()); return; }
+  if (url.pathname === '/__fixture/microsoft-visual/isolation') {
+    json(response, 200, { data: { fixtureProjectHasEnvFiles: fixtureEnvFiles.length > 0, unallowlistedCanaryInherited: Object.hasOwn(childEnv, canaryKey) } }); return;
+  }
   if (url.pathname.startsWith('/api/')) { api(request, response, url); return; }
   const upstream = httpRequest({ hostname: host, port: nextPort, path: request.url, method: request.method, headers: { ...request.headers, host: `${host}:${port}` } }, (upstreamResponse) => {
     response.writeHead(upstreamResponse.statusCode ?? 502, upstreamResponse.headers);
@@ -185,12 +226,17 @@ function close() {
   // `npm run dev` can have a Next child. It is spawned in its own process
   // group, so shutdown reaches only this fixture's process tree.
   if (next && !next.killed) {
+    next.once('exit', removeFixtureProject);
     try { process.kill(-next.pid, 'SIGTERM'); } catch { next.kill('SIGTERM'); }
-  }
+  } else removeFixtureProject();
 }
-process.on('SIGINT', close); process.on('SIGTERM', close); process.on('exit', close);
+function removeFixtureProject() {
+  try { rmSync(fixtureProject, { recursive: true, force: true, maxRetries: 3, retryDelay: 50 }); }
+  catch { setTimeout(removeFixtureProject, 100); }
+}
+process.on('SIGINT', close); process.on('SIGTERM', close); process.once('exit', () => { try { rmSync(fixtureProject, { recursive: true, force: true }); } catch {} });
 
-next = spawn('npm', ['run', 'dev', '--', '--webpack', '--hostname', host, '--port', String(nextPort)], {
-  cwd: new URL('..', import.meta.url), env: { ...process.env, NEXT_PUBLIC_API_URL: origin, NEXT_TELEMETRY_DISABLED: '1' }, stdio: 'inherit', detached: true,
+next = spawn(process.execPath, [join(realProject, 'node_modules/next/dist/bin/next'), 'dev', '--webpack', '--hostname', host, '--port', String(nextPort)], {
+  cwd: fixtureProject, env: childEnv, stdio: 'inherit', detached: true,
 });
 server.listen(port, host, () => console.log(`Microsoft visual fixture ready at ${origin}/__fixture/microsoft-visual (PID ${process.pid}; Ctrl-C to stop)`));
