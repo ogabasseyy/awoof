@@ -92,12 +92,18 @@ export default function MicrosoftVerificationCard({ available, unavailableReason
             return false;
         }
     };
-    const load = async () => { await Promise.all([loadNotice(), loadHistory(), loadIdentities()]); };
+    const loadOwnerReads = async () => { await Promise.all([loadHistory(), loadIdentities()]); };
     useEffect(() => {
         mounted.current = true;
-        queueMicrotask(() => { void load(); });
+        queueMicrotask(() => { void loadOwnerReads(); });
         return () => { mounted.current = false; };
         // The parent remounts this card for each logical session.
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, []);
+    useEffect(() => {
+        queueMicrotask(() => { void loadNotice(); });
+        // Availability changes only the provider-consent notice; it must not
+        // supersede an owner identity refresh already in progress.
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [available]);
     const run = async (operation: () => Promise<void>) => {

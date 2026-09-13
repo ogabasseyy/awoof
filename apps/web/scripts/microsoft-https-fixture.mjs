@@ -52,15 +52,18 @@ let delayedFinishDeliveries = 0;
 let diagnosticCalls = 0;
 let diagnosticsUnavailableReleased = false;
 let delayNextIdentityRead = false;
+let delayNextStatusRead = false;
 const attempts = new Map();
 const observedPaths = [];
 const observedServerSessions = [];
 const identityReadEvents = [];
+const statusReadEvents = [];
 const capturedApplicationLogs = [];
 const capturedApplicationErrors = [];
 const capturedProxyLogs = [];
 const delayedFinishResponses = new Set();
 const delayedIdentityResponses = new Set();
+const delayedStatusResponses = new Set();
 const delayedDiagnosticResponses = new Set();
 const noticeChanges = new Set();
 const acceptedConsentSnapshots = [];
@@ -76,14 +79,17 @@ function initialAccounts() {
 let accounts = initialAccounts();
 
 function resetFixture() {
-  startCalls = 0; callbackCookieCalls = 0; finishCalls = 0; refreshCalls = 0; logoutCalls = 0; delayedFinishDeliveries = 0; diagnosticCalls = 0; diagnosticsUnavailableReleased = false; delayNextIdentityRead = false;
+  startCalls = 0; callbackCookieCalls = 0; finishCalls = 0; refreshCalls = 0; logoutCalls = 0; delayedFinishDeliveries = 0; diagnosticCalls = 0; diagnosticsUnavailableReleased = false; delayNextIdentityRead = false; delayNextStatusRead = false;
   attempts.clear(); noticeChanges.clear(); acceptedConsentSnapshots.length = 0; revokedServerSessions.clear(); observedPaths.length = 0; observedServerSessions.length = 0;
   capturedApplicationLogs.length = 0; capturedApplicationErrors.length = 0; capturedProxyLogs.length = 0;
   identityReadEvents.length = 0;
+  statusReadEvents.length = 0;
   for (const release of delayedFinishResponses) release(true);
   delayedFinishResponses.clear(); accounts = initialAccounts();
   for (const release of delayedIdentityResponses) release(true);
   delayedIdentityResponses.clear();
+  for (const release of delayedStatusResponses) release(true);
+  delayedStatusResponses.clear();
   for (const release of delayedDiagnosticResponses) release();
   delayedDiagnosticResponses.clear();
 }
@@ -196,6 +202,13 @@ async function handleApiRequest(request, response) {
   if (url.pathname === '/api/__fixture/delay-next-identity-read' && request.method === 'POST') {
     delayNextIdentityRead = true; json(request, response, 204, {}); return;
   }
+  if (url.pathname === '/api/__fixture/release-delayed-status' && request.method === 'POST') {
+    for (const delayed of delayedStatusResponses) delayed();
+    delayedStatusResponses.clear(); json(request, response, 204, {}); return;
+  }
+  if (url.pathname === '/api/__fixture/delay-next-status-read' && request.method === 'POST') {
+    delayNextStatusRead = true; json(request, response, 204, {}); return;
+  }
   if (url.pathname === '/api/__fixture/release-delayed-diagnostics' && request.method === 'POST') {
     for (const delayed of delayedDiagnosticResponses) delayed();
     delayedDiagnosticResponses.clear(); json(request, response, 204, {}); return;
@@ -212,6 +225,7 @@ async function handleApiRequest(request, response) {
       diagnosticCalls, capturedApplicationLogs, capturedApplicationErrors, capturedProxyLogs,
       acceptedConsentSnapshots, revokedServerSessions: [...revokedServerSessions],
       identityReadEvents,
+      statusReadEvents,
       accounts: Object.fromEntries([...accounts].map(([id, account]) => [id, {
         emailEvidenceEligible: account.emailEvidenceEligible,
         microsoftEnrollmentEligible: account.microsoftEnrollmentEligible,
@@ -266,19 +280,27 @@ async function handleApiRequest(request, response) {
   }
   if (url.pathname === '/api/verification/status') {
     const account = user ? accounts.get(user.id) : null;
-    const statusFailure = hasMode(context, 'status-failure') && Boolean(account?.finishCalls || account?.unlinkedMicrosoftIdentity) && !account?.statusFailureDelivered;
     const refreshExpired = hasMode(context, 'refresh-expired');
     if (refreshExpired) { json(request, response, 401, { error: { code: 'fixture_access_expired' } }); return; }
-    if (statusFailure && account) account.statusFailureDelivered = true;
-    json(request, response, statusFailure ? 503 : 200, statusFailure ? { error: { code: 'fixture_status_failure' } } : {
-      success: true, data: {
-        emailDomainApproved: true, mailboxConfirmed: Boolean(account?.emailEvidenceEligible), email: user?.email ?? 'unknown@approved.test', universityId: 'fixture-university',
-        // Identity linking is deliberately not enrollment verification. The
-        // fixture reports separate evidence sources, and only the account's
-        // independent email evidence determines effective eligibility.
-        eligibility: { eligible: Boolean(account?.emailEvidenceEligible || account?.microsoftEnrollmentEligible), emailEvidenceEligible: Boolean(account?.emailEvidenceEligible), microsoftIdentityLinked: Boolean(account?.linkedMicrosoftIdentities) }, notices: { verification: { version: 'fixture-v1', text: 'Synthetic Awoof processing notice.' } },
-      },
-    }); return;
+    const event = { userId: context?.id ?? null, received: true, delivered: false, delayed: false, status: null };
+    statusReadEvents.push(event);
+    const send = (cancelled = false) => {
+      if (cancelled || response.writableEnded) return;
+      const statusFailure = hasMode(context, 'status-failure') && Boolean(account?.finishCalls || account?.unlinkedMicrosoftIdentity) && !account?.statusFailureDelivered;
+      if (statusFailure && account) account.statusFailureDelivered = true;
+      event.delivered = true; event.status = statusFailure ? 503 : 200;
+      json(request, response, statusFailure ? 503 : 200, statusFailure ? { error: { code: 'fixture_status_failure' } } : {
+        success: true, data: {
+          emailDomainApproved: true, mailboxConfirmed: Boolean(account?.emailEvidenceEligible), email: user?.email ?? 'unknown@approved.test', universityId: 'fixture-university',
+          // Identity linking is deliberately not enrollment verification. The
+          // fixture reports separate evidence sources, and only the account's
+          // independent email evidence determines effective eligibility.
+          eligibility: { eligible: Boolean(account?.emailEvidenceEligible || account?.microsoftEnrollmentEligible), emailEvidenceEligible: Boolean(account?.emailEvidenceEligible), microsoftIdentityLinked: Boolean(account?.linkedMicrosoftIdentities) }, notices: { verification: { version: 'fixture-v1', text: 'Synthetic Awoof processing notice.' } },
+        },
+      });
+    };
+    if (delayNextStatusRead) { delayNextStatusRead = false; event.delayed = true; delayedStatusResponses.add(send); return; }
+    send(); return;
   }
   if (url.pathname === '/api/verification/methods/fixture-university') {
     json(request, response, 200, { data: { methods: [
@@ -318,7 +340,7 @@ async function handleApiRequest(request, response) {
       if (!context || !account || hasMode(context, 'identity-read-error')) { json(request, response, 503, { error: { code: 'fixture_identity_read_failed' } }); return; }
       // The off-policy case deliberately has a persisted owner resource even
       // though new Microsoft starts are disabled.
-      const present = account.linkedMicrosoftIdentities > 0 || account.unlinkedMicrosoftIdentity || hasMode(context, 'global-off');
+      const present = account.linkedMicrosoftIdentities > 0 || account.unlinkedMicrosoftIdentity || hasMode(context, 'global-off') || hasMode(context, 'identity-linked');
       const institutionName = context.id.endsWith('002') ? 'Synthetic approved institution B' : 'Synthetic approved institution A';
       const item = present ? [{ id: `fixture-identity-${context.id}`, universityId: 'fixture-university', universityName: institutionName, linkedAt: '2026-09-01T00:00:00.000Z', revokedAt: account.unlinkedMicrosoftIdentity ? '2026-09-13T00:00:00.000Z' : null, status: account.unlinkedMicrosoftIdentity ? 'revoked' : 'connected' }] : [];
       event.delivered = true;

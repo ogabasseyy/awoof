@@ -250,8 +250,6 @@ export class App {
     try {
       const verificationRoutes = await import('./routes/verification.routes.js');
       this.app.use('/api/verification', verificationRoutes.default);
-      const merchantVerificationRoutes = await import('./routes/merchant-verification.routes.js');
-      this.app.use('/api/merchant-verification', merchantVerificationRoutes.default);
       appLogger.info('Verification routes registered');
     } catch (error) {
       appLogger.error('Failed to register verification routes:', error);

@@ -103,6 +103,7 @@ type FixtureEvidence = {
   observedPaths: string[];
   observedServerSessions: Array<{ path: string; serverSessionId: string; userId: string }>;
   identityReadEvents: Array<{ userId: string | null; received: boolean; delivered: boolean; delayed: boolean }>;
+  statusReadEvents: Array<{ userId: string | null; received: boolean; delivered: boolean; delayed: boolean; status: number | null }>;
   acceptedConsentSnapshots: Array<{ providerPolicyVersion?: number; noticeVersion?: string } | null>;
   revokedServerSessions: string[];
   accounts: Record<string, { emailEvidenceEligible: boolean; microsoftEnrollmentEligible: boolean; finishCalls: number; linkedMicrosoftIdentities: number }>;
@@ -464,6 +465,28 @@ test('a successful unlink keeps its result while a failed owner-status refresh c
   await page.getByRole('button', { name: 'Retry current eligibility' }).click();
   await expect(page.getByRole('button', { name: 'Retry current eligibility' })).toHaveCount(0);
   await expect(page.getByRole('heading', { name: 'Confirm your school email' })).toBeVisible();
+});
+
+test('an enabled-policy unlink keeps a successful identity refresh distinct from a delayed failed eligibility refresh', async ({ page }) => {
+  await seedStudent(page, 'unlink-enabled-status-browser-session', 'student-access:identity-linked:status-failure');
+  await loadAuthenticatedVerification(page);
+  await expect(page.getByRole('button', { name: 'Continue with Microsoft' })).toBeVisible();
+  await expect(page.getByText('Connected — Synthetic approved institution A')).toBeVisible();
+  const identityReadsBeforeUnlink = (await evidence(page)).identityReadEvents
+    .filter((event) => event.userId === '00000000-0000-4000-8000-000000000001' && event.delivered).length;
+  await page.getByRole('button', { name: 'Unlink Microsoft connection' }).click();
+  await fixtureControl(page, '/api/__fixture/delay-next-status-read');
+  await page.getByRole('button', { name: 'Unlink Microsoft' }).click();
+  await expect.poll(async () => (await evidence(page)).statusReadEvents).toContainEqual(expect.objectContaining({ delayed: true, delivered: false, userId: '00000000-0000-4000-8000-000000000001' }));
+  await expect.poll(async () => (await evidence(page)).identityReadEvents.filter((event) => event.userId === '00000000-0000-4000-8000-000000000001' && event.delivered).length).toBe(identityReadsBeforeUnlink + 1);
+  await expect(page.getByText(/Microsoft connection removed\. Your independent school-email verification was not changed/)).toBeVisible();
+  await fixtureControl(page, '/api/__fixture/release-delayed-status');
+  await expect(page.getByText(/The connection was removed, but current eligibility could not be refreshed/)).toBeVisible();
+  await expect(page.getByText('Microsoft connections could not be loaded. You can retry.')).toHaveCount(0);
+  await expect(page.getByText('Removed — Synthetic approved institution A')).toBeVisible();
+  await page.getByRole('button', { name: 'Retry current eligibility' }).click();
+  await expect(page.getByRole('button', { name: 'Retry current eligibility' })).toHaveCount(0);
+  await expect(page.getByText('Removed — Synthetic approved institution A')).toBeVisible();
 });
 
 test('a delayed old-owner identity read cannot populate after account replacement while the new owner sees only its own connection', async ({ page, context }) => {
