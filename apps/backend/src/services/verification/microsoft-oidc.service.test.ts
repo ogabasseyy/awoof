@@ -20,7 +20,7 @@ function token(overrides: Record<string, unknown> = {}, key = privateKey, kid = 
     return `${header}.${payload}.${signer.sign(key).toString('base64url')}`;
 }
 
-function syntheticTransport(current: () => string, keys: () => unknown, metadataOverride: Record<string, unknown> = {}, redirect = false, oversized = false): import('openid-client').CustomFetch {
+function syntheticTransport(current: () => string, keys: () => unknown, metadataOverride: Record<string, unknown> = {}, redirect = false, oversized = false, tokenError?: string): import('openid-client').CustomFetch {
     return async (input) => {
         const url = new URL(input instanceof Request ? input.url : input.toString());
         if (redirect) return new Response(null, { status: 302, headers: { location: 'https://attacker.invalid/' } });
@@ -29,14 +29,16 @@ function syntheticTransport(current: () => string, keys: () => unknown, metadata
             return Response.json({ issuer: issuer.href, authorization_endpoint: new URL('/authorize', issuer).href, token_endpoint: new URL('/token', issuer).href, jwks_uri: new URL('/keys', issuer).href, response_types_supported: ['code'], subject_types_supported: ['pairwise'], id_token_signing_alg_values_supported: ['RS256'], code_challenge_methods_supported: ['S256'], ...metadataOverride });
         }
         if (url.pathname === '/keys') return Response.json({ keys: keys() });
-        if (url.pathname === '/token') return Response.json({ token_type: 'Bearer', access_token: 'never-returned', id_token: current() });
+        if (url.pathname === '/token') return tokenError
+            ? Response.json({ error: tokenError, error_description: 'provider-detail-must-not-escape' }, { status: 400 })
+            : Response.json({ token_type: 'Bearer', access_token: 'never-returned', id_token: current() });
         throw new Error('unexpected synthetic endpoint');
     };
 }
 
-function service(current: () => string, keys: () => unknown, metadataOverride: Record<string, unknown> = {}, redirect = false, oversized = false): MicrosoftOidcService {
+function service(current: () => string, keys: () => unknown, metadataOverride: Record<string, unknown> = {}, redirect = false, oversized = false, tokenError?: string): MicrosoftOidcService {
     const configuration = readMicrosoftOidcConfiguration({ enabled: true, tenantId, clientId, clientSecret: 'test-secret', callbackUrl: callback.href, frontendCompletionUrl: 'https://app.awoof.example/student/verification/microsoft/complete' });
-    return MicrosoftOidcService.forConfiguration(configuration, { issuer, fetch: syntheticTransport(current, keys, metadataOverride, redirect, oversized) });
+    return MicrosoftOidcService.forConfiguration(configuration, { issuer, fetch: syntheticTransport(current, keys, metadataOverride, redirect, oversized, tokenError) });
 }
 
 async function redeem(oidc: MicrosoftOidcService): Promise<unknown> {
@@ -80,6 +82,12 @@ test('reuses one transport instance across trusted JWKS rotation', async () => {
     keySet = [{ ...rotated, kid: 'other', use: 'sig', alg: 'RS256' }];
     const result = await redeem(oidc);
     assert.equal((result as { identity: { objectId: string } }).identity.objectId, '33333333-3333-4333-8333-333333333333');
+});
+
+test('classifies only approved provider cancellation codes as cancellation', async () => {
+    const keys = () => [{ ...jwk, kid: 'key-1', use: 'sig', alg: 'RS256' }];
+    await assert.rejects(() => redeem(service(() => token(), keys, {}, false, false, 'access_denied')), payloadFree('cancelled_or_permission'));
+    await assert.rejects(() => redeem(service(() => token(), keys, {}, false, false, 'server_error')), payloadFree('upstream_unavailable'));
 });
 
 test('authorization always uses code PKCE S256, query response mode, state, nonce, and only server-approved scopes', async () => {

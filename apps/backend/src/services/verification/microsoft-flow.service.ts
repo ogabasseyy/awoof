@@ -4,7 +4,7 @@ import { ConflictError, ForbiddenError, RateLimitError } from '../../common/erro
 import { decryptMicrosoftAttemptVerifier, encryptMicrosoftAttemptVerifier, hashMicrosoftAttemptSecret } from './microsoft-attempt-crypto.js';
 import { MicrosoftOidcOperationalError, type MicrosoftOidc, type MicrosoftIdentity } from './microsoft-oidc.service.js';
 import { lockMicrosoftAttempt } from './microsoft-session.service.js';
-import { assertMicrosoftAuthority, type MicrosoftAttemptAuthority } from './microsoft-authority.service.js';
+import { assertMicrosoftAuthority, MicrosoftAuthorityInvalidatedError, type MicrosoftAttemptAuthority } from './microsoft-authority.service.js';
 import type { EducationObservation, MicrosoftEducationService } from './microsoft-education.service.js';
 import { applyMicrosoftEnrollment } from './eligibility-evidence.service.js';
 import { appLogger } from '../../common/logger.js';
@@ -74,7 +74,7 @@ function secret(bytes = 32): string { return randomBytes(bytes).toString('base64
 function cookieName(attemptId: string): string { return `awoof_ms_${attemptId}`; }
 function invalidAttempt(): ConflictError { return new ConflictError('Microsoft verification attempt is no longer valid'); }
 class MicrosoftAttemptExpiredError extends ConflictError {
-    constructor(readonly attemptId: string) { super('Microsoft verification attempt is no longer valid'); }
+    constructor(readonly attemptId: string, readonly isNonterminal: boolean) { super('Microsoft verification attempt is no longer valid'); }
 }
 function fixedCallback(actual: URL, configured: URL): boolean {
     return actual.protocol === 'https:' && !actual.username && !actual.password && !actual.hash
@@ -152,8 +152,7 @@ export class MicrosoftFlowService {
         let authorizationUrl: string;
         try { authorizationUrl = await this.oidcForTenant(prepared.tenantId).authorize({ tenantId: prepared.tenantId, state: prepared.state, nonce: prepared.nonce, verifier: prepared.verifier, scopes: prepared.scopes }); }
         catch (error) {
-            await this.fail(prepared.attemptId);
-            await this.emit(prepared.attemptId, { stage: 'finished', outcome: 'failure', reason: oidcFailureReason(error), durationMs: this.elapsed(startedAt) });
+            await this.emitTerminalFailure(prepared.attemptId, { outcome: 'failure', reason: oidcFailureReason(error), durationMs: this.elapsed(startedAt) });
             throw error;
         }
         await this.transaction(async (tx) => {
@@ -169,21 +168,46 @@ export class MicrosoftFlowService {
             if (!locked.rows[0] || locked.rows[0].status !== 'pending' || locked.rows[0].expires_at <= clock.rows[0]!.now) throw invalidAttempt();
             this.assertEnabled();
         }).catch(async (error) => {
-            await this.fail(prepared.attemptId);
-            await this.emit(prepared.attemptId, { stage: 'finished', outcome: 'failure', reason: 'cancelled', durationMs: this.elapsed(startedAt) });
+            await this.emitTerminalFailure(prepared.attemptId, { outcome: 'failure', reason: 'cancelled', durationMs: this.elapsed(startedAt) });
             throw error;
         });
         if (this.deps.isEnabled?.() !== true) {
-            await this.fail(prepared.attemptId);
-            await this.emit(prepared.attemptId, { stage: 'finished', outcome: 'failure', reason: 'cancelled', durationMs: this.elapsed(startedAt) });
+            await this.emitTerminalFailure(prepared.attemptId, { outcome: 'failure', reason: 'cancelled', durationMs: this.elapsed(startedAt) });
             throw invalidAttempt();
         }
         await this.emit(prepared.attemptId, { stage: 'started', outcome: 'success', reason: 'none', durationMs: this.elapsed(startedAt) });
         return { publicResult: { attemptId: prepared.attemptId, authorizationUrl, finishSecret: prepared.finishSecret }, callbackCookie: { name: cookieName(prepared.attemptId), value: prepared.browserSecret, maxAgeSeconds: ATTEMPT_LIFETIME_SECONDS, path: '/api/verification/microsoft/callback', httpOnly: true, secure: true, sameSite: 'lax' } };
     }
 
-    private async fail(attemptId: string): Promise<void> {
-        await this.transaction(async (tx) => { await tx.query(`UPDATE microsoft_verification_attempts SET status='failed', encrypted_verifier=NULL, nonce=NULL, result=NULL WHERE id=$1 AND status IN ('pending','processing','ready')`, [attemptId]); });
+    private async fail(attemptId: string): Promise<boolean> {
+        return this.transaction(async (tx) => {
+            const failed = await tx.query(`UPDATE microsoft_verification_attempts SET status='failed', encrypted_verifier=NULL, nonce=NULL, result=NULL WHERE id=$1 AND status IN ('pending','processing','ready')`, [attemptId]);
+            return failed.rowCount === 1;
+        });
+    }
+
+    private async emitTerminalFailure(attemptId: string, event: Omit<PendingDiagnosticEvent, 'stage'>): Promise<void> {
+        // The status transition is the durable deduplication gate. It also
+        // prevents a late retry from appending a terminal diagnostic after a
+        // successful completion.
+        if (await this.fail(attemptId)) await this.emit(attemptId, { stage: 'finished', ...event });
+    }
+
+    private async postTokenFailureReason(attemptId: string, error: unknown): Promise<DiagnosticEvent['reason']> {
+        if (error instanceof MicrosoftAttemptExpiredError) return 'expired';
+        if (error instanceof MicrosoftAuthorityInvalidatedError) return 'cancelled';
+        // This lookup runs only after the authority transaction has rolled
+        // back/released. It reads a durable, server-owned state rather than a
+        // provider value, so it cannot turn an arbitrary upstream failure into
+        // a cancellation classification.
+        const result = await this.deps.pool.query<{ status: Attempt['status']; expired: boolean }>(
+            `SELECT status, expires_at <= clock_timestamp() AS expired
+             FROM microsoft_verification_attempts WHERE id=$1`, [attemptId],
+        );
+        const attempt = result.rows[0];
+        if (attempt?.expired) return 'expired';
+        if (attempt?.status === 'failed') return 'cancelled';
+        return 'upstream_unavailable';
     }
 
     async callback(input: { callbackUrl: URL; browserCookie?: string; browserCookies?: readonly { name: string; value: string }[] }): Promise<MicrosoftCallbackResult> {
@@ -208,7 +232,7 @@ export class MicrosoftFlowService {
             const locked = await tx.query<Attempt>('SELECT * FROM microsoft_verification_attempts WHERE id=$1', [attempt.id]);
             const clock = await tx.query<{ now: Date }>('SELECT clock_timestamp() AS now');
             if (!locked.rows[0] || locked.rows[0].status !== 'pending') throw invalidAttempt();
-            if (locked.rows[0].expires_at <= clock.rows[0]!.now) throw new MicrosoftAttemptExpiredError(locked.rows[0].id);
+            if (locked.rows[0].expires_at <= clock.rows[0]!.now) throw new MicrosoftAttemptExpiredError(locked.rows[0].id, true);
             if (authority.policy.tenant_id.length === 0 || !attempt.encrypted_verifier || !attempt.nonce) throw invalidAttempt();
             this.assertEnabled();
             const updated = await tx.query(`UPDATE microsoft_verification_attempts SET status='processing' WHERE id=$1 AND status='pending'`, [attempt.id]);
@@ -216,7 +240,7 @@ export class MicrosoftFlowService {
             return { attempt, tenantId: authority.policy.tenant_id, state, verifier: decryptMicrosoftAttemptVerifier(attempt.encrypted_verifier, this.deps.verifierEncryptionKey, attempt.id), nonce: attempt.nonce };
         }); } catch (error) {
             if (error instanceof MicrosoftAttemptExpiredError) {
-                await this.emit(error.attemptId, { stage: 'finished', outcome: 'failure', reason: 'expired', durationMs: this.elapsed(startedAt) });
+                await this.emitTerminalFailure(error.attemptId, { outcome: 'failure', reason: 'expired', durationMs: this.elapsed(startedAt) });
             }
             throw error;
         }
@@ -237,8 +261,7 @@ export class MicrosoftFlowService {
             // authorize finish or evidence creation.
             const reason = oidcFailureReason(error);
             await this.emit(claimed.attempt.id, { stage: 'token_validated', outcome: 'failure', reason, durationMs: this.elapsed(startedAt) });
-            await this.fail(claimed.attempt.id);
-            await this.emit(claimed.attempt.id, { stage: 'finished', outcome: 'failure', reason, durationMs: this.elapsed(startedAt) });
+            await this.emitTerminalFailure(claimed.attempt.id, { outcome: 'failure', reason, durationMs: this.elapsed(startedAt) });
             const completionUrl = new URL(this.deps.completionUrl);
             completionUrl.searchParams.set('attempt', claimed.attempt.id);
             completionUrl.searchParams.set('outcome', 'connection_not_completed');
@@ -258,7 +281,8 @@ export class MicrosoftFlowService {
                 const row = await tx.query<Attempt>('SELECT * FROM microsoft_verification_attempts WHERE id=$1', [claimed.attempt.id]);
                 const attempt = row.rows[0];
                 const clock = await tx.query<{ now: Date }>('SELECT clock_timestamp() AS now');
-                if (!attempt || attempt.status !== 'processing' || attempt.expires_at <= clock.rows[0]!.now) throw invalidAttempt();
+                if (!attempt || attempt.status !== 'processing') throw invalidAttempt();
+                if (attempt.expires_at <= clock.rows[0]!.now) throw new MicrosoftAttemptExpiredError(attempt.id, true);
                 await assertMicrosoftAuthority(tx, { userId: attempt.user_id, sid: attempt.server_session_id, use: 'issuance', processingGrantId: attempt.processing_grant_id, providerConsentId: attempt.provider_consent_id, expected: attempt, mode: policyMode });
                 this.assertEnabled();
                 // Stay processing until Graph's out-of-transaction result is
@@ -288,7 +312,8 @@ export class MicrosoftFlowService {
                     await lockMicrosoftAttempt(tx, attempt.id);
                     const locked = (await tx.query<Attempt>('SELECT * FROM microsoft_verification_attempts WHERE id=$1', [attempt.id])).rows[0];
                     const clock = await tx.query<{ now: Date }>('SELECT clock_timestamp() AS now');
-                    if (!locked || locked.status !== 'processing' || locked.expires_at <= clock.rows[0]!.now) throw invalidAttempt();
+                    if (!locked || locked.status !== 'processing') throw invalidAttempt();
+                    if (locked.expires_at <= clock.rows[0]!.now) throw new MicrosoftAttemptExpiredError(locked.id, true);
                     await assertMicrosoftAuthority(tx, { userId: locked.user_id, sid: locked.server_session_id, use: 'issuance', processingGrantId: locked.processing_grant_id, providerConsentId: locked.provider_consent_id, expected: locked, mode: 'graph_enrollment' });
                     this.assertEnabled();
                     const updated = await tx.query(`UPDATE microsoft_verification_attempts SET status='ready', encrypted_verifier=NULL, nonce=NULL, result=$2::jsonb WHERE id=$1 AND status='processing'`, [locked.id, JSON.stringify({ identity, educationObservation: observation })]);
@@ -296,8 +321,8 @@ export class MicrosoftFlowService {
                 });
             }
         } catch (error) {
-            await this.fail(claimed.attempt.id);
-            await this.emit(claimed.attempt.id, { stage: 'finished', outcome: 'failure', reason: 'upstream_unavailable', durationMs: this.elapsed(startedAt) });
+            const reason = await this.postTokenFailureReason(claimed.attempt.id, error).catch(() => 'upstream_unavailable' as const);
+            await this.emitTerminalFailure(claimed.attempt.id, { outcome: 'failure', reason, durationMs: this.elapsed(startedAt) });
             throw error;
         }
         const completionUrl = new URL(this.deps.completionUrl); completionUrl.searchParams.set('attempt', claimed.attempt.id);
@@ -330,7 +355,7 @@ export class MicrosoftFlowService {
             const row = await tx.query<Attempt>('SELECT * FROM microsoft_verification_attempts WHERE id=$1', [input.attemptId]); const attempt = row.rows[0];
             const clock = await tx.query<{ now: Date }>('SELECT clock_timestamp() AS now');
             if (!attempt) throw invalidAttempt();
-            if (attempt.expires_at <= clock.rows[0]!.now) throw new MicrosoftAttemptExpiredError(attempt.id);
+            if (attempt.expires_at <= clock.rows[0]!.now) throw new MicrosoftAttemptExpiredError(attempt.id, attempt.status !== 'completed');
             const currentAuthority = await assertMicrosoftAuthority(tx, { userId: input.userId, sid: input.serverSessionId, use: 'owner', processingGrantId: attempt.processing_grant_id, providerConsentId: attempt.provider_consent_id, expected: attempt, mode: finishMode });
             if (attempt.status === 'completed') {
                 const receipt = attempt.result as { accountLinked?: boolean; enrollment?: string; identityId?: string; evidenceId?: string; providerProofId?: string } | null;
@@ -373,7 +398,7 @@ export class MicrosoftFlowService {
             // Refresh both authority and the expiry boundary before final CAS.
             if (graphReady) await assertMicrosoftAuthority(tx, { userId: input.userId, sid: input.serverSessionId, use: 'owner', processingGrantId: attempt.processing_grant_id, providerConsentId: attempt.provider_consent_id, expected: attempt, mode: 'graph_enrollment' });
             const finalClock = await tx.query<{ now: Date }>('SELECT clock_timestamp() AS now');
-            if (attempt.expires_at <= finalClock.rows[0]!.now) throw new MicrosoftAttemptExpiredError(attempt.id);
+            if (attempt.expires_at <= finalClock.rows[0]!.now) throw new MicrosoftAttemptExpiredError(attempt.id, true);
             this.assertEnabled();
             // This is only populated by the integration suite. It holds the
             // final authority locks so both transaction orders are observable.
@@ -383,8 +408,8 @@ export class MicrosoftFlowService {
             if (completed.rowCount !== 1) throw invalidAttempt();
             return { result: { accountLinked: true, enrollment }, committed: true };
         }); } catch (error) {
-            if (error instanceof MicrosoftAttemptExpiredError) {
-                await this.emit(error.attemptId, { stage: 'finished', outcome: 'failure', reason: 'expired', durationMs: this.elapsed(startedAt) });
+            if (error instanceof MicrosoftAttemptExpiredError && error.isNonterminal) {
+                await this.emitTerminalFailure(error.attemptId, { outcome: 'failure', reason: 'expired', durationMs: this.elapsed(startedAt) });
             }
             throw error;
         }

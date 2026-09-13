@@ -4,6 +4,10 @@ import type { ApprovedMicrosoftOidcConfiguration, MicrosoftOidcConfiguration } f
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const IDENTITY_SCOPES = ['openid', 'profile'] as const;
 const GRAPH_ENROLLMENT_SCOPES = ['https://graph.microsoft.com/EduRoster.ReadBasic', 'openid', 'profile'] as const;
+// These are the only provider error codes that have a safe, user-actionable
+// cancellation/permission meaning in our callback lifecycle. All other
+// response bodies (including server_error) remain an upstream failure.
+const CANCELLATION_OR_PERMISSION_CODES = new Set(['access_denied', 'interaction_required', 'login_required', 'consent_required']);
 const MAX_PROVIDER_RESPONSE_BYTES = 256 * 1024;
 const REQUEST_TIMEOUT_MS = 5_000;
 
@@ -31,7 +35,8 @@ function matchesApprovedServerScopes(scopes: readonly string[]): boolean {
 }
 
 function failureCategory(error: unknown): MicrosoftOidcFailureCategory {
-    if (error instanceof client.AuthorizationResponseError || error instanceof client.ResponseBodyError) return 'cancelled_or_permission';
+    if ((error instanceof client.AuthorizationResponseError || error instanceof client.ResponseBodyError)
+        && CANCELLATION_OR_PERMISSION_CODES.has(error.error)) return 'cancelled_or_permission';
     if (error instanceof client.ClientError) return 'invalid_identity';
     return 'upstream_unavailable';
 }

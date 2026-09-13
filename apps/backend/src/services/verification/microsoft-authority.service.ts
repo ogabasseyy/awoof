@@ -39,8 +39,18 @@ export type MicrosoftAuthority = {
     authoritativeDenial: boolean;
 };
 
-function invalidAttempt(): ConflictError {
-    return new ConflictError('Microsoft verification attempt is no longer valid');
+/**
+ * This has the same public conflict contract as every other invalid attempt,
+ * but lets the in-process callback lifecycle distinguish a locally revoked
+ * authority from an OIDC transport failure after its authority transaction
+ * has released its locks.
+ */
+export class MicrosoftAuthorityInvalidatedError extends ConflictError {
+    constructor() { super('Microsoft verification attempt is no longer valid'); }
+}
+
+function invalidAttempt(): MicrosoftAuthorityInvalidatedError {
+    return new MicrosoftAuthorityInvalidatedError();
 }
 
 function sameScopes(actual: readonly string[], expected: readonly string[]): boolean {
