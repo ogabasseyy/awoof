@@ -5,6 +5,8 @@
  */
 
 import swaggerJsdoc from 'swagger-jsdoc';
+import { existsSync, lstatSync, readFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
 import { config } from './env.js';
 
 const options: swaggerJsdoc.Options = {
@@ -419,4 +421,31 @@ Access tokens expire in 15 minutes. Use the refresh token endpoint to get a new 
     ],
 };
 
-export const swaggerSpec = swaggerJsdoc(options);
+function compiledSwaggerSpec(): ReturnType<typeof swaggerJsdoc> {
+    const renderedPath = fileURLToPath(new URL('./openapi.json', import.meta.url));
+    if (!existsSync(renderedPath) || !lstatSync(renderedPath).isFile()) {
+        throw new Error('Compiled OpenAPI artifact is missing: dist/config/openapi.json. Run npm run build:artifact.');
+    }
+    try {
+        const parsed: unknown = JSON.parse(readFileSync(renderedPath, 'utf8'));
+        if (!parsed || typeof parsed !== 'object' || !('paths' in parsed) || !parsed.paths || typeof parsed.paths !== 'object' || Object.keys(parsed.paths).length === 0) {
+            throw new Error('Compiled OpenAPI artifact has no paths.');
+        }
+        const spec = parsed as { servers?: Array<{ url?: unknown; description?: unknown }> };
+        const developmentServer = spec.servers?.find((server) => server.description === 'Development server');
+        if (!developmentServer || typeof developmentServer.url !== 'string') throw new Error('Compiled OpenAPI artifact is missing its development server contract.');
+        // The artifact owns route/component documentation; the local listener
+        // port remains an explicitly documented runtime-only server value.
+        developmentServer.url = `http://localhost:${config.port}`;
+        return parsed as ReturnType<typeof swaggerJsdoc>;
+    } catch (error) {
+        if (error instanceof Error && error.message === 'Compiled OpenAPI artifact has no paths.') throw error;
+        throw new Error('Compiled OpenAPI artifact is invalid JSON.');
+    }
+}
+
+// TSX preserves the source .ts URL while tsc emits this module as .js. This
+// deterministic layout check keeps source development live and makes a dist
+// runtime fail closed instead of scanning absent source comments.
+const isCompiledModule = fileURLToPath(import.meta.url).endsWith('.js');
+export const swaggerSpec = isCompiledModule ? compiledSwaggerSpec() : swaggerJsdoc(options);

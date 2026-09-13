@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os';
 import { basename, join, resolve } from 'node:path';
 import { randomBytes, randomUUID } from 'node:crypto';
 import { execFileSync, spawnSync } from 'node:child_process';
+import pg from 'pg';
 import process from 'node:process';
 import { cleanupOwnedCluster } from './test-postgres-lifecycle.mjs';
 import { selectPostgresTestMode } from './postgres-test-mode.mjs';
@@ -104,6 +105,17 @@ try {
     };
     const migrate = spawnSync(mode.migration, mode.migrationArgs, { cwd: backendRoot, encoding: 'utf8', timeout: 60_000, env: childEnvironment });
     if (migrate.status !== 0 || migrate.error) throw new Error(`Migration runner failed: ${(migrate.stderr || migrate.error?.message || '').slice(0, 8_000)}`);
+    if (mode.label === 'compiled' && process.env.AWOOF_POSTGRES_ARTIFACT_RUNTIME === '1') {
+        const metadataPool = new pg.Pool({ connectionString: databaseUrl, max: 1, idleTimeoutMillis: 1_000, connectionTimeoutMillis: 2_000 });
+        try {
+            const applied = await metadataPool.query('SELECT filename FROM migrations ORDER BY filename');
+            const filenames = applied.rows.map((row) => row.filename);
+            if (filenames.length === 0 || filenames.some((filename) => typeof filename !== 'string')) throw new Error('Migration metadata query returned no ordered filenames.');
+            process.stdout.write(`Applied migration filenames: ${JSON.stringify(filenames)}\n`);
+        } finally {
+            await metadataPool.end();
+        }
+    }
     const result = spawnSync(mode.runner, mode.testArgs, { cwd: backendRoot, encoding: 'utf8', timeout: 120_000, env: childEnvironment });
     process.stdout.write(result.stdout || '');
     process.stderr.write(result.stderr || '');

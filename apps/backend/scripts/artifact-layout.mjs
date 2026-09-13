@@ -1,9 +1,10 @@
 import assert from 'node:assert/strict';
 import { copyFileSync, existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, rmSync } from 'node:fs';
 import { basename, join, relative, resolve } from 'node:path';
+import { DISABLED_FALLBACK_SMOKE } from './artifact-manifest.mjs';
 
 export const ARTIFACT_ROOT_NAME = 'dist';
-export const DISABLED_FALLBACK_SMOKE = 'testing/postgres/microsoft-fallback-artifact.integration.js';
+export { DISABLED_FALLBACK_SMOKE } from './artifact-manifest.mjs';
 
 function listFiles(directory, predicate) {
     return readdirSync(directory, { withFileTypes: true }).flatMap((entry) => {
@@ -65,6 +66,8 @@ export function assertCompiledArtifact(backendRoot) {
     const artifactRoot = join(backendRoot, ARTIFACT_ROOT_NAME);
     const migrationRunner = join(artifactRoot, 'database/migrations/run.js');
     requireRegularFile(migrationRunner, 'Compiled migration runner is missing: dist/database/migrations/run.js. Run npm run build:artifact first.');
+    requireRegularFile(join(artifactRoot, 'config/openapi.json'), 'Rendered OpenAPI document is missing: dist/config/openapi.json. Run npm run build:artifact first.');
+    requireRegularFile(join(artifactRoot, 'scripts/cleanup-microsoft-attempts.js'), 'Compiled Microsoft retention cleanup CLI is missing: dist/scripts/cleanup-microsoft-attempts.js. Run npm run build:artifact first.');
     assertExactMigrationSql(backendRoot);
 
     const sourceRoot = join(backendRoot, 'src');
