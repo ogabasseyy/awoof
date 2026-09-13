@@ -201,6 +201,21 @@ test('an own refresh keeps a logical session current while fencing its old exact
   });
 });
 
+test('a snapshot exposes the durable browser session id and keeps it through an own refresh', () => {
+  resetSessionState();
+  withStorage(memoryStorage(), () => {
+    storeTokens({ accessToken: 'access-a', refreshToken: 'refresh-a' });
+    const beforeRefresh = getSessionSnapshot();
+    assert.equal(beforeRefresh.browserSessionId !== null, true);
+
+    assert.equal(
+      replaceCurrentSessionTokens(beforeRefresh, { accessToken: 'access-b', refreshToken: 'refresh-a' }),
+      true,
+    );
+    assert.equal(getSessionSnapshot().browserSessionId, beforeRefresh.browserSessionId);
+  });
+});
+
 test('subscribers see local login plus provisional and durable logout lifecycle changes', () => {
   resetSessionState();
   withStorage(memoryStorage(), () => {

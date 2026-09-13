@@ -7,6 +7,7 @@ import ProtectedRoute from '@/components/ProtectedRoute';
 import apiClient from '@/lib/api-client';
 import { useAuth } from '@/contexts/AuthContext';
 import { getSessionSnapshot, isCurrentSession, subscribeSessionChanges } from '@/lib/auth';
+import MicrosoftVerificationCard from './MicrosoftVerificationCard';
 
 type Consent = { id: string; kind: 'processing' | 'disclosure'; acceptedAt: string; withdrawnAt: string | null; origin?: string | null; purpose?: string | null };
 const sessionGeneration = () => getSessionSnapshot().generation;
@@ -39,7 +40,7 @@ function VerificationForm() {
     const [consentError, setConsentError] = useState('');
     const [nextCursor, setNextCursor] = useState<string | null>(null);
     const [status, setStatus] = useState<VerificationStatus | null>(null);
-    const [methods, setMethods] = useState<Array<{ methodType: string; isAvailable: boolean }> | null>(null);
+    const [methods, setMethods] = useState<Array<{ methodType: string; isAvailable: boolean; reason?: string }> | null>(null);
     const [accepted, setAccepted] = useState(false);
     const [mailboxConfirmed, setMailboxConfirmed] = useState(false);
     const [grant, setGrant] = useState('');
@@ -162,6 +163,13 @@ function VerificationForm() {
                 <button disabled={busy || !accepted || !registration.trim()} className="underline">Check enrollment</button>
             </form> : <p>{registrationAvailable ? 'Confirm your school email above before checking enrollment.' : 'Enrollment verification is not currently available for your school.'}</p>}
         </>}
+        <MicrosoftVerificationCard
+            available={methods?.some((method) => method.methodType === 'microsoft' && method.isAvailable) === true}
+            unavailableReason={methods?.find((method) => method.methodType === 'microsoft')?.reason}
+            parentAccepted={accepted}
+            setParentAccepted={setAccepted}
+            processingGrant={processingGrant}
+        />
         <section aria-labelledby="consent-heading" className="space-y-3 border-t pt-4">
             <h2 id="consent-heading" className="text-lg font-semibold">Verification privacy and consent</h2>
             <p>You can withdraw consent even when your verification has expired. Withdrawing verification consent may end your student eligibility.</p>

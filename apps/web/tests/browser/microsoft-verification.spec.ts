@@ -1,0 +1,251 @@
+import { expect, test, type BrowserContext, type Page } from '@playwright/test';
+
+const appOrigin = 'https://app.awoof.test:3443';
+const apiOrigin = 'https://api.awoof.test:3444';
+const attemptStorageKey = 'awoof.microsoft.verification.attempt.v1';
+const sessionStorageKey = 'awoof.session.v1';
+
+function session(sessionId = 'fixture-browser-session', accessToken = 'student-access') {
+  return JSON.stringify({ v: 1, state: 'active', sessionId, accessToken, refreshToken: 'student-refresh' });
+}
+
+async function seedStudent(page: Page, sessionId = 'fixture-browser-session', accessToken = 'student-access') {
+  const marker = `__awoof_microsoft_https_seed_${sessionId}`;
+  await page.addInitScript(({ app, key, value, marker: once }) => {
+    // Like the established browser fixture, seed only the first app document.
+    // Reloads and callback documents must observe the real resulting state;
+    // they must not silently restore the old account.
+    if (location.origin !== app || sessionStorage.getItem(once) !== null) return;
+    localStorage.setItem(key, value);
+    sessionStorage.setItem(once, 'seeded');
+  }, { app: appOrigin, key: sessionStorageKey, value: session(sessionId, accessToken), marker });
+}
+
+async function installSyntheticMicrosoftDocument(context: BrowserContext, holdProviderDocument = true) {
+  let resolveArrival!: () => void;
+  const arrived = new Promise<void>((resolve) => { resolveArrival = resolve; });
+  let providerPage: Page | null = null;
+  let callbackUrl = '';
+  let visits = 0;
+  await context.route('**/*', async (route) => {
+    const requestUrl = new URL(route.request().url());
+    if (requestUrl.origin === appOrigin || requestUrl.origin === apiOrigin) {
+      await route.continue(); return;
+    }
+    if (requestUrl.origin !== 'https://login.microsoftonline.com') {
+      await route.abort('blockedbyclient'); return;
+    }
+    visits += 1;
+    resolveArrival();
+    const state = requestUrl.searchParams.get('state');
+    callbackUrl = `${apiOrigin}/api/verification/microsoft/callback?state=${encodeURIComponent(state ?? '')}`;
+    providerPage = route.request().frame().page();
+    // This controlled document is fulfilled by Playwright, not continued. It
+    // cannot reach the real tenant. It commits a real provider-origin document
+    // before the controlled callback. This prevents Awoof's storage listener
+    // from racing a cross-tab replacement while the route is merely pending.
+    const navigation = holdProviderDocument
+      ? `<button id="fixture-continue" type="button">Continue synthetic Microsoft callback</button><script>document.querySelector('#fixture-continue').onclick=()=>location.assign(${JSON.stringify(callbackUrl)})</script>`
+      : `<script>location.replace(${JSON.stringify(callbackUrl)})</script>`;
+    await route.fulfill({ contentType: 'text/html', body: `<!doctype html><title>Synthetic Microsoft</title>${navigation}` });
+  });
+  return {
+    arrived,
+    release: async () => {
+      if (!holdProviderDocument || !providerPage) throw new Error('Synthetic Microsoft provider document is unavailable.');
+      await providerPage.getByRole('button', { name: 'Continue synthetic Microsoft callback' }).click();
+    },
+    visits: () => visits,
+    callbackUrl: () => callbackUrl,
+  };
+}
+
+async function start(page: Page) {
+  await loadAuthenticatedVerification(page);
+  await page.getByLabel('Accept verification processing consent').check();
+  await page.getByLabel('Accept Microsoft provider consent').check();
+  // The controlled provider route stays pending so the test can inspect tab
+  // storage before the provider document is released. Do not await its full
+  // document navigation here.
+  void page.getByRole('button', { name: 'Continue with Microsoft' }).click({ noWaitAfter: true }).catch(() => undefined);
+}
+
+async function loadAuthenticatedVerification(page: Page) {
+  await page.goto('/student/verification');
+  await expect.poll(() => page.evaluate((key) => localStorage.getItem(key), sessionStorageKey)).toContain('student-access');
+  await expect.poll(async () => {
+    const response = await page.evaluate(async (url) => (await (await fetch(url, { credentials: 'include' })).json()).data, `${apiOrigin}/api/__fixture/evidence`);
+    return response.observedPaths.includes('GET /api/auth/me');
+  }).toBe(true);
+  await expect(page.getByRole('heading', { name: 'Connect a Microsoft school account' })).toBeVisible();
+}
+
+type FixtureEvidence = {
+  startCalls: number;
+  finishCalls: number;
+  callbackCookieCalls: number;
+  observedPaths: string[];
+  accounts: Record<string, { emailEvidenceEligible: boolean; finishCalls: number; linkedMicrosoftIdentities: number }>;
+  attempts: Array<{ attemptId: string; ownerId: string; ready: boolean; callbackUsed: boolean; completed: boolean; callbackCookieCalls: number; finishCalls: number; finishCookieCalls: number; completionWrites: number }>;
+};
+
+async function evidence(page: Page): Promise<FixtureEvidence> {
+  return page.evaluate(async (url) => {
+    const response = await fetch(url, { credentials: 'include' });
+    return (await response.json()).data;
+  }, `${apiOrigin}/api/__fixture/evidence`);
+}
+
+function callbackAttemptId(callbackUrl: string) {
+  return new URL(callbackUrl).searchParams.get('state')?.replace('fixture-state-', '') ?? '';
+}
+
+test('HTTPS fixture forwards the Next development debug stream before authenticated verification loads', async ({ page }) => {
+  await seedStudent(page);
+  await loadAuthenticatedVerification(page);
+});
+
+test('genuine HTTPS callback carries and consumes the Secure HttpOnly SameSite cookie before the app redirect', async ({ page, context }) => {
+  await seedStudent(page);
+  await page.addInitScript((key) => {
+    const original = Storage.prototype.setItem;
+    Storage.prototype.setItem = function captureMicrosoftAttempt(storageKey: string, value: string): void {
+      original.call(this, storageKey, value);
+      if (this === sessionStorage && storageKey === key) {
+        const attempt = JSON.parse(value) as { browserSessionId?: string };
+        localStorage.setItem('__fixture_microsoft_attempt_capture', JSON.stringify({ keys: Object.keys(attempt).sort(), browserSessionId: attempt.browserSessionId }));
+      }
+    };
+  }, attemptStorageKey);
+  const provider = await installSyntheticMicrosoftDocument(context, false);
+  await start(page);
+
+  // The tab record is inspected before the provider document is released: it
+  // has exactly the approved four fields and no authorization URL or token.
+  await expect(page).toHaveURL(/\/student\/verification\/microsoft\/complete\?attempt=fixture-attempt-/);
+  const stored = await page.evaluate(() => JSON.parse(localStorage.getItem('__fixture_microsoft_attempt_capture') ?? '{}'));
+  expect(stored.keys).toEqual(['attemptId', 'browserSessionId', 'expiresAt', 'finishSecret']);
+  expect(stored.browserSessionId).toBe('fixture-browser-session');
+  expect(provider.visits()).toBe(1);
+
+  await expect(page.getByRole('heading', { name: 'University account connected' })).toBeVisible();
+  await expect(page.getByText('Current Awoof eligibility:')).toContainText('eligible');
+  expect(await page.evaluate((key) => sessionStorage.getItem(key), attemptStorageKey)).toBeNull();
+  const observed = await evidence(page);
+  expect(observed.callbackCookieCalls).toBeGreaterThan(0);
+  expect(observed.finishCalls).toBeGreaterThan(0);
+  const attempt = observed.attempts.find((item) => item.attemptId === 'fixture-attempt-1');
+  expect(attempt).toMatchObject({ ownerId: '00000000-0000-4000-8000-000000000001', ready: true, callbackUsed: true, completed: true, callbackCookieCalls: 1, finishCookieCalls: 0, completionWrites: 1 });
+  expect(attempt?.finishCalls).toBeGreaterThanOrEqual(1);
+  expect(observed.accounts['00000000-0000-4000-8000-000000000001'].linkedMicrosoftIdentities).toBe(1);
+});
+
+test('a callback without tab-scoped state is rejected before the HTTPS finish request', async ({ page }) => {
+  await seedStudent(page);
+  await page.goto('/__fixture-storage-tab');
+  const before = await evidence(page);
+  await page.goto('/student/verification/microsoft/complete?attempt=fixture-attempt-missing');
+  await expect(page.getByText('This Microsoft connection cannot be completed in the current Awoof session. Start again from student verification.')).toBeVisible();
+  const after = await evidence(page);
+  expect(after.finishCalls).toBe(before.finishCalls);
+});
+
+test('expired tab state is removed and cannot be replayed through a full callback document', async ({ page }) => {
+  await seedStudent(page);
+  await page.addInitScript(({ key }) => sessionStorage.setItem(key, JSON.stringify({
+    attemptId: 'expired-attempt', finishSecret: 'synthetic-expired', browserSessionId: 'fixture-browser-session', expiresAt: Date.now() - 1,
+  })), { key: attemptStorageKey });
+  await page.goto('/__fixture-storage-tab');
+  const before = await evidence(page);
+  await page.goto('/student/verification/microsoft/complete?attempt=expired-attempt');
+  await expect(page.getByText('This Microsoft connection cannot be completed in the current Awoof session. Start again from student verification.')).toBeVisible();
+  expect(await page.evaluate((key) => sessionStorage.getItem(key), attemptStorageKey)).toBeNull();
+  expect((await evidence(page)).finishCalls).toBe(before.finishCalls);
+});
+
+test('cross-tab replacement never grants Microsoft evidence to the replacement account', async ({ page, context }) => {
+  await seedStudent(page, 'student-a-browser-session');
+  const provider = await installSyntheticMicrosoftDocument(context);
+  await start(page);
+  await provider.arrived;
+  const replacement = await context.newPage();
+  await replacement.goto(`${appOrigin}/__fixture-storage-tab`);
+  await replacement.evaluate(({ key, value }) => localStorage.setItem(key, value), { key: sessionStorageKey, value: session('student-b-browser-session', 'student-access:account-b') });
+  await provider.release();
+  await expect(page.getByText('This Microsoft connection cannot be completed in the current Awoof session. Start again from student verification.')).toBeVisible();
+  await expect(page.getByText('University account connected')).toHaveCount(0);
+  expect((await evidence(page)).accounts['00000000-0000-4000-8000-000000000002'].linkedMicrosoftIdentities).toBe(0);
+});
+
+test('invalid callback returns a header-valid rejection without consuming an attempt', async ({ page }) => {
+  await seedStudent(page);
+  await page.goto('/__fixture-storage-tab');
+  const before = await evidence(page);
+  const callbackUrl = `${apiOrigin}/api/verification/microsoft/callback?state=unknown-state`;
+  const rejected = page.waitForResponse((response) => response.url() === callbackUrl);
+  await page.goto(callbackUrl).catch(() => undefined);
+  const response = await rejected;
+  expect(response.status()).toBe(400);
+  expect(response.headers().location).toBeUndefined();
+  await page.waitForURL('chrome-error://chromewebdata/');
+  await page.goto('/__fixture-storage-tab');
+  const after = await evidence(page);
+  expect(after.callbackCookieCalls).toBe(before.callbackCookieCalls);
+  expect(after.finishCalls).toBe(before.finishCalls);
+});
+
+test('callback without the real Secure cookie is rejected before an attempt becomes ready', async ({ page, context }) => {
+  await seedStudent(page);
+  const provider = await installSyntheticMicrosoftDocument(context);
+  await start(page);
+  await provider.arrived;
+  await context.clearCookies({ name: '__Host-awoof-microsoft-fixture' });
+  const rejected = page.waitForResponse((response) => response.url() === provider.callbackUrl());
+  await provider.release();
+  expect((await rejected).status()).toBe(400);
+  await page.goto('/__fixture-storage-tab');
+  const observed = await evidence(page);
+  const attempt = observed.attempts.find((item) => item.attemptId === callbackAttemptId(provider.callbackUrl()));
+  expect(attempt).toMatchObject({ ready: false, callbackUsed: false, callbackCookieCalls: 0, finishCalls: 0 });
+});
+
+test('a callback state is accepted once and replay is rejected without a second finish', async ({ page, context }) => {
+  await seedStudent(page);
+  const provider = await installSyntheticMicrosoftDocument(context);
+  await start(page);
+  await provider.arrived;
+  const callbackUrl = provider.callbackUrl();
+  await provider.release();
+  await expect(page.getByRole('heading', { name: 'University account connected' })).toBeVisible();
+  const afterFirstCallback = await evidence(page);
+  const replayResponse = page.waitForResponse((response) => response.url() === callbackUrl);
+  await page.goto(callbackUrl).catch(() => undefined);
+  expect((await replayResponse).status()).toBe(400);
+  await page.waitForURL('chrome-error://chromewebdata/');
+  await page.goto('/__fixture-storage-tab');
+  const afterReplay = await evidence(page);
+  expect(afterReplay.callbackCookieCalls).toBe(afterFirstCallback.callbackCookieCalls);
+  expect(afterReplay.finishCalls).toBe(afterFirstCallback.finishCalls);
+});
+
+// These are deliberately executable regression contracts, kept skipped until
+// the frozen Task4b UI owner addresses the parent-reviewed defects. They are
+// separate from fixture transport: the passing cases above already prove the
+// real HTTPS cookie/navigation boundary.
+test('terminal finish failure clears the secret and requires restart, not completion retry', async ({ page, context }) => {
+  await seedStudent(page, 'terminal-browser-session', 'student-access:terminal');
+  const provider = await installSyntheticMicrosoftDocument(context);
+  await start(page); await provider.arrived; await provider.release();
+  await expect(page.getByRole('link', { name: 'Start again' })).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Retry completion' })).toHaveCount(0);
+  expect(await page.evaluate((key) => sessionStorage.getItem(key), attemptStorageKey)).toBeNull();
+});
+
+test('successful finish with a failed status reload keeps the linked result and retries status only', async ({ page, context }) => {
+  await seedStudent(page, 'status-browser-session', 'student-access:status-failure:account-b');
+  const provider = await installSyntheticMicrosoftDocument(context);
+  await start(page); await provider.arrived; await provider.release();
+  await expect(page.getByRole('heading', { name: 'University account connected' })).toBeVisible();
+  await expect(page.getByText('Current eligibility could not be reloaded. Visit verification to check it.')).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Retry completion' })).toHaveCount(0);
+});
