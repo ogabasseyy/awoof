@@ -355,7 +355,7 @@ export class MicrosoftFlowService {
             // Session lock occurs before the attempt lock, including retry reads.
             const attemptRow = await tx.query<Attempt>('SELECT * FROM microsoft_verification_attempts WHERE id=$1', [input.attemptId]);
             const preliminary = attemptRow.rows[0];
-            if (!preliminary || preliminary.user_id !== input.userId || hashMicrosoftAttemptSecret(input.finishSecret) !== (await tx.query<{ finish_secret_hash: string }>('SELECT finish_secret_hash FROM microsoft_verification_attempts WHERE id=$1', [input.attemptId])).rows[0]?.finish_secret_hash) throw new ForbiddenError('Microsoft verification finish secret is invalid');
+            if (!preliminary || preliminary.user_id !== input.userId || hashMicrosoftAttemptSecret(input.finishSecret) !== (await tx.query<{ finish_secret_hash: string | null }>('SELECT finish_secret_hash FROM microsoft_verification_attempts WHERE id=$1', [input.attemptId])).rows[0]?.finish_secret_hash) throw new ForbiddenError('Microsoft verification finish secret is invalid');
             const finishMode = isGraphAttemptResult(preliminary.result) ? 'graph_enrollment' : 'identity_only';
             await assertMicrosoftAuthority(tx, { userId: input.userId, sid: input.serverSessionId, use: 'owner', processingGrantId: preliminary.processing_grant_id, providerConsentId: preliminary.provider_consent_id, expected: preliminary, mode: finishMode });
             await lockMicrosoftAttempt(tx, input.attemptId);

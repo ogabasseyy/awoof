@@ -224,7 +224,7 @@ Access tokens expire in 15 minutes. Use the refresh token endpoint to get a new 
                             additionalProperties: false,
                             required: ['code', 'statusCode'],
                             properties: {
-                                code: { type: 'string', enum: ['MICROSOFT_REQUEST_REJECTED', 'reauthentication_required', 'consent_notice_changed'] },
+                                code: { type: 'string', enum: ['BAD_REQUEST', 'UNAUTHORIZED', 'FORBIDDEN', 'NOT_FOUND', 'INTERNAL_SERVER_ERROR', 'MICROSOFT_REQUEST_REJECTED', 'reauthentication_required', 'consent_notice_changed'] },
                                 statusCode: { type: 'integer', minimum: 400, maximum: 599 },
                             },
                         },
@@ -329,6 +329,21 @@ Access tokens expire in 15 minutes. Use the refresh token endpoint to get a new 
                             properties: {
                                 providerConsentId: { type: 'string', format: 'uuid' },
                                 withdrawn: { type: 'boolean', enum: [true] },
+                            },
+                        },
+                    },
+                },
+                MicrosoftIdentityUnlinkResponse: {
+                    type: 'object', additionalProperties: false, required: ['success', 'data'],
+                    properties: {
+                        success: { type: 'boolean', enum: [true] },
+                        data: {
+                            type: 'object', additionalProperties: false,
+                            required: ['identityId', 'unlinked', 'recovery'],
+                            properties: {
+                                identityId: { type: 'string', format: 'uuid' },
+                                unlinked: { type: 'boolean', enum: [true] },
+                                recovery: { type: 'string', enum: ['support_required'] },
                             },
                         },
                     },

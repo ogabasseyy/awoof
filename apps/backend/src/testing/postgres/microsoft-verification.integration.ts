@@ -7,7 +7,7 @@ import type { PoolClient } from 'pg';
 import { db } from '../../config/database.js';
 import { config } from '../../config/env.js';
 import { grantMerchantDisclosure, grantVerificationProcessing, withdrawConsent } from '../../services/verification/eligibility-consent.service.js';
-import { applyMicrosoftEnrollment, recordMailboxProof } from '../../services/verification/eligibility-evidence.service.js';
+import { applyMicrosoftEnrollment, recordEmailAssurance, recordMailboxProof } from '../../services/verification/eligibility-evidence.service.js';
 import { consumeChallenge, requestChallenge } from '../../services/verification/challenge.service.js';
 import { acceptMicrosoftConsent, withdrawMicrosoftConsent } from '../../services/verification/microsoft-consent.service.js';
 import { VERIFICATION_NOTICE_VERSION } from '../../services/verification/verification-notices.js';
@@ -17,6 +17,11 @@ import { MicrosoftOidcOperationalError, MicrosoftOidcService } from '../../servi
 import { readMicrosoftOidcConfiguration } from '../../services/verification/microsoft-oidc.config.js';
 import type { VerificationDiagnostics } from '../../services/verification/verification-diagnostics.service.js';
 import { hashMicrosoftAttemptSecret } from '../../services/verification/microsoft-attempt-crypto.js';
+import { MicrosoftRetentionService } from '../../services/verification/microsoft-retention.service.js';
+import { unlinkMicrosoftIdentity } from '../../services/verification/microsoft-identity-unlink.service.js';
+import { assertMicrosoftSession } from '../../services/verification/microsoft-session.service.js';
+import { lockStudentContext } from '../../services/verification/eligibility-context.service.js';
+import { getEffectiveEligibility } from '../../services/verification/eligibility-read.service.js';
 import { createApp } from '../../index.js';
 import { jwtService } from '../../services/auth/jwt.service.js';
 import { rotateReportingKey } from '../../services/auth/reporting-key.service.js';
@@ -75,6 +80,22 @@ async function assertPidBlockedBy(observer: PoolClient, waitingPid: number, bloc
         await delay(10);
     }
     throw new Error(`Expected ${label} (pid ${waitingPid}) to block behind finish authority (pid ${blockerPid})`);
+}
+
+async function assertDiagnosticWriterBlockedBy(observer: PoolClient, blockerPid: number): Promise<void> {
+    for (let attempt = 0; attempt < 40; attempt += 1) {
+        const result = await observer.query<{ blocked: boolean }>(
+            `SELECT EXISTS (
+                 SELECT 1 FROM pg_stat_activity
+                 WHERE $1 = ANY(pg_blocking_pids(pid))
+                   AND query LIKE 'SELECT id FROM universities WHERE id=$1 FOR KEY SHARE%'
+             ) AS blocked`,
+            [blockerPid],
+        );
+        if (result.rows[0]?.blocked === true) return;
+        await delay(10);
+    }
+    throw new Error('Expected post-commit diagnostic writer to block on the unlink institution lock');
 }
 
 async function rejectsSql(operation: () => Promise<unknown>, client: Parameters<typeof inTransaction>[0]): Promise<void> {
@@ -246,13 +267,18 @@ async function invalidSignedGraphAttempt() {
 
 type FinishInvalidation = 'provider_policy_change' | 'identity_unlink' | 'account_identity_change' | 'authoritative_denial';
 
-async function mutateFinishAuthority(client: PoolClient, kind: FinishInvalidation, data: Fixture): Promise<void> {
+async function mutateFinishAuthority(client: PoolClient, kind: FinishInvalidation, data: Fixture, sid?: string): Promise<void> {
     if (kind === 'provider_policy_change') {
         await client.query(`UPDATE institution_microsoft_policies SET max_evidence_hours=max_evidence_hours-1 WHERE university_id=$1`, [data.universityId]);
         return;
     }
     if (kind === 'identity_unlink') {
-        await client.query(`UPDATE microsoft_identities SET revoked_at=clock_timestamp() WHERE user_id=$1 AND university_id=$2 AND revoked_at IS NULL`, [data.userId, data.universityId]);
+        if (!sid) throw new Error('Identity unlink race requires the owner session');
+        const identity = (await client.query<{ id: string }>(`SELECT id FROM microsoft_identities
+            WHERE user_id=$1 AND university_id=$2 AND revoked_at IS NULL`, [data.userId, data.universityId])).rows[0];
+        if (!identity) throw new Error('Expected prelinked identity for unlink race');
+        await assertMicrosoftSession(client, data.userId, sid, 'owner');
+        await unlinkMicrosoftIdentity(client, data.userId, identity.id);
         return;
     }
     if (kind === 'account_identity_change') {
@@ -1000,7 +1026,7 @@ test('actual Graph finish serializes provider, identity, account, and denial inv
         try {
             const mutationPid = Number((await mutation.query<{ pid: number }>('SELECT pg_backend_pid() AS pid')).rows[0]!.pid);
             await mutation.query('BEGIN');
-            await mutateFinishAuthority(mutation, kind, flow.data);
+            await mutateFinishAuthority(mutation, kind, flow.data, flow.sid);
             const pending = flow.service.finish({ userId: flow.data.userId, serverSessionId: flow.sid, attemptId: flow.started.publicResult.attemptId, finishSecret: flow.started.publicResult.finishSecret });
             await started;
             await assertPidBlockedBy(observer, finishPid, mutationPid, `${kind} mutation-first finish`);
@@ -1018,6 +1044,7 @@ test('actual Graph finish serializes provider, identity, account, and denial inv
 
     for (const kind of invalidations) {
         let finishPid = 0; let finishStarted!: () => void; let release!: () => void; let entered!: () => void;
+        let pending: Promise<unknown> | undefined;
         const started = new Promise<void>((resolve) => { finishStarted = resolve; });
         const released = new Promise<void>((resolve) => { release = resolve; });
         const atPrecommit = new Promise<void>((resolve) => { entered = resolve; });
@@ -1031,17 +1058,23 @@ test('actual Graph finish serializes provider, identity, account, and denial inv
                 },
             },
         });
-        const pending = flow.service.finish({ userId: flow.data.userId, serverSessionId: flow.sid, attemptId: flow.started.publicResult.attemptId, finishSecret: flow.started.publicResult.finishSecret });
+        pending = flow.service.finish({ userId: flow.data.userId, serverSessionId: flow.sid, attemptId: flow.started.publicResult.attemptId, finishSecret: flow.started.publicResult.finishSecret });
         await started; await atPrecommit;
         const mutation = await db.getPool().connect(); const observer = await db.getPool().connect();
         try {
             const mutationPid = Number((await mutation.query<{ pid: number }>('SELECT pg_backend_pid() AS pid')).rows[0]!.pid);
             await mutation.query('BEGIN');
-            const changed = mutateFinishAuthority(mutation, kind, flow.data);
+            const changed = mutateFinishAuthority(mutation, kind, flow.data, flow.sid);
             await assertPidBlockedBy(observer, mutationPid, finishPid, `${kind} finish-first mutation`);
             release();
+            // The observed block proves this mutation is behind the held finish
+            // transaction. Once it acquires the lock, finish has committed, but
+            // finish still writes best-effort diagnostics after its transaction.
+            // Commit this mutation before awaiting that post-commit work.
+            await changed;
+            if (kind === 'identity_unlink') await assertDiagnosticWriterBlockedBy(observer, mutationPid);
+            await mutation.query('COMMIT');
             assert.deepEqual(await pending, { accountLinked: true, enrollment: 'eligible' });
-            await changed; await mutation.query('COMMIT');
             const retry = flow.service.finish({ userId: flow.data.userId, serverSessionId: flow.sid, attemptId: flow.started.publicResult.attemptId, finishSecret: flow.started.publicResult.finishSecret });
             if (kind === 'authoritative_denial') {
                 assert.deepEqual(await retry, { accountLinked: true, enrollment: 'denied' }, 'a later authoritative denial must never be returned as positive retry success');
@@ -1051,6 +1084,10 @@ test('actual Graph finish serializes provider, identity, account, and denial inv
         } finally {
             release?.();
             await mutation.query('ROLLBACK').catch(() => undefined); mutation.release(); observer.release();
+            if (pending) await Promise.race([
+                pending.then(() => undefined, () => undefined),
+                delay(5_000).then(() => { throw new Error(`${kind} finish promise did not settle during cleanup`); }),
+            ]);
         }
     }
 });
@@ -1185,6 +1222,17 @@ test('mounted Microsoft callback and finish use the durable service with fixed r
         assert.equal(finish.status, 200);
         const result = await finish.json() as { data: { accountLinked: boolean; enrollment: string } };
         assert.deepEqual(result.data, { accountLinked: true, enrollment: 'not_checked' });
+
+        const identityId = (await withTestClient(async (client) => (await client.query<{ id: string }>('SELECT id FROM microsoft_identities WHERE user_id=$1 AND revoked_at IS NULL', [flow.data.userId])).rows[0]!.id));
+        const unlink = await fetch(`${base}/api/verification/microsoft/identities/${identityId}/unlink`, {
+            method: 'POST', headers: { origin: 'http://localhost:3000', 'content-type': 'application/json', authorization: `Bearer ${token}` }, body: '{}',
+        });
+        assert.equal(unlink.status, 200, 'owner unlink remains available even though the fixture does not enable global Microsoft issuance');
+        assert.deepEqual((await unlink.json() as { data: unknown }).data, { identityId, unlinked: true, recovery: 'support_required' });
+        const malformedUnlink = await fetch(`${base}/api/verification/microsoft/identities/${identityId}/unlink`, {
+            method: 'POST', headers: { origin: 'http://localhost:3000', 'content-type': 'application/json', authorization: `Bearer ${token}` }, body: '{"unexpected":true}',
+        });
+        assert.equal(malformedUnlink.status, 400);
 
         const replay = await callbackRequest(base, `/api/verification/microsoft/callback?state=${callbackState}&code=CANARY_CODE`, callbackHeaders);
         assert.equal(replay.status, 409);
@@ -1534,4 +1582,212 @@ test('persistent Microsoft start limit is shared across service instances', asyn
     await assert.rejects(() => make().start(input));
     assert.equal(authorizations, before);
     assert.equal((await withTestClient(async c => c.query(`SELECT 1 FROM microsoft_verification_attempts WHERE user_id=$1 AND created_at > clock_timestamp()-interval '10 minutes'`, [flow.data.userId]))).rowCount, 5);
+});
+
+async function seedRetentionAttempt(
+    client: PoolClient,
+    data: Fixture,
+    providerConsentId: string,
+    input: { status: 'pending' | 'ready' | 'completed' | 'failed'; expiresAt: Date; result?: unknown },
+): Promise<{ id: string; correlationId: string }> {
+    const policy = (await client.query<{ version: number }>('SELECT version FROM institution_microsoft_policies WHERE university_id=$1', [data.universityId])).rows[0]!;
+    const id = randomUUID(); const correlationId = randomUUID();
+    await client.query(
+        `INSERT INTO microsoft_verification_attempts
+             (id,user_id,university_id,institution_policy_version,provider_policy_version,identity_version,
+              processing_grant_id,provider_consent_id,server_session_id,diagnostic_correlation_id,state_hash,
+              browser_secret_hash,finish_secret_hash,encrypted_verifier,nonce,expires_at,status,result)
+         SELECT $1,$2,$3,verification_policy_version,$4,identity_version,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16::jsonb
+         FROM universities JOIN students ON students.university_id=universities.id WHERE universities.id=$3`,
+        [id, data.userId, data.universityId, policy.version, data.processingGrantId, providerConsentId, randomUUID(), correlationId,
+            `retention-state-${randomUUID()}`, `retention-browser-${randomUUID()}`, `retention-finish-${randomUUID()}`,
+            input.status === 'pending' ? 'retention-verifier' : null, input.status === 'pending' ? 'retention-nonce' : null,
+            input.expiresAt, input.status, JSON.stringify(input.result ?? (input.status === 'completed' ? { accountLinked: true, enrollment: 'not_checked', identityId: randomUUID() } : null))],
+    );
+    return { id, correlationId };
+}
+
+test('Microsoft retention is bounded at 500, preserves a current receipt through its original deadline, and removes only expired diagnostics', async () => {
+    // The disposable integration database is shared by this file. Establish a
+    // real bounded-cleanup baseline instead of assuming other test attempts do
+    // not match the global retention worker's selection predicate.
+    const drain = new MicrosoftRetentionService({ pool: db.getPool(), now: () => new Date('2031-01-15T12:00:00.000Z') });
+    let drained = false;
+    for (let batch = 0; batch < 100; batch += 1) {
+        const result = await drain.cleanup();
+        if (result.attempts < 500 && result.diagnostics < 500) { drained = true; break; }
+    }
+    assert.equal(drained, true, 'bounded cleanup baseline must converge without manual row deletion');
+    const data = await fixture();
+    const cutoff = new Date();
+    const providerConsentId = await withTestClient((client) => inTransaction(client, async () => {
+        const policy = (await client.query<{ version: number }>('SELECT version FROM institution_microsoft_policies WHERE university_id=$1', [data.universityId])).rows[0]!;
+        const consent = await acceptMicrosoftConsent(client, data.userId, { accepted: true, processingGrantId: data.processingGrantId,
+            snapshot: { universityId: data.universityId, providerPolicyVersion: policy.version, noticeVersion: 'microsoft-v1', mode: 'identity_only', scopes: ['openid', 'profile'] } });
+        for (let index = 0; index < 501; index += 1) await seedRetentionAttempt(client, data, consent, { status: 'failed', expiresAt: new Date(cutoff.getTime() - 60_000) });
+        return consent;
+    }));
+    const cleanup = new MicrosoftRetentionService({ pool: db.getPool(), now: () => cutoff });
+    assert.deepEqual(await cleanup.cleanup(), { attempts: 500, diagnostics: 0 });
+    assert.equal((await withTestClient(async (client) => (await client.query<{ count: number }>(`SELECT count(*)::int AS count FROM microsoft_verification_attempts WHERE user_id=$1 AND finish_secret_hash IS NOT NULL`, [data.userId])).rows[0]!.count)), 1);
+    assert.deepEqual(await cleanup.cleanup(), { attempts: 1, diagnostics: 0 });
+
+    const liveReceipt = await readyDurableAttempt();
+    const liveInput = { userId: liveReceipt.data.userId, serverSessionId: liveReceipt.sid, attemptId: liveReceipt.started.publicResult.attemptId, finishSecret: liveReceipt.started.publicResult.finishSecret };
+    assert.deepEqual(await liveReceipt.service.finish(liveInput), { accountLinked: true, enrollment: 'not_checked' });
+    const live = await withTestClient(async (client) => (await client.query<{ diagnostic_correlation_id: string; expires_at: Date }>(
+        'SELECT diagnostic_correlation_id,expires_at FROM microsoft_verification_attempts WHERE id=$1', [liveInput.attemptId],
+    )).rows[0]!);
+    const seeded = await withTestClient((client) => inTransaction(client, async () => {
+        const expiredPending = await seedRetentionAttempt(client, data, providerConsentId, { status: 'pending', expiresAt: new Date(cutoff.getTime() - 60_000) });
+        const expiredReady = await seedRetentionAttempt(client, data, providerConsentId, { status: 'ready', expiresAt: new Date(cutoff.getTime() - 60_000), result: { accountLinked: true } });
+        const expiredCompleted = await seedRetentionAttempt(client, data, providerConsentId, { status: 'completed', expiresAt: new Date(cutoff.getTime() - 60_000) });
+        await client.query(`INSERT INTO verification_diagnostic_events (correlation_id,stage,outcome,reason,duration_ms,recorded_at,institution_id,policy_version)
+            VALUES ($1,'started','success','none',0,$2,$3,1), ($4,'started','success','none',0,$5,$3,1)`,
+        [expiredCompleted.correlationId, new Date(cutoff.getTime() - 31 * 24 * 60 * 60_000), data.universityId, live.diagnostic_correlation_id, new Date(cutoff.getTime() - 24 * 60 * 60_000)]);
+        return { expiredPending, expiredReady, expiredCompleted };
+    }));
+    const result = await cleanup.cleanup();
+    assert.equal(result.attempts, 4); assert.equal(result.diagnostics, 1);
+    await withTestClient(async (client) => {
+        const terminal = await client.query<{ id: string; status: string; state_hash: string | null; browser_secret_hash: string | null; finish_secret_hash: string | null; encrypted_verifier: string | null; nonce: string | null; result: unknown }>(
+            `SELECT id,status,state_hash,browser_secret_hash,finish_secret_hash,encrypted_verifier,nonce,result
+             FROM microsoft_verification_attempts WHERE id = ANY($1::uuid[])`, [[seeded.expiredPending.id, seeded.expiredReady.id, seeded.expiredCompleted.id]],
+        );
+        const byId = new Map(terminal.rows.map((row) => [row.id, row]));
+        for (const id of [seeded.expiredPending.id, seeded.expiredReady.id, seeded.expiredCompleted.id]) {
+            const row = byId.get(id)!;
+            assert.equal(row.status, id === seeded.expiredCompleted.id ? 'completed' : 'failed'); assert.equal(row.state_hash, null); assert.equal(row.browser_secret_hash, null);
+            assert.equal(row.finish_secret_hash, null); assert.equal(row.encrypted_verifier, null); assert.equal(row.nonce, null); assert.equal(row.result, null);
+        }
+        assert.equal((await client.query(`SELECT 1 FROM verification_diagnostic_events WHERE correlation_id=$1`, [seeded.expiredCompleted.correlationId])).rowCount, 0);
+        assert.ok(((await client.query(`SELECT 1 FROM verification_diagnostic_events WHERE correlation_id=$1`, [live.diagnostic_correlation_id])).rowCount ?? 0) >= 1);
+    });
+    await withTestClient(async (client) => {
+        const row = (await client.query<{ state_hash: string | null; browser_secret_hash: string | null; finish_secret_hash: string | null; result: unknown }>(
+            'SELECT state_hash,browser_secret_hash,finish_secret_hash,result FROM microsoft_verification_attempts WHERE id=$1', [liveInput.attemptId],
+        )).rows[0]!;
+        assert.equal(row.state_hash, null); assert.equal(row.browser_secret_hash, null);
+        assert.notEqual(row.finish_secret_hash, null); assert.notEqual(row.result, null, 'the actual receipt remains retryable through its original deadline');
+    });
+    assert.deepEqual(await liveReceipt.service.finish(liveInput), { accountLinked: true, enrollment: 'not_checked' }, 'actual completed finish retry remains usable before its original deadline');
+    const afterDeadline = new MicrosoftRetentionService({ pool: db.getPool(), now: () => new Date(live.expires_at.getTime() + 1) });
+    assert.deepEqual(await afterDeadline.cleanup(), { attempts: 1, diagnostics: 0 });
+    await withTestClient(async (client) => {
+        const row = (await client.query<{ finish_secret_hash: string | null; result: unknown }>('SELECT finish_secret_hash,result FROM microsoft_verification_attempts WHERE id=$1', [liveInput.attemptId])).rows[0]!;
+        assert.deepEqual(row, { finish_secret_hash: null, result: null });
+    });
+    await assert.rejects(() => liveReceipt.service.finish(liveInput));
+    assert.deepEqual(await afterDeadline.cleanup(), { attempts: 0, diagnostics: 0 }, 'cleanup is idempotent');
+});
+
+test('owner unlink remains available off-policy, uses the captured identity institution, preserves email proof, and tombstones Microsoft data', async () => {
+    const data = await fixture();
+    const sid = randomUUID();
+    const seeded = await withTestClient((client) => inTransaction(client, async () => {
+        await client.query(`UPDATE users SET active_session_id=$2,refresh_token_hash='unlink-session',refresh_token_expires_at=clock_timestamp()+interval '1 hour' WHERE id=$1`, [data.userId, sid]);
+        const policy = (await client.query<{ version: number; tenant_id: string }>('SELECT version,tenant_id FROM institution_microsoft_policies WHERE university_id=$1', [data.universityId])).rows[0]!;
+        const consent = await acceptMicrosoftConsent(client, data.userId, { accepted: true, processingGrantId: data.processingGrantId,
+            snapshot: { universityId: data.universityId, providerPolicyVersion: policy.version, noticeVersion: 'microsoft-v1', mode: 'identity_only', scopes: ['openid', 'profile'] } });
+        const identity = (await client.query<{ id: string }>('INSERT INTO microsoft_identities(user_id,university_id,tenant_id,object_id) VALUES($1,$2,$3,$4) RETURNING id', [data.userId, data.universityId, policy.tenant_id, randomUUID()])).rows[0]!.id;
+        const proof = (await client.query<{ id: string }>('INSERT INTO microsoft_provider_proofs(user_id,university_id,provider_consent_id,identity_id,provider_policy_version) VALUES($1,$2,$3,$4,$5) RETURNING id', [data.userId, data.universityId, consent, identity, policy.version])).rows[0]!.id;
+        const pending = await seedRetentionAttempt(client, data, consent, { status: 'pending', expiresAt: new Date(Date.now() + 60_000) });
+        const currentUniversity = (await client.query<{ id: string }>(`INSERT INTO universities(name,is_active) VALUES($1,true) RETURNING id`, [`Current school ${randomUUID()}`])).rows[0]!.id;
+        await client.query(`UPDATE students SET university_id=$2,university='Current school' WHERE user_id=$1`, [data.userId, currentUniversity]);
+        await client.query(`UPDATE universities SET email_evidence_validity_days=90 WHERE id=$1`, [currentUniversity]);
+        await client.query(`INSERT INTO approved_student_email_domains(university_id,domain,is_active,approved_by) VALUES($1,'example.invalid',true,$2)`, [currentUniversity, data.adminId]);
+        const emailGrant = await grantVerificationProcessing(client, data.userId, currentUniversity, { accepted: true, noticeVersion: VERIFICATION_NOTICE_VERSION });
+        const emailContext = await lockStudentContext(client, data.userId);
+        const challenge = await requestChallenge(client, { purpose: 'student_email', subjectKey: data.userId, bindings: { ...emailContext, processingGrantId: emailGrant, noticeVersion: VERIFICATION_NOTICE_VERSION } });
+        if (challenge.status !== 'issued') throw new Error('Expected current-school email challenge');
+        const consumed = await consumeChallenge(client, { purpose: 'student_email', subjectKey: data.userId, challengeId: challenge.challengeId, code: challenge.code });
+        if (consumed.status !== 'verified') throw new Error('Expected current-school email verification');
+        assert.equal((await recordEmailAssurance(client, data.userId, { challengeId: challenge.challengeId, processingGrantId: emailGrant })).eligible, true);
+        await client.query('UPDATE institution_microsoft_policies SET enabled=false WHERE university_id=$1', [data.universityId]);
+        return { consent, identity, proof, pending: pending.id };
+    }));
+    const unlink = () => withTestClient((client) => inTransaction(client, async () => {
+        await assertMicrosoftSession(client, data.userId, sid, 'owner');
+        return unlinkMicrosoftIdentity(client, data.userId, seeded.identity);
+    }));
+    const beforeUnlink = await withTestClient(async (client) => (await client.query<{ status: string; finish_secret_hash: string | null; expires_at: Date }>(
+        'SELECT status,finish_secret_hash,expires_at FROM microsoft_verification_attempts WHERE id=$1', [seeded.pending],
+    )).rows[0]!);
+    // Disabling the captured policy has already terminalized this row through
+    // migration 040's policy trigger. Unlink must not reinterpret failed rows.
+    assert.equal(beforeUnlink.status, 'failed');
+    assert.notEqual(beforeUnlink.finish_secret_hash, null);
+    assert.deepEqual(await unlink(), { identityId: seeded.identity, unlinked: true, recovery: 'support_required' });
+    assert.deepEqual(await unlink(), { identityId: seeded.identity, unlinked: true, recovery: 'support_required' });
+    await withTestClient(async (client) => {
+        assert.notEqual((await client.query<{ revoked_at: Date | null }>('SELECT revoked_at FROM microsoft_identities WHERE id=$1', [seeded.identity])).rows[0]!.revoked_at, null);
+        assert.notEqual((await client.query<{ revoked_at: Date | null }>('SELECT revoked_at FROM microsoft_provider_proofs WHERE id=$1', [seeded.proof])).rows[0]!.revoked_at, null);
+        assert.deepEqual((await client.query<{ status: string; finish_secret_hash: string | null }>('SELECT status,finish_secret_hash FROM microsoft_verification_attempts WHERE id=$1', [seeded.pending])).rows[0], { status: 'failed', finish_secret_hash: beforeUnlink.finish_secret_hash });
+        const effective = await getEffectiveEligibility(client, data.userId);
+        assert.equal(effective.eligible, true);
+        assert.equal(effective.method, 'student_email', 'unlinking Microsoft data must not revoke independent current-school email eligibility');
+        assert.equal((await client.query(`SELECT count(*)::int AS count FROM verification_audit_events WHERE user_id=$1 AND event_type='microsoft_identity_unlinked'`, [data.userId])).rows[0]!.count, 1);
+    });
+    await new MicrosoftRetentionService({ pool: db.getPool(), now: () => new Date(beforeUnlink.expires_at.getTime() + 1) }).cleanup();
+    assert.equal((await withTestClient(async (client) => (await client.query<{ finish_secret_hash: string | null }>('SELECT finish_secret_hash FROM microsoft_verification_attempts WHERE id=$1', [seeded.pending])).rows[0]!.finish_secret_hash)), null);
+    const foreign = await fixture();
+    await withTestClient((client) => inTransaction(client, () => assert.rejects(() => unlinkMicrosoftIdentity(client, foreign.userId, seeded.identity), { statusCode: 403 })));
+});
+
+test('replaying an old Microsoft tombstone does not cancel a later actual start', async () => {
+    const data = await fixture(); const sid = randomUUID();
+    const seeded = await withTestClient((client) => inTransaction(client, async () => {
+        await client.query(`UPDATE users SET active_session_id=$2,refresh_token_hash='unlink-replay-session',refresh_token_expires_at=clock_timestamp()+interval '1 hour' WHERE id=$1`, [data.userId, sid]);
+        const policy = (await client.query<{ version: number; tenant_id: string }>('SELECT version,tenant_id FROM institution_microsoft_policies WHERE university_id=$1', [data.universityId])).rows[0]!;
+        const consent = await acceptMicrosoftConsent(client, data.userId, { accepted: true, processingGrantId: data.processingGrantId,
+            snapshot: { universityId: data.universityId, providerPolicyVersion: policy.version, noticeVersion: 'microsoft-v1', mode: 'identity_only', scopes: ['openid', 'profile'] } });
+        const identity = (await client.query<{ id: string }>('INSERT INTO microsoft_identities(user_id,university_id,tenant_id,object_id) VALUES($1,$2,$3,$4) RETURNING id', [data.userId, data.universityId, policy.tenant_id, randomUUID()])).rows[0]!.id;
+        return { consent, identity };
+    }));
+    const unlink = () => withTestClient((client) => inTransaction(client, async () => {
+        await assertMicrosoftSession(client, data.userId, sid, 'owner');
+        return unlinkMicrosoftIdentity(client, data.userId, seeded.identity);
+    }));
+    await unlink();
+    const service = new MicrosoftFlowService({ pool: db.getPool(), verifierEncryptionKey: randomBytes(32).toString('base64url'), isEnabled: () => true,
+        callbackUrl: new URL('https://api.example.invalid/api/verification/microsoft/callback'), completionUrl: new URL('https://app.example.invalid/student/verification/microsoft/complete'),
+        oidc: { authorize: async () => 'https://provider.example.invalid/authorize', redeem: async () => { throw new Error('not used'); } },
+    });
+    const fresh = await service.start({ userId: data.userId, serverSessionId: sid, processingGrantId: data.processingGrantId, providerConsentId: seeded.consent });
+    await unlink();
+    const status = await withTestClient(async (client) => (await client.query<{ status: string }>('SELECT status FROM microsoft_verification_attempts WHERE id=$1', [fresh.publicResult.attemptId])).rows[0]?.status);
+    assert.equal(status, 'pending', 'replaying an already-revoked identity must not cancel a later distinct connection attempt');
+});
+
+test('actual callback cannot restore an unlinked identity in either callback/unlink order', async () => {
+    for (const order of ['unlink_first', 'callback_first'] as const) {
+        const objectId = randomUUID();
+        const flow = await pendingDurableAttempt({ redeem: async (tenantId) => ({ identity: { tenantId, objectId } }) });
+        const identityId = await withTestClient((client) => inTransaction(client, async () => {
+            const tenantId = (await client.query<{ tenant_id: string }>('SELECT tenant_id FROM institution_microsoft_policies WHERE university_id=$1', [flow.data.universityId])).rows[0]!.tenant_id;
+            return (await client.query<{ id: string }>('INSERT INTO microsoft_identities(user_id,university_id,tenant_id,object_id) VALUES($1,$2,$3,$4) RETURNING id', [flow.data.userId, flow.data.universityId, tenantId, objectId])).rows[0]!.id;
+        }));
+        const unlink = () => withTestClient((client) => inTransaction(client, async () => {
+            await assertMicrosoftSession(client, flow.data.userId, flow.sid, 'owner');
+            return unlinkMicrosoftIdentity(client, flow.data.userId, identityId);
+        }));
+        if (order === 'unlink_first') {
+            await unlink();
+            await assert.rejects(() => flow.service.callback({ callbackUrl: flow.callback, browserCookie: flow.started.callbackCookie.value }));
+        } else {
+            await flow.service.callback({ callbackUrl: flow.callback, browserCookie: flow.started.callbackCookie.value });
+            await unlink();
+            await assert.rejects(() => flow.service.finish({ userId: flow.data.userId, serverSessionId: flow.sid, attemptId: flow.started.publicResult.attemptId, finishSecret: flow.started.publicResult.finishSecret }));
+        }
+        await withTestClient(async (client) => {
+            const attempt = (await client.query<{ status: string; state_hash: string | null; browser_secret_hash: string | null; finish_secret_hash: string | null; encrypted_verifier: string | null; nonce: string | null; result: unknown }>(
+                'SELECT status,state_hash,browser_secret_hash,finish_secret_hash,encrypted_verifier,nonce,result FROM microsoft_verification_attempts WHERE id=$1', [flow.started.publicResult.attemptId],
+            )).rows[0]!;
+            assert.equal(attempt.status, 'failed');
+            assert.equal(attempt.state_hash, null); assert.equal(attempt.browser_secret_hash, null); assert.equal(attempt.finish_secret_hash, null);
+            assert.equal(attempt.encrypted_verifier, null); assert.equal(attempt.nonce, null); assert.equal(attempt.result, null);
+            assert.notEqual((await client.query<{ revoked_at: Date | null }>('SELECT revoked_at FROM microsoft_identities WHERE id=$1', [identityId])).rows[0]!.revoked_at, null);
+            assert.equal((await client.query(`SELECT 1 FROM microsoft_identities WHERE tenant_id=(SELECT tenant_id FROM institution_microsoft_policies WHERE university_id=$1) AND object_id=$2 AND revoked_at IS NULL`, [flow.data.universityId, objectId])).rowCount, 0);
+        });
+    }
 });

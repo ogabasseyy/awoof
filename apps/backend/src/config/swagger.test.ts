@@ -45,6 +45,7 @@ test('publishes the strict Microsoft consent notice, history, acceptance, and wi
     const finish = spec.paths['/api/verification/microsoft/finish'];
     const consents = spec.paths['/api/verification/microsoft/consents'];
     const withdrawal = spec.paths['/api/verification/microsoft/consents/{id}/withdraw'];
+    const unlink = spec.paths['/api/verification/microsoft/identities/{id}/unlink'];
     assert.ok(notice?.get);
     assert.equal(start?.post?.requestBody?.content['application/json']?.schema.additionalProperties, false);
     assert.equal(finish?.post?.requestBody?.content['application/json']?.schema.additionalProperties, false);
@@ -52,6 +53,7 @@ test('publishes the strict Microsoft consent notice, history, acceptance, and wi
     assert.equal(consents?.post?.requestBody?.content['application/json']?.schema.additionalProperties, false);
     assert.ok(consents?.post?.requestBody?.content['application/json']?.schema.properties?.snapshot);
     assert.equal(withdrawal?.post?.requestBody?.content['application/json']?.schema.additionalProperties, false);
+    assert.equal(unlink?.post?.requestBody?.content['application/json']?.schema.additionalProperties, false);
 
     const responseSchema = (endpoint: Endpoint | undefined, status: string): JsonSchema => {
         const schema = endpoint?.responses?.[status]?.content?.['application/json']?.schema;
@@ -64,6 +66,7 @@ test('publishes the strict Microsoft consent notice, history, acceptance, and wi
     assert.equal(responseSchema(consents?.get, '200').$ref, '#/components/schemas/MicrosoftConsentHistoryResponse');
     assert.equal(responseSchema(consents?.post, '201').$ref, '#/components/schemas/MicrosoftConsentAcceptanceResponse');
     assert.equal(responseSchema(withdrawal?.post, '200').$ref, '#/components/schemas/MicrosoftConsentWithdrawalResponse');
+    assert.equal(responseSchema(unlink?.post, '200').$ref, '#/components/schemas/MicrosoftIdentityUnlinkResponse');
 
     const microsoftError = spec.components.responses.MicrosoftRequestError.content['application/json'].schema;
     assert.equal(microsoftError.$ref, '#/components/schemas/MicrosoftRequestError');
@@ -74,6 +77,7 @@ test('publishes the strict Microsoft consent notice, history, acceptance, and wi
         [consents?.get, ['400', '401']],
         [consents?.post, ['400', '409', '503']],
         [withdrawal?.post, ['400', '401', '403']],
+        [unlink?.post, ['400', '401', '403', '404', '500']],
     ] as const) {
         for (const status of statuses) {
             assert.equal(endpoint?.responses?.[status]?.$ref, '#/components/responses/MicrosoftRequestError');
@@ -85,6 +89,7 @@ test('publishes the strict Microsoft consent notice, history, acceptance, and wi
     assert.equal(spec.components.schemas.MicrosoftConsentSnapshot.additionalProperties, false);
     assert.deepEqual(spec.components.schemas.MicrosoftConsentHistoryResponse.properties?.data?.required, ['items', 'nextCursor']);
     assert.deepEqual(spec.components.schemas.MicrosoftConsentWithdrawalResponse.properties?.data?.required, ['providerConsentId', 'withdrawn']);
+    assert.deepEqual(spec.components.schemas.MicrosoftIdentityUnlinkResponse.properties?.data?.required, ['identityId', 'unlinked', 'recovery']);
 });
 
 test('publishes exact strict error envelopes for redacted verification diagnostics', () => {

@@ -6,6 +6,7 @@ import { getPool } from '../config/database.js';
 import { requireMicrosoftSession } from '../middleware/microsoft-session.js';
 import { withMicrosoftSession } from '../services/verification/microsoft-session.service.js';
 import { acceptMicrosoftConsent, getMicrosoftConsentNotice, listMicrosoftConsents, withdrawMicrosoftConsent } from '../services/verification/microsoft-consent.service.js';
+import { unlinkMicrosoftIdentity } from '../services/verification/microsoft-identity-unlink.service.js';
 import { MicrosoftFlowService } from '../services/verification/microsoft-flow.service.js';
 import { MicrosoftOidcService, type MicrosoftOidc } from '../services/verification/microsoft-oidc.service.js';
 import { forApprovedMicrosoftTenant } from '../services/verification/microsoft-oidc.config.js';
@@ -163,6 +164,18 @@ export function createMicrosoftVerificationRouter(factory: FlowFactory = default
         });
         responseHeaders(res);
         res.json({ success: true, data: { providerConsentId: id, withdrawn: true } });
+    }));
+
+    router.post('/identities/:id/unlink', exactOrigin, exactJson, requireMicrosoftSession('owner'), asyncHandler(async (req, res) => {
+        emptyBody(req);
+        const id = consentId(req.params.id);
+        // Deliberately no issuance/policy gate: a valid owner session must be
+        // able to sever a stored Microsoft link during feature rollback.
+        const result = await withMicrosoftSession(getPool(), { userId: req.user!.id, sid: req.user!.sid, use: 'owner' }, (tx) =>
+            unlinkMicrosoftIdentity(tx, req.user!.id, id),
+        );
+        responseHeaders(res);
+        res.json({ success: true, data: result });
     }));
 
     router.get('/callback', asyncHandler(async (req, res) => {
@@ -333,4 +346,29 @@ export default createMicrosoftVerificationRouter;
  *       400: { $ref: '#/components/responses/MicrosoftRequestError' }
  *       401: { $ref: '#/components/responses/MicrosoftRequestError' }
  *       403: { $ref: '#/components/responses/MicrosoftRequestError' }
+ * /api/verification/microsoft/identities/{id}/unlink:
+ *   post:
+ *     summary: Explicitly unlink one owner-scoped Microsoft identity
+ *     description: Requires exact configured Origin and an empty JSON object. It remains available when Microsoft issuance or institution policy is disabled. It revokes dependent Microsoft evidence but leaves independent email evidence and merchant audit records intact. The revoked identity is kept as a tombstone and cannot be silently restored or transferred; support is required for any future recovery.
+ *     tags: [Microsoft verification]
+ *     security: [{ bearerAuth: [] }]
+ *     parameters:
+ *       - in: path
+ *         name: id
+ *         required: true
+ *         schema: { type: string, format: uuid }
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema: { type: object, additionalProperties: false }
+ *     responses:
+ *       200:
+ *         description: Unlink completed or was already completed
+ *         content: { application/json: { schema: { $ref: '#/components/schemas/MicrosoftIdentityUnlinkResponse' } } }
+ *       400: { $ref: '#/components/responses/MicrosoftRequestError' }
+ *       401: { $ref: '#/components/responses/MicrosoftRequestError' }
+ *       403: { $ref: '#/components/responses/MicrosoftRequestError' }
+ *       404: { $ref: '#/components/responses/MicrosoftRequestError' }
+ *       500: { $ref: '#/components/responses/MicrosoftRequestError' }
  */
