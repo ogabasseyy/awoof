@@ -392,8 +392,11 @@ test('disabled compiled default routes reject issuance while owner recovery rema
             assert.equal(unlinked.status, 200);
             assert.deepEqual((await unlinked.json() as { data: unknown }).data, { identityId: microsoft.identityId, unlinked: true, recovery: 'support_required' });
         } finally {
-            restoreFetch();
-            await new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
+            try {
+                restoreFetch();
+            } finally {
+                await new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
+            }
         }
     });
 });

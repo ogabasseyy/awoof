@@ -65,8 +65,11 @@ test('mounted app keeps merchant CORS while isolating Microsoft CORS and redacts
     (db as unknown as { query: typeof db.query }).query = async (_text, values) => ({ rows: values?.[0] === 'merchant.example' ? [{}] : [], rowCount: values?.[0] === 'merchant.example' ? 1 : 0 }) as never;
     const fixture = await mountedServer();
     const originalLog = console.log;
-    const captured: string[] = [];
-    console.log = (...args: unknown[]) => { captured.push(args.map(String).join(' ')); };
+    const originalError = console.error;
+    const capturedLogs: string[] = [];
+    const capturedErrors: string[] = [];
+    console.log = (...args: unknown[]) => { capturedLogs.push(args.map(String).join(' ')); };
+    console.error = (...args: unknown[]) => { capturedErrors.push(args.map(String).join(' ')); };
     try {
         const frontend = 'http://localhost:3000';
         const microsoftPreflight = await fetch(`${fixture.baseUrl}/api/verification/microsoft/start`, { method: 'OPTIONS', headers: { Origin: frontend, 'Access-Control-Request-Method': 'POST', 'Access-Control-Request-Headers': 'authorization, content-type' } });
@@ -79,6 +82,13 @@ test('mounted app keeps merchant CORS while isolating Microsoft CORS and redacts
         const hostileMicrosoft = await fetch(`${fixture.baseUrl}/api/verification/microsoft/start`, { method: 'OPTIONS', headers: { Origin: merchant, 'Access-Control-Request-Method': 'POST' } });
         assert.equal(hostileMicrosoft.status, 403);
         assert.equal(hostileMicrosoft.headers.get('access-control-allow-origin'), null);
+
+        const mixedCasePreflight = await fetch(`${fixture.baseUrl}/API/Verification/Microsoft/START`, { method: 'OPTIONS', headers: { Origin: merchant, 'Access-Control-Request-Method': 'POST' } });
+        assert.equal(mixedCasePreflight.status, 403);
+        assert.equal(mixedCasePreflight.headers.get('access-control-allow-origin'), null);
+
+        const mixedCaseOwnerRead = await fetch(`${fixture.baseUrl}/api/verification/Microsoft/consents`, { headers: { Origin: merchant, Authorization: 'Bearer malformed-owner-token' } });
+        assert.equal(mixedCaseOwnerRead.headers.get('access-control-allow-origin'), null);
 
         const hostilePost = await fetch(`${fixture.baseUrl}/api/verification/microsoft/start`, { method: 'POST', headers: { Origin: merchant, 'Content-Type': 'application/json' }, body: '{}' });
         const hostilePostBody = await hostilePost.json() as { error: { code: string; message?: string } };
@@ -99,16 +109,20 @@ test('mounted app keeps merchant CORS while isolating Microsoft CORS and redacts
         const unknownWidget = await fetch(`${fixture.baseUrl}/api/widget/domain-check`, { method: 'OPTIONS', headers: { Origin: 'https://unknown.example', 'Access-Control-Request-Method': 'GET' } });
         assert.equal(unknownWidget.headers.get('access-control-allow-origin'), null);
 
-        const malformed = await fetch(`${fixture.baseUrl}/api/verification/microsoft/finish`, { method: 'POST', headers: { Origin: frontend, 'Content-Type': 'application/json' }, body: '{"finishSecret":"MALFORMED_FINISH_SECRET_CANARY"' });
-        const body = await malformed.text();
-        assert.equal(malformed.status, 400);
-        assert.equal(body.includes('MALFORMED_FINISH_SECRET_CANARY'), false);
-        assert.equal(captured.join('\n').includes('MALFORMED_FINISH_SECRET_CANARY'), false);
-        assert.equal(malformed.headers.get('cache-control'), 'no-store');
-        assert.equal(malformed.headers.get('referrer-policy'), 'no-referrer');
+        for (const path of ['/API/Verification/Microsoft/START', '/API/Verification/Microsoft/FINISH']) {
+            const malformed = await fetch(`${fixture.baseUrl}${path}`, { method: 'POST', headers: { Origin: frontend, 'Content-Type': 'application/json' }, body: '{"finishSecret":"MALFORMED_FINISH_SECRET_CANARY"' });
+            const body = await malformed.text();
+            assert.equal(malformed.status, 400);
+            assert.equal(body.includes('MALFORMED_FINISH_SECRET_CANARY'), false);
+            assert.equal(malformed.headers.get('cache-control'), 'no-store');
+            assert.equal(malformed.headers.get('referrer-policy'), 'no-referrer');
+        }
+        assert.equal(capturedLogs.join('\n').includes('MALFORMED_FINISH_SECRET_CANARY'), false);
+        assert.equal(capturedErrors.join('\n').includes('MALFORMED_FINISH_SECRET_CANARY'), false);
     } finally {
         await fixture.close();
         console.log = originalLog;
+        console.error = originalError;
         (db as unknown as { query: typeof db.query }).query = originalQuery;
     }
 });

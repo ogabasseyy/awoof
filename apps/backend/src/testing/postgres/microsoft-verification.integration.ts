@@ -21,6 +21,7 @@ import { MicrosoftRetentionService } from '../../services/verification/microsoft
 import { unlinkMicrosoftIdentity } from '../../services/verification/microsoft-identity-unlink.service.js';
 import { assertMicrosoftSession } from '../../services/verification/microsoft-session.service.js';
 import { lockStudentContext } from '../../services/verification/eligibility-context.service.js';
+import { updateInstitutionPolicy } from '../../services/verification/eligibility-policy.service.js';
 import { getEffectiveEligibility } from '../../services/verification/eligibility-read.service.js';
 import { createApp } from '../../index.js';
 import { jwtService } from '../../services/auth/jwt.service.js';
@@ -34,7 +35,7 @@ after(() => db.close());
 type Fixture = { adminId: string; userId: string; universityId: string; processingGrantId: string };
 
 async function assertCallbacksBlockedBy(observer: PoolClient, blockerPid: number, expected: number): Promise<void> {
-    for (let attempt = 0; attempt < 40; attempt += 1) {
+    for (let attempt = 0; attempt < 500; attempt += 1) {
         const result = await observer.query<{ count: string }>(
             `WITH RECURSIVE blocking_chain AS (
                  SELECT waiting.pid AS waiting_pid, blocker.pid AS blocker_pid, 1 AS depth
@@ -82,6 +83,10 @@ async function assertPidBlockedBy(observer: PoolClient, waitingPid: number, bloc
     throw new Error(`Expected ${label} (pid ${waitingPid}) to block behind finish authority (pid ${blockerPid})`);
 }
 
+async function bounded<T>(promise: Promise<T>, label: string): Promise<T> {
+    return Promise.race([promise, delay(5_000).then(() => { throw new Error(`${label} timed out`); })]);
+}
+
 async function assertDiagnosticWriterBlockedBy(observer: PoolClient, blockerPid: number): Promise<void> {
     for (let attempt = 0; attempt < 40; attempt += 1) {
         const result = await observer.query<{ blocked: boolean }>(
@@ -105,13 +110,19 @@ async function rejectsSql(operation: () => Promise<unknown>, client: Parameters<
     await client.query(`ROLLBACK TO SAVEPOINT ${savepoint}`);
 }
 
-async function fixture(): Promise<Fixture> {
+async function fixture(options: { approvedStudentDomain?: string } = {}): Promise<Fixture> {
     return withTestClient(async (client) => inTransaction(client, async () => {
         const suffix = randomUUID().slice(0, 8);
         const adminId = (await client.query<{ id: string }>(`INSERT INTO users (email, role) VALUES ($1, 'admin') RETURNING id`, [`admin-${suffix}@example.invalid`])).rows[0]!.id;
         const userId = (await client.query<{ id: string }>(`INSERT INTO users (email, role) VALUES ($1, 'student') RETURNING id`, [`student-${suffix}@example.invalid`])).rows[0]!.id;
         const universityId = (await client.query<{ id: string }>(`INSERT INTO universities (name, is_active) VALUES ($1, true) RETURNING id`, [`Microsoft ${suffix}`])).rows[0]!.id;
         await client.query(`INSERT INTO students (user_id, name, university_id) VALUES ($1, 'Student', $2)`, [userId, universityId]);
+        if (options.approvedStudentDomain) {
+            await updateInstitutionPolicy(client, adminId, universityId, {
+                domains: [options.approvedStudentDomain], emailEvidenceValidityDays: 90, enrollmentValidityDays: 30,
+                registrationNormalization: null, isActive: true,
+            });
+        }
         await client.query(
             `INSERT INTO institution_microsoft_policies
                  (university_id, tenant_id, enabled, mode, approved_until, approved_by, term_ends_at, max_evidence_hours, scopes, notice_version)
@@ -158,8 +169,10 @@ type FinishTestHooks = {
     beforeFinishCommit?: (tx: PoolClient) => Promise<void>;
 };
 
-async function readyGraphAttempt(options: { prelinkedIdentity?: boolean; testHooks?: FinishTestHooks; education?: { observe(input: { accessToken: string; expectedOid: string }): Promise<import('../../services/verification/microsoft-education.service.js').EducationObservation> } } = {}) {
-    const data = await fixture();
+async function readyGraphAttempt(options: { approvedStudentDomain?: string; prelinkedIdentity?: boolean; testHooks?: FinishTestHooks; education?: { observe(input: { accessToken: string; expectedOid: string }): Promise<import('../../services/verification/microsoft-education.service.js').EducationObservation> } } = {}) {
+    const data = options.approvedStudentDomain
+        ? await fixture({ approvedStudentDomain: options.approvedStudentDomain })
+        : await fixture();
     const sid = randomUUID(); let state = '';
     const { consentId, tenantId, objectId, identityId } = await withTestClient((client) => inTransaction(client, async () => {
         await client.query(`UPDATE users SET active_session_id=$2, refresh_token_hash='ready-graph', refresh_token_expires_at=clock_timestamp()+interval '1 hour' WHERE id=$1`, [data.userId, sid]);
@@ -295,6 +308,51 @@ async function graphEvidenceCount(attemptId: string): Promise<number> {
     )).rows[0]?.count ?? 0));
 }
 
+async function blockedPidForQuery(observer: PoolClient, blockerPid: number, queryPrefix: string, label: string): Promise<number> {
+    for (let attempt = 0; attempt < 40; attempt += 1) {
+        const result = await observer.query<{ pid: number }>(
+            `SELECT pid FROM pg_stat_activity
+             WHERE $1 = ANY(pg_blocking_pids(pid))
+               AND regexp_replace(query, '[[:space:]]+', ' ', 'g') LIKE $2
+             LIMIT 1`, [blockerPid, `${queryPrefix.replace(/\s+/g, ' ')}%`],
+        );
+        if (result.rows[0]) return Number(result.rows[0].pid);
+        await delay(10);
+    }
+    throw new Error(`Expected ${label} to block behind pid ${blockerPid}`);
+}
+
+async function microsoftMerchantAssertion(flow: Awaited<ReturnType<typeof readyGraphAttempt>>, campaignId: string) {
+    const merchant = await withTestClient((client) => inTransaction(client, async () => {
+        const ownerId = (await client.query<{ id: string }>(`INSERT INTO users(email,role) VALUES($1,'vendor') RETURNING id`, [`withdrawal-merchant-${randomUUID()}@example.invalid`])).rows[0]!.id;
+        const vendorId = (await client.query<{ id: string }>(`INSERT INTO vendors(user_id,name,status) VALUES($1,$2,'active') RETURNING id`, [ownerId, 'Withdrawal merchant'])).rows[0]!.id;
+        const origin = 'https://withdrawal-merchant.example';
+        await client.query(`INSERT INTO widget_configs(vendor_id,allowed_domains,allowed_origins,api_key,status)
+            VALUES($1,ARRAY['withdrawal-merchant.example'],ARRAY[$2],$3,'active')`, [vendorId, origin, randomUUID()]);
+        const disclosureGrantId = await grantMerchantDisclosure(client, flow.data.userId, { vendorId, origin, purpose: 'student-discount', accepted: true, noticeVersion: MERCHANT_DISCLOSURE_NOTICE_VERSION });
+        return { ownerId, vendorId, origin, disclosureGrantId };
+    }));
+    const key = await rotateReportingKey(db.getPool(), merchant.ownerId);
+    const input = { vendorId: merchant.vendorId, origin: merchant.origin, purpose: 'student-discount', campaignId, disclosureGrantId: merchant.disclosureGrantId };
+    const assertion = await issueMerchantAssertion(db.getPool(), flow.data.userId, input);
+    return { ...merchant, key, input, assertion };
+}
+
+async function recordIndependentStudentEmail(flow: Awaited<ReturnType<typeof readyGraphAttempt>>): Promise<void> {
+    await withTestClient((client) => inTransaction(client, async () => {
+        const context = await lockStudentContext(client, flow.data.userId);
+        const issued = await requestChallenge(client, {
+            purpose: 'student_email', subjectKey: flow.data.userId,
+            bindings: { ...context, processingGrantId: flow.data.processingGrantId, noticeVersion: VERIFICATION_NOTICE_VERSION },
+        });
+        assert.equal(issued.status, 'issued');
+        if (issued.status !== 'issued') throw new Error('Expected independent email challenge');
+        const consumed = await consumeChallenge(client, { purpose: 'student_email', subjectKey: flow.data.userId, challengeId: issued.challengeId, code: issued.code });
+        assert.equal(consumed.status, 'verified');
+        await recordEmailAssurance(client, flow.data.userId, { challengeId: issued.challengeId, processingGrantId: flow.data.processingGrantId });
+    }));
+}
+
 async function callbackRequest(base: string, path: string, headers: http.OutgoingHttpHeaders): Promise<{ status: number; headers: http.IncomingHttpHeaders }> {
     const url = new URL(path, base);
     return new Promise((resolve, reject) => {
@@ -343,6 +401,26 @@ test('canonical Graph writer uses exact configured expiry and is idempotent', as
              WHERE p.attempt_id=$1 GROUP BY e.expires_at,p.observed_at`, [attempt],
         )).rows[0]!;
         assert.equal(row.count, '1'); assert.equal(Number(row.hours), 2);
+    }));
+});
+
+test('canonical Graph writer rejects a valid future observation without advancing the current evidence pointer', async () => {
+    const future = await fixture();
+    await withTestClient(client => inTransaction(client, async () => {
+        const attempt = await graphReadyWriterAttempt(client, future, { observedAt: new Date(Date.now() + 60_000).toISOString() });
+        assert.deepEqual(await applyMicrosoftEnrollment(client, attempt, { isEnabled: () => true }), { eligible: false, reason: 'unverified' });
+        assert.equal((await client.query(`SELECT 1 FROM microsoft_provider_proofs WHERE attempt_id=$1`, [attempt])).rowCount, 0);
+        assert.equal((await client.query(`SELECT 1 FROM eligibility_evidence WHERE student_id=(SELECT id FROM students WHERE user_id=$1)`, [future.userId])).rowCount, 0);
+        assert.equal((await client.query(`SELECT current_evidence_id FROM student_eligibility_state WHERE student_id=(SELECT id FROM students WHERE user_id=$1)`, [future.userId])).rows[0]?.current_evidence_id, null);
+    }));
+
+    const current = await fixture();
+    await withTestClient(client => inTransaction(client, async () => {
+        const attempt = await graphReadyWriterAttempt(client, current);
+        assert.equal((await applyMicrosoftEnrollment(client, attempt, { isEnabled: () => true })).eligible, true);
+        assert.equal((await client.query(`SELECT 1 FROM microsoft_provider_proofs WHERE attempt_id=$1`, [attempt])).rowCount, 1);
+        const pointer = (await client.query<{ current_evidence_id: string | null }>(`SELECT current_evidence_id FROM student_eligibility_state WHERE student_id=(SELECT id FROM students WHERE user_id=$1)`, [current.userId])).rows[0];
+        assert.ok(pointer?.current_evidence_id, 'a current-time positive control must create and select evidence');
     }));
 });
 
@@ -1089,6 +1167,161 @@ test('actual Graph finish serializes provider, identity, account, and denial inv
                 delay(5_000).then(() => { throw new Error(`${kind} finish promise did not settle during cleanup`); }),
             ]);
         }
+    }
+});
+
+test('actual parent and provider withdrawals serialize Graph finish in both commit orders', async () => {
+    for (const kind of ['processing', 'provider'] as const) {
+        let finishPid = 0; let started!: () => void;
+        const finishStarted = new Promise<void>((resolve) => { started = resolve; });
+        const flow = await readyGraphAttempt({
+            testHooks: { onFinishTransactionStarted: async (tx) => { finishPid = Number((await tx.query<{ pid: number }>('SELECT pg_backend_pid() AS pid')).rows[0]!.pid); started(); } },
+        });
+        const withdrawal = await db.getPool().connect(); const observer = await db.getPool().connect();
+        let pending: Promise<unknown> | undefined;
+        try {
+            const withdrawalPid = Number((await withdrawal.query<{ pid: number }>('SELECT pg_backend_pid() AS pid')).rows[0]!.pid);
+            await withdrawal.query('BEGIN');
+            await (kind === 'processing'
+                ? withdrawConsent(withdrawal, flow.data.userId, flow.data.processingGrantId)
+                : withdrawMicrosoftConsent(withdrawal, flow.data.userId, flow.consentId));
+            pending = flow.service.finish({ userId: flow.data.userId, serverSessionId: flow.sid, attemptId: flow.started.publicResult.attemptId, finishSecret: flow.started.publicResult.finishSecret });
+            void pending.catch(() => undefined);
+            await bounded(finishStarted, `${kind} withdrawal-first finish start`);
+            await assertPidBlockedBy(observer, finishPid, withdrawalPid, `${kind} withdrawal-first finish`);
+            await withdrawal.query('COMMIT');
+            const finish = pending;
+            if (!finish) throw new Error('Expected a pending withdrawal-first finish');
+            await bounded(assert.rejects(() => finish), `${kind} withdrawal-first finish settlement`);
+            assert.equal(await graphEvidenceCount(flow.started.publicResult.attemptId), 0, `${kind} withdrawal-first finish cannot write obsolete evidence`);
+        } finally {
+            await withdrawal.query('ROLLBACK').catch(() => undefined); withdrawal.release(); observer.release();
+            if (pending) await bounded(pending.then(() => undefined, () => undefined), `${kind} withdrawal-first finish cleanup`);
+        }
+    }
+
+    for (const kind of ['processing', 'provider'] as const) {
+        let finishPid = 0; let started!: () => void; let entered!: () => void; let release!: () => void;
+        const finishStarted = new Promise<void>((resolve) => { started = resolve; });
+        const beforeCommit = new Promise<void>((resolve) => { entered = resolve; });
+        const released = new Promise<void>((resolve) => { release = resolve; });
+        const flow = await readyGraphAttempt({
+            testHooks: {
+                onFinishTransactionStarted: async (tx) => { finishPid = Number((await tx.query<{ pid: number }>('SELECT pg_backend_pid() AS pid')).rows[0]!.pid); started(); },
+                beforeFinishCommit: async () => { entered(); await released; },
+            },
+        });
+        const pending = flow.service.finish({ userId: flow.data.userId, serverSessionId: flow.sid, attemptId: flow.started.publicResult.attemptId, finishSecret: flow.started.publicResult.finishSecret });
+        await bounded(finishStarted, `${kind} finish-first finish start`); await bounded(beforeCommit, `${kind} finish-first precommit barrier`);
+        const withdrawal = await db.getPool().connect(); const observer = await db.getPool().connect();
+        try {
+            const withdrawalPid = Number((await withdrawal.query<{ pid: number }>('SELECT pg_backend_pid() AS pid')).rows[0]!.pid);
+            await withdrawal.query('BEGIN');
+            const waitingWithdrawal = kind === 'processing'
+                ? withdrawConsent(withdrawal, flow.data.userId, flow.data.processingGrantId)
+                : withdrawMicrosoftConsent(withdrawal, flow.data.userId, flow.consentId);
+            await assertPidBlockedBy(observer, withdrawalPid, finishPid, `${kind} finish-first withdrawal`);
+            release();
+            // finish commits its authority/evidence transaction before its
+            // best-effort diagnostics. Let the blocked withdrawal commit
+            // before awaiting that post-commit diagnostic work.
+            await bounded(waitingWithdrawal, `${kind} finish-first withdrawal settlement`);
+            await withdrawal.query('COMMIT');
+            assert.deepEqual(await bounded(pending, `${kind} finish-first finish settlement`), { accountLinked: true, enrollment: 'eligible' });
+            const receiptBeforeWithdrawal = await withTestClient(async (client) => (await client.query<{ result: unknown }>(`SELECT result FROM microsoft_verification_attempts WHERE id=$1`, [flow.started.publicResult.attemptId])).rows[0]!.result);
+            await assert.rejects(() => flow.service.finish({ userId: flow.data.userId, serverSessionId: flow.sid, attemptId: flow.started.publicResult.attemptId, finishSecret: flow.started.publicResult.finishSecret }));
+            assert.equal(await graphEvidenceCount(flow.started.publicResult.attemptId), 1, `${kind} keeps the immutable finished receipt while revoking live evidence`);
+            const receiptAfterWithdrawal = await withTestClient(async (client) => (await client.query<{ result: unknown }>(`SELECT result FROM microsoft_verification_attempts WHERE id=$1`, [flow.started.publicResult.attemptId])).rows[0]!.result);
+            assert.deepEqual(receiptAfterWithdrawal, receiptBeforeWithdrawal, `${kind} withdrawal must not rewrite the finished receipt`);
+            const proofSnapshot = await withTestClient(async (client) => (await client.query<{ observed_at: Date; revoked_at: Date | null }>(`SELECT observed_at,revoked_at FROM microsoft_provider_proofs WHERE attempt_id=$1`, [flow.started.publicResult.attemptId])).rows[0]);
+            assert.ok(proofSnapshot?.observed_at);
+            assert.ok(proofSnapshot?.revoked_at, `${kind} withdrawal must retain and revoke the original proof`);
+            const liveEvidence = await withTestClient(async (client) => (await client.query(`SELECT 1 FROM eligibility_evidence evidence JOIN microsoft_provider_proofs proof ON proof.id=evidence.provider_proof_id WHERE proof.attempt_id=$1 AND evidence.revoked_at IS NULL AND proof.revoked_at IS NULL`, [flow.started.publicResult.attemptId])).rowCount);
+            assert.equal(liveEvidence, 0, `${kind} withdrawal invalidates later live use`);
+        } finally {
+            release?.();
+            await withdrawal.query('ROLLBACK').catch(() => undefined); withdrawal.release(); observer.release();
+            await bounded(pending.then(() => undefined, () => undefined), `${kind} finish-first finish cleanup`);
+        }
+    }
+});
+
+test('actual parent and provider withdrawals serialize Microsoft-bound merchant exchange in both commit orders', async () => {
+    const originalEnabled = config.microsoftOidc.enabled;
+    config.microsoftOidc.enabled = true;
+    try {
+    for (const kind of ['processing', 'provider'] as const) {
+        const flow = await readyGraphAttempt();
+        assert.deepEqual(await flow.service.finish({ userId: flow.data.userId, serverSessionId: flow.sid, attemptId: flow.started.publicResult.attemptId, finishSecret: flow.started.publicResult.finishSecret }), { accountLinked: true, enrollment: 'eligible' });
+        const merchant = await microsoftMerchantAssertion(flow, `withdrawal-first-${kind}`);
+        const holder = await db.getPool().connect(); const withdrawal = await db.getPool().connect(); const observer = await db.getPool().connect();
+        try {
+            const withdrawalPid = Number((await withdrawal.query<{ pid: number }>('SELECT pg_backend_pid() AS pid')).rows[0]!.pid);
+            await holder.query('BEGIN'); await holder.query('SELECT id FROM users WHERE id=$1 FOR UPDATE', [flow.data.userId]);
+            await withdrawal.query('BEGIN');
+            const waitingWithdrawal = kind === 'processing'
+                ? withdrawConsent(withdrawal, flow.data.userId, flow.data.processingGrantId)
+                : withdrawMicrosoftConsent(withdrawal, flow.data.userId, flow.consentId);
+            const exchange = exchangeMerchantAssertion(db.getPool(), merchant.key, { code: merchant.assertion.code, campaignId: merchant.input.campaignId, idempotencyKey: randomUUID() });
+            void exchange.catch(() => undefined);
+            const holderPid = Number((await holder.query<{ pid: number }>('SELECT pg_backend_pid() AS pid')).rows[0]!.pid);
+            await assertPidBlockedBy(observer, withdrawalPid, holderPid, `${kind} withdrawal-first withdrawal`);
+            const exchangePid = await blockedPidForQuery(observer, withdrawalPid, 'SELECT id, role, deleted_at', `${kind} withdrawal-first exchange`);
+            await holder.query('COMMIT');
+            await assertPidBlockedBy(observer, exchangePid, withdrawalPid, `${kind} withdrawal-first exchange`);
+            await waitingWithdrawal; await withdrawal.query('COMMIT');
+            await assert.rejects(() => exchange, /no longer eligible/i);
+            const consumed = await withTestClient(async (client) => (await client.query<{ consumed_at: Date | null }>(`SELECT consumed_at FROM merchant_assertions WHERE code_hash=encode(sha256($1::bytea),'hex')`, [Buffer.from(merchant.assertion.code)])).rows[0]!.consumed_at);
+            assert.equal(consumed, null, `${kind} withdrawal-first leaves the obsolete assertion unconsumed`);
+        } finally {
+            await holder.query('ROLLBACK').catch(() => undefined); await withdrawal.query('ROLLBACK').catch(() => undefined);
+            holder.release(); withdrawal.release(); observer.release();
+        }
+    }
+
+    for (const kind of ['processing', 'provider'] as const) {
+        const flow = kind === 'provider'
+            ? await readyGraphAttempt({ approvedStudentDomain: 'example.invalid' })
+            : await readyGraphAttempt();
+        const preservedEmail = kind === 'provider' ? (await recordIndependentStudentEmail(flow), await withTestClient(async (client) => (await client.query<{ id: string; expires_at: Date }>(`SELECT id,expires_at FROM eligibility_evidence WHERE student_id=(SELECT id FROM students WHERE user_id=$1) AND method='student_email' AND revoked_at IS NULL ORDER BY verified_at DESC,id DESC LIMIT 1`, [flow.data.userId])).rows[0]!)) : null;
+        assert.deepEqual(await flow.service.finish({ userId: flow.data.userId, serverSessionId: flow.sid, attemptId: flow.started.publicResult.attemptId, finishSecret: flow.started.publicResult.finishSecret }), { accountLinked: true, enrollment: 'eligible' });
+        const merchant = await microsoftMerchantAssertion(flow, `exchange-first-${kind}`);
+        const staleMicrosoftAssertion = kind === 'provider'
+            ? await issueMerchantAssertion(db.getPool(), flow.data.userId, { ...merchant.input, campaignId: `${merchant.input.campaignId}-stale` })
+            : null;
+        const keyHolder = await db.getPool().connect(); const withdrawal = await db.getPool().connect(); const observer = await db.getPool().connect();
+        try {
+            const withdrawalPid = Number((await withdrawal.query<{ pid: number }>('SELECT pg_backend_pid() AS pid')).rows[0]!.pid);
+            await keyHolder.query('BEGIN'); await keyHolder.query(`SELECT id FROM widget_configs WHERE vendor_id=$1 FOR UPDATE`, [merchant.vendorId]);
+            const exchangeInput = { code: merchant.assertion.code, campaignId: merchant.input.campaignId, idempotencyKey: randomUUID() };
+            const exchange = exchangeMerchantAssertion(db.getPool(), merchant.key, exchangeInput);
+            const exchangePid = await blockedPidForQuery(observer, Number((await keyHolder.query<{ pid: number }>('SELECT pg_backend_pid() AS pid')).rows[0]!.pid), 'SELECT id FROM widget_configs', `${kind} exchange-first exchange`);
+            await withdrawal.query('BEGIN');
+            const waitingWithdrawal = kind === 'processing'
+                ? withdrawConsent(withdrawal, flow.data.userId, flow.data.processingGrantId)
+                : withdrawMicrosoftConsent(withdrawal, flow.data.userId, flow.consentId);
+            await assertPidBlockedBy(observer, withdrawalPid, exchangePid, `${kind} exchange-first withdrawal`);
+            await keyHolder.query('COMMIT');
+            const receipt = await exchange;
+            await waitingWithdrawal; await withdrawal.query('COMMIT');
+            const replay = await exchangeMerchantAssertion(db.getPool(), merchant.key, exchangeInput);
+            assert.deepEqual(replay, receipt, `${kind} preserves the immutable merchant receipt after withdrawal`);
+            if (kind === 'provider' && staleMicrosoftAssertion) {
+                assert.ok(preservedEmail);
+                const preservedAfterWithdrawal = await withTestClient(async (client) => (await client.query<{ id: string; expires_at: Date; revoked_at: Date | null }>(`SELECT id,expires_at,revoked_at FROM eligibility_evidence WHERE id=$1`, [preservedEmail.id])).rows[0]);
+                assert.deepEqual(preservedAfterWithdrawal, { ...preservedEmail, revoked_at: null }, 'provider withdrawal preserves independent email evidence and expiry');
+                await assert.rejects(() => exchangeMerchantAssertion(db.getPool(), merchant.key, { code: staleMicrosoftAssertion.code, campaignId: `${merchant.input.campaignId}-stale`, idempotencyKey: randomUUID() }), /no longer eligible/i);
+                const emailAssertion = await issueMerchantAssertion(db.getPool(), flow.data.userId, { ...merchant.input, campaignId: `${merchant.input.campaignId}-email` });
+                const emailReceipt = await exchangeMerchantAssertion(db.getPool(), merchant.key, { code: emailAssertion.code, campaignId: `${merchant.input.campaignId}-email`, idempotencyKey: randomUUID() });
+                assert.equal(emailReceipt.assuranceMethod, 'student_email');
+            }
+        } finally {
+            await keyHolder.query('ROLLBACK').catch(() => undefined); await withdrawal.query('ROLLBACK').catch(() => undefined);
+            keyHolder.release(); withdrawal.release(); observer.release();
+        }
+    }
+    } finally {
+        config.microsoftOidc.enabled = originalEnabled;
     }
 });
 

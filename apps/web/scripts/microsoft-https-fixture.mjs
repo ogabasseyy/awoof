@@ -53,17 +53,20 @@ let diagnosticCalls = 0;
 let diagnosticsUnavailableReleased = false;
 let delayNextIdentityRead = false;
 let delayNextStatusRead = false;
+let delayNextHistoryRead = false;
 const attempts = new Map();
 const observedPaths = [];
 const observedServerSessions = [];
 const identityReadEvents = [];
 const statusReadEvents = [];
+const historyReadEvents = [];
 const capturedApplicationLogs = [];
 const capturedApplicationErrors = [];
 const capturedProxyLogs = [];
 const delayedFinishResponses = new Set();
 const delayedIdentityResponses = new Set();
 const delayedStatusResponses = new Set();
+const delayedHistoryResponses = new Set();
 const delayedDiagnosticResponses = new Set();
 const noticeChanges = new Set();
 const acceptedConsentSnapshots = [];
@@ -72,24 +75,27 @@ const appSockets = new Set();
 
 function initialAccounts() {
   return new Map([
-    ['00000000-0000-4000-8000-000000000001', { email: 'student-a@approved.test', emailEvidenceEligible: true, microsoftEnrollmentEligible: false, finishCalls: 0, linkedMicrosoftIdentities: 0, unlinkedMicrosoftIdentity: false, statusFailureDelivered: false }],
-    ['00000000-0000-4000-8000-000000000002', { email: 'student-b@approved.test', emailEvidenceEligible: false, microsoftEnrollmentEligible: false, finishCalls: 0, linkedMicrosoftIdentities: 0, unlinkedMicrosoftIdentity: false, statusFailureDelivered: false }],
+    ['00000000-0000-4000-8000-000000000001', { email: 'student-a@approved.test', emailEvidenceEligible: true, microsoftEnrollmentEligible: false, finishCalls: 0, linkedMicrosoftIdentities: 0, unlinkedMicrosoftIdentity: false, providerConsentWithdrawn: false, providerWithdrawCalls: 0, historyFailureDelivered: false, statusFailureDelivered: false }],
+    ['00000000-0000-4000-8000-000000000002', { email: 'student-b@approved.test', emailEvidenceEligible: false, microsoftEnrollmentEligible: false, finishCalls: 0, linkedMicrosoftIdentities: 0, unlinkedMicrosoftIdentity: false, providerConsentWithdrawn: false, providerWithdrawCalls: 0, historyFailureDelivered: false, statusFailureDelivered: false }],
   ]);
 }
 let accounts = initialAccounts();
 
 function resetFixture() {
-  startCalls = 0; callbackCookieCalls = 0; finishCalls = 0; refreshCalls = 0; logoutCalls = 0; delayedFinishDeliveries = 0; diagnosticCalls = 0; diagnosticsUnavailableReleased = false; delayNextIdentityRead = false; delayNextStatusRead = false;
+  startCalls = 0; callbackCookieCalls = 0; finishCalls = 0; refreshCalls = 0; logoutCalls = 0; delayedFinishDeliveries = 0; diagnosticCalls = 0; diagnosticsUnavailableReleased = false; delayNextIdentityRead = false; delayNextStatusRead = false; delayNextHistoryRead = false;
   attempts.clear(); noticeChanges.clear(); acceptedConsentSnapshots.length = 0; revokedServerSessions.clear(); observedPaths.length = 0; observedServerSessions.length = 0;
   capturedApplicationLogs.length = 0; capturedApplicationErrors.length = 0; capturedProxyLogs.length = 0;
   identityReadEvents.length = 0;
   statusReadEvents.length = 0;
+  historyReadEvents.length = 0;
   for (const release of delayedFinishResponses) release(true);
   delayedFinishResponses.clear(); accounts = initialAccounts();
   for (const release of delayedIdentityResponses) release(true);
   delayedIdentityResponses.clear();
   for (const release of delayedStatusResponses) release(true);
   delayedStatusResponses.clear();
+  for (const release of delayedHistoryResponses) release(true);
+  delayedHistoryResponses.clear();
   for (const release of delayedDiagnosticResponses) release();
   delayedDiagnosticResponses.clear();
 }
@@ -209,6 +215,13 @@ async function handleApiRequest(request, response) {
   if (url.pathname === '/api/__fixture/delay-next-status-read' && request.method === 'POST') {
     delayNextStatusRead = true; json(request, response, 204, {}); return;
   }
+  if (url.pathname === '/api/__fixture/release-delayed-history' && request.method === 'POST') {
+    for (const delayed of delayedHistoryResponses) delayed();
+    delayedHistoryResponses.clear(); json(request, response, 204, {}); return;
+  }
+  if (url.pathname === '/api/__fixture/delay-next-history-read' && request.method === 'POST') {
+    delayNextHistoryRead = true; json(request, response, 204, {}); return;
+  }
   if (url.pathname === '/api/__fixture/release-delayed-diagnostics' && request.method === 'POST') {
     for (const delayed of delayedDiagnosticResponses) delayed();
     delayedDiagnosticResponses.clear(); json(request, response, 204, {}); return;
@@ -226,11 +239,14 @@ async function handleApiRequest(request, response) {
       acceptedConsentSnapshots, revokedServerSessions: [...revokedServerSessions],
       identityReadEvents,
       statusReadEvents,
+      historyReadEvents,
       accounts: Object.fromEntries([...accounts].map(([id, account]) => [id, {
         emailEvidenceEligible: account.emailEvidenceEligible,
         microsoftEnrollmentEligible: account.microsoftEnrollmentEligible,
         finishCalls: account.finishCalls,
         linkedMicrosoftIdentities: account.linkedMicrosoftIdentities,
+        providerConsentWithdrawn: account.providerConsentWithdrawn,
+        providerWithdrawCalls: account.providerWithdrawCalls,
       }])),
       attempts: [...attempts.values()].map(({ attemptId, ownerId, ready, callbackUsed, completed, callbackCookieCalls: attemptCallbackCookieCalls, finishCalls: attemptFinishCalls, finishCookieCalls, completionWrites, callbackOutcome, transientFailures }) => ({
         attemptId, ownerId, ready, callbackUsed, completed, callbackCookieCalls: attemptCallbackCookieCalls, finishCalls: attemptFinishCalls, finishCookieCalls, completionWrites, callbackOutcome: callbackOutcome ?? null, transientFailures,
@@ -286,7 +302,7 @@ async function handleApiRequest(request, response) {
     statusReadEvents.push(event);
     const send = (cancelled = false) => {
       if (cancelled || response.writableEnded) return;
-      const statusFailure = hasMode(context, 'status-failure') && Boolean(account?.finishCalls || account?.unlinkedMicrosoftIdentity) && !account?.statusFailureDelivered;
+      const statusFailure = hasMode(context, 'status-failure') && Boolean(account?.finishCalls || account?.unlinkedMicrosoftIdentity || account?.providerConsentWithdrawn) && !account?.statusFailureDelivered;
       if (statusFailure && account) account.statusFailureDelivered = true;
       event.delivered = true; event.status = statusFailure ? 503 : 200;
       json(request, response, statusFailure ? 503 : 200, statusFailure ? { error: { code: 'fixture_status_failure' } } : {
@@ -295,7 +311,7 @@ async function handleApiRequest(request, response) {
           // Identity linking is deliberately not enrollment verification. The
           // fixture reports separate evidence sources, and only the account's
           // independent email evidence determines effective eligibility.
-          eligibility: { eligible: Boolean(account?.emailEvidenceEligible || account?.microsoftEnrollmentEligible), emailEvidenceEligible: Boolean(account?.emailEvidenceEligible), microsoftIdentityLinked: Boolean(account?.linkedMicrosoftIdentities) }, notices: { verification: { version: 'fixture-v1', text: 'Synthetic Awoof processing notice.' } },
+          eligibility: { eligible: Boolean(account?.emailEvidenceEligible || account?.microsoftEnrollmentEligible || (hasMode(context, 'provider-withdrawal') && !account?.providerConsentWithdrawn)), emailEvidenceEligible: Boolean(account?.emailEvidenceEligible), microsoftIdentityLinked: Boolean(account?.linkedMicrosoftIdentities) }, notices: { verification: { version: 'fixture-v1', text: 'Synthetic Awoof processing notice.' } },
         },
       });
     };
@@ -317,11 +333,27 @@ async function handleApiRequest(request, response) {
   }
   if (url.pathname === '/api/verification/microsoft/consents' && request.method === 'GET') {
     const paginated = hasMode(context, 'history-pagination');
-    const history = hasMode(context, 'global-off') || hasMode(context, 'notice-failure') || paginated
+    const account = user ? accounts.get(user.id) : null;
+    const providerWithdrawal = hasMode(context, 'provider-withdrawal');
+    const history = providerWithdrawal
+      ? [{ id: 'fixture-provider-withdrawal-consent', snapshot: { universityId: 'fixture-university', providerPolicyVersion: 1, noticeVersion: 'fixture-provider-v1', mode: 'graph_enrollment', scopes: ['openid'] }, acceptedAt: '2026-09-01T00:00:00.000Z', withdrawnAt: account?.providerConsentWithdrawn ? '2026-09-13T00:00:00.000Z' : null }]
+      : hasMode(context, 'global-off') || hasMode(context, 'notice-failure') || paginated
       ? [{ id: 'fixture-history-1', snapshot: { universityId: 'fixture-university', providerPolicyVersion: 1, noticeVersion: 'fixture-provider-v1', mode: 'identity_only', scopes: ['openid'] }, acceptedAt: '2026-09-01T00:00:00.000Z', withdrawnAt: null }]
       : [];
     const second = [{ id: 'fixture-history-2', snapshot: { universityId: 'fixture-university', providerPolicyVersion: 1, noticeVersion: 'fixture-provider-v1', mode: 'identity_only', scopes: ['openid'] }, acceptedAt: '2026-09-02T00:00:00.000Z', withdrawnAt: '2026-09-03T00:00:00.000Z' }];
-    json(request, response, 200, { data: { items: paginated && url.searchParams.get('cursor') === 'fixture-history-page-2' ? second : history, nextCursor: paginated && url.searchParams.get('cursor') !== 'fixture-history-page-2' ? 'fixture-history-page-2' : null } }); return;
+    const event = { userId: context?.id ?? null, received: true, delivered: false, delayed: false };
+    historyReadEvents.push(event);
+    const send = (cancelled = false) => {
+      if (cancelled || response.writableEnded) return;
+      if (providerWithdrawal && hasMode(context, 'history-read-failure') && account?.providerConsentWithdrawn && !account.historyFailureDelivered) {
+        account.historyFailureDelivered = true; event.delivered = true;
+        json(request, response, 503, { error: { code: 'fixture_history_read_failed' } }); return;
+      }
+      event.delivered = true;
+      json(request, response, 200, { data: { items: paginated && url.searchParams.get('cursor') === 'fixture-history-page-2' ? second : history, nextCursor: paginated && url.searchParams.get('cursor') !== 'fixture-history-page-2' ? 'fixture-history-page-2' : null } });
+    };
+    if (delayNextHistoryRead) { delayNextHistoryRead = false; event.delayed = true; delayedHistoryResponses.add(send); return; }
+    send(); return;
   }
   if (url.pathname === '/api/verification/microsoft/consents' && request.method === 'POST') {
     const consentBody = await body(request);
@@ -330,6 +362,14 @@ async function handleApiRequest(request, response) {
       noticeChanges.add(context.id); json(request, response, 409, { error: { code: 'consent_notice_changed' } }); return;
     }
     json(request, response, 200, { data: { providerConsentId: 'fixture-provider-consent' } }); return;
+  }
+  if (/^\/api\/verification\/microsoft\/consents\/[^/]+\/withdraw$/.test(url.pathname) && request.method === 'POST') {
+    const account = user ? accounts.get(user.id) : null;
+    if (!context || !account) { json(request, response, 401, { error: { code: 'fixture_auth_required' } }); return; }
+    account.providerWithdrawCalls += 1;
+    account.providerConsentWithdrawn = true;
+    account.microsoftEnrollmentEligible = false;
+    json(request, response, 200, { data: { providerConsentId: url.pathname.split('/')[5], withdrawn: true } }); return;
   }
   if (url.pathname === '/api/verification/microsoft/identities' && request.method === 'GET') {
     const account = user ? accounts.get(user.id) : null;

@@ -1,7 +1,8 @@
 import type { NextFunction, Request, Response } from 'express';
 
 export function isMicrosoftRoute(path: string): boolean {
-    return path === '/api/verification/microsoft' || path.startsWith('/api/verification/microsoft/');
+    const normalizedPath = path.toLowerCase();
+    return normalizedPath === '/api/verification/microsoft' || normalizedPath.startsWith('/api/verification/microsoft/');
 }
 
 export type MicrosoftCorsOptions = { frontendOrigin: string };

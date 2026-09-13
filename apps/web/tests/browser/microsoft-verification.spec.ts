@@ -104,9 +104,10 @@ type FixtureEvidence = {
   observedServerSessions: Array<{ path: string; serverSessionId: string; userId: string }>;
   identityReadEvents: Array<{ userId: string | null; received: boolean; delivered: boolean; delayed: boolean }>;
   statusReadEvents: Array<{ userId: string | null; received: boolean; delivered: boolean; delayed: boolean; status: number | null }>;
+  historyReadEvents: Array<{ userId: string | null; received: boolean; delivered: boolean; delayed: boolean }>;
   acceptedConsentSnapshots: Array<{ providerPolicyVersion?: number; noticeVersion?: string } | null>;
   revokedServerSessions: string[];
-  accounts: Record<string, { emailEvidenceEligible: boolean; microsoftEnrollmentEligible: boolean; finishCalls: number; linkedMicrosoftIdentities: number }>;
+  accounts: Record<string, { emailEvidenceEligible: boolean; microsoftEnrollmentEligible: boolean; finishCalls: number; linkedMicrosoftIdentities: number; providerConsentWithdrawn: boolean; providerWithdrawCalls: number }>;
   attempts: Array<{ attemptId: string; ownerId: string; ready: boolean; callbackUsed: boolean; completed: boolean; callbackCookieCalls: number; finishCalls: number; finishCookieCalls: number; completionWrites: number; transientFailures: number }>;
 };
 
@@ -464,7 +465,90 @@ test('a successful unlink keeps its result while a failed owner-status refresh c
   await expect(page.getByText(/The connection was removed, but current eligibility could not be refreshed/)).toBeVisible();
   await page.getByRole('button', { name: 'Retry current eligibility' }).click();
   await expect(page.getByRole('button', { name: 'Retry current eligibility' })).toHaveCount(0);
-  await expect(page.getByRole('heading', { name: 'Confirm your school email' })).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Send verification code' })).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Retry current eligibility' })).toHaveCount(0);
+});
+
+test('durable provider withdrawal tombstones stale history and clears Microsoft-only eligibility before delayed reads return', async ({ page }) => {
+  await seedStudent(page, 'provider-withdrawal-browser-session', 'student-access:account-b:provider-withdrawal');
+  await loadAuthenticatedVerification(page);
+  await expect(page.getByText('Your student eligibility is current.', { exact: true })).toBeVisible();
+  await expect(page.getByText('Active — accepted')).toBeVisible();
+
+  await fixtureControl(page, '/api/__fixture/delay-next-history-read');
+  await page.getByRole('button', { name: 'Refresh' }).nth(1).click();
+  await expect.poll(async () => (await evidence(page)).historyReadEvents).toContainEqual(expect.objectContaining({ userId: '00000000-0000-4000-8000-000000000002', delayed: true, delivered: false }));
+  await fixtureControl(page, '/api/__fixture/delay-next-status-read');
+  await page.getByRole('button', { name: 'Withdraw Microsoft consent' }).click();
+
+  await expect(page.getByText(/Microsoft provider consent withdrawn\. Independent email evidence was not changed/)).toBeVisible();
+  await expect(page.getByText('Withdrawn — accepted')).toBeVisible();
+  await expect(page.getByText('Your student eligibility is current.', { exact: true })).toHaveCount(0);
+  await expect.poll(async () => (await evidence(page)).statusReadEvents).toContainEqual(expect.objectContaining({ userId: '00000000-0000-4000-8000-000000000002', delayed: true, delivered: false }));
+
+  await fixtureControl(page, '/api/__fixture/release-delayed-history');
+  await expect(page.getByText('Withdrawn — accepted')).toBeVisible();
+  await expect(page.getByText('Active — accepted')).toHaveCount(0);
+  await fixtureControl(page, '/api/__fixture/release-delayed-status');
+  await expect(page.getByRole('button', { name: 'Send verification code' })).toBeVisible();
+  expect((await evidence(page)).accounts['00000000-0000-4000-8000-000000000002']).toMatchObject({ emailEvidenceEligible: false, microsoftEnrollmentEligible: false, providerConsentWithdrawn: true, providerWithdrawCalls: 1 });
+});
+
+test('provider withdrawal keeps durable success separate from a failed eligibility refresh and does not repeat the mutation on retry', async ({ page }) => {
+  await seedStudent(page, 'provider-withdrawal-refresh-browser-session', 'student-access:account-b:provider-withdrawal:status-failure');
+  await loadAuthenticatedVerification(page);
+  await page.getByRole('button', { name: 'Withdraw Microsoft consent' }).click();
+  await expect(page.getByText(/Microsoft provider consent withdrawn\. Independent email evidence was not changed/)).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Retry current eligibility' })).toBeVisible();
+  expect((await evidence(page)).accounts['00000000-0000-4000-8000-000000000002'].providerWithdrawCalls).toBe(1);
+  await page.getByRole('button', { name: 'Retry current eligibility' }).click();
+  await expect(page.getByRole('button', { name: 'Retry current eligibility' })).toHaveCount(0);
+  await expect(page.getByRole('button', { name: 'Send verification code' })).toBeVisible();
+  expect((await evidence(page)).accounts['00000000-0000-4000-8000-000000000002'].providerWithdrawCalls).toBe(1);
+});
+
+test('provider withdrawal retains its local tombstone when the fresh consent-history read fails', async ({ page }) => {
+  await seedStudent(page, 'provider-withdrawal-history-failure', 'student-access:account-b:provider-withdrawal:history-read-failure');
+  await loadAuthenticatedVerification(page);
+  await page.getByRole('button', { name: 'Withdraw Microsoft consent' }).click();
+  await expect(page.getByText('Withdrawn — accepted')).toBeVisible();
+  await expect(page.getByText(/Microsoft consent was withdrawn, but consent history could not be refreshed/)).toBeVisible();
+  expect((await evidence(page)).accounts['00000000-0000-4000-8000-000000000002'].providerWithdrawCalls).toBe(1);
+  await page.getByRole('button', { name: 'Refresh' }).nth(1).click();
+  await expect(page.getByText('Withdrawn — accepted')).toBeVisible();
+  await expect(page.getByText('Active — accepted')).toHaveCount(0);
+  expect((await evidence(page)).accounts['00000000-0000-4000-8000-000000000002'].providerWithdrawCalls).toBe(1);
+});
+
+test('provider withdrawal reloads an independent email result without blanket revocation', async ({ page }) => {
+  await seedStudent(page, 'provider-withdrawal-email-browser-session', 'student-access:provider-withdrawal');
+  await loadAuthenticatedVerification(page);
+  await page.getByRole('button', { name: 'Withdraw Microsoft consent' }).click();
+  await expect(page.getByText(/Microsoft provider consent withdrawn\. Independent email evidence was not changed/)).toBeVisible();
+  await expect(page.getByText('Your student eligibility is current.', { exact: true })).toBeVisible();
+  expect((await evidence(page)).accounts['00000000-0000-4000-8000-000000000001']).toMatchObject({ emailEvidenceEligible: true, providerConsentWithdrawn: true, providerWithdrawCalls: 1 });
+});
+
+test('a delayed provider-history read cannot restore the old owner consent after session replacement', async ({ page, context }) => {
+  const replacement = await context.newPage();
+  try {
+    await page.goto('/__fixture-storage-tab');
+    await seedStudent(page, 'provider-history-old-session', 'student-access:provider-withdrawal');
+    await loadAuthenticatedVerification(page);
+    await expect(page.getByText('Active — accepted')).toBeVisible();
+    await fixtureControl(page, '/api/__fixture/delay-next-history-read');
+    await page.getByRole('button', { name: 'Refresh' }).nth(1).click();
+    await expect.poll(async () => (await evidence(page)).historyReadEvents).toContainEqual(expect.objectContaining({ userId: '00000000-0000-4000-8000-000000000001', delayed: true, delivered: false }));
+
+    await seedStudent(replacement, 'provider-history-new-session', 'student-access:account-b');
+    await loadAuthenticatedVerification(replacement);
+    await expect(page.getByText('student-b@approved.test').first()).toBeVisible();
+    await fixtureControl(replacement, '/api/__fixture/release-delayed-history');
+    await expect.poll(async () => (await evidence(replacement)).historyReadEvents).toContainEqual(expect.objectContaining({ userId: '00000000-0000-4000-8000-000000000001', delayed: true, delivered: true }));
+    await expect(page.getByText('Active — accepted')).toHaveCount(0);
+  } finally {
+    await replacement.close();
+  }
 });
 
 test('an enabled-policy unlink keeps a successful identity refresh distinct from a delayed failed eligibility refresh', async ({ page }) => {
