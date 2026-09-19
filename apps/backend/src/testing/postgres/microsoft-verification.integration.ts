@@ -573,6 +573,7 @@ test('policy changes and provider withdrawal cancel pending attempts and scrub s
         await withdrawConsent(client, data.userId, data.processingGrantId);
         await withdrawMicrosoftConsent(client, data.userId, consentId);
         await withdrawMicrosoftConsent(client, data.userId, consentId);
+        assert.equal((await client.query<{ count: number }>(`SELECT count(*)::int AS count FROM verification_audit_events WHERE user_id = $1 AND event_type = 'microsoft_consent_withdrawn'`, [data.userId])).rows[0]!.count, 1);
         const cancelled = (await client.query<{ status: string; encrypted_verifier: string | null; nonce: string | null }>(`SELECT status, encrypted_verifier, nonce FROM microsoft_verification_attempts WHERE id = $1`, [providerAttemptId])).rows[0]!;
         assert.deepEqual(cancelled, { status: 'failed', encrypted_verifier: null, nonce: null });
         assert.notEqual((await client.query<{ revoked_at: Date | null }>(`SELECT revoked_at FROM microsoft_provider_proofs WHERE id = $1`, [proofId])).rows[0]!.revoked_at, null);

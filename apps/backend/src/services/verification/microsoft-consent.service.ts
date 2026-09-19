@@ -180,15 +180,20 @@ export async function withdrawMicrosoftConsent(tx: PoolClient, userId: string, c
         [consentId, userId],
     );
     if (!locked.rows[0]) throw new NotFoundError('Microsoft consent not found');
-    await tx.query(`UPDATE microsoft_verification_consents SET withdrawn_at = COALESCE(withdrawn_at, clock_timestamp()) WHERE id = $1`, [consentId]);
+    // A retry of an already successful withdrawal stays a no-op: only the
+    // transition from null records audit history, so a lost response cannot
+    // grow the audit table on retry.
+    const transitioned = await tx.query(`UPDATE microsoft_verification_consents SET withdrawn_at = clock_timestamp() WHERE id = $1 AND withdrawn_at IS NULL`, [consentId]);
     await tx.query(
         `UPDATE microsoft_verification_attempts
          SET status = 'failed', encrypted_verifier = NULL, nonce = NULL, result = NULL
          WHERE provider_consent_id = $1 AND status IN ('pending', 'processing', 'ready')`, [consentId],
     );
     await tx.query(`UPDATE microsoft_provider_proofs SET revoked_at = clock_timestamp() WHERE provider_consent_id = $1 AND revoked_at IS NULL`, [consentId]);
-    await tx.query(
-        `INSERT INTO verification_audit_events (user_id, university_id, event_type, metadata)
-         VALUES ($1, $2, 'microsoft_consent_withdrawn', '{}'::jsonb)`, [userId, row.university_id],
-    );
+    if ((transitioned.rowCount ?? 0) > 0) {
+        await tx.query(
+            `INSERT INTO verification_audit_events (user_id, university_id, event_type, metadata)
+             VALUES ($1, $2, 'microsoft_consent_withdrawn', '{}'::jsonb)`, [userId, row.university_id],
+        );
+    }
 }
