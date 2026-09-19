@@ -66,10 +66,15 @@ test('Microsoft callback skips the shared quota and keeps CORS headers on its de
             start: async () => { throw new Error('not used'); },
             finish: async () => { throw new Error('not used'); },
             callbackCookieNameForState: async () => null,
-            callback: async () => ({
-                attemptId: '33333333-3333-4333-8333-333333333333',
-                completionUrl: new URL('https://app.awoof.example/student/verification/microsoft/complete?attempt=33333333-3333-4333-8333-333333333333'),
-            }),
+            callback: async (input: { callbackUrl: URL }) => {
+                // Only the first legitimate return succeeds; replays fail so
+                // they accumulate toward the dedicated limiter quota.
+                if (input.callbackUrl.searchParams.get('state') !== 'fresh-state') throw new Error('replay');
+                return {
+                    attemptId: '33333333-3333-4333-8333-333333333333',
+                    completionUrl: new URL('https://app.awoof.example/student/verification/microsoft/complete?attempt=33333333-3333-4333-8333-333333333333'),
+                };
+            },
         }),
     });
     try {
@@ -84,17 +89,19 @@ test('Microsoft callback skips the shared quota and keeps CORS headers on its de
             await health.text();
         }
         // The callback skips the shared quota and still reaches its redirect.
+        // Successful completions never consume the dedicated quota either.
         const pastQuota = await callback('fresh-state');
         assert.equal(pastQuota.status, 303);
         assert.equal(pastQuota.headers.get('access-control-allow-origin'), frontend);
         await pastQuota.text();
-        // Its dedicated limiter still bounds replays, with CORS headers intact.
+        // Failed replays accumulate instead, until the dedicated limiter
+        // refuses them - still with CORS headers intact.
         let limited: Response | undefined;
-        for (let replay = 0; replay < 60; replay += 1) {
+        for (let replay = 0; replay < 61; replay += 1) {
             const response = await callback(`replay-${replay}`);
             await response.text();
             if (response.status === 429) { limited = response; break; }
-            assert.equal(response.status, 303);
+            assert.equal(response.status, 500);
         }
         assert.ok(limited, 'the dedicated callback limiter must eventually refuse replays');
         assert.equal(limited.headers.get('access-control-allow-origin'), frontend);

@@ -89,11 +89,15 @@ function responseHeaders(res: Response): void {
 // provider return always reaches its bounded redirect. This dedicated
 // limiter (one attempt lifetime window) keeps replayed states from
 // converting that reachability into unbounded claim transactions.
+// Successful completions (3xx) never consume the quota, so a burst of
+// distinct students behind one NAT address passes while only failed
+// replays accumulate toward the limit.
 const microsoftCallbackLimiter = rateLimit({
     windowMs: 10 * 60 * 1000,
     max: 60,
     standardHeaders: true,
     legacyHeaders: false,
+    skipSuccessfulRequests: true,
 });
 
 function defaultFlow(): Flow {
