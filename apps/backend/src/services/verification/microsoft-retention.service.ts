@@ -2,10 +2,19 @@ import type { Pool } from 'pg';
 
 export const MICROSOFT_RETENTION_BATCH_SIZE = 500;
 export const MICROSOFT_DIAGNOSTIC_RETENTION_DAYS = 30;
+// Bounds total work when rows age into eligibility faster than passes drain
+// them. Twenty passes still cover a 10k-row backlog per table between
+// scheduled runs; anything larger reports incomplete so automation reruns.
+export const MICROSOFT_RETENTION_MAX_PASSES = 20;
 
 export type MicrosoftRetentionResult = {
     attempts: number;
     diagnostics: number;
+};
+
+export type MicrosoftRetentionDrainResult = MicrosoftRetentionResult & {
+    passes: number;
+    complete: boolean;
 };
 
 export type MicrosoftRetentionDependencies = {
@@ -20,6 +29,28 @@ export type MicrosoftRetentionDependencies = {
  */
 export class MicrosoftRetentionService {
     constructor(private readonly deps: MicrosoftRetentionDependencies) {}
+
+    /**
+     * Drains every eligible retention batch. Each pass stays in its own
+     * bounded transaction; iteration stops once a pass returns short batches
+     * on both tables, or reports incomplete after the pass cap so the
+     * scheduler invokes cleanup again instead of logging success.
+     */
+    async cleanupAll(maxPasses: number = MICROSOFT_RETENTION_MAX_PASSES): Promise<MicrosoftRetentionDrainResult> {
+        let attempts = 0;
+        let diagnostics = 0;
+        let passes = 0;
+        for (;;) {
+            const result = await this.cleanup();
+            attempts += result.attempts;
+            diagnostics += result.diagnostics;
+            passes += 1;
+            if (result.attempts < MICROSOFT_RETENTION_BATCH_SIZE && result.diagnostics < MICROSOFT_RETENTION_BATCH_SIZE) {
+                return { attempts, diagnostics, passes, complete: true };
+            }
+            if (passes >= maxPasses) return { attempts, diagnostics, passes, complete: false };
+        }
+    }
 
     async cleanup(): Promise<MicrosoftRetentionResult> {
         const tx = await this.deps.pool.connect();

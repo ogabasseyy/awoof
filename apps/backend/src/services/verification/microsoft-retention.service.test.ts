@@ -54,6 +54,42 @@ test('retention terminalizes expired unfinished attempts and removes only diagno
     assert.match(diagnostics.sql, /LIMIT 500/);
 });
 
+function scriptedFixture(counts: Array<{ attempts: number; diagnostics: number }>): { service: MicrosoftRetentionService; queries: Query[] } {
+    const queries: Query[] = [];
+    let pass = 0;
+    const client = {
+        query: async (sql: string, values?: unknown[]) => {
+            queries.push({ sql, values });
+            if (sql === 'BEGIN' || sql === 'COMMIT' || sql === 'ROLLBACK') return { rowCount: 0, rows: [] };
+            if (sql.includes('SELECT clock_timestamp() AS now')) return { rowCount: 1, rows: [{ now: databaseNow }] };
+            const current = counts[Math.min(pass, counts.length - 1)]!;
+            const rowCount = sql.includes('microsoft_verification_attempts') ? current.attempts : current.diagnostics;
+            if (sql.includes('DELETE FROM verification_diagnostic_events')) pass += 1;
+            return { rowCount, rows: [] };
+        },
+        release: () => undefined,
+    };
+    return {
+        service: new MicrosoftRetentionService({ pool: { connect: async () => client } as never }),
+        queries,
+    };
+}
+
+test('cleanupAll drains full batches across passes and totals every row', async () => {
+    const { service, queries } = scriptedFixture([
+        { attempts: 500, diagnostics: 500 },
+        { attempts: 500, diagnostics: 3 },
+        { attempts: 2, diagnostics: 0 },
+    ]);
+    assert.deepEqual(await service.cleanupAll(), { attempts: 1002, diagnostics: 503, passes: 3, complete: true });
+    assert.equal(queries.filter((query) => query.sql === 'BEGIN').length, 3, 'each pass must stay in its own bounded transaction');
+});
+
+test('cleanupAll reports incomplete instead of looping forever under continuous backlog', async () => {
+    const { service } = scriptedFixture([{ attempts: 500, diagnostics: 500 }]);
+    assert.deepEqual(await service.cleanupAll(2), { attempts: 1000, diagnostics: 1000, passes: 2, complete: false });
+});
+
 test('unknown stored statuses are not selected for destructive cleanup', async () => {
     const { service, queries } = fixture();
     await service.cleanup();

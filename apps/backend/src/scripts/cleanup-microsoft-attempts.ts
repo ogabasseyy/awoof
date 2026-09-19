@@ -35,8 +35,13 @@ async function main(): Promise<void> {
         // pg can surface an idle client error outside a query promise. Never
         // forward that object because it may include a connection URL/value.
         pool.on('error', fail);
-        const result = await new MicrosoftRetentionService({ pool }).cleanup();
-        process.stdout.write(`microsoft retention cleanup complete: attempts=${result.attempts} diagnostics=${result.diagnostics}\n`);
+        const result = await new MicrosoftRetentionService({ pool }).cleanupAll();
+        if (!result.complete) {
+            process.stderr.write(`microsoft retention cleanup incomplete: attempts=${result.attempts} diagnostics=${result.diagnostics} passes=${result.passes}\n`);
+            process.exitCode = 1;
+            return;
+        }
+        process.stdout.write(`microsoft retention cleanup complete: attempts=${result.attempts} diagnostics=${result.diagnostics} passes=${result.passes}\n`);
     } catch {
         fail();
     } finally {
