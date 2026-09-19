@@ -5,7 +5,7 @@
  */
 
 import swaggerJsdoc from 'swagger-jsdoc';
-import { existsSync, lstatSync, readFileSync } from 'node:fs';
+import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { config } from './env.js';
 
@@ -423,11 +423,14 @@ Access tokens expire in 15 minutes. Use the refresh token endpoint to get a new 
 
 function compiledSwaggerSpec(): ReturnType<typeof swaggerJsdoc> {
     const renderedPath = fileURLToPath(new URL('./openapi.json', import.meta.url));
-    if (!existsSync(renderedPath) || !lstatSync(renderedPath).isFile()) {
+    let raw: string;
+    try {
+        raw = readFileSync(renderedPath, 'utf8');
+    } catch {
         throw new Error('Compiled OpenAPI artifact is missing: dist/config/openapi.json. Run npm run build:artifact.');
     }
     try {
-        const parsed: unknown = JSON.parse(readFileSync(renderedPath, 'utf8'));
+        const parsed: unknown = JSON.parse(raw);
         if (!parsed || typeof parsed !== 'object' || !('paths' in parsed) || !parsed.paths || typeof parsed.paths !== 'object' || Object.keys(parsed.paths).length === 0) {
             throw new Error('Compiled OpenAPI artifact has no paths.');
         }

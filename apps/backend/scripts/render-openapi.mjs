@@ -1,4 +1,4 @@
-import { existsSync, lstatSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { swaggerSpec } from '../src/config/swagger.ts';
 
@@ -30,9 +30,13 @@ function assertRenderedSpec(spec) {
     }
 }
 
-if (existsSync(output)) {
-    if (!lstatSync(output).isFile()) throw new Error(`Refusing to replace non-file OpenAPI output: ${output}`);
-    rmSync(output);
+// Remove any previous render without a check-then-act race: force ignores a
+// missing file, while a directory still fails (EISDIR/EPERM) instead of
+// being replaced.
+try {
+    rmSync(output, { force: true });
+} catch (error) {
+    throw new Error(`Refusing to replace non-file OpenAPI output: ${output}`, { cause: error });
 }
 assertRenderedSpec(swaggerSpec);
 mkdirSync(resolve(backendRoot, 'dist/config'), { recursive: true });
