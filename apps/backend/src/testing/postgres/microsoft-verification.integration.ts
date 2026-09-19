@@ -1660,7 +1660,7 @@ test('mounted Microsoft consent routes bind the rendered snapshot, preserve owne
     }
 });
 
-test('mounted Microsoft rejects expired callbacks and stale live sessions without writes', async () => {
+test('mounted Microsoft redirects expired callbacks to completion and rejects stale live sessions without writes', async () => {
     const expired = await pendingDurableAttempt();
     const app = await createApp({ microsoftFlowFactory: () => expired.service }); const server = http.createServer(app);
     await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve)); const address = server.address();
@@ -1669,7 +1669,8 @@ test('mounted Microsoft rejects expired callbacks and stale live sessions withou
         await withTestClient((client) => client.query(`UPDATE microsoft_verification_attempts SET expires_at=clock_timestamp()-interval '1 second' WHERE id=$1`, [expired.started.publicResult.attemptId]));
         const state = expired.callback.searchParams.get('state')!;
         const expiredResponse = await callbackRequest(base, `/api/verification/microsoft/callback?state=${state}&code=CANARY`, { host:'api.example.invalid', 'x-forwarded-proto':'https', cookie:`${expired.started.callbackCookie.name}=${expired.started.callbackCookie.value}` });
-        assert.equal(expiredResponse.status, 409);
+        assert.equal(expiredResponse.status, 303);
+        assert.equal(expiredResponse.headers.location, `https://app.example.invalid/student/verification/microsoft/complete?attempt=${expired.started.publicResult.attemptId}&outcome=connection_not_completed`);
         assert.equal((await withTestClient((client) => client.query(`SELECT count(*)::int AS count FROM microsoft_identities WHERE user_id=$1`, [expired.data.userId]))).rows[0]!.count, 0);
     } finally { await new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve())); }
 
@@ -1699,7 +1700,10 @@ test('callback expiry is rechecked after it blocks on the independent user lock'
         await assertCallbacksBlockedBy(observer, blockerPid, 1);
         await lockClient.query(`UPDATE microsoft_verification_attempts SET expires_at=clock_timestamp()-interval '1 second' WHERE id=$1`, [flow.started.publicResult.attemptId]);
         await lockClient.query('COMMIT');
-        assert.deepEqual(await settled, { ok: false });
+        assert.deepEqual(await settled, { ok: true });
+        const terminal = await callback;
+        assert.equal(terminal.outcome, 'connection_not_completed');
+        assert.equal(terminal.completionUrl.searchParams.get('attempt'), flow.started.publicResult.attemptId);
         assert.equal(flow.exchanges(), 0);
         assert.equal((await withTestClient(client => client.query(`SELECT 1 FROM microsoft_verification_attempts WHERE id=$1 AND status='ready'`, [flow.started.publicResult.attemptId]))).rowCount, 0);
     } finally {

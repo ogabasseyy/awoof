@@ -272,6 +272,13 @@ export class MicrosoftFlowService {
         }); } catch (error) {
             if (error instanceof MicrosoftAttemptExpiredError) {
                 await this.emitTerminalFailure(error.attemptId, { outcome: 'failure', reason: 'expired', durationMs: this.elapsed(startedAt) });
+                // The state and cookie already authenticated this attempt, so
+                // an expired return belongs on the completion page rather
+                // than on a raw API error. Unauthenticated claims still throw.
+                const completionUrl = new URL(this.deps.completionUrl);
+                completionUrl.searchParams.set('attempt', error.attemptId);
+                completionUrl.searchParams.set('outcome', 'connection_not_completed');
+                return { attemptId: error.attemptId, completionUrl, outcome: 'connection_not_completed' };
             }
             throw error;
         }
