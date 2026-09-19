@@ -117,7 +117,7 @@ test('linkMicrosoftIdentity conflicts when another active identity exists for th
     await assert.rejects(linkMicrosoftIdentity(tx, linkInput), (error: unknown) => error instanceof ConflictError);
 });
 
-type CallbackScenario = { authorityFailsAt: 'never' | 'claim' | 'post'; expired: boolean };
+type CallbackScenario = { authorityFailsAt: 'never' | 'claim' | 'post'; expired: boolean; wrongKey?: boolean };
 
 function callbackHarness(scenario: CallbackScenario): { service: MicrosoftFlowService; invoke: () => Promise<{ attemptId: string; outcome?: string; completionUrl: URL }> } {
     const callbackAttemptId = '99999999-9999-4999-8999-999999999999';
@@ -188,7 +188,7 @@ function callbackHarness(scenario: CallbackScenario): { service: MicrosoftFlowSe
                 redeemed = true;
                 return { identity: { tenantId: callbackTenant, objectId: callbackObject } };
             } },
-        verifierEncryptionKey: key,
+        verifierEncryptionKey: scenario.wrongKey ? randomBytes(32).toString('base64url') : key,
         callbackUrl: new URL('https://api.example.test/api/verification/microsoft/callback'),
         completionUrl: new URL('https://app.example.test/student/verification/microsoft/complete'),
         isEnabled: () => true,
@@ -217,6 +217,12 @@ test('callback returns a bounded completion page when authority is lost after th
 
 test('callback returns a bounded completion page for an authenticated expired attempt', async () => {
     await assertBoundedCompletion({ authorityFailsAt: 'never', expired: true });
+});
+
+test('callback terminalizes instead of 500ing when the stored verifier no longer decrypts', async () => {
+    // wrongKey makes decryptMicrosoftAttemptVerifier throw inside the claim
+    // transaction; the oidc harness asserts redemption never dispatches.
+    await assertBoundedCompletion({ authorityFailsAt: 'never', expired: false, wrongKey: true });
 });
 
 test('canonicalizeEducationObservation re-stamps student observations with the database clock', () => {

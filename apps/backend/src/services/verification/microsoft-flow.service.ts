@@ -275,6 +275,10 @@ export class MicrosoftFlowService {
         // attempt. Failures after this point know their attempt, so the
         // catch below can redirect them instead of throwing raw errors.
         let cookieAuthenticatedAttemptId: string | null = null;
+        // Set when the stored verifier cannot be decrypted with the current
+        // key (rotation or corruption after issuance). The attempt can never
+        // complete, so the catch below terminalizes it instead of 500ing.
+        let undecryptableAttemptId: string | null = null;
         try { claimed = await this.transaction(async (tx) => {
             // State locates the per-attempt cookie, but never authorizes it.
             // Canonical authority is locked before the attempt itself.
@@ -296,7 +300,14 @@ export class MicrosoftFlowService {
             this.assertEnabled();
             const updated = await tx.query(`UPDATE microsoft_verification_attempts SET status='processing' WHERE id=$1 AND status='pending'`, [attempt.id]);
             if (updated.rowCount !== 1) throw invalidAttempt();
-            return { attempt, tenantId: authority.policy.tenant_id, state, verifier: decryptMicrosoftAttemptVerifier(attempt.encrypted_verifier, this.deps.verifierEncryptionKey, attempt.id), nonce: attempt.nonce };
+            let verifier: string;
+            try {
+                verifier = decryptMicrosoftAttemptVerifier(attempt.encrypted_verifier, this.deps.verifierEncryptionKey, attempt.id);
+            } catch (error) {
+                undecryptableAttemptId = attempt.id;
+                throw error;
+            }
+            return { attempt, tenantId: authority.policy.tenant_id, state, verifier, nonce: attempt.nonce };
         }); } catch (error) {
             if (error instanceof MicrosoftAttemptExpiredError) {
                 await this.emitTerminalFailure(error.attemptId, { outcome: 'failure', reason: 'expired', durationMs: this.elapsed(startedAt) });
@@ -306,6 +317,10 @@ export class MicrosoftFlowService {
             // approval, withdrawn grant, replaced session, suspended profile)
             // know their attempt, so they redirect like expiries. Claims that
             // never authenticated (bad state, cookie, or status race) throw.
+            if (undecryptableAttemptId !== null) {
+                await this.emitTerminalFailure(undecryptableAttemptId, { outcome: 'failure', reason: 'cancelled', durationMs: this.elapsed(startedAt) });
+                return this.boundedFailureCompletion(undecryptableAttemptId);
+            }
             if (cookieAuthenticatedAttemptId !== null
                 && (error instanceof MicrosoftAuthorityInvalidatedError || error instanceof UnauthorizedError
                     || (error instanceof AppError && error.statusCode === 401))) {
