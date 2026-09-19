@@ -1758,7 +1758,10 @@ test('disabling during held redeem scrubs the attempt, and disabling after an aw
     const callback = flow.service.callback({ callbackUrl: flow.callback, browserCookie: flow.started.callbackCookie.value });
     const settledCallback = callback.then(() => ({ ok: true }), () => ({ ok: false }));
     await redeemEntered; enabled = false; releaseRedeem!();
-    assert.deepEqual(await settledCallback, { ok: false });
+    assert.deepEqual(await settledCallback, { ok: true });
+    const terminal = await callback;
+    assert.equal(terminal.outcome, 'connection_not_completed');
+    assert.equal(terminal.completionUrl.searchParams.get('attempt'), flow.started.publicResult.attemptId);
     const scrubbed = await withTestClient(async (client) => (await client.query<{ status: string; encrypted_verifier: string | null; nonce: string | null }>('SELECT status,encrypted_verifier,nonce FROM microsoft_verification_attempts WHERE id=$1', [flow.started.publicResult.attemptId])).rows[0]!);
     assert.deepEqual(scrubbed, { status: 'failed', encrypted_verifier: null, nonce: null });
 
