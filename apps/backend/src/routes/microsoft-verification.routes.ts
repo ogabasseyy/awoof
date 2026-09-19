@@ -1,5 +1,6 @@
 import { Router, type NextFunction, type Request, type Response } from 'express';
 import rateLimit from 'express-rate-limit';
+import type { Pool } from 'pg';
 import { BadRequestError, ServiceUnavailableError } from '../common/errors/AppError.js';
 import { asyncHandler } from '../common/middleware/errorHandler.js';
 import { config } from '../config/env.js';
@@ -13,7 +14,7 @@ import { MicrosoftFlowService } from '../services/verification/microsoft-flow.se
 import { MicrosoftOidcService, type MicrosoftOidc } from '../services/verification/microsoft-oidc.service.js';
 import { forApprovedMicrosoftTenant } from '../services/verification/microsoft-oidc.config.js';
 import { MicrosoftEducationService } from '../services/verification/microsoft-education.service.js';
-import { hasValidMicrosoftAttemptEncryptionKey } from '../services/verification/microsoft-attempt-crypto.js';
+import { hasValidMicrosoftAttemptEncryptionKey, hashMicrosoftAttemptSecret } from '../services/verification/microsoft-attempt-crypto.js';
 
 type Flow = Pick<MicrosoftFlowService, 'start' | 'callback' | 'finish'> & Partial<Pick<MicrosoftFlowService, 'callbackCookieNameForState'>>;
 type FlowFactory = () => Flow;
@@ -83,6 +84,46 @@ function consentId(value: string | string[] | undefined): string {
 function responseHeaders(res: Response): void {
     res.setHeader('Cache-Control', 'no-store');
     res.setHeader('Referrer-Policy', 'no-referrer');
+}
+
+/** Our callback cookie names parsed from a Cookie header. */
+export function microsoftCallbackCookieNames(header: string | undefined): string[] {
+    return String(header ?? '').split(';').flatMap((entry) => {
+        const trimmed = entry.trim();
+        const separator = trimmed.indexOf('=');
+        if (separator <= 0) return [];
+        const name = trimmed.slice(0, separator);
+        return name === '' ? [] : [name];
+    });
+}
+
+/**
+ * Completion redirect for an in-flight browser return that arrives while new
+ * issuance is unavailable (feature disabled or key missing). Resolving the
+ * attempt by its state hash needs no decryption, so the browser still lands
+ * on the bounded completion page and its stale callback cookies are cleared
+ * instead of stranding it on a raw API error.
+ */
+export async function issuanceUnavailableCompletion(
+    pool: Pick<Pool, 'query'>,
+    completionUrl: URL,
+    state: string | null,
+    cookieHeader: string | undefined,
+): Promise<{ location: string; clearCookies: string[] }> {
+    let attemptId: string | null = null;
+    if (state) {
+        const row = await pool.query<{ id: string }>(
+            `SELECT id FROM microsoft_verification_attempts WHERE state_hash=$1`, [hashMicrosoftAttemptSecret(state)],
+        );
+        attemptId = row.rows[0]?.id ?? null;
+    }
+    const url = new URL(completionUrl.href);
+    if (attemptId) {
+        url.searchParams.set('attempt', attemptId);
+        url.searchParams.set('outcome', 'connection_not_completed');
+    }
+    const clearCookies = microsoftCallbackCookieNames(cookieHeader).filter((name) => name.startsWith('awoof_ms_'));
+    return { location: url.href, clearCookies };
 }
 
 // The callback skips the shared API quota in the middleware stack so a
@@ -226,7 +267,26 @@ export function createMicrosoftVerificationRouter(factory: FlowFactory = default
         const callbackUrl = new URL(`${req.protocol}://${req.get('host')}${req.originalUrl}`);
         // The service compares this to the server fixed callback URL. The raw
         // query never reaches a response, log line, or redirect location.
-        const flow = factory();
+        let flow: Flow;
+        try {
+            flow = factory();
+        } catch (error) {
+            if (!(error instanceof ServiceUnavailableError)) throw error;
+            // The configured completion URL only exists when OIDC is
+            // enabled; otherwise fall back to the frontend origin contract.
+            const oidcConfig = config.microsoftOidc;
+            const completionUrl = oidcConfig.enabled
+                ? oidcConfig.frontendCompletionUrl
+                : new URL('/student/verification/microsoft/complete', config.microsoftVerification.frontendOrigin);
+            const completed = await issuanceUnavailableCompletion(
+                getPool(), completionUrl,
+                callbackUrl.searchParams.get('state'), req.headers.cookie,
+            );
+            for (const name of completed.clearCookies) {
+                res.clearCookie(name, { path: '/api/verification/microsoft/callback', httpOnly: true, secure: true, sameSite: 'lax' });
+            }
+            return res.redirect(303, completed.location);
+        }
         const resolvedCookieName = await flow.callbackCookieNameForState?.(callbackUrl);
         try {
             const result = await flow.callback({ callbackUrl, browserCookies });

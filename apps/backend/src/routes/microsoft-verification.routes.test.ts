@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import type { Request } from 'express';
 import { BadRequestError } from '../common/errors/AppError.js';
-import { bodyIds } from './microsoft-verification.routes.js';
+import { bodyIds, issuanceUnavailableCompletion, microsoftCallbackCookieNames } from './microsoft-verification.routes.js';
 
 const START_IDS = ['11111111-1111-4111-8111-111111111111', '22222222-2222-4222-8222-222222222222'];
 const ATTEMPT_ID = '33333333-3333-4333-8333-333333333333';
@@ -21,6 +21,27 @@ test('bodyIds rejects malformed start identifiers instead of leaking a database 
         () => bodyIds(reqWith({ processingGrantId: 'not-a-uuid', providerConsentId: START_IDS[1] }), ['processingGrantId', 'providerConsentId']),
         (error: unknown) => error instanceof BadRequestError,
     );
+});
+
+test('microsoftCallbackCookieNames parses only well-formed entries', () => {
+    assert.deepEqual(microsoftCallbackCookieNames('awoof_ms_x=1; other=2; broken; =x'), ['awoof_ms_x', 'other']);
+    assert.deepEqual(microsoftCallbackCookieNames(undefined), []);
+});
+
+test('issuanceUnavailableCompletion redirects a known return with its cookies cleared', async () => {
+    const pool = { query: async () => ({ rows: [{ id: ATTEMPT_ID }] }) } as never;
+    const completion = new URL('https://app.example.test/student/verification/microsoft/complete');
+    const result = await issuanceUnavailableCompletion(pool, completion, 'some-state', 'awoof_ms_x=1; session=abc');
+    assert.equal(result.location, `${completion.href}?attempt=${ATTEMPT_ID}&outcome=connection_not_completed`);
+    assert.deepEqual(result.clearCookies, ['awoof_ms_x']);
+});
+
+test('issuanceUnavailableCompletion degrades to a bare completion page for unknown returns', async () => {
+    const pool = { query: async () => ({ rows: [] }) } as never;
+    const completion = new URL('https://app.example.test/student/verification/microsoft/complete');
+    const result = await issuanceUnavailableCompletion(pool, completion, 'unknown-state', undefined);
+    assert.equal(result.location, completion.href);
+    assert.deepEqual(result.clearCookies, []);
 });
 
 test('bodyIds keeps finishSecret opaque while requiring a UUID attemptId', () => {
