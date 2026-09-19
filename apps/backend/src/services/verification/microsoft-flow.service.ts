@@ -70,6 +70,26 @@ export type MicrosoftFlowDependencies = {
     };
 };
 
+export type MicrosoftIdentityLink = { userId: string; universityId: string; tenantId: string; objectId: string };
+
+/** Resolve the owner identity row, refusing a second active link for the same university. */
+export async function linkMicrosoftIdentity(tx: PoolClient, input: MicrosoftIdentityLink): Promise<string> {
+    const existing = await tx.query<{ id: string; user_id: string; university_id: string; revoked_at: Date | null }>('SELECT id,user_id,university_id,revoked_at FROM microsoft_identities WHERE tenant_id=$1 AND object_id=$2 FOR UPDATE', [input.tenantId, input.objectId]);
+    const linked = existing.rows[0];
+    if (linked && (linked.user_id !== input.userId || linked.university_id !== input.universityId || linked.revoked_at !== null)) throw new ConflictError('Microsoft identity cannot be transferred or restored');
+    if (!linked) {
+        const active = await tx.query<{ id: string }>('SELECT id FROM microsoft_identities WHERE user_id=$1 AND university_id=$2 AND revoked_at IS NULL FOR UPDATE', [input.userId, input.universityId]);
+        if (active.rows[0]) throw new ConflictError('Microsoft identity is already linked for this university; unlink the existing connection before connecting a different account');
+    }
+    if (linked?.id) return linked.id;
+    try {
+        return (await tx.query<{ id: string }>('INSERT INTO microsoft_identities (user_id,university_id,tenant_id,object_id) VALUES ($1,$2,$3,$4) RETURNING id', [input.userId, input.universityId, input.tenantId, input.objectId])).rows[0]!.id;
+    } catch (error) {
+        if ((error as { code?: string })?.code === '23505') throw new ConflictError('Microsoft identity is already linked for this university; unlink the existing connection before connecting a different account');
+        throw error;
+    }
+}
+
 function secret(bytes = 32): string { return randomBytes(bytes).toString('base64url'); }
 function cookieName(attemptId: string): string { return `awoof_ms_${attemptId}`; }
 function invalidAttempt(): ConflictError { return new ConflictError('Microsoft verification attempt is no longer valid'); }
@@ -392,10 +412,7 @@ export class MicrosoftFlowService {
             const graphResult = graphReady ? storedResult : null;
             const identity = (graphResult ? graphResult.identity : attempt.result) as MicrosoftIdentity | null;
             if (attempt.status !== 'ready' || !identity || typeof identity.tenantId !== 'string' || typeof identity.objectId !== 'string') throw invalidAttempt();
-            const existing = await tx.query<{ id: string; user_id: string; university_id: string; revoked_at: Date | null }>('SELECT id,user_id,university_id,revoked_at FROM microsoft_identities WHERE tenant_id=$1 AND object_id=$2 FOR UPDATE', [identity.tenantId, identity.objectId]);
-            const linked = existing.rows[0];
-            if (linked && (linked.user_id !== input.userId || linked.university_id !== attempt.university_id || linked.revoked_at !== null)) throw new ConflictError('Microsoft identity cannot be transferred or restored');
-            const identityId = linked?.id ?? (await tx.query<{ id: string }>('INSERT INTO microsoft_identities (user_id,university_id,tenant_id,object_id) VALUES ($1,$2,$3,$4) RETURNING id', [input.userId, attempt.university_id, identity.tenantId, identity.objectId])).rows[0]!.id;
+            const identityId = await linkMicrosoftIdentity(tx, { userId: input.userId, universityId: attempt.university_id, tenantId: identity.tenantId, objectId: identity.objectId });
             this.assertEnabled();
             const applied = graphReady ? await applyMicrosoftEnrollment(tx, attempt.id, this.deps.isEnabled ? { isEnabled: this.deps.isEnabled } : {}) : null;
             const enrollment = applied ? enrollmentReceipt(applied) : 'not_checked';

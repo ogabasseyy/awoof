@@ -1,7 +1,9 @@
 import assert from 'node:assert/strict';
 import { randomBytes } from 'node:crypto';
 import test from 'node:test';
-import { MicrosoftFlowService } from './microsoft-flow.service.js';
+import type { PoolClient } from 'pg';
+import { ConflictError } from '../../common/errors/AppError.js';
+import { MicrosoftFlowService, linkMicrosoftIdentity } from './microsoft-flow.service.js';
 
 const userId = '11111111-1111-4111-8111-111111111111';
 const sid = '22222222-2222-4222-8222-222222222222';
@@ -58,4 +60,49 @@ test('start keeps the browser secret exclusively in typed cookie instructions an
     assert.equal(insert!.includes(result.publicResult.finishSecret), false);
     assert.equal(typeof insert![9], 'string');
     assert.notEqual(insert![9], result.publicResult.attemptId);
+});
+
+function linkTx(queries: (text: string) => { rows: Record<string, unknown>[]; rowCount: number } | never, onInsert?: () => void): PoolClient {
+    return {
+        query: async (text: string) => {
+            if (text.includes('INSERT INTO microsoft_identities')) {
+                onInsert?.();
+                return queries(text);
+            }
+            return queries(text);
+        },
+    } as unknown as PoolClient;
+}
+
+const linkInput = { userId, universityId, tenantId, objectId: '77777777-7777-4777-8777-777777777777' };
+
+test('linkMicrosoftIdentity reuses the same active owner identity', async () => {
+    let inserts = 0;
+    const tx = linkTx((text) => {
+        if (text.includes('WHERE tenant_id=$1 AND object_id=$2')) {
+            return { rows: [{ id: 'identity-1', user_id: userId, university_id: universityId, revoked_at: null }], rowCount: 1 };
+        }
+        throw new Error(`Unexpected query ${text}`);
+    }, () => { inserts += 1; });
+    assert.equal(await linkMicrosoftIdentity(tx, linkInput), 'identity-1');
+    assert.equal(inserts, 0);
+});
+
+test('linkMicrosoftIdentity conflicts when another active identity exists for the university', async () => {
+    const tx = linkTx((text) => {
+        if (text.includes('WHERE tenant_id=$1 AND object_id=$2')) return { rows: [], rowCount: 0 };
+        if (text.includes('WHERE user_id=$1 AND university_id=$2')) return { rows: [{ id: 'identity-existing' }], rowCount: 1 };
+        throw new Error(`Unexpected query ${text}`);
+    });
+    await assert.rejects(linkMicrosoftIdentity(tx, linkInput), (error: unknown) => error instanceof ConflictError);
+});
+
+test('linkMicrosoftIdentity maps an insert race to a conflict instead of a 500', async () => {
+    const tx = linkTx((text) => {
+        if (text.includes('WHERE tenant_id=$1 AND object_id=$2')) return { rows: [], rowCount: 0 };
+        if (text.includes('WHERE user_id=$1 AND university_id=$2')) return { rows: [], rowCount: 0 };
+        if (text.includes('INSERT INTO microsoft_identities')) throw Object.assign(new Error('duplicate key'), { code: '23505' });
+        throw new Error(`Unexpected query ${text}`);
+    });
+    await assert.rejects(linkMicrosoftIdentity(tx, linkInput), (error: unknown) => error instanceof ConflictError);
 });

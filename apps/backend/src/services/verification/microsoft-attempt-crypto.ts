@@ -30,8 +30,11 @@ export function encryptMicrosoftAttemptVerifier(verifier: string, keyMaterial: s
 export function decryptMicrosoftAttemptVerifier(encoded: string, keyMaterial: string, attemptId: string): string {
     const [ivText, tagText, ciphertextText, extra] = encoded.split('.');
     if (!ivText || !tagText || !ciphertextText || extra) throw new TypeError('Encrypted Microsoft verifier is invalid');
-    const decipher = createDecipheriv(ALGORITHM, keyFrom(keyMaterial), Buffer.from(ivText, 'base64url'));
+    const iv = Buffer.from(ivText, 'base64url');
+    const tag = Buffer.from(tagText, 'base64url');
+    if (iv.byteLength !== 12 || tag.byteLength !== 16) throw new TypeError('Encrypted Microsoft verifier is invalid');
+    const decipher = createDecipheriv(ALGORITHM, keyFrom(keyMaterial), iv, { authTagLength: 16 });
     decipher.setAAD(Buffer.from(attemptId, 'utf8'));
-    decipher.setAuthTag(Buffer.from(tagText, 'base64url'));
+    decipher.setAuthTag(tag);
     return Buffer.concat([decipher.update(Buffer.from(ciphertextText, 'base64url')), decipher.final()]).toString('utf8');
 }

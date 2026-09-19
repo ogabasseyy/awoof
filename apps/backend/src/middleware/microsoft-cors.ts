@@ -26,7 +26,7 @@ export function microsoftCors(options: MicrosoftCorsOptions) {
             res.setHeader('Access-Control-Allow-Origin', options.frontendOrigin);
             res.setHeader('Access-Control-Allow-Credentials', 'true');
             if (req.method === 'OPTIONS') {
-                res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
+                res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
                 res.setHeader('Access-Control-Allow-Headers', 'Authorization, Content-Type');
                 res.status(204).end();
                 return;

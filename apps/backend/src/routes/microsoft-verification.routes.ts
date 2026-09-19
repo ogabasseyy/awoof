@@ -32,13 +32,18 @@ function exactOrigin(req: Request, _res: Response, next: NextFunction): void {
     next();
 }
 
-function bodyIds(req: Request, names: readonly string[]): Record<string, string> {
+export function bodyIds(req: Request, names: readonly string[]): Record<string, string> {
     const body = req.body;
     if (!body || typeof body !== 'object' || Array.isArray(body) || Object.keys(body).length !== names.length
         || names.some((name) => typeof body[name] !== 'string' || body[name].length === 0 || body[name].length > 200)) {
         throw new BadRequestError('Microsoft verification request is invalid');
     }
-    return body as Record<string, string>;
+    const values = body as Record<string, string>;
+    // finishSecret stays an opaque string; every other ID maps to a UUID column.
+    if (names.some((name) => name !== 'finishSecret' && !UUID.test(values[name]!))) {
+        throw new BadRequestError('Microsoft verification request is invalid');
+    }
+    return values;
 }
 
 function consentBody(req: Request): { processingGrantId: string; snapshot: { universityId: string; providerPolicyVersion: number; noticeVersion: string; mode: 'identity_only' | 'graph_enrollment'; scopes: string[] }; accepted: true } {

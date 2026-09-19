@@ -13,3 +13,13 @@ test('attempt secrets are one-way hashed and PKCE verifiers require the dedicate
     assert.throws(() => decryptMicrosoftAttemptVerifier(encrypted, randomBytes(32).toString('base64url'), 'attempt-a'));
     assert.throws(() => decryptMicrosoftAttemptVerifier(encrypted, key, 'attempt-b'));
 });
+
+test('decrypt rejects truncated IVs and shortened authentication tags', () => {
+    const key = randomBytes(32).toString('base64url');
+    const encrypted = encryptMicrosoftAttemptVerifier('B'.repeat(64), key, 'attempt-a');
+    const [ivText, tagText, ciphertextText] = encrypted.split('.');
+    const shortTag = Buffer.from(tagText ?? '', 'base64url').subarray(0, 8).toString('base64url');
+    assert.throws(() => decryptMicrosoftAttemptVerifier(`${ivText}.${shortTag}.${ciphertextText}`, key, 'attempt-a'));
+    const shortIv = Buffer.from(ivText ?? '', 'base64url').subarray(0, 6).toString('base64url');
+    assert.throws(() => decryptMicrosoftAttemptVerifier(`${shortIv}.${tagText}.${ciphertextText}`, key, 'attempt-a'));
+});
