@@ -64,6 +64,10 @@ function Complete() {
             if (!isCurrentSession(session)) return;
             clearMicrosoftAttempt(window.sessionStorage);
             setResult(response.data.data);
+            // The link is committed; render it before the independent
+            // eligibility refresh so a slow status endpoint cannot hold the
+            // page on its loading state indefinitely.
+            if (isCurrentSession(session)) setLoading(false);
             await reloadEligibility(session);
         } catch (cause) {
             if (!isCurrentSession(session)) return;

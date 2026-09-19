@@ -42,6 +42,22 @@ export type MerchantReceipt = {
     receiptId: string; merchantSubject: string; eligible: true; assuranceMethod: string;
     institutionId: string; verifiedAt: string; validUntil: string; campaignId: string;
 };
+
+/**
+ * Return the already-committed receipt for an idempotency key, or null when
+ * none exists. A concurrent exchange may commit between our earlier read
+ * and a contended write; re-reading converts that race into the promised
+ * immutable receipt instead of a spurious conflict.
+ */
+async function readCommittedReceipt(tx: PoolClient, vendorId: string, idempotencyKey: string, assertionId: string): Promise<MerchantReceipt | null> {
+    const committed = await tx.query<{ assertion_id: string; receipt: MerchantReceipt }>(
+        `SELECT assertion_id,receipt FROM merchant_assertion_receipts WHERE vendor_id=$1 AND idempotency_key=$2`,
+        [vendorId, idempotencyKey],
+    );
+    if (!committed.rows[0]) return null;
+    if (committed.rows[0].assertion_id !== assertionId) throw new ConflictError('Idempotency key already used');
+    return committed.rows[0].receipt;
+}
 export async function exchangeMerchantAssertion(pool: Pool, key: string, input: {
     code: string; campaignId: string; idempotencyKey: string;
 }): Promise<MerchantReceipt> {
@@ -61,12 +77,8 @@ export async function exchangeMerchantAssertion(pool: Pool, key: string, input: 
         );
         if (currentKey.rowCount !== 1) throw new UnauthorizedError('Merchant key unavailable');
         if (input.campaignId !== assertion.campaign_id) throw new BadRequestError('Campaign mismatch');
-        const previous = await tx.query(`SELECT assertion_id,receipt FROM merchant_assertion_receipts
-            WHERE vendor_id=$1 AND idempotency_key=$2`, [assertion.vendor_id, input.idempotencyKey]);
-        if (previous.rows[0]) {
-            if (previous.rows[0].assertion_id !== assertion.id) throw new ConflictError('Idempotency key already used');
-            return previous.rows[0].receipt as MerchantReceipt;
-        }
+        const previous = await readCommittedReceipt(tx, assertion.vendor_id, input.idempotencyKey, assertion.id);
+        if (previous) return previous;
         const eligibility = await getEffectiveEligibility(tx, assertion.user_id, {
             vendorId: assertion.vendor_id, origin: assertion.origin, purpose: assertion.purpose,
             grantId: assertion.disclosure_grant_id,
@@ -77,7 +89,11 @@ export async function exchangeMerchantAssertion(pool: Pool, key: string, input: 
         }
         const consumed = await tx.query(`UPDATE merchant_assertions SET consumed_at=clock_timestamp()
             WHERE id=$1 AND consumed_at IS NULL AND expires_at > clock_timestamp() RETURNING id`, [assertion.id]);
-        if (consumed.rowCount !== 1) throw new ConflictError('Verification code expired or already used');
+        if (consumed.rowCount !== 1) {
+            const committed = await readCommittedReceipt(tx, assertion.vendor_id, input.idempotencyKey, assertion.id);
+            if (committed) return committed;
+            throw new ConflictError('Verification code expired or already used');
+        }
         await tx.query(`INSERT INTO merchant_subjects (vendor_id,user_id) VALUES ($1,$2)
             ON CONFLICT (vendor_id,user_id) DO NOTHING`, [assertion.vendor_id, assertion.user_id]);
         const subject = await tx.query(`SELECT subject FROM merchant_subjects WHERE vendor_id=$1 AND user_id=$2`,
@@ -88,8 +104,11 @@ export async function exchangeMerchantAssertion(pool: Pool, key: string, input: 
             verifiedAt: eligibility.verifiedAt.toISOString(), validUntil: eligibility.expiresAt.toISOString(),
             campaignId: assertion.campaign_id,
         };
-        await tx.query(`INSERT INTO merchant_assertion_receipts (vendor_id,idempotency_key,assertion_id,receipt)
-            VALUES ($1,$2,$3,$4::jsonb)`, [assertion.vendor_id,input.idempotencyKey,assertion.id,JSON.stringify(receipt)]);
-        return receipt;
+        const stored = await tx.query(`INSERT INTO merchant_assertion_receipts (vendor_id,idempotency_key,assertion_id,receipt)
+            VALUES ($1,$2,$3,$4::jsonb) ON CONFLICT (vendor_id, idempotency_key) DO NOTHING RETURNING receipt`, [assertion.vendor_id,input.idempotencyKey,assertion.id,JSON.stringify(receipt)]);
+        if ((stored.rowCount ?? 0) > 0) return receipt;
+        const raced = await readCommittedReceipt(tx, assertion.vendor_id, input.idempotencyKey, assertion.id);
+        if (raced) return raced;
+        throw new ConflictError('Verification code expired or already used');
     });
 }

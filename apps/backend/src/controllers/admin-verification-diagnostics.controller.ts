@@ -152,10 +152,16 @@ export async function readVerificationDiagnostics(req: Request, res: Response): 
                AND event.recorded_at <= $1::timestamptz
                AND event.stage = 'started'
                AND attempt.expires_at <= $1::timestamptz
+               AND attempt.status <> 'completed'
                AND NOT EXISTS (
                    SELECT 1 FROM verification_diagnostic_events callback
                    WHERE callback.correlation_id = event.correlation_id
                      AND callback.stage = 'callback_received'
+               )
+               AND NOT EXISTS (
+                   SELECT 1 FROM verification_diagnostic_events finished
+                   WHERE finished.correlation_id = event.correlation_id
+                     AND finished.stage = 'finished'
                )
              GROUP BY event.institution_id
              ORDER BY event.institution_id`,

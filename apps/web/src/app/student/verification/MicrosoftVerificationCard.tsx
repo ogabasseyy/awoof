@@ -126,12 +126,16 @@ export default function MicrosoftVerificationCard({ available, unavailableReason
         if (!current()) return;
         const consent = await microsoftVerificationApiClient.post<{ data: { providerConsentId: string } }>('/verification/microsoft/consents', { processingGrantId, snapshot: notice.snapshot, accepted: true });
         if (!current()) return;
-        const started = await microsoftVerificationApiClient.post<{ data: { attemptId: string; finishSecret: string; authorizationUrl: string } }>('/verification/microsoft/start', { processingGrantId, providerConsentId: consent.data.data.providerConsentId });
+        const started = await microsoftVerificationApiClient.post<{ data: { attemptId: string; finishSecret: string; authorizationUrl: string; expiresAt: string } }>('/verification/microsoft/start', { processingGrantId, providerConsentId: consent.data.data.providerConsentId });
         if (!current()) return;
         if (!isMicrosoftAuthorizationUrl(started.data.data.authorizationUrl)) throw new Error('Microsoft authorization address is invalid.');
         const browserSessionId = getSessionSnapshot().browserSessionId;
         if (!browserSessionId || !current()) throw new Error('Your Awoof session changed. Start again.');
-        writeMicrosoftAttempt(window.sessionStorage, { attemptId: started.data.data.attemptId, finishSecret: started.data.data.finishSecret, browserSessionId, expiresAt: Date.now() + 9 * 60 * 1000 });
+        // Keep the tab record alive for the server's actual attempt window.
+        // A shorter client-side deadline would delete the finish secret while
+        // the durable attempt is still valid.
+        const serverExpiry = Date.parse(started.data.data.expiresAt);
+        writeMicrosoftAttempt(window.sessionStorage, { attemptId: started.data.data.attemptId, finishSecret: started.data.data.finishSecret, browserSessionId, expiresAt: Number.isFinite(serverExpiry) ? serverExpiry : Date.now() + 9 * 60 * 1000 });
         window.location.assign(started.data.data.authorizationUrl);
     });
     const unlink = (identity: Identity) => void run(async () => {
