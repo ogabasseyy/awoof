@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { isMicrosoftAuthorizationUrl, readMicrosoftAttempt, writeMicrosoftAttempt } from '../../src/lib/microsoft-verification';
+import { isMicrosoftAuthorizationUrl, isTerminalFinishStatus, readMicrosoftAttempt, writeMicrosoftAttempt } from '../../src/lib/microsoft-verification';
 
 test('only accepts an HTTPS Microsoft authorization host', () => {
   assert.equal(isMicrosoftAuthorizationUrl('https://login.microsoftonline.com/tenant/oauth2/v2.0/authorize'), true);
@@ -27,4 +27,11 @@ test('tab state serializes exactly the four approved fields', () => {
   const storage: Storage = { get length() { return values.size; }, clear: () => values.clear(), key: () => null, getItem: (key: string) => values.get(key) ?? null, setItem: (key: string, value: string) => { values.set(key, value); }, removeItem: (key: string) => { values.delete(key); } };
   writeMicrosoftAttempt(storage, { attemptId: 'attempt', finishSecret: 'finish', browserSessionId: 'browser', expiresAt: Date.now() + 1_000, authorizationUrl: 'https://login.microsoftonline.com/never-store' } as never);
   assert.deepEqual(Object.keys(JSON.parse(storage.getItem('awoof.microsoft.verification.attempt.v1') ?? '{}')).sort(), ['attemptId', 'browserSessionId', 'expiresAt', 'finishSecret']);
+});
+
+test('a 429 finish response stays retryable while other 4xx responses are terminal', () => {
+  assert.equal(isTerminalFinishStatus(429), false);
+  assert.equal(isTerminalFinishStatus(400), true);
+  assert.equal(isTerminalFinishStatus(409), true);
+  assert.equal(isTerminalFinishStatus(500), false);
 });

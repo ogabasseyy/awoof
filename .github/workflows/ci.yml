@@ -66,6 +66,10 @@ jobs:
         working-directory: apps/backend
         run: npm test
 
+      - name: Test backend scripts
+        working-directory: apps/backend
+        run: npm run test:scripts
+
       - name: Test PostgreSQL authority and migration regressions
         working-directory: apps/backend
         run: POSTGRES_BIN_DIR="$(pg_config --bindir)" npm run test:postgres
@@ -152,3 +156,7 @@ jobs:
       - name: Build
         working-directory: apps/backend
         run: npm run build
+
+      - name: Test artifact parity and runtime
+        working-directory: apps/backend
+        run: npm run test:artifact

@@ -4,6 +4,7 @@ import { isEmailConfigured } from '../email/email.service.js';
 import { parseConfiguredEnrollmentAdapter } from './registration-lookup.service.js';
 import { hasSupportedMicrosoftScopes } from './microsoft-policy.js';
 import { hasValidMicrosoftAttemptEncryptionKey } from './microsoft-attempt-crypto.js';
+import { MICROSOFT_CURRENT_NOTICE_VERSION } from './verification-notices.js';
 
 export type VerificationMethod = 'portal' | 'email' | 'registration' | 'whatsapp' | 'microsoft';
 
@@ -114,7 +115,7 @@ export async function getAvailableVerificationMethods(universityId: string): Pro
             const policySupported = institution.microsoft_mode !== null && institution.microsoft_scopes !== null
                 && hasSupportedMicrosoftScopes(institution.microsoft_mode, institution.microsoft_scopes);
             if (!configured || institution.microsoft_enabled !== true || !institution.microsoft_tenant_id
-                || institution.microsoft_current !== true || !policySupported || institution.microsoft_notice_version !== 'microsoft-v3') {
+                || institution.microsoft_current !== true || !policySupported || institution.microsoft_notice_version !== MICROSOFT_CURRENT_NOTICE_VERSION) {
                 return unavailable(methodType, priority, 'Microsoft verification is not currently available.');
             }
             return { methodType, isAvailable: true, priority };

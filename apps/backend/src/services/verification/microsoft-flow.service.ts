@@ -8,6 +8,7 @@ import { assertMicrosoftAuthority, MicrosoftAuthorityInvalidatedError, type Micr
 import type { EducationObservation, MicrosoftEducationService } from './microsoft-education.service.js';
 import { applyMicrosoftEnrollment } from './eligibility-evidence.service.js';
 import { appLogger } from '../../common/logger.js';
+import { MICROSOFT_CURRENT_NOTICE_VERSION } from './verification-notices.js';
 import {
     recordDiagnosticBestEffort,
     type DiagnosticEvent,
@@ -156,6 +157,10 @@ export class MicrosoftFlowService {
         const prepared = await this.transaction(async (tx) => {
             const policyMode = await currentPolicyMode(tx, input.processingGrantId);
             const authority = await assertMicrosoftAuthority(tx, { userId: input.userId, sid: input.serverSessionId, use: 'issuance', processingGrantId: input.processingGrantId, providerConsentId: input.providerConsentId, mode: policyMode });
+            // New attempts require the current Microsoft notice. Historical
+            // v1/v2 grants keep their callback/finish path through the
+            // authority check above; they just cannot mint new attempts.
+            if (authority.policy.notice_version !== MICROSOFT_CURRENT_NOTICE_VERSION) throw invalidAttempt();
             const recent = await tx.query<{ count: string }>(`SELECT count(*) FROM microsoft_verification_attempts WHERE user_id=$1 AND created_at > clock_timestamp() - interval '10 minutes'`, [input.userId]);
             if (Number(recent.rows[0]?.count ?? 0) >= START_LIMIT) throw new RateLimitError('Too many Microsoft verification starts');
             const outstanding = await tx.query<{ count: string }>(`SELECT count(*) FROM microsoft_verification_attempts WHERE user_id=$1 AND status IN ('pending','processing') AND expires_at > clock_timestamp()`, [input.userId]);
@@ -350,7 +355,13 @@ export class MicrosoftFlowService {
         } catch (error) {
             const reason = await this.postTokenFailureReason(claimed.attempt.id, error).catch(() => 'upstream_unavailable' as const);
             await this.emitTerminalFailure(claimed.attempt.id, { outcome: 'failure', reason, durationMs: this.elapsed(startedAt) });
-            throw error;
+            // The callback route redirects this bounded outcome to the
+            // completion page. Rethrowing here would strand the browser on
+            // a raw API error for provider-side cancellations.
+            const completionUrl = new URL(this.deps.completionUrl);
+            completionUrl.searchParams.set('attempt', claimed.attempt.id);
+            completionUrl.searchParams.set('outcome', 'connection_not_completed');
+            return { attemptId: claimed.attempt.id, completionUrl, outcome: 'connection_not_completed' };
         }
         const completionUrl = new URL(this.deps.completionUrl); completionUrl.searchParams.set('attempt', claimed.attempt.id);
         return { attemptId: claimed.attempt.id, completionUrl };

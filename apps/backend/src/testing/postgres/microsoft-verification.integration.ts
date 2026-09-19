@@ -178,12 +178,12 @@ async function readyGraphAttempt(options: { approvedStudentDomain?: string; prel
         await client.query(`UPDATE users SET active_session_id=$2, refresh_token_hash='ready-graph', refresh_token_expires_at=clock_timestamp()+interval '1 hour' WHERE id=$1`, [data.userId, sid]);
         await client.query(`UPDATE institution_microsoft_policies
             SET mode='graph_enrollment', scopes=ARRAY['https://graph.microsoft.com/EduRoster.ReadBasic','openid','profile'],
-                notice_version='microsoft-v2', term_ends_at=clock_timestamp()+interval '1 day'
+                notice_version='microsoft-v3', term_ends_at=clock_timestamp()+interval '1 day'
             WHERE university_id=$1`, [data.universityId]);
         const policy = (await client.query<{ version: number; tenant_id: string }>('SELECT version,tenant_id FROM institution_microsoft_policies WHERE university_id=$1', [data.universityId])).rows[0]!;
         const consentId = await acceptMicrosoftConsent(client, data.userId, {
             accepted: true, processingGrantId: data.processingGrantId,
-            snapshot: { universityId: data.universityId, providerPolicyVersion: policy.version, noticeVersion: 'microsoft-v2', mode: 'graph_enrollment', scopes: ['https://graph.microsoft.com/EduRoster.ReadBasic', 'openid', 'profile'] },
+            snapshot: { universityId: data.universityId, providerPolicyVersion: policy.version, noticeVersion: 'microsoft-v3', mode: 'graph_enrollment', scopes: ['https://graph.microsoft.com/EduRoster.ReadBasic', 'openid', 'profile'] },
         });
         const objectId = randomUUID();
         const identityId = options.prelinkedIdentity
@@ -232,11 +232,11 @@ async function invalidSignedGraphAttempt() {
         await client.query(`UPDATE users SET active_session_id=$2, refresh_token_hash='invalid-signed-graph', refresh_token_expires_at=clock_timestamp()+interval '1 hour' WHERE id=$1`, [data.userId, sid]);
         await client.query(`UPDATE institution_microsoft_policies
             SET mode='graph_enrollment', scopes=ARRAY['https://graph.microsoft.com/EduRoster.ReadBasic','openid','profile'],
-                notice_version='microsoft-v2', term_ends_at=clock_timestamp()+interval '1 day'
+                notice_version='microsoft-v3', term_ends_at=clock_timestamp()+interval '1 day'
             WHERE university_id=$1`, [data.universityId]);
         const policy = (await client.query<{ version: number; tenant_id: string }>('SELECT version,tenant_id FROM institution_microsoft_policies WHERE university_id=$1', [data.universityId])).rows[0]!;
         const consentId = await acceptMicrosoftConsent(client, data.userId, { accepted: true, processingGrantId: data.processingGrantId,
-            snapshot: { universityId: data.universityId, providerPolicyVersion: policy.version, noticeVersion: 'microsoft-v2', mode: 'graph_enrollment', scopes: ['https://graph.microsoft.com/EduRoster.ReadBasic', 'openid', 'profile'] } });
+            snapshot: { universityId: data.universityId, providerPolicyVersion: policy.version, noticeVersion: 'microsoft-v3', mode: 'graph_enrollment', scopes: ['https://graph.microsoft.com/EduRoster.ReadBasic', 'openid', 'profile'] } });
         const email = (await client.query<{ email: string }>('SELECT email FROM users WHERE id=$1', [data.userId])).rows[0]!.email;
         const challenge = await requestChallenge(client, { purpose: 'account_email', subjectKey: data.userId, bindings: { userId: data.userId, email } });
         if (challenge.status !== 'issued') throw new Error('Expected Graph invalid-token mailbox challenge');
@@ -697,9 +697,10 @@ test('durable identity-only flow hashes secrets, links only at finish, and permi
     const key = randomUUID().replaceAll('-', '') + randomUUID().replaceAll('-', '').slice(0, 12);
     const consentId = await withTestClient(async (client) => inTransaction(client, async () => {
         await client.query(`UPDATE users SET active_session_id=$2, refresh_token_hash='test-hash', refresh_token_expires_at=clock_timestamp()+interval '1 hour' WHERE id=$1`, [data.userId, sid]);
+        await client.query(`UPDATE institution_microsoft_policies SET notice_version='microsoft-v3' WHERE university_id=$1`, [data.universityId]);
         const policy = (await client.query<{ version: number }>('SELECT version FROM institution_microsoft_policies WHERE university_id=$1', [data.universityId])).rows[0]!;
         return acceptMicrosoftConsent(client, data.userId, { accepted: true, processingGrantId: data.processingGrantId,
-            snapshot: { universityId: data.universityId, providerPolicyVersion: policy.version, noticeVersion: 'microsoft-v1', mode: 'identity_only', scopes: ['openid', 'profile'] } });
+            snapshot: { universityId: data.universityId, providerPolicyVersion: policy.version, noticeVersion: 'microsoft-v3', mode: 'identity_only', scopes: ['openid', 'profile'] } });
     }));
     let authorizeInput: { state: string; nonce: string; verifier: string } | undefined;
     const tenantId = await withTestClient(async (client) => {
@@ -736,10 +737,11 @@ test('a durable claimed callback redemption failure returns only a generic termi
     const sid = randomUUID(); let state = '';
     const consentId = await withTestClient((client) => inTransaction(client, async () => {
         await client.query(`UPDATE users SET active_session_id=$2, refresh_token_hash='redeem-failure', refresh_token_expires_at=clock_timestamp()+interval '1 hour' WHERE id=$1`, [data.userId, sid]);
+        await client.query(`UPDATE institution_microsoft_policies SET notice_version='microsoft-v3' WHERE university_id=$1`, [data.universityId]);
         const policy = (await client.query<{ version: number }>('SELECT version FROM institution_microsoft_policies WHERE university_id=$1', [data.universityId])).rows[0]!;
         return acceptMicrosoftConsent(client, data.userId, {
             accepted: true, processingGrantId: data.processingGrantId,
-            snapshot: { universityId: data.universityId, providerPolicyVersion: policy.version, noticeVersion: 'microsoft-v1', mode: 'identity_only', scopes: ['openid', 'profile'] },
+            snapshot: { universityId: data.universityId, providerPolicyVersion: policy.version, noticeVersion: 'microsoft-v3', mode: 'identity_only', scopes: ['openid', 'profile'] },
         });
     }));
     const service = new MicrosoftFlowService({
@@ -897,9 +899,10 @@ test('both consent withdrawals prevent dispatch before claim, prevent ready duri
             const sid = randomUUID();
             const consentId = await withTestClient(async (client) => inTransaction(client, async () => {
                 await client.query(`UPDATE users SET active_session_id=$2, refresh_token_hash='test-hash', refresh_token_expires_at=clock_timestamp()+interval '1 hour' WHERE id=$1`, [data.userId, sid]);
+                await client.query(`UPDATE institution_microsoft_policies SET notice_version='microsoft-v3' WHERE university_id=$1`, [data.universityId]);
                 const policy = (await client.query<{ version: number }>('SELECT version FROM institution_microsoft_policies WHERE university_id=$1', [data.universityId])).rows[0]!;
                 return acceptMicrosoftConsent(client, data.userId, { accepted: true, processingGrantId: data.processingGrantId,
-                    snapshot: { universityId: data.universityId, providerPolicyVersion: policy.version, noticeVersion: 'microsoft-v1', mode: 'identity_only', scopes: ['openid', 'profile'] } });
+                    snapshot: { universityId: data.universityId, providerPolicyVersion: policy.version, noticeVersion: 'microsoft-v3', mode: 'identity_only', scopes: ['openid', 'profile'] } });
             }));
             const tenantId = (await withTestClient(async (client) => (await client.query<{ tenant_id: string }>('SELECT tenant_id FROM institution_microsoft_policies WHERE university_id=$1', [data.universityId])).rows[0]!.tenant_id));
             let state = ''; let dispatched = 0; let release: (() => void) | undefined; let entered: (() => void) | undefined;
@@ -922,7 +925,9 @@ test('both consent withdrawals prevent dispatch before claim, prevent ready duri
                 const pending = service.callback({ callbackUrl: callback, browserCookie: started.callbackCookie.value });
                 await enteredRedeem;
                 await withdraw(); release!();
-                await assert.rejects(() => pending);
+                const terminal = await pending;
+                assert.equal(terminal.outcome, 'connection_not_completed');
+                assert.equal(terminal.completionUrl.searchParams.get('attempt'), started.publicResult.attemptId);
                 assert.equal((await withTestClient(async (client) => client.query(`SELECT 1 FROM microsoft_verification_attempts WHERE id=$1 AND status='ready'`, [started.publicResult.attemptId]))).rowCount, 0);
                 assert.equal((await withTestClient(async (client) => client.query(`SELECT 1 FROM microsoft_identities WHERE user_id=$1`, [data.userId]))).rowCount, 0);
             } else {
@@ -944,11 +949,11 @@ test('both consent withdrawals during held Graph discard the token result and ne
             await client.query(`UPDATE users SET active_session_id=$2, refresh_token_hash='graph-test', refresh_token_expires_at=clock_timestamp()+interval '1 hour' WHERE id=$1`, [data.userId, sid]);
             await client.query(`UPDATE institution_microsoft_policies
                 SET mode='graph_enrollment', scopes=ARRAY['https://graph.microsoft.com/EduRoster.ReadBasic','openid','profile'],
-                    notice_version='microsoft-v2', term_ends_at=clock_timestamp()+interval '1 day'
+                    notice_version='microsoft-v3', term_ends_at=clock_timestamp()+interval '1 day'
                 WHERE university_id=$1`, [data.universityId]);
             const policy = (await client.query<{ version: number }>('SELECT version FROM institution_microsoft_policies WHERE university_id=$1', [data.universityId])).rows[0]!;
             return acceptMicrosoftConsent(client, data.userId, { accepted: true, processingGrantId: data.processingGrantId,
-                snapshot: { universityId: data.universityId, providerPolicyVersion: policy.version, noticeVersion: 'microsoft-v2', mode: 'graph_enrollment', scopes: ['https://graph.microsoft.com/EduRoster.ReadBasic', 'openid', 'profile'] } });
+                snapshot: { universityId: data.universityId, providerPolicyVersion: policy.version, noticeVersion: 'microsoft-v3', mode: 'graph_enrollment', scopes: ['https://graph.microsoft.com/EduRoster.ReadBasic', 'openid', 'profile'] } });
         }));
         const tenantId = (await withTestClient(async (client) => (await client.query<{ tenant_id: string }>('SELECT tenant_id FROM institution_microsoft_policies WHERE university_id=$1', [data.universityId])).rows[0]!.tenant_id));
         let releaseGraph: (() => void) | undefined; let enteredGraph: (() => void) | undefined;
@@ -968,7 +973,9 @@ test('both consent withdrawals during held Graph discard the token result and ne
             ? withdrawConsent(client, data.userId, data.processingGrantId)
             : withdrawMicrosoftConsent(client, data.userId, consentId)));
         releaseGraph!();
-        await assert.rejects(() => pending);
+        const terminal = await pending;
+        assert.equal(terminal.outcome, 'connection_not_completed');
+        assert.equal(terminal.completionUrl.searchParams.get('attempt'), started.publicResult.attemptId);
         assert.equal(graphCalls, 1, `${withdrawal} can only stop Graph persistence after its already-dispatched request`);
         const stored = await withTestClient(async (client) => (await client.query<{ status: string; result: unknown }>(
             'SELECT status,result FROM microsoft_verification_attempts WHERE id=$1', [started.publicResult.attemptId],
@@ -982,10 +989,10 @@ test('Graph callback writes only the canonical observation and finish writes an 
     const data = await fixture(); const sid = randomUUID(); let state = '';
     const { consentId, tenantId } = await withTestClient((client) => inTransaction(client, async () => {
         await client.query(`UPDATE users SET active_session_id=$2, refresh_token_hash='graph-positive', refresh_token_expires_at=clock_timestamp()+interval '1 hour' WHERE id=$1`, [data.userId, sid]);
-        await client.query(`UPDATE institution_microsoft_policies SET mode='graph_enrollment', scopes=ARRAY['https://graph.microsoft.com/EduRoster.ReadBasic','openid','profile'], notice_version='microsoft-v2', term_ends_at=clock_timestamp()+interval '1 day' WHERE university_id=$1`, [data.universityId]);
+        await client.query(`UPDATE institution_microsoft_policies SET mode='graph_enrollment', scopes=ARRAY['https://graph.microsoft.com/EduRoster.ReadBasic','openid','profile'], notice_version='microsoft-v3', term_ends_at=clock_timestamp()+interval '1 day' WHERE university_id=$1`, [data.universityId]);
         const policy = (await client.query<{ version: number; tenant_id: string }>('SELECT version,tenant_id FROM institution_microsoft_policies WHERE university_id=$1', [data.universityId])).rows[0]!;
         const consentId = await acceptMicrosoftConsent(client, data.userId, { accepted: true, processingGrantId: data.processingGrantId,
-            snapshot: { universityId: data.universityId, providerPolicyVersion: policy.version, noticeVersion: 'microsoft-v2', mode: 'graph_enrollment', scopes: ['https://graph.microsoft.com/EduRoster.ReadBasic', 'openid', 'profile'] } });
+            snapshot: { universityId: data.universityId, providerPolicyVersion: policy.version, noticeVersion: 'microsoft-v3', mode: 'graph_enrollment', scopes: ['https://graph.microsoft.com/EduRoster.ReadBasic', 'openid', 'profile'] } });
         const email = (await client.query<{ email: string }>('SELECT email FROM users WHERE id=$1', [data.userId])).rows[0]!.email;
         const issued = await requestChallenge(client, { purpose: 'account_email', subjectKey: data.userId, bindings: { userId: data.userId, email } });
         if (issued.status !== 'issued') throw new Error('Expected mailbox challenge');
@@ -1329,10 +1336,10 @@ test('unknown Graph observation links the validated identity but never fabricate
     const data = await fixture(); const sid = randomUUID(); let state = '';
     const { consentId, tenantId } = await withTestClient((client) => inTransaction(client, async () => {
         await client.query(`UPDATE users SET active_session_id=$2, refresh_token_hash='graph-unknown', refresh_token_expires_at=clock_timestamp()+interval '1 hour' WHERE id=$1`, [data.userId, sid]);
-        await client.query(`UPDATE institution_microsoft_policies SET mode='graph_enrollment', scopes=ARRAY['https://graph.microsoft.com/EduRoster.ReadBasic','openid','profile'], notice_version='microsoft-v2', term_ends_at=clock_timestamp()+interval '1 day' WHERE university_id=$1`, [data.universityId]);
+        await client.query(`UPDATE institution_microsoft_policies SET mode='graph_enrollment', scopes=ARRAY['https://graph.microsoft.com/EduRoster.ReadBasic','openid','profile'], notice_version='microsoft-v3', term_ends_at=clock_timestamp()+interval '1 day' WHERE university_id=$1`, [data.universityId]);
         const policy = (await client.query<{ version: number; tenant_id: string }>('SELECT version,tenant_id FROM institution_microsoft_policies WHERE university_id=$1', [data.universityId])).rows[0]!;
         return { consentId: await acceptMicrosoftConsent(client, data.userId, { accepted: true, processingGrantId: data.processingGrantId,
-            snapshot: { universityId: data.universityId, providerPolicyVersion: policy.version, noticeVersion: 'microsoft-v2', mode: 'graph_enrollment', scopes: ['https://graph.microsoft.com/EduRoster.ReadBasic', 'openid', 'profile'] } }), tenantId: policy.tenant_id };
+            snapshot: { universityId: data.universityId, providerPolicyVersion: policy.version, noticeVersion: 'microsoft-v3', mode: 'graph_enrollment', scopes: ['https://graph.microsoft.com/EduRoster.ReadBasic', 'openid', 'profile'] } }), tenantId: policy.tenant_id };
     }));
     const service = new MicrosoftFlowService({ pool: db.getPool(), verifierEncryptionKey: randomBytes(32).toString('base64url'), isEnabled: () => true,
         callbackUrl: new URL('https://api.example.invalid/api/verification/microsoft/callback'), completionUrl: new URL('https://app.example.invalid/student/verification/microsoft/complete'),
@@ -1352,10 +1359,10 @@ test('Graph mode cancellation prevents claim dispatch, prevents Graph after held
         const data = await fixture(); const sid = randomUUID(); let state = ''; let tokenCalls = 0; let graphCalls = 0;
         const { consentId, tenantId } = await withTestClient((client) => inTransaction(client, async () => {
             await client.query(`UPDATE users SET active_session_id=$2, refresh_token_hash='graph-cancel', refresh_token_expires_at=clock_timestamp()+interval '1 hour' WHERE id=$1`, [data.userId, sid]);
-            await client.query(`UPDATE institution_microsoft_policies SET mode='graph_enrollment', scopes=ARRAY['https://graph.microsoft.com/EduRoster.ReadBasic','openid','profile'], notice_version='microsoft-v2', term_ends_at=clock_timestamp()+interval '1 day' WHERE university_id=$1`, [data.universityId]);
+            await client.query(`UPDATE institution_microsoft_policies SET mode='graph_enrollment', scopes=ARRAY['https://graph.microsoft.com/EduRoster.ReadBasic','openid','profile'], notice_version='microsoft-v3', term_ends_at=clock_timestamp()+interval '1 day' WHERE university_id=$1`, [data.universityId]);
             const policy = (await client.query<{ version: number; tenant_id: string }>('SELECT version,tenant_id FROM institution_microsoft_policies WHERE university_id=$1', [data.universityId])).rows[0]!;
             return { consentId: await acceptMicrosoftConsent(client, data.userId, { accepted: true, processingGrantId: data.processingGrantId,
-                snapshot: { universityId: data.universityId, providerPolicyVersion: policy.version, noticeVersion: 'microsoft-v2', mode: 'graph_enrollment', scopes: ['https://graph.microsoft.com/EduRoster.ReadBasic', 'openid', 'profile'] } }), tenantId: policy.tenant_id };
+                snapshot: { universityId: data.universityId, providerPolicyVersion: policy.version, noticeVersion: 'microsoft-v3', mode: 'graph_enrollment', scopes: ['https://graph.microsoft.com/EduRoster.ReadBasic', 'openid', 'profile'] } }), tenantId: policy.tenant_id };
         }));
         let releaseToken: (() => void) | undefined; let enteredToken: (() => void) | undefined;
         const heldToken = new Promise<void>((resolve) => { releaseToken = resolve; });
@@ -1373,7 +1380,9 @@ test('Graph mode cancellation prevents claim dispatch, prevents Graph after held
             assert.equal(tokenCalls, 0); assert.equal(graphCalls, 0);
         } else if (phase === 'held_token') {
             const pending = service.callback({ callbackUrl: callback, browserCookie: started.callbackCookie.value }); await tokenEntered;
-            await withdraw(); releaseToken!(); await assert.rejects(() => pending);
+            await withdraw(); releaseToken!(); const terminal = await pending;
+            assert.equal(terminal.outcome, 'connection_not_completed');
+            assert.equal(terminal.completionUrl.searchParams.get('attempt'), started.publicResult.attemptId);
             assert.equal(tokenCalls, 1); assert.equal(graphCalls, 0, 'post-token authority check must fence Graph');
             const terminalEvents = await withTestClient(async (client) => (await client.query<{ reason: string }>(
                 `SELECT reason FROM verification_diagnostic_events
@@ -1395,8 +1404,9 @@ async function readyDurableAttempt(options: { diagnostics?: VerificationDiagnost
     const data = await fixture(); const sid = randomUUID(); let state = ''; let exchanges = 0;
     const consentId = await withTestClient(async (client) => inTransaction(client, async () => {
         await client.query(`UPDATE users SET active_session_id=$2,refresh_token_hash='h',refresh_token_expires_at=clock_timestamp()+interval '1 hour' WHERE id=$1`, [data.userId, sid]);
+        await client.query(`UPDATE institution_microsoft_policies SET notice_version='microsoft-v3' WHERE university_id=$1`, [data.universityId]);
         const policy = (await client.query<{ version:number }>('SELECT version FROM institution_microsoft_policies WHERE university_id=$1', [data.universityId])).rows[0]!;
-        return acceptMicrosoftConsent(client, data.userId, { accepted:true, processingGrantId:data.processingGrantId, snapshot:{ universityId:data.universityId, providerPolicyVersion:policy.version, noticeVersion:'microsoft-v1', mode:'identity_only', scopes:['openid','profile'] } });
+        return acceptMicrosoftConsent(client, data.userId, { accepted:true, processingGrantId:data.processingGrantId, snapshot:{ universityId:data.universityId, providerPolicyVersion:policy.version, noticeVersion:'microsoft-v3', mode:'identity_only', scopes:['openid','profile'] } });
     }));
     const tenantId = (await withTestClient(async (client) => (await client.query<{tenant_id:string}>('SELECT tenant_id FROM institution_microsoft_policies WHERE university_id=$1',[data.universityId])).rows[0]!.tenant_id));
     const service = new MicrosoftFlowService({ pool:db.getPool(), verifierEncryptionKey:randomBytes(32).toString('base64url'), isEnabled:()=>true, callbackUrl:new URL('https://api.example.invalid/api/verification/microsoft/callback'), completionUrl:new URL('https://app.example.invalid/student/verification/microsoft/complete'), oidc:{ authorize:async(input)=>{state=input.state;return 'https://provider.example.invalid/a';}, redeem:async()=>{exchanges++;return {identity:{tenantId,objectId:randomUUID()}};} }, ...(options.diagnostics ? { diagnostics: options.diagnostics } : {}), ...(options.diagnosticAlert ? { diagnosticAlert: options.diagnosticAlert } : {}) });
@@ -1410,8 +1420,9 @@ async function pendingDurableAttempt(options: { isEnabled?: () => boolean; befor
     const data = await fixture(); const sid = randomUUID(); let state = ''; let exchanges = 0;
     const consentId = await withTestClient(async (client) => inTransaction(client, async () => {
         await client.query(`UPDATE users SET active_session_id=$2,refresh_token_hash='h',refresh_token_expires_at=clock_timestamp()+interval '1 hour' WHERE id=$1`, [data.userId, sid]);
+        await client.query(`UPDATE institution_microsoft_policies SET notice_version='microsoft-v3' WHERE university_id=$1`, [data.universityId]);
         const policy = (await client.query<{ version: number }>('SELECT version FROM institution_microsoft_policies WHERE university_id=$1', [data.universityId])).rows[0]!;
-        return acceptMicrosoftConsent(client, data.userId, { accepted: true, processingGrantId: data.processingGrantId, snapshot: { universityId: data.universityId, providerPolicyVersion: policy.version, noticeVersion: 'microsoft-v1', mode: 'identity_only', scopes: ['openid', 'profile'] } });
+        return acceptMicrosoftConsent(client, data.userId, { accepted: true, processingGrantId: data.processingGrantId, snapshot: { universityId: data.universityId, providerPolicyVersion: policy.version, noticeVersion: 'microsoft-v3', mode: 'identity_only', scopes: ['openid', 'profile'] } });
     }));
     const tenantId = (await withTestClient(async (client) => (await client.query<{ tenant_id: string }>('SELECT tenant_id FROM institution_microsoft_policies WHERE university_id=$1', [data.universityId])).rows[0]!.tenant_id));
     const service = new MicrosoftFlowService({ pool: db.getPool(), verifierEncryptionKey: randomBytes(32).toString('base64url'), isEnabled: options.isEnabled ?? (() => true), callbackUrl: new URL('https://api.example.invalid/api/verification/microsoft/callback'), completionUrl: new URL('https://app.example.invalid/student/verification/microsoft/complete'), oidc: { authorize: async (input) => { state = input.state; return 'https://provider.example.invalid/a'; }, redeem: async () => { exchanges += 1; await options.beforeRedeem?.(consentId); return options.redeem ? options.redeem(tenantId) : { identity: { tenantId, objectId: randomUUID() } }; } } });
@@ -1488,8 +1499,9 @@ test('mounted Microsoft start returns only the finish secret and sets the state-
     const data = await fixture(); const sid = randomUUID(); let authorized = 0;
     const consentId = await withTestClient((client) => inTransaction(client, async () => {
         await client.query(`UPDATE users SET active_session_id=$2,refresh_token_hash='h',refresh_token_expires_at=clock_timestamp()+interval '1 hour' WHERE id=$1`, [data.userId, sid]);
+        await client.query(`UPDATE institution_microsoft_policies SET notice_version='microsoft-v3' WHERE university_id=$1`, [data.universityId]);
         const policy = (await client.query<{ version:number }>('SELECT version FROM institution_microsoft_policies WHERE university_id=$1', [data.universityId])).rows[0]!;
-        return acceptMicrosoftConsent(client, data.userId, { accepted:true, processingGrantId:data.processingGrantId, snapshot:{ universityId:data.universityId, providerPolicyVersion:policy.version, noticeVersion:'microsoft-v1', mode:'identity_only', scopes:['openid','profile'] } });
+        return acceptMicrosoftConsent(client, data.userId, { accepted:true, processingGrantId:data.processingGrantId, snapshot:{ universityId:data.universityId, providerPolicyVersion:policy.version, noticeVersion:'microsoft-v3', mode:'identity_only', scopes:['openid','profile'] } });
     }));
     const service = new MicrosoftFlowService({ pool: db.getPool(), verifierEncryptionKey: randomBytes(32).toString('base64url'), isEnabled: () => true,
         callbackUrl: new URL('https://api.example.invalid/api/verification/microsoft/callback'), completionUrl: new URL('https://app.example.invalid/student/verification/microsoft/complete'),
@@ -2000,9 +2012,10 @@ test('replaying an old Microsoft tombstone does not cancel a later actual start'
     const data = await fixture(); const sid = randomUUID();
     const seeded = await withTestClient((client) => inTransaction(client, async () => {
         await client.query(`UPDATE users SET active_session_id=$2,refresh_token_hash='unlink-replay-session',refresh_token_expires_at=clock_timestamp()+interval '1 hour' WHERE id=$1`, [data.userId, sid]);
+        await client.query(`UPDATE institution_microsoft_policies SET notice_version='microsoft-v3' WHERE university_id=$1`, [data.universityId]);
         const policy = (await client.query<{ version: number; tenant_id: string }>('SELECT version,tenant_id FROM institution_microsoft_policies WHERE university_id=$1', [data.universityId])).rows[0]!;
         const consent = await acceptMicrosoftConsent(client, data.userId, { accepted: true, processingGrantId: data.processingGrantId,
-            snapshot: { universityId: data.universityId, providerPolicyVersion: policy.version, noticeVersion: 'microsoft-v1', mode: 'identity_only', scopes: ['openid', 'profile'] } });
+            snapshot: { universityId: data.universityId, providerPolicyVersion: policy.version, noticeVersion: 'microsoft-v3', mode: 'identity_only', scopes: ['openid', 'profile'] } });
         const identity = (await client.query<{ id: string }>('INSERT INTO microsoft_identities(user_id,university_id,tenant_id,object_id) VALUES($1,$2,$3,$4) RETURNING id', [data.userId, data.universityId, policy.tenant_id, randomUUID()])).rows[0]!.id;
         return { consent, identity };
     }));

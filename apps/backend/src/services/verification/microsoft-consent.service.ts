@@ -4,7 +4,7 @@ import { AppError, BadRequestError, ForbiddenError, NotFoundError, ServiceUnavai
 import { lockStudentContext } from './eligibility-context.service.js';
 import { hasSupportedMicrosoftScopes, sameConsentSnapshot } from './microsoft-policy.js';
 import type { AcceptMicrosoftConsent, MicrosoftConsentHistoryItem, MicrosoftConsentNotice, MicrosoftConsentSnapshot } from './microsoft.types.js';
-import { VERIFICATION_NOTICE_VERSION } from './verification-notices.js';
+import { MICROSOFT_CURRENT_NOTICE_VERSION, VERIFICATION_NOTICE_VERSION } from './verification-notices.js';
 
 type PolicyRow = {
     university_id: string;
@@ -114,7 +114,7 @@ export async function getMicrosoftConsentNotice(tx: PoolClient, userId: string):
     );
     const policy = result.rows[0];
     const now = (await tx.query<{ now: Date }>('SELECT clock_timestamp() AS now')).rows[0]?.now;
-    if (!policy || !now || !validCurrentPolicy(policy, now) || policy.notice_version !== 'microsoft-v3') {
+    if (!policy || !now || !validCurrentPolicy(policy, now) || policy.notice_version !== MICROSOFT_CURRENT_NOTICE_VERSION) {
         throw new ServiceUnavailableError('Microsoft verification is unavailable');
     }
     return { snapshot: snapshotFrom(policy), copy: { text: policy.content } };

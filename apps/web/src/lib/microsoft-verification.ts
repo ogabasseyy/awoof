@@ -28,6 +28,15 @@ function valid(value: unknown): value is MicrosoftAttemptState {
         && Number.isFinite(state.expiresAt);
 }
 
+/**
+ * A 4xx finish response is terminal unless the server asks for a paced
+ * retry. 429 keeps the tab attempt so the student can retry after the
+ * rate-limit window instead of restarting the whole Microsoft flow.
+ */
+export function isTerminalFinishStatus(status: number): boolean {
+    return status >= 400 && status < 500 && status !== 429;
+}
+
 /** The only authorization host a browser may navigate to from this flow. */
 export function isMicrosoftAuthorizationUrl(value: string): boolean {
     try {

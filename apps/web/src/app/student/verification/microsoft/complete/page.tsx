@@ -7,7 +7,7 @@ import { CheckCircle2, RefreshCw, ShieldAlert } from 'lucide-react';
 import ProtectedRoute from '@/components/ProtectedRoute';
 import { microsoftVerificationApiClient, default as apiClient } from '@/lib/api-client';
 import { getSessionSnapshot, isCurrentSession, subscribeSessionChanges } from '@/lib/auth';
-import { clearMicrosoftAttempt, readMicrosoftAttempt } from '@/lib/microsoft-verification';
+import { clearMicrosoftAttempt, isTerminalFinishStatus, readMicrosoftAttempt } from '@/lib/microsoft-verification';
 import { useAuth } from '@/contexts/AuthContext';
 
 type Finish = { accountLinked: true; enrollment: 'not_checked' | 'eligible' | 'unconfirmed' | 'denied' };
@@ -67,7 +67,7 @@ function Complete() {
             await reloadEligibility(session);
         } catch (cause) {
             if (!isCurrentSession(session)) return;
-            const terminal = axios.isAxiosError(cause) && typeof cause.response?.status === 'number' && cause.response.status >= 400 && cause.response.status < 500;
+            const terminal = axios.isAxiosError(cause) && typeof cause.response?.status === 'number' && isTerminalFinishStatus(cause.response.status);
             if (terminal) {
                 try { clearMicrosoftAttempt(window.sessionStorage); } catch { /* Restart is the safe path. */ }
                 setFinishError('This Microsoft connection can no longer be completed. Start again from student verification.');
