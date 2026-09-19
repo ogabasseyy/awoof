@@ -349,7 +349,7 @@ test('disabled compiled fallback keeps assertion binding and historical receipt 
     }
 });
 
-test('disabled compiled default routes reject issuance while owner recovery remain available without external transport', { concurrency: false }, async () => {
+test('disabled compiled default routes reject issuance while owner recovery and disabled callback redirect remain available without external transport', { concurrency: false }, async () => {
     assertMicrosoftDisabled();
     await withTestClient(async (client) => {
         const fixture = await createFixture(client);
@@ -371,7 +371,12 @@ test('disabled compiled default routes reject issuance while owner recovery rema
             assert.equal((await fetch(`${base}/consents`, { method: 'POST', headers, body: JSON.stringify({ accepted: true, processingGrantId: fixture.processingGrantId, snapshot: { universityId: fixture.universityId, providerPolicyVersion: 1, noticeVersion: 'microsoft-v2', mode: 'graph_enrollment', scopes: ['https://graph.microsoft.com/EduRoster.ReadBasic', 'openid', 'profile'] } }) })).status, 503);
             assert.equal((await fetch(`${base}/start`, { method: 'POST', headers, body: JSON.stringify({ processingGrantId: fixture.processingGrantId, providerConsentId: microsoft.consentId }) })).status, 503);
             assert.equal((await fetch(`${base}/finish`, { method: 'POST', headers, body: JSON.stringify({ attemptId: microsoft.attemptId, finishSecret: 'finish' }) })).status, 503);
-            assert.equal((await fetch(`${base}/callback?state=synthetic`)).status, 503);
+            // An in-flight return while issuance is disabled still lands on
+            // the bounded completion page instead of a raw API error.
+            const disabledCallback = await fetch(`${base}/callback?state=synthetic`, { redirect: 'manual' });
+            assert.equal(disabledCallback.status, 303);
+            assert.equal(disabledCallback.headers.get('location'), 'http://localhost:3000/student/verification/microsoft/complete');
+            await disabledCallback.text();
             assert.equal((await client.query(`SELECT count(*)::int AS count FROM microsoft_verification_attempts WHERE user_id=$1`, [fixture.userId])).rows[0]!.count, beforeAttempts);
             const history = await fetch(`${base}/consents`, { headers });
             assert.equal(history.status, 200);
