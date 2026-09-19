@@ -921,9 +921,7 @@ test('both consent withdrawals prevent dispatch before claim, prevent ready duri
                 : withdrawMicrosoftConsent(client, data.userId, consentId)));
             if (phase === 'before') {
                 await withdraw();
-                const terminal = await service.callback({ callbackUrl: callback, browserCookie: started.callbackCookie.value });
-                assert.equal(terminal.outcome, 'connection_not_completed');
-                assert.equal(terminal.completionUrl.searchParams.get('attempt'), started.publicResult.attemptId);
+                await assert.rejects(() => service.callback({ callbackUrl: callback, browserCookie: started.callbackCookie.value }));
                 assert.equal(dispatched, 0, `${withdrawal} withdrawal must prevent token dispatch before claim`);
             } else if (phase === 'during') {
                 const pending = service.callback({ callbackUrl: callback, browserCookie: started.callbackCookie.value });
@@ -1380,10 +1378,7 @@ test('Graph mode cancellation prevents claim dispatch, prevents Graph after held
         const callback = new URL('https://api.example.invalid/api/verification/microsoft/callback'); callback.searchParams.set('state', state); callback.searchParams.set('code', 'CANARY');
         const withdraw = () => withTestClient((client) => inTransaction(client, () => withdrawal === 'processing' ? withdrawConsent(client, data.userId, data.processingGrantId) : withdrawMicrosoftConsent(client, data.userId, consentId)));
         if (phase === 'before_claim') {
-            await withdraw();
-            const terminal = await service.callback({ callbackUrl: callback, browserCookie: started.callbackCookie.value });
-            assert.equal(terminal.outcome, 'connection_not_completed');
-            assert.equal(terminal.completionUrl.searchParams.get('attempt'), started.publicResult.attemptId);
+            await withdraw(); await assert.rejects(() => service.callback({ callbackUrl: callback, browserCookie: started.callbackCookie.value }));
             assert.equal(tokenCalls, 0); assert.equal(graphCalls, 0);
         } else if (phase === 'held_token') {
             const pending = service.callback({ callbackUrl: callback, browserCookie: started.callbackCookie.value }); await tokenEntered;
