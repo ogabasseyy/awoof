@@ -4,32 +4,38 @@ import { MicrosoftRetentionService } from './microsoft-retention.service.js';
 
 type Query = { sql: string; values?: unknown[] };
 
+const databaseNow = new Date('2026-09-13T12:00:00.000Z');
+
 function fixture(): { service: MicrosoftRetentionService; queries: Query[] } {
     const queries: Query[] = [];
     const client = {
         query: async (sql: string, values?: unknown[]) => {
             queries.push({ sql, values });
             if (sql === 'BEGIN' || sql === 'COMMIT' || sql === 'ROLLBACK') return { rowCount: 0, rows: [] };
+            if (sql.includes('SELECT clock_timestamp() AS now')) return { rowCount: 1, rows: [{ now: databaseNow }] };
             return { rowCount: sql.includes('microsoft_verification_attempts') ? 3 : 2, rows: [] };
         },
         release: () => undefined,
     };
     return {
-        service: new MicrosoftRetentionService({ pool: { connect: async () => client } as never, now: () => new Date('2026-09-13T12:00:00.000Z') }),
+        service: new MicrosoftRetentionService({ pool: { connect: async () => client } as never }),
         queries,
     };
 }
 
-test('retention is bounded, preserves a current completed receipt, and uses only its injected clock', async () => {
+test('retention is bounded, preserves a current completed receipt, and reads its cutoff from the database clock', async () => {
     const { service, queries } = fixture();
     assert.deepEqual(await service.cleanup(), { attempts: 3, diagnostics: 2 });
-    const attempts = queries.find((query) => query.sql.includes('UPDATE microsoft_verification_attempts'))!;
+    const clockIndex = queries.findIndex((query) => query.sql.includes('SELECT clock_timestamp() AS now'));
+    const attemptsIndex = queries.findIndex((query) => query.sql.includes('UPDATE microsoft_verification_attempts'));
+    assert.ok(clockIndex >= 0 && clockIndex < attemptsIndex, 'the database cutoff must precede the cleanup writes');
+    const attempts = queries[attemptsIndex]!;
     assert.match(attempts.sql, /LIMIT 500/);
     assert.match(attempts.sql, /status = 'completed'/);
     assert.match(attempts.sql, /candidate\.expires_at <= \$1::timestamptz/);
     assert.match(attempts.sql, /ELSE attempt\.finish_secret_hash/);
     assert.match(attempts.sql, /ELSE attempt\.result/);
-    assert.deepEqual(attempts.values, [new Date('2026-09-13T12:00:00.000Z')]);
+    assert.deepEqual(attempts.values, [databaseNow]);
 });
 
 test('retention terminalizes expired unfinished attempts and removes only diagnostics beyond 30 days', async () => {

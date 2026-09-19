@@ -1,4 +1,5 @@
 import { Router, type NextFunction, type Request, type Response } from 'express';
+import rateLimit from 'express-rate-limit';
 import { BadRequestError, ServiceUnavailableError } from '../common/errors/AppError.js';
 import { asyncHandler } from '../common/middleware/errorHandler.js';
 import { config } from '../config/env.js';
@@ -83,6 +84,17 @@ function responseHeaders(res: Response): void {
     res.setHeader('Cache-Control', 'no-store');
     res.setHeader('Referrer-Policy', 'no-referrer');
 }
+
+// The callback skips the shared API quota in the middleware stack so a
+// provider return always reaches its bounded redirect. This dedicated
+// limiter (one attempt lifetime window) keeps replayed states from
+// converting that reachability into unbounded claim transactions.
+const microsoftCallbackLimiter = rateLimit({
+    windowMs: 10 * 60 * 1000,
+    max: 60,
+    standardHeaders: true,
+    legacyHeaders: false,
+});
 
 function defaultFlow(): Flow {
     const oidcConfig = config.microsoftOidc;
@@ -198,7 +210,7 @@ export function createMicrosoftVerificationRouter(factory: FlowFactory = default
         res.json({ success: true, data: result });
     }));
 
-    router.get('/callback', asyncHandler(async (req, res) => {
+    router.get('/callback', microsoftCallbackLimiter, asyncHandler(async (req, res) => {
         responseHeaders(res);
         // State is used inside the service to resolve the durable attempt
         // before selecting this server-generated cookie name.

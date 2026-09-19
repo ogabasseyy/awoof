@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import type { Request, Response } from 'express';
-import { isMicrosoftRoute, microsoftCors } from './microsoft-cors.js';
+import { isMicrosoftCallbackPath, isMicrosoftRoute, microsoftCors } from './microsoft-cors.js';
 
 test('classifies only the Microsoft verification namespace', () => {
     assert.equal(isMicrosoftRoute('/api/verification/microsoft/start'), true);
@@ -11,6 +11,13 @@ test('classifies only the Microsoft verification namespace', () => {
     assert.equal(isMicrosoftRoute('/api/verification/microsoft-extra'), false);
     assert.equal(isMicrosoftRoute('/API/Verification/Microsoft-extra'), false);
     assert.equal(isMicrosoftRoute('/api/widget/config'), false);
+});
+
+test('identifies only the Microsoft OAuth callback path', () => {
+    assert.equal(isMicrosoftCallbackPath('/api/verification/microsoft/callback'), true);
+    assert.equal(isMicrosoftCallbackPath('/API/Verification/Microsoft/CALLBACK'), true);
+    assert.equal(isMicrosoftCallbackPath('/api/verification/microsoft/start'), false);
+    assert.equal(isMicrosoftCallbackPath('/api/verification/microsoft/callback/extra'), false);
 });
 
 test('advertises GET in Microsoft CORS preflights so credentialed reads pass', () => {

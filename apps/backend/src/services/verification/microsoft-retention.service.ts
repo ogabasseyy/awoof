@@ -10,8 +10,6 @@ export type MicrosoftRetentionResult = {
 
 export type MicrosoftRetentionDependencies = {
     pool: Pick<Pool, 'connect'>;
-    /** Internal clock injection is for deterministic worker tests only. */
-    now?: () => Date;
 };
 
 /**
@@ -21,17 +19,19 @@ export type MicrosoftRetentionDependencies = {
  * expiration deadline; no caller supplies that deadline.
  */
 export class MicrosoftRetentionService {
-    private readonly now: () => Date;
-
-    constructor(private readonly deps: MicrosoftRetentionDependencies) {
-        this.now = deps.now ?? (() => new Date());
-    }
+    constructor(private readonly deps: MicrosoftRetentionDependencies) {}
 
     async cleanup(): Promise<MicrosoftRetentionResult> {
         const tx = await this.deps.pool.connect();
-        const cutoff = this.now();
         try {
             await tx.query('BEGIN');
+            // Attempt expiries and diagnostic timestamps are written with
+            // PostgreSQL clock_timestamp(), so the cutoff must come from the
+            // same database clock. An application-host clock running ahead
+            // would terminalize live attempts and delete diagnostics early,
+            // which matters because the cleanup CLI can run on a separate
+            // operational host.
+            const cutoff = (await tx.query<{ now: Date }>('SELECT clock_timestamp() AS now')).rows[0]!.now;
             const attempts = await tx.query(
                 `WITH candidates AS (
                     SELECT id, status, expires_at

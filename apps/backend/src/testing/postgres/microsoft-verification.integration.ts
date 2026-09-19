@@ -1892,7 +1892,14 @@ test('Microsoft retention is bounded at 500, preserves a current receipt through
     // The disposable integration database is shared by this file. Establish a
     // real bounded-cleanup baseline instead of assuming other test attempts do
     // not match the global retention worker's selection predicate.
-    const drain = new MicrosoftRetentionService({ pool: db.getPool(), now: () => new Date('2031-01-15T12:00:00.000Z') });
+    // Backdate every leftover row instead of time-travelling the worker clock:
+    // the worker must read its cutoff from the database clock, so the drain
+    // ages the data itself to establish the same baseline.
+    await withTestClient(async (client) => {
+        await client.query(`UPDATE microsoft_verification_attempts SET expires_at = clock_timestamp() - interval '1 second'`);
+        await client.query(`UPDATE verification_diagnostic_events SET recorded_at = clock_timestamp() - interval '31 days'`);
+    });
+    const drain = new MicrosoftRetentionService({ pool: db.getPool() });
     let drained = false;
     for (let batch = 0; batch < 100; batch += 1) {
         const result = await drain.cleanup();
@@ -1908,7 +1915,7 @@ test('Microsoft retention is bounded at 500, preserves a current receipt through
         for (let index = 0; index < 501; index += 1) await seedRetentionAttempt(client, data, consent, { status: 'failed', expiresAt: new Date(cutoff.getTime() - 60_000) });
         return consent;
     }));
-    const cleanup = new MicrosoftRetentionService({ pool: db.getPool(), now: () => cutoff });
+    const cleanup = new MicrosoftRetentionService({ pool: db.getPool() });
     assert.deepEqual(await cleanup.cleanup(), { attempts: 500, diagnostics: 0 });
     assert.equal((await withTestClient(async (client) => (await client.query<{ count: number }>(`SELECT count(*)::int AS count FROM microsoft_verification_attempts WHERE user_id=$1 AND finish_secret_hash IS NOT NULL`, [data.userId])).rows[0]!.count)), 1);
     assert.deepEqual(await cleanup.cleanup(), { attempts: 1, diagnostics: 0 });
@@ -1952,7 +1959,10 @@ test('Microsoft retention is bounded at 500, preserves a current receipt through
         assert.notEqual(row.finish_secret_hash, null); assert.notEqual(row.result, null, 'the actual receipt remains retryable through its original deadline');
     });
     assert.deepEqual(await liveReceipt.service.finish(liveInput), { accountLinked: true, enrollment: 'not_checked' }, 'actual completed finish retry remains usable before its original deadline');
-    const afterDeadline = new MicrosoftRetentionService({ pool: db.getPool(), now: () => new Date(live.expires_at.getTime() + 1) });
+    await withTestClient(async (client) => {
+        await client.query(`UPDATE microsoft_verification_attempts SET expires_at = clock_timestamp() - interval '1 second' WHERE id=$1`, [liveInput.attemptId]);
+    });
+    const afterDeadline = new MicrosoftRetentionService({ pool: db.getPool() });
     assert.deepEqual(await afterDeadline.cleanup(), { attempts: 1, diagnostics: 0 });
     await withTestClient(async (client) => {
         const row = (await client.query<{ finish_secret_hash: string | null; result: unknown }>('SELECT finish_secret_hash,result FROM microsoft_verification_attempts WHERE id=$1', [liveInput.attemptId])).rows[0]!;
@@ -2009,7 +2019,7 @@ test('owner unlink remains available off-policy, uses the captured identity inst
         assert.equal(effective.method, 'student_email', 'unlinking Microsoft data must not revoke independent current-school email eligibility');
         assert.equal((await client.query(`SELECT count(*)::int AS count FROM verification_audit_events WHERE user_id=$1 AND event_type='microsoft_identity_unlinked'`, [data.userId])).rows[0]!.count, 1);
     });
-    await new MicrosoftRetentionService({ pool: db.getPool(), now: () => new Date(beforeUnlink.expires_at.getTime() + 1) }).cleanup();
+    await new MicrosoftRetentionService({ pool: db.getPool() }).cleanup();
     assert.equal((await withTestClient(async (client) => (await client.query<{ finish_secret_hash: string | null }>('SELECT finish_secret_hash FROM microsoft_verification_attempts WHERE id=$1', [seeded.pending])).rows[0]!.finish_secret_hash)), null);
     const foreign = await fixture();
     await withTestClient((client) => inTransaction(client, () => assert.rejects(() => unlinkMicrosoftIdentity(client, foreign.userId, seeded.identity), { statusCode: 403 })));

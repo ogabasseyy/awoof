@@ -60,6 +60,49 @@ test('mounted Microsoft callback redirects only a bound terminal provider failur
     }
 });
 
+test('Microsoft callback skips the shared quota and keeps CORS headers on its dedicated limit', async () => {
+    const fixture = await mountedServer({
+        microsoftFlowFactory: () => ({
+            start: async () => { throw new Error('not used'); },
+            finish: async () => { throw new Error('not used'); },
+            callbackCookieNameForState: async () => null,
+            callback: async () => ({
+                attemptId: '33333333-3333-4333-8333-333333333333',
+                completionUrl: new URL('https://app.awoof.example/student/verification/microsoft/complete?attempt=33333333-3333-4333-8333-333333333333'),
+            }),
+        }),
+    });
+    try {
+        const frontend = 'http://localhost:3000';
+        const callback = (state: string) => fetch(`${fixture.baseUrl}/api/verification/microsoft/callback?state=${state}&code=CANARY`, {
+            redirect: 'manual', headers: { Origin: frontend },
+        });
+        // Exhaust the shared 100-request quota on an unrelated path.
+        for (let warm = 0; warm < 100; warm += 1) {
+            const health = await fetch(`${fixture.baseUrl}/health`);
+            assert.equal(health.status, 200);
+            await health.text();
+        }
+        // The callback skips the shared quota and still reaches its redirect.
+        const pastQuota = await callback('fresh-state');
+        assert.equal(pastQuota.status, 303);
+        assert.equal(pastQuota.headers.get('access-control-allow-origin'), frontend);
+        await pastQuota.text();
+        // Its dedicated limiter still bounds replays, with CORS headers intact.
+        let limited: Response | undefined;
+        for (let replay = 0; replay < 60; replay += 1) {
+            const response = await callback(`replay-${replay}`);
+            await response.text();
+            if (response.status === 429) { limited = response; break; }
+            assert.equal(response.status, 303);
+        }
+        assert.ok(limited, 'the dedicated callback limiter must eventually refuse replays');
+        assert.equal(limited.headers.get('access-control-allow-origin'), frontend);
+    } finally {
+        await fixture.close();
+    }
+});
+
 test('mounted app keeps merchant CORS while isolating Microsoft CORS and redacts malformed JSON', async () => {
     const originalQuery = db.query.bind(db);
     (db as unknown as { query: typeof db.query }).query = async (_text, values) => ({ rows: values?.[0] === 'merchant.example' ? [{}] : [], rowCount: values?.[0] === 'merchant.example' ? 1 : 0 }) as never;

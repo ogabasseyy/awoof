@@ -5,6 +5,11 @@ export function isMicrosoftRoute(path: string): boolean {
     return normalizedPath === '/api/verification/microsoft' || normalizedPath.startsWith('/api/verification/microsoft/');
 }
 
+/** The provider-driven OAuth return. It must stay reachable under load. */
+export function isMicrosoftCallbackPath(path: string): boolean {
+    return path.toLowerCase() === '/api/verification/microsoft/callback';
+}
+
 export type MicrosoftCorsOptions = { frontendOrigin: string };
 
 function appendVary(res: Response, value: string): void {

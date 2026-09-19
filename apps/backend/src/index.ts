@@ -11,7 +11,7 @@ import cors from 'cors';
 import helmet from 'helmet';
 import rateLimit from 'express-rate-limit';
 import { skipCorsPreflight } from './middleware/cors-preflight.js';
-import { isMicrosoftRoute, microsoftCors } from './middleware/microsoft-cors.js';
+import { isMicrosoftCallbackPath, isMicrosoftRoute, microsoftCors } from './middleware/microsoft-cors.js';
 import { uploadedFile } from './middleware/uploaded-file.js';
 import { paystackWebhookLimiter } from './middleware/paystack-webhook-limit.js';
 import swaggerUi from 'swagger-ui-express';
@@ -83,18 +83,22 @@ export class App {
       })
     );
 
-    // Throttle before dynamic CORS can consume a database connection.
+    // Microsoft endpoints use their own exact-origin credentialed policy. It is
+    // database-free, so it runs before the throttle: a 429 must still carry
+    // the allow-origin headers or browsers report an opaque CORS failure.
+    this.app.use(microsoftCors({ frontendOrigin: config.microsoftVerification.frontendOrigin }));
+
+    // Throttle before dynamic CORS can consume a database connection. The
+    // Microsoft OAuth callback skips this shared quota so a provider return
+    // always reaches its bounded completion redirect; it carries its own
+    // dedicated limiter on the route instead.
     this.app.use(rateLimit({
       windowMs: config.rateLimit.windowMs,
       max: config.rateLimit.maxRequests,
-      skip: skipCorsPreflight,
+      skip: (req) => skipCorsPreflight(req) || (req.method === 'GET' && isMicrosoftCallbackPath(req.path)),
       standardHeaders: true,
       legacyHeaders: false,
     }));
-
-    // Microsoft endpoints use their own exact-origin credentialed policy. It
-    // must run before (and be excluded from) the historical merchant policy.
-    this.app.use(microsoftCors({ frontendOrigin: config.microsoftVerification.frontendOrigin }));
 
     // Existing merchant/static CORS remains unchanged outside Microsoft.
     const merchantCors = cors({
