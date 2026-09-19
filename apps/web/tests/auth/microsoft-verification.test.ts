@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { isMicrosoftAuthorizationUrl, isTerminalFinishStatus, readMicrosoftAttempt, writeMicrosoftAttempt } from '../../src/lib/microsoft-verification';
+import { isMicrosoftAuthorizationUrl, isTerminalFinishStatus, readMicrosoftAttempt, tabAttemptExpiresAt, writeMicrosoftAttempt } from '../../src/lib/microsoft-verification';
 
 test('only accepts an HTTPS Microsoft authorization host', () => {
   assert.equal(isMicrosoftAuthorizationUrl('https://login.microsoftonline.com/tenant/oauth2/v2.0/authorize'), true);
@@ -34,4 +34,16 @@ test('a 429 finish response stays retryable while other 4xx responses are termin
   assert.equal(isTerminalFinishStatus(400), true);
   assert.equal(isTerminalFinishStatus(409), true);
   assert.equal(isTerminalFinishStatus(500), false);
+});
+
+test('tab deadline derives a server-measured lifetime regardless of device offset', () => {
+  const serverNow = '2026-09-19T12:00:00.000Z';
+  const serverExpiry = '2026-09-19T12:09:30.000Z';
+  // A device behind the server still gets the full remaining lifetime.
+  assert.equal(tabAttemptExpiresAt(serverExpiry, serverNow, Date.parse('2026-09-19T11:55:00.000Z')), Date.parse('2026-09-19T11:55:00.000Z') + 570_000);
+  // A device ahead of the server is not cut short either.
+  assert.equal(tabAttemptExpiresAt(serverExpiry, serverNow, Date.parse('2026-09-19T12:05:00.000Z')), Date.parse('2026-09-19T12:05:00.000Z') + 570_000);
+  // Unusable server timing falls back to a nine-minute local window.
+  assert.equal(tabAttemptExpiresAt('not-a-date', serverNow, 1_000), 1_000 + 9 * 60 * 1000);
+  assert.equal(tabAttemptExpiresAt(serverNow, serverExpiry, 1_000), 1_000 + 9 * 60 * 1000);
 });

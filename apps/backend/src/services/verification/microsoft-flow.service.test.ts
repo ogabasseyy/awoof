@@ -28,7 +28,7 @@ function startService(noticeVersion: string): { service: MicrosoftFlowService; i
         if (text.includes('FROM institution_microsoft_policies')) return { rowCount: 1, rows: [{ tenant_id: tenantId, version: 1, enabled: true, mode: 'identity_only', approved_until: new Date(Date.now() + 60_000), scopes: ['openid', 'profile'], notice_version: noticeVersion }] };
         if (text.includes('FROM microsoft_verification_consents')) return { rowCount: 1, rows: [{}] };
         if (text.includes('count(*)')) return { rowCount: 1, rows: [{ count: '0' }] };
-        if (text.includes('INSERT INTO microsoft_verification_attempts')) { insert = values; return { rowCount: 1, rows: [{ expires_at: new Date(Date.now() + 600_000) }] }; }
+        if (text.includes('INSERT INTO microsoft_verification_attempts')) { insert = values; const now = new Date(); return { rowCount: 1, rows: [{ expires_at: new Date(now.getTime() + 600_000), now }] }; }
         if (text.includes('FROM microsoft_verification_attempts')) {
             if (text.includes('SELECT id')) return { rowCount: 1, rows: [{ id: insert?.[0] }] };
             return { rowCount: 1, rows: [{ id: insert?.[0], user_id: userId, university_id: universityId, institution_policy_version: 1, provider_policy_version: 1, identity_version: 1, processing_grant_id: processingGrantId, provider_consent_id: providerConsentId, server_session_id: sid, encrypted_verifier: 'x', nonce: 'x', expires_at: new Date(Date.now() + 60_000), status: 'pending', result: null }] };
@@ -69,6 +69,8 @@ test('start keeps the browser secret exclusively in typed cookie instructions an
     assert.equal(typeof insert![9], 'string');
     assert.notEqual(insert![9], result.publicResult.attemptId);
     assert.ok(Number.isFinite(Date.parse(result.publicResult.expiresAt)));
+    assert.ok(Number.isFinite(Date.parse(result.publicResult.serverNow)));
+    assert.ok(Date.parse(result.publicResult.expiresAt) > Date.parse(result.publicResult.serverNow));
 });
 
 test('start refuses a new attempt under a legacy Microsoft notice policy', async () => {

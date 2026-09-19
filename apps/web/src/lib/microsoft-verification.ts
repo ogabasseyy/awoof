@@ -37,6 +37,19 @@ export function isTerminalFinishStatus(status: number): boolean {
     return status >= 400 && status < 500 && status !== 429;
 }
 
+/**
+ * Derive the tab record deadline from two server timestamps. The lifetime is
+ * a server-measured duration, so a device clock offset cannot shrink or
+ * stretch it; only local elapsed time is measured against the device clock.
+ * Falls back to a nine-minute local window when the server timing is unusable.
+ */
+export function tabAttemptExpiresAt(expiresAt: string, serverNow: string, now = Date.now()): number {
+    const remainingMs = Date.parse(expiresAt) - Date.parse(serverNow);
+    const attemptLifetimeMs = 10 * 60 * 1000;
+    if (remainingMs > 0 && remainingMs <= attemptLifetimeMs) return now + remainingMs;
+    return now + 9 * 60 * 1000;
+}
+
 /** The only authorization host a browser may navigate to from this flow. */
 export function isMicrosoftAuthorizationUrl(value: string): boolean {
     try {

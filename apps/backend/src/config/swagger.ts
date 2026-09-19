@@ -250,12 +250,13 @@ Access tokens expire in 15 minutes. Use the refresh token endpoint to get a new 
                         success: { type: 'boolean', enum: [true] },
                         data: {
                             type: 'object', additionalProperties: false,
-                            required: ['attemptId', 'authorizationUrl', 'finishSecret', 'expiresAt'],
+                            required: ['attemptId', 'authorizationUrl', 'finishSecret', 'expiresAt', 'serverNow'],
                             properties: {
                                 attemptId: { type: 'string', format: 'uuid' },
                                 authorizationUrl: { type: 'string', format: 'uri' },
                                 finishSecret: { type: 'string' },
                                 expiresAt: { type: 'string', format: 'date-time' },
+                                serverNow: { type: 'string', format: 'date-time' },
                             },
                         },
                     },

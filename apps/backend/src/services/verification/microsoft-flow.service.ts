@@ -36,7 +36,7 @@ type DiagnosticAttempt = {
 };
 
 export type MicrosoftCallbackCookie = { name: string; value: string; maxAgeSeconds: number; path: '/api/verification/microsoft/callback'; httpOnly: true; secure: true; sameSite: 'lax' };
-export type MicrosoftStartPublicResult = { attemptId: string; authorizationUrl: string; finishSecret: string; expiresAt: string };
+export type MicrosoftStartPublicResult = { attemptId: string; authorizationUrl: string; finishSecret: string; expiresAt: string; serverNow: string };
 export type MicrosoftStartResult = { publicResult: MicrosoftStartPublicResult; callbackCookie: MicrosoftCallbackCookie };
 export type MicrosoftCallbackResult = {
     attemptId: string;
@@ -180,13 +180,13 @@ export class MicrosoftFlowService {
             const outstanding = await tx.query<{ count: string }>(`SELECT count(*) FROM microsoft_verification_attempts WHERE user_id=$1 AND status IN ('pending','processing') AND expires_at > clock_timestamp()`, [input.userId]);
             if (Number(outstanding.rows[0]?.count ?? 0) >= OUTSTANDING_COOKIE_LIMIT) throw new RateLimitError('Too many outstanding Microsoft verification attempts');
             const attemptId = randomUUID(); const diagnosticCorrelationId = randomUUID(); const state = secret(); const browserSecret = secret(); const finishSecret = secret(); const nonce = secret(); const verifier = secret(48);
-            const inserted = await tx.query<{ expires_at: Date }>(
+            const inserted = await tx.query<{ expires_at: Date; now: Date }>(
                 `INSERT INTO microsoft_verification_attempts (id,user_id,university_id,institution_policy_version,provider_policy_version,identity_version,processing_grant_id,provider_consent_id,server_session_id,diagnostic_correlation_id,state_hash,browser_secret_hash,finish_secret_hash,encrypted_verifier,nonce,expires_at,status)
                  VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,clock_timestamp()+interval '10 minutes','pending')
-                 RETURNING expires_at`,
+                 RETURNING expires_at, clock_timestamp() AS now`,
                 [attemptId, input.userId, authority.universityId, authority.institutionPolicyVersion, authority.policy.version, authority.identityVersion, input.processingGrantId, input.providerConsentId, input.serverSessionId, diagnosticCorrelationId, hashMicrosoftAttemptSecret(state), hashMicrosoftAttemptSecret(browserSecret), hashMicrosoftAttemptSecret(finishSecret), encryptMicrosoftAttemptVerifier(verifier, this.deps.verifierEncryptionKey, attemptId), nonce],
             );
-            return { attemptId, state, browserSecret, finishSecret, nonce, verifier, tenantId: authority.policy.tenant_id, scopes: authority.policy.scopes, expiresAt: inserted.rows[0]!.expires_at };
+            return { attemptId, state, browserSecret, finishSecret, nonce, verifier, tenantId: authority.policy.tenant_id, scopes: authority.policy.scopes, expiresAt: inserted.rows[0]!.expires_at, serverNow: inserted.rows[0]!.now };
         });
         // Authorization discovery is deliberately outside the authority transaction.
         let authorizationUrl: string;
@@ -216,7 +216,7 @@ export class MicrosoftFlowService {
             throw invalidAttempt();
         }
         await this.emit(prepared.attemptId, { stage: 'started', outcome: 'success', reason: 'none', durationMs: this.elapsed(startedAt) });
-        return { publicResult: { attemptId: prepared.attemptId, authorizationUrl, finishSecret: prepared.finishSecret, expiresAt: prepared.expiresAt.toISOString() }, callbackCookie: { name: cookieName(prepared.attemptId), value: prepared.browserSecret, maxAgeSeconds: ATTEMPT_LIFETIME_SECONDS, path: '/api/verification/microsoft/callback', httpOnly: true, secure: true, sameSite: 'lax' } };
+        return { publicResult: { attemptId: prepared.attemptId, authorizationUrl, finishSecret: prepared.finishSecret, expiresAt: prepared.expiresAt.toISOString(), serverNow: prepared.serverNow.toISOString() }, callbackCookie: { name: cookieName(prepared.attemptId), value: prepared.browserSecret, maxAgeSeconds: ATTEMPT_LIFETIME_SECONDS, path: '/api/verification/microsoft/callback', httpOnly: true, secure: true, sameSite: 'lax' } };
     }
 
     private async fail(attemptId: string): Promise<boolean> {
