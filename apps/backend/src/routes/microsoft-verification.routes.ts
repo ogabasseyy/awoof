@@ -1,7 +1,7 @@
 import { Router, type NextFunction, type Request, type Response } from 'express';
 import rateLimit from 'express-rate-limit';
 import type { Pool } from 'pg';
-import { BadRequestError, ServiceUnavailableError } from '../common/errors/AppError.js';
+import { AppError, BadRequestError, ServiceUnavailableError } from '../common/errors/AppError.js';
 import { asyncHandler } from '../common/middleware/errorHandler.js';
 import { config } from '../config/env.js';
 import { getPool } from '../config/database.js';
@@ -86,29 +86,18 @@ function responseHeaders(res: Response): void {
     res.setHeader('Referrer-Policy', 'no-referrer');
 }
 
-/** Our callback cookie names parsed from a Cookie header. */
-export function microsoftCallbackCookieNames(header: string | undefined): string[] {
-    return String(header ?? '').split(';').flatMap((entry) => {
-        const trimmed = entry.trim();
-        const separator = trimmed.indexOf('=');
-        if (separator <= 0) return [];
-        const name = trimmed.slice(0, separator);
-        return name === '' ? [] : [name];
-    });
-}
-
 /**
  * Completion redirect for an in-flight browser return that arrives while new
  * issuance is unavailable (feature disabled or key missing). Resolving the
  * attempt by its state hash needs no decryption, so the browser still lands
- * on the bounded completion page and its stale callback cookies are cleared
- * instead of stranding it on a raw API error.
+ * on the bounded completion page instead of stranding it on a raw API error.
+ * Only the cookie bound to the resolved attempt is cleared: sibling tabs may
+ * hold other in-flight attempts whose cookies must survive this outage.
  */
 export async function issuanceUnavailableCompletion(
     pool: Pick<Pool, 'query'>,
     completionUrl: URL,
     state: string | null,
-    cookieHeader: string | undefined,
 ): Promise<{ location: string; clearCookies: string[] }> {
     let attemptId: string | null = null;
     if (state) {
@@ -122,8 +111,7 @@ export async function issuanceUnavailableCompletion(
         url.searchParams.set('attempt', attemptId);
         url.searchParams.set('outcome', 'connection_not_completed');
     }
-    const clearCookies = microsoftCallbackCookieNames(cookieHeader).filter((name) => name.startsWith('awoof_ms_'));
-    return { location: url.href, clearCookies };
+    return { location: url.href, clearCookies: attemptId === null ? [] : [`awoof_ms_${attemptId}`] };
 }
 
 // The callback skips the shared API quota in the middleware stack so a
@@ -280,7 +268,7 @@ export function createMicrosoftVerificationRouter(factory: FlowFactory = default
                 : new URL('/student/verification/microsoft/complete', config.microsoftVerification.frontendOrigin);
             const completed = await issuanceUnavailableCompletion(
                 getPool(), completionUrl,
-                callbackUrl.searchParams.get('state'), req.headers.cookie,
+                callbackUrl.searchParams.get('state'),
             );
             for (const name of completed.clearCookies) {
                 res.clearCookie(name, { path: '/api/verification/microsoft/callback', httpOnly: true, secure: true, sameSite: 'lax' });
@@ -293,7 +281,14 @@ export function createMicrosoftVerificationRouter(factory: FlowFactory = default
             res.clearCookie(`awoof_ms_${result.attemptId}`, { path: '/api/verification/microsoft/callback', httpOnly: true, secure: true, sameSite: 'lax' });
             res.redirect(303, result.completionUrl.href);
         } catch (error) {
-            if (resolvedCookieName) res.clearCookie(resolvedCookieName, { path: '/api/verification/microsoft/callback', httpOnly: true, secure: true, sameSite: 'lax' });
+            // The cookie is the browser's only continuity for a
+            // still-pending attempt. Clear it for terminal client outcomes,
+            // but preserve it across transient operational failures so that
+            // reloading the unchanged provider callback can still recover
+            // the attempt.
+            if (resolvedCookieName && error instanceof AppError && error.statusCode >= 400 && error.statusCode < 500) {
+                res.clearCookie(resolvedCookieName, { path: '/api/verification/microsoft/callback', httpOnly: true, secure: true, sameSite: 'lax' });
+            }
             throw error;
         }
     }));

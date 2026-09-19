@@ -3,7 +3,7 @@ import http from 'node:http';
 import test from 'node:test';
 import { db } from './config/database.js';
 import { createApp, type AppOptions } from './index.js';
-import { BadRequestError } from './common/errors/AppError.js';
+import { BadRequestError, ConflictError } from './common/errors/AppError.js';
 
 async function mountedServer(options?: AppOptions): Promise<{ baseUrl: string; close: () => Promise<void> }> {
     const app = await createApp(options);
@@ -105,6 +105,35 @@ test('Microsoft callback skips the shared quota and keeps CORS headers on its de
         }
         assert.ok(limited, 'the dedicated callback limiter must eventually refuse replays');
         assert.equal(limited.headers.get('access-control-allow-origin'), frontend);
+    } finally {
+        await fixture.close();
+    }
+});
+
+test('callback preserves its cookie on transient failures but clears it for terminal outcomes', async () => {
+    const fixture = await mountedServer({
+        microsoftFlowFactory: () => ({
+            start: async () => { throw new Error('not used'); },
+            finish: async () => { throw new Error('not used'); },
+            callbackCookieNameForState: async () => 'awoof_ms_attempt',
+            callback: async (input: { callbackUrl: URL }) => {
+                if (input.callbackUrl.searchParams.get('state') === 'transient') throw new Error('database unavailable');
+                throw new ConflictError('Microsoft verification attempt is no longer valid');
+            },
+        }),
+    });
+    try {
+        const callback = (state: string) => fetch(`${fixture.baseUrl}/api/verification/microsoft/callback?state=${state}&code=CANARY`, {
+            redirect: 'manual', headers: { Cookie: 'awoof_ms_attempt=secret' },
+        });
+        const transient = await callback('transient');
+        assert.equal(transient.status, 500);
+        assert.equal(transient.headers.get('set-cookie'), null);
+        await transient.text();
+        const terminal = await callback('terminal');
+        assert.equal(terminal.status, 409);
+        assert.match(terminal.headers.get('set-cookie') ?? '', /awoof_ms_attempt=;/);
+        await terminal.text();
     } finally {
         await fixture.close();
     }
