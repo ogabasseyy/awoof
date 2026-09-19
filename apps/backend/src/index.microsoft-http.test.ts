@@ -79,12 +79,15 @@ test('Microsoft callback skips the shared quota and keeps CORS headers on its de
     });
     try {
         const frontend = 'http://localhost:3000';
+        // A dedicated client address keeps this quota drill isolated from
+        // every other test sharing the process-wide limiter stores.
+        const quotaHeaders = { Origin: frontend, 'X-Forwarded-For': '10.99.0.12' };
         const callback = (state: string) => fetch(`${fixture.baseUrl}/api/verification/microsoft/callback?state=${state}&code=CANARY`, {
-            redirect: 'manual', headers: { Origin: frontend },
+            redirect: 'manual', headers: quotaHeaders,
         });
         // Exhaust the shared 100-request quota on an unrelated path.
         for (let warm = 0; warm < 100; warm += 1) {
-            const health = await fetch(`${fixture.baseUrl}/health`);
+            const health = await fetch(`${fixture.baseUrl}/health`, { headers: quotaHeaders });
             assert.equal(health.status, 200);
             await health.text();
         }
@@ -124,7 +127,7 @@ test('callback preserves its cookie on transient failures but clears it for term
     });
     try {
         const callback = (state: string) => fetch(`${fixture.baseUrl}/api/verification/microsoft/callback?state=${state}&code=CANARY`, {
-            redirect: 'manual', headers: { Cookie: 'awoof_ms_attempt=secret' },
+            redirect: 'manual', headers: { Cookie: 'awoof_ms_attempt=secret', 'X-Forwarded-For': '10.99.0.11' },
         });
         const transient = await callback('transient');
         assert.equal(transient.status, 500);
