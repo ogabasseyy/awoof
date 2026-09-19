@@ -5,7 +5,7 @@ import type { Pool, PoolClient } from 'pg';
 import { ConflictError } from '../../common/errors/AppError.js';
 import { encryptMicrosoftAttemptVerifier, hashMicrosoftAttemptSecret } from './microsoft-attempt-crypto.js';
 import { MicrosoftAuthorityInvalidatedError } from './microsoft-authority.service.js';
-import { MicrosoftFlowService, linkMicrosoftIdentity } from './microsoft-flow.service.js';
+import { MicrosoftFlowService, canonicalizeEducationObservation, linkMicrosoftIdentity } from './microsoft-flow.service.js';
 
 const userId = '11111111-1111-4111-8111-111111111111';
 const sid = '22222222-2222-4222-8222-222222222222';
@@ -114,7 +114,9 @@ test('linkMicrosoftIdentity conflicts when another active identity exists for th
     await assert.rejects(linkMicrosoftIdentity(tx, linkInput), (error: unknown) => error instanceof ConflictError);
 });
 
-test('callback returns a bounded completion page instead of a raw error when authority is lost after token redemption', async () => {
+type CallbackScenario = { authorityFailsAt: 'never' | 'claim' | 'post'; expired: boolean };
+
+function callbackHarness(scenario: CallbackScenario): { service: MicrosoftFlowService; invoke: () => Promise<{ attemptId: string; outcome?: string; completionUrl: URL }> } {
     const callbackAttemptId = '99999999-9999-4999-8999-999999999999';
     const callbackTenant = '88888888-8888-4888-8888-888888888888';
     const callbackObject = '77777777-7777-4777-8777-777777777777';
@@ -125,16 +127,15 @@ test('callback returns a bounded completion page instead of a raw error when aut
         provider_policy_version: 1, identity_version: 1, processing_grant_id: processingGrantId,
         provider_consent_id: providerConsentId, server_session_id: sid,
         encrypted_verifier: encryptMicrosoftAttemptVerifier('verifier-canary', key, callbackAttemptId),
-        nonce: 'nonce-canary', expires_at: new Date(Date.now() + 60_000), status: 'pending', result: null,
+        nonce: 'nonce-canary', expires_at: new Date(Date.now() + (scenario.expired ? -60_000 : 60_000)), status: 'pending', result: null,
     };
-    let phase: 'claim' | 'post' = 'claim';
+    let redeemed = false;
     const txQuery = async (text: string) => {
         if (text === 'BEGIN' || text === 'COMMIT' || text === 'ROLLBACK') return { rowCount: 0, rows: [] };
-        if (text.includes('WHERE state_hash=$1')) return { rowCount: 1, rows: [attempt] };
         if (text.includes('SELECT browser_secret_hash')) return { rowCount: 1, rows: [{ browser_secret_hash: hashMicrosoftAttemptSecret(browserCookie) }] };
         if (text.includes('JOIN institution_microsoft_policies')) return { rowCount: 1, rows: [{ mode: 'identity_only' }] };
         if (text.includes('FROM microsoft_verification_consents')) {
-            if (phase === 'post') throw new MicrosoftAuthorityInvalidatedError();
+            if (scenario.authorityFailsAt === 'claim' || (scenario.authorityFailsAt === 'post' && redeemed)) throw new MicrosoftAuthorityInvalidatedError();
             return { rowCount: 1, rows: [{ id: providerConsentId }] };
         }
         if (text.includes('FROM verification_consents')) return { rowCount: 1, rows: [{ id: processingGrantId }] };
@@ -163,9 +164,14 @@ test('callback returns a bounded completion page instead of a raw error when aut
         if (text.includes("SET status='failed'")) return { rowCount: 1, rows: [] };
         throw new Error(`Unexpected query ${text}`);
     };
-    const tx = { query: txQuery, release: () => undefined } as unknown as PoolClient;
     const pool = {
-        connect: async () => tx,
+        connect: async () => ({ query: async (text: string, values: unknown[] = []) => {
+            if (text.includes('WHERE state_hash=$1')) {
+                assert.equal(values[0], hashMicrosoftAttemptSecret('callback-state'));
+                return { rowCount: 1, rows: [attempt] };
+            }
+            return txQuery(text);
+        }, release: () => undefined }),
         query: async (text: string) => {
             if (text.includes('diagnostic_correlation_id')) return { rowCount: 0, rows: [] };
             throw new Error(`Unexpected direct pool query ${text}`);
@@ -174,7 +180,11 @@ test('callback returns a bounded completion page instead of a raw error when aut
     const service = new MicrosoftFlowService({
         pool,
         oidc: { authorize: async () => { throw new Error('not used'); },
-            redeem: async () => { phase = 'post'; return { identity: { tenantId: callbackTenant, objectId: callbackObject } }; } },
+            redeem: async () => {
+                assert.equal(scenario.authorityFailsAt, 'post', 'token exchange must not dispatch for pre-redemption failures');
+                redeemed = true;
+                return { identity: { tenantId: callbackTenant, objectId: callbackObject } };
+            } },
         verifierEncryptionKey: key,
         callbackUrl: new URL('https://api.example.test/api/verification/microsoft/callback'),
         completionUrl: new URL('https://app.example.test/student/verification/microsoft/complete'),
@@ -182,21 +192,39 @@ test('callback returns a bounded completion page instead of a raw error when aut
         diagnostics: { record: async () => undefined },
     });
     const callbackUrl = new URL('https://api.example.test/api/verification/microsoft/callback?state=callback-state&code=canary');
-    // Seed the state lookup for the callback state.
-    const originalQuery = txQuery;
-    const statefulTx = { query: async (text: string, values: unknown[] = []) => {
-        if (text.includes('WHERE state_hash=$1')) {
-            assert.equal(values[0], hashMicrosoftAttemptSecret('callback-state'));
-            return { rowCount: 1, rows: [attempt] };
-        }
-        return originalQuery(text);
-    }, release: () => undefined } as unknown as PoolClient;
-    (pool as { connect: () => Promise<PoolClient> }).connect = async () => statefulTx;
-    const result = await service.callback({ callbackUrl, browserCookies: [{ name: `awoof_ms_${callbackAttemptId}`, value: browserCookie }] });
-    assert.equal(result.attemptId, callbackAttemptId);
+    return { service, invoke: () => service.callback({ callbackUrl, browserCookies: [{ name: `awoof_ms_${callbackAttemptId}`, value: browserCookie }] }) };
+}
+
+async function assertBoundedCompletion(scenario: CallbackScenario): Promise<void> {
+    const { invoke } = callbackHarness(scenario);
+    const result = await invoke();
+    assert.equal(result.attemptId, '99999999-9999-4999-8999-999999999999');
     assert.equal(result.outcome, 'connection_not_completed');
-    assert.equal(result.completionUrl.searchParams.get('attempt'), callbackAttemptId);
+    assert.equal(result.completionUrl.searchParams.get('attempt'), '99999999-9999-4999-8999-999999999999');
     assert.equal(result.completionUrl.searchParams.get('outcome'), 'connection_not_completed');
+}
+
+test('callback returns a bounded completion page instead of a raw error when authority is lost after token redemption', async () => {
+    await assertBoundedCompletion({ authorityFailsAt: 'post', expired: false });
+});
+
+test('callback returns a bounded completion page when authority is lost after the cookie check but before redemption', async () => {
+    await assertBoundedCompletion({ authorityFailsAt: 'claim', expired: false });
+});
+
+test('callback returns a bounded completion page for an authenticated expired attempt', async () => {
+    await assertBoundedCompletion({ authorityFailsAt: 'never', expired: true });
+});
+
+test('canonicalizeEducationObservation re-stamps student observations with the database clock', () => {
+    const appClock = new Date('2026-09-19T10:00:00.000Z');
+    const databaseClock = new Date('2026-09-19T12:00:00.000Z');
+    assert.deepEqual(
+        canonicalizeEducationObservation({ outcome: 'student', objectId: 'oid', observedAt: appClock }, databaseClock),
+        { outcome: 'student', objectId: 'oid', observedAt: databaseClock },
+    );
+    assert.equal(canonicalizeEducationObservation({ outcome: 'unknown', reason: 'unavailable' }, databaseClock)?.outcome, 'unknown');
+    assert.equal(canonicalizeEducationObservation(undefined, databaseClock), undefined);
 });
 
 test('linkMicrosoftIdentity maps an insert race to a conflict instead of a 500', async () => {

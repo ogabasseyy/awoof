@@ -842,7 +842,9 @@ test('diagnostic expiry and terminal events require trusted ownership and one co
 
     const expired = await pendingDurableAttempt();
     await withTestClient((client) => client.query(`UPDATE microsoft_verification_attempts SET expires_at=clock_timestamp()-interval '1 second' WHERE id=$1`, [expired.started.publicResult.attemptId]));
-    await assert.rejects(() => expired.service.callback({ callbackUrl: expired.callback, browserCookie: expired.started.callbackCookie.value }));
+    const expiredTerminal = await expired.service.callback({ callbackUrl: expired.callback, browserCookie: expired.started.callbackCookie.value });
+    assert.equal(expiredTerminal.outcome, 'connection_not_completed');
+    assert.equal(expiredTerminal.completionUrl.searchParams.get('attempt'), expired.started.publicResult.attemptId);
     await assert.rejects(() => expired.service.callback({ callbackUrl: expired.callback, browserCookie: expired.started.callbackCookie.value }));
     const expiryEvents = await withTestClient(async (client) => (await client.query<{ reason: string }>(
         `SELECT reason FROM verification_diagnostic_events WHERE correlation_id=(SELECT diagnostic_correlation_id FROM microsoft_verification_attempts WHERE id=$1) AND stage='finished'`,
@@ -919,7 +921,9 @@ test('both consent withdrawals prevent dispatch before claim, prevent ready duri
                 : withdrawMicrosoftConsent(client, data.userId, consentId)));
             if (phase === 'before') {
                 await withdraw();
-                await assert.rejects(() => service.callback({ callbackUrl: callback, browserCookie: started.callbackCookie.value }));
+                const terminal = await service.callback({ callbackUrl: callback, browserCookie: started.callbackCookie.value });
+                assert.equal(terminal.outcome, 'connection_not_completed');
+                assert.equal(terminal.completionUrl.searchParams.get('attempt'), started.publicResult.attemptId);
                 assert.equal(dispatched, 0, `${withdrawal} withdrawal must prevent token dispatch before claim`);
             } else if (phase === 'during') {
                 const pending = service.callback({ callbackUrl: callback, browserCookie: started.callbackCookie.value });
@@ -1376,7 +1380,10 @@ test('Graph mode cancellation prevents claim dispatch, prevents Graph after held
         const callback = new URL('https://api.example.invalid/api/verification/microsoft/callback'); callback.searchParams.set('state', state); callback.searchParams.set('code', 'CANARY');
         const withdraw = () => withTestClient((client) => inTransaction(client, () => withdrawal === 'processing' ? withdrawConsent(client, data.userId, data.processingGrantId) : withdrawMicrosoftConsent(client, data.userId, consentId)));
         if (phase === 'before_claim') {
-            await withdraw(); await assert.rejects(() => service.callback({ callbackUrl: callback, browserCookie: started.callbackCookie.value }));
+            await withdraw();
+            const terminal = await service.callback({ callbackUrl: callback, browserCookie: started.callbackCookie.value });
+            assert.equal(terminal.outcome, 'connection_not_completed');
+            assert.equal(terminal.completionUrl.searchParams.get('attempt'), started.publicResult.attemptId);
             assert.equal(tokenCalls, 0); assert.equal(graphCalls, 0);
         } else if (phase === 'held_token') {
             const pending = service.callback({ callbackUrl: callback, browserCookie: started.callbackCookie.value }); await tokenEntered;

@@ -1,6 +1,6 @@
 import { randomBytes, randomUUID } from 'node:crypto';
 import type { Pool, PoolClient } from 'pg';
-import { ConflictError, ForbiddenError, RateLimitError } from '../../common/errors/AppError.js';
+import { AppError, ConflictError, ForbiddenError, RateLimitError, UnauthorizedError } from '../../common/errors/AppError.js';
 import { decryptMicrosoftAttemptVerifier, encryptMicrosoftAttemptVerifier, hashMicrosoftAttemptSecret } from './microsoft-attempt-crypto.js';
 import { MicrosoftOidcOperationalError, type MicrosoftOidc, type MicrosoftIdentity } from './microsoft-oidc.service.js';
 import { lockMicrosoftAttempt } from './microsoft-session.service.js';
@@ -89,6 +89,20 @@ export async function linkMicrosoftIdentity(tx: PoolClient, input: MicrosoftIden
         if ((error as { code?: string })?.code === '23505') throw new ConflictError('Microsoft identity is already linked for this university; unlink the existing connection before connecting a different account');
         throw error;
     }
+}
+
+/**
+ * Re-stamp a Graph observation with the database clock. PostgreSQL compares
+ * the stored instant with clock_timestamp() when the receipt is finalized,
+ * so an ahead application host would otherwise poison a valid observation
+ * (or a behind host would shorten its evidence lifetime).
+ */
+export function canonicalizeEducationObservation(
+    observation: EducationObservation | undefined,
+    now: Date,
+): EducationObservation | undefined {
+    if (observation?.outcome !== 'student') return observation;
+    return { ...observation, observedAt: now };
 }
 
 function secret(bytes = 32): string { return randomBytes(bytes).toString('base64url'); }
@@ -241,6 +255,14 @@ export class MicrosoftFlowService {
         return undefined;
     }
 
+    /** Expired and authority-revoked callbacks land here instead of stranding the browser on a raw API error. */
+    private boundedFailureCompletion(attemptId: string): MicrosoftCallbackResult {
+        const completionUrl = new URL(this.deps.completionUrl);
+        completionUrl.searchParams.set('attempt', attemptId);
+        completionUrl.searchParams.set('outcome', 'connection_not_completed');
+        return { attemptId, completionUrl, outcome: 'connection_not_completed' };
+    }
+
     async callback(input: { callbackUrl: URL; browserCookie?: string; browserCookies?: readonly { name: string; value: string }[] }): Promise<MicrosoftCallbackResult> {
         const startedAt = Date.now();
         this.assertEnabled();
@@ -248,6 +270,10 @@ export class MicrosoftFlowService {
         const state = input.callbackUrl.searchParams.get('state');
         if (!state) throw invalidAttempt();
         let claimed: { attempt: Attempt; tenantId: string; state: string; verifier: string; nonce: string };
+        // Set once the state and per-attempt cookie have authenticated the
+        // attempt. Failures after this point know their attempt, so the
+        // catch below can redirect them instead of throwing raw errors.
+        let cookieAuthenticatedAttemptId: string | null = null;
         try { claimed = await this.transaction(async (tx) => {
             // State locates the per-attempt cookie, but never authorizes it.
             // Canonical authority is locked before the attempt itself.
@@ -257,6 +283,7 @@ export class MicrosoftFlowService {
             // server-generated cookie name may supply browser continuity.
             const browserCookie = input.browserCookies?.find((cookie) => cookie.name === cookieName(attempt?.id ?? ''))?.value ?? input.browserCookie;
             if (!attempt || attempt.status !== 'pending' || !browserCookie || hashMicrosoftAttemptSecret(browserCookie) !== (await tx.query<{ browser_secret_hash: string }>('SELECT browser_secret_hash FROM microsoft_verification_attempts WHERE id=$1', [attempt.id])).rows[0]?.browser_secret_hash) throw invalidAttempt();
+            cookieAuthenticatedAttemptId = attempt.id;
             const policyMode = await currentPolicyMode(tx, attempt.processing_grant_id);
             const authority = await assertMicrosoftAuthority(tx, { userId: attempt.user_id, sid: attempt.server_session_id, use: 'issuance', processingGrantId: attempt.processing_grant_id, providerConsentId: attempt.provider_consent_id, expected: attempt, mode: policyMode });
             await lockMicrosoftAttempt(tx, attempt.id);
@@ -272,13 +299,17 @@ export class MicrosoftFlowService {
         }); } catch (error) {
             if (error instanceof MicrosoftAttemptExpiredError) {
                 await this.emitTerminalFailure(error.attemptId, { outcome: 'failure', reason: 'expired', durationMs: this.elapsed(startedAt) });
-                // The state and cookie already authenticated this attempt, so
-                // an expired return belongs on the completion page rather
-                // than on a raw API error. Unauthenticated claims still throw.
-                const completionUrl = new URL(this.deps.completionUrl);
-                completionUrl.searchParams.set('attempt', error.attemptId);
-                completionUrl.searchParams.set('outcome', 'connection_not_completed');
-                return { attemptId: error.attemptId, completionUrl, outcome: 'connection_not_completed' };
+                return this.boundedFailureCompletion(error.attemptId);
+            }
+            // Authority or session failures after the cookie check (expired
+            // approval, withdrawn grant, replaced session, suspended profile)
+            // know their attempt, so they redirect like expiries. Claims that
+            // never authenticated (bad state, cookie, or status race) throw.
+            if (cookieAuthenticatedAttemptId !== null
+                && (error instanceof MicrosoftAuthorityInvalidatedError || error instanceof UnauthorizedError
+                    || (error instanceof AppError && error.statusCode === 401))) {
+                await this.emitTerminalFailure(cookieAuthenticatedAttemptId, { outcome: 'failure', reason: 'cancelled', durationMs: this.elapsed(startedAt) });
+                return this.boundedFailureCompletion(cookieAuthenticatedAttemptId);
             }
             throw error;
         }
@@ -355,7 +386,8 @@ export class MicrosoftFlowService {
                     if (locked.expires_at <= clock.rows[0]!.now) throw new MicrosoftAttemptExpiredError(locked.id, true);
                     await assertMicrosoftAuthority(tx, { userId: locked.user_id, sid: locked.server_session_id, use: 'issuance', processingGrantId: locked.processing_grant_id, providerConsentId: locked.provider_consent_id, expected: locked, mode: 'graph_enrollment' });
                     this.assertEnabled();
-                    const updated = await tx.query(`UPDATE microsoft_verification_attempts SET status='ready', encrypted_verifier=NULL, nonce=NULL, result=$2::jsonb WHERE id=$1 AND status='processing'`, [locked.id, JSON.stringify({ identity, educationObservation: observation })]);
+                    const storedObservation = canonicalizeEducationObservation(observation, clock.rows[0]!.now);
+                    const updated = await tx.query(`UPDATE microsoft_verification_attempts SET status='ready', encrypted_verifier=NULL, nonce=NULL, result=$2::jsonb WHERE id=$1 AND status='processing'`, [locked.id, JSON.stringify({ identity, educationObservation: storedObservation })]);
                     if (updated.rowCount !== 1) throw invalidAttempt();
                 });
             }
@@ -365,10 +397,7 @@ export class MicrosoftFlowService {
             // The callback route redirects this bounded outcome to the
             // completion page. Rethrowing here would strand the browser on
             // a raw API error for provider-side cancellations.
-            const completionUrl = new URL(this.deps.completionUrl);
-            completionUrl.searchParams.set('attempt', claimed.attempt.id);
-            completionUrl.searchParams.set('outcome', 'connection_not_completed');
-            return { attemptId: claimed.attempt.id, completionUrl, outcome: 'connection_not_completed' };
+            return this.boundedFailureCompletion(claimed.attempt.id);
         }
         const completionUrl = new URL(this.deps.completionUrl); completionUrl.searchParams.set('attempt', claimed.attempt.id);
         return { attemptId: claimed.attempt.id, completionUrl };
