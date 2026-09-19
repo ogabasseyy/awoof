@@ -21,6 +21,7 @@ type TimelineRow = {
     http_status: number | null;
     duration_ms: number;
     recorded_at: Date;
+    institution_id: string;
 };
 
 type LatencyRow = {
@@ -99,7 +100,7 @@ export async function readVerificationDiagnostics(req: Request, res: Response): 
         }
 
         const timelineResult = await tx.query<TimelineRow>(
-            `SELECT stage, outcome, reason, http_status, duration_ms, recorded_at
+            `SELECT stage, outcome, reason, http_status, duration_ms, recorded_at, institution_id
              FROM verification_diagnostic_events
              WHERE correlation_id = $1
              ORDER BY recorded_at ASC, id ASC
@@ -208,15 +209,17 @@ export async function readVerificationDiagnostics(req: Request, res: Response): 
 
         // An access audit is intentionally separate from diagnostic events and
         // carries no URL, correlation, provider string, or subject identifier.
-        await tx.query(
+        // The institution is retained from the timeline read above: re-reading
+        // it here would let retention cleanup delete the correlation in
+        // between and silently record no audit for a served response.
+        const auditedInstitutionId = z.string().uuid().safeParse(timelineResult.rows[0]?.institution_id);
+        if (!auditedInstitutionId.success) throw new NotFoundError('Verification diagnostic not found');
+        const audit = await tx.query(
             `INSERT INTO verification_audit_events (actor_user_id, university_id, event_type, metadata)
-             SELECT $2, institution_id, 'verification_diagnostics_viewed', '{"surface":"redacted_admin"}'::jsonb
-             FROM verification_diagnostic_events
-             WHERE correlation_id = $1
-             ORDER BY recorded_at ASC, id ASC
-             LIMIT 1`,
-            [correlationId, actorId.data],
+             VALUES ($1, $2, 'verification_diagnostics_viewed', '{"surface":"redacted_admin"}'::jsonb)`,
+            [actorId.data, auditedInstitutionId.data],
         );
+        if (audit.rowCount !== 1) throw new Error('Diagnostic access audit was not recorded');
         await tx.query('COMMIT');
         success(res, {
             data: {

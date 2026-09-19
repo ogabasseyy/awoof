@@ -35,7 +35,7 @@ test('admin diagnostic read is redacted, audited, no-store, and fenced by a tran
                 return { rows: [{ role: currentRole, deleted_at: null }], rowCount: 1 };
             }
             if (text.includes('FROM verification_diagnostic_events') && text.includes('ORDER BY recorded_at ASC')) {
-                return { rows: [{ stage: 'finished', outcome: 'success', reason: 'none', http_status: null, duration_ms: 18, recorded_at: new Date('2026-09-13T09:00:00.000Z') }], rowCount: 1 };
+                return { rows: [{ stage: 'finished', outcome: 'success', reason: 'none', http_status: null, duration_ms: 18, recorded_at: new Date('2026-09-13T09:00:00.000Z'), institution_id: institutionId }], rowCount: 1 };
             }
             if (text === 'SELECT clock_timestamp() AS measured_at') return { rows: [{ measured_at: new Date('2026-09-13T10:00:00.000Z') }], rowCount: 1 };
             if (text.includes('average_finished_request_duration_ms')) {
@@ -87,8 +87,11 @@ test('admin diagnostic read is redacted, audited, no-store, and fenced by a tran
         for (const secret of ['student@example.invalid', 'TOKEN_CANARY', 'tenant-id', 'provider-profile']) assert.equal(rendered.includes(secret), false);
         const audit = queries.find((query) => query.text.includes("'verification_diagnostics_viewed'"));
         assert.ok(audit);
-        assert.equal(audit?.params?.includes(correlationId), true);
+        // The audit carries the institution retained from the timeline read,
+        // never a re-read of the correlation that cleanup could delete first.
+        assert.equal(audit?.params?.includes(correlationId), false);
         assert.equal(audit?.params?.includes(actorId), true);
+        assert.equal(audit?.params?.includes(institutionId), true);
         assert.equal(audit?.text.includes('request_url'), false);
         assert.equal(audit?.text.includes('provider'), false);
 
@@ -132,6 +135,36 @@ test('missing diagnostic IDs are generic and never append an administrative read
         assert.equal(queries.some((query) => query.includes("'verification_diagnostics_viewed'")), false);
         const malformed = await fetch(`http://127.0.0.1:${address.port}/admin/verification-diagnostics/not-a-correlation-id`, { headers: { authorization: `Bearer ${token('admin')}` } });
         await assertErrorEnvelope(malformed, 422, 'Invalid verification diagnostic identifier', 'VALIDATION_ERROR');
+    } finally { server.close(); await once(server, 'close'); }
+});
+
+test('a swallowed access audit fails loudly instead of serving an unaudited read', async (t) => {
+    const client = {
+        async query(text: string) {
+            if (text === 'BEGIN' || text === 'ROLLBACK') return { rows: [], rowCount: 0 };
+            if (text === 'SELECT role, deleted_at FROM users WHERE id = $1 FOR UPDATE') return { rows: [{ role: 'admin', deleted_at: null }], rowCount: 1 };
+            if (text.includes('FROM verification_diagnostic_events') && text.includes('ORDER BY recorded_at ASC')) {
+                return { rows: [{ stage: 'finished', outcome: 'success', reason: 'none', http_status: null, duration_ms: 18, recorded_at: new Date('2026-09-13T09:00:00.000Z'), institution_id: institutionId }], rowCount: 1 };
+            }
+            if (text === 'SELECT clock_timestamp() AS measured_at') return { rows: [{ measured_at: new Date('2026-09-13T10:00:00.000Z') }], rowCount: 1 };
+            if (text.includes('average_finished_request_duration_ms')) return { rows: [], rowCount: 0 };
+            if (text.includes("AND event.outcome = 'failure'")) return { rows: [], rowCount: 0 };
+            if (text.includes('incomplete_attempts')) return { rows: [], rowCount: 0 };
+            // Retention won the race: the audit insert writes nothing.
+            if (text.includes("'verification_diagnostics_viewed'")) return { rows: [], rowCount: 0 };
+            throw new Error(`Unexpected query: ${text}`);
+        },
+        release() {},
+    };
+    t.mock.method(db, 'query', async () => ({ rows: [{ role: 'admin', deleted_at: null }], rowCount: 1 }));
+    t.mock.method(db, 'getPool', () => ({ connect: async () => client }) as ReturnType<typeof db.getPool>);
+    const app = express(); app.use('/admin', adminRouter); app.use(errorHandler);
+    const server = app.listen(0, '127.0.0.1'); await once(server, 'listening');
+    const address = server.address();
+    if (!address || typeof address === 'string') throw new Error('Expected a loopback port');
+    try {
+        const response = await fetch(`http://127.0.0.1:${address.port}/admin/verification-diagnostics/${correlationId}`, { headers: { authorization: `Bearer ${token('admin')}` } });
+        await assertErrorEnvelope(response, 500, 'Verification diagnostics are temporarily unavailable', 'INTERNAL_SERVER_ERROR');
     } finally { server.close(); await once(server, 'close'); }
 });
 

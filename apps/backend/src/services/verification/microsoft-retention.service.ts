@@ -46,9 +46,51 @@ export class MicrosoftRetentionService {
             diagnostics += result.diagnostics;
             passes += 1;
             if (result.attempts < MICROSOFT_RETENTION_BATCH_SIZE && result.diagnostics < MICROSOFT_RETENTION_BATCH_SIZE) {
-                return { attempts, diagnostics, passes, complete: true };
+                // A short pass is not proof of completion: FOR UPDATE SKIP
+                // LOCKED omits rows held by concurrent transactions, so a
+                // lock-held backlog would otherwise report complete while
+                // secret-bearing material remains. Recount without taking row
+                // locks; anything left reports incomplete for the scheduler.
+                const remaining = await this.countRemaining();
+                return { attempts, diagnostics, passes, complete: remaining === 0 };
             }
             if (passes >= maxPasses) return { attempts, diagnostics, passes, complete: false };
+        }
+    }
+
+    /** Counts eligible rows without locking them, so the check never blocks on concurrent callbacks. */
+    private async countRemaining(): Promise<number> {
+        const client = await this.deps.pool.connect();
+        try {
+            const cutoff = (await client.query<{ now: Date }>('SELECT clock_timestamp() AS now')).rows[0]!.now;
+            const attempts = await client.query<{ count: string }>(
+                `SELECT COUNT(*) AS count
+                 FROM microsoft_verification_attempts
+                 WHERE (
+                     status IN ('pending', 'processing', 'ready') AND expires_at <= $1::timestamptz
+                 ) OR (
+                     status = 'failed' AND (
+                         state_hash IS NOT NULL OR browser_secret_hash IS NOT NULL OR finish_secret_hash IS NOT NULL
+                         OR encrypted_verifier IS NOT NULL OR nonce IS NOT NULL OR result IS NOT NULL
+                     )
+                 ) OR (
+                     status = 'completed' AND (
+                         state_hash IS NOT NULL OR browser_secret_hash IS NOT NULL
+                         OR encrypted_verifier IS NOT NULL OR nonce IS NOT NULL
+                         OR (expires_at <= $1::timestamptz AND (finish_secret_hash IS NOT NULL OR result IS NOT NULL))
+                     )
+                 )`,
+                [cutoff],
+            );
+            const diagnostics = await client.query<{ count: string }>(
+                `SELECT COUNT(*) AS count
+                 FROM verification_diagnostic_events
+                 WHERE recorded_at < $1::timestamptz - interval '${MICROSOFT_DIAGNOSTIC_RETENTION_DAYS} days'`,
+                [cutoff],
+            );
+            return Number(attempts.rows[0]?.count ?? 0) + Number(diagnostics.rows[0]?.count ?? 0);
+        } finally {
+            client.release();
         }
     }
 

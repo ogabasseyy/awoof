@@ -127,6 +127,24 @@ export class VerificationDiagnosticsService implements VerificationDiagnostics {
 }
 
 /**
+ * Bounds a best-effort write so a stalled pool connection or a held
+ * institution lock cannot block a start, callback, or finish. The deadline
+ * only abandons the wait; a late write may still land afterward.
+ */
+export const DIAGNOSTIC_BEST_EFFORT_TIMEOUT_MS = 5_000;
+
+async function withDiagnosticDeadline<T>(work: Promise<T>, timeoutMs: number): Promise<T> {
+    let rejectDeadline: (error: Error) => void = () => undefined;
+    const deadline = new Promise<never>((_, reject) => { rejectDeadline = reject; });
+    const timer = setTimeout(() => rejectDeadline(new Error('verification diagnostic write timed out')), timeoutMs);
+    try {
+        return await Promise.race([work, deadline]);
+    } finally {
+        clearTimeout(timer);
+    }
+}
+
+/**
  * Diagnostics are intentionally non-authoritative. A storage failure is kept
  * out of provider and authority logs and cannot change a committed outcome.
  */
@@ -135,9 +153,10 @@ export async function recordDiagnosticBestEffort(
     context: DiagnosticStorageContext,
     event: unknown,
     alert: (...args: unknown[]) => void = appLogger.error,
+    timeoutMs: number = DIAGNOSTIC_BEST_EFFORT_TIMEOUT_MS,
 ): Promise<void> {
     try {
-        await diagnostics.record(context, event);
+        await withDiagnosticDeadline(diagnostics.record(context, event), timeoutMs);
     } catch {
         alert('verification diagnostic persistence failed');
     }

@@ -125,3 +125,20 @@ test('best-effort recorder keeps a secret-bearing persistence failure out of the
     );
     assert.deepEqual(alerts, [['verification diagnostic persistence failed']]);
 });
+
+test('best-effort recorder abandons a never-settling write instead of blocking the user flow', async () => {
+    const alerts: unknown[][] = [];
+    let settled = false;
+    const startedAt = Date.now();
+    await recordDiagnosticBestEffort(
+        { record: () => new Promise<void>(() => undefined) },
+        { institutionId: 'c1f7c4b1-5b7d-45a7-8d61-27f94d315e57', policyVersion: 3 },
+        validEvent,
+        (...args: unknown[]) => { alerts.push(args); },
+        20,
+    );
+    settled = true;
+    assert.equal(settled, true);
+    assert.ok(Date.now() - startedAt < 5_000, 'the stalled write must resolve at the deadline');
+    assert.deepEqual(alerts, [['verification diagnostic persistence failed']]);
+});
