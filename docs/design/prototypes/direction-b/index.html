@@ -1,0 +1,331 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Student Verification and Benefits | Awoof (Design prototype direction-b v1)</title>
+  <meta name="description" content="Design prototype direction-b v1 (2026-09-21): verification-first homepage concept with synthetic content only. Nothing here is a live offer or verified claim.">
+  <meta name="robots" content="noindex, nofollow">
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <p class="prototype-strip" role="note">
+    <strong>Design prototype — synthetic content.</strong>
+    <span>Direction-b v1 · 2026-09-21 · Layout concept only; buttons and links demonstrate structure, not live verification, offers, or accounts.</span>
+  </p>
+
+  <a class="skip-link" href="#main-content">Skip to content</a>
+
+  <header class="site-header">
+    <div class="header-inner">
+      <p class="wordmark"><a href="#top" aria-label="Awoof prototype home">Awoof</a></p>
+      <button class="menu-toggle" type="button" aria-expanded="false" aria-controls="site-nav" hidden>
+        Menu
+      </button>
+      <nav id="site-nav" class="site-nav" aria-label="Prototype sections">
+        <ul>
+          <li><a href="#students">Students</a></li>
+          <li><a href="#verify">How verification works</a></li>
+          <li><a href="#businesses">Businesses</a></li>
+          <li><a href="#universities">Universities</a></li>
+          <li><a href="#limits">Trust &amp; limits</a></li>
+          <li><a href="#help">Help</a></li>
+        </ul>
+        <ul class="nav-account">
+          <li><a class="nav-login" href="#next-steps">Log in</a></li>
+          <li><a class="nav-signup" href="#next-steps">Sign up</a></li>
+        </ul>
+      </nav>
+    </div>
+  </header>
+
+  <main id="main-content" tabindex="-1">
+    <!-- Hero -->
+    <section class="hero" id="top" aria-labelledby="page-title">
+      <div class="hero-grid">
+        <div class="hero-copy">
+          <p class="kicker">Student verification &amp; benefits · Nigeria / Africa</p>
+          <h1 id="page-title">Student status, verified plainly. Benefits, applied honestly.</h1>
+          <p class="lede">
+            Awoof checks whether you are a student so merchants can offer you student
+            benefits. This page explains what is checked, what is <em>not</em> claimed,
+            and what happens when a check cannot complete.
+          </p>
+          <p class="hero-ctas">
+            <a class="button button-primary" href="#verify">How verification works</a>
+            <a class="button button-secondary" href="#students">See student benefits</a>
+          </p>
+          <p class="hero-note">No signup needed to read this page. All examples below are synthetic.</p>
+        </div>
+        <aside class="ledger" aria-labelledby="ledger-title">
+          <h2 id="ledger-title">The assurance ledger <span class="synthetic-tag">Synthetic example</span></h2>
+          <p>Three separate facts. One is never mistaken for another.</p>
+          <ol class="ledger-rows">
+            <li>
+              <span class="ledger-level">1 · Account login</span>
+              <span class="ledger-meaning">Proves you can sign in. Says nothing about student status.</span>
+              <span class="stamp stamp-neutral">Demonstration</span>
+            </li>
+            <li>
+              <span class="ledger-level">2 · School-account proof</span>
+              <span class="ledger-meaning">A code sent to a school mailbox proves mailbox control — not current enrollment.</span>
+              <span class="stamp stamp-neutral">Demonstration</span>
+            </li>
+            <li>
+              <span class="ledger-level">3 · Enrollment eligibility</span>
+              <span class="ledger-meaning">Needs authoritative enrollment evidence. Where none is connected, the honest answer is “pending”.</span>
+              <span class="stamp stamp-pending">Pending in demo</span>
+            </li>
+          </ol>
+        </aside>
+      </div>
+    </section>
+
+    <!-- Honest limits strip -->
+    <section class="limits-strip" aria-labelledby="limits-strip-title">
+      <div class="wrap">
+        <h2 id="limits-strip-title">What this page does not claim</h2>
+        <ul class="limits-list">
+          <li>No student counts or “verified” totals</li>
+          <li>No university or merchant logos</li>
+          <li>No testimonials or reviews</li>
+          <li>No certifications, audits, or uptime promises</li>
+        </ul>
+      </div>
+    </section>
+
+    <!-- 01 Verification -->
+    <section class="section" id="verify" aria-labelledby="verify-title">
+      <div class="wrap section-grid">
+        <p class="section-number" aria-hidden="true">01</p>
+        <div>
+          <p class="kicker">Verification, step by step</p>
+          <h2 id="verify-title">Three checks. Three different answers.</h2>
+          <p>
+            Student verification fails when these get blurred together. Awoof keeps them
+            apart so a mailbox code is never shown as proof of enrollment.
+          </p>
+          <div class="cards three">
+            <article class="card">
+              <h3>Account login</h3>
+              <p>You sign in with your own credentials. This opens your account and nothing else.</p>
+              <p class="card-state"><span class="stamp stamp-neutral">Demonstration</span></p>
+            </article>
+            <article class="card">
+              <h3>School-account proof</h3>
+              <p>A one-time code goes to a school mailbox. It confirms control of that mailbox on that day.</p>
+              <p class="card-state"><span class="stamp stamp-neutral">Demonstration</span></p>
+            </article>
+            <article class="card">
+              <h3>Enrollment eligibility</h3>
+              <p>Current enrollment needs authoritative evidence from a connected source. Without one, the status stays pending — never “verified”.</p>
+              <p class="card-state"><span class="stamp stamp-pending">Pending in demo</span></p>
+            </article>
+          </div>
+          <h3 class="subhead">When a check cannot complete</h3>
+          <ul class="state-list">
+            <li><strong>Code never arrives</strong> — retry guidance and mailbox checks, not a dead end. See <a href="#help">Help</a>.</li>
+            <li><strong>School not listed</strong> — an honest “not connected” state with what to do next, never a fake upload button.</li>
+            <li><strong>Evidence expires</strong> — the status changes visibly; old proof is not shown as current.</li>
+          </ul>
+          <p class="planned-note" role="note">
+            <strong>Not available in this prototype:</strong> single sign-on, automated enrollment
+            feeds, and manual document review. Any future availability will be labelled with its
+            backend dependency and activation date.
+          </p>
+        </div>
+      </div>
+    </section>
+
+    <!-- 02 Students -->
+    <section class="section section-tint" id="students" aria-labelledby="students-title">
+      <div class="wrap section-grid">
+        <p class="section-number" aria-hidden="true">02</p>
+        <div>
+          <p class="kicker">For students</p>
+          <h2 id="students-title">Browse first. Verify when a benefit needs it.</h2>
+          <p>
+            You can look through benefits before creating an account. When a merchant’s
+            offer requires student status, verification happens then — and the merchant,
+            not Awoof, applies the benefit.
+          </p>
+          <div class="cards three">
+            <article class="card">
+              <h3>Example benefit A <span class="synthetic-tag">Synthetic</span></h3>
+              <p>An illustrative food offer showing how a benefit card reads: who gives it, who verifies you, and what happens at checkout.</p>
+              <p class="card-state"><span class="stamp stamp-neutral">Example only</span></p>
+            </article>
+            <article class="card">
+              <h3>Example benefit B <span class="synthetic-tag">Synthetic</span></h3>
+              <p>An illustrative study-supplies offer. Categories, availability, and terms here are invented for layout and mean nothing.</p>
+              <p class="card-state"><span class="stamp stamp-neutral">Example only</span></p>
+            </article>
+            <article class="card">
+              <h3>Example benefit C <span class="synthetic-tag">Synthetic</span></h3>
+              <p>An illustrative transport offer. In production, protected codes stay hidden until eligibility is confirmed.</p>
+              <p class="card-state"><span class="stamp stamp-neutral">Example only</span></p>
+            </article>
+          </div>
+          <p class="hero-ctas">
+            <a class="button button-primary" href="#next-steps">Browse benefits (demonstration)</a>
+            <a class="button button-secondary" href="#help">I didn’t get my code</a>
+          </p>
+        </div>
+      </div>
+    </section>
+
+    <!-- 03 Businesses -->
+    <section class="section" id="businesses" aria-labelledby="businesses-title">
+      <div class="wrap section-grid">
+        <p class="section-number" aria-hidden="true">03</p>
+        <div>
+          <p class="kicker">For businesses</p>
+          <h2 id="businesses-title">Offer student benefits without guessing who is a student.</h2>
+          <p>
+            Awoof asserts eligibility; your business applies the benefit. Each stage below
+            would be labelled available or planned on the production page.
+          </p>
+          <ol class="steps">
+            <li><strong>Create a business account.</strong> Separate from student accounts from the start.</li>
+            <li><strong>Configure your offer.</strong> What the benefit is, and when it applies.</li>
+            <li><strong>Student consents to verification.</strong> Consent is explicit and can be withdrawn.</li>
+            <li><strong>You apply the benefit.</strong> Awoof’s answer informs your checkout; it does not run it.</li>
+          </ol>
+          <p class="planned-note" role="note">
+            <strong>Prototype honesty:</strong> integration stages, reporting, pricing, and timelines
+            are not stated here because none is confirmed. No case studies or partner logos appear
+            until real, approved ones exist.
+          </p>
+          <p class="hero-ctas">
+            <a class="button button-primary" href="#next-steps">Start as a business (demonstration)</a>
+          </p>
+        </div>
+      </div>
+    </section>
+
+    <!-- 04 Universities -->
+    <section class="section section-tint" id="universities" aria-labelledby="universities-title">
+      <div class="wrap section-grid">
+        <p class="section-number" aria-hidden="true">04</p>
+        <div>
+          <p class="kicker">For universities</p>
+          <h2 id="universities-title">Cooperation, described without exaggeration.</h2>
+          <p>
+            There is no list of partner institutions here, because there is no approved
+            list to show. If your institution ever connects an enrollment source, this
+            section would name exactly what evidence flows and what Awoof never claims —
+            for example, a staff email address is not student enrollment.
+          </p>
+          <ul class="state-list">
+            <li><strong>What cooperation means:</strong> an authoritative enrollment source, with scope agreed in writing.</li>
+            <li><strong>What is required:</strong> evidence Awoof can re-check, plus a way to handle withdrawals and expiry.</li>
+            <li><strong>What is not claimed:</strong> partnerships, logos, or integrations that do not exist.</li>
+          </ul>
+          <p class="planned-note" role="note">
+            <strong>No university contact is listed</strong> because no monitored channel has been
+            confirmed. Publishing an inbox or phone number here is a release blocker, not a detail.
+          </p>
+        </div>
+      </div>
+    </section>
+
+    <!-- 05 Limits -->
+    <section class="section" id="limits" aria-labelledby="limits-title">
+      <div class="wrap section-grid">
+        <p class="section-number" aria-hidden="true">05</p>
+        <div>
+          <p class="kicker">Trust &amp; limits</p>
+          <h2 id="limits-title">Plain answers, including “we don’t know yet”.</h2>
+          <dl class="limits-dl">
+            <div>
+              <dt>Is my data sold?</dt>
+              <dd>This prototype makes no data-handling claims. Production trust copy must cite real code, config, and tests — not intentions.</dd>
+            </div>
+            <div>
+              <dt>Is Awoof certified or audited?</dt>
+              <dd>No certifications, audits, uptime figures, or compliance statements appear here. None will ship without dated evidence in an internal claim register.</dd>
+            </div>
+            <div>
+              <dt>Where is the status page?</dt>
+              <dd>Nowhere yet. A status page needs live monitored data; a hardcoded green light would be dishonest, so there isn’t one.</dd>
+            </div>
+          </dl>
+        </div>
+      </div>
+    </section>
+
+    <!-- 06 Help -->
+    <section class="section section-tint" id="help" aria-labelledby="help-title">
+      <div class="wrap section-grid">
+        <p class="section-number" aria-hidden="true">06</p>
+        <div>
+          <p class="kicker">Help</p>
+          <h2 id="help-title">Failure states, answered first.</h2>
+          <div class="faq">
+            <details>
+              <summary>My verification code never arrived</summary>
+              <p>Check the exact mailbox, wait a short time, then request a fresh code. If codes never arrive, your school’s mail system may be blocking them — the production help page will name the real next step.</p>
+            </details>
+            <details>
+              <summary>My school isn’t listed</summary>
+              <p>Not every school is connected. The honest status is “not connected”, with retry guidance — not a form that goes nowhere.</p>
+            </details>
+            <details>
+              <summary>My status says pending or expired</summary>
+              <p>Pending means evidence is missing or still being checked. Expired means old proof no longer counts. Neither is shown as “verified”.</p>
+            </details>
+            <details>
+              <summary>How do I withdraw consent?</summary>
+              <p>Consent withdrawal ends eligibility checks based on that consent. The production page will give the exact steps and what changes afterwards.</p>
+            </details>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- Next steps / prototype honesty -->
+    <section class="section" id="next-steps" aria-labelledby="next-steps-title">
+      <div class="wrap section-grid">
+        <p class="section-number" aria-hidden="true">→</p>
+        <div>
+          <p class="kicker">Next steps</p>
+          <h2 id="next-steps-title">In production, this is where journeys begin.</h2>
+          <p>
+            Every button above that names an account, a marketplace, or registration is a
+            layout demonstration. In the shipped site these reach real destinations —
+            the marketplace, student login/signup, and business registration — and every
+            unavailable state links to a real, monitored help destination.
+          </p>
+          <ul class="state-list">
+            <li><strong>Students:</strong> marketplace preview first; login/signup kept working.</li>
+            <li><strong>Businesses:</strong> narrative first, then the real registration or login route — never a form that delivers nothing.</li>
+            <li><strong>Universities:</strong> generic cooperation copy until an approved contact or pilot exists.</li>
+          </ul>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <footer class="site-footer">
+    <div class="wrap footer-grid">
+      <div>
+        <p class="wordmark wordmark-footer">Awoof</p>
+        <p>Design prototype — synthetic content.<br>Direction-b v1 · 2026-09-21.</p>
+      </div>
+      <nav aria-label="Prototype footer">
+        <ul>
+          <li><a href="#students">Students</a></li>
+          <li><a href="#verify">How verification works</a></li>
+          <li><a href="#businesses">Businesses</a></li>
+          <li><a href="#universities">Universities</a></li>
+          <li><a href="#limits">Trust &amp; limits</a></li>
+          <li><a href="#help">Help</a></li>
+        </ul>
+      </nav>
+      <p class="footer-note">No offers, accounts, verification, or contacts on this page are real. No tracking, downloads, or network calls.</p>
+    </div>
+  </footer>
+
+  <script src="prototype.js" defer></script>
+</body>
+</html>
