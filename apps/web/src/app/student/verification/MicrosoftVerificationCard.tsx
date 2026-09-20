@@ -31,6 +31,10 @@ export default function MicrosoftVerificationCard({ available, unavailableReason
     const requestSession = useRef(getSessionSnapshot());
     const historyRead = useRef(0);
     const identityRead = useRef(0);
+    // A committed provider acceptance survives transport retries. Without
+    // this, a failed /start would re-post acceptance on retry and mint a
+    // duplicate permanent consent row and audit event.
+    const committedConsent = useRef<{ processingGrantId: string; providerConsentId: string } | null>(null);
     const current = () => mounted.current && isCurrentSession(requestSession.current);
     const beginOwnerRead = () => {
         const snapshot = requestSession.current;
@@ -115,6 +119,8 @@ export default function MicrosoftVerificationCard({ available, unavailableReason
             if (!current()) return;
             const code = axios.isAxiosError(cause) ? cause.response?.data?.error?.code : undefined;
             if (code === 'consent_notice_changed') {
+                // The retained acceptance belongs to the superseded notice.
+                committedConsent.current = null;
                 setProviderAccepted(false); await loadNotice();
                 if (current()) setMessage('The Microsoft notice changed. Please read the updated notice and accept it again.');
             } else setError(safeError(cause, 'Microsoft connection is unavailable. Please try again.'));
@@ -124,9 +130,13 @@ export default function MicrosoftVerificationCard({ available, unavailableReason
         if (!notice || !parentAccepted || !providerAccepted) throw new Error('Consent is required.');
         const processingGrantId = await processingGrant();
         if (!current()) return;
-        const consent = await microsoftVerificationApiClient.post<{ data: { providerConsentId: string } }>('/verification/microsoft/consents', { processingGrantId, snapshot: notice.snapshot, accepted: true });
+        const retained = committedConsent.current;
+        const providerConsentId = retained && retained.processingGrantId === processingGrantId
+            ? retained.providerConsentId
+            : (await microsoftVerificationApiClient.post<{ data: { providerConsentId: string } }>('/verification/microsoft/consents', { processingGrantId, snapshot: notice.snapshot, accepted: true })).data.data.providerConsentId;
+        committedConsent.current = { processingGrantId, providerConsentId };
         if (!current()) return;
-        const started = await microsoftVerificationApiClient.post<{ data: { attemptId: string; finishSecret: string; authorizationUrl: string; expiresAt: string; serverNow: string } }>('/verification/microsoft/start', { processingGrantId, providerConsentId: consent.data.data.providerConsentId });
+        const started = await microsoftVerificationApiClient.post<{ data: { attemptId: string; finishSecret: string; authorizationUrl: string; expiresAt: string; serverNow: string } }>('/verification/microsoft/start', { processingGrantId, providerConsentId });
         if (!current()) return;
         if (!isMicrosoftAuthorizationUrl(started.data.data.authorizationUrl)) throw new Error('Microsoft authorization address is invalid.');
         const browserSessionId = getSessionSnapshot().browserSessionId;
