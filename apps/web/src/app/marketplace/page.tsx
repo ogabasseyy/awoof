@@ -25,6 +25,7 @@ import { useAuth } from '@/contexts/AuthContext';
 import { formatCurrency, formatSavings } from '@/lib/format';
 import { DealSkeletonRail, ExpectancyEmpty, FadeIn } from './_components/ExpectancyUI';
 import { StudentHeaderActions } from '@/components/student/StudentHeaderActions';
+import PublicFooter from '@/components/public/PublicFooter';
 
 interface Product {
     id: string;
@@ -653,44 +654,7 @@ export default function MarketplacePage() {
                 </FadeIn>
             </main>
 
-            <footer className="bg-[#1D4ED8] text-white mt-4">
-                <div className="mx-auto max-w-6xl px-4 py-8">
-                    <div className="flex flex-col md:flex-row md:items-center justify-between gap-6">
-                        <Image
-                            src="/images/awoofLogo.png"
-                            alt="Awoof"
-                            width={100}
-                            height={34}
-                            className="object-contain brightness-0 invert"
-                        />
-                        <div className="flex flex-wrap gap-x-6 gap-y-2 text-sm text-blue-100">
-                            <Link href="/contact" className="hover:text-white">
-                                Contact
-                            </Link>
-                            <Link href="/partner" className="hover:text-white">
-                                Partner
-                            </Link>
-                            <Link href="/privacy" className="hover:text-white">
-                                Privacy
-                            </Link>
-                            <Link href="/terms" className="hover:text-white">
-                                Terms
-                            </Link>
-                        </div>
-                        <Button
-                            variant="outline"
-                            size="sm"
-                            className="rounded-full border-white/40 bg-white/10 text-white hover:bg-white/20 w-fit"
-                        >
-                            <Smartphone className="h-4 w-4 mr-2" />
-                            Get the app
-                        </Button>
-                    </div>
-                    <p className="mt-6 text-center text-xs text-blue-200">
-                        © {new Date().getFullYear()} Awoof — Empowering students, one discount at a time
-                    </p>
-                </div>
-            </footer>
+            <PublicFooter />
         </div>
     );
 }

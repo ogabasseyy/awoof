@@ -1,5 +1,9 @@
-import Header from './components/Header';
 import ScrollToHash from './components/ScrollToHash';
+import PublicShell from '@/components/public/PublicShell';
+import { buildPublicMetadata } from '@/lib/public-metadata';
+import { publicPageMetadata } from '@/content/public/page-metadata';
+
+export const metadata = buildPublicMetadata(publicPageMetadata['/']);
 import Banner from './components/HomePage/banner';
 import Cloud from '../../public/images/Cloud.svg';
 import Image from 'next/image';
@@ -7,12 +11,11 @@ import About from './components/HomePage/About';
 import TopDeals from './components/HomePage/TopDeals';
 import FAQ from './components/HomePage/FAQ';
 import Partner from './components/HomePage/Partner';
-import Footer from './components/Footer';
 import AnimatedTop from './components/HomePage/AnimatedTop';
 
 export default async function Home() {
   return (
-    <main className="bg-[#F4F7FD] w-full min-w-0 overflow-x-hidden">
+    <PublicShell>
       <ScrollToHash />
       <div
         id="hero"
@@ -25,10 +28,6 @@ export default async function Home() {
               'radial-gradient(ellipse 80% 50% at 10% 20%, rgba(255,255,255,0.18), transparent), radial-gradient(ellipse 60% 40% at 90% 10%, rgba(191,219,254,0.35), transparent)',
           }}
         />
-
-        <div className="relative z-50 w-full sticky top-0">
-          <Header />
-        </div>
 
         <div className="relative z-30">
           <div className="container w-full max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
@@ -49,7 +48,6 @@ export default async function Home() {
       <TopDeals />
       <FAQ />
       <Partner />
-      <Footer />
-    </main>
+    </PublicShell>
   );
 }
