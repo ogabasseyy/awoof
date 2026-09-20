@@ -101,6 +101,7 @@ test('persists only the validated diagnostic allowlist and safe server context',
 
     assert.deepEqual(calls.map((call) => call.text), [
         'BEGIN',
+        'SET LOCAL statement_timeout = 4500',
         'SELECT id FROM universities WHERE id=$1 FOR KEY SHARE',
                  `INSERT INTO verification_diagnostic_events
                      (correlation_id, stage, outcome, reason, http_status, duration_ms, institution_id, policy_version)
@@ -108,7 +109,7 @@ test('persists only the validated diagnostic allowlist and safe server context',
                  ON CONFLICT (correlation_id) WHERE stage = 'finished' DO NOTHING`,
         'COMMIT',
     ]);
-    assert.deepEqual(calls[2]!.values, [
+    assert.deepEqual(calls[3]!.values, [
         validEvent.correlationId, validEvent.stage, validEvent.outcome, validEvent.reason,
         null, validEvent.durationMs, 'c1f7c4b1-5b7d-45a7-8d61-27f94d315e57', 3,
     ]);

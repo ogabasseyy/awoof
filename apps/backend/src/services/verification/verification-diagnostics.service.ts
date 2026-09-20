@@ -100,6 +100,7 @@ export class VerificationDiagnosticsService implements VerificationDiagnostics {
         const client = await this.pool.connect();
         try {
             await client.query('BEGIN');
+            await client.query(`SET LOCAL statement_timeout = ${DIAGNOSTIC_WRITE_STATEMENT_TIMEOUT_MS}`);
             const institution = await client.query(
                 'SELECT id FROM universities WHERE id=$1 FOR KEY SHARE',
                 [context.institutionId],
@@ -132,6 +133,11 @@ export class VerificationDiagnosticsService implements VerificationDiagnostics {
  * only abandons the wait; a late write may still land afterward.
  */
 export const DIAGNOSTIC_BEST_EFFORT_TIMEOUT_MS = 5_000;
+// Aborts the writer's own backend work just inside the caller deadline.
+// statement_timeout covers lock waits, so a held institution lock rolls the
+// transaction back and releases the pooled connection instead of letting
+// abandoned waiters accumulate and fill the pool.
+const DIAGNOSTIC_WRITE_STATEMENT_TIMEOUT_MS = 4_500;
 
 async function withDiagnosticDeadline<T>(work: Promise<T>, timeoutMs: number): Promise<T> {
     let rejectDeadline: (error: Error) => void = () => undefined;

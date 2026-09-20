@@ -202,6 +202,10 @@ async function independentlyValidEmailEvidence(
            AND evidence.identity_version = $3
            AND evidence.policy_version = $4
            AND proofs.email = $5
+           -- Evidence is retained indefinitely, so expired rows must not
+           -- reach the per-candidate grant, row-lock, and clock queries
+           -- below. This mirrors the loop's own expiry check exactly.
+           AND evidence.expires_at > clock_timestamp()
          ORDER BY evidence.verified_at DESC, evidence.id DESC
         `,
         [context.studentId, context.universityId, context.identityVersion, context.policyVersion,
