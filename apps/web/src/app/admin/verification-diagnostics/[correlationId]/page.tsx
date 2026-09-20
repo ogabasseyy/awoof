@@ -164,12 +164,12 @@ function AdminVerificationDiagnosticsDetail({ correlationId }: { correlationId: 
             user={{ name: user?.email ?? 'Admin', email: user?.email, roleLabel: 'Admin', profileHref: '/admin/settings' }}
             onLogout={logout}
         >
-            <Link href="/admin/universities">
-                <Button variant="ghost" size="sm" className="mb-4">
+            <Button asChild variant="ghost" size="sm" className="mb-4">
+                <Link href="/admin/universities">
                     <ChevronLeft className="mr-2 h-4 w-4" />
                     Back to universities
-                </Button>
-            </Link>
+                </Link>
+            </Button>
 
             <section className="max-w-5xl space-y-6">
                 <div className="border-b border-slate-200 pb-5">
