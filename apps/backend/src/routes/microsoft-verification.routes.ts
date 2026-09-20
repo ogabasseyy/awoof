@@ -118,15 +118,23 @@ export async function issuanceUnavailableCompletion(
 // provider return always reaches its bounded redirect. This dedicated
 // limiter (one attempt lifetime window) keeps replayed states from
 // converting that reachability into unbounded claim transactions.
-// Successful completions (3xx) never consume the quota, so a burst of
+// Authenticated completions (3xx) never consume the quota, so a burst of
 // distinct students behind one NAT address passes while only failed
-// replays accumulate toward the limit.
+// replays accumulate toward the limit. Outage redirects are also 303 but
+// are unauthenticated: they resolve an arbitrary state with a database
+// lookup and would never count, so they stay counted to keep a disabled
+// issuance path from serving unbounded indexed queries per client.
+export function isQuotaExcusedCallback(_req: Request, res: Response): boolean {
+    return res.statusCode < 400 && (res.locals as { outageRedirect?: boolean }).outageRedirect !== true;
+}
+
 const microsoftCallbackLimiter = rateLimit({
     windowMs: 10 * 60 * 1000,
     max: 60,
     standardHeaders: true,
     legacyHeaders: false,
     skipSuccessfulRequests: true,
+    requestWasSuccessful: isQuotaExcusedCallback,
 });
 
 function defaultFlow(): Flow {
@@ -270,6 +278,9 @@ export function createMicrosoftVerificationRouter(factory: FlowFactory = default
                 getPool(), completionUrl,
                 callbackUrl.searchParams.get('state'),
             );
+            // Mark this redirect as unauthenticated so the callback quota
+            // counts it instead of excusing it as a successful completion.
+            res.locals.outageRedirect = true;
             for (const name of completed.clearCookies) {
                 res.clearCookie(name, { path: '/api/verification/microsoft/callback', httpOnly: true, secure: true, sameSite: 'lax' });
             }
