@@ -136,7 +136,19 @@ export default function MicrosoftVerificationCard({ available, unavailableReason
             : (await microsoftVerificationApiClient.post<{ data: { providerConsentId: string } }>('/verification/microsoft/consents', { processingGrantId, snapshot: notice.snapshot, accepted: true })).data.data.providerConsentId;
         committedConsent.current = { processingGrantId, providerConsentId };
         if (!current()) return;
-        const started = await microsoftVerificationApiClient.post<{ data: { attemptId: string; finishSecret: string; authorizationUrl: string; expiresAt: string; serverNow: string } }>('/verification/microsoft/start', { processingGrantId, providerConsentId });
+        let started;
+        try {
+            started = await microsoftVerificationApiClient.post<{ data: { attemptId: string; finishSecret: string; authorizationUrl: string; expiresAt: string; serverNow: string } }>('/verification/microsoft/start', { processingGrantId, providerConsentId });
+        } catch (cause) {
+            // A terminal rejection means the retained acceptance lost
+            // authority (withdrawn in another tab, superseded policy), so
+            // drop it: the next attempt must re-accept instead of replaying
+            // a dead consent forever. Transport and 5xx failures keep it.
+            if (axios.isAxiosError(cause) && cause.response && cause.response.status >= 400 && cause.response.status < 500) {
+                committedConsent.current = null;
+            }
+            throw cause;
+        }
         if (!current()) return;
         if (!isMicrosoftAuthorizationUrl(started.data.data.authorizationUrl)) throw new Error('Microsoft authorization address is invalid.');
         const browserSessionId = getSessionSnapshot().browserSessionId;

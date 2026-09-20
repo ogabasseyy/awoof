@@ -5,6 +5,7 @@ import { success } from '../common/utils/response.js';
 import { db } from '../config/database.js';
 
 const correlationIdSchema = z.string().uuid();
+const attemptIdSchema = z.string().uuid();
 
 const stages = ['started', 'callback_received', 'token_validated', 'education_response', 'policy_decision', 'finished'] as const;
 const outcomes = ['success', 'failure', 'unknown'] as const;
@@ -81,6 +82,32 @@ function serializeTimeline(rows: TimelineRow[]) {
  * No student, attempt, identity, tenant, URL, token or provider-response value
  * is selected by this controller.
  */
+/**
+ * Resolves a verification attempt to its diagnostic timeline through the
+ * same authorized, audited path below. Operators otherwise cannot reach
+ * the diagnostics surface from a production attempt without direct
+ * database access: the start response exposes only the attempt ID.
+ */
+export async function readVerificationDiagnosticsByAttempt(req: Request, res: Response): Promise<void> {
+    res.setHeader('Cache-Control', 'no-store');
+    const attemptId = attemptIdSchema.parse(req.params.attemptId);
+    const actorId = z.string().uuid().safeParse(req.user?.userId);
+    if (!actorId.success) throw new UnauthorizedError('Authenticated administrator required');
+    // The correlation is written once at attempt creation and never
+    // updated, so a single indexed lookup suffices; the delegated read
+    // re-verifies the administrator and records the same access audit.
+    // Missing attempts and attempts without diagnostics stay a generic
+    // absence: do not disclose whether an attempt exists.
+    const attempt = await db.getPool().query<{ diagnostic_correlation_id: string | null }>(
+        'SELECT diagnostic_correlation_id FROM microsoft_verification_attempts WHERE id = $1',
+        [attemptId],
+    );
+    const correlationId = attempt.rows[0]?.diagnostic_correlation_id;
+    if (!correlationId) throw new NotFoundError('Verification diagnostic not found');
+    req.params.correlationId = correlationId;
+    return readVerificationDiagnostics(req, res);
+}
+
 export async function readVerificationDiagnostics(req: Request, res: Response): Promise<void> {
     res.setHeader('Cache-Control', 'no-store');
     const correlationId = correlationIdSchema.parse(req.params.correlationId);

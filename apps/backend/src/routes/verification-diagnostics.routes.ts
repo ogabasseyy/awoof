@@ -1,6 +1,6 @@
 import { Router } from 'express';
 import { asyncHandler } from '../common/middleware/errorHandler.js';
-import { readVerificationDiagnostics } from '../controllers/admin-verification-diagnostics.controller.js';
+import { readVerificationDiagnostics, readVerificationDiagnosticsByAttempt } from '../controllers/admin-verification-diagnostics.controller.js';
 import { verificationDiagnosticsErrorHandler } from '../middleware/verification-diagnostics-error.middleware.js';
 
 /**
@@ -175,6 +175,24 @@ const router = Router();
 
 // This router is mounted only below admin.routes.ts after its authentication,
 // role, and current-admin middleware; do not mount it directly at index.ts.
+/**
+ * @swagger
+ * /api/admin/verification-diagnostics/by-attempt/{attemptId}:
+ *   get:
+ *     summary: Read a redacted diagnostic timeline by verification attempt
+ *     description: Requires a current administrator. Resolves the attempt to its diagnostic correlation and returns the same redacted timeline as the correlation route, with the same access audit.
+ *     tags: [Admin Verification Diagnostics]
+ *     security: [{ bearerAuth: [] }]
+ *     parameters:
+ *       - in: path
+ *         name: attemptId
+ *         required: true
+ *         schema: { type: string, format: uuid }
+ *     responses:
+ *       '200':
+ *         description: Redacted timeline and safe aggregate counts and latencies.
+ */
+router.get('/by-attempt/:attemptId', asyncHandler(readVerificationDiagnosticsByAttempt));
 router.get('/:correlationId', asyncHandler(readVerificationDiagnostics));
 // This route boundary never forwards raw diagnostic/provider/database errors
 // into the general development error handler, which can include error detail.

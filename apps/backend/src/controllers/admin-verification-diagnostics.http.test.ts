@@ -9,6 +9,7 @@ import { jwtService } from '../services/auth/jwt.service.js';
 
 const actorId = '35176342-b6fc-43e8-bad2-31052c61cf88';
 const correlationId = '92d71887-18a0-4c0d-b696-138bc9d54f20';
+const attemptId = '37155f8e-7f2b-4c9f-a5e3-9a2c8f7d6b5a';
 const institutionId = '80dcaee5-d77e-4eb2-bc35-a54d83b5ade4';
 
 function token(role: 'admin' | 'student' | 'vendor') {
@@ -192,5 +193,79 @@ test('diagnostic route boundary masks an injected operational error in both the 
         assert.equal(response.headers.get('cache-control'), 'no-store');
         assert.equal(consoleErrors.some((line) => line.includes('DATABASE_ERROR_CANARY')), false);
         assert.deepEqual(consoleErrors, ['Verification diagnostics request failed']);
+    } finally { server.close(); await once(server, 'close'); }
+});
+
+test('diagnostic timeline resolves by attempt through the same audited redacted path', async (t) => {
+    const queries: Array<{ text: string; params: unknown[] | undefined }> = [];
+    const client = {
+        async query(text: string, params?: unknown[]) {
+            queries.push({ text, params });
+            if (text === 'BEGIN' || text === 'COMMIT' || text === 'ROLLBACK') return { rows: [], rowCount: 0 };
+            if (text === 'SELECT role, deleted_at FROM users WHERE id = $1 FOR UPDATE') {
+                return { rows: [{ role: 'admin', deleted_at: null }], rowCount: 1 };
+            }
+            if (text.includes('FROM verification_diagnostic_events') && text.includes('ORDER BY recorded_at ASC')) {
+                return { rows: [{ stage: 'finished', outcome: 'success', reason: 'none', http_status: null, duration_ms: 18, recorded_at: new Date('2026-09-13T09:00:00.000Z'), institution_id: institutionId }], rowCount: 1 };
+            }
+            if (text === 'SELECT clock_timestamp() AS measured_at') return { rows: [{ measured_at: new Date('2026-09-13T10:00:00.000Z') }], rowCount: 1 };
+            if (text.includes('average_finished_request_duration_ms')) return { rows: [], rowCount: 0 };
+            if (text.includes("AND event.outcome = 'failure'")) return { rows: [], rowCount: 0 };
+            if (text.includes('incomplete_attempts')) return { rows: [], rowCount: 0 };
+            if (text.includes("'verification_diagnostics_viewed'")) return { rows: [], rowCount: 1 };
+            throw new Error(`Unexpected query: ${text}`);
+        },
+        release() {},
+    };
+    const pool = {
+        async query(text: string, params?: unknown[]) {
+            queries.push({ text, params });
+            if (text.includes('diagnostic_correlation_id')) {
+                assert.deepEqual(params, [attemptId]);
+                return { rows: [{ diagnostic_correlation_id: correlationId }], rowCount: 1 };
+            }
+            throw new Error(`Unexpected pool query: ${text}`);
+        },
+        connect: async () => client,
+    };
+    t.mock.method(db, 'query', async () => ({ rows: [{ role: 'admin', deleted_at: null }], rowCount: 1 }));
+    t.mock.method(db, 'getPool', () => pool as ReturnType<typeof db.getPool>);
+    const app = express(); app.use('/admin', adminRouter); app.use(errorHandler);
+    const server = app.listen(0, '127.0.0.1'); await once(server, 'listening');
+    const address = server.address();
+    if (!address || typeof address === 'string') throw new Error('Expected a loopback port');
+    try {
+        const response = await fetch(`http://127.0.0.1:${address.port}/admin/verification-diagnostics/by-attempt/${attemptId}`, { headers: { authorization: `Bearer ${token('admin')}` } });
+        assert.equal(response.status, 200);
+        const body = await response.json() as { data: { timeline: Array<Record<string, unknown>> } };
+        assert.deepEqual(body.data.timeline, [{ stage: 'finished', outcome: 'success', reason: 'none', httpStatus: null, durationMs: 18, recordedAt: '2026-09-13T09:00:00.000Z' }]);
+        const audit = queries.find((query) => query.text.includes("'verification_diagnostics_viewed'"));
+        assert.ok(audit);
+        assert.equal(audit?.params?.includes(actorId), true);
+        assert.equal(audit?.params?.includes(institutionId), true);
+    } finally { server.close(); await once(server, 'close'); }
+});
+
+test('unknown attempts and malformed attempt identifiers stay generic without an audit', async (t) => {
+    const queries: string[] = [];
+    const pool = {
+        async query(text: string) {
+            queries.push(text);
+            return { rows: [], rowCount: 0 };
+        },
+        connect: async () => { throw new Error('must not open a read transaction without a correlation'); },
+    };
+    t.mock.method(db, 'query', async () => ({ rows: [{ role: 'admin', deleted_at: null }], rowCount: 1 }));
+    t.mock.method(db, 'getPool', () => pool as ReturnType<typeof db.getPool>);
+    const app = express(); app.use('/admin', adminRouter); app.use(errorHandler);
+    const server = app.listen(0, '127.0.0.1'); await once(server, 'listening');
+    const address = server.address();
+    if (!address || typeof address === 'string') throw new Error('Expected a loopback port');
+    try {
+        const response = await fetch(`http://127.0.0.1:${address.port}/admin/verification-diagnostics/by-attempt/${attemptId}`, { headers: { authorization: `Bearer ${token('admin')}` } });
+        await assertErrorEnvelope(response, 404, 'Verification diagnostic not found', 'NOT_FOUND');
+        const malformed = await fetch(`http://127.0.0.1:${address.port}/admin/verification-diagnostics/by-attempt/not-an-attempt-id`, { headers: { authorization: `Bearer ${token('admin')}` } });
+        await assertErrorEnvelope(malformed, 422, 'Invalid verification diagnostic identifier', 'VALIDATION_ERROR');
+        assert.equal(queries.some((query) => query.includes("'verification_diagnostics_viewed'")), false);
     } finally { server.close(); await once(server, 'close'); }
 });
