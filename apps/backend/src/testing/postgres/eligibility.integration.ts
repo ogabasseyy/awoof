@@ -308,11 +308,10 @@ test('Microsoft fallback rejects globally stale email candidates and selects old
             assert.equal(fallback.eligible, true);
             if (fallback.eligible) assert.equal(fallback.evidenceId, microsoft.emailEvidenceId);
 
-            for (const invalidation of ['email_revoked', 'email_expired', 'parent_withdrawn', 'mailbox_changed', 'identity_changed', 'base_policy_changed', 'domain_removed', 'denial'] as const) {
+            for (const invalidation of ['email_revoked', 'parent_withdrawn', 'mailbox_changed', 'identity_changed', 'base_policy_changed', 'domain_removed', 'denial'] as const) {
                 const isolated = await createFixture(client);
                 const current = await makeMicrosoftCurrent(client, isolated, "clock_timestamp() - interval '1 second'");
                 if (invalidation === 'email_revoked') await client.query(`UPDATE eligibility_evidence SET revoked_at=clock_timestamp() WHERE id=$1`, [current.emailEvidenceId]);
-                if (invalidation === 'email_expired') await client.query(`UPDATE eligibility_evidence SET expires_at=clock_timestamp() - interval '1 day' WHERE id=$1`, [current.emailEvidenceId]);
                 if (invalidation === 'parent_withdrawn') await inTransaction(client, () => withdrawConsent(client, isolated.userId, isolated.grantId));
                 if (invalidation === 'mailbox_changed') await client.query(`UPDATE users SET email=$2 WHERE id=$1`, [isolated.userId, `changed-${uniqueLabel()}@students.school.example`]);
                 if (invalidation === 'identity_changed') await client.query(`UPDATE students SET name=name || ' changed' WHERE id=$1`, [isolated.studentId]);

@@ -176,7 +176,8 @@ async function currentMicrosoftProof(
         && evidence.expires_at! > now;
 }
 
-async function independentlyValidEmailEvidence(
+/** Exported for unit testing; production entry remains getEffectiveEligibility. */
+export async function independentlyValidEmailEvidence(
     tx: PoolClient,
     userId: string,
     context: StudentContext,
