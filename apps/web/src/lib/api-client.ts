@@ -13,6 +13,7 @@ import {
 } from './auth';
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:5001';
+const API_BASE_URL = `${API_URL}/api`;
 
 export function getImageUrl(imagePath: string | null | undefined): string | null {
     if (!imagePath) return null;
@@ -21,13 +22,24 @@ export function getImageUrl(imagePath: string | null | undefined): string | null
 }
 
 const apiClient: AxiosInstance = axios.create({
-    baseURL: `${API_URL}/api`,
+    baseURL: API_BASE_URL,
     headers: { 'Content-Type': 'application/json' },
+});
+
+/**
+ * Credentialed requests are limited to the Microsoft verification namespace.
+ * Do not use this client for arbitrary URLs: it carries both a bearer token
+ * and the short-lived callback cookie needed by the redirect flow.
+ */
+export const microsoftVerificationApiClient: AxiosInstance = axios.create({
+    baseURL: API_BASE_URL,
+    headers: { 'Content-Type': 'application/json' },
+    withCredentials: true,
 });
 
 /** Public/auth-start requests never refresh, clear, or navigate globally. */
 export const publicApiClient: AxiosInstance = axios.create({
-    baseURL: `${API_URL}/api`,
+    baseURL: API_BASE_URL,
     headers: { 'Content-Type': 'application/json' },
 });
 
@@ -40,6 +52,7 @@ type SessionBoundRequest = InternalAxiosRequestConfig & {
     __awoofSession?: SessionSnapshot;
     __awoofCredentials?: RequestCredentials;
     __awoofRetried?: boolean;
+    __awoofClient?: AxiosInstance;
 };
 
 const refreshes = new Map<string, Promise<string>>();
@@ -124,12 +137,32 @@ function retryWith(request: SessionBoundRequest, snapshot: SessionSnapshot) {
         refreshToken: snapshot.refreshToken,
     };
     setAuthorization(request, snapshot.accessToken);
-    return apiClient(request);
+    return (request.__awoofClient ?? apiClient)(request);
 }
 
-apiClient.interceptors.request.use(
+export function isMicrosoftVerificationRequest(config: Pick<InternalAxiosRequestConfig, 'url' | 'baseURL'>): boolean {
+    const url = config.url ?? '';
+    if (config.baseURL !== API_BASE_URL || !url.startsWith('/verification/microsoft') || url.includes('\\') || /(^|\/)\.\.?(\/|$)/.test(url)) return false;
+    try {
+        const base = new URL(`${API_BASE_URL}/`);
+        // Axios combines its base path with a slash-prefixed relative URL;
+        // URL() alone would instead discard `/api`.
+        const resolved = new URL(url.slice(1), base);
+        const namespace = `${base.pathname.replace(/\/$/, '')}/verification/microsoft`;
+        return resolved.origin === base.origin && (resolved.pathname === namespace || resolved.pathname.startsWith(`${namespace}/`));
+    } catch {
+        return false;
+    }
+}
+
+function installSessionInterceptors(client: AxiosInstance, microsoftOnly = false): void {
+client.interceptors.request.use(
     (config: InternalAxiosRequestConfig) => {
+        if (microsoftOnly && !isMicrosoftVerificationRequest(config)) {
+            return Promise.reject(new Error('Microsoft credentialed client only permits Microsoft verification paths.'));
+        }
         const request = config as SessionBoundRequest;
+        request.__awoofClient = client;
         if (!request.__awoofSession) {
             const started = getSessionSnapshot();
             request.__awoofSession = started;
@@ -145,7 +178,7 @@ apiClient.interceptors.request.use(
     (error) => Promise.reject(error),
 );
 
-apiClient.interceptors.response.use(
+client.interceptors.response.use(
     (response) => response,
     async (error) => {
         const request = error.config as SessionBoundRequest | undefined;
@@ -180,5 +213,9 @@ apiClient.interceptors.response.use(
         }
     },
 );
+}
+
+installSessionInterceptors(apiClient);
+installSessionInterceptors(microsoftVerificationApiClient, true);
 
 export default apiClient;

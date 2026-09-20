@@ -6,6 +6,7 @@ import type { PoolClient } from 'pg';
 import { db } from '../../config/database.js';
 import { issueSession, refreshSession, revokeSessionByRefreshToken } from '../../services/auth/session.service.js';
 import { jwtService, type TokenPayload } from '../../services/auth/jwt.service.js';
+import { withMicrosoftSession } from '../../services/verification/microsoft-session.service.js';
 import { assertFixtureDatabase, createTestPool, withTestClient } from './test-database.js';
 
 type Profile = { userId: string; email: string; role: TokenPayload['role']; passwordHash: string };
@@ -39,6 +40,19 @@ async function assertBlockedUserUpdate(observer: PoolClient): Promise<void> {
     throw new Error('Expected session issuance UPDATE to be blocked before releasing password-reset lock');
 }
 
+async function assertBlockedMicrosoftUserLock(observer: PoolClient): Promise<void> {
+    for (let attempt = 0; attempt < 40; attempt += 1) {
+        const result = await observer.query<{ pid: number }>(
+            `SELECT pid FROM pg_stat_activity
+             WHERE query LIKE 'SELECT id, email FROM users%'
+               AND cardinality(pg_blocking_pids(pid)) > 0`,
+        );
+        if (result.rowCount === 1) return;
+        await delay(10);
+    }
+    throw new Error('Expected Microsoft session authority to wait on the user lock');
+}
+
 test('uses durable profile authority, stored hashes, and current database claims', async (t) => {
     const pool = createTestPool();
     t.after(async () => { await db.close(); await pool.end(); });
@@ -49,28 +63,33 @@ test('uses durable profile authority, stored hashes, and current database claims
         const pendingVendor = await createProfile(client, 'vendor', 'pending');
         const activeVendor = await createProfile(client, 'vendor');
         const studentTokens = await issueSession(student, false, student.passwordHash);
-        const stored = await client.query<{ refresh_token_hash: string; refresh_token_expires_at: Date }>(
-            'SELECT refresh_token_hash, refresh_token_expires_at FROM users WHERE id = $1', [student.userId],
+        const stored = await client.query<{ refresh_token_hash: string; refresh_token_expires_at: Date; active_session_id: string }>(
+            'SELECT refresh_token_hash, refresh_token_expires_at, active_session_id FROM users WHERE id = $1', [student.userId],
         );
         assert.equal(stored.rows[0]?.refresh_token_hash, createHash('sha256').update(studentTokens.refreshToken).digest('hex'));
         assert.ok(stored.rows[0]?.refresh_token_expires_at instanceof Date);
         assert.equal(stored.rows[0]?.refresh_token_expires_at.getTime(), jwtService.verifyRefreshToken(studentTokens.refreshToken).exp! * 1000);
-        assert.equal(jwtService.verifyAccessToken(await refreshSession(studentTokens.refreshToken)).email, student.email);
+        assert.equal(stored.rows[0]?.active_session_id, jwtService.verifyRefreshToken(studentTokens.refreshToken).sid);
+        const refreshedStudent = jwtService.verifyAccessToken(await refreshSession(studentTokens.refreshToken));
+        assert.equal(refreshedStudent.email, student.email);
+        assert.equal(refreshedStudent.sid, stored.rows[0]?.active_session_id);
         const pendingTokens = await issueSession(pendingVendor, false, pendingVendor.passwordHash);
         const activeTokens = await issueSession(activeVendor, false, activeVendor.passwordHash);
         assert.equal(jwtService.verifyAccessToken(await refreshSession(pendingTokens.refreshToken)).role, 'vendor');
         assert.equal(jwtService.verifyAccessToken(await refreshSession(activeTokens.refreshToken)).role, 'vendor');
 
         const second = await issueSession(student, false, student.passwordHash);
+        assert.notEqual(jwtService.verifyRefreshToken(studentTokens.refreshToken).sid, jwtService.verifyRefreshToken(second.refreshToken).sid);
         await assert.rejects(refreshSession(studentTokens.refreshToken), /Refresh token not found or invalid/);
         assert.equal(jwtService.verifyAccessToken(await refreshSession(second.refreshToken)).role, 'student');
         await revokeSessionByRefreshToken(studentTokens.refreshToken);
         assert.equal(jwtService.verifyAccessToken(await refreshSession(second.refreshToken)).role, 'student');
         await revokeSessionByRefreshToken(second.refreshToken);
         await assert.rejects(refreshSession(second.refreshToken), /Refresh token not found or invalid/);
-        const revoked = await client.query<{ refresh_token_hash: string | null; refresh_token_expires_at: Date | null }>('SELECT refresh_token_hash, refresh_token_expires_at FROM users WHERE id = $1', [student.userId]);
+        const revoked = await client.query<{ refresh_token_hash: string | null; refresh_token_expires_at: Date | null; active_session_id: string | null }>('SELECT refresh_token_hash, refresh_token_expires_at, active_session_id FROM users WHERE id = $1', [student.userId]);
         assert.equal(revoked.rows[0]?.refresh_token_hash, null);
         assert.equal(revoked.rows[0]?.refresh_token_expires_at, null);
+        assert.equal(revoked.rows[0]?.active_session_id, null);
 
         const staleStudent = await createProfile(client, 'student');
         const staleToken = await issueSession(staleStudent, false, staleStudent.passwordHash);
@@ -80,6 +99,63 @@ test('uses durable profile authority, stored hashes, and current database claims
         assert.equal(current.role, 'admin');
     } finally {
         client.release();
+    }
+});
+
+test('an old refresh logout blocked behind a replacement commit cannot revoke the replacement session', async (t) => {
+    const pool = createTestPool();
+    t.after(async () => { await db.close(); await pool.end(); });
+    const lockClient = await pool.connect();
+    const observer = await pool.connect();
+    try {
+        await assertFixtureDatabase(lockClient);
+        const profile = await createProfile(lockClient, 'student');
+        const old = await issueSession(profile, false, profile.passwordHash);
+        const replacement = await issueSession(profile, false, profile.passwordHash);
+        // Reinstall old authority so a captured logout is valid before it waits.
+        await lockClient.query('UPDATE users SET refresh_token_hash = $2, active_session_id = $3::uuid WHERE id = $1', [
+            profile.userId, createHash('sha256').update(old.refreshToken).digest('hex'), jwtService.verifyRefreshToken(old.refreshToken).sid,
+        ]);
+        await lockClient.query('BEGIN');
+        await lockClient.query('SELECT id FROM users WHERE id = $1 FOR UPDATE', [profile.userId]);
+        const blockedLogout = revokeSessionByRefreshToken(old.refreshToken);
+        await assertBlockedUserUpdate(observer);
+        await lockClient.query('UPDATE users SET refresh_token_hash = $2, active_session_id = $3::uuid WHERE id = $1', [
+            profile.userId, createHash('sha256').update(replacement.refreshToken).digest('hex'), jwtService.verifyRefreshToken(replacement.refreshToken).sid,
+        ]);
+        await lockClient.query('COMMIT');
+        await blockedLogout;
+        const current = await lockClient.query<{ active_session_id: string | null }>('SELECT active_session_id FROM users WHERE id = $1', [profile.userId]);
+        assert.equal(current.rows[0]?.active_session_id, jwtService.verifyRefreshToken(replacement.refreshToken).sid);
+        assert.equal(jwtService.verifyAccessToken(await refreshSession(replacement.refreshToken)).sid, current.rows[0]?.active_session_id);
+    } finally {
+        await lockClient.query('ROLLBACK').catch(() => undefined);
+        lockClient.release();
+        observer.release();
+    }
+});
+
+test('Microsoft authority rechecks expiry after waiting for a user lock', async (t) => {
+    const pool = createTestPool();
+    t.after(async () => { await db.close(); await pool.end(); });
+    const lockClient = await pool.connect();
+    const observer = await pool.connect();
+    try {
+        await assertFixtureDatabase(lockClient);
+        const profile = await createProfile(lockClient, 'student');
+        const tokens = await issueSession(profile, false, profile.passwordHash);
+        const sid = jwtService.verifyAccessToken(tokens.accessToken).sid!;
+        await lockClient.query('BEGIN');
+        await lockClient.query('SELECT id FROM users WHERE id = $1 FOR UPDATE', [profile.userId]);
+        const waitingAuthority = withMicrosoftSession(pool, { userId: profile.userId, sid, use: 'issuance' }, async () => true);
+        await assertBlockedMicrosoftUserLock(observer);
+        await lockClient.query(`UPDATE users SET refresh_token_expires_at = clock_timestamp() - interval '1 second' WHERE id = $1`, [profile.userId]);
+        await lockClient.query('COMMIT');
+        await assert.rejects(waitingAuthority, /requires reauthentication/);
+    } finally {
+        await lockClient.query('ROLLBACK').catch(() => undefined);
+        lockClient.release();
+        observer.release();
     }
 });
 

@@ -46,8 +46,8 @@ export function DashboardTopbar({
     const profileSecondary = user?.secondaryText ?? user?.roleLabel ?? user?.email ?? '';
 
     return (
-        <header className="sticky top-0 z-20 flex items-center justify-between border-b border-slate-200/80 bg-white/75 px-4 py-3 backdrop-blur-md sm:px-6 sm:py-4">
-            <div className="flex items-center gap-3">
+        <header className="sticky top-0 z-20 flex min-w-0 items-center justify-between border-b border-slate-200/80 bg-white/75 px-4 py-3 backdrop-blur-md sm:px-6 sm:py-4">
+            <div className="flex min-w-0 items-center gap-3">
                 <button
                     type="button"
                     onClick={onToggleSidebar}
@@ -67,7 +67,7 @@ export function DashboardTopbar({
                 </Link>
             </div>
 
-            <div className="flex items-center gap-4">
+            <div className="flex shrink-0 items-center gap-2 sm:gap-4">
                 {actions && <div className="hidden md:block">{actions}</div>}
 
                 <NotificationBell />
@@ -76,7 +76,8 @@ export function DashboardTopbar({
                     <button
                         type="button"
                         onClick={() => setIsMenuOpen((prev) => !prev)}
-                        className="flex items-center gap-3  bg-white px-2 py-1.5 text-left transition-colors hover:bg-slate-100"
+                        className="flex items-center gap-2 bg-white px-2 py-1.5 text-left transition-colors hover:bg-slate-100 sm:gap-3"
+                        aria-label={`Open account menu for ${profileName}`}
                     >
                         {user?.avatarUrl ? (
                             <Image
@@ -91,7 +92,7 @@ export function DashboardTopbar({
                                 {profileName?.[0]?.toUpperCase() ?? 'U'}
                             </div>
                         )}
-                        <div className="flex items-center gap-2">
+                        <div className="hidden items-center gap-2 sm:flex">
                             <div className="text-left">
                                 <p className="text-sm font-semibold text-slate-900">{profileName}</p>
                                 {profileSecondary && <p className="text-xs text-slate-500">{profileSecondary}</p>}
@@ -122,4 +123,3 @@ export function DashboardTopbar({
         </header>
     );
 }
-

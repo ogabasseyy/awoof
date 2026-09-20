@@ -66,6 +66,10 @@ jobs:
         working-directory: apps/backend
         run: npm test
 
+      - name: Test backend scripts
+        working-directory: apps/backend
+        run: npm run test:scripts
+
       - name: Test PostgreSQL authority and migration regressions
         working-directory: apps/backend
         run: POSTGRES_BIN_DIR="$(pg_config --bindir)" npm run test:postgres
@@ -87,6 +91,12 @@ jobs:
         run: npm run test:browser
         env:
           AWOOF_BROWSER_MODE: dev
+          PLAYWRIGHT_NO_COPY_PROMPT: '1'
+
+      - name: Test Microsoft browser flows
+        working-directory: apps/web
+        run: npm run test:browser:microsoft
+        env:
           PLAYWRIGHT_NO_COPY_PROMPT: '1'
 
       - name: Build widget
@@ -146,3 +156,7 @@ jobs:
       - name: Build
         working-directory: apps/backend
         run: npm run build
+
+      - name: Test artifact parity and runtime
+        working-directory: apps/backend
+        run: npm run test:artifact

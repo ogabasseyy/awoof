@@ -19,6 +19,8 @@ export interface User {
 
 export interface SessionSnapshot {
     generation: number;
+    /** Browser-local continuity fence, never a server credential or identifier. */
+    browserSessionId: string | null;
     accessToken: string | null;
     refreshToken: string | null;
 }
@@ -247,10 +249,11 @@ function attachStorageListener(): void {
 
 function snapshot(): SessionSnapshot {
     if (quarantined || observed.state === 'signed_out') {
-        return { generation, accessToken: null, refreshToken: null };
+        return { generation, browserSessionId: null, accessToken: null, refreshToken: null };
     }
     return {
         generation,
+        browserSessionId: observed.sessionId,
         accessToken: observed.accessToken,
         refreshToken: observed.refreshToken,
     };

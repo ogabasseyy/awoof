@@ -149,6 +149,23 @@ export async function withdrawConsent(tx: PoolClient, userId: string, grantId: s
              WHERE processing_grant_id = $1 AND revoked_at IS NULL`,
             [grantId],
         );
+        // Microsoft provider authority is deliberately narrower than the
+        // processing grant, but a parent withdrawal must cancel it atomically.
+        await tx.query(
+            `UPDATE microsoft_verification_attempts
+             SET status = 'failed', encrypted_verifier = NULL, nonce = NULL, result = NULL
+             WHERE processing_grant_id = $1 AND status IN ('pending', 'processing', 'ready')`,
+            [grantId],
+        );
+        await tx.query(
+            `UPDATE microsoft_provider_proofs proofs
+             SET revoked_at = clock_timestamp()
+             FROM microsoft_verification_consents consents
+             WHERE consents.id = proofs.provider_consent_id
+               AND consents.processing_grant_id = $1
+               AND proofs.revoked_at IS NULL`,
+            [grantId],
+        );
     }
     await tx.query(
         `INSERT INTO verification_audit_events (user_id, university_id, event_type, metadata)

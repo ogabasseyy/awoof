@@ -32,6 +32,8 @@ export function Step1CompanyInfo({ onNext, error, isLoading, progressIndicator }
     const form = useForm<Step1Data>({
         resolver: zodResolver(step1Schema),
     });
+    const { isReady } = form.formState;
+    const controlsDisabled = Boolean(isLoading) || !isReady;
 
     const onSubmit = (data: Step1Data) => {
         onNext(data);
@@ -39,84 +41,85 @@ export function Step1CompanyInfo({ onNext, error, isLoading, progressIndicator }
 
     return (
         <StepWrapper progressIndicator={progressIndicator} error={error}>
-            <form onSubmit={form.handleSubmit(onSubmit)} className="space-y-5">
-                <div>
-                    <Label htmlFor="companyName" className="text-left block mb-2">
-                        Company&apos;s Name
-                    </Label>
-                    <Input
-                        id="companyName"
-                        type="text"
-                        placeholder="Enter your company's Name"
-                        {...form.register('companyName')}
-                        aria-invalid={form.formState.errors.companyName ? 'true' : 'false'}
-                        className="w-full"
-                    />
-                    {form.formState.errors.companyName && (
-                        <p className="mt-1 text-sm text-red-600 text-left">
-                            {form.formState.errors.companyName.message}
-                        </p>
-                    )}
-                </div>
+            <form onSubmit={form.handleSubmit(onSubmit)} method="post">
+                <fieldset disabled={controlsDisabled} aria-busy={!isReady} className="m-0 w-full min-w-0 border-0 p-0 space-y-5">
+                    <div>
+                        <Label htmlFor="companyName" className="text-left block mb-2">
+                            Company&apos;s Name
+                        </Label>
+                        <Input
+                            id="companyName"
+                            type="text"
+                            placeholder="Enter your company's Name"
+                            {...form.register('companyName')}
+                            aria-invalid={form.formState.errors.companyName ? 'true' : 'false'}
+                            className="w-full"
+                        />
+                        {form.formState.errors.companyName && (
+                            <p className="mt-1 text-sm text-red-600 text-left">
+                                {form.formState.errors.companyName.message}
+                            </p>
+                        )}
+                    </div>
 
-                <div>
-                    <Label htmlFor="companyEmail" className="text-left block mb-2">
-                        Company&apos;s Email
-                    </Label>
-                    <Input
-                        id="companyEmail"
-                        type="email"
-                        placeholder="Enter your company's Email"
-                        {...form.register('companyEmail')}
-                        aria-invalid={form.formState.errors.companyEmail ? 'true' : 'false'}
-                        className="w-full"
-                    />
-                    {form.formState.errors.companyEmail && (
-                        <p className="mt-1 text-sm text-red-600 text-left">
-                            {form.formState.errors.companyEmail.message}
-                        </p>
-                    )}
-                </div>
+                    <div>
+                        <Label htmlFor="companyEmail" className="text-left block mb-2">
+                            Company&apos;s Email
+                        </Label>
+                        <Input
+                            id="companyEmail"
+                            type="email"
+                            placeholder="Enter your company's Email"
+                            {...form.register('companyEmail')}
+                            aria-invalid={form.formState.errors.companyEmail ? 'true' : 'false'}
+                            className="w-full"
+                        />
+                        {form.formState.errors.companyEmail && (
+                            <p className="mt-1 text-sm text-red-600 text-left">
+                                {form.formState.errors.companyEmail.message}
+                            </p>
+                        )}
+                    </div>
 
-                <div>
-                    <Label htmlFor="fullName" className="text-left block mb-2">Full Name</Label>
-                    <Input
-                        id="fullName"
-                        type="text"
-                        placeholder="Enter your full name"
-                        {...form.register('fullName')}
-                        aria-invalid={form.formState.errors.fullName ? 'true' : 'false'}
-                        className="w-full"
-                    />
-                    {form.formState.errors.fullName && (
-                        <p className="mt-1 text-sm text-red-600 text-left">
-                            {form.formState.errors.fullName.message}
-                        </p>
-                    )}
-                </div>
+                    <div>
+                        <Label htmlFor="fullName" className="text-left block mb-2">Full Name</Label>
+                        <Input
+                            id="fullName"
+                            type="text"
+                            placeholder="Enter your full name"
+                            {...form.register('fullName')}
+                            aria-invalid={form.formState.errors.fullName ? 'true' : 'false'}
+                            className="w-full"
+                        />
+                        {form.formState.errors.fullName && (
+                            <p className="mt-1 text-sm text-red-600 text-left">
+                                {form.formState.errors.fullName.message}
+                            </p>
+                        )}
+                    </div>
 
-                <div>
-                    <Label htmlFor="phoneNumber" className="text-left block mb-2">Phone Number</Label>
-                    <Input
-                        id="phoneNumber"
-                        type="tel"
-                        placeholder="Enter your phone number"
-                        {...form.register('phoneNumber')}
-                        aria-invalid={form.formState.errors.phoneNumber ? 'true' : 'false'}
-                        className="w-full"
-                    />
-                    {form.formState.errors.phoneNumber && (
-                        <p className="mt-1 text-sm text-red-600 text-left">
-                            {form.formState.errors.phoneNumber.message}
-                        </p>
-                    )}
-                </div>
+                    <div>
+                        <Label htmlFor="phoneNumber" className="text-left block mb-2">Phone Number</Label>
+                        <Input
+                            id="phoneNumber"
+                            type="tel"
+                            placeholder="Enter your phone number"
+                            {...form.register('phoneNumber')}
+                            aria-invalid={form.formState.errors.phoneNumber ? 'true' : 'false'}
+                            className="w-full"
+                        />
+                        {form.formState.errors.phoneNumber && (
+                            <p className="mt-1 text-sm text-red-600 text-left">
+                                {form.formState.errors.phoneNumber.message}
+                            </p>
+                        )}
+                    </div>
 
-                <Button type="submit" className="w-full rounded-full h-11 font-semibold" disabled={isLoading}>
-                    Continue
-                </Button>
+                    <Button type="submit" className="w-full rounded-full h-11 font-semibold" disabled={controlsDisabled}>
+                        Continue
+                    </Button>
+                </fieldset>
             </form>
         </StepWrapper>
     );
 }
-

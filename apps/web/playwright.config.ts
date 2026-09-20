@@ -8,10 +8,11 @@ if (browserMode !== 'dev' && browserMode !== 'production') {
 
 const webServerCommand = browserMode === 'production'
   ? 'NEXT_PUBLIC_API_URL=http://127.0.0.1:3108 NEXT_TELEMETRY_DISABLED=1 node scripts/serve-browser-production.mjs'
-  : 'NEXT_PUBLIC_API_URL=http://127.0.0.1:3108 NEXT_TELEMETRY_DISABLED=1 npm run dev -- --hostname 127.0.0.1 --port 3107';
+  : 'NEXT_PUBLIC_API_URL=http://127.0.0.1:3108 NEXT_TELEMETRY_DISABLED=1 npm run dev -- --webpack --hostname 127.0.0.1 --port 3107';
 
 export default defineConfig({
   testDir: './tests/browser',
+  testIgnore: 'microsoft-verification.spec.ts',
   fullyParallel: false,
   forbidOnly: true,
   retries: 0,

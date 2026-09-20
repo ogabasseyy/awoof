@@ -1,9 +1,11 @@
 import type { PoolClient } from 'pg';
+import { config } from '../../config/env.js';
 import { BadRequestError, ConflictError, NotFoundError } from '../../common/errors/AppError.js';
 import { challengeSubjectDigest } from './challenge.service.js';
 import { lockStudentContext } from './eligibility-context.service.js';
 import { getEffectiveEligibility } from './eligibility-read.service.js';
 import { normalizeMailbox } from './eligibility-policy.service.js';
+import { assertMicrosoftAuthority, type MicrosoftAttemptAuthority } from './microsoft-authority.service.js';
 import {
     ENROLLMENT_SOURCE,
     type EligibilityResult,
@@ -14,6 +16,18 @@ import {
     type StudentEmailChallengeBindings,
 } from './eligibility.types.js';
 import { VERIFICATION_NOTICE_VERSION } from './verification-notices.js';
+
+type MicrosoftReadyAttempt = MicrosoftAttemptAuthority & {
+    id: string;
+    expires_at: Date;
+    status: string;
+    result: unknown;
+};
+
+type TrustedMicrosoftObservation = {
+    identity: { tenantId: string; objectId: string };
+    observedAt: Date;
+};
 
 type ChallengeRow = {
     id: string;
@@ -48,6 +62,18 @@ type StudentProfile = {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
     return value !== null && typeof value === 'object' && !Array.isArray(value);
+}
+
+/** Parses only the server-stored graph-ready result contract. */
+export function trustedMicrosoftObservation(value: unknown): TrustedMicrosoftObservation | null {
+    if (!isRecord(value) || !isRecord(value.identity) || !isRecord(value.educationObservation)) return null;
+    const identity = value.identity;
+    const observation = value.educationObservation;
+    if (typeof identity.tenantId !== 'string' || !identity.tenantId || typeof identity.objectId !== 'string' || !identity.objectId
+        || observation.outcome !== 'student' || observation.objectId !== identity.objectId || typeof observation.observedAt !== 'string') return null;
+    const observedAt = new Date(observation.observedAt);
+    if (!Number.isFinite(observedAt.getTime())) return null;
+    return { identity: { tenantId: identity.tenantId, objectId: identity.objectId }, observedAt };
 }
 
 function sameStudentEmailBindings(value: unknown, context: StudentContext, grantId: string): boolean {
@@ -357,6 +383,142 @@ export async function recordEmailAssurance(
         verifiedAt: created.verified_at,
         expiresAt: created.expires_at,
     };
+}
+
+/**
+ * Applies one server-stored Graph student observation. This writer is not a
+ * read fallback and never derives a Microsoft result from email evidence.
+ * The caller is responsible for the durable attempt receipt/status transition.
+ */
+export async function applyMicrosoftEnrollment(
+    tx: PoolClient,
+    attemptId: string,
+    options: { isEnabled?: () => boolean } = {},
+): Promise<EligibilityResult> {
+    const enabled = options.isEnabled ?? (() => config.microsoftOidc.enabled);
+    if (enabled() !== true) return { eligible: false, reason: 'unverified' };
+    const preliminary = await tx.query<MicrosoftReadyAttempt>(
+        `SELECT id, user_id, university_id, institution_policy_version, provider_policy_version,
+                identity_version, processing_grant_id, provider_consent_id, server_session_id,
+                expires_at, status, result
+         FROM microsoft_verification_attempts WHERE id = $1`,
+        [attemptId],
+    );
+    const original = preliminary.rows[0];
+    if (!original) throw new NotFoundError('Microsoft verification attempt not found');
+    await assertMicrosoftAuthority(tx, {
+        userId: original.user_id, sid: original.server_session_id, use: 'owner',
+        processingGrantId: original.processing_grant_id, providerConsentId: original.provider_consent_id,
+        expected: original, mode: 'graph_enrollment',
+    });
+    const locked = await tx.query<MicrosoftReadyAttempt>(
+        `SELECT id, user_id, university_id, institution_policy_version, provider_policy_version,
+                identity_version, processing_grant_id, provider_consent_id, server_session_id,
+                expires_at, status, result
+         FROM microsoft_verification_attempts WHERE id = $1 FOR UPDATE`,
+        [attemptId],
+    );
+    const attempt = locked.rows[0];
+    const now = await databaseNow(tx);
+    if (!attempt || attempt.status !== 'ready' || attempt.expires_at <= now) {
+        return { eligible: false, reason: 'unverified' };
+    }
+    // Recheck after the attempt lock: all values used below are current.
+    const current = await assertMicrosoftAuthority(tx, {
+        userId: attempt.user_id, sid: attempt.server_session_id, use: 'owner',
+        processingGrantId: attempt.processing_grant_id, providerConsentId: attempt.provider_consent_id,
+        expected: attempt, mode: 'graph_enrollment',
+    });
+    if (current.authoritativeDenial) return { eligible: false, reason: 'enrollment_denied' };
+    const trusted = trustedMicrosoftObservation(attempt.result);
+    if (!trusted || trusted.identity.tenantId !== current.policy.tenant_id) return { eligible: false, reason: 'unverified' };
+
+    const identity = await tx.query<{ id: string }>(
+        `SELECT id FROM microsoft_identities
+         WHERE user_id = $1 AND university_id = $2 AND tenant_id = $3 AND object_id = $4 AND revoked_at IS NULL
+         FOR UPDATE`,
+        [attempt.user_id, current.universityId, trusted.identity.tenantId, trusted.identity.objectId],
+    );
+    const identityId = identity.rows[0]?.id;
+    if (!identityId) return { eligible: false, reason: 'unverified' };
+    const mailbox = await tx.query<{ id: string }>(
+        `SELECT id FROM user_email_proofs
+         WHERE user_id = $1 AND email = $2
+         ORDER BY proven_at DESC, id DESC LIMIT 1 FOR UPDATE`,
+        [attempt.user_id, (await tx.query<{ email: string }>('SELECT lower(btrim(email)) AS email FROM users WHERE id = $1', [attempt.user_id])).rows[0]?.email],
+    );
+    const emailProofId = mailbox.rows[0]?.id;
+    if (!emailProofId) return { eligible: false, reason: 'unverified' };
+    const expiry = await tx.query<{ expires_at: Date }>(
+        `SELECT LEAST($2::timestamptz + interval '24 hours',
+                      $2::timestamptz + (max_evidence_hours * interval '1 hour'),
+                      term_ends_at, approved_until) AS expires_at
+         FROM institution_microsoft_policies WHERE university_id = $1 FOR UPDATE`,
+        [current.universityId, trusted.observedAt],
+    );
+    const expiresAt = expiry.rows[0]?.expires_at;
+
+    const existing = await tx.query<{ id: string; verified_at: Date; expires_at: Date }>(
+        `SELECT evidence.id, evidence.verified_at, evidence.expires_at
+         FROM eligibility_evidence evidence
+         JOIN microsoft_provider_proofs proof ON proof.id = evidence.provider_proof_id
+         WHERE proof.attempt_id = $1 AND proof.revoked_at IS NULL AND evidence.revoked_at IS NULL
+         FOR UPDATE OF evidence, proof`,
+        [attempt.id],
+    );
+    const existingEvidence = existing.rows[0];
+    // This is deliberately after every potentially blocking authority and
+    // existing-evidence lock. No stale clock may authorize a final write.
+    const finalNow = await databaseNow(tx);
+    if (enabled() !== true || attempt.expires_at <= finalNow || trusted.observedAt > finalNow) {
+        return { eligible: false, reason: 'unverified' };
+    }
+    if (!expiresAt || expiresAt <= finalNow) return { eligible: false, reason: 'expired' };
+    if (existingEvidence) {
+        if (existingEvidence.expires_at <= finalNow) return { eligible: false, reason: 'expired' };
+        return { eligible: true, studentId: current.studentId, universityId: current.universityId,
+            evidenceId: existingEvidence.id, processingGrantId: attempt.processing_grant_id,
+            method: 'enrollment', verifiedAt: existingEvidence.verified_at, expiresAt: existingEvidence.expires_at };
+    }
+
+    const proof = await tx.query<{ id: string }>(
+        `INSERT INTO microsoft_provider_proofs
+             (user_id, university_id, provider_consent_id, identity_id, provider_policy_version,
+              attempt_id, observed_at, outcome, source)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, 'student', 'microsoft-education:v1')
+         ON CONFLICT (attempt_id) WHERE attempt_id IS NOT NULL DO NOTHING
+         RETURNING id`,
+        [attempt.user_id, current.universityId, attempt.provider_consent_id, identityId,
+            current.policy.version, attempt.id, trusted.observedAt],
+    );
+    const providerProofId = proof.rows[0]?.id ?? (await tx.query<{ id: string }>(
+        'SELECT id FROM microsoft_provider_proofs WHERE attempt_id = $1 AND revoked_at IS NULL FOR UPDATE', [attempt.id],
+    )).rows[0]?.id;
+    if (!providerProofId) throw new Error('Microsoft provider proof was not returned');
+    const evidence = await tx.query<{ id: string; verified_at: Date; expires_at: Date }>(
+        `INSERT INTO eligibility_evidence
+             (student_id, university_id, email_proof_id, processing_grant_id, provider_proof_id,
+              method, outcome, identity_version, policy_version, source, expires_at)
+         VALUES ($1, $2, $3, $4, $5, 'enrollment', 'verified', $6, $7, 'microsoft-education:v1', $8)
+         RETURNING id, verified_at, expires_at`,
+        [current.studentId, current.universityId, emailProofId, attempt.processing_grant_id, providerProofId,
+            current.identityVersion, current.institutionPolicyVersion, expiresAt],
+    );
+    const created = evidence.rows[0];
+    if (!created) throw new Error('Microsoft enrollment evidence was not returned');
+    await tx.query(
+        `UPDATE student_eligibility_state SET current_evidence_id = $3
+         WHERE student_id = $1 AND university_id = $2 AND authoritative_denial = false`,
+        [current.studentId, current.universityId, created.id],
+    );
+    await tx.query(
+        `INSERT INTO verification_audit_events (user_id, university_id, event_type, metadata)
+         VALUES ($1, $2, 'microsoft_enrollment_recorded', jsonb_build_object('evidenceId', $3::text))`,
+        [attempt.user_id, current.universityId, created.id],
+    );
+    return { eligible: true, studentId: current.studentId, universityId: current.universityId,
+        evidenceId: created.id, processingGrantId: attempt.processing_grant_id, method: 'enrollment',
+        verifiedAt: created.verified_at, expiresAt: created.expires_at };
 }
 
 export async function beginEnrollmentCheck(
