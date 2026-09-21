@@ -15,7 +15,7 @@ const webRoot = dirname(here);
 const APP_PORT = 3107;
 const WIDTHS = [360, 390, 768, 1440];
 const ROUTES = [
-  { path: '/', slug: 'home', h1: 'Your student ID just got more powerful' },
+  { path: '/', slug: 'home', h1: 'Verify your student status' },
   { path: '/marketplace', slug: 'marketplace', h1: 'savings are warming up' },
   { path: '/widget/verify', slug: 'widget-verify', h1: 'Merchant verification is unavailable' },
 ];
@@ -52,8 +52,9 @@ try {
     for (const width of WIDTHS) {
       const page = await browser.newPage({ viewport: { width, height: 900 } });
       try {
-        const response = await page.goto(`http://127.0.0.1:${APP_PORT}${route.path}`, { waitUntil: 'networkidle' });
+        const response = await page.goto(`http://127.0.0.1:${APP_PORT}${route.path}`, { waitUntil: 'load' });
         if (!response || !response.ok()) throw new Error(`${route.path} responded ${response?.status()}.`);
+        await page.waitForTimeout(1500);
         const h1 = await page.locator('h1').first().innerText();
         if (!h1.includes(route.h1)) throw new Error(`${route.path} h1 "${h1}" missing "${route.h1}".`);
         const file = join(outDir, `${route.slug}-${width}.png`);

@@ -1,21 +1,37 @@
-import React from 'react'
-import SignupImage from "../../../../../public/images/Signup screen.svg";
-import Image from 'next/image';
-
 function AboutScreenshot() {
   return (
     <div className="w-full max-w-lg">
-      <div className="min-h-[320px] sm:min-h-[480px] lg:h-[840px] max-w-lg bg-gradient-to-b from-[#5076E0] to-transparent rounded-3xl lg:rounded-4xl flex items-center justify-center">
-        <div className="p-6 sm:p-10 lg:p-16 w-full flex justify-center">
-          <Image
-            src={SignupImage}
-            alt="Signup Screenshot"
-            className="w-full h-auto max-h-[70vh] object-contain"
-          />
+      <div
+        role="img"
+        aria-label="Illustrative sample: a student verification status card showing one confirmed and one pending check"
+        className="rounded-3xl bg-white p-7 shadow-sm ring-1 ring-[#1D4ED8]/10"
+      >
+        <div className="flex items-center justify-between">
+          <p className="text-lg font-extrabold tracking-tight text-slate-900">Your verification</p>
+          <p className="text-[11px] font-bold uppercase tracking-[0.12em] text-slate-500">
+            Illustrative sample
+          </p>
         </div>
+        <dl className="mt-5 space-y-4">
+          <div className="flex items-center justify-between rounded-2xl bg-emerald-50 px-4 py-3">
+            <dt className="text-sm font-semibold text-slate-700">School mailbox</dt>
+            <dd className="text-sm font-bold text-emerald-700">Confirmed ✓</dd>
+          </div>
+          <div className="flex items-center justify-between rounded-2xl bg-amber-50 px-4 py-3">
+            <dt className="text-sm font-semibold text-slate-700">Current enrollment</dt>
+            <dd className="text-sm font-bold text-amber-700">Pending ◷</dd>
+          </div>
+        </dl>
+        <p className="mt-5 text-sm leading-relaxed text-slate-600">
+          Two separate checks, two separate answers. A pending check never
+          upgrades itself — and it never blocks what is already confirmed.
+        </p>
       </div>
+      <p className="mt-3 text-center text-xs text-slate-500">
+        Sample states for illustration — not your account.
+      </p>
     </div>
   );
 }
 
-export default AboutScreenshot
+export default AboutScreenshot;
