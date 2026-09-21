@@ -41,6 +41,7 @@ jobs:
             --no-progress
             './**/*.md' './**/*.html' './**/*.tsx' './**/*.ts'
             --include-mail=false
+            --exclude-path './**/node_modules/**'
             --exclude 'localhost|127\.0\.0\.1'
             --exclude 'github\.com'
             --exclude 'via\.placeholder\.com|example\.com|yourcdn\.com|yoursite\.com'
