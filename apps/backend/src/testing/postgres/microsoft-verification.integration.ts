@@ -1486,13 +1486,19 @@ test('mounted Microsoft callback and finish use the durable service with fixed r
         assert.match(String(replay.headers['set-cookie'] ?? ''), new RegExp(`${flow.started.callbackCookie.name}=;`));
 
         const widgetOrigin = 'https://merchant.example';
-        const widgetOk = await fetch(`${base}/api/widget/domain-check?domain=merchant.example&apiKey=${widget.apiKey}`, { headers: { origin: widgetOrigin } });
+        const widgetCheck = (origin: string, domain: string) => fetch(`${base}/api/widget/domain-check`, {
+            method: 'POST', headers: { origin, 'content-type': 'application/json' }, body: JSON.stringify({ domain, apiKey: widget.apiKey }),
+        });
+        const widgetOk = await widgetCheck(widgetOrigin, 'merchant.example');
         assert.equal(widgetOk.status, 200); assert.equal(widgetOk.headers.get('access-control-allow-origin'), widgetOrigin);
-        const widgetUnknown = await fetch(`${base}/api/widget/domain-check?domain=unknown.example&apiKey=${widget.apiKey}`, { headers: { origin: 'https://unknown.example' } });
+        const widgetUnknown = await widgetCheck('https://unknown.example', 'unknown.example');
         assert.equal(widgetUnknown.status, 403); assert.equal(widgetUnknown.headers.get('access-control-allow-origin'), null);
         await withTestClient((client) => client.query(`UPDATE widget_configs SET status='suspended' WHERE vendor_id=$1`, [widget.vendor]));
-        const widgetDisabled = await fetch(`${base}/api/widget/domain-check?domain=merchant.example&apiKey=${widget.apiKey}`, { headers: { origin: widgetOrigin } });
+        const widgetDisabled = await widgetCheck(widgetOrigin, 'merchant.example');
         assert.equal(widgetDisabled.status, 403); assert.equal(widgetDisabled.headers.get('access-control-allow-origin'), null);
+        // POST-only contract: credentials in the query string are not honored.
+        const widgetGet = await fetch(`${base}/api/widget/domain-check?domain=merchant.example&apiKey=${widget.apiKey}`, { headers: { origin: widgetOrigin } });
+        assert.equal(widgetGet.status, 404);
     } finally {
         await new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
     }
