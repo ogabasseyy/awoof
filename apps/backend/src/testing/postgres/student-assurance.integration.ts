@@ -152,45 +152,47 @@ function assertIsoInstant(value: string | null): asserts value is string {
 }
 
 // R3: Release A reads existing mailbox/evidence tables only and must not
-// depend on migration 057. The same fixture must project identical assurance
-// on a migration-056-only database and on a fully upgraded database where the
-// SSO tables exist.
-test('R3: assurance reader is identical on pre-057 and fully-upgraded databases', async () => {
+// depend on migration 057 content. B1 retired the pre-057 database itself,
+// so this test now pins the surviving half of the original matrix: the same
+// fixture projects identical assurance before and after real SSO rows exist.
+// (B4 extends the reader to project SSO assertions behind provider flags.)
+test('R3: assurance reader ignores SSO storage on the upgraded database', async () => {
     await withTestClient(async (client) => {
         const fixture = await createFixture(client);
         const baseline = await read(client, fixture.userId);
         assert.equal(baseline.schoolAccountStatus, 'verified');
         assert.equal(baseline.studentStatus, 'pending');
 
-        await client.query('BEGIN');
-        try {
-            await client.query(`CREATE TABLE student_auth_identities (
-                id uuid PRIMARY KEY, user_id uuid NOT NULL, university_id uuid NOT NULL,
-                provider text NOT NULL, issuer text NOT NULL, subject text NOT NULL,
-                observed_email text, revoked_at timestamptz, linked_at timestamptz NOT NULL DEFAULT clock_timestamp()
-            )`);
-            await client.query(`CREATE TABLE institution_login_policies (
-                id uuid PRIMARY KEY, university_id uuid NOT NULL, provider text NOT NULL,
-                issuer text NOT NULL, provider_realm text NOT NULL, version integer NOT NULL DEFAULT 1,
-                enabled boolean NOT NULL DEFAULT false
-            )`);
-            await client.query(`CREATE TABLE student_school_assertions (
-                id uuid PRIMARY KEY, user_id uuid NOT NULL, university_id uuid NOT NULL,
-                source text NOT NULL, verified_at timestamptz NOT NULL DEFAULT clock_timestamp(),
-                expires_at timestamptz NOT NULL, revoked_at timestamptz
-            )`);
-            const upgraded = await readStudentAssurance(client, fixture.userId);
-            assert.deepEqual(upgraded, baseline);
-        } finally {
-            await client.query('ROLLBACK');
-        }
-
         const tables = await client.query<{ tablename: string }>(
             `SELECT tablename FROM pg_tables
              WHERE schemaname = 'public'
                AND tablename IN ('student_school_assertions', 'student_auth_identities', 'institution_login_policies')`,
         );
-        assert.equal(tables.rowCount, 0);
+        assert.equal(tables.rowCount, 3);
+        const policyId = (await client.query<{ id: string }>(
+            `INSERT INTO institution_login_policies
+                 (university_id, provider, issuer, provider_realm, enabled,
+                  approved_until, school_assertion_days)
+             VALUES ($1, 'google', 'https://accounts.google.com', 'students.school.example',
+                     true, clock_timestamp() + interval '30 days', 90)
+             RETURNING id`,
+            [fixture.universityId],
+        )).rows[0]!.id;
+        const identityId = (await client.query<{ id: string }>(
+            `INSERT INTO student_auth_identities
+                 (user_id, university_id, provider, issuer, subject)
+             VALUES ($1, $2, 'google', 'https://accounts.google.com', $3)
+             RETURNING id`,
+            [fixture.userId, fixture.universityId, `r3-sub-${uniqueLabel()}`],
+        )).rows[0]!.id;
+        await client.query(
+            `INSERT INTO student_school_assertions
+                 (user_id, university_id, source, auth_identity_id, login_policy_id,
+                  policy_version, identity_version, expires_at)
+             VALUES ($1, $2, 'google_workspace', $3, $4, 1, 1,
+                     clock_timestamp() + interval '30 days')`,
+            [fixture.userId, fixture.universityId, identityId, policyId],
+        );
         assert.deepEqual(await read(client, fixture.userId), baseline);
     });
 });

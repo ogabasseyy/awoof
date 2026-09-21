@@ -674,3 +674,97 @@ Review disposition: `docs/runbooks/student-sso-review-disposition.md` (GO for Re
   NOT RUN — production access is forbidden to this task; an operator
   must execute and record each gate during the release window. The
   deprecated `verifiedStudents` alias awaits client-migration removal.
+
+## Task B1: durable login policy, identities, and attempts
+
+- Task: B1 — define durable login policy, identities and attempts
+  (`docs/superpowers/plans/2026-09-20-institution-email-auth.md`,
+  Task B1).
+- Commit: `test(auth): pin SSO handoff and identity-link security contracts`
+  on branch `codex/student-email-first-auth` (this commit; hash in completion
+  report). See deviations for the message override.
+- Source changes:
+  - `database/migrations/057_student_sso_auth.sql` (new): additive only —
+    `UNIQUE(id, user_id)` on `user_email_proofs` (verified absent at
+    baseline: PK on id only plus a `(user_id, email, proven_at)` index);
+    greenfield `institution_login_policies` (UNIQUE per
+    university/provider plus the UNIQUE id/university/provider triple for
+    the domain mapping), `institution_login_domains` (lowercase domain PK,
+    one university per domain), `institution_login_domain_providers`
+    (composite FKs to both), `student_auth_identities` (UNIQUE per
+    provider/issuer/subject plus owner key), `student_school_assertions`
+    (exactly-one-evidence CHECK with composite owner FKs to each source),
+    `student_auth_attempts` (status/payload CHECKs, 10-minute cap),
+    `student_auth_link_handoffs` (single use per attempt, paired targets,
+    10-minute cap), `student_auth_reauth_grants` (link/unlink purpose,
+    5-minute cap); expiry/status/owner indexes; triggers for identity
+    owner immutability, assertion one-way revocation, terminal-attempt
+    lock, handoff/grant consume-once, and no-delete retention on
+    identities/assertions; nullable
+    `users.active_session_auth_identity_id` with no backfill. No
+    `microsoft_*` table is created, altered, or referenced for writes.
+  - `services/auth/student-sso.types.ts` (new): exact plan transport
+    types (`LoginProvider`, `ProviderObservation`, `LoginOptions`),
+    separate from persistence. No session code is written or changed.
+- Tests added (18):
+  - `testing/postgres/student-sso.integration.ts`: 18 — policy
+    uniqueness; policy provider/version/window validation; lowercase
+    single-university domains; multi-provider domain without ambiguous
+    ownership; ambiguous binding rejections; approval-ready lookup joins
+    active universities/live approvals only; identity issuer-subject
+    uniqueness with same-provider second identity allowed; owner
+    immutability with no transfer after revocation plus no-delete; owner
+    composite key pinned via `pg_constraint`; exactly-one-evidence
+    source matrix; evidence-to-owner binding; assertion one-way
+    revocation plus no-delete; attempt status/payload CHECKs with a
+    reachable pending→ready→consumed lifecycle; terminal lock with
+    state-hash uniqueness; single-use handoffs with paired targets and
+    consume-once freeze; bounded lifetimes with expired-row retention;
+    single-purpose single-use reauth grants; nullable session
+    provenance without backfill.
+- Tests intentionally updated (none deleted or weakened): the R3 test
+  in `student-assurance.integration.ts` retired its pre-057 stub-table
+  matrix (B1 removes the 056-only database) and now pins the surviving
+  half: identical assurance before and after real SSO rows exist on the
+  upgraded database.
+- Gate commands and results (from worktree root):
+  - `npm --prefix apps/backend test` → PASS (199 tests, 0 fail).
+  - `npm --prefix apps/backend run test:postgres` → PASS via the
+    official runner (292 tests: 291 pass, 0 fail, 1 skipped — the
+    dedicated compiled fallback smoke, skipped by design in source
+    mode).
+  - `npm --prefix apps/backend run type-check` → PASS (clean).
+  - Pre-change failure observation (test-first, per file):
+    `student-sso.integration.ts` failed before migration 057 with
+    `relation "institution_login_policies" does not exist` (and sibling
+    missing relations); the same file passes 18/18 after. Two
+    post-migration failures were test-fixture bugs, not contract bugs:
+    an expired-row window wider than the 10-minute cap and a `??`
+    helper swallowing explicit `null` payloads — both fixed in the
+    tests, with the migration untouched.
+- Migration check: no `057` file before; `057_student_sso_auth.sql`
+  added (rechecked at commit time). `056` untouched.
+- Deviations:
+  - Commit message is the owner-specified `test(auth): pin SSO handoff
+    and identity-link security contracts`, overriding the plan text's
+    `feat(auth): persist student login authority and attempts`.
+  - No-delete triggers cover identities and assertions (retention rule
+    in the plan) but identity revocation stays clearable so the
+    original owner can reactivate after fresh proof per Task B4; only
+    the owner/subject key is frozen.
+  - Lifetime caps are database CHECKs (attempts/handoffs 10 minutes,
+    reauth grants 5 minutes) and approval requires `enabled` plus a
+    non-null unexpired `approved_until` (NULL fails closed); the B2
+    discovery join shape is pinned by the active-university lookup
+    test.
+  - Policy version incrementing under lock and SSO university/provider
+    matching stay writer rules for B2/B4 (documented in the migration
+    header); no writer exists in B1 to test them against.
+- Docs impact (AGENTS.md checklist): no trust/help/partner/developers
+  changes — B1 adds storage and transport types only, with no API, UI,
+  or approval behavior change. School-account assurance and enrollment
+  eligibility stay separated in every response, UI label, and doc; no
+  new public claims, coverage, institutions, or contacts.
+- Unresolved: none for B1. Follow-ups for B2–B4: discovery join,
+  OIDC adapters, browser-bound flow, linking writers, and the SSO
+  cleanup script.
