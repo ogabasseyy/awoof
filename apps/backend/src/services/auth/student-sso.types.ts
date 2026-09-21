@@ -24,3 +24,9 @@ export type LoginOptions = {
     registration: true;
     recovery: true;
 };
+
+/** Institution SSO login adapter boundary (Task B2). Browser tab secrets stay with the B3 flow; adapters only observe. */
+export interface StudentOidcAdapter {
+    authorize(input: { state: string; nonce: string; verifier: string; loginHint: string }): Promise<URL>;
+    redeem(input: { callback: URL; state: string; nonce: string; verifier: string }): Promise<ProviderObservation>;
+}

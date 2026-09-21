@@ -8,8 +8,47 @@ import { Router } from 'express';
 import { asyncHandler } from '../common/middleware/errorHandler.js';
 import { authenticate } from '../middleware/auth.middleware.js';
 import { AuthController } from '../controllers/auth.controller.js';
+import { BadRequestError } from '../common/errors/AppError.js';
+import { success } from '../common/utils/response.js';
+import { getPool } from '../config/database.js';
+import { config } from '../config/env.js';
+import { getRedisClient } from '../config/redis.js';
+import { enabledStudentSsoProviders } from '../services/auth/student-oidc.config.js';
+import {
+    checkDiscoveryQuota,
+    createRedisQuotaStore,
+    normalizeStudentLoginEmail,
+    resolveStudentLoginOptions,
+} from '../services/auth/student-login-options.service.js';
+import type { LoginOptions } from '../services/auth/student-sso.types.js';
 
-export function createAuthRouter(authController: AuthController = new AuthController()): Router {
+export type StudentLoginOptionsDependencies = {
+    resolveLoginOptions: (email: unknown) => Promise<LoginOptions>;
+    checkQuota: (clientIp: string) => Promise<void>;
+};
+
+function defaultStudentLoginOptions(): StudentLoginOptionsDependencies {
+    // Pools open per request only; mounting the router never connects.
+    return {
+        resolveLoginOptions: (email) => resolveStudentLoginOptions(
+            (text, params) => getPool().query(text, params),
+            { email, enabledProviders: enabledStudentSsoProviders(config.studentSso) },
+        ),
+        checkQuota: (clientIp) => checkDiscoveryQuota(createRedisQuotaStore(getRedisClient()), clientIp),
+    };
+}
+
+function readLoginOptionsEmail(body: unknown): string {
+    if (!body || typeof body !== 'object' || Array.isArray(body)) throw new BadRequestError('Invalid email address');
+    const keys = Object.keys(body);
+    if (keys.length !== 1 || keys[0] !== 'email') throw new BadRequestError('Invalid email address');
+    return normalizeStudentLoginEmail((body as { email: unknown }).email);
+}
+
+export function createAuthRouter(
+    authController: AuthController = new AuthController(),
+    loginOptions: StudentLoginOptionsDependencies = defaultStudentLoginOptions(),
+): Router {
     const router = Router();
 
 /**
@@ -204,6 +243,27 @@ router.post(
 router.post(
     '/student/register-confirm',
     asyncHandler(authController.studentRegisterConfirm.bind(authController))
+);
+
+/**
+ * @route   POST /api/auth/student/login-options
+ * @desc    Resolve approved login methods for an email domain without revealing account existence
+ * @access  Public
+ */
+router.post(
+    '/student/login-options',
+    asyncHandler(async (req, res) => {
+        // Discovery responses are per-domain and privacy-sensitive: never cache.
+        // The request body is never logged; the shared logger records method and path only.
+        res.setHeader('Cache-Control', 'no-store');
+        // Malformed input is a deterministic 400: validation runs before the
+        // quota check so outages cannot mask it, and quota failures never
+        // reach discovery.
+        const email = readLoginOptionsEmail(req.body);
+        const clientIp = typeof req.ip === 'string' && req.ip !== '' ? req.ip : 'unknown';
+        await loginOptions.checkQuota(clientIp);
+        success(res, { data: await loginOptions.resolveLoginOptions(email) });
+    })
 );
 
     return router;

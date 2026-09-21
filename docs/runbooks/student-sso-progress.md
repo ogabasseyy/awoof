@@ -768,3 +768,181 @@ Review disposition: `docs/runbooks/student-sso-review-disposition.md` (GO for Re
 - Unresolved: none for B1. Follow-ups for B2–B4: discovery join,
   OIDC adapters, browser-bound flow, linking writers, and the SSO
   cleanup script.
+
+## Task B2: email-first institution SSO configuration (providers disabled)
+
+- Task: B2 — discover login methods and validate provider claims
+  (`docs/superpowers/plans/2026-09-20-institution-email-auth.md`,
+  Task B2).
+- Commit: `feat(auth): add email-first institution SSO configuration`
+  on branch `codex/student-email-first-auth` (this commit; hash in completion
+  report). See deviations for the message override.
+- Source changes:
+  - `services/auth/student-oidc.config.ts` (new):
+    `readStudentSsoConfiguration` plus the fixed callback/completion paths
+    and `enabledStudentSsoProviders` deployment-readiness helper.
+    Opt-in `GOOGLE_LOGIN_*` / `MICROSOFT_LOGIN_*` /
+    `STUDENT_SSO_COMPLETION_URL` / `STUDENT_SSO_ATTEMPT_KEY`; disabled
+    providers require no credentials (stale values ignored while fully
+    disabled); enabled providers require client credentials, the exact
+    fixed HTTPS callback path, the fixed same-site completion route
+    (tldts site rule shared with verification OIDC, private suffixes
+    excluded), and a base64url 32-byte attempt key. No per-institution
+    entries: tenants and hosted domains always come from approved
+    runtime policy.
+  - `services/auth/student-login-options.service.ts` (new):
+    `normalizeStudentLoginEmail` (trim/lowercase, plus/dot preserving,
+    254-char cap, 400 on malformed), `resolveStudentLoginOptions`
+    (single read-only SELECT over login policies, domain-provider
+    mappings, domains, and universities — no users/students/identities,
+    no legacy mailbox domains, no benefit evidence; enabled + live
+    approval + active university/domain; deployment filter; sorted
+    dedupe; password-only short-circuit with no lookup when nothing is
+    enabled), and Redis quota helpers (`createRedisQuotaStore` atomic
+    INCR+PEXPIRE Lua, `checkDiscoveryQuota` 60/IP/10min,
+    `checkSsoStartQuota` 10/IP + 5/HMAC(mailbox)/10min for B3 wiring,
+    `hmacStudentMailbox` HMAC-SHA256 keyed by the attempt key). Store
+    outages fail closed with retryable 503, never unlimited access.
+  - `services/auth/student-google-oidc.ts` (new): `StudentGoogleOidc`
+    `StudentOidcAdapter` with `forApprovedDomain` bound to a
+    server-approved hosted domain. Fixed discovery URL, exact
+    allowlisted metadata (authorization origin accounts.google.com,
+    token origin oauth2.googleapis.com, JWKS origin
+    www.googleapis.com — reverified against the official discovery
+    document on 2026-09-21), 5 s deadline, 256 KiB cap, no redirects.
+    Validates signature, audience/azp, issuer, expiry, nonce, state,
+    PKCE S256, `email_verified`, and hd mapping; login_hint mailbox;
+    `openid email profile` only; no tokeninfo call. Approved hd
+    attests school membership (explicit mapping may differ from the
+    email domain); personal Gmail and unapproved hd authenticate
+    without school assurance.
+  - `services/auth/student-microsoft-oidc.ts` (new):
+    `StudentMicrosoftOidc` adapter with `forApprovedTenant` bound to a
+    server-approved tenant UUID and exact tenant issuer. The login
+    client asserts audience and issuer on every token, then binds
+    tid/oid/sub; `openid profile email` only. Email may be null;
+    `preferred_username` never becomes the observed email.
+    `schoolMembershipAttested` is always false (a login ID token
+    carries no trusted member/guest evidence; approved-mailbox OTP
+    remains the fallback school proof) and `mailboxVerified` is
+    false. Unapproved tenants rejected.
+  - `services/auth/student-sso.types.ts`: added the shared
+    `StudentOidcAdapter` authorize/redeem interface (additive).
+  - `routes/auth.routes.ts`: `POST /api/auth/student/login-options`
+    with injected discovery/quota dependencies (pools open per
+    request only), strict `{email}` shape, deterministic 400 before
+    quota, proxy-aware IP quota, `Cache-Control: no-store`, no
+    request-body logging.
+  - `routes/auth.routes.swagger.ts`: OpenAPI doc for the endpoint
+    (strict schema, constant-shape response, 400/429/503).
+  - `config/env.ts` + `env.example`: opt-in SSO variables wired
+    through `config.studentSso`; boot succeeds with all absent.
+- Tests added (89):
+  - `services/auth/student-oidc.config.test.ts`: 12 — fixed paths,
+    disabled-requires-nothing, stale-values boot, credential/callback
+    requirements, HTTPS fixed-path callbacks, completion requirement,
+    same-site incl. private-suffix rejection, 32-byte key, shared
+    completion/key, no per-institution entries.
+  - `services/auth/student-login-options.service.test.ts`: 26 —
+    normalization (trim/lower, plus/dot), overlong/malformed 400s
+    with no lookup (7), unknown-domain password-only, exact domain +
+    provider binding, stable multi-provider order, readiness
+    filter/dedupe, disabled short-circuit, read-only single-SELECT
+    assertion, allowed/forbidden table assertion, live-approval
+    predicate assertion, 60/10min quota + IP isolation, 503
+    fail-closed, start quotas + HMAC keying, HMAC stability/keying,
+    Redis script shape, non-integer fail-closed, transport union.
+  - `services/auth/student-google-oidc.test.ts`: 20 — identity
+    scopes, authorize URL (S256/login_hint/state/nonce), login-hint
+    rejection without network, attested redeem, mapping-differs
+    attestation, Gmail unattested, unapproved-hd unattested, 8 claim
+    rejections, unknown-key rejection, state/PKCE mismatch, hostile
+    metadata, redirect/oversize, construction guards. All discovery
+    mocked; no tokeninfo URL touched; no network identity calls.
+  - `services/auth/student-microsoft-oidc.test.ts`: 16 — login
+    scopes, authorize URL, audience+issuer assertion test, tenant
+    binding without membership assertion, null email +
+    preferred_username ignored, unapproved-tenant rejection, 7 claim
+    rejections, state/PKCE/callback mismatch, hostile metadata +
+    redirect, construction guards. All discovery mocked; no network
+    identity calls.
+  - `controllers/auth.student-login-options.http.test.ts`: 15 —
+    options + no-store, password-only passthrough, 8 malformed-shape
+    400s (no quota/discovery side effects), overlong 400, 429
+    passthrough, 503 passthrough with no discovery, malformed-stays-
+    400 during outage, OpenAPI contract assertion.
+- Tests intentionally updated: none. No existing test was modified,
+  weakened, or deleted.
+- Gate commands and results (from worktree root):
+  - `npm --prefix apps/backend test` → PASS (288 tests, 0 fail;
+    baseline 199 + 89 new).
+  - `npm --prefix apps/backend run type-check` → PASS (clean).
+  - `npm --prefix apps/web run test:auth` → PASS (80 tests, 0 fail;
+    unchanged, no web edits in B2).
+  - Extra (routes/swagger changed): `npm --prefix apps/backend run
+    test:artifact` → PASS (24 integration files, 58 staged
+    migrations, 647 hashed files; OpenAPI parity; source-absent
+    probes). Also proves disabled builds boot with no SSO secrets.
+  - Pre-change failure observation (test-first, per file): config
+    suite failed to load (missing module); login-options suite
+    failed to load; Google suite failed to load; Microsoft suite 1
+    test / 0 pass / 1 fail; HTTP suite 15 tests / 0 pass / 15 fail.
+    Three post-implementation failures were test-fixture bugs, not
+    contract bugs (mock token responses lacked the `access_token`
+    openid-client requires; a state-mismatch helper moved the
+    callback and expectation together; the unapproved-tenant
+    transport served the wrong tenant metadata) — fixed in the
+    tests, implementations untouched.
+- No-database-writes check: B2 sources issue only the discovery
+  SELECT; grep over the new service/config/route files finds no
+  INSERT/UPDATE/DELETE/BEGIN/COMMIT outside comments and a
+  pre-existing doc line.
+- Unverified-institution check (recorded): migration 057 contains
+  zero INSERTs (grep count 0 — no seed approvals); the SSO config
+  carries no per-institution entries (test pins its exact keys and
+  serialized shape); discovery requires enabled policy + non-null
+  unexpired `approved_until` + active university + active domain;
+  disabled deployments return password-only without a lookup.
+- Providers-disabled check: both flags default `false`; boot and
+  the artifact render run with no SSO variables set; no real
+  credentials anywhere (only `test-secret` fixtures inside tests);
+  OIDC discovery is mocked in every adapter test — no network
+  identity calls, ever.
+- Migration check: `056`/`057` present and untouched; B2 adds no
+  migration (rechecked at commit time).
+- Deviations:
+  - Commit message is the owner-specified `feat(auth): add
+    email-first institution SSO configuration`, overriding the plan
+    text's `feat(auth): add institution discovery and OIDC login
+    adapters`. The endpoint is the plan's
+    `POST /api/auth/student/login-options`.
+  - `StudentOidcAdapter` lives in `student-sso.types.ts` (B1 file,
+    additive export): the plan names the interface but no home
+    file, and the transport-types module is its specified home.
+  - `auth.student-login-options.http.test.ts` is added beyond the
+    plan's file list for route coverage (no-store, 400/429/503,
+    OpenAPI doc), following the A4 precedent.
+  - Quota helpers live in `student-login-options.service.ts`
+    (no extra file); SSO start quotas are implemented and tested
+    now, wired by the B3 start route later.
+  - HMAC-SHA256 via node:crypto keys mailbox quota subjects (same
+    primitive family as the existing SHA-256 hashing); key
+    validation mirrors the attempt-crypto 32-byte base64url rule.
+    No new crypto was invented; session-cookie primitives are N/A
+    in B2 (no cookies set — B3 owns the callback cookie and reuses
+    the existing Secure HttpOnly SameSite descriptor pattern).
+  - The route validates the email before the quota check so
+    malformed input is a deterministic 400 even during a quota
+    outage; quota failures never reach discovery.
+- Docs impact (AGENTS.md checklist): no trust/help/partner/
+  developers changes — providers stay disabled, discovery is
+  additive and read-only, and no UI, approval, or benefit behavior
+  changed. OpenAPI documents the new endpoint with an explicit
+  never-authorizes-benefits description; school-account assurance
+  and enrollment eligibility stay separated in every response, UI
+  label, and doc touched here. No new public claims, coverage,
+  institutions, or contacts.
+- Unresolved: none for B2. Follow-ups for B3–B5/C1: SSO start
+  route wiring (quotas, callback cookies, atomic sessions),
+  explicit linking writers, the email-first page, and
+  real-provider acceptance (mocked discovery cannot establish it).
