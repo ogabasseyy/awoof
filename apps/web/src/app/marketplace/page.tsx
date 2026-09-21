@@ -300,8 +300,8 @@ export default function MarketplacePage() {
 
             <main className="mx-auto max-w-6xl px-4 py-8 md:py-10 space-y-10">
                 {/* Welcome + expectancy */}
-                <FadeIn>
-                    <section className="relative overflow-hidden rounded-3xl bg-[#1D4ED8] text-white px-6 py-8 md:px-10 md:py-10 shadow-xl shadow-[#1D4ED8]/20">
+                {/* No entrance animation here: the hero H1 is the LCP element and must paint with first render. */}
+                <section className="relative overflow-hidden rounded-3xl bg-[#1D4ED8] text-white px-6 py-8 md:px-10 md:py-10 shadow-xl shadow-[#1D4ED8]/20">
                         <div
                             aria-hidden
                             className="absolute -right-16 -top-16 h-56 w-56 rounded-full bg-white/10 blur-2xl"
@@ -351,8 +351,7 @@ export default function MarketplacePage() {
                                 </div>
                             </div>
                         </div>
-                    </section>
-                </FadeIn>
+                </section>
 
                 {/* Savings journey */}
                 <FadeIn delay={0.06}>
@@ -392,7 +391,7 @@ export default function MarketplacePage() {
                 {categories.length > 0 && (
                     <FadeIn delay={0.1}>
                         <div>
-                            <p className="text-xs font-semibold uppercase tracking-wider text-slate-500 mb-3">
+                            <p className="text-xs font-semibold uppercase tracking-wider text-slate-600 mb-3">
                                 Browse by vibe
                             </p>
                             <div className="-mx-1 px-1 flex gap-4 md:gap-6 overflow-x-auto pt-3 pb-3 scrollbar-hide justify-start md:justify-center">
@@ -430,7 +429,7 @@ export default function MarketplacePage() {
                                             </div>
                                             <span
                                                 className={`text-xs md:text-sm font-semibold whitespace-nowrap ${
-                                                    isActive ? 'text-[#1D4ED8]' : 'text-slate-600'
+                                                    isActive ? 'text-[#1D4ED8]' : 'text-slate-800'
                                                 }`}
                                             >
                                                 {category.name}
@@ -452,7 +451,7 @@ export default function MarketplacePage() {
                                     <h2 className="text-xl md:text-2xl font-extrabold tracking-tight text-slate-900">
                                         {getSelectedCategoryName()}
                                     </h2>
-                                    <p className="text-sm text-slate-500 mt-0.5">Hand-picked for this category</p>
+                                    <p className="text-sm text-slate-600 mt-0.5">Hand-picked for this category</p>
                                 </div>
                                 {categoryProducts.length > 0 && (
                                     <Link
@@ -489,7 +488,7 @@ export default function MarketplacePage() {
                                                         <ShoppingBag className="h-10 w-10" />
                                                     </div>
                                                 )}
-                                                <div className="absolute top-2 right-2 bg-emerald-500 text-white text-[11px] font-bold px-2 py-1 rounded-full">
+                                                <div className="absolute top-2 right-2 bg-emerald-700 text-white text-[11px] font-bold px-2 py-1 rounded-full">
                                                     {calculateDiscount(product.price, product.student_price)}% OFF
                                                 </div>
                                             </div>
@@ -518,7 +517,7 @@ export default function MarketplacePage() {
                                 <h2 className="text-xl md:text-2xl font-extrabold tracking-tight text-slate-900">
                                     Vouchers
                                 </h2>
-                                <p className="text-sm text-slate-500 mt-0.5">Codes & campus perks</p>
+                                <p className="text-sm text-slate-600 mt-0.5">Codes & campus perks</p>
                             </div>
                             {voucherProducts.length > 0 && (
                                 <Link href="/marketplace/search?deal_type=voucher" className="text-sm font-semibold text-[#1D4ED8] hover:underline">
@@ -572,7 +571,7 @@ export default function MarketplacePage() {
                                 <h2 className="text-xl md:text-2xl font-extrabold tracking-tight text-slate-900">
                                     Featured deals
                                 </h2>
-                                <p className="text-sm text-slate-500 mt-0.5">What everyone’s talking about</p>
+                                <p className="text-sm text-slate-600 mt-0.5">What everyone’s talking about</p>
                             </div>
                             {featuredProducts.length > 0 && (
                                 <Link href="/marketplace/search" className="text-sm font-semibold text-[#1D4ED8] hover:underline">
