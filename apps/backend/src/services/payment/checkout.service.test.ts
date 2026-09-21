@@ -9,7 +9,7 @@ import {
 type QueryReply = Pick<QueryResult, 'rows'>;
 const eligibleStudent: typeof getEffectiveEligibility = async () => ({
     eligible: true, studentId: 'student-1', universityId: 'school-1', evidenceId: 'evidence-1',
-    processingGrantId: 'grant-1', method: 'student_email', verifiedAt: new Date('2026-01-01'), expiresAt: new Date('2100-01-01'),
+    processingGrantId: 'grant-1', method: 'enrollment', verifiedAt: new Date('2026-01-01'), expiresAt: new Date('2100-01-01'),
 });
 
 function fakeClient(replies: QueryReply[]) {

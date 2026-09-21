@@ -323,19 +323,19 @@ test('binds a delivered email OTP and resulting evidence to the current signed-i
             challengeId: requested.challengeId,
             otp: delivered[0]!.code,
         });
-        assert.equal(confirmed.eligible, true);
-        if (!confirmed.eligible) return;
-        assert.equal(confirmed.universityId, fixture.universityId);
-        assert.equal(confirmed.processingGrantId, initiated.processingGrantId);
+        // Mailbox confirmation records audit evidence with enrollment pending;
+        // only current enrollment authorizes benefits.
+        assert.deepEqual(confirmed, { eligible: false, reason: 'unverified' });
 
-        const evidence = await pool.query<{ user_id: string; email: string }>(
-            `SELECT proofs.user_id, proofs.email
+        const evidence = await pool.query<{ user_id: string; email: string; method: string }>(
+            `SELECT proofs.user_id, proofs.email, evidence.method
              FROM eligibility_evidence evidence
              JOIN user_email_proofs proofs ON proofs.id = evidence.email_proof_id
-             WHERE evidence.id = $1`,
-            [confirmed.evidenceId],
+             JOIN students ON students.id = evidence.student_id
+             WHERE students.user_id = $1`,
+            [fixture.userId],
         );
-        assert.deepEqual(evidence.rows, [{ user_id: fixture.userId, email: fixture.email }]);
+        assert.deepEqual(evidence.rows, [{ user_id: fixture.userId, email: fixture.email, method: 'student_email' }]);
     });
 });
 
@@ -463,7 +463,7 @@ test('commits a wrong signed-in-student OTP guess without evidence and permits t
         assert.deepEqual(afterGuess.rows, [{ failed_attempts: 1, evidence_count: '0' }]);
 
         const first = await flow.confirmEmail(fixture.userId, { challengeId: requested.challengeId, otp: delivered[0]!.code });
-        assert.equal(first.eligible, true);
+        assert.deepEqual(first, { eligible: false, reason: 'unverified' });
         await assert.rejects(
             flow.confirmEmail(fixture.userId, { challengeId: requested.challengeId, otp: delivered[0]!.code }),
             /Invalid verification code/i,
@@ -607,12 +607,15 @@ test('reports expired assurance, permits a bounded re-verification, and rejects 
         });
         const initial = await flow.requestEmail(fixture.userId, { processingGrantId: initiated.processingGrantId });
         const firstEvidence = await flow.confirmEmail(fixture.userId, { challengeId: initial.challengeId, otp: delivered[0]!.code });
-        assert.equal(firstEvidence.eligible, true);
-        if (!firstEvidence.eligible) throw new Error('Initial synthetic assurance was not eligible');
+        assert.deepEqual(firstEvidence, { eligible: false, reason: 'unverified' });
+        const studentId = (await pool.query<{ id: string }>(
+            `SELECT id FROM students WHERE user_id = $1`,
+            [fixture.userId],
+        )).rows[0]!.id;
         const original = await pool.query<{ email_proof_id: string; identity_version: number; policy_version: number }>(
             `SELECT email_proof_id, identity_version, policy_version
-             FROM eligibility_evidence WHERE id = $1`,
-            [firstEvidence.evidenceId],
+             FROM eligibility_evidence WHERE student_id = $1 AND method = 'student_email'`,
+            [studentId],
         );
         const expired = await pool.query<{ id: string }>(
             `INSERT INTO eligibility_evidence
@@ -622,7 +625,7 @@ test('reports expired assurance, permits a bounded re-verification, and rejects 
                      clock_timestamp() - interval '1 second')
              RETURNING id`,
             [
-                firstEvidence.studentId,
+                studentId,
                 fixture.universityId,
                 original.rows[0]!.email_proof_id,
                 initiated.processingGrantId,
@@ -633,7 +636,7 @@ test('reports expired assurance, permits a bounded re-verification, and rejects 
         await pool.query(
             `UPDATE student_eligibility_state SET current_evidence_id = $3
              WHERE student_id = $1 AND university_id = $2`,
-            [firstEvidence.studentId, fixture.universityId, expired.rows[0]!.id],
+            [studentId, fixture.universityId, expired.rows[0]!.id],
         );
         assert.deepEqual((await flow.status(fixture.userId)).eligibility, { eligible: false, reason: 'expired' });
         assert.equal((await flow.status(fixture.userId)).mailboxConfirmed, true);
@@ -646,7 +649,9 @@ test('reports expired assurance, permits a bounded re-verification, and rejects 
         );
         const replacement = await flow.requestEmail(fixture.userId, { processingGrantId: initiated.processingGrantId });
         const renewed = await flow.confirmEmail(fixture.userId, { challengeId: replacement.challengeId, otp: delivered[1]!.code });
-        assert.equal(renewed.eligible, true);
+        // Mailbox re-verification records fresh audit evidence but cannot
+        // renew lapsed enrollment into benefit authority.
+        assert.deepEqual(renewed, { eligible: false, reason: 'unverified' });
 
         await pool.query(
             `UPDATE verification_challenge_budgets

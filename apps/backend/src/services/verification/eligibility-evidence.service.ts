@@ -362,27 +362,42 @@ export async function recordEmailAssurance(
     if (state.authoritative_denial) {
         return { eligible: false, reason: 'enrollment_denied' };
     }
+    // Mailbox assurance never displaces a live enrollment pointer. Email
+    // evidence stays immutable audit and prerequisite proof, but only
+    // current enrollment authorizes benefits.
     await tx.query(
         `UPDATE student_eligibility_state
          SET current_evidence_id = $3
-         WHERE student_id = $1 AND university_id = $2`,
-        [context.studentId, context.universityId, created.id],
+         WHERE student_id = $1 AND university_id = $2
+           AND NOT EXISTS (
+               SELECT 1
+               FROM eligibility_evidence evidence
+               JOIN user_email_proofs proofs ON proofs.id = evidence.email_proof_id
+               WHERE evidence.id = student_eligibility_state.current_evidence_id
+                 AND evidence.method = 'enrollment'
+                 AND evidence.outcome = 'verified'
+                 AND evidence.revoked_at IS NULL
+                 AND evidence.expires_at > clock_timestamp()
+                 AND evidence.identity_version = $4
+                 AND evidence.policy_version = $5
+                 AND proofs.email = $6
+                 AND evidence.source IN ('institution-registration:v1', 'microsoft-education:v1')
+           )`,
+        [
+            context.studentId,
+            context.universityId,
+            created.id,
+            context.identityVersion,
+            context.policyVersion,
+            context.email,
+        ],
     );
     await tx.query(
         `INSERT INTO verification_audit_events (user_id, university_id, event_type, metadata)
          VALUES ($1, $2, 'student_email_assurance_recorded', jsonb_build_object('evidenceId', $3::text))`,
         [userId, context.universityId, created.id],
     );
-    return {
-        eligible: true,
-        studentId: context.studentId,
-        universityId: context.universityId,
-        evidenceId: created.id,
-        processingGrantId: input.processingGrantId,
-        method: 'student_email',
-        verifiedAt: created.verified_at,
-        expiresAt: created.expires_at,
-    };
+    return getEffectiveEligibility(tx, userId);
 }
 
 /**

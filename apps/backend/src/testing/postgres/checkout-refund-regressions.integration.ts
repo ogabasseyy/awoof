@@ -11,7 +11,8 @@ import type { AuthRequest } from '../../middleware/auth.middleware.js';
 import { grantVerificationProcessing } from '../../services/verification/eligibility-consent.service.js';
 import { lockStudentContext } from '../../services/verification/eligibility-context.service.js';
 import { requestChallenge, consumeChallenge } from '../../services/verification/challenge.service.js';
-import { recordEmailAssurance } from '../../services/verification/eligibility-evidence.service.js';
+import { applyEnrollmentDecision, beginEnrollmentCheck, recordEmailAssurance } from '../../services/verification/eligibility-evidence.service.js';
+import { ENROLLMENT_SOURCE } from '../../services/verification/eligibility.types.js';
 import { updateInstitutionPolicy } from '../../services/verification/eligibility-policy.service.js';
 import { VERIFICATION_NOTICE_VERSION } from '../../services/verification/verification-notices.js';
 import { inTransaction, withTestClient } from './test-database.js';
@@ -19,17 +20,18 @@ import { inTransaction, withTestClient } from './test-database.js';
 after(() => db.close());
 const response = { status() { return this; }, json() { return this; } } as unknown as Response;
 
-async function fixture(client: PoolClient, eligible = false) {
+async function fixture(client: PoolClient, assurance: 'email' | 'enrollment' | false = false) {
     const label = randomUUID();
-    const studentUser = (await client.query(`INSERT INTO users(email, role) VALUES ($1, 'student') RETURNING id`, [`${label}@students.example`])).rows[0].id;
+    const email = `${label}@students.example`;
+    const studentUser = (await client.query(`INSERT INTO users(email, role) VALUES ($1, 'student') RETURNING id`, [email])).rows[0].id;
     const owner = (await client.query(`INSERT INTO users(email, role) VALUES ($1, 'vendor') RETURNING id`, [`vendor-${label}@example.invalid`])).rows[0].id;
     const university = (await client.query(`INSERT INTO universities(name, is_active) VALUES ($1, true) RETURNING id`, [label])).rows[0].id;
     const student = (await client.query(`INSERT INTO students(user_id, name, university_id) VALUES ($1, 'Synthetic', $2) RETURNING id`, [studentUser, university])).rows[0].id;
     const vendor = (await client.query(`INSERT INTO vendors(user_id, name, status) VALUES ($1, 'Synthetic', 'active') RETURNING id`, [owner])).rows[0].id;
     const product = (await client.query(`INSERT INTO products(vendor_id, name, price, student_price, stock, status) VALUES ($1, 'Synthetic', 100, 80, 4, 'active') RETURNING id`, [vendor])).rows[0].id;
-    if (eligible) {
+    if (assurance !== false) {
         const admin = (await client.query(`INSERT INTO users(email, role) VALUES ($1, 'admin') RETURNING id`, [`admin-${label}@example.invalid`])).rows[0].id;
-        await inTransaction(client, () => updateInstitutionPolicy(client, admin, university, { domains: ['students.example'], emailEvidenceValidityDays: 90, enrollmentValidityDays: 30, registrationNormalization: null, isActive: true }));
+        await inTransaction(client, () => updateInstitutionPolicy(client, admin, university, { domains: ['students.example'], emailEvidenceValidityDays: 90, enrollmentValidityDays: 30, registrationNormalization: 'trim_upper', isActive: true }));
         const grant = await inTransaction(client, () => grantVerificationProcessing(client, studentUser, university, { accepted: true, noticeVersion: VERIFICATION_NOTICE_VERSION }));
         await inTransaction(client, async () => {
             const context = await lockStudentContext(client, studentUser);
@@ -39,13 +41,36 @@ async function fixture(client: PoolClient, eligible = false) {
             assert.equal((await consumeChallenge(client, { purpose: 'student_email', subjectKey: studentUser, challengeId: challenge.challengeId, code: challenge.code })).status, 'verified');
             await recordEmailAssurance(client, studentUser, { challengeId: challenge.challengeId, processingGrantId: grant });
         });
+        if (assurance === 'enrollment') {
+            await client.query(
+                `INSERT INTO university_verification_methods (university_id, method_type, api_endpoint, is_active)
+                 VALUES ($1, 'registration', 'https://institution.example/verify', true)`,
+                [university],
+            );
+            const snapshot = await inTransaction(client, () => beginEnrollmentCheck(client, studentUser, grant));
+            const decision = await inTransaction(client, () => applyEnrollmentDecision(client, snapshot, {
+                outcome: 'verified', email, registrationNumber: 'CHECKOUT-1',
+                validUntil: new Date(Date.now() + 30 * 86_400_000), source: ENROLLMENT_SOURCE,
+            }));
+            assert.equal(decision.eligible, true);
+        }
     }
     return { studentUser, owner, student, vendor, product };
 }
 
+test('email-only student cannot start checkout without current enrollment evidence', async () => {
+    await withTestClient(async (client) => {
+        const f = await fixture(client, 'email');
+        await assert.rejects(
+            new CheckoutController().createCheckout({ user: { userId: f.studentUser, role: 'student' }, body: { productId: randomUUID() } } as AuthRequest, response),
+            /Current student eligibility is required/,
+        );
+    });
+});
+
 test('checkout retains owner, vendor and product authority until its reservation decision commits', async () => {
     await withTestClient(async (client) => {
-        const f = await fixture(client, true);
+        const f = await fixture(client, 'enrollment');
         await client.query(`INSERT INTO transactions(student_id, product_id, vendor_id, amount, commission, status, payment_source, paystack_reference, checkout_authorization_url)
             VALUES ($1, $2, $3, 80, 4, 'pending', 'awoof', $4, 'https://example.invalid/synthetic-checkout')`, [f.student, f.product, f.vendor, randomUUID()]);
         const checkoutClient = await db.getPool().connect();

@@ -7,8 +7,13 @@ import {
     prepareMerchantDisclosure,
     type MerchantDisclosureContext,
 } from './eligibility-merchant-context.service.js';
-import { isApprovedStudentEmail } from './eligibility-policy.service.js';
-import type { EligibilityResult, StudentContext } from './eligibility.types.js';
+import {
+
+    ENROLLMENT_SOURCE,
+    MICROSOFT_ENROLLMENT_SOURCE,
+    type EligibilityResult,
+    type StudentContext,
+} from './eligibility.types.js';
 import { MERCHANT_DISCLOSURE_NOTICE_VERSION, VERIFICATION_NOTICE_VERSION } from './verification-notices.js';
 
 type StateEvidence = {
@@ -103,7 +108,7 @@ async function currentMicrosoftProof(
     evidence: EvidenceCandidate,
 ): Promise<boolean> {
     if (!hasCurrentBaseAuthority(evidence, context)
-        || evidence.source !== 'microsoft-education:v1'
+        || evidence.source !== MICROSOFT_ENROLLMENT_SOURCE
         || !evidence.provider_proof_id
         || !await currentProcessingGrant(tx, userId, context.universityId, evidence.processing_grant_id)) return false;
 
@@ -176,14 +181,21 @@ async function currentMicrosoftProof(
         && evidence.expires_at! > now;
 }
 
+function isRecognizedEnrollmentSource(source: string | null): boolean {
+    return source === ENROLLMENT_SOURCE || source === MICROSOFT_ENROLLMENT_SOURCE;
+}
+
 /** Exported for unit testing; production entry remains getEffectiveEligibility. */
-export async function independentlyValidEmailEvidence(
+export async function independentlyValidEnrollmentEvidence(
     tx: PoolClient,
     userId: string,
     context: StudentContext,
 ): Promise<EvidenceCandidate | undefined> {
     // This is intentionally a valid-set query. A newer revoked or stale row
-    // must not conceal an older still-valid independently verified mailbox.
+    // must not conceal an older still-valid independent enrollment. Email
+    // evidence never appears here: only current enrollment authorizes
+    // benefits, and every candidate is validated through its actual source
+    // authority below.
     const candidates = await tx.query<EvidenceCandidate>(
         `SELECT evidence.id AS evidence_id, evidence.method, evidence.outcome,
                 evidence.verified_at, evidence.expires_at, evidence.revoked_at,
@@ -197,12 +209,13 @@ export async function independentlyValidEmailEvidence(
          JOIN verification_consents processing ON processing.id = evidence.processing_grant_id
          WHERE evidence.student_id = $1
            AND evidence.university_id = $2
-           AND evidence.method = 'student_email'
+           AND evidence.method = 'enrollment'
            AND evidence.outcome = 'verified'
            AND evidence.revoked_at IS NULL
            AND evidence.identity_version = $3
            AND evidence.policy_version = $4
            AND proofs.email = $5
+           AND evidence.source IN ('institution-registration:v1', 'microsoft-education:v1')
            -- Evidence is retained indefinitely, so expired rows must not
            -- reach the per-candidate grant, row-lock, and clock queries
            -- below. This mirrors the loop's own expiry check exactly.
@@ -212,8 +225,6 @@ export async function independentlyValidEmailEvidence(
         [context.studentId, context.universityId, context.identityVersion, context.policyVersion,
             context.email],
     );
-    const domainApproved = await isApprovedStudentEmail(tx, context.universityId, context.email);
-    if (!domainApproved) return undefined;
     for (const candidate of candidates.rows) {
         if (!await currentProcessingGrant(tx, userId, context.universityId, candidate.processing_grant_id)) continue;
         const locked = await tx.query<EvidenceCandidate>(
@@ -230,8 +241,17 @@ export async function independentlyValidEmailEvidence(
         );
         const current = locked.rows[0];
         const now = (await tx.query<{ now: Date }>('SELECT clock_timestamp() AS now')).rows[0]!.now;
-        if (current && hasCurrentBaseAuthority(current, context) && current.method === 'student_email'
-            && current.expires_at! > now && current.processing_grant_id === candidate.processing_grant_id) return current;
+        if (!current || !hasCurrentBaseAuthority(current, context) || current.method !== 'enrollment'
+            || !isRecognizedEnrollmentSource(current.source)
+            || current.expires_at! <= now || current.processing_grant_id !== candidate.processing_grant_id) continue;
+        if (current.source === MICROSOFT_ENROLLMENT_SOURCE) {
+            if (await currentMicrosoftProof(tx, userId, context, current)) return current;
+            continue;
+        }
+        // Registration enrollment carries no provider proof; the locked
+        // evidence row with its current grant, identity/policy binding, and
+        // database-time expiry is the source authority.
+        return current;
     }
     return undefined;
 }
@@ -297,59 +317,61 @@ export async function getEffectiveEligibility(
     if (!state.evidence_id || state.outcome !== 'verified' || !state.method || !state.verified_at || !state.expires_at) {
         return { eligible: false, reason: 'unverified' };
     }
-    // Identity and base institution policy are global authority gates. A
-    // provider-only failure may fall back; a changed canonical identity/policy
-    // may not resurrect any historical evidence.
-    if (state.evidence_identity_version !== context.identityVersion) return { eligible: false, reason: 'identity_changed' };
-    if (state.evidence_policy_version !== context.policyVersion) return { eligible: false, reason: 'policy_changed' };
-    let selected: EvidenceCandidate | undefined = state;
-    if (state.source === 'microsoft-education:v1') {
-        if (!await currentMicrosoftProof(tx, userId, context, state)) {
-            selected = await independentlyValidEmailEvidence(tx, userId, context);
-            if (!selected) {
-                if (state.revoked_at !== null || !await currentProcessingGrant(tx, userId, context.universityId, state.processing_grant_id)) {
-                    return { eligible: false, reason: 'consent_required' };
-                }
-                const failureNow = (await tx.query<{ now: Date }>('SELECT clock_timestamp() AS now')).rows[0]!.now;
-                return { eligible: false, reason: state.expires_at <= failureNow ? 'expired' : 'unverified' };
-            }
+    // Only current enrollment evidence authorizes student benefits. Email
+    // evidence is mailbox proof for audit and enrollment prerequisites; it
+    // never selects here regardless of how fresh it is. A provider-only
+    // failure may fall back to another valid independent enrollment, but a
+    // changed canonical identity/policy may not resurrect historical evidence.
+    let selected: EvidenceCandidate | undefined;
+    if (state.method === 'enrollment' && isRecognizedEnrollmentSource(state.source)) {
+        if (state.source === MICROSOFT_ENROLLMENT_SOURCE) {
+            if (await currentMicrosoftProof(tx, userId, context, state)) selected = state;
+        } else if (state.revoked_at === null
+            && state.proof_email === context.email
+            && state.evidence_identity_version === context.identityVersion
+            && state.evidence_policy_version === context.policyVersion
+            && await currentProcessingGrant(tx, userId, context.universityId, state.processing_grant_id)) {
+            const fastNow = (await tx.query<{ now: Date }>('SELECT clock_timestamp() AS now')).rows[0]!.now;
+            if (state.expires_at > fastNow) selected = state;
         }
-    } else {
-        // Preserve the established non-Microsoft behavior exactly: only a
-        // provider-invalid Microsoft pointer may use independent-email fallback.
+    }
+    if (!selected) selected = await independentlyValidEnrollmentEvidence(tx, userId, context);
+    if (canonicalDisclosure && merchant && !await validMerchantDisclosure(tx, userId, canonicalDisclosure, merchant)) {
+        return { eligible: false, reason: 'consent_required' };
+    }
+    if (selected) {
+        // Required invariant after complete source/consent/context validation:
+        if (selected.method !== 'enrollment') return { eligible: false, reason: 'unverified' };
+        // Disclosure acquisition may have blocked behind a concurrent
+        // withdrawal. Re-evaluate both selected expiry and the server-owned
+        // provider switch only after that final dependent lock.
+        const finalNow = (await tx.query<{ now: Date }>('SELECT clock_timestamp() AS now')).rows[0]!.now;
+        if (selected.expires_at! <= finalNow) return { eligible: false, reason: 'expired' };
+        if (selected.source === MICROSOFT_ENROLLMENT_SOURCE && !config.microsoftOidc.enabled) {
+            return { eligible: false, reason: 'unverified' };
+        }
+        return {
+            eligible: true,
+            studentId: context.studentId,
+            universityId: context.universityId,
+            evidenceId: selected.evidence_id!,
+            processingGrantId: selected.processing_grant_id!,
+            method: selected.method!,
+            verifiedAt: selected.verified_at!,
+            expiresAt: selected.expires_at!,
+        };
+    }
+    // No current enrollment. Benefit reasons derive from enrollment evidence
+    // only; email evidence never produces a benefit reason.
+    if (state.method === 'enrollment') {
+        if (state.evidence_identity_version !== context.identityVersion) return { eligible: false, reason: 'identity_changed' };
+        if (state.evidence_policy_version !== context.policyVersion) return { eligible: false, reason: 'policy_changed' };
         if (state.revoked_at !== null || !await currentProcessingGrant(tx, userId, context.universityId, state.processing_grant_id)) {
             return { eligible: false, reason: 'consent_required' };
         }
         if (state.proof_email !== context.email) return { eligible: false, reason: 'identity_changed' };
-        if (state.method === 'student_email' && !await isApprovedStudentEmail(tx, context.universityId, context.email)) {
-            return { eligible: false, reason: 'policy_changed' };
-        }
+        const reasonNow = (await tx.query<{ now: Date }>('SELECT clock_timestamp() AS now')).rows[0]!.now;
+        if (state.expires_at <= reasonNow) return { eligible: false, reason: 'expired' };
     }
-    if (canonicalDisclosure && merchant && !await validMerchantDisclosure(tx, userId, canonicalDisclosure, merchant)) {
-        return { eligible: false, reason: 'consent_required' };
-    }
-    // Disclosure acquisition may have blocked behind a concurrent withdrawal.
-    // Re-evaluate both selected expiry and the server-owned provider switch only
-    // after that final dependent lock.
-    const finalNow = (await tx.query<{ now: Date }>('SELECT clock_timestamp() AS now')).rows[0]!.now;
-    if (selected.source === 'microsoft-education:v1'
-        && (selected.expires_at! <= finalNow || !config.microsoftOidc.enabled)) {
-        const fallback = await independentlyValidEmailEvidence(tx, userId, context);
-        if (!fallback) return { eligible: false, reason: selected.expires_at! <= finalNow ? 'expired' : 'unverified' };
-        selected = fallback;
-        const fallbackNow = (await tx.query<{ now: Date }>('SELECT clock_timestamp() AS now')).rows[0]!.now;
-        if (selected.expires_at! <= fallbackNow) return { eligible: false, reason: 'expired' };
-    } else if (selected.expires_at! <= finalNow) {
-        return { eligible: false, reason: 'expired' };
-    }
-    return {
-        eligible: true,
-        studentId: context.studentId,
-        universityId: context.universityId,
-        evidenceId: selected.evidence_id!,
-        processingGrantId: selected.processing_grant_id!,
-        method: selected.method!,
-        verifiedAt: selected.verified_at!,
-        expiresAt: selected.expires_at!,
-    };
+    return { eligible: false, reason: 'unverified' };
 }

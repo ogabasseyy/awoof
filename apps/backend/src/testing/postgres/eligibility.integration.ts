@@ -245,7 +245,7 @@ async function makeMicrosoftCurrent(
     return { microsoftEvidenceId: evidence.rows[0]!.id, emailEvidenceId: email.id, proofId };
 }
 
-test('Microsoft-only invalidation falls back to the unchanged independently valid email evidence', async () => {
+test('Microsoft-only invalidation never falls back to email evidence for benefits', async () => {
     const originalEnabled = config.microsoftOidc.enabled;
     config.microsoftOidc.enabled = true;
     try {
@@ -260,17 +260,17 @@ test('Microsoft-only invalidation falls back to the unchanged independently vali
                      WHERE id=(SELECT identity_id FROM microsoft_provider_proofs WHERE id=$1)`, [microsoft.proofId]);
                 if (invalidation === 'policy_disabled') await client.query(`UPDATE institution_microsoft_policies SET enabled=false WHERE university_id=$1`, [fixture.universityId]);
                 if (invalidation === 'global_disabled') config.microsoftOidc.enabled = false;
-                const result = await inTransaction(client, () => getEffectiveEligibility(client, fixture.userId));
-                assert.equal(result.eligible, true, invalidation);
-                if (result.eligible) {
-                    assert.equal(result.evidenceId, microsoft.emailEvidenceId);
-                    assert.equal(result.method, 'student_email');
-                    const email = await client.query<{ processing_grant_id: string; expires_at: Date; verified_at: Date }>(
-                        'SELECT processing_grant_id,expires_at,verified_at FROM eligibility_evidence WHERE id=$1', [microsoft.emailEvidenceId]);
-                    assert.equal(result.processingGrantId, email.rows[0]!.processing_grant_id);
-                    assert.deepEqual(result.expiresAt, email.rows[0]!.expires_at);
-                    assert.deepEqual(result.verifiedAt, email.rows[0]!.verified_at);
-                }
+                // Fresh mailbox evidence exists, but only current enrollment
+                // authorizes benefits, so every invalidation fails closed.
+                assert.deepEqual(
+                    await inTransaction(client, () => getEffectiveEligibility(client, fixture.userId)),
+                    { eligible: false, reason: invalidation === 'expired' ? 'expired' : 'unverified' },
+                );
+                // The independent mailbox evidence itself is untouched for
+                // audit and enrollment prerequisites.
+                const email = await client.query<{ revoked_at: Date | null }>(
+                    'SELECT revoked_at FROM eligibility_evidence WHERE id=$1', [microsoft.emailEvidenceId]);
+                assert.equal(email.rows[0]!.revoked_at, null);
                 config.microsoftOidc.enabled = true;
             });
         }
@@ -279,13 +279,14 @@ test('Microsoft-only invalidation falls back to the unchanged independently vali
     }
 });
 
-test('Microsoft fallback rejects globally stale email candidates and selects older valid email evidence', async () => {
+test('Microsoft failure without valid enrollment stays ineligible across stale-email invalidations', async () => {
     const originalEnabled = config.microsoftOidc.enabled;
     config.microsoftOidc.enabled = true;
     try {
         await withTestClient(async (client) => {
-            // A Microsoft parent withdrawal invalidates only its dependent proof
-            // and evidence. An independently issued email grant remains usable.
+            // A Microsoft parent withdrawal invalidates its dependent proof
+            // and evidence. An independently issued email grant can prove the
+            // mailbox again, but mailbox evidence never authorizes benefits.
             const separateGrant = await createFixture(client);
             const separateMicrosoft = await makeMicrosoftCurrent(client, separateGrant);
             const freshGrant = await inTransaction(client, () => grantVerificationProcessing(client, separateGrant.userId, separateGrant.universityId,
@@ -295,18 +296,16 @@ test('Microsoft fallback rejects globally stale email candidates and selects old
                 [separateMicrosoft.microsoftEvidenceId, separateGrant.studentId, separateGrant.universityId]);
             await inTransaction(client, () => withdrawConsent(client, separateGrant.userId, separateGrant.grantId));
             const separateResult = await inTransaction(client, () => getEffectiveEligibility(client, separateGrant.userId));
-            assert.equal(separateResult.eligible, true);
-            if (separateResult.eligible) assert.equal(separateResult.processingGrantId, freshGrant);
+            assert.equal(separateResult.eligible, false);
 
             const fixture = await createFixture(client);
             await issueEmailAssurance(client, fixture);
             const emails = await client.query<{ id: string }>(`SELECT id FROM eligibility_evidence
                 WHERE student_id=$1 AND method='student_email' ORDER BY verified_at DESC,id DESC`, [fixture.studentId]);
             await client.query(`UPDATE eligibility_evidence SET revoked_at=clock_timestamp() WHERE id=$1`, [emails.rows[0]!.id]);
-            const microsoft = await makeMicrosoftCurrent(client, fixture, "clock_timestamp() - interval '1 second'");
+            await makeMicrosoftCurrent(client, fixture, "clock_timestamp() - interval '1 second'");
             const fallback = await inTransaction(client, () => getEffectiveEligibility(client, fixture.userId));
-            assert.equal(fallback.eligible, true);
-            if (fallback.eligible) assert.equal(fallback.evidenceId, microsoft.emailEvidenceId);
+            assert.equal(fallback.eligible, false);
 
             for (const invalidation of ['email_revoked', 'parent_withdrawn', 'mailbox_changed', 'identity_changed', 'base_policy_changed', 'domain_removed', 'denial'] as const) {
                 const isolated = await createFixture(client);
@@ -328,13 +327,21 @@ test('Microsoft fallback rejects globally stale email candidates and selects old
     }
 });
 
-test('a Microsoft-bound merchant assertion rejects after fallback while a fresh email-bound assertion succeeds', async () => {
+test('a Microsoft-bound merchant assertion rejects after fallback while a fresh enrollment-bound assertion succeeds', async () => {
     const originalEnabled = config.microsoftOidc.enabled;
     config.microsoftOidc.enabled = true;
     const pool = createTestPool();
     try {
         await withTestClient(async (client) => {
-            const fixture = await createFixture(client);
+            const fixture = await createFixture(client, { enrollment: true, normalization: 'trim_upper' });
+            const snapshot = await begin(client, fixture);
+            const registration = await inTransaction(client, () => applyEnrollmentDecision(
+                client,
+                snapshot,
+                verifiedDecision(fixture.email, 'merchant-reg'),
+            ));
+            assert.equal(registration.eligible, true);
+            if (!registration.eligible) throw new Error('Registration fixture was not eligible');
             const microsoft = await makeMicrosoftCurrent(client, fixture);
             const merchant = await createMerchantFixture(client);
             const disclosure = await inTransaction(client, () => grantMerchantDisclosure(client, fixture.userId, {
@@ -352,11 +359,11 @@ test('a Microsoft-bound merchant assertion rejects after fallback while a fresh 
             const receipt = await exchangeMerchantAssertion(pool, key, {
                 code: fresh.code, campaignId: input.campaignId, idempotencyKey: randomUUID(),
             });
-            assert.equal(receipt.assuranceMethod, 'student_email');
+            assert.equal(receipt.assuranceMethod, 'enrollment');
             const persisted = await client.query<{ evidence_id: string; processing_grant_id: string }>(
                 `SELECT evidence_id,processing_grant_id FROM merchant_assertions WHERE code_hash=encode(sha256($1::bytea),'hex')`, [Buffer.from(fresh.code)],
             );
-            assert.equal(persisted.rows[0]!.evidence_id, microsoft.emailEvidenceId);
+            assert.equal(persisted.rows[0]!.evidence_id, registration.evidenceId);
             assert.equal(persisted.rows[0]!.processing_grant_id, fixture.grantId);
         });
     } finally {
@@ -383,7 +390,10 @@ test('Microsoft fallback reads and withdrawal or authoritative denial contend in
                     : applyEnrollmentDecision(mutator, snapshot!, { outcome: 'denied', email: fixture.email, source: ENROLLMENT_SOURCE });
                 if (order === 'reader_first') {
                     await beginWithLockTimeout(reader);
-                    assert.equal((await getEffectiveEligibility(reader, fixture.userId)).eligible, true);
+                    // Expired Microsoft enrollment with only mailbox evidence
+                    // fails closed, while still holding the authority locks the
+                    // mutation below must wait behind.
+                    assert.equal((await getEffectiveEligibility(reader, fixture.userId)).eligible, false);
                     await beginWithLockTimeout(mutator);
                     const mutatorPid = await clientPid(mutator);
                     const readerPid = await clientPid(reader);
@@ -430,6 +440,16 @@ function verifiedDecision(email: string, registrationNumber: string): {
     };
 }
 
+async function applyRegistrationEnrollment(client: PoolClient, fixture: Fixture, registrationNumber: string): Promise<void> {
+    const snapshot = await begin(client, fixture);
+    const result = await inTransaction(client, () => applyEnrollmentDecision(
+        client,
+        snapshot,
+        verifiedDecision(fixture.email, registrationNumber),
+    ));
+    assert.equal(result.eligible, true);
+}
+
 async function state(client: PoolClient, fixture: Fixture): Promise<{
     provider_request_generation: number;
     provider_applied_generation: number;
@@ -449,6 +469,209 @@ async function state(client: PoolClient, fixture: Fixture): Promise<{
     );
     return result.rows[0]!;
 }
+
+test('fresh email proof alone never authorizes student benefits', async () => {
+    await withTestClient(async (client) => {
+        const fixture = await createFixture(client);
+        const actual = await inTransaction(client, () => getEffectiveEligibility(client, fixture.userId));
+        assert.equal(actual.eligible, false);
+        assert.deepEqual(actual, { eligible: false, reason: 'unverified' });
+        // Mailbox proof and email evidence are retained for audit and as
+        // enrollment prerequisites even though they grant no benefits.
+        const proof = await client.query(`SELECT 1 FROM user_email_proofs WHERE user_id = $1`, [fixture.userId]);
+        assert.equal(proof.rowCount, 1);
+        const evidence = await client.query<{ method: string; outcome: string }>(
+            `SELECT method, outcome FROM eligibility_evidence WHERE student_id = $1`,
+            [fixture.studentId],
+        );
+        assert.deepEqual(evidence.rows, [{ method: 'student_email', outcome: 'verified' }]);
+    });
+});
+
+test('expired Graph enrollment plus fresh email stays ineligible', async () => {
+    const originalEnabled = config.microsoftOidc.enabled;
+    config.microsoftOidc.enabled = true;
+    try {
+        await withTestClient(async (client) => {
+            const fixture = await createFixture(client);
+            await makeMicrosoftCurrent(client, fixture, "clock_timestamp() - interval '1 second'");
+            assert.deepEqual(
+                await inTransaction(client, () => getEffectiveEligibility(client, fixture.userId)),
+                { eligible: false, reason: 'expired' },
+            );
+            // A fresh mailbox re-proof records new email evidence but cannot
+            // renew lapsed enrollment into benefit authority.
+            await issueEmailAssurance(client, fixture);
+            const actual = await inTransaction(client, () => getEffectiveEligibility(client, fixture.userId));
+            assert.equal(actual.eligible, false);
+        });
+    } finally {
+        config.microsoftOidc.enabled = originalEnabled;
+    }
+});
+
+test('withdrawn Graph consent plus fresh email stays ineligible without moving a live enrollment pointer', async () => {
+    const originalEnabled = config.microsoftOidc.enabled;
+    config.microsoftOidc.enabled = true;
+    try {
+        await withTestClient(async (client) => {
+            const fixture = await createFixture(client);
+            const microsoft = await makeMicrosoftCurrent(client, fixture);
+            await client.query(
+                `UPDATE microsoft_verification_consents SET withdrawn_at = clock_timestamp()
+                 WHERE id = (SELECT provider_consent_id FROM microsoft_provider_proofs WHERE id = $1)`,
+                [microsoft.proofId],
+            );
+            await client.query(`UPDATE microsoft_provider_proofs SET revoked_at = clock_timestamp() WHERE id = $1`, [microsoft.proofId]);
+            assert.deepEqual(
+                await inTransaction(client, () => getEffectiveEligibility(client, fixture.userId)),
+                { eligible: false, reason: 'unverified' },
+            );
+            await issueEmailAssurance(client, fixture);
+            const pointer = await client.query<{ current_evidence_id: string }>(
+                `SELECT current_evidence_id FROM student_eligibility_state
+                 WHERE student_id = $1 AND university_id = $2`,
+                [fixture.studentId, fixture.universityId],
+            );
+            assert.equal(pointer.rows[0]!.current_evidence_id, microsoft.microsoftEvidenceId);
+            assert.deepEqual(
+                await inTransaction(client, () => getEffectiveEligibility(client, fixture.userId)),
+                { eligible: false, reason: 'unverified' },
+            );
+        });
+    } finally {
+        config.microsoftOidc.enabled = originalEnabled;
+    }
+});
+
+test('expired registration evidence stays ineligible and email re-proof cannot renew it', async () => {
+    await withTestClient(async (client) => {
+        const fixture = await createFixture(client, { enrollment: true, normalization: 'trim_upper' });
+        const snapshot = await begin(client, fixture);
+        assert.equal((await inTransaction(client, () => applyEnrollmentDecision(
+            client,
+            snapshot,
+            verifiedDecision(fixture.email, 'expiring-reg'),
+        ))).eligible, true);
+        // Evidence rows are immutable, so lapse is simulated by revoking the
+        // live row and letting a historical expired row take the pointer; no
+        // valid enrollment remains for the candidate scan to preserve.
+        await client.query(
+            `UPDATE eligibility_evidence SET revoked_at = clock_timestamp()
+             WHERE student_id = $1 AND method = 'enrollment'`,
+            [fixture.studentId],
+        );
+        const original = await client.query<{ email_proof_id: string; identity_version: number; policy_version: number }>(
+            `SELECT email_proof_id, identity_version, policy_version
+             FROM eligibility_evidence
+             WHERE student_id = $1 AND method = 'enrollment'
+             ORDER BY verified_at DESC LIMIT 1`,
+            [fixture.studentId],
+        );
+        const expired = await client.query<{ id: string }>(
+            `INSERT INTO eligibility_evidence
+                 (student_id, university_id, email_proof_id, processing_grant_id,
+                  method, outcome, identity_version, policy_version, source, expires_at)
+             VALUES ($1, $2, $3, $4, 'enrollment', 'verified', $5, $6, $7,
+                     clock_timestamp() - interval '1 minute')
+             RETURNING id`,
+            [
+                fixture.studentId,
+                fixture.universityId,
+                original.rows[0]!.email_proof_id,
+                fixture.grantId,
+                original.rows[0]!.identity_version,
+                original.rows[0]!.policy_version,
+                ENROLLMENT_SOURCE,
+            ],
+        );
+        await client.query(
+            `UPDATE student_eligibility_state SET current_evidence_id = $3
+             WHERE student_id = $1 AND university_id = $2`,
+            [fixture.studentId, fixture.universityId, expired.rows[0]!.id],
+        );
+        assert.deepEqual(
+            await inTransaction(client, () => getEffectiveEligibility(client, fixture.userId)),
+            { eligible: false, reason: 'expired' },
+        );
+        await issueEmailAssurance(client, fixture);
+        const actual = await inTransaction(client, () => getEffectiveEligibility(client, fixture.userId));
+        assert.equal(actual.eligible, false);
+    });
+});
+
+test('fresh valid registration authorizes student benefits', async () => {
+    await withTestClient(async (client) => {
+        const fixture = await createFixture(client, { enrollment: true, normalization: 'trim_upper' });
+        const snapshot = await begin(client, fixture);
+        const result = await inTransaction(client, () => applyEnrollmentDecision(
+            client,
+            snapshot,
+            verifiedDecision(fixture.email, 'active-reg'),
+        ));
+        assert.equal(result.eligible, true);
+        if (!result.eligible) throw new Error('Fresh registration enrollment was not eligible');
+        assert.equal(result.method, 'enrollment');
+        const stored = await client.query<{ source: string }>(
+            `SELECT source FROM eligibility_evidence WHERE id = $1`,
+            [result.evidenceId],
+        );
+        assert.equal(stored.rows[0]!.source, ENROLLMENT_SOURCE);
+        const read = await inTransaction(client, () => getEffectiveEligibility(client, fixture.userId));
+        assert.deepEqual(read, result);
+    });
+});
+
+test('valid independent enrollment survives another source failure', async () => {
+    const originalEnabled = config.microsoftOidc.enabled;
+    config.microsoftOidc.enabled = true;
+    try {
+        for (const invalidation of ['expired', 'proof_revoked'] as const) {
+            await withTestClient(async (client) => {
+                const fixture = await createFixture(client, { enrollment: true, normalization: 'trim_upper' });
+                const snapshot = await begin(client, fixture);
+                const registration = await inTransaction(client, () => applyEnrollmentDecision(
+                    client,
+                    snapshot,
+                    verifiedDecision(fixture.email, 'independent-reg'),
+                ));
+                assert.equal(registration.eligible, true);
+                if (!registration.eligible) throw new Error('Registration fixture was not eligible');
+                const microsoft = await makeMicrosoftCurrent(client, fixture,
+                    invalidation === 'expired' ? "clock_timestamp() - interval '1 second'" : undefined);
+                if (invalidation === 'proof_revoked') {
+                    await client.query(`UPDATE microsoft_provider_proofs SET revoked_at = clock_timestamp() WHERE id = $1`, [microsoft.proofId]);
+                }
+                const result = await inTransaction(client, () => getEffectiveEligibility(client, fixture.userId));
+                assert.equal(result.eligible, true, invalidation);
+                if (result.eligible) {
+                    assert.equal(result.evidenceId, registration.evidenceId, invalidation);
+                    assert.equal(result.method, 'enrollment', invalidation);
+                }
+            });
+        }
+    } finally {
+        config.microsoftOidc.enabled = originalEnabled;
+    }
+});
+
+test('authoritative denial plus fresh email proof stays denied', async () => {
+    await withTestClient(async (client) => {
+        const fixture = await createFixture(client, { enrollment: true, normalization: 'trim_upper' });
+        const snapshot = await begin(client, fixture);
+        assert.deepEqual(
+            await inTransaction(client, () => applyEnrollmentDecision(client, snapshot, {
+                outcome: 'denied', email: fixture.email, source: ENROLLMENT_SOURCE,
+            })),
+            { eligible: false, reason: 'enrollment_denied' },
+        );
+        await issueEmailAssurance(client, fixture);
+        assert.deepEqual(
+            await inTransaction(client, () => getEffectiveEligibility(client, fixture.userId)),
+            { eligible: false, reason: 'enrollment_denied' },
+        );
+    });
+});
 
 type MerchantFixture = {
     ownerId: string;
@@ -584,7 +807,8 @@ async function completeNewSignup(
             challengeId: issued.challengeId,
             processingGrantId: grantId,
         });
-        assert.equal(result.eligible, true);
+        // Signup mailbox proof creates the account with pending enrollment.
+        assert.deepEqual(result, { eligible: false, reason: 'unverified' });
         return { userId, studentId, grantId };
     });
 }
@@ -612,24 +836,35 @@ test('legacy verified status without explicit evidence is not eligible', async (
 test('requires an exact active approved domain and explicit fresh processing consent', async () => {
     await withTestClient(async (client) => {
         const fixture = await createFixture(client);
-        assert.equal((await inTransaction(client, () => getEffectiveEligibility(client, fixture.userId))).eligible, true);
+        // Mailbox proof alone never authorizes benefits, with or without a
+        // legacy domain column value.
+        assert.deepEqual(
+            await inTransaction(client, () => getEffectiveEligibility(client, fixture.userId)),
+            { eligible: false, reason: 'unverified' },
+        );
         await client.query(`UPDATE universities SET domain = 'students.school.example,public.example' WHERE id = $1`, [fixture.universityId]);
-        assert.equal((await inTransaction(client, () => getEffectiveEligibility(client, fixture.userId))).eligible, true);
+        assert.deepEqual(
+            await inTransaction(client, () => getEffectiveEligibility(client, fixture.userId)),
+            { eligible: false, reason: 'unverified' },
+        );
         await inTransaction(client, () => updateInstitutionPolicy(client, fixture.adminId, fixture.universityId, {
             domains: [], emailEvidenceValidityDays: 90, enrollmentValidityDays: 30,
             registrationNormalization: null, isActive: true,
         }));
         assert.deepEqual(
             await inTransaction(client, () => getEffectiveEligibility(client, fixture.userId)),
-            { eligible: false, reason: 'policy_changed' },
+            { eligible: false, reason: 'unverified' },
         );
+        // Domain approval still gates recording new mailbox assurance: an
+        // unapproved domain cannot mint even audit evidence.
+        await assert.rejects(issueEmailAssurance(client, fixture), /not approved/i);
         await inTransaction(client, () => updateInstitutionPolicy(client, fixture.adminId, fixture.universityId, {
             domains: ['students.school.example'], emailEvidenceValidityDays: 90, enrollmentValidityDays: 30,
             registrationNormalization: null, isActive: true,
         }));
         assert.deepEqual(
             await inTransaction(client, () => getEffectiveEligibility(client, fixture.userId)),
-            { eligible: false, reason: 'policy_changed' },
+            { eligible: false, reason: 'unverified' },
         );
         await assert.rejects(
             inTransaction(client, () => grantVerificationProcessing(client, fixture.userId, fixture.universityId, {
@@ -666,13 +901,13 @@ test('invalidates evidence for suspension, restoration, and identity changes wit
         await client.query(`UPDATE students SET status = 'active' WHERE id = $1`, [fixture.studentId]);
         assert.deepEqual(
             await inTransaction(client, () => getEffectiveEligibility(client, fixture.userId)),
-            { eligible: false, reason: 'identity_changed' },
+            { eligible: false, reason: 'unverified' },
         );
         await client.query(`UPDATE users SET email = upper(email) WHERE id = $1`, [fixture.userId]);
         await client.query(`UPDATE users SET email = lower(email) WHERE id = $1`, [fixture.userId]);
         assert.deepEqual(
             await inTransaction(client, () => getEffectiveEligibility(client, fixture.userId)),
-            { eligible: false, reason: 'identity_changed' },
+            { eligible: false, reason: 'unverified' },
         );
     });
 });
@@ -681,9 +916,14 @@ test('processing withdrawal revokes the old evidence and a re-grant cannot reviv
     await withTestClient(async (client) => {
         const fixture = await createFixture(client);
         await inTransaction(client, () => withdrawConsent(client, fixture.userId, fixture.grantId));
+        const revoked = await client.query<{ revoked_at: Date | null }>(
+            `SELECT revoked_at FROM eligibility_evidence WHERE processing_grant_id = $1`,
+            [fixture.grantId],
+        );
+        assert.ok(revoked.rows[0]!.revoked_at);
         assert.deepEqual(
             await inTransaction(client, () => getEffectiveEligibility(client, fixture.userId)),
-            { eligible: false, reason: 'consent_required' },
+            { eligible: false, reason: 'unverified' },
         );
         await inTransaction(client, () => grantVerificationProcessing(
             client,
@@ -693,7 +933,7 @@ test('processing withdrawal revokes the old evidence and a re-grant cannot reviv
         ));
         assert.deepEqual(
             await inTransaction(client, () => getEffectiveEligibility(client, fixture.userId)),
-            { eligible: false, reason: 'consent_required' },
+            { eligible: false, reason: 'unverified' },
         );
         const foreign = (await client.query<{ id: string }>(
             `INSERT INTO users (email, role) VALUES ($1, 'student') RETURNING id`,
@@ -749,9 +989,9 @@ test('keeps merchant disclosures independent and requires a configured exact ori
             })),
             { eligible: false, reason: 'consent_required' },
         );
-        assert.equal((await inTransaction(client, () => getEffectiveEligibility(client, fixture.userId, {
+        assert.deepEqual((await inTransaction(client, () => getEffectiveEligibility(client, fixture.userId, {
             vendorId: vendorB, grantId: disclosureB, origin: 'https://b.example', purpose: 'discount',
-        }))).eligible, true);
+        }))), { eligible: false, reason: 'unverified' });
     });
 });
 
@@ -873,7 +1113,12 @@ test('unknown preserves current evidence while consuming exactly one provider ge
     await withTestClient(async (client) => {
         const fixture = await createFixture(client, { enrollment: true, normalization: 'trim_upper' });
         const snapshot = await begin(client, fixture);
-        assert.equal((await inTransaction(client, () => applyEnrollmentDecision(client, snapshot, { outcome: 'unknown' }))).eligible, true);
+        // A transient unknown result preserves the mailbox-evidence pointer
+        // without authorizing benefits.
+        assert.deepEqual(
+            await inTransaction(client, () => applyEnrollmentDecision(client, snapshot, { outcome: 'unknown' })),
+            { eligible: false, reason: 'unverified' },
+        );
         const after = await state(client, fixture);
         assert.equal(after.provider_applied_generation, snapshot.requestGeneration);
         assert.ok(after.current_evidence_id);
@@ -986,11 +1231,11 @@ test('rejects missing and foreign processing grants without changing current aut
             [fixture.studentId],
         );
         assert.equal(evidence.rows[0]!.count, baselineEvidence.rows[0]!.count);
-        assert.equal((await inTransaction(client, () => applyEnrollmentDecision(
+        assert.deepEqual((await inTransaction(client, () => applyEnrollmentDecision(
             client,
             snapshot,
             { outcome: 'unknown' },
-        ))).eligible, true);
+        ))), { eligible: false, reason: 'unverified' });
     });
 });
 
@@ -1203,7 +1448,7 @@ test('fresh evidence never resurrects after material identity or policy changes 
         await client.query(`UPDATE users SET email = $2 WHERE id = $1`, [emailFixture.userId, originalEmail]);
         assert.deepEqual(
             await inTransaction(client, () => getEffectiveEligibility(client, emailFixture.userId)),
-            { eligible: false, reason: 'identity_changed' },
+            { eligible: false, reason: 'unverified' },
         );
 
         const profileFixture = await createFixture(client);
@@ -1214,7 +1459,7 @@ test('fresh evidence never resurrects after material identity or policy changes 
         );
         assert.deepEqual(
             await inTransaction(client, () => getEffectiveEligibility(client, profileFixture.userId)),
-            { eligible: false, reason: 'identity_changed' },
+            { eligible: false, reason: 'unverified' },
         );
 
         const institutionFixture = await createFixture(client);
@@ -1226,7 +1471,7 @@ test('fresh evidence never resurrects after material identity or policy changes 
         await client.query(`UPDATE universities SET is_active = true WHERE id = $1`, [institutionFixture.universityId]);
         assert.deepEqual(
             await inTransaction(client, () => getEffectiveEligibility(client, institutionFixture.userId)),
-            { eligible: false, reason: 'policy_changed' },
+            { eligible: false, reason: 'unverified' },
         );
 
         const domainFixture = await createFixture(client);
@@ -1240,14 +1485,14 @@ test('fresh evidence never resurrects after material identity or policy changes 
         }));
         assert.deepEqual(
             await inTransaction(client, () => getEffectiveEligibility(client, domainFixture.userId)),
-            { eligible: false, reason: 'policy_changed' },
+            { eligible: false, reason: 'unverified' },
         );
 
         const caseOnlyFixture = await createFixture(client);
         await client.query(`UPDATE users SET email = upper(email) WHERE id = $1`, [caseOnlyFixture.userId]);
         assert.equal(
             (await inTransaction(client, () => getEffectiveEligibility(client, caseOnlyFixture.userId))).eligible,
-            true,
+            false,
         );
     });
 });
@@ -1276,7 +1521,7 @@ test('serializes profile and email mutations behind a live eligibility read', as
             const mutator = await pool.connect();
             try {
                 await beginWithLockTimeout(reader);
-                assert.equal((await getEffectiveEligibility(reader, fixture.userId)).eligible, true);
+                assert.equal((await getEffectiveEligibility(reader, fixture.userId)).eligible, false);
                 await beginWithLockTimeout(mutator);
                 const blockedPid = await clientPid(mutator);
                 const blockerPid = await clientPid(reader);
@@ -1288,7 +1533,7 @@ test('serializes profile and email mutations behind a live eligibility read', as
                 await mutator.query('COMMIT');
                 assert.deepEqual(
                     await inTransaction(client, () => getEffectiveEligibility(client, fixture.userId)),
-                    { eligible: false, reason: 'identity_changed' },
+                    { eligible: false, reason: 'unverified' },
                 );
             } finally {
                 await reader.query('ROLLBACK').catch(() => undefined);
@@ -1310,7 +1555,7 @@ test('serializes institution policy mutation behind an application and invalidat
         const mutator = await pool.connect();
         try {
             await beginWithLockTimeout(application);
-            assert.equal((await applyEnrollmentDecision(application, snapshot, { outcome: 'unknown' })).eligible, true);
+            assert.equal((await applyEnrollmentDecision(application, snapshot, { outcome: 'unknown' })).eligible, false);
             await beginWithLockTimeout(mutator);
             const blockedPid = await clientPid(mutator);
             const blockerPid = await clientPid(application);
@@ -1324,7 +1569,7 @@ test('serializes institution policy mutation behind an application and invalidat
             await mutator.query('COMMIT');
             assert.deepEqual(
                 await inTransaction(client, () => getEffectiveEligibility(client, fixture.userId)),
-                { eligible: false, reason: 'policy_changed' },
+                { eligible: false, reason: 'unverified' },
             );
         } finally {
             await application.query('ROLLBACK').catch(() => undefined);
@@ -1413,15 +1658,22 @@ test('lets exactly one concurrent student profile and normalized email claim com
     });
 });
 
-test('new-account signup consumes proof and creates matching null and matric-bound assurance atomically', async () => {
+test('new-account signup consumes proof and creates matching null and matric-bound mailbox assurance atomically', async () => {
     await withTestClient(async (client) => {
         const seed = await createFixture(client);
         const noMatricClaim = await signupClaim(client, seed.universityId);
         const noMatric = await completeNewSignup(client, noMatricClaim);
         const valueClaim = await signupClaim(client, seed.universityId, { matricNumber: 'SELF-DECLARED-42' });
         const withMatric = await completeNewSignup(client, valueClaim);
-        assert.equal((await inTransaction(client, () => getEffectiveEligibility(client, noMatric.userId))).eligible, true);
-        assert.equal((await inTransaction(client, () => getEffectiveEligibility(client, withMatric.userId))).eligible, true);
+        // New accounts hold mailbox assurance with enrollment pending.
+        assert.deepEqual(
+            await inTransaction(client, () => getEffectiveEligibility(client, noMatric.userId)),
+            { eligible: false, reason: 'unverified' },
+        );
+        assert.deepEqual(
+            await inTransaction(client, () => getEffectiveEligibility(client, withMatric.userId)),
+            { eligible: false, reason: 'unverified' },
+        );
         const profiles = await client.query<{ registration_number: string | null }>(
             `SELECT registration_number FROM students WHERE id = ANY($1::uuid[]) ORDER BY id`,
             [[noMatric.studentId, withMatric.studentId]],
@@ -1506,7 +1758,7 @@ test('observes real client contention and admits only one application of a provi
         const second = await pool.connect();
         try {
             await first.query('BEGIN');
-            assert.equal((await applyEnrollmentDecision(first, snapshot, { outcome: 'unknown' })).eligible, true);
+            assert.equal((await applyEnrollmentDecision(first, snapshot, { outcome: 'unknown' })).eligible, false);
             await second.query('BEGIN');
             const blocked = applyEnrollmentDecision(second, snapshot, { outcome: 'unknown' });
             await waitForOtherClientLock(client);
@@ -1678,7 +1930,7 @@ test('rejects policy-row reparenting and remove-add cannot resurrect fresh evide
         }));
         assert.deepEqual(
             await inTransaction(client, () => getEffectiveEligibility(client, fixture.userId)),
-            { eligible: false, reason: 'policy_changed' },
+            { eligible: false, reason: 'unverified' },
         );
     });
 });
@@ -1707,7 +1959,7 @@ test('requires a live merchant owner and merchant for grants and qualified reads
             accepted: true,
             noticeVersion: MERCHANT_DISCLOSURE_NOTICE_VERSION,
         }));
-        assert.equal((await read()).eligible, true);
+        assert.deepEqual(await read(), { eligible: false, reason: 'unverified' });
 
         await client.query(`UPDATE vendors SET status = 'suspended' WHERE id = $1`, [merchant.vendorId]);
         assert.deepEqual(await read(), { eligible: false, reason: 'consent_required' });
@@ -1809,7 +2061,7 @@ test('observes withdrawal blocked by a reader and preserves final revoked author
         const withdrawal = await pool.connect();
         try {
             await beginWithLockTimeout(reader);
-            assert.equal((await getEffectiveEligibility(reader, fixture.userId)).eligible, true);
+            assert.equal((await getEffectiveEligibility(reader, fixture.userId)).eligible, false);
             await beginWithLockTimeout(withdrawal);
             const blockedPid = await clientPid(withdrawal);
             const blockerPid = await clientPid(reader);
@@ -1820,7 +2072,7 @@ test('observes withdrawal blocked by a reader and preserves final revoked author
             await withdrawal.query('COMMIT');
             assert.deepEqual(
                 await inTransaction(client, () => getEffectiveEligibility(client, fixture.userId)),
-                { eligible: false, reason: 'consent_required' },
+                { eligible: false, reason: 'unverified' },
             );
         } finally {
             await reader.query('ROLLBACK').catch(() => undefined);
@@ -1853,13 +2105,13 @@ test('withdrawal never holds consent ahead of a reader common-lock sequence', as
             const blockerPid = await clientPid(reader);
             const revoke = withdrawConsent(withdrawal, fixture.userId, fixture.grantId);
             await waitForBlockedBy(client, blockedPid, blockerPid, 'withdrawal common-lock acquisition');
-            assert.equal((await getEffectiveEligibility(reader, fixture.userId)).eligible, true);
+            assert.equal((await getEffectiveEligibility(reader, fixture.userId)).eligible, false);
             await reader.query('COMMIT');
             await revoke;
             await withdrawal.query('COMMIT');
             assert.deepEqual(
                 await inTransaction(client, () => getEffectiveEligibility(client, fixture.userId)),
-                { eligible: false, reason: 'consent_required' },
+                { eligible: false, reason: 'unverified' },
             );
         } finally {
             await reader.query('ROLLBACK').catch(() => undefined);
@@ -1880,7 +2132,7 @@ test('observes withdrawal blocked by an application and revokes after the genera
         const withdrawal = await pool.connect();
         try {
             await beginWithLockTimeout(application);
-            assert.equal((await applyEnrollmentDecision(application, snapshot, { outcome: 'unknown' })).eligible, true);
+            assert.equal((await applyEnrollmentDecision(application, snapshot, { outcome: 'unknown' })).eligible, false);
             await beginWithLockTimeout(withdrawal);
             const blockedPid = await clientPid(withdrawal);
             const blockerPid = await clientPid(application);
@@ -1893,7 +2145,7 @@ test('observes withdrawal blocked by an application and revokes after the genera
             assert.equal(after.provider_applied_generation, snapshot.requestGeneration);
             assert.deepEqual(
                 await inTransaction(client, () => getEffectiveEligibility(client, fixture.userId)),
-                { eligible: false, reason: 'consent_required' },
+                { eligible: false, reason: 'unverified' },
             );
         } finally {
             await application.query('ROLLBACK').catch(() => undefined);
@@ -1991,7 +2243,7 @@ test('serializes method mutation behind applyEnrollmentDecision without a lock c
         const mutator = await pool.connect();
         try {
             await beginWithLockTimeout(applyClient);
-            assert.equal((await applyEnrollmentDecision(applyClient, snapshot, { outcome: 'unknown' })).eligible, true);
+            assert.equal((await applyEnrollmentDecision(applyClient, snapshot, { outcome: 'unknown' })).eligible, false);
             await beginWithLockTimeout(mutator);
             const blockedPid = await clientPid(mutator);
             const blockerPid = await clientPid(applyClient);
@@ -2007,7 +2259,7 @@ test('serializes method mutation behind applyEnrollmentDecision without a lock c
             await mutator.query('COMMIT');
             assert.deepEqual(
                 await inTransaction(client, () => getEffectiveEligibility(client, fixture.userId)),
-                { eligible: false, reason: 'policy_changed' },
+                { eligible: false, reason: 'unverified' },
             );
         } finally {
             await applyClient.query('ROLLBACK').catch(() => undefined);
@@ -2022,7 +2274,8 @@ test('serializes method mutation behind applyEnrollmentDecision without a lock c
 
 test('checkout uses current evidence even when legacy verification flags disagree', async () => {
     await withTestClient(async (client) => {
-        const fixture = await createFixture(client);
+        const fixture = await createFixture(client, { enrollment: true, normalization: 'trim_upper' });
+        await applyRegistrationEnrollment(client, fixture, 'checkout-current');
         const controller = new CheckoutController();
         // Missing product proves authority admission without calling a provider.
         const request = { user: { userId: fixture.userId, role: 'student' },
@@ -2051,7 +2304,8 @@ test('uncertain provider initialization survives retries and expiry without a se
     }) as typeof axios.post;
     try {
         await withTestClient(async (client) => {
-            const fixture = await createFixture(client);
+            const fixture = await createFixture(client, { enrollment: true, normalization: 'trim_upper' });
+            await applyRegistrationEnrollment(client, fixture, 'checkout-uncertain');
             const vendor = await createMerchantFixture(client);
             const product = (await client.query(`INSERT INTO products (vendor_id, name, price, student_price, stock, status)
                 VALUES ($1, 'Synthetic checkout', 100, 80, 10, 'active') RETURNING id`, [vendor.vendorId])).rows[0];
@@ -2106,7 +2360,8 @@ test('definitively rejected initialization releases the checkout for a corrected
     }) as typeof axios.post;
     try {
         await withTestClient(async (client) => {
-            const fixture = await createFixture(client);
+            const fixture = await createFixture(client, { enrollment: true, normalization: 'trim_upper' });
+            await applyRegistrationEnrollment(client, fixture, 'checkout-retry');
             const vendor = await createMerchantFixture(client);
             const product = (await client.query(`INSERT INTO products (vendor_id, name, price, student_price, stock, status)
                 VALUES ($1, 'Synthetic retry', 100, 80, 10, 'active') RETURNING id`, [vendor.vendorId])).rows[0];
@@ -2173,7 +2428,8 @@ for (const mutation of ['none', 'withdrawn', 'policy', 'expired', 'inactive'] as
     test(`delayed successful checkout requires current eligibility: ${mutation}`, async () => {
         const { completeMarketplaceTransactionWithClient } = await import('../../services/payment/checkout.service.js');
         await withTestClient(async (client) => {
-            const fixture = await createFixture(client);
+            const fixture = await createFixture(client, { enrollment: true, normalization: 'trim_upper' });
+            await applyRegistrationEnrollment(client, fixture, `checkout-delayed-${mutation}`);
             assert.equal((await inTransaction(client, () => getEffectiveEligibility(client, fixture.userId))).eligible, true);
             const vendor = await createMerchantFixture(client);
             const product = (await client.query(`INSERT INTO products(vendor_id,name,price,student_price,stock,status)
@@ -2185,6 +2441,7 @@ for (const mutation of ['none', 'withdrawn', 'policy', 'expired', 'inactive'] as
             if (mutation === 'policy') await client.query('UPDATE universities SET verification_policy_version=verification_policy_version+1 WHERE id=$1', [fixture.universityId]);
             if (mutation === 'inactive') await client.query("UPDATE students SET status='suspended' WHERE id=$1", [fixture.studentId]);
             if (mutation === 'expired') {
+                await client.query(`UPDATE eligibility_evidence SET revoked_at = clock_timestamp() WHERE student_id = $1 AND method = 'enrollment'`, [fixture.studentId]);
                 const expired = (await client.query(`INSERT INTO eligibility_evidence(student_id,university_id,email_proof_id,processing_grant_id,method,outcome,identity_version,policy_version,source,expires_at)
                     SELECT student_id,university_id,email_proof_id,processing_grant_id,'enrollment','verified',identity_version,policy_version,'synthetic-expiry',clock_timestamp()-interval '1 second'
                     FROM eligibility_evidence WHERE student_id=$1 ORDER BY verified_at DESC LIMIT 1 RETURNING id`, [fixture.studentId])).rows[0];
