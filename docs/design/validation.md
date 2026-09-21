@@ -123,11 +123,37 @@ Captured via `apps/web/scripts/capture-route-screenshots.mjs`.
   `/robots.txt` and `/sitemap.xml` verified rendering.
 - Baseline summary hash re-verified unchanged (`b6e1b30c…`).
 
+## Marketplace LCP + contrast fixes (2026-09-21, sha `fdad422`)
+
+- Root causes (researched before fixing): the hero H1 ships in SSR HTML
+  but a framer-motion `FadeIn` (`opacity: 0` until hydration) gated its
+  paint on JS execution; four text/background pairs failed WCAG AA
+  (page-bg slate-500 labels 4.43:1, inactive pills blended 3.44:1 at 70%
+  opacity, emerald-500/white badge 2.54:1).
+- Fixes (`0dd4111`, all in `marketplace/page.tsx`): hero renders without
+  the entrance wrapper (below-fold motion kept); labels to slate-600
+  (7.06:1), inactive pills to slate-800 (blended 5.33:1, distinction
+  kept), badge to emerald-700 (5.48:1). Passing pairs left untouched.
+- First re-audit: marketplace LCP 4031ms → 2860ms med; contrast fixed
+  (a11y 1.00, 0 failing nodes × 5 runs). Blocking experiments ruled out
+  webfonts and API/prefetch shaping as the remaining sim driver; runs
+  were bimodal (2265 vs 2861ms) while real-condition runs held ~2.1s.
+- Second cut (`fdad422`): `prefetch={false}` on deal-card and
+  browse-more links (7+ wasted `_rsc` requests per visit); primary
+  navigation keeps prefetch. Final capture: marketplace LCP **2259ms
+  med (2258–2260 all runs)** — variance gone, budget passed.
+- Compare verdict: **7/7 PASS** (first clean sweep). Lighthouse run-1:
+  perf 0.99, a11y 1.00, seo 1.00, contrast pass on all 7 routes.
+  Evidence: `docs/design/evidence/candidate-marketplace-fix-fdad422-summary.json`.
+- Full browser suite 202/202 green on the fix commits; baseline summary
+  hash re-verified unchanged (`b6e1b30c…`).
+
 ## Release blockers carried forward (owner decisions)
 
 - Legal pages (`/privacy`, `/terms`) unpublished — blocked, no placeholder.
 - Public inbox/phone: none offered; support-owner decision needed before adding.
-- Marketplace LCP (4.0s) and a11y (0.96) preexisting over-budget items.
+- ~~Marketplace LCP (4.0s) and a11y (0.96) preexisting over-budget items.~~
+  RESOLVED `fdad422`: LCP 2259ms med, a11y 1.00 (see section above).
 - Enrollment-source coverage per institution unverified; no per-school promises made.
 
 ## Preexisting findings (not caused by this work)
