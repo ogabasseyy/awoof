@@ -1,4 +1,5 @@
 import ScrollToHash from './components/ScrollToHash';
+import '@/styles/remix.css';
 import PublicShell from '@/components/public/PublicShell';
 import { buildPublicMetadata } from '@/lib/public-metadata';
 import { publicPageMetadata } from '@/content/public/page-metadata';
@@ -16,21 +17,8 @@ export default async function Home() {
   return (
     <PublicShell>
       <ScrollToHash />
-      <div
-        id="hero"
-        className="relative bg-gradient-to-b from-[#1D4ED8] via-[#2563EB] to-[#93C5FD]"
-      >
-        <div
-          className="pointer-events-none absolute inset-0 opacity-50"
-          style={{
-            backgroundImage:
-              'radial-gradient(ellipse 80% 50% at 10% 20%, rgba(255,255,255,0.18), transparent), radial-gradient(ellipse 60% 40% at 90% 10%, rgba(191,219,254,0.35), transparent)',
-          }}
-        />
-        <div className="relative">
-          <Banner />
-        </div>
-      </div>
+      <div id="hero" className="remix-home-hero"><Banner /></div>
+      <div className="remix-band">Campus energy. Everyday possibilities. A very Awoof idea.</div>
       <AudiencePaths />
       <About />
       <TopDeals />

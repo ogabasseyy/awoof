@@ -15,7 +15,7 @@ const webRoot = dirname(here);
 const APP_PORT = 3107;
 const WIDTHS = [360, 390, 768, 1440];
 const ROUTES = [
-  { path: '/', slug: 'home', h1: 'Verify your student status' },
+  { path: '/', slug: 'home', h1: 'Student verification' },
   { path: '/marketplace', slug: 'marketplace', h1: 'savings are warming up' },
   { path: '/widget/verify', slug: 'widget-verify', h1: 'Merchant verification is unavailable' },
   { path: '/trust', slug: 'trust', h1: 'Security and trust' },

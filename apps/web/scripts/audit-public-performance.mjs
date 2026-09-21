@@ -32,7 +32,7 @@ const BASELINE_ROUTES = ['/', '/marketplace'];
 const CANDIDATE_EXTRA_ROUTES = ['/trust', '/help', '/contact', '/partner', '/developers'];
 // Stable h1 substrings asserted before measuring each route.
 const EXPECTED_H1 = {
-  '/': 'Verify your student status',
+  '/': 'Student verification',
   '/marketplace': 'savings are warming up',
 };
 const ALLOWED_FAILURE_PATHS = new Set(['/api/auth/me']);

@@ -23,7 +23,7 @@ const paths = [
 
 export default function AudiencePaths() {
   return (
-    <section aria-labelledby="audience-heading" className="mx-auto w-full max-w-7xl px-4 py-14 sm:px-6 lg:px-8">
+    <section aria-labelledby="audience-heading" className="remix-audience mx-auto w-full max-w-7xl px-4 py-14 sm:px-6 lg:px-8">
       <h2 id="audience-heading" className="max-w-2xl text-balance text-3xl font-extrabold tracking-tight text-slate-900 sm:text-4xl">
         Three ways in. One clear check.
       </h2>

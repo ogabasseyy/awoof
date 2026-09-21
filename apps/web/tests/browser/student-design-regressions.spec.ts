@@ -1,4 +1,4 @@
-import { expect, test } from '@playwright/test';
+import { expect, test, type Page } from '@playwright/test';
 import { apiOrigin, appOrigin, installSyntheticApi, seedSession } from './fixtures';
 
 /**
@@ -34,7 +34,7 @@ const verificationStatus = (eligible: boolean) => ({
   notices: { verification: { version: 'fixture-notice', text: 'I agree to school email verification.' } },
 });
 
-async function stubVerification(page: Parameters<Parameters<typeof test>[1]>[0], eligible: boolean) {
+async function stubVerification(page: Page, eligible: boolean) {
   await page.route(`${apiOrigin}/api/verification/**`, async (route) => {
     const endpoint = new URL(route.request().url()).pathname;
     let data: unknown = {};

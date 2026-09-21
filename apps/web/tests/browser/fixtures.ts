@@ -5,7 +5,7 @@ import type { Page, Request, Route } from '@playwright/test';
 // flag only prevents submitted synthetic form values from being copied there.
 process.env.PLAYWRIGHT_NO_COPY_PROMPT = '1';
 
-export const appOrigin = 'http://127.0.0.1:3107';
+export const appOrigin = process.env.AWOOF_APP_ORIGIN ?? 'http://127.0.0.1:3107';
 export const apiOrigin = 'http://127.0.0.1:3108';
 export const storageTabPath = '/__awoof-browser-storage-tab__';
 
