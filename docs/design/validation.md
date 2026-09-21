@@ -90,6 +90,39 @@ Captured via `apps/web/scripts/capture-route-screenshots.mjs`.
 - Full suite after fixes: 180/180 browser + 56/56 auth + 16/16 perf-unit.
   Baseline summary hash re-verified unchanged (`b6e1b30c…`).
 
+## Remix re-verification (2026-09-21, sha `18ad554`)
+
+- Candidate capture: 35/35 runs across all 7 public routes on the remix
+  HEAD (same harness/dataset/Chrome 152 as Task 7; app served on 3127 in an
+  isolated worktree because the owner's preview holds 3107 — ports only,
+  methodology unchanged). Evidence:
+  `docs/design/evidence/candidate-remix-18ad554-summary.json`
+  (raw 35 LHRs remain git-ignored by design).
+- Compare verdict: `/` PASS (LCP 5557ms → 2047ms med, −63%; script −10.5%),
+  all five new routes PASS absolute budgets (LCP ≈2.03s, CLS 0).
+  `/marketplace` FAILS absolute LCP (4031ms vs 2500ms) — preexisting
+  (baseline 4015ms, +0.4%, inside the 10% regression tolerance), route not
+  materially altered. Recorded as carryover, not a sign-off blocker per plan.
+- Remix homepage LCP element is now `p.remix-lead` (was `h1`); median LCP
+  2047ms vs 2031ms pre-remix — the restoration did not regress lab LCP.
+- Lighthouse run-1 scores: home + 5 new routes perf 0.98–0.99, a11y 1.0,
+  seo 1.0, color-contrast pass. Marketplace a11y 0.96 on the same
+  preexisting deal-card contrast fails (slate-500/600 small text on tints,
+  emerald-500/white 11px badge); seo 1.0, perf 0.86. Deal-card internals
+  untouched by this work; fix needs owner design input (P1/P2 carried).
+- Lab INP risk proxy: TBT medians 50–60ms on all routes (good threshold
+  <200ms), JS 277–364KB. Field INP/CWV cannot be established in lab: no
+  RUM pipeline exists in the repo (no web-vitals/Analytics wiring), so a
+  production CWV pass requires post-deploy real-user measurement.
+- Responsive/keyboard: new `public-responsive-keyboard.spec.ts` (20 tests)
+  covers 320px + 768px on all 7 routes, a 200%-zoom equivalent viewport,
+  overflow with the mobile menu expanded, keyboard-only menu toggling, and
+  rendered focus outlines. Full suite 202/202 accounted green (21 mid-run
+  `page.goto` timeouts under disk starvation, all cleared on re-run; zero
+  assertion failures). `src/app/robots.ts` added (allow-all + sitemap);
+  `/robots.txt` and `/sitemap.xml` verified rendering.
+- Baseline summary hash re-verified unchanged (`b6e1b30c…`).
+
 ## Release blockers carried forward (owner decisions)
 
 - Legal pages (`/privacy`, `/terms`) unpublished — blocked, no placeholder.
