@@ -24,8 +24,10 @@ jobs:
       actions: read # only required for private repository by github/codeql-action/upload-sarif
     name: Scan
     runs-on: ubuntu-latest
-    # Skip any PR created by dependabot to avoid permission issues
-    if: github.actor != 'dependabot[bot]'
+    # No job-level `if`: skipped jobs report Success, so skipping would let
+    # PRs merge with a green check that never scanned anything. The scan
+    # always runs (same-repo branches and forks alike); only the SARIF
+    # upload below is skipped for forks, which lack security-events permission.
     container:
       # Pin to specific version for reproducible builds
       image: semgrep/semgrep:1.99.0
@@ -50,4 +52,6 @@ jobs:
         uses: github/codeql-action/upload-sarif@cdf488f595d80d6e07e03d4674febd5ab45fa938 # v4
         with:
           sarif_file: semgrep.sarif
-        if: always() && hashFiles('semgrep.sarif') != ''
+        # Fork PRs lack security-events permission, so the upload (only the
+        # upload — the scan above still runs) is skipped for them.
+        if: always() && hashFiles('semgrep.sarif') != '' && github.event.pull_request.head.repo.fork != true
