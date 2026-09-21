@@ -273,7 +273,8 @@ export class CheckoutController {
                     // Both sides come from parameterized DB queries (not user
                     // input), and the response below allowlists explicit fields,
                     // so this merge can neither exfiltrate nor mass-assign.
-                    Object.assign(tx, refreshed.rows[0]); // nosemgrep: javascript.express.security.express-data-exfiltration.express-data-exfiltration
+                    // (Documented false positive: dismissed in code scanning.)
+                    Object.assign(tx, refreshed.rows[0]);
                 }
             }
         }

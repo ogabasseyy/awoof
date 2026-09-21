@@ -38,7 +38,8 @@ function getMigrationFiles(): string[] {
         .sort();
     // Names come from readdirSync (filesystem), not user input, and cannot
     // contain separators (see filter above); the resolve stays in MIGRATIONS_DIR.
-    return files.map((f) => resolve(MIGRATIONS_DIR, f)); // nosemgrep: javascript.lang.security.audit.path-traversal.path-join-resolve-traversal.path-join-resolve-traversal
+    // (Documented false positive: dismissed in code scanning.)
+    return files.map((f) => resolve(MIGRATIONS_DIR, f));
 }
 
 /**

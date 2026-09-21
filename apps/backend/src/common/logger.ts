@@ -32,7 +32,9 @@ export const appLogger = {
   info: (...args: unknown[]) => {
     if (!isProd) {
       const msg = safeMessage(args);
-      console.log(msg); // codeql[js/log-injection] msg neutralized by safeMessage/neutralize (CWE-117); sanitizer not modeled
+      // msg is neutralized by safeMessage/neutralize (CWE-117); the sanitizer
+      // is unmodeled so the finding is dismissed as a false positive.
+      console.log(msg);
     }
   },
   warn: (...args: unknown[]) => {
