@@ -456,6 +456,7 @@ export default function MarketplacePage() {
                                 {categoryProducts.length > 0 && (
                                     <Link
                                         href={`/marketplace/search?categoryId=${selectedCategory}`}
+                                        prefetch={false}
                                         className="text-sm font-semibold text-[#1D4ED8] hover:underline shrink-0"
                                     >
                                         See all
@@ -472,6 +473,7 @@ export default function MarketplacePage() {
                                         <Link
                                             key={product.id}
                                             href={`/marketplace/${product.id}`}
+                                            prefetch={false}
                                             className="shrink-0 w-72 bg-white rounded-2xl border border-slate-200/80 overflow-hidden hover:border-[#1D4ED8]/30 hover:-translate-y-0.5 transition-all duration-200"
                                         >
                                             <div className="relative h-40 bg-slate-100">
@@ -520,7 +522,7 @@ export default function MarketplacePage() {
                                 <p className="text-sm text-slate-600 mt-0.5">Codes & campus perks</p>
                             </div>
                             {voucherProducts.length > 0 && (
-                                <Link href="/marketplace/search?deal_type=voucher" className="text-sm font-semibold text-[#1D4ED8] hover:underline">
+                                <Link prefetch={false} href="/marketplace/search?deal_type=voucher" className="text-sm font-semibold text-[#1D4ED8] hover:underline">
                                     See all
                                 </Link>
                             )}
@@ -537,6 +539,7 @@ export default function MarketplacePage() {
                                         <Link
                                             key={product.id}
                                             href={`/marketplace/${product.id}`}
+                                            prefetch={false}
                                             className="shrink-0 w-[380px] md:w-[440px] bg-white rounded-2xl overflow-hidden flex border border-dashed border-[#1D4ED8]/50 hover:border-[#1D4ED8] transition-colors"
                                         >
                                             <div className="flex items-center justify-center px-3 py-6 bg-[#1D4ED8] min-w-[56px]">
@@ -574,7 +577,7 @@ export default function MarketplacePage() {
                                 <p className="text-sm text-slate-600 mt-0.5">What everyone’s talking about</p>
                             </div>
                             {featuredProducts.length > 0 && (
-                                <Link href="/marketplace/search" className="text-sm font-semibold text-[#1D4ED8] hover:underline">
+                                <Link prefetch={false} href="/marketplace/search" className="text-sm font-semibold text-[#1D4ED8] hover:underline">
                                     See all
                                 </Link>
                             )}
@@ -591,6 +594,7 @@ export default function MarketplacePage() {
                                         <Link
                                             key={product.id}
                                             href={`/marketplace/${product.id}`}
+                                            prefetch={false}
                                             className="shrink-0 w-72 md:w-80 bg-white rounded-2xl border border-slate-200/80 overflow-hidden hover:-translate-y-0.5 transition-transform duration-200"
                                         >
                                             <div className="relative h-36 bg-slate-100">
