@@ -139,17 +139,19 @@ const microsoftCallbackLimiter = rateLimit({
 
 // The session-authenticated routes below perform authorization-adjacent
 // work (consent grants, identity reads/unlinks, attempt issuance). They
-// share the global throttle, but carry this dedicated failures-only quota
-// so session/consent probing cannot blend into the shared budget.
-// Successful (2xx/3xx) completions never consume the quota, so a burst of
-// distinct students behind one NAT address passes while only failed
-// attempts accumulate toward the limit.
+// share the global IP throttle, but carry this dedicated per-user quota so
+// one account's failures — or one NAT address shared by a class of
+// students — can never starve another account. The limiter runs after
+// requireMicrosoftSession so the key is the authenticated user;
+// unauthenticated traffic never reaches it and stays under the global
+// limiter instead. Successful (2xx/3xx) completions never consume the quota.
 const microsoftSessionLimiter = rateLimit({
     windowMs: 10 * 60 * 1000,
     max: 60,
     standardHeaders: true,
     legacyHeaders: false,
     skipSuccessfulRequests: true,
+    keyGenerator: (req) => req.user?.id ?? req.ip ?? 'unknown',
 });
 
 function defaultFlow(): Flow {
@@ -178,7 +180,7 @@ export function createMicrosoftVerificationRouter(factory: FlowFactory = default
         if (!issuanceEnabled()) throw new ServiceUnavailableError('Microsoft verification is unavailable');
     };
 
-    router.post('/start', microsoftSessionLimiter, exactOrigin, exactJson, requireMicrosoftSession('issuance'), asyncHandler(async (req, res) => {
+    router.post('/start', exactOrigin, exactJson, requireMicrosoftSession('issuance'), microsoftSessionLimiter, asyncHandler(async (req, res) => {
         const body = bodyIds(req, ['processingGrantId', 'providerConsentId']);
         const result = await factory().start({ userId: req.user!.id, serverSessionId: req.user!.sid!, processingGrantId: body.processingGrantId!, providerConsentId: body.providerConsentId! });
         responseHeaders(res);
@@ -189,7 +191,7 @@ export function createMicrosoftVerificationRouter(factory: FlowFactory = default
         res.status(201).json({ success: true, data: result.publicResult });
     }));
 
-    router.get('/notice', microsoftSessionLimiter, requireMicrosoftSession('issuance'), asyncHandler(async (req, res) => {
+    router.get('/notice', requireMicrosoftSession('issuance'), microsoftSessionLimiter, asyncHandler(async (req, res) => {
         const result = await withMicrosoftSession(getPool(), { userId: req.user!.id, sid: req.user!.sid, use: 'issuance' }, async (tx) => {
             assertIssuanceEnabled();
             const notice = await getMicrosoftConsentNotice(tx, req.user!.id);
@@ -202,7 +204,7 @@ export function createMicrosoftVerificationRouter(factory: FlowFactory = default
         res.json({ success: true, data: result });
     }));
 
-    router.post('/consents', microsoftSessionLimiter, exactOrigin, exactJson, requireMicrosoftSession('issuance'), asyncHandler(async (req, res) => {
+    router.post('/consents', exactOrigin, exactJson, requireMicrosoftSession('issuance'), microsoftSessionLimiter, asyncHandler(async (req, res) => {
         const input = consentBody(req);
         const providerConsentId = await withMicrosoftSession(getPool(), { userId: req.user!.id, sid: req.user!.sid, use: 'issuance' }, async (tx) => {
             assertIssuanceEnabled();
@@ -218,7 +220,7 @@ export function createMicrosoftVerificationRouter(factory: FlowFactory = default
         res.status(201).json({ success: true, data: { providerConsentId } });
     }));
 
-    router.get('/consents', microsoftSessionLimiter, requireMicrosoftSession('owner'), asyncHandler(async (req, res) => {
+    router.get('/consents', requireMicrosoftSession('owner'), microsoftSessionLimiter, asyncHandler(async (req, res) => {
         const rawCursor = Array.isArray(req.query.cursor) ? req.query.cursor[0] : req.query.cursor;
         if (rawCursor !== undefined && (typeof rawCursor !== 'string' || !UUID.test(rawCursor))) {
             throw new BadRequestError('Microsoft consent cursor is invalid');
@@ -230,7 +232,7 @@ export function createMicrosoftVerificationRouter(factory: FlowFactory = default
         res.json({ success: true, data: result });
     }));
 
-    router.post('/consents/:id/withdraw', microsoftSessionLimiter, exactOrigin, exactJson, requireMicrosoftSession('owner'), asyncHandler(async (req, res) => {
+    router.post('/consents/:id/withdraw', exactOrigin, exactJson, requireMicrosoftSession('owner'), microsoftSessionLimiter, asyncHandler(async (req, res) => {
         emptyBody(req);
         const id = consentId(req.params.id);
         await withMicrosoftSession(getPool(), { userId: req.user!.id, sid: req.user!.sid, use: 'owner' }, async (tx) => {
@@ -240,7 +242,7 @@ export function createMicrosoftVerificationRouter(factory: FlowFactory = default
         res.json({ success: true, data: { providerConsentId: id, withdrawn: true } });
     }));
 
-    router.get('/identities', microsoftSessionLimiter, requireMicrosoftSession('owner'), asyncHandler(async (req, res) => {
+    router.get('/identities', requireMicrosoftSession('owner'), microsoftSessionLimiter, asyncHandler(async (req, res) => {
         const rawCursor = Array.isArray(req.query.cursor) ? req.query.cursor[0] : req.query.cursor;
         if (rawCursor !== undefined && (typeof rawCursor !== 'string' || !UUID.test(rawCursor))) {
             throw new BadRequestError('Microsoft identity cursor is invalid');
@@ -254,7 +256,7 @@ export function createMicrosoftVerificationRouter(factory: FlowFactory = default
         res.json({ success: true, data: result });
     }));
 
-    router.post('/identities/:id/unlink', microsoftSessionLimiter, exactOrigin, exactJson, requireMicrosoftSession('owner'), asyncHandler(async (req, res) => {
+    router.post('/identities/:id/unlink', exactOrigin, exactJson, requireMicrosoftSession('owner'), microsoftSessionLimiter, asyncHandler(async (req, res) => {
         emptyBody(req);
         const id = consentId(req.params.id);
         // Deliberately no issuance/policy gate: a valid owner session must be
@@ -319,7 +321,7 @@ export function createMicrosoftVerificationRouter(factory: FlowFactory = default
         }
     }));
 
-    router.post('/finish', microsoftSessionLimiter, exactOrigin, exactJson, requireMicrosoftSession('issuance'), asyncHandler(async (req, res) => {
+    router.post('/finish', exactOrigin, exactJson, requireMicrosoftSession('issuance'), microsoftSessionLimiter, asyncHandler(async (req, res) => {
         const body = bodyIds(req, ['attemptId', 'finishSecret']);
         const result = await factory().finish({ userId: req.user!.id, serverSessionId: req.user!.sid!, attemptId: body.attemptId!, finishSecret: body.finishSecret! });
         responseHeaders(res);

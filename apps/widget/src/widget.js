@@ -39,6 +39,17 @@ function init(opts = {}) {
 
   state.apiKey = apiKey.trim();
   state.apiBaseUrl = (opts.apiBaseUrl || getDefaultApiBase()).replace(/\/$/, '');
+  // The API key is POSTed to this base: require HTTPS (HTTP only for
+  // localhost development) so the key is never sent in cleartext. Rejected
+  // before checkDomain below can construct or send the POST body.
+  try {
+    const parsedApiBase = new URL(state.apiBaseUrl);
+    const localDevelopment = parsedApiBase.protocol === 'http:'
+      && ['localhost', '127.0.0.1', '[::1]'].includes(parsedApiBase.hostname);
+    if (parsedApiBase.protocol !== 'https:' && !localDevelopment) throw new Error();
+  } catch {
+    throw new Error('Awoof.init: apiBaseUrl must be an absolute HTTPS URL (HTTP is allowed only for localhost).');
+  }
   state.webAppUrl = (opts.webAppUrl || '').replace(/\/$/, '');
   state.callbacks.onSuccess = opts.onSuccess || null;
   state.callbacks.onError = opts.onError || null;
