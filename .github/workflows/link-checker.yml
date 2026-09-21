@@ -40,7 +40,7 @@ jobs:
             --verbose
             --no-progress
             './**/*.md' './**/*.html' './**/*.tsx' './**/*.ts'
-            --exclude-mail
+            --include-mail=false
             --exclude 'localhost|127\.0\.0\.1'
             --exclude 'github\.com'
             --exclude 'via\.placeholder\.com|example\.com|yourcdn\.com|yoursite\.com'
