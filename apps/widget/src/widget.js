@@ -126,13 +126,16 @@ function verify(verifyOpts = {}) {
 
   const origin = typeof window !== 'undefined' && window.location ? window.location.origin : '';
   const params = new URLSearchParams({
-    apiKey: state.apiKey,
     vendorId: String(state.vendorId || ''),
     origin,
   });
   if (verifyOpts.vendorId) params.set('vendorId', String(verifyOpts.vendorId));
   if (verifyOpts.productId) params.set('productId', String(verifyOpts.productId));
-  const iframeUrl = `${state.webAppUrl}/widget/verify?${params.toString()}`;
+  // The API key travels in the URL fragment, which browsers never send to
+  // the server and never include in Referer headers — unlike the query
+  // string, which would land in access logs and downstream Referers.
+  const fragment = new URLSearchParams({ apiKey: state.apiKey });
+  const iframeUrl = `${state.webAppUrl}/widget/verify?${params.toString()}#${fragment.toString()}`;
 
   const modal = createModal({
     title: state.config.modalTitle,
