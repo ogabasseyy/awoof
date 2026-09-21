@@ -5,6 +5,7 @@ import type { AxiosInstance, InternalAxiosRequestConfig } from 'axios';
 import {
     clearTokens,
     getSessionSnapshot,
+    getUserFromToken,
     isCurrentSession,
     isExactSession,
     isSessionStorageQuarantined,
@@ -41,6 +42,17 @@ export const microsoftVerificationApiClient: AxiosInstance = axios.create({
 export const publicApiClient: AxiosInstance = axios.create({
     baseURL: API_BASE_URL,
     headers: { 'Content-Type': 'application/json' },
+});
+
+/**
+ * Pre-session student SSO calls (start/finish) with the per-attempt callback
+ * cookie. No session interceptors: these calls never refresh, clear, or carry
+ * the browser session, and never navigate globally.
+ */
+export const studentSsoApiClient: AxiosInstance = axios.create({
+    baseURL: API_BASE_URL,
+    headers: { 'Content-Type': 'application/json' },
+    withCredentials: true,
 });
 
 type RequestCredentials = {
@@ -119,11 +131,21 @@ function exactFailedRequest(request: SessionBoundRequest): SessionSnapshot | nul
 function clearOnlyCurrentFailedSession(request: SessionBoundRequest): void {
     const failed = exactFailedRequest(request);
     if (!failed || !isExactSession(failed)) return;
+    // Routing hint only, read before the clear; the server stays authoritative.
+    const failedRole = getUserFromToken()?.role ?? null;
     clearTokens();
     if (isSessionStorageQuarantined()) return;
     if (typeof window !== 'undefined' && !window.location.pathname.startsWith('/auth/')) {
         // This module has no router context; navigation occurs only after the
-        // current failed session has been durably fenced.
+        // current failed session has been durably fenced. The login page
+        // re-validates the return path before honoring it.
+        if (failedRole === 'student') {
+            const redirect = `${window.location.pathname}${window.location.search}`;
+            const query = new URLSearchParams({ error: 'session_expired', redirect }).toString();
+            // eslint-disable-next-line @next/next/no-location-assign-relative-destination
+            window.location.href = `/auth/student/login?${query}`;
+            return;
+        }
         // eslint-disable-next-line @next/next/no-location-assign-relative-destination
         window.location.href = '/auth/login';
     }
@@ -215,7 +237,33 @@ client.interceptors.response.use(
 );
 }
 
+export function isStudentSsoRequest(config: Pick<InternalAxiosRequestConfig, 'url' | 'baseURL'>): boolean {
+    const url = config.url ?? '';
+    if (config.baseURL !== API_BASE_URL || !url.startsWith('/auth/student/sso') || url.includes('\\') || /(^|\/)\.\.?(\/|$)/.test(url)) return false;
+    try {
+        const base = new URL(`${API_BASE_URL}/`);
+        // Axios combines its base path with a slash-prefixed relative URL;
+        // URL() alone would instead discard `/api`.
+        const resolved = new URL(url.slice(1), base);
+        const namespace = `${base.pathname.replace(/\/$/, '')}/auth/student/sso`;
+        return resolved.origin === base.origin && (resolved.pathname === namespace || resolved.pathname.startsWith(`${namespace}/`));
+    } catch {
+        return false;
+    }
+}
+
 installSessionInterceptors(apiClient);
 installSessionInterceptors(microsoftVerificationApiClient, true);
+
+studentSsoApiClient.interceptors.request.use(
+    (config: InternalAxiosRequestConfig) => {
+        if (!isStudentSsoRequest(config)) {
+            return Promise.reject(new Error('Student credentialed client only permits student SSO paths.'));
+        }
+        applyMultipartHeader(config);
+        return config;
+    },
+    (error) => Promise.reject(error),
+);
 
 export default apiClient;

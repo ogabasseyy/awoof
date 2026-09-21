@@ -29,23 +29,32 @@ import {
 } from '@/lib/auth-response';
 import { resolveStudentReturn } from '@/lib/student-return';
 import { revokeLogoutSession } from '@/lib/logout-revocation';
+import { parseStudentAssurance, type StudentAssurance } from '@/lib/student-assurance';
+import { parseSsoFinishResponse } from '@/lib/student-login-flow';
 import {
     parseSignupAuthentication,
     type ConfirmSignupResult,
     type SignupConfirmation,
 } from '@/lib/student-signup';
 
+export type SsoCommitResult =
+    | { committed: true; studentAssurance: StudentAssurance | null; assuranceStatus: 'available' | 'unavailable' }
+    | { committed: false };
+
 interface AuthContextType {
     user: User | null;
     isAuthenticated: boolean;
     isLoading: boolean;
     error: string | null;
+    /** Server-derived student assurance for display; null when unknown, unavailable, or not a student. Raw tokens are never exposed. */
+    studentAssurance: StudentAssurance | null;
     login: (
         email: string,
         password: string,
         requiredRole?: 'admin' | 'vendor' | 'student',
         rememberMe?: boolean,
     ) => Promise<void>;
+    completeSsoLogin: (startedGeneration: number, responseBody: unknown) => Promise<SsoCommitResult>;
     register: (
         email: string,
         password: string,
@@ -90,6 +99,12 @@ function hasSessionIssuanceFailure(body: unknown): boolean {
     return asRecord(asRecord(body)?.error)?.code === 'SESSION_ISSUANCE_UNAVAILABLE';
 }
 
+/** Assurance piggybacks on student auth responses; anything unparseable is unknown, never verified. */
+function studentAssuranceFrom(account: User, body: unknown): StudentAssurance | null {
+    if (account.role !== 'student') return null;
+    return parseStudentAssurance(asRecord(asRecord(body)?.data)?.studentAssurance);
+}
+
 function studentRecoveryPaths(returnTo: string | null): { returnPath: string; signInPath: string } {
     const origin = typeof window === 'undefined' ? null : window.location.origin;
     const returnPath = origin ? resolveStudentReturn(returnTo, origin) : '/marketplace';
@@ -101,6 +116,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     const [user, setUser] = useState<User | null>(null);
     const [isLoading, setIsLoading] = useState(true);
     const [error, setError] = useState<string | null>(null);
+    const [studentAssurance, setStudentAssurance] = useState<StudentAssurance | null>(null);
     const mountedRef = useRef(false);
     const operationRef = useRef(0);
     const ownCommitRef = useRef(false);
@@ -117,6 +133,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         if (!started.accessToken) {
             if (mountedRef.current && operation === operationRef.current) {
                 setUser(null);
+                setStudentAssurance(null);
                 const blocked = isSessionStorageQuarantined();
                 setIsLoading(blocked);
                 setError(blocked ? STORAGE_FAILURE_MESSAGE : null);
@@ -131,11 +148,13 @@ export function AuthProvider({ children }: { children: ReactNode }) {
             if (!account) throw new Error('The server returned an invalid current account.');
             if (isCurrentRead()) {
                 setUser(account);
+                setStudentAssurance(studentAssuranceFrom(account, response.data));
                 setError(null);
             }
         } catch {
             if (isCurrentRead()) {
                 setUser(null);
+                setStudentAssurance(null);
                 setError(ACCOUNT_FAILURE_MESSAGE);
             }
         } finally {
@@ -153,6 +172,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         const unsubscribe = subscribeSessionChanges(() => {
             if (ownCommitRef.current) return;
             setUser(null);
+            setStudentAssurance(null);
             void loadCurrentUser(true);
         });
         const initialOperation = operationRef.current;
@@ -218,6 +238,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         } catch (commitError) {
             if (mountedRef.current && operation === operationRef.current) {
                 setUser(null);
+                setStudentAssurance(null);
                 setError(ACCOUNT_FAILURE_MESSAGE);
             }
             throw commitError;
@@ -234,7 +255,65 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         }
         setIsLoading(false);
         setUser(account);
+        setStudentAssurance(studentAssuranceFrom(account, response.data));
         redirectAfterAuth(destinationFor(account));
+    }, [commitAuthenticatedResponse]);
+
+    const completeSsoLogin = useCallback(async (
+        startedGeneration: number,
+        responseBody: unknown,
+    ): Promise<SsoCommitResult> => {
+        const operation = ++operationRef.current;
+        const finished = parseSsoFinishResponse(responseBody);
+        if (!finished || finished.kind !== 'authenticated') return { committed: false };
+        const current = getSessionSnapshot();
+        // A late finish never replaces another account's session: the tab
+        // generation must still match and no session may have appeared.
+        if (
+            !mountedRef.current
+            || operation !== operationRef.current
+            || current.generation !== startedGeneration
+            || current.accessToken
+            || current.refreshToken
+        ) {
+            return { committed: false };
+        }
+
+        let account: User;
+        try {
+            account = commitAuthenticatedResponse({
+                user: finished.user,
+                tokens: finished.tokens,
+                requiresEmailVerification: false,
+            }, 'student');
+        } catch {
+            if (mountedRef.current && operation === operationRef.current) {
+                setUser(null);
+                setStudentAssurance(null);
+                setError(ACCOUNT_FAILURE_MESSAGE);
+            }
+            return { committed: false };
+        }
+
+        const persisted = getSessionSnapshot();
+        if (
+            !mountedRef.current
+            || operation !== operationRef.current
+            || !persisted.accessToken
+            || !persisted.refreshToken
+        ) {
+            return { committed: false };
+        }
+        setIsLoading(false);
+        setUser(account);
+        setStudentAssurance(finished.studentAssurance);
+        // Navigation is the caller's: enrolled students continue to their
+        // requested page while pending students continue to verification.
+        return {
+            committed: true,
+            studentAssurance: finished.studentAssurance,
+            assuranceStatus: finished.assuranceStatus,
+        };
     }, [commitAuthenticatedResponse]);
 
     const register = useCallback(async (
@@ -264,6 +343,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         } catch (commitError) {
             if (mountedRef.current && operation === operationRef.current) {
                 setUser(null);
+                setStudentAssurance(null);
                 setError(ACCOUNT_FAILURE_MESSAGE);
             }
             throw commitError;
@@ -274,6 +354,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         }
         setIsLoading(false);
         setUser(account);
+        setStudentAssurance(studentAssuranceFrom(account, response.data));
         if (account.role === 'vendor' && authentication.requiresEmailVerification) return;
         redirectAfterAuth(account.role === 'student' ? '/marketplace' : destinationFor(account));
     }, [commitAuthenticatedResponse]);
@@ -297,6 +378,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         }
         if (mountedRef.current) {
             setUser(null);
+            setStudentAssurance(null);
             setIsLoading(blocked);
             setError(blocked ? STORAGE_FAILURE_MESSAGE : null);
         }
@@ -411,6 +493,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
             setIsLoading(false);
             setError(null);
             setUser(account);
+            setStudentAssurance(studentAssuranceFrom(account, response.data));
             // The committed response remains the immediate UI authority. This
             // background read only reconciles the named server account after
             // persistence; it is intentionally not awaited before navigation.
@@ -447,12 +530,14 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         isAuthenticated: !!user,
         isLoading,
         error,
+        studentAssurance,
         login,
+        completeSsoLogin,
         register,
         logout,
         refreshUser,
         confirmStudentSignup,
-    }), [user, isLoading, error, login, register, logout, refreshUser, confirmStudentSignup]);
+    }), [user, isLoading, error, studentAssurance, login, completeSsoLogin, register, logout, refreshUser, confirmStudentSignup]);
 
     return (
         <AuthContext.Provider value={value}>

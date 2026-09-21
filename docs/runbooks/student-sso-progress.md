@@ -1179,3 +1179,200 @@ Review disposition: `docs/runbooks/student-sso-review-disposition.md` (GO for Re
   wrapper over the integration-tested function). Real-provider
   acceptance still outstanding (all OIDC discovery mocked — no
   network identity calls, ever).
+
+## Task B5: SSO login UX and pending states
+
+- Task: B5 — deliver the email-first page and enrollment continuation
+  (`docs/superpowers/plans/2026-09-20-institution-email-auth.md`,
+  Task B5), executed under the owner-issued B5 mandate (commit
+  `feat(auth): complete SSO login UX and pending states`, browser spec
+  named `sso-login.spec.ts`, safe error taxonomy, assurance-surfacing
+  AuthContext, explicit pending states).
+- Commit: `feat(auth): complete SSO login UX and pending states`
+  on branch `codex/student-email-first-auth` (this commit; hash in completion
+  report). Commits web files only; the uncommitted B4 backend work present in
+  the tree (link/onboarding services, routes, assurance projection) is left
+  untouched for its owner.
+- Source changes:
+  - `apps/web/src/lib/student-login-flow.ts` (new): plan `LoginStep`
+    8-state union with pure immutable transitions (`submitEmail` exact plan
+    shape; stale discovery IDs return the same state); strict parsers for
+    discovery (deduped provider union), start (HTTPS authorization URL, no
+    credentials/fragment; loopback http only so local tests prove redirect
+    intent without touching a real provider), and the finish
+    authenticated/link_required union (null assurance only with
+    unavailable; non-student accounts rejected; restart is 409-code-only);
+    tab (sessionStorage) attempt store holding only attempt ID, finish
+    secret, local expiry, session generation, and a validated return path
+    (deviation: the return path — the server never echoes it back — is the
+    only addition to the plan's four fields, validated at write and at
+    use); tab handoff store (UUID + secret + expiry, never in a URL);
+    fixed login error taxonomy (`session_expired`, `sso_not_completed`,
+    `sso_expired`, `sso_unavailable`) with fixed copy and a failure-path
+    builder that re-validates the return path; post-login routing
+    (verified or unavailable assurance → requested page; pending/expired/
+    denied/revoked/inactive → `/student/verification`).
+  - `apps/web/src/app/auth/student/sso/complete/page.tsx` (new): fixed
+    completion route (plan-named; the A4-deviation note concerns the claim
+    route, which is untouched). Denied/outcome-unknown/missing/expired/
+    mismatched attempts redirect with taxonomy codes only; an active tab
+    session discards the late finish before any attempt check (another
+    account is never replaced); finish posts over the credentialed SSO
+    client; link_required stays signed out with an explicit pending view
+    (password/register links, handoff kept in tab storage for B4's
+    onboarding continuation); authenticated commits through
+    `completeSsoLogin` and routes by assurance. Checking progress is
+    honest ("Your school may ask you to approve enrollment access next").
+  - `apps/web/src/app/auth/student/login/page.tsx` (extended in place):
+    password form untouched (same fields, labels, order, reset/remember
+    behavior); email autocomplete aligned to `username` per the plan's
+    password-manager item (password stays `current-password`); new
+    `?error=` taxonomy banner (fixed copy, focused on mount, unknown
+    codes ignored, never echoed); new school-account section below the
+    form reusing the single email field — explicit Find options →
+    discovery → Continue with Microsoft/Google buttons, no redirect from
+    typing, password-fallback note when no provider exists, inline
+    retryable errors, and a Back control. Remember-me flows into
+    SSO start; typed email is retained in-page and never enters a URL.
+  - `apps/web/src/contexts/AuthContext.tsx` (extended): context value
+    gains `studentAssurance` (parsed from student login/me/register/
+    signup responses, null when unknown/unavailable/non-student; raw
+    tokens never exposed) and `completeSsoLogin(startedGeneration, body)`
+    (strict finish parse, tab-generation fence plus no-active-session
+    rule, student-only commit, assurance set, navigation left to the
+    caller). Assurance clears on logout, session loss, and replacement.
+  - `apps/web/src/lib/api-client.ts` (extended): new credentialed
+    `studentSsoApiClient` (cookies for the per-attempt callback cookie,
+    namespace-guarded to `/auth/student/sso`, no session
+    interceptors — never refreshes, clears, carries, or navigates);
+    terminal-401 recovery now routes an expired *student* session to
+    `/auth/student/login?error=session_expired&redirect=<current page>`
+    (JWT role is a routing hint only, read before the clear; the login
+    page re-validates the return), keeping `/auth/login` for everyone
+    else and no navigation on auth paths or quarantine.
+  - `apps/web/src/app/student/verification/page.tsx` (extended in
+    place): when methods are loaded, assurance is readable and not
+    verified/inactive, and no registration or Microsoft enrollment
+    method is available, an honest paragraph explains the school
+    connection is not yet available and mailbox proof cannot unlock
+    discounts. Existing status/method copy and order untouched.
+  - `apps/web/tsconfig.auth-tests.json`: includes the new web lib.
+- Tests added (30):
+  - `tests/auth/student-login-flow.test.ts`: 14 — submitEmail shape,
+    stale supersession (same-state return), no-provider password
+    fallback, back/retry email retention, provider gating with
+    start-failure return, malformed discovery, start URL safety incl.
+    loopback-only http, finish union accept/reject (null-only-with-
+    unavailable, non-student rejected, restart never a 200 outcome),
+    restart code detection, attempt round-trip/expiry/match, storage
+    failure closed without throwing, handoff validation, taxonomy
+    parse/copy/redirect safety, post-login routing matrix.
+  - `tests/auth/api-client.test.ts`: +3 — expired student JWT session
+    navigates to the student password login with `session_expired` and
+    return path; opaque-token expiry keeps `/auth/login`; SSO client
+    carries cookies with no Authorization inside the namespace and
+    rejects outside paths.
+  - `tests/browser/sso-login.spec.ts`: 13 — single email field with
+    username/current-password autocomplete and no auto-discovery;
+    explicit discovery with exact `{email}` body; unknown-domain
+    password fallback plus working password login; start stores only
+    the tab attempt (no token substrings) with exact start body and
+    redirects to a loopback provider stub; enrolled finish lands on
+    the requested page with session stored and attempt cleared;
+    pending finish routes to verification with independent labels and
+    the unintegrated-school explainer; link_required stays signed out
+    (no session, handoff in tab storage, no secret in URL); provider
+    denial returns `sso_not_completed` with a focused banner and no
+    attempt/secret in the URL; unknown error codes ignored unrendered;
+    expired attempts recover through password login at the return
+    path; late finish after another tab-user discarded with zero
+    finish calls and the foreign session byte-identical; expired
+    student session recovers through the current password login;
+    discovery outage keeps the typed email and retries at mobile
+    width with keyboard activation.
+- Tests intentionally updated: none. No existing test was modified,
+  weakened, or deleted. The verification explainer was reworded during
+  development (dropped the `Student status:` prefix) so the A2
+  design-regression assertions keep matching exactly one element.
+- Gate commands and results (from worktree root):
+  - `npm --prefix apps/web run test:auth` → PASS (99 tests, 0 fail;
+    baseline 82 + 14 flow + 3 api-client).
+  - `npm --prefix apps/web run test:browser:typecheck` → PASS (clean).
+  - `npx tsc --noEmit -p tsconfig.json` (apps/web) → PASS (clean;
+    covers the new/edited pages and context).
+  - Browser (isolated temp 3117 config + `AWOOF_APP_ORIGIN`, deleted
+    after): `sso-login.spec.ts` 13/13 pass; full suite 226/226 pass,
+    0 fail (23 files, incl. all pre-existing login, verification,
+    signup, claims, support, admin, merchant, vendor, public, and
+    widget specs). Protected 127.0.0.1:3107 preview untouched
+    (no listener before or after; nothing started on 3107).
+  - `npm --prefix apps/backend test` → PASS (332 tests, 0 fail —
+    includes the uncommitted B4 backend work present in the tree).
+  - `npm --prefix apps/backend run type-check` → PASS (clean).
+  - `npm --prefix apps/backend run test:postgres` → NOT RUN (B5
+    touches no backend file; `/` holds 2.1 GiB, below the runner's
+    3 GiB guard — same environmental block as before).
+  - `npm --prefix apps/web run lint` → pre-existing repo-wide failure
+    (missing `react-hooks` plugin config), unchanged by B5; recorded,
+    not bypassed.
+  - Pre-change failure observation (test-first, per file): flow suite
+    failed to compile (missing module), then one inverted assertion
+    fixed in the test; api-client suite failed on the missing SSO
+    client export; browser failures during development were fixture
+    bugs (credentialed CORS `*` origin, stub-origin catch-all abort,
+    ambiguous locators) plus two real ordering/copy defects fixed in
+    the implementation (session check now precedes the attempt check
+    on the complete page; verification explainer reworded).
+- Migration check: `056`/`057` present and untouched; B5 adds no
+  migration (rechecked at commit time). `next-env.d.ts` dev-server
+  churn reverted, not committed.
+- Deviations:
+  - Browser spec is `sso-login.spec.ts` and the commit message is
+    `feat(auth): complete SSO login UX and pending states`, per the
+    owner-issued B5 mandate (overriding the plan's
+    `student-email-first-login.spec.ts` / `feat(web): ...`).
+  - The login page keeps its approved password-first layout with the
+    SSO section added below reusing the single email field, instead
+    of the plan's email-only first screen: committed browser specs
+    require Email+Password visible together with
+    autocomplete=current-password, and the existing tests are the
+    contract. One email field total; no redirect from typing;
+    provider buttons appear only after explicit discovery.
+  - The tab attempt record adds the validated same-origin return path
+    to the plan's four stored fields: the B3 server never echoes
+    `returnPath` back, so without it "continue to the validated
+    requested page" is unreachable. It is validated at write and at
+    use; no token or email is ever stored.
+  - The complete page renders the link-required pending state inline
+    (signed out, handoff in tab storage) rather than linking to B4's
+    planned `/auth/student/sso/onboarding` route, which does not
+    exist yet — no dead link; B4's onboarding can consume the
+    documented tab handoff when it lands (see Unresolved).
+  - `api-client.ts` is extended beyond the plan's Modify list: the
+    B3 finish call needs the per-attempt cookie (new namespace-
+    guarded credentialed client), and the owner mandate requires
+    enrolled SESSION_EXPIRED recovery through the current password
+    login (student-aware terminal-401 routing).
+  - Expired-session recovery keys off the local JWT role as a routing
+    hint only; authorization stays server-side, and undecodable or
+    non-student sessions keep the previous `/auth/login` behavior.
+- Docs impact (AGENTS.md checklist): no trust/help/partner/developers
+  changes. Public help copy (password-reset/account recovery) stays
+  accurate — password login is unchanged and the SSO UI is inert
+  while providers stay disabled (discovery returns password-only, so
+  the panel shows the honest no-provider note). No page advertises
+  SSO as deployed, approved institutions, manual review, or new
+  contacts. User-visible changes are the in-app SSO section,
+  completion/pending/expired states, and the verification explainer —
+  all covered by the browser tests above; school-account assurance
+  and enrollment eligibility stay separated in every message, label,
+  and doc touched here.
+- Unresolved: B4's onboarding/linking UI (planned
+  `/auth/student/sso/onboarding`) is still unlanded — link-required
+  users currently continue via the password-login/register links on
+  the complete page with the handoff preserved in tab storage; B4
+  owns the reauth/link/unlink UI and the handoff consumption. The B4
+  backend work in the tree remains uncommitted for its owner.
+  Real-provider acceptance still outstanding (all OIDC discovery
+  mocked; the provider redirect is proven only against a loopback
+  stub — no network identity calls, ever).

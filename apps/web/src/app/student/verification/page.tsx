@@ -135,6 +135,7 @@ function VerificationForm() {
     }
     const emailAvailable = status?.emailDomainApproved === true && methods?.some((method) => method.methodType === 'email' && method.isAvailable) === true;
     const registrationAvailable = methods?.some((method) => method.methodType === 'registration' && method.isAvailable) === true;
+    const microsoftAvailable = methods?.some((method) => method.methodType === 'microsoft' && method.isAvailable) === true;
     const assurance = status ? parseStudentAssurance(status.studentAssurance) : null;
     async function retryStatus() {
         await run(async () => {
@@ -196,6 +197,9 @@ function VerificationForm() {
                 <label className="block">Registration number<input className="block rounded border p-2" value={registration} maxLength={100} required onChange={(event) => setRegistration(event.target.value)} /></label>
                 <button disabled={busy || !accepted || !registration.trim()} className="inline-flex min-h-[44px] items-center underline">Check enrollment</button>
             </form> : <p>{registrationAvailable ? 'Confirm your school email above before checking enrollment.' : 'Enrollment verification is not currently available for your school.'}</p>}
+            {methods !== null && assurance && assurance.studentStatus !== 'verified' && assurance.studentStatus !== 'inactive'
+                && !registrationAvailable && !microsoftAvailable
+                && <p>The school connection is not yet available for your school — confirming your school email proves mailbox control but cannot unlock discounts.</p>}
         </>}
         <MicrosoftVerificationCard
             available={methods?.some((method) => method.methodType === 'microsoft' && method.isAvailable) === true}
