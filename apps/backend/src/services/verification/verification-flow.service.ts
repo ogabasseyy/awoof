@@ -22,6 +22,8 @@ import {
 import { getInstitutionPolicy } from './eligibility-policy.service.js';
 import { getEffectiveEligibility } from './eligibility-read.service.js';
 import type { EligibilityResult, StudentContext, StudentEmailChallengeBindings } from './eligibility.types.js';
+import { pendingStudentAssurance, readStudentAssurance } from './student-assurance.service.js';
+import type { StudentAssurance } from './student-assurance.types.js';
 import {
     parseConfiguredEnrollmentAdapter,
     verifyConfiguredEnrollment,
@@ -99,6 +101,7 @@ export type VerificationStatus = {
     email: string;
     universityId: string | null;
     eligibility: EligibilityResult;
+    studentAssurance: StudentAssurance;
     notices: VerificationNotices;
     guidance?: 'incomplete_profile';
 };
@@ -491,6 +494,7 @@ export function createVerificationFlowService(dependencies: VerificationFlowDepe
                     email: context.email,
                     universityId: context.universityId,
                     eligibility: await getEffectiveEligibility(tx, userId),
+                    studentAssurance: await readStudentAssurance(tx, userId),
                     notices: notices(),
                 };
             } catch (error) {
@@ -512,6 +516,7 @@ export function createVerificationFlowService(dependencies: VerificationFlowDepe
                     email: user.email,
                     universityId: null,
                     eligibility: { eligible: false, reason: 'unverified' },
+                    studentAssurance: pendingStudentAssurance(),
                     notices: notices(),
                     guidance: 'incomplete_profile',
                 };

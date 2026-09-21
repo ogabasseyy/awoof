@@ -50,6 +50,15 @@ function controller(overrides: Partial<ConstructorParameters<typeof AuthControll
         },
         studentEmailPreflight: async () => ({ supported: false, reason: 'This school email domain is not approved.' }),
         issueSession: async () => ({ accessToken: 'access-token', refreshToken: 'refresh-token' }),
+        readStudentAssurance: async () => ({
+            schoolAccountStatus: 'verified' as const,
+            schoolAccountMethod: 'email_otp' as const,
+            schoolAccountValidUntil: '2026-10-01T00:00:00.000Z',
+            studentStatus: 'pending' as const,
+            enrollmentMethod: null,
+            studentValidUntil: null,
+            reason: 'awaiting_enrollment' as const,
+        }),
         ...overrides,
     });
 }
@@ -93,6 +102,15 @@ test('uses the production student handlers for preflight, request, confirm, and 
         assert.equal(confirmation.status, 201);
         const confirmationBody = await confirmation.json();
         assert.deepEqual(confirmationBody.data.user.eligibility, { eligible: false, reason: 'unverified' });
+        assert.deepEqual(confirmationBody.data.user.studentAssurance, {
+            schoolAccountStatus: 'verified',
+            schoolAccountMethod: 'email_otp',
+            schoolAccountValidUntil: '2026-10-01T00:00:00.000Z',
+            studentStatus: 'pending',
+            enrollmentMethod: null,
+            studentValidUntil: null,
+            reason: 'awaiting_enrollment',
+        });
         assert.equal(confirmationBody.data.tokens.accessToken, 'access-token');
         assert.equal(confirmationBody.data.redirectTo, '/marketplace');
         assert.equal(JSON.stringify(confirmationBody).includes('expectedPasswordHash'), false);

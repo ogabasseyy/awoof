@@ -12,6 +12,8 @@ import {
     BadRequestError,
     UnauthorizedError,
 } from '../common/errors/AppError.js';
+import { readStudentAssuranceOrNull } from '../services/verification/student-assurance.service.js';
+import type { StudentAssurance } from '../services/verification/student-assurance.types.js';
 import { success } from '../common/utils/response.js';
 import type { AuthRequest } from '../middleware/auth.middleware.js';
 import { z } from 'zod';
@@ -30,6 +32,17 @@ const updateProfileSchema = z.object({
  * Student Controller
  */
 export class StudentController {
+    private readonly readAssurance: (userId: string) => Promise<StudentAssurance | null>;
+
+    constructor(dependencies: {
+        readStudentAssurance?: (userId: string) => Promise<StudentAssurance | null>;
+    } = {}) {
+        // The application pool opens only when a profile response is served,
+        // never merely by mounting the router.
+        this.readAssurance = dependencies.readStudentAssurance
+            ?? ((userId: string) => readStudentAssuranceOrNull(db.getPool(), userId));
+    }
+
     /**
      * Get student profile
      */
@@ -83,6 +96,7 @@ export class StudentController {
                     email: user.email,
                     role: user.role,
                     verificationStatus: user.verification_status,
+                    studentAssurance: await this.readAssurance(req.user.userId),
                     createdAt: user.created_at,
                     profile,
                 },
@@ -216,6 +230,7 @@ export class StudentController {
                         email: updatedUser.email,
                         role: updatedUser.role,
                         verificationStatus: updatedUser.verification_status,
+                        studentAssurance: await this.readAssurance(req.user.userId),
                         createdAt: updatedUser.created_at,
                         profile,
                     },

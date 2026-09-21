@@ -20,6 +20,8 @@ import {
     type StudentSignupService,
 } from '../services/auth/student-signup.service.js';
 import { normalizeMailbox } from '../services/verification/eligibility-policy.service.js';
+import { readStudentAssuranceOrNull } from '../services/verification/student-assurance.service.js';
+import type { StudentAssurance } from '../services/verification/student-assurance.types.js';
 import { VERIFICATION_NOTICE_TEXT, VERIFICATION_NOTICE_VERSION } from '../services/verification/verification-notices.js';
 import {
     AppError,
@@ -75,12 +77,14 @@ export class AuthController {
     private readonly studentEmailPreflight: (universityId: string, email: string) => Promise<StudentEmailPreflight>;
     private readonly sendVendorVerification: typeof sendEmailVerificationOTP;
     private readonly issueStudentSession: typeof issueSession;
+    private readonly readAssurance: (userId: string) => Promise<StudentAssurance | null>;
 
     constructor(dependencies: {
         studentSignupService?: StudentSignupService;
         studentEmailPreflight?: (universityId: string, email: string) => Promise<StudentEmailPreflight>;
         issueSession?: typeof issueSession;
         sendVendorVerification?: typeof sendEmailVerificationOTP;
+        readStudentAssurance?: (userId: string) => Promise<StudentAssurance | null>;
     } = {}) {
         this.studentSignupService = dependencies.studentSignupService ?? createStudentSignupService({
             pool: { connect: () => db.getPool().connect() },
@@ -93,6 +97,10 @@ export class AuthController {
         this.studentEmailPreflight = dependencies.studentEmailPreflight ?? preflightStudentEmail;
         this.issueStudentSession = dependencies.issueSession ?? issueSession;
         this.sendVendorVerification = dependencies.sendVendorVerification ?? sendEmailVerificationOTP;
+        // The application pool opens only when a student response is served,
+        // never merely by mounting the router.
+        this.readAssurance = dependencies.readStudentAssurance
+            ?? ((userId: string) => readStudentAssuranceOrNull(db.getPool(), userId));
     }
 
     /**
@@ -281,6 +289,9 @@ export class AuthController {
                     email: user.email,
                     role: user.role,
                     verificationStatus: user.verification_status,
+                    ...(user.role === 'student'
+                        ? { studentAssurance: await this.readAssurance(user.id) }
+                        : {}),
                 },
                 tokens,
             },
@@ -362,6 +373,9 @@ export class AuthController {
                 email: user.email,
                 role: user.role,
                 verificationStatus: user.verification_status,
+                ...(user.role === 'student'
+                    ? { studentAssurance: await this.readAssurance(user.id) }
+                    : {}),
                 profile,
             },
         }, 200);
@@ -844,7 +858,11 @@ export class AuthController {
         success(res, {
             message: 'Registration successful',
             data: {
-                user: { ...completion.user, eligibility: completion.eligibility },
+                user: {
+                    ...completion.user,
+                    eligibility: completion.eligibility,
+                    studentAssurance: await this.readAssurance(completion.user.id),
+                },
                 tokens,
                 redirectTo: '/marketplace',
             },

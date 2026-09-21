@@ -44,6 +44,10 @@
  *                               type: string
  *                             verificationStatus:
  *                               type: string
+ *                               deprecated: true
+ *                             studentAssurance:
+ *                               $ref: '#/components/schemas/StudentAssurance'
+ *                               nullable: true
  *                             createdAt:
  *                               type: string
  *                               format: date-time

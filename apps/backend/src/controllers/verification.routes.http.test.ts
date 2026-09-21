@@ -40,8 +40,19 @@ function flow(calls: string[]): VerificationFlowService {
             return { eligibility: { eligible: false as const, reason: 'unverified' as const }, reason: 'provider_unknown' as const };
         },
         status: async () => ({
+            emailDomainApproved: true,
+            mailboxConfirmed: true,
             email: 'ada@students.school.example', universityId,
             eligibility: { eligible: false as const, reason: 'unverified' as const },
+            studentAssurance: {
+                schoolAccountStatus: 'verified' as const,
+                schoolAccountMethod: 'email_otp' as const,
+                schoolAccountValidUntil: '2026-10-01T00:00:00.000Z',
+                studentStatus: 'pending' as const,
+                enrollmentMethod: null,
+                studentValidUntil: null,
+                reason: 'awaiting_enrollment' as const,
+            },
             notices: {
                 verification: { version: VERIFICATION_NOTICE_VERSION, text: 'current verification notice' },
                 merchantDisclosure: { version: MERCHANT_DISCLOSURE_NOTICE_VERSION, text: 'current disclosure notice' },
@@ -177,6 +188,37 @@ test('accepts only the strict authenticated registration body and keeps merchant
         assert.equal(serialized.includes('accesstoken'), false);
         assert.equal(serialized.includes('refreshtoken'), false);
     });
+});
+
+test('exposes independent school-account and student status to a mailbox-confirmed student', async () => {
+    await withServer(new VerificationController({ flow: flow([]) }), async (baseUrl) => {
+        const response = await fetch(`${baseUrl}/status`, {
+            headers: { authorization: `Bearer ${token()}` },
+        });
+        assert.equal(response.status, 200);
+        const body = await response.json() as { data: Record<string, unknown> };
+        assert.deepEqual(body.data.studentAssurance, {
+            schoolAccountStatus: 'verified',
+            schoolAccountMethod: 'email_otp',
+            schoolAccountValidUntil: '2026-10-01T00:00:00.000Z',
+            studentStatus: 'pending',
+            enrollmentMethod: null,
+            studentValidUntil: null,
+            reason: 'awaiting_enrollment',
+        });
+        assert.equal((body.data.eligibility as { eligible: boolean }).eligible, false);
+    });
+});
+
+test('authentication JWTs carry no eligibility or assurance claims', () => {
+    const decoded = jwtService.verifyAccessToken(token()) as Record<string, unknown>;
+    for (const forbidden of ['eligible', 'eligibility', 'studentAssurance', 'studentStatus', 'schoolAccountStatus', 'verificationStatus']) {
+        assert.equal(forbidden in decoded, false, `JWT must not carry ${forbidden}`);
+    }
+    assert.deepEqual(
+        Object.keys(decoded).filter((key) => !['iat', 'exp'].includes(key)).sort(),
+        ['email', 'role', 'userId'],
+    );
 });
 
 test('rejects an invalid public institution identifier before availability SQL is invoked', async () => {

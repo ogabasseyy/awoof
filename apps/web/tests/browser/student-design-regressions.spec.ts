@@ -87,3 +87,96 @@ test('profile badge never shows verified from unknown or negative eligibility', 
   await expect(page.getByText('Verified', { exact: true })).toHaveCount(0);
   await expect(page.getByRole('link', { name: /verify your student status/i })).toHaveAttribute('href', '/student/verification');
 });
+
+// Task A2: school-account assurance and current-enrollment eligibility are
+// independent checks with independent labels and expiry. A verified school
+// mailbox never implies student benefits.
+const pendingAssurance = {
+  schoolAccountStatus: 'verified',
+  schoolAccountMethod: 'email_otp',
+  schoolAccountValidUntil: '2030-06-15T00:00:00.000Z',
+  studentStatus: 'pending',
+  enrollmentMethod: null,
+  studentValidUntil: null,
+  reason: 'awaiting_enrollment',
+};
+
+const credentialedHeaders = { ...headers, 'access-control-allow-credentials': 'true' };
+
+async function stubVerificationWithAssurance(page: Page, failStatus: { current: boolean }) {
+  await page.route(`${apiOrigin}/api/verification/**`, async (route) => {
+    const endpoint = new URL(route.request().url()).pathname;
+    if (endpoint.endsWith('/status')) {
+      if (failStatus.current) {
+        await route.fulfill({ headers, status: 503, json: { success: false, error: { message: 'Down' } } });
+        return;
+      }
+      await route.fulfill({ headers, json: { success: true, data: { ...verificationStatus(false), studentAssurance: pendingAssurance } } });
+      return;
+    }
+    let data: unknown = {};
+    if (endpoint.includes('/methods/')) data = { methods: [{ methodType: 'email', isAvailable: true }] };
+    else if (endpoint.endsWith('/consents')) data = { items: [], nextCursor: null };
+    else if (endpoint.includes('/microsoft/identities')) data = { items: [], nextCursor: null };
+    else if (endpoint.includes('/microsoft/consents')) data = { items: [], nextCursor: null };
+    await route.fulfill({ headers: credentialedHeaders, json: { success: true, data } });
+  });
+}
+
+test('verification shows independent school and student status with expiry', async ({ page }) => {
+  await installSyntheticApi(page);
+  await seedSession(page, 'student');
+  await stubVerificationWithAssurance(page, { current: false });
+  await page.goto('/student/verification');
+  await expect(page.getByText('School account:')).toBeVisible();
+  await expect(page.getByText(/Verified.*school email code.*2030/)).toBeVisible();
+  await expect(page.getByText('Student status:')).toBeVisible();
+  await expect(page.getByText(/Pending.*enrollment/)).toBeVisible();
+});
+
+test('verification load failure offers a retry that recovers without fake states', async ({ page }) => {
+  await installSyntheticApi(page);
+  await seedSession(page, 'student');
+  const failStatus = { current: true };
+  await stubVerificationWithAssurance(page, failStatus);
+  await page.goto('/student/verification');
+  await expect(page.getByRole('alert').filter({ hasText: /unable to load verification/i })).toBeVisible();
+  await expect(page.getByText('Your student eligibility is current.')).toHaveCount(0);
+  failStatus.current = false;
+  await page.getByRole('button', { name: 'Retry', exact: true }).click();
+  await expect(page.getByRole('heading', { name: 'Current status' })).toBeVisible();
+  await expect(page.getByText(/Pending.*enrollment/)).toBeVisible();
+});
+
+test('profile shows independent school and student status', async ({ page }) => {
+  await installSyntheticApi(page);
+  await seedSession(page, 'student');
+  await page.route(`${apiOrigin}/api/verification/status`, async (route) => {
+    await route.fulfill({ headers, json: { success: true, data: { eligibility: { eligible: false }, studentAssurance: pendingAssurance } } });
+  });
+  await page.goto('/student/profile');
+  await expect(page.getByText('School account:')).toBeVisible();
+  await expect(page.getByText(/Verified.*school email code.*2030/)).toBeVisible();
+  await expect(page.getByText('Student status:')).toBeVisible();
+  await expect(page.getByText(/Pending.*enrollment/)).toBeVisible();
+  await expect(page.getByText('Verified', { exact: true })).toHaveCount(0);
+});
+
+test('profile status failure shows retry without positive state', async ({ page }) => {
+  await installSyntheticApi(page);
+  await seedSession(page, 'student');
+  const failStatus = { current: true };
+  await page.route(`${apiOrigin}/api/verification/status`, async (route) => {
+    if (failStatus.current) {
+      await route.fulfill({ headers, status: 503, json: { success: false, error: { message: 'Down' } } });
+    } else {
+      await route.fulfill({ headers, json: { success: true, data: { eligibility: { eligible: false }, studentAssurance: pendingAssurance } } });
+    }
+  });
+  await page.goto('/student/profile');
+  await expect(page.getByText('Verification unavailable', { exact: true })).toBeVisible();
+  await expect(page.getByText('Verified', { exact: true })).toHaveCount(0);
+  failStatus.current = false;
+  await page.getByRole('button', { name: 'Retry verification status' }).click();
+  await expect(page.getByText(/Pending.*enrollment/)).toBeVisible();
+});

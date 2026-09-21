@@ -359,6 +359,53 @@
 
 /**
  * @swagger
+ * /api/verification/status:
+ *   get:
+ *     summary: Get current verification status for the signed-in student
+ *     tags: [Verification]
+ *     security:
+ *       - bearerAuth: []
+ *     responses:
+ *       200:
+ *         description: Current verification status retrieved
+ *         content:
+ *           application/json:
+ *             schema:
+ *               allOf:
+ *                 - $ref: '#/components/schemas/SuccessResponse'
+ *                 - type: object
+ *                   properties:
+ *                     data:
+ *                       type: object
+ *                       properties:
+ *                         emailDomainApproved:
+ *                           type: boolean
+ *                         mailboxConfirmed:
+ *                           type: boolean
+ *                         email:
+ *                           type: string
+ *                           format: email
+ *                         universityId:
+ *                           type: string
+ *                           format: uuid
+ *                           nullable: true
+ *                         eligibility:
+ *                           type: object
+ *                           description: Current benefit eligibility; eligible is true only with current enrollment evidence.
+ *                         studentAssurance:
+ *                           $ref: '#/components/schemas/StudentAssurance'
+ *                         guidance:
+ *                           type: string
+ *                           enum: [incomplete_profile]
+ *                           description: Present when the student profile or institution is missing.
+ *       401:
+ *         $ref: '#/components/responses/Unauthorized'
+ *       503:
+ *         description: Status temporarily unavailable; the account stays signed in and the client should retry without assuming a positive state.
+ */
+
+/**
+ * @swagger
  * /api/verification/status/{studentId}:
  *   get:
  *     summary: Get student verification status
