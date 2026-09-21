@@ -43,6 +43,49 @@ router.post('/universities', asyncHandler(adminUniversityController.createUniver
 router.put('/universities/:id', asyncHandler(adminUniversityController.updateUniversity.bind(adminUniversityController)));
 router.delete('/universities/:id', asyncHandler(adminUniversityController.deleteUniversity.bind(adminUniversityController)));
 
+/**
+ * @swagger
+ * /api/admin/students:
+ *   get:
+ *     summary: List students with enrollment assurance
+ *     description: >-
+ *       Paginated admin report. Each row carries a bounded read-only
+ *       studentAssurance projection that shares the point reader's validity
+ *       rules but takes no locks; school-account and student status stay
+ *       independent. The projection reports status only and never authorizes
+ *       benefits. Requires a currently active administrator.
+ *     tags: [Admin]
+ *     security: [{ bearerAuth: [] }]
+ *     parameters:
+ *       - in: query
+ *         name: page
+ *         schema: { type: integer, minimum: 1, default: 1 }
+ *       - in: query
+ *         name: limit
+ *         schema: { type: integer, minimum: 1, maximum: 100, default: 20 }
+ *       - in: query
+ *         name: search
+ *         schema: { type: string }
+ *         description: Matches name, email, university, or registration number.
+ *     responses:
+ *       '200':
+ *         description: Students retrieved successfully
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 data:
+ *                   type: object
+ *                   properties:
+ *                     students:
+ *                       type: array
+ *                       items:
+ *                         type: object
+ *                         properties:
+ *                           studentAssurance: { $ref: '#/components/schemas/StudentAssurance' }
+ *       '401': { $ref: '#/components/responses/Unauthorized' }
+ */
 router.get('/students', asyncHandler(adminStudentController.getStudents.bind(adminStudentController)));
 router.get('/vendors', asyncHandler(adminVendorController.getVendors.bind(adminVendorController)));
 router.patch(

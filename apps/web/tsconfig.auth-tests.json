@@ -22,6 +22,7 @@
     "src/lib/auth-response.ts",
     "src/lib/api-client.ts",
     "src/lib/student-assurance.ts",
+    "src/lib/vendor-analytics.ts",
     "src/lib/student-benefit-claim.ts",
     "src/lib/student-return.ts",
     "tests/auth/**/*.ts",

@@ -29,6 +29,34 @@ test('existing key stays hidden with scope guidance', async ({ page }) => {
   await expect(page.locator('main').getByText(/awoof_/)).toHaveCount(0);
 });
 
+test('vendor analytics reports purchasing students, never a verification count (A5)', async ({ page }) => {
+  await installSyntheticApi(page);
+  await seedSession(page, 'vendor');
+  await page.route(`${apiOrigin}/api/vendors/analytics`, async (route) => {
+    await route.fulfill({
+      headers,
+      json: {
+        success: true,
+        data: {
+          overall: {
+            totalOrders: 9, completedOrders: 8, totalRevenue: 640, totalCommission: 64,
+            totalEarnings: 576, uniqueCustomers: 7, averageOrderValue: 80, conversionRate: 88.89,
+          },
+          products: [],
+          timeBased: [],
+          monthly: [],
+          students: { totalStudents: 11, purchasingStudents: 7, verifiedStudents: 7, repeatCustomers: 3 },
+          topProducts: [],
+        },
+      },
+    });
+  });
+  await page.goto('/vendor/analytics');
+  await page.getByRole('button', { name: 'Students', exact: true }).click();
+  await expect(page.getByText('Purchasing Students', { exact: true })).toBeVisible();
+  await expect(page.getByText('Verified Students', { exact: true })).toHaveCount(0);
+});
+
 test('integration tabs and key generation entry point survive', async ({ page }) => {
   await installSyntheticApi(page);
   await seedSession(page, 'vendor');

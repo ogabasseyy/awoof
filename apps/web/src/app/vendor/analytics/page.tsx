@@ -14,6 +14,7 @@ import { DashboardLayout } from '@/components/dashboard';
 import apiClient, { getImageUrl } from '@/lib/api-client';
 import Image from 'next/image';
 import { formatCurrency } from '@/lib/format';
+import { parseVendorStudentAnalytics } from '@/lib/vendor-analytics';
 
 const iconProps = { className: 'h-5 w-5', strokeWidth: 1.5, fill: 'currentColor' as const };
 
@@ -76,7 +77,9 @@ interface MonthlyData {
 
 interface StudentAnalytics {
     totalStudents: number;
-    verifiedStudents: number;
+    purchasingStudents: number;
+    /** @deprecated Server alias; the parser falls back to it on mixed-version responses. */
+    verifiedStudents?: number;
     repeatCustomers: number;
 }
 
@@ -535,9 +538,9 @@ export default function VendorAnalyticsPage() {
                                 <div className="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm">
                                     <div className="flex items-center justify-between">
                                         <div>
-                                            <p className="text-sm font-medium text-slate-600">Verified Students</p>
+                                            <p className="text-sm font-medium text-slate-600">Purchasing Students</p>
                                             <p className="mt-2 text-2xl font-bold text-green-600">
-                                                {analytics.students.verifiedStudents}
+                                                {parseVendorStudentAnalytics(analytics.students)?.purchasingStudents ?? '—'}
                                             </p>
                                         </div>
                                         <div className="rounded-full bg-green-100 p-3">

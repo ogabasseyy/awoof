@@ -40,7 +40,8 @@ export type SchoolAccountProjection = {
     schoolAccountValidUntil: string | null;
 };
 
-function enrollmentMethodFromSource(source: string | null): EnrollmentMethod {
+/** Shared validity rule: evidence source text to enrollment method. Also used by the admin batch projection. */
+export function enrollmentMethodFromSource(source: string | null): EnrollmentMethod {
     if (source === MICROSOFT_ENROLLMENT_SOURCE) return 'microsoft_graph';
     if (source === ENROLLMENT_SOURCE) return 'registration';
     return null;

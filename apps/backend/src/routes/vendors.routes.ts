@@ -387,6 +387,41 @@ router.post(
  * @route   GET /api/vendors/analytics
  * @desc    Get vendor analytics
  * @access  Private (Vendor)
+ *
+ * @swagger
+ * components:
+ *   schemas:
+ *     VendorStudentAnalytics:
+ *       type: object
+ *       required: [totalStudents, purchasingStudents, repeatCustomers]
+ *       properties:
+ *         totalStudents: { type: integer, example: 11 }
+ *         purchasingStudents:
+ *           type: integer
+ *           example: 7
+ *           description: Students with a completed order at this vendor. Transaction-derived; never a count of current student verification.
+ *         verifiedStudents:
+ *           type: integer
+ *           example: 7
+ *           deprecated: true
+ *           description: Deprecated alias of purchasingStudents. It never measured verification; use purchasingStudents.
+ *         repeatCustomers: { type: integer, example: 3 }
+ * /api/vendors/analytics:
+ *   get:
+ *     summary: Get vendor analytics
+ *     description: Vendor-scoped orders, revenue, and student counts. Student counts are transaction-derived and never assert current enrollment.
+ *     tags: [Vendors]
+ *     security: [{ bearerAuth: [] }]
+ *     responses:
+ *       '200':
+ *         description: Analytics retrieved successfully
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 students: { $ref: '#/components/schemas/VendorStudentAnalytics' }
+ *       '401': { $ref: '#/components/responses/Unauthorized' }
  */
 router.get(
     '/analytics',

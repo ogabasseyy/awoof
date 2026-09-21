@@ -537,3 +537,140 @@ Review disposition: `docs/runbooks/student-sso-review-disposition.md` (GO for Re
   one redemption per checkout in its own durable transaction before
   any external enforcement is claimed live. This closes the A2/A3
   unresolved item (official `test:postgres` now runs green).
+
+## Task A5: audit every consumer and release enrollment-only benefits
+
+- Task: A5 — audit every consumer and release enrollment-only benefits
+  (`docs/superpowers/plans/2026-09-20-institution-email-auth.md`,
+  Task A5).
+- Commit: `feat(admin): report enrollment assurance and document cutover`
+  on branch `codex/student-email-first-auth` (this commit; hash in completion
+  report).
+- Source changes:
+  - `services/verification/admin-student-assurance.service.ts` (new):
+    `readAdminStudentAssurance(store, userIds)` — a bounded (100/page),
+    read-only (no `FOR UPDATE`) batch projection of `StudentAssurance`
+    for admin reporting. It shares the point reader's validity rules
+    (`resolveStudentStatus`, `resolveSchoolAccount`,
+    `enrollmentMethodFromSource`, now exported from
+    `student-assurance.service.ts`) over batched unlocked reads keyed by
+    a JSONB context join: current-evidence pointer + processing-grant
+    currency, an independent-enrollment scan in locked order with full
+    Microsoft source authority, revocation/expiry/drift flags,
+    provider-availability, and 90-day-capped mailbox evidence. Missing
+    profiles/universities route to pending; inactive actors to inactive.
+    Labels may lag a concurrent write but can never authorize.
+  - `controllers/admin-student.controller.ts`: optional constructor DI
+    for the projection (A2 pattern); each list row gains
+    `studentAssurance` for the exact page of user IDs. Pagination stays
+    scoped (limit clamped to 100).
+  - `controllers/analytics.controller.ts`: transaction-derived
+    `verified_students` renamed to `purchasing_students` /
+    `purchasingStudents` (SQL alias + response); the old
+    `verifiedStudents` field remains as an explicitly deprecated alias
+    returning the same value. `admin-analytics.controller.ts` reviewed:
+    no verification-flavored metric, no change needed.
+  - OpenAPI: new `VendorStudentAnalytics` schema (`verifiedStudents`
+    marked `deprecated`) plus `GET /api/vendors/analytics` path doc in
+    `routes/vendors.routes.ts`; new `GET /api/admin/students` path doc
+    (page/limit/search, `StudentAssurance` items) in
+    `routes/admin.routes.ts`.
+  - `apps/web/src/lib/vendor-analytics.ts` (new): strict
+    `parseVendorStudentAnalytics` (new field primary, deprecated alias
+    as mixed-version fallback).
+  - `apps/web/src/app/vendor/analytics/page.tsx` (extended in place):
+    `Verified Students` card → `Purchasing Students` via the parser.
+  - `apps/web/src/app/admin/students/page.tsx` (extended in place):
+    new `School account` / `Student status` columns reusing the A2
+    label helpers; legacy rows without assurance render `—`.
+  - `docs/runbooks/student-benefit-cutover.md` (new): every benefit
+    consumer (checkout start, fulfillment/refund, issuance, exchange,
+    report, product claim, protected redemption, public projection,
+    retired tokens) with its authority check and email-only-fails proof;
+    admin visibility; the disposable-database rehearsal; the metric
+    rename; deploy gates recorded NOT RUN; rollback (benefits stay
+    closed, no downgrade to email-eligible code).
+- Tests added (32):
+  - `controllers/admin-student.http.test.ts`: 6 — 401 without token,
+    401 wrong role, 403 demoted admin, per-row assurance provenance,
+    all six statuses pass through, scoped pagination/search params plus
+    projection called with exactly the page's user IDs.
+  - `controllers/analytics.controller.test.ts`: 2 — purchasing count
+    reported, deprecated alias stays equal.
+  - `testing/postgres/admin-student-assurance.integration.ts`: 10 —
+    parity (`deepEqual`) against `readStudentAssurance` for
+    pending/verified/expired-pointer/denied/revoked/inactive (plus a
+    revoked-beats-expired lapse), missing profile/university pending,
+    boundedness + no-lock check, controller list end-to-end.
+  - `testing/postgres/cutover-rehearsal.integration.ts`: 5 —
+    historical purchases/savings retained; email-only fails checkout,
+    issuance, claim, legacy report, sealed token entrypoints, and
+    fulfillment (`requires_refund` + reconciliation, no stock move);
+    enrolled issuance/exchange/fulfillment canary; lapsed paid order
+    reconciles; token retirement revokes unused only.
+  - `tests/auth/vendor-analytics.test.ts`: 7 — renamed metric,
+    deprecated fallback, precedence, missing/non-integer/non-record
+    rejection, no verification claim in the parsed shape.
+  - `tests/browser/admin-design-regressions.spec.ts`: +1 — independent
+    assurance columns, pending reason, legacy `—` fallback.
+  - `tests/browser/merchant-design-regressions.spec.ts`: +1 — vendor
+    analytics shows `Purchasing Students`, never `Verified Students`.
+- Tests intentionally updated: none. No existing test was modified,
+  weakened, or deleted.
+- Gate commands and results (from worktree root):
+  - `npm --prefix apps/backend test` → PASS (199 tests, 0 fail;
+    baseline 191 + 8 new).
+  - `npm --prefix apps/backend run test:postgres` → PASS via the
+    official runner (274 tests: 273 pass, 0 fail, 1 skipped — the
+    dedicated compiled fallback smoke, skipped by design in source
+    mode).
+  - `npm --prefix apps/backend run type-check` → PASS (clean).
+  - `npm --prefix apps/backend run test:artifact` → PASS (23
+    integration files incl. the 2 new files, 57 staged migrations,
+    622 hashed files; OpenAPI parity; source-absent probes).
+  - `npm --prefix apps/web run test:auth` → PASS (80 tests, 0 fail).
+  - `npm --prefix apps/web run test:browser:typecheck` → PASS (clean).
+  - Browser (isolated temp 3117 config + `AWOOF_APP_ORIGIN`, deleted
+    after): `admin-design-regressions.spec.ts` +
+    `merchant-design-regressions.spec.ts` 9/9 pass (5 + 4, incl. 2 new).
+    Protected 127.0.0.1:3107 preview untouched (HTTP 200 before and after).
+  - Pre-change failure observation (test-first): new backend suites
+    failed (missing `purchasingStudents` / `studentAssurance`;
+    `type-check` failed on the missing projection module), `test:auth`
+    failed on the missing web lib, both new browser specs failed
+    against the original pages (observed via a temporary page-only
+    stash, then restored), and the postgres parity suite failed on
+    query authoring until the JSONB context join landed.
+- Migration check: `056_student_benefit_authorizations.sql` present;
+  `057` still absent (B1 owns it). A5 adds no migration (rechecked at
+  commit time).
+- Deviations:
+  - The batch projection joins per-student contexts via
+    `jsonb_to_recordset` instead of multi-array `UNNEST` (PostgreSQL
+    cannot infer mixed polymorphic array params) and numbers bind
+    params per query (unused params fail inference); SQL text is built
+    by a small `ctxJoin(param)` helper.
+  - The projection takes a single database-time `now` from the state
+    batch instead of the point reader's per-step clock reads; parity
+    holds outside a millisecond expiry-boundary window, and reporting
+    never authorizes.
+  - `AdminStudentController` uses optional constructor DI for the
+    projection (same rationale as A2: unit tests must not open the
+    real pool); the HTTP suite mounts the real admin middleware chain
+    with a stubbed projection, while integration covers the real SQL.
+  - The admin list's legacy `verificationDate` API field is retained
+    untouched: it is not displayed in the UI and nothing authorizes
+    from it, so no relabel was required by A5's scope.
+- Docs impact (AGENTS.md checklist): no trust/help/partner/developers
+  changes — verified no public page or developer doc references the
+  analytics endpoint or makes a renamed-metric claim (the `partners.ts`
+  analytics line is dashboard copy, unchanged). User-visible changes are
+  the in-app independent admin labels and the `Purchasing Students`
+  card, both covered by browser tests; OpenAPI documents the new admin
+  response and the explicit metric deprecation; the cutover runbook is
+  internal. School-account assurance and enrollment eligibility stay
+  separated in every response, UI label, and doc touched here.
+- Unresolved: deploy gates §6 and real-partner acceptance (§6.6) are
+  NOT RUN — production access is forbidden to this task; an operator
+  must execute and record each gate during the release window. The
+  deprecated `verifiedStudents` alias awaits client-migration removal.

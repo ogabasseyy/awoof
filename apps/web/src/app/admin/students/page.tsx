@@ -17,6 +17,7 @@ import type { User } from '@/lib/auth';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import apiClient from '@/lib/api-client';
+import { parseStudentAssurance, schoolAccountLabel, studentStatusLabel } from '@/lib/student-assurance';
 import { primaryNavItems, secondaryNavItems } from '../adminNav';
 
 interface Student {
@@ -33,6 +34,17 @@ interface Student {
     totalSpent: number;
     totalSavings: number | null;
     recordedSavings?: number;
+    studentAssurance?: unknown;
+}
+
+function schoolAccountCell(value: unknown): string {
+    const assurance = parseStudentAssurance(value);
+    return assurance ? schoolAccountLabel(assurance) : '—';
+}
+
+function studentStatusCell(value: unknown): string {
+    const assurance = parseStudentAssurance(value);
+    return assurance ? studentStatusLabel(assurance) : '—';
 }
 
 function formatCurrency(n: number): string {
@@ -121,6 +133,8 @@ export default function AdminStudentsPage() {
                                             <th className="px-6 py-3 text-left text-xs font-medium uppercase text-slate-700">University</th>
                                             <th className="px-6 py-3 text-left text-xs font-medium uppercase text-slate-700">Reg no.</th>
                                             <th className="px-6 py-3 text-left text-xs font-medium uppercase text-slate-700">Status</th>
+                                            <th className="px-6 py-3 text-left text-xs font-medium uppercase text-slate-700">School account</th>
+                                            <th className="px-6 py-3 text-left text-xs font-medium uppercase text-slate-700">Student status</th>
                                             <th className="px-6 py-3 text-right text-xs font-medium uppercase text-slate-700">Spent</th>
                                             <th className="px-6 py-3 text-right text-xs font-medium uppercase text-slate-700">Saved</th>
                                             <th className="px-6 py-3 text-left text-xs font-medium uppercase text-slate-700">Joined</th>
@@ -134,6 +148,8 @@ export default function AdminStudentsPage() {
                                                 <td className="px-6 py-4 text-sm text-slate-600">{s.university || '-'}</td>
                                                 <td className="px-6 py-4 text-sm text-slate-600">{s.registrationNumber || '-'}</td>
                                                 <td className="px-6 py-4 text-sm capitalize text-slate-600">{s.status}</td>
+                                                <td className="px-6 py-4 text-sm text-slate-600">{schoolAccountCell(s.studentAssurance)}</td>
+                                                <td className="px-6 py-4 text-sm text-slate-600">{studentStatusCell(s.studentAssurance)}</td>
                                                 <td className="px-6 py-4 text-sm text-right font-medium text-slate-900">{formatCurrency(s.totalSpent)}</td>
                                                 <td className="px-6 py-4 text-sm text-right font-medium text-green-600">{formatSavings(s.totalSavings, s.recordedSavings)}</td>
                                                 <td className="px-6 py-4 text-sm text-slate-600">{formatDate(s.createdAt)}</td>

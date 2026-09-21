@@ -7,11 +7,22 @@
 import type { Request, Response } from 'express';
 import { db } from '../config/database.js';
 import { success } from '../common/utils/response.js';
+import { readAdminStudentAssurance } from '../services/verification/admin-student-assurance.service.js';
+import type { StudentAssurance } from '../services/verification/student-assurance.types.js';
 
 export class AdminStudentController {
+    constructor(
+        private dependencies: {
+            readAssurancePage?: (userIds: string[]) => Promise<Map<string, StudentAssurance>>;
+        } = {},
+    ) {}
+
     /**
      * GET /api/admin/students
-     * List students with pagination, search, total_spent and total_savings.
+     * List students with pagination, search, total_spent, total_savings, and a
+     * bounded read-only enrollment assurance projection per row. The
+     * projection shares the point reader's validity rules but takes no locks;
+     * it reports status and never authorizes benefits.
      */
     async getStudents(req: Request, res: Response): Promise<void> {
         const page = Math.max(1, parseInt(req.query.page as string) || 1);
@@ -78,6 +89,9 @@ export class AdminStudentController {
             LIMIT $${paramIdx} OFFSET $${paramIdx + 1}
         `;
         const result = await db.query(listQuery, params);
+        const readAssurancePage = this.dependencies.readAssurancePage
+            ?? ((userIds: string[]) => readAdminStudentAssurance(db, userIds));
+        const assurance = await readAssurancePage(result.rows.map((row) => row.user_id as string));
 
         const students = result.rows.map((row) => ({
             id: row.id,
@@ -94,6 +108,7 @@ export class AdminStudentController {
             totalSavings: Number(row.unknown_savings_count) > 0 ? null : parseFloat(row.total_savings ?? '0'),
             recordedSavings: parseFloat(row.total_savings ?? '0'),
             unknownSavingsCount: Number(row.unknown_savings_count),
+            studentAssurance: assurance.get(row.user_id as string) ?? null,
         }));
 
         success(res, {
