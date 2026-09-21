@@ -21,7 +21,7 @@ export function PublicDesktopNav({ items }: { items: PublicNavItem[] }) {
         <li key={item.href + item.label}>
           <Link
             href={item.href}
-            className="block rounded-full px-4 py-2 text-sm font-semibold text-white/95 hover:bg-white/10 hover:text-white"
+            className="flex min-h-[44px] items-center rounded-full px-4 text-sm font-semibold text-white/95 hover:bg-white/10 hover:text-white"
           >
             {item.label}
           </Link>

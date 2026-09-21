@@ -34,4 +34,9 @@ export const publicPageMetadata = {
     title: 'Developer Integration Guide | Awoof',
     description: 'Integration concepts for Awoof verification: server-side credentials, student consent, and verification checks.',
   },
+  '/marketplace': {
+    pathname: '/marketplace',
+    title: 'Student Marketplace | Awoof',
+    description: 'Browse student benefits from participating merchants. Each benefit states where and how it applies.',
+  },
 } satisfies Record<string, PublicMetadataInput>;

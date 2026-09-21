@@ -17,14 +17,14 @@ export default function DevelopersPage() {
         {developerExamples.map((example, index) => (
           <section key={example.title} aria-labelledby={`dev-section-${index}`}>
             <h2 id={`dev-section-${index}`} className="text-2xl font-extrabold tracking-tight text-slate-900">{example.title}</h2>
-            <p className="mt-2 font-mono text-sm text-[#3858bb">{example.route}</p>
+            <p className="mt-2 font-mono text-sm text-[#3858bb]">{example.route}</p>
             <p className="mt-3 leading-relaxed text-slate-600">{example.body}</p>
             <h3 className="mt-5 font-bold text-slate-900">Request</h3>
-            <pre className="mt-2 overflow-x-auto rounded-2xl bg-slate-900 p-5 text-sm leading-relaxed text-slate-100">
+            <pre tabIndex={0} aria-label={`Example request: ${example.route}`} className="mt-2 overflow-x-auto rounded-2xl bg-slate-900 p-5 text-sm leading-relaxed text-slate-100">
               {example.request}
             </pre>
             <h3 className="mt-5 font-bold text-slate-900">Response</h3>
-            <pre className="mt-2 overflow-x-auto rounded-2xl bg-slate-900 p-5 text-sm leading-relaxed text-slate-100">
+            <pre tabIndex={0} aria-label="Example response" className="mt-2 overflow-x-auto rounded-2xl bg-slate-900 p-5 text-sm leading-relaxed text-slate-100">
               {example.response}
             </pre>
           </section>

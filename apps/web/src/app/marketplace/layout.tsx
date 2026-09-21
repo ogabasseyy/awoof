@@ -1,4 +1,8 @@
 import { Plus_Jakarta_Sans } from 'next/font/google';
+import { buildPublicMetadata } from '@/lib/public-metadata';
+import { publicPageMetadata } from '@/content/public/page-metadata';
+
+export const metadata = buildPublicMetadata(publicPageMetadata['/marketplace']);
 
 const plusJakarta = Plus_Jakarta_Sans({
     subsets: ['latin'],

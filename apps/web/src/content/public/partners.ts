@@ -97,5 +97,5 @@ export const developerSeparations = [
   'Sign-in is not eligibility. A logged-in student with no passing check is not eligible.',
   'Server keys are not browser keys. Keys live on your backend; nothing secret goes in pages, apps, or URLs.',
   'Receipt history is not new authorization. Replays return the committed receipt; only a fresh approved check creates a new one.',
-  'Errors are explicit: 401 invalid key or inactive merchant, 409 expired or conflicting code, 429 quota exhausted.',
+  'Errors are explicit: 400 invalid input, 401 invalid key or inactive merchant, 403 check no longer current, 409 expired or conflicting code, 429 quota exhausted.',
 ];

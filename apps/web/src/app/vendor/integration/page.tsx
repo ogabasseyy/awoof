@@ -601,7 +601,7 @@ export default function VendorIntegrationPage() {
                                     <div>
                                         <Label>Example Request</Label>
                                         <div className="relative mt-2">
-                                            <pre className="overflow-x-auto rounded-lg bg-slate-900 p-4 text-xs text-slate-100">
+                                            <pre tabIndex={0} aria-label="Example transaction reporting request" className="overflow-x-auto rounded-lg bg-slate-900 p-4 text-xs text-slate-100">
                                                 {`fetch('${apiBaseUrl}/api/vendors/transactions/report', {
   method: 'POST',
   headers: {

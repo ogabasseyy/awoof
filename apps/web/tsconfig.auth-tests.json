@@ -24,6 +24,7 @@
     "src/lib/student-return.ts",
     "tests/auth/**/*.ts",
     "src/lib/public-metadata.ts",
-    "src/content/public/page-metadata.ts"
+    "src/content/public/page-metadata.ts",
+    "src/app/sitemap.ts"
   ]
 }

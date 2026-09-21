@@ -18,6 +18,11 @@ const ROUTES = [
   { path: '/', slug: 'home', h1: 'Verify your student status' },
   { path: '/marketplace', slug: 'marketplace', h1: 'savings are warming up' },
   { path: '/widget/verify', slug: 'widget-verify', h1: 'Merchant verification is unavailable' },
+  { path: '/trust', slug: 'trust', h1: 'Security and trust' },
+  { path: '/help', slug: 'help', h1: 'Help with verification' },
+  { path: '/contact', slug: 'contact', h1: 'Contact Awoof' },
+  { path: '/partner', slug: 'partner', h1: 'Student verification for partners' },
+  { path: '/developers', slug: 'developers', h1: 'Developer integration guide' },
 ];
 
 async function waitForServer(url, timeoutMs) {

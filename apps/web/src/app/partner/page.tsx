@@ -58,7 +58,7 @@ export default function PartnerPage() {
             </Link>
           </nav>
         </section>
-        <section aria-labelledby="universities" id="universities" className="scroll-mt-24">
+        <section aria-labelledby="universities-heading" id="universities" className="scroll-mt-24">
           <h2 id="universities-heading" className="text-2xl font-extrabold tracking-tight text-slate-900">
             For universities
           </h2>

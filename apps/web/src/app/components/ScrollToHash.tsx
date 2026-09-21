@@ -16,7 +16,12 @@ export default function ScrollToHash() {
     if (!hash) return;
     const el = document.getElementById(hash);
     if (el) {
-      el.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      const reduceMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+      el.scrollIntoView({ behavior: reduceMotion ? 'auto' : 'smooth', block: 'start' });
+      if (!/^(A|BUTTON|INPUT|TEXTAREA|SELECT)$/.test(el.tagName) && !el.hasAttribute('tabindex')) {
+        el.setAttribute('tabindex', '-1');
+      }
+      (el as HTMLElement).focus({ preventScroll: true });
     }
   }, [pathname]);
 
