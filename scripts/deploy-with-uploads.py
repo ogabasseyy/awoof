@@ -70,6 +70,9 @@ def deploy():
         raise RuntimeError('Built backend image unavailable; original container retained')
     backup_dir = Path('backups/uploads')
     backup_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
+    # 0o700 is owner-only (most restrictive), required because captured Compose
+    # output can contain secrets; the audit rule misfires on any chmod here.
+    # (Documented false positive: dismissed in code scanning.)
     os.chmod(backup_dir, 0o700)
     helper = 'awoof-upload-migration-' + uuid.uuid4().hex
     was_running = state['State']['Running']

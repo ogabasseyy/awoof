@@ -53,9 +53,12 @@ async function installSyntheticMicrosoftDocument(context: BrowserContext, holdPr
     // cannot reach the real tenant. It commits a real provider-origin document
     // before the controlled callback. This prevents Awoof's storage listener
     // from racing a cross-tab replacement while the route is merely pending.
+    // Escape HTML metacharacters in the embedded JSON so the callback URL
+    // can never break out of the <script> block (e.g. via "</script>").
+    const callbackUrlJson = JSON.stringify(callbackUrl).replace(/</g, '\\u003c');
     const navigation = holdProviderDocument
-      ? `<button id="fixture-continue" type="button">Continue synthetic Microsoft callback</button><script>document.querySelector('#fixture-continue').onclick=()=>location.assign(${JSON.stringify(callbackUrl)})</script>`
-      : `<script>location.replace(${JSON.stringify(callbackUrl)})</script>`;
+      ? `<button id="fixture-continue" type="button">Continue synthetic Microsoft callback</button><script>document.querySelector('#fixture-continue').onclick=()=>location.assign(${callbackUrlJson})</script>`
+      : `<script>location.replace(${callbackUrlJson})</script>`;
     await route.fulfill({ contentType: 'text/html', body: `<!doctype html><title>Synthetic Microsoft</title>${navigation}` });
   });
   return {

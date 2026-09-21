@@ -19,11 +19,15 @@ const domainCheckSchema = z.object({
 /**
  * Check if a domain is allowed for a given widget API key.
  * Used by the widget on load to validate the vendor's domain allowlist.
+ *
+ * POST-only with a JSON body. The API key must never travel in the URL:
+ * query strings land in access logs, proxy/CDN logs, browser history,
+ * and Referer headers. Query parameters are deliberately not read here.
  */
 export async function domainCheck(req: Request, res: Response): Promise<void> {
     const parsed = domainCheckSchema.safeParse({
-        domain: req.query.domain ?? req.body?.domain,
-        apiKey: req.query.apiKey ?? req.query.api_key ?? req.body?.apiKey ?? req.body?.api_key,
+        domain: req.body?.domain,
+        apiKey: req.body?.apiKey ?? req.body?.api_key,
     });
 
     if (!parsed.success) {

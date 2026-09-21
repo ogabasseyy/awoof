@@ -12,13 +12,13 @@ import * as widgetController from '../controllers/widget.controller.js';
 const router = Router();
 
 /**
- * @route   GET /api/widget/domain-check
+ * @route   POST /api/widget/domain-check
  * @desc    Check if current domain is allowed for the given widget API key
- * @query   domain - hostname (e.g. vendor-site.com)
- * @query   apiKey - vendor widget API key
+ * @body    domain - hostname (e.g. vendor-site.com)
+ * @body    apiKey - vendor widget API key (never in the URL query string)
  * @access  Public
  */
-router.get(
+router.post(
     '/domain-check',
     asyncHandler(widgetController.domainCheck)
 );
