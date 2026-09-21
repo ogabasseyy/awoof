@@ -569,6 +569,10 @@ export default function VendorIntegrationPage() {
                                 <h2 className="mb-4 text-lg font-semibold text-slate-900">Transaction Reporting API</h2>
                                 <p className="mb-6 text-sm text-slate-600">
                                     Report transactions after successful payments on your website.
+                                    Each report needs the benefit authorization from exchanging a
+                                    product-bound merchant assertion; it settles only while the
+                                    student holds current enrollment. Legacy verification tokens
+                                    are retired and always fail.
                                 </p>
 
                                 <div className="space-y-4">
@@ -609,7 +613,7 @@ export default function VendorIntegrationPage() {
     'Content-Type': 'application/json'
   },
   body: JSON.stringify({
-    verificationToken: window.verificationToken,
+    benefitAuthorizationId: 'authorization_from_exchange',
     paymentReference: 'paystack_ref_123',
     amount: 15000,
     productId: 'product-uuid',
@@ -637,7 +641,7 @@ export default function VendorIntegrationPage() {
     'Content-Type': 'application/json'
   },
   body: JSON.stringify({
-    verificationToken: window.verificationToken,
+    benefitAuthorizationId: 'authorization_from_exchange',
     paymentReference: 'paystack_ref_123',
     amount: 15000,
     productId: 'product-uuid',
@@ -666,7 +670,7 @@ export default function VendorIntegrationPage() {
                                     <div className="rounded-lg bg-slate-50 p-4">
                                         <h3 className="mb-2 text-sm font-semibold text-slate-900">Request Parameters:</h3>
                                         <ul className="space-y-1 text-xs text-slate-600">
-                                            <li><strong>verificationToken:</strong> Token received from widget verification</li>
+                                            <li><strong>benefitAuthorizationId:</strong> Authorization from exchanging a product-bound merchant assertion (one discounted report per authorization)</li>
                                             <li><strong>paymentReference:</strong> Payment reference from your payment gateway</li>
                                             <li><strong>amount:</strong> Transaction amount in kobo (for Naira)</li>
                                             <li><strong>productId:</strong> UUID of the product purchased</li>

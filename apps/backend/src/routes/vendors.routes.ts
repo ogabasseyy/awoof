@@ -314,6 +314,64 @@ router.put(
  * @route   POST /api/vendors/transactions/report
  * @desc    Report transaction (for vendor website payments)
  * @access  Private (Vendor API Key or JWT)
+ *
+ * @swagger
+ * /api/vendors/transactions/report:
+ *   post:
+ *     summary: Report a discounted transaction against a benefit authorization
+ *     description: >
+ *       Server-to-server only with a vendor JWT or a private awoof_ reporting key.
+ *       Settles one discounted transaction against a product-bound benefit authorization
+ *       minted by exchanging a merchant assertion. First use rechecks current enrollment
+ *       authority, product binding, disclosure, quoted price and authorization expiry;
+ *       legacy verification tokens are retired and fail closed. Exact committed retries
+ *       return the original result without new benefit; changed bindings conflict.
+ *       Late or expired first reports fail with reconciliation details instead of
+ *       settling, and never mint a new authorization. A payment report alone cannot
+ *       enforce an external checkout: the merchant must hold current enrollment
+ *       authority before granting a discount.
+ *     tags: [Vendors]
+ *     security: [{ bearerAuth: [] }]
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             additionalProperties: false
+ *             required: [benefitAuthorizationId, paymentReference, amount, productId, paymentGateway]
+ *             properties:
+ *               benefitAuthorizationId:
+ *                 type: string
+ *                 format: uuid
+ *                 description: Product-bound authorization from a merchant-assertion exchange receipt.
+ *               paymentReference:
+ *                 type: string
+ *                 minLength: 1
+ *                 description: Payment reference from the merchant payment gateway.
+ *               amount:
+ *                 type: integer
+ *                 minimum: 1
+ *                 description: Charged amount in kobo (NGN minor units). Must exactly match the quoted student price.
+ *               productId:
+ *                 type: string
+ *                 format: uuid
+ *                 description: UUID of the purchased product. Must match the authorization binding.
+ *               paymentGateway:
+ *                 type: string
+ *                 minLength: 1
+ *                 description: Payment gateway used ('paystack' is verified externally; other values are merchant-attested).
+ *     responses:
+ *       '201':
+ *         description: Discounted transaction settled.
+ *       '200':
+ *         description: Exact committed retry; the original result without new benefit.
+ *       '400': { description: Invalid input, retired token, or amount/product/currency mismatch }
+ *       '401': { description: Vendor JWT or reporting key invalid, or merchant inactive }
+ *       '403': { description: Current enrollment authority or merchant disclosure unavailable }
+ *       '404': { description: Unknown benefit authorization for this merchant }
+ *       '409': { description: Conflicting report bindings, or a late first report needing explicit reconciliation }
+ *       '422': { description: Request body failed strict validation }
  */
 router.post(
     '/transactions/report',

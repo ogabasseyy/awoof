@@ -222,3 +222,161 @@ Review disposition: `docs/runbooks/student-sso-review-disposition.md` (GO for Re
   written test-first and type-checks but has never executed. Fixture
   assumptions were verified by inspection against the passing A1 suite's
   helpers and migration schema.
+
+## Task A3: retire legacy tokens, authorize merchant transaction reporting
+
+- Task: A3 — retire legacy tokens and authorize merchant transaction
+  reporting (`docs/superpowers/plans/2026-09-20-institution-email-auth.md`,
+  Task A3).
+- Commit: `fix(merchants): bind discount reports to current enrollment`
+  on branch `codex/student-email-first-auth` (this commit; hash in completion
+  report).
+- Source changes:
+  - `database/migrations/056_student_benefit_authorizations.sql` (new):
+    additive only — `revoked_at` on `verification_tokens`, new
+    `merchant_benefit_authorizations` (assertion UNIQUE, vendor/user/
+    product/evidence/processing/disclosure FKs, list+student price
+    snapshots, currency, server pricing digest, expiry, nullable UNIQUE
+    `transaction_id`), nullable `product_id` on `merchant_assertions`,
+    plus the A4 `merchant_claim_sessions` table and nullable
+    `claim_session_id` FKs on assertions/authorizations per the plan's
+    no-retrofit rule. No `transactions` change, so the existing receipt
+    writer gains no `NOT NULL` column.
+  - `services/verification/merchant-benefit.service.ts` (new):
+    `reportMerchantBenefit` settles one discounted transaction per
+    product-bound authorization. Boundary kobo→naira conversion, Paystack
+    verification outside DB locks on first use only, unlocked candidate
+    read, participant users sorted via `prepareMerchantDisclosure`,
+    merchant re-authentication inside the commit transaction (API-key row
+    recheck; vendor active/ownership recheck for JWT), canonical
+    `getEffectiveEligibility` authority, then assertion/authorization and
+    product/transaction locks. First use rechecks enrollment, current
+    evidence/processing IDs, disclosure, product/currency/price bindings,
+    pricing digest, and authorization expiry after all blocking locks;
+    exact committed retries return the original result as historical
+    bookkeeping; changed bindings conflict; late/expired/stock-out first
+    reports fail with explicit `reconciliation: required` details echoing
+    the payment reference instead of settling or minting. Unique
+    conflicts roll back and re-read the merchant's committed transaction
+    with an exact match, else 409. Also exports the `NGN` catalog
+    currency, pricing digest, money-boundary helpers, and unused-only
+    authorization cleanup.
+  - `merchant-assertion.service.ts`: optional server-validated `productId`
+    on issuance (active product of the vendor); product-bound exchange
+    mints the authorization with quoted snapshots in the same transaction
+    as receipt storage, capped at min(evidence expiry, now + 2 minutes),
+    and adds `benefitAuthorizationId` to the receipt. Generic campaign
+    receipt shape is unchanged; historical receipt retries mint nothing.
+  - `verification-token.service.ts`: issuance/validation/consumption fail
+    closed with a retirement message (no DB touch); rows preserved;
+    `revokeUnusedLegacyTokens` sets `revoked_at` on unused rows only,
+    never `used_at`.
+  - `payment.controller.ts`: strict report schema replaces
+    `verificationToken` with `benefitAuthorizationId` (UUID, kobo-integer
+    amount, `.strict()`); delegates to the service; 201 first use, 200
+    exact retry; notifications only on first commit.
+  - `reporting-key.service.ts`: new `recheckReportingKeyInTransaction`
+    helper (exchange flow untouched).
+  - `merchant-verification.routes.ts`: optional `productId` on issuance;
+    receipt Swagger gains optional `benefitAuthorizationId`.
+    `vendors.routes.ts`: new Swagger block for
+    `POST /api/vendors/transactions/report` (no prior definition existed).
+  - `src/scripts/retire-verification-tokens.ts` and
+    `src/scripts/cleanup-benefit-authorizations.ts` (new, with
+    `scripts/*.ts` compat entries and `tokens:retire`/`benefits:cleanup`
+    package pairs): redacted cutover/recurring CLIs following the
+    Microsoft cleanup pattern.
+- Tests added (30):
+  - `testing/postgres/merchant-benefit.integration.ts`: 23 — legacy
+    token fail-closed (422/404) + strict-schema rejection, retirement
+    revokes unused only, product-bound minting with server quotes
+    (generic unchanged), JWT settle (201 + full ledger assertions), API
+    key settle, factor-of-100 rejections (80/800000 kobo) with no
+    writes, Paystack minor-unit boundary (mocked provider kobo, mismatch
+    and denial cases), 5 lapsed-enrollment refusals (expired, denied,
+    processing-withdrawn, disclosure-withdrawn, inactive), email-only
+    issuance/report refusal, concurrent identical reports (one
+    transaction, 201+200 same payload), concurrent different references
+    (201+409), exact retry vs changed amount/product/gateway/reference
+    (200 vs 409s), retry after authorization+evidence expiry with current
+    merchant auth only (revoked key 401, no renewed benefit), late first
+    report reconciliation without new authorization, stock-out
+    reconciliation, receipt-replay mints nothing + generic receipts
+    cannot report, edited catalog prices never rewrite quoted savings
+    (+refund), migration-056 additivity incl. claim-session uniqueness,
+    cleanup deletes only expired-unused past retention.
+  - `services/verification/merchant-benefit.service.test.ts`: 4 —
+    NGN/kobo boundary, minor-unit rejections, pricing-digest
+    sensitivity, invalid-price rejections.
+  - `services/verification/verification-token.service.test.ts`: 3 —
+    issuance/consumption throw, validation reports invalid.
+- Tests intentionally updated (none deleted or weakened):
+  `checkout-refund-regressions.integration.ts` external-reporting test
+  now runs the authorization flow (enrolled fixture, disclosure,
+  product assertion, exchange, `benefitAuthorizationId` report) with
+  identical savings/stock/refund assertions.
+- Tests repaired (A2 follow-up, assertions unchanged): two
+  `student-assurance.integration.ts` expiry tests used a direct
+  `eligibility_evidence.expires_at` UPDATE that the pre-existing
+  immutability trigger forbids (they were committed unrun). Email expiry
+  now revokes the live mailbox row and records a historical expired row
+  through a second mailbox proof; enrollment expiry uses a single
+  short-lived enrollment plus a bounded 11 s wait, since revocation
+  outranks expiry in the specified precedence.
+- Gate commands and results (from worktree root):
+  - `npm --prefix apps/backend test` → PASS (178 tests, 0 fail).
+  - `npm --prefix apps/backend run type-check` → PASS (clean).
+  - `npm --prefix apps/backend run test:artifact` → PASS (20
+    integration tests incl. the new file, 57 staged migrations incl.
+    056, 602 hashed files; OpenAPI parity; source-absent probes). Both
+    new scripts also executed in source and compiled form.
+  - `npm --prefix apps/backend run test:postgres` → BLOCKED (exit 1):
+    the runner's disk guard requires 3 GiB free in the OS temp dir and
+    the volume holds ~660 MB (same environmental block as A2; only
+    session-owned scratch may be cleaned). Equivalent evidence instead:
+    the full 21-file integration suite executed on a manually-managed
+    disposable loopback cluster (fresh `awoof_test_*` database, same
+    guard env shape, destroyed after): 251 tests, 250 pass, 0 fail, 1
+    skipped (the dedicated compiled fallback smoke, skipped by design
+    in source mode).
+  - Pre-change failure observation (test-first): new unit suites failed
+    (missing `merchant-benefit` module; legacy token entrypoints hit the
+    live code path), and the new integration file failed to load
+    (`ERR_MODULE_NOT_FOUND`).
+  - Extra: web app `tsc --noEmit` clean; `apps/web run lint` remains
+    broken repo-wide (missing `react-hooks` plugin config),
+    pre-existing and untouched.
+- Migration check: no `056`/`057` files before; `056` added, `057`
+  still absent (B1 owns it). Claim-session schema ships inside `056`
+  per the plan; its `claim_session_id` bindings stay null until A4.
+- Deviations:
+  - Snapshot columns use `NUMERIC(10, 2)` rather than the plan's bare
+    `numeric`, matching the existing product/transaction money units the
+    plan requires for consistency.
+  - Product-unavailable and stock-out first reports return 409 with
+    `reconciliation: required` (like late/expired reports) instead of
+    the old 400, since the merchant may already have charged; nothing
+    is written and no new authorization is minted.
+  - Exact committed retries skip renewed Paystack verification: a set
+    `transaction_id` never unsets, so retries are pure historical
+    bookkeeping (this also yields the specified 409 for a
+    gateway-changed retry).
+  - Retention for unused authorizations is 7 days past expiry, mirroring
+    the existing transient-record rule; used rows and all receipts are
+    never deleted.
+  - JWT merchant re-authentication inside the transaction rechecks
+    vendor active/ownership under lock; only API-key callers get the
+    additional key-row recheck (JWTs are stateless 15-minute tokens).
+- Docs impact (AGENTS.md checklist): behavior changed, so merchant
+  integration copy changed with it — vendor integration/payment pages
+  now document `benefitAuthorizationId` (assertion → exchange → report,
+  current enrollment required, legacy tokens retired), the public
+  developer guide gains the `productId`/authorization notes plus a
+  synthetic transaction-report example, and OpenAPI covers the new
+  report contract. No new public claims, coverage, contacts, or
+  commitments; school-account and enrollment stays separated in every
+  message and label. Trust/help/partner pages needed no other edits.
+- Unresolved: run the official `npm --prefix apps/backend run
+  test:postgres` from a volume with ≥3 GiB free; scheduling for the
+  recurring authorization-cleanup CLI is operator-owned. This closes
+  A2's unresolved item subject to that same official rerun.

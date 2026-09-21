@@ -6,7 +6,7 @@ import { db } from '../../config/database.js';
 import { config } from '../../config/env.js';
 
 after(() => db.close());
-import { consumeChallenge, requestChallenge } from '../../services/verification/challenge.service.js';
+import { challengeSubjectDigest, consumeChallenge, requestChallenge } from '../../services/verification/challenge.service.js';
 import {
     grantVerificationProcessing,
     withdrawConsent,
@@ -214,10 +214,61 @@ test('email evidence expiry is visible on the next read without token refresh', 
     await withTestClient(async (client) => {
         const fixture = await createFixture(client);
         assert.equal((await read(client, fixture.userId)).schoolAccountStatus, 'verified');
+        // Evidence rows are immutable: revoke the live mailbox evidence and
+        // record a historical expired row through a second mailbox proof.
         await client.query(
-            `UPDATE eligibility_evidence SET expires_at = clock_timestamp() - interval '1 second'
+            `UPDATE eligibility_evidence SET revoked_at = clock_timestamp()
              WHERE student_id = $1 AND method = 'student_email'`,
             [fixture.studentId],
+        );
+        const live = (await client.query(
+            `SELECT identity_version, policy_version
+             FROM eligibility_evidence
+             WHERE student_id = $1 AND method = 'student_email'
+             ORDER BY verified_at DESC LIMIT 1`,
+            [fixture.studentId],
+        )).rows[0];
+        await client.query(
+            `UPDATE verification_challenge_budgets SET resend_available_at = clock_timestamp() - interval '1 second'
+             WHERE purpose = 'student_email' AND subject_digest = $1`,
+            [challengeSubjectDigest('student_email', fixture.userId)],
+        );
+        const secondChallenge = await inTransaction(client, async () => {
+            const context = await lockStudentContext(client, fixture.userId);
+            const issued = await requestChallenge(client, {
+                purpose: 'student_email',
+                subjectKey: fixture.userId,
+                bindings: {
+                    ...context,
+                    processingGrantId: fixture.grantId,
+                    noticeVersion: VERIFICATION_NOTICE_VERSION,
+                },
+            });
+            assert.equal(issued.status, 'issued');
+            if (issued.status !== 'issued') throw new Error('Expiry challenge was not issued');
+            const consumed = await consumeChallenge(client, {
+                purpose: 'student_email',
+                subjectKey: fixture.userId,
+                challengeId: issued.challengeId,
+                code: issued.code,
+            });
+            assert.equal(consumed.status, 'verified');
+            return issued.challengeId;
+        });
+        const proof = (await client.query<{ id: string }>(
+            `INSERT INTO user_email_proofs (user_id, email, challenge_id) VALUES ($1, $2, $3) RETURNING id`,
+            [fixture.userId, fixture.email.toLowerCase(), secondChallenge],
+        )).rows[0]!.id;
+        await client.query(
+            `INSERT INTO eligibility_evidence
+                 (student_id, university_id, email_proof_id, processing_grant_id, challenge_id,
+                  method, outcome, identity_version, policy_version, expires_at)
+             VALUES ($1, $2, $3, $4, $5, 'student_email', 'verified', $6, $7,
+                     clock_timestamp() - interval '1 second')`,
+            [
+                fixture.studentId, fixture.universityId, proof, fixture.grantId, secondChallenge,
+                live.identity_version, live.policy_version,
+            ],
         );
         // No token, session, or cache refresh: the next direct read reflects it.
         const assurance = await read(client, fixture.userId);
@@ -264,13 +315,20 @@ test('fresh registration enrollment reads verified with the registration method'
 test('enrollment expiry is visible on the next read without token refresh', async () => {
     await withTestClient(async (client) => {
         const fixture = await createFixture(client, { enrollment: true, normalization: 'trim_upper' });
-        await applyRegistrationEnrollment(client, fixture, 'assurance-reg');
+        // Evidence rows are immutable and revocation outranks expiry, so the
+        // only enrollment is short-lived and the read waits past its deadline.
+        // No token, session, or cache refresh.
+        const snapshot = await begin(client, fixture);
+        const applied = await inTransaction(client, () => applyEnrollmentDecision(client, snapshot, {
+            outcome: 'verified',
+            email: fixture.email,
+            registrationNumber: 'assurance-reg',
+            validUntil: new Date(Date.now() + 10_000),
+            source: ENROLLMENT_SOURCE,
+        }));
+        assert.equal(applied.eligible, true);
         assert.equal((await read(client, fixture.userId)).studentStatus, 'verified');
-        await client.query(
-            `UPDATE eligibility_evidence SET expires_at = clock_timestamp() - interval '1 second'
-             WHERE student_id = $1 AND method = 'enrollment'`,
-            [fixture.studentId],
-        );
+        await new Promise((resolve) => setTimeout(resolve, 11_000));
         const assurance = await read(client, fixture.userId);
         assert.equal(assurance.studentStatus, 'expired');
         assert.equal(assurance.reason, 'evidence_expired');

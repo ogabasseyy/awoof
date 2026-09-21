@@ -101,23 +101,47 @@ test('checkout retains owner, vendor and product authority until its reservation
 });
 
 test('external reporting records the exact credited delta for a later refund', async () => {
-    await withTestClient(async (client) => {
-        const f = await fixture(client);
-        const token = randomUUID();
-        await client.query(`INSERT INTO verification_tokens(token, student_id, vendor_id, product_id, expires_at)
-            VALUES ($1, $2, $3, $4, now() + interval '10 minutes')`, [token, f.student, f.vendor, f.product]);
-        await new PaymentController().reportTransaction({ user: { userId: f.owner, role: 'vendor' }, body: {
-            verificationToken: token, productId: f.product, paymentReference: randomUUID(), amount: 8000, paymentGateway: 'other',
-        } } as AuthRequest, response);
-        const order = (await client.query('SELECT id, recorded_savings_delta FROM transactions WHERE student_id = $1', [f.student])).rows[0];
-        assert.equal(Number(order.recorded_savings_delta), 20);
-        await client.query('UPDATE products SET price = 500 WHERE id = $1', [f.product]);
-        await new OrderController().updateOrderStatus({ user: { userId: f.owner, role: 'vendor' }, params: { id: order.id }, body: { status: 'refunded' } } as unknown as AuthRequest, response);
-        const stats = (await client.query('SELECT total_savings, total_purchases FROM savings_stats WHERE student_id = $1', [f.student])).rows[0];
-        assert.equal(Number(stats.total_savings), 0);
-        assert.equal(stats.total_purchases, 0);
-        assert.equal((await client.query('SELECT stock FROM products WHERE id = $1', [f.product])).rows[0].stock, 4);
-    });
+    const { grantMerchantDisclosure } = await import('../../services/verification/eligibility-consent.service.js');
+    const { MERCHANT_DISCLOSURE_NOTICE_VERSION } = await import('../../services/verification/verification-notices.js');
+    const { rotateReportingKey } = await import('../../services/auth/reporting-key.service.js');
+    const { issueMerchantAssertion, exchangeMerchantAssertion } = await import('../../services/verification/merchant-assertion.service.js');
+    const { createTestPool } = await import('./test-database.js');
+    const pool = createTestPool();
+    try {
+        await withTestClient(async (client) => {
+            const f = await fixture(client, 'enrollment');
+            const origin = `https://refund-${randomUUID()}.example`;
+            await client.query("INSERT INTO widget_configs (vendor_id,allowed_domains,allowed_origins,api_key,status) VALUES ($1,$2,$3,$4,'active')",
+                [f.vendor, [origin.replace('https://', '')], [origin], randomUUID()]);
+            const disclosure = await inTransaction(client, () => grantMerchantDisclosure(client, f.studentUser, {
+                vendorId: f.vendor, origin, purpose: 'student-discount', accepted: true,
+                noticeVersion: MERCHANT_DISCLOSURE_NOTICE_VERSION,
+            }));
+            const key = await rotateReportingKey(pool, f.owner);
+            const issued = await issueMerchantAssertion(pool, f.studentUser, {
+                vendorId: f.vendor, origin, purpose: 'student-discount',
+                campaignId: 'refund-regression', disclosureGrantId: disclosure, productId: f.product,
+            });
+            const receipt = await exchangeMerchantAssertion(pool, key, {
+                code: issued.code, campaignId: 'refund-regression', idempotencyKey: `refund-${randomUUID()}`,
+            });
+            assert.ok(receipt.benefitAuthorizationId);
+            await new PaymentController().reportTransaction({ user: { userId: f.owner, role: 'vendor' }, body: {
+                benefitAuthorizationId: receipt.benefitAuthorizationId, productId: f.product,
+                paymentReference: randomUUID(), amount: 8000, paymentGateway: 'other',
+            } } as AuthRequest, response);
+            const order = (await client.query('SELECT id, recorded_savings_delta FROM transactions WHERE student_id = $1', [f.student])).rows[0];
+            assert.equal(Number(order.recorded_savings_delta), 20);
+            await client.query('UPDATE products SET price = 500 WHERE id = $1', [f.product]);
+            await new OrderController().updateOrderStatus({ user: { userId: f.owner, role: 'vendor' }, params: { id: order.id }, body: { status: 'refunded' } } as unknown as AuthRequest, response);
+            const stats = (await client.query('SELECT total_savings, total_purchases FROM savings_stats WHERE student_id = $1', [f.student])).rows[0];
+            assert.equal(Number(stats.total_savings), 0);
+            assert.equal(stats.total_purchases, 0);
+            assert.equal((await client.query('SELECT stock FROM products WHERE id = $1', [f.product])).rows[0].stock, 4);
+        });
+    } finally {
+        await pool.end();
+    }
 });
 
 test('legacy external refund requires reconciliation instead of reversing a backfilled price', async () => {

@@ -29,10 +29,14 @@ import { issueMerchantAssertion, exchangeMerchantAssertion } from '../services/v
  *         verifiedAt: { type: string, format: date-time }
  *         validUntil: { type: string, format: date-time }
  *         campaignId: { type: string }
+ *         benefitAuthorizationId:
+ *           type: string
+ *           format: uuid
+ *           description: Present only for product-bound exchanges. Authorizes one discounted transaction report for the bound product; generic campaign receipts never carry it.
  * /api/merchant-verification/assertions:
  *   post:
  *     summary: Create a short-lived merchant-specific eligibility code
- *     description: Requires current eligibility and current explicit merchant disclosure. Code lifetime is at most two minutes and never exceeds evidence expiry. No payment is created.
+ *     description: Requires current eligibility and current explicit merchant disclosure. Code lifetime is at most two minutes and never exceeds evidence expiry. No payment is created. Pass productId to bind the code to one active product of this vendor; exchanging a product-bound code mints a single-transaction benefit authorization.
  *     tags: [Merchant Verification]
  *     security: [{ bearerAuth: [] }]
  *     requestBody:
@@ -49,6 +53,7 @@ import { issueMerchantAssertion, exchangeMerchantAssertion } from '../services/v
  *               purpose: { type: string, minLength: 1, maxLength: 200 }
  *               campaignId: { type: string, minLength: 1, maxLength: 100 }
  *               disclosureGrantId: { type: string, format: uuid }
+ *               productId: { type: string, format: uuid, description: Optional active product of this vendor. When present, the exchange receipt carries a benefitAuthorizationId for one discounted transaction report. }
  *     responses:
  *       '201':
  *         description: Pass this opaque code only to the intended merchant backend; it is not an eligibility receipt.
@@ -71,7 +76,7 @@ import { issueMerchantAssertion, exchangeMerchantAssertion } from '../services/v
  * /api/merchant-verification/exchange:
  *   post:
  *     summary: Atomically exchange a code for a merchant-scoped eligibility receipt
- *     description: Merchant backend selects the expected campaign. Identical code/campaign/idempotency retries return the immutable committed receipt, including after later consent withdrawal; this is not a new eligibility authorization. Different idempotency reuse conflicts. No payment, pricing or coupon rules are applied by this endpoint.
+ *     description: Merchant backend selects the expected campaign. Identical code/campaign/idempotency retries return the immutable committed receipt, including after later consent withdrawal; this is not a new eligibility authorization and mints no new benefit authorization. Product-bound codes add a benefitAuthorizationId for one discounted transaction report. Different idempotency reuse conflicts. No payment, pricing or coupon rules are applied by this endpoint.
  *     tags: [Merchant Verification]
  *     security: [{ merchantServerKey: [] }]
  *     requestBody:
@@ -105,12 +110,18 @@ import { issueMerchantAssertion, exchangeMerchantAssertion } from '../services/v
  */
 const bounded = z.string().trim().min(1).max(100);
 const issuance = z.object({ vendorId:z.string().uuid(), origin:z.string().max(512),
-    purpose:z.string().min(1).max(200), campaignId:bounded, disclosureGrantId:z.string().uuid() }).strict();
+    purpose:z.string().min(1).max(200), campaignId:bounded, disclosureGrantId:z.string().uuid(),
+    productId:z.string().uuid().optional() }).strict();
 const exchange = z.object({ code:z.string().regex(/^[A-Za-z0-9_-]{43}$/), campaignId:bounded,
     idempotencyKey:bounded }).strict();
 const router = Router();
 router.post('/assertions', authenticate, requireRole('student'), asyncHandler(async (req,res) => {
-    const data = await issueMerchantAssertion(getPool(), req.user!.id, issuance.parse(req.body));
+    const parsed = issuance.parse(req.body);
+    const data = await issueMerchantAssertion(getPool(), req.user!.id, {
+        vendorId: parsed.vendorId, origin: parsed.origin, purpose: parsed.purpose,
+        campaignId: parsed.campaignId, disclosureGrantId: parsed.disclosureGrantId,
+        ...(parsed.productId !== undefined ? { productId: parsed.productId } : {}),
+    });
     res.status(201).json({ success:true, data });
 }));
 router.post('/exchange', asyncHandler(async (req,res) => {
