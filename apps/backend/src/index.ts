@@ -23,11 +23,16 @@ import { logger } from './common/middleware/logger.js';
 import { appLogger } from './common/logger.js';
 import { swaggerSpec } from './config/swagger.js';
 import type { MicrosoftFlowService } from './services/verification/microsoft-flow.service.js';
+import { isStudentSsoCallbackPath, isStudentSsoRoute } from './routes/student-sso.routes.js';
+import type { StudentSsoFlowService } from './services/auth/student-sso-flow.service.js';
 
 export type AppOptions = {
   microsoftFlowFactory?: () => Pick<MicrosoftFlowService, 'start' | 'callback' | 'finish' | 'callbackCookieNameForState'>;
   /** Local integration harness only; production keeps server-held config. */
   microsoftIssuanceEnabled?: () => boolean;
+  studentSsoFlowFactory?: () => Pick<StudentSsoFlowService, 'start' | 'callback' | 'finish' | 'callbackCookieNameForState'>;
+  /** Local integration harness only; production keeps server-held config. */
+  studentSsoIssuanceEnabled?: () => boolean;
 };
 
 /**
@@ -89,13 +94,15 @@ export class App {
     this.app.use(microsoftCors({ frontendOrigin: config.microsoftVerification.frontendOrigin }));
 
     // Throttle before dynamic CORS can consume a database connection. The
-    // Microsoft OAuth callback skips this shared quota so a provider return
-    // always reaches its bounded completion redirect; it carries its own
-    // dedicated limiter on the route instead.
+    // Microsoft and student SSO OAuth callbacks skip this shared quota so a
+    // provider return always reaches its bounded completion redirect; each
+    // carries its own dedicated limiter on the route instead.
     this.app.use(rateLimit({
       windowMs: config.rateLimit.windowMs,
       max: config.rateLimit.maxRequests,
-      skip: (req) => skipCorsPreflight(req) || (req.method === 'GET' && isMicrosoftCallbackPath(req.path)),
+      skip: (req) => skipCorsPreflight(req)
+        || (req.method === 'GET' && isMicrosoftCallbackPath(req.path))
+        || (req.method === 'GET' && isStudentSsoCallbackPath(req.path)),
       standardHeaders: true,
       legacyHeaders: false,
     }));
@@ -199,6 +206,20 @@ export class App {
         }),
       });
     });
+
+    // Student SSO mounts before the auth limiter with its own namespace quotas
+    // (dedicated start quotas and callback limiter, plus the global throttle),
+    // so a provider return always reaches its bounded completion redirect.
+    try {
+      const studentSsoRoutes = await import('./routes/student-sso.routes.js');
+      this.app.use('/api/auth/student/sso', studentSsoRoutes.createStudentSsoRouter(this.options.studentSsoFlowFactory, {
+        ...(this.options.studentSsoIssuanceEnabled ? { isIssuanceEnabled: this.options.studentSsoIssuanceEnabled } : {}),
+      }));
+      appLogger.info('Student SSO routes registered');
+    } catch (error) {
+      appLogger.error('Failed to register student SSO routes:', error);
+      throw error;
+    }
 
     // Authentication routes (stricter rate limit: login, register, forgot-password abuse)
     try {
@@ -324,9 +345,11 @@ export class App {
     if (this.errorHandlingInitialized) return;
     this.errorHandlingInitialized = true;
     // express.json can surface a SyntaxError containing the raw submitted
-    // body. Microsoft errors never enter the general error logger/handler.
+    // body. Microsoft and student SSO errors never enter the general error
+    // logger/handler.
     this.app.use((err: unknown, req: Request, res: Response, next: NextFunction) => {
-      if (!isMicrosoftRoute(req.path)) return next(err);
+      const ssoRoute = isStudentSsoRoute(req.path);
+      if (!isMicrosoftRoute(req.path) && !ssoRoute) return next(err);
       res.setHeader('Cache-Control', 'no-store');
       res.setHeader('Referrer-Policy', 'no-referrer');
       if (res.headersSent) return next(err);
@@ -335,9 +358,11 @@ export class App {
       const status = typeof candidate === 'number' && candidate >= 400 && candidate < 600 ? candidate : 500;
       // Only client-recoverable protocol states are exposed. Keep every other
       // error's message/code generic so provider, SQL, and request details
-      // cannot cross the Microsoft boundary.
-      const safeCode = typed.code === 'reauthentication_required' || typed.code === 'consent_notice_changed'
-        ? typed.code : 'MICROSOFT_REQUEST_REJECTED';
+      // cannot cross the Microsoft or SSO boundary.
+      const safeCode = ssoRoute
+        ? 'SSO_REQUEST_REJECTED'
+        : typed.code === 'reauthentication_required' || typed.code === 'consent_notice_changed'
+          ? typed.code : 'MICROSOFT_REQUEST_REJECTED';
       res.status(status).json({ success: false, error: { code: safeCode, statusCode: status } });
     });
     // 404 handler

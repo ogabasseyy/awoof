@@ -28,6 +28,8 @@
     "tokens:retire:prod": "node dist/scripts/retire-verification-tokens.js",
     "benefits:cleanup": "./node_modules/.bin/tsx scripts/cleanup-benefit-authorizations.ts",
     "benefits:cleanup:prod": "node dist/scripts/cleanup-benefit-authorizations.js",
+    "sso:cleanup": "./node_modules/.bin/tsx scripts/cleanup-student-sso.ts",
+    "sso:cleanup:prod": "node dist/scripts/cleanup-student-sso.js",
     "admin:create": "tsx src/scripts/create-admin.ts",
     "admin:set-password": "tsx src/scripts/set-admin-password.ts"
   },

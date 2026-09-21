@@ -77,6 +77,28 @@ export function isStudentVerified(assurance: StudentAssurance | null): boolean {
     return assurance?.studentStatus === 'verified';
 }
 
+export type AuthenticatedAssurance = {
+    studentAssurance: StudentAssurance | null;
+    assuranceStatus: 'available' | 'unavailable';
+};
+
+/**
+ * Strictly validate the SSO login assurance union. Null is permitted only
+ * with unavailable; any other pairing is unusable, never verified.
+ */
+export function parseAuthenticatedAssurance(value: unknown): AuthenticatedAssurance | null {
+    if (!isRecord(value)) return null;
+    if (value.assuranceStatus !== 'available' && value.assuranceStatus !== 'unavailable') return null;
+    if (value.studentAssurance === null) {
+        return value.assuranceStatus === 'unavailable'
+            ? { studentAssurance: null, assuranceStatus: 'unavailable' }
+            : null;
+    }
+    const parsed = parseStudentAssurance(value.studentAssurance);
+    if (!parsed || value.assuranceStatus !== 'available') return null;
+    return { studentAssurance: parsed, assuranceStatus: 'available' };
+}
+
 function formatValidUntil(value: string | null): string | null {
     if (!value) return null;
     const parsed = new Date(value);

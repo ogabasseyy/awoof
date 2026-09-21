@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { isStudentVerified, parseStudentAssurance, schoolAccountLabel, studentStatusLabel } from '../../src/lib/student-assurance';
+import { isStudentVerified, parseAuthenticatedAssurance, parseStudentAssurance, schoolAccountLabel, studentStatusLabel } from '../../src/lib/student-assurance';
 
 const mailboxConfirmed = {
   schoolAccountStatus: 'verified',
@@ -87,4 +87,24 @@ test('unverified school account has no expiry or method claim', () => {
   const parsed = parseStudentAssurance({ ...mailboxConfirmed, schoolAccountStatus: 'unverified', schoolAccountMethod: null, schoolAccountValidUntil: null });
   assert.ok(parsed);
   assert.equal(schoolAccountLabel(parsed), 'Not verified');
+});
+
+test('SSO login union keeps assurance null only while unavailable', () => {
+  assert.deepEqual(
+    parseAuthenticatedAssurance({ studentAssurance: mailboxConfirmed, assuranceStatus: 'available' }),
+    { studentAssurance: mailboxConfirmed, assuranceStatus: 'available' },
+  );
+  assert.deepEqual(
+    parseAuthenticatedAssurance({ studentAssurance: null, assuranceStatus: 'unavailable' }),
+    { studentAssurance: null, assuranceStatus: 'unavailable' },
+  );
+});
+
+test('SSO login union rejects null-with-available and malformed pairs', () => {
+  assert.equal(parseAuthenticatedAssurance({ studentAssurance: null, assuranceStatus: 'available' }), null);
+  assert.equal(parseAuthenticatedAssurance({ studentAssurance: mailboxConfirmed, assuranceStatus: 'unavailable' }), null);
+  assert.equal(parseAuthenticatedAssurance({ studentAssurance: mailboxConfirmed, assuranceStatus: 'verified' }), null);
+  assert.equal(parseAuthenticatedAssurance({ studentAssurance: { ...mailboxConfirmed, studentStatus: 'bogus' }, assuranceStatus: 'available' }), null);
+  assert.equal(parseAuthenticatedAssurance(null), null);
+  assert.equal(parseAuthenticatedAssurance({ studentAssurance: mailboxConfirmed }), null);
 });

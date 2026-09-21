@@ -946,3 +946,236 @@ Review disposition: `docs/runbooks/student-sso-review-disposition.md` (GO for Re
   route wiring (quotas, callback cookies, atomic sessions),
   explicit linking writers, the email-first page, and
   real-provider acceptance (mocked discovery cannot establish it).
+
+## Task B3: browser-bound atomic SSO login
+
+- Task: B3 — bind login to the browser and commit sessions atomically
+  (`docs/superpowers/plans/2026-09-20-institution-email-auth.md`,
+  Task B3).
+- Commit: `feat(auth): implement SSO callback, session, and recovery`
+  on branch `codex/student-email-first-auth` (this commit; hash in completion
+  report). See deviations for the message override.
+- Source changes:
+  - `services/auth/session.service.ts`: extracted the session SQL into
+    `issueSessionInTransaction(tx, payload, rememberMe,
+    expectedPasswordHash?)` (exact plan signature), the only
+    session-issuance statement — no parallel session system. The
+    password wrapper `issueSession` opens/commits its own transaction;
+    no other password behavior changed. The writer stamps
+    `active_session_auth_identity_id = NULL` (password provenance);
+    SSO overwrites it with the linked identity in the same
+    transaction. `revokeSession`/`revokeSessionByRefreshToken` clear
+    the identity column as session-teardown hygiene.
+  - `services/auth/student-sso-flow.service.ts` (new):
+    `StudentSsoFlowService` with `start` (opaque state/nonce/PKCE
+    verifier plus distinct callback-cookie and finish secrets,
+    hashed/encrypted at rest, server-side 10-minute expiry, backend
+    mirror of the web student-return rules, approved policy/version
+    binding, 3 open attempts per policy mailbox), `callback`
+    (state/cookie/provider checks, pending→processing CAS before any
+    external redemption, locks released before network, re-locked
+    policy/attempt before storing the ready observation), `finish`
+    (tab secret plus browser binding, canonical lock order
+    users→students→universities→policies→identities→attempts→handoff,
+    ownership revalidation, session plus consumed-state commit with
+    tokens after commit, no email matching), single-handoff unlinked
+    finish with browser binding inherited, and controlled restart
+    (consumed/failed/expired/decrypt-failure plus abandoned
+    pending/processing invalidation; ready siblings survive). Login
+    succeeds with `studentAssurance: null` plus `assuranceStatus:
+    unavailable` when the post-commit status read fails; inactive or
+    deleted actors fail with 401 and no session. Misconfigured
+    policy trust data (wrong issuer, non-UUID tenant, realm/issuer
+    mismatch) fails closed before any provider call. Expired,
+    denied, and policy-changed callbacks land on the bounded
+    `connection_not_completed` completion redirect with no upstream
+    string and no secret in the URL. Also exports
+    `cleanupStudentSsoTransients` (B1 retention: fail+scrub expired
+    attempts, `scrubbed`-marker expired handoffs, delete 7-day-old
+    attempts/handoffs/reauth grants; identities/assertions retained).
+    Crypto reuses the tested `microsoft-attempt-crypto` primitives
+    (SHA-256 hash, AES-256-GCM) via import aliases — no new crypto.
+  - `routes/student-sso.routes.ts` (new):
+    `POST /api/auth/student/sso/:provider/start` (201, per-attempt
+    `awoof_sso_<attemptId>` Secure HttpOnly SameSite=Lax host-only
+    cookie, `Path=/api/auth/student/sso`, 600 s),
+    `GET /api/auth/student/sso/:provider/callback` (303 to the fixed
+    completion route; cookie retained on success, cleared on
+    terminal failure), `POST /api/auth/student/sso/finish`
+    (authenticated with the assurance union, `link_required` with the
+    cookie retained, or 409 `SSO_RESTART_REQUIRED` with the cookie
+    cleared). POSTs enforce exact completion Origin plus JSON with
+    strict body schemas — no CSRF-exempt session mutation. Dedicated
+    failed-callback limiter (60/10 min, successful completions
+    excused); no-store/no-referrer throughout; B2 start quotas wired
+    (10/IP + 5/mailbox-HMAC, fail closed).
+  - `src/scripts/cleanup-student-sso.ts` (new) plus
+    `scripts/cleanup-student-sso.ts` compat entry and
+    `sso:cleanup`/`sso:cleanup:prod` package pairs: redacted CLI
+    around the retention function, following the Microsoft cleanup
+    pattern (deferred service import keeps bootstrap output clean).
+  - `src/index.ts`: SSO router mounted before the auth limiter with
+    its own namespace quotas (callback skips the shared throttle via
+    `isStudentSsoCallbackPath`), `AppOptions` flow-factory
+    injection, and the namespace error middleware extended to the
+    SSO paths (`SSO_REQUEST_REJECTED`, no message/secret echo —
+    malformed JSON with a finish-secret canary stays redacted).
+    CORS stays the existing exact-origin credentialed policy, never
+    wildcard.
+  - `config/swagger.ts`: `StudentSsoStartResponse` and
+    `StudentSsoFinishResponse` (authenticated/link_required
+    discriminator; null assurance only with unavailable) schemas;
+    route JSDoc documents the three endpoints.
+  - `apps/web/src/lib/student-assurance.ts` (extended in place):
+    `parseAuthenticatedAssurance` validates the login union
+    (null-only-with-unavailable); no UI change, Remix styling kept.
+- Tests added (46):
+  - `services/auth/session.service.test.ts`: 1 —
+    transaction writer uses only the supplied client, never the
+    global pool. Existing 9 tests intentionally updated for the
+    wrapper (BEGIN/UPDATE/COMMIT assertions, NULL identity stamp);
+    purposes preserved.
+  - `services/auth/student-sso-flow.service.test.ts`: 8 — exact
+    cookie name/Path/Lax/max-age/open-attempt constants, provider
+    parsing, return-path accept/reject matrix (same-origin,
+    no /auth loops, malformed escapes), adapter policy
+    issuer/realm fail-closed, start/finish/callback validation
+    before any storage touch.
+  - `routes/student-sso.routes.test.ts`: 12 — exact Set-Cookie
+    (name, `Path=/api/auth/student/sso`, HttpOnly, Secure,
+    SameSite=Lax, Max-Age=600, no Domain) and no-store; strict
+    body/JSON/exact-Origin rejections; disabled issuance/provider
+    fail-closed; quota failures never reach the flow; callback 303
+    with no secret in the URL and cookie retained, cleared on
+    failure outcome/4xx/outage; finish cookie cleared on
+    authenticated/restart but retained for link_required; 409
+    `SSO_RESTART_REQUIRED` shape; dedicated limiter consumes
+    failures and excuses completions; namespace predicates; OpenAPI
+    contract.
+  - `src/index.sso-http.test.ts`: 2 — mounted namespace redacts
+    malformed JSON (finish-secret canary absent from body, logs,
+    and errors) and fails closed while disabled; mounted callback
+    skips the shared quota past 100 unrelated requests.
+  - `src/scripts/cleanup-student-sso.test.ts`: 1 — CLI masks
+    bootstrap connection values with one fixed failure.
+  - `testing/postgres/student-sso-flow.integration.ts`: 20 —
+    linked atomic sign-in with separated assurance; foreign-browser
+    callback denied with zero redemptions; concurrent callbacks
+    redeem once; concurrent finishes issue one session; denial
+    cannot skip state/browser checks; unlinked handoff with
+    retained browser binding (decrypt-verified); duplicate finish
+    after commit restarts with the committed row unchanged;
+    logout-then-stale finish commits nothing; restart invalidates
+    abandoned pending flows but spares ready siblings;
+    policy-disable/version-bump fails the return; expired finish
+    restarts scrubbed; early finish invalid and side-effect free;
+    inactive/deleted actors fail without a session; login succeeds
+    with unavailable assurance on status failure; misconfigured
+    trust data fails start closed; per-mailbox open-attempt cap;
+    unknown-domain 404 and disabled 409 without rows; held user
+    lock with same-client session write; remember-me 30-day
+    window; cleanup scrub/delete/retention matrix.
+  - `tests/auth/student-assurance.test.ts`: +2 — login union
+    null-only-with-unavailable accept/reject.
+- Tests intentionally updated: the 9 existing session tests above
+  only. No test was deleted or weakened.
+- Gate commands and results (from worktree root):
+  - `npm --prefix apps/backend test` → PASS (312 tests, 0 fail;
+    baseline 288 + 24 new).
+  - `npm --prefix apps/backend run type-check` → PASS (clean).
+  - `npm --prefix apps/backend run test:postgres` → BLOCKED (exit
+    1): the runner's disk guard requires 3 GiB free in the OS temp
+    dir and the volume holds ~913 MB (same environmental block as
+    A2/A3; only session-owned scratch may be cleaned). Equivalent
+    evidence instead: the full 25-file integration suite executed
+    on a manually-managed disposable loopback cluster (fresh
+    `awoof_test_*` database, same guard env shape, destroyed
+    after; script kept at `/tmp/sso-manual-postgres.mjs`, outside
+    the repo): 312 tests, 311 pass, 0 fail, 1 skipped (the
+    dedicated compiled fallback smoke, skipped by design in source
+    mode). New file: 20/20.
+  - `npm --prefix apps/backend run test:artifact` → PASS (25
+    integration files incl. the new file, 58 staged migrations,
+    663 hashed files; OpenAPI parity; source-absent probes).
+    Compiled `dist/scripts/cleanup-student-sso.js` failure probe:
+    exit 1 with the fixed message. Source CLI failure probe: same
+    via the unit test.
+  - `npm --prefix apps/web run test:auth` → PASS (82 tests, 0
+    fail; baseline 80 + 2 new).
+  - `npm --prefix apps/web run test:browser:typecheck` → PASS
+    (clean).
+  - Pre-change failure observation (test-first, per file):
+    session suite failed on the missing `issueSessionInTransaction`
+    export; flow unit suite failed to load (missing module);
+    routes suite failed to load; cleanup CLI test failed on the
+    missing compat script; mounted SSO tests failed on first run
+    (dynamic widget CORS opened the real pool, whose error handler
+    exits the process — fixed with the Microsoft-test db stub);
+    web suite failed on the missing parser export.
+    Post-implementation failures were test-fixture bugs, not
+    contract bugs (CHECK-window expiry math fixed twice in the
+    cleanup test; aged-handoff scrub-before-delete count pinned
+    at 2; concurrent-finish losers now restart instead of 409 —
+    the service change is intentional, see deviations).
+  - Protected 127.0.0.1:3107 preview untouched (no browser tests
+    in B3; no request sent there).
+- Migration check: `056`/`057` present and untouched; B3 adds no
+  migration (rechecked at commit time).
+- Deviations:
+  - Commit message is the owner-specified `feat(auth): implement
+    SSO callback, session, and recovery`, overriding the plan
+    text's `feat(auth): add browser-bound atomic SSO login`.
+  - `testing/postgres/student-sso-flow.integration.ts` is added
+    beyond the plan's file list (A4 precedent): concurrency,
+    lock-order, held-lock, and scrub proofs need a real database.
+  - `src/index.sso-http.test.ts` is added beyond the plan's file
+    list (index.microsoft-http precedent): mounted namespace
+    redaction and quota-skip have no other home.
+  - The web parser addition is beyond the plan's backend-only
+    file list but required by its "browser parsing" checkbox; it
+    extends the existing A2 module in place for B5 to reuse.
+  - The callback fixed-URL check pins the configured origin plus
+    path without hardcoding https (deployment config enforces
+    HTTPS; the service pins the configured value so loopback
+    fixtures run). Documented in code.
+  - A finish that loses a post-pre-read race returns the
+    controlled restart response (not 409 invalid): it is a
+    duplicate finish, and the attempt outcome is already decided.
+  - Restart invalidates pending/processing siblings only; a ready
+    sibling in another tab is not abandoned and still finishes.
+  - A revoked identity takes the unlinked path so only the
+    original owner can reactivate it after fresh proof in B4; it
+    never logs in. B4 must bind the handoff grant to that owner.
+  - Deployment-disabled providers answer start with 404 (not
+    available), matching unknown-domain semantics.
+  - The SSO router mounts before the auth limiter with its own
+    quotas (mirroring the Microsoft namespace); start keeps
+    dedicated quotas plus the global throttle, and the callback
+    always reaches its redirect.
+  - Cleanup also deletes 7-day-old reauth grants (B1 retention
+    contract); B4 owns grant behavior, not their retention age.
+  - `revokeSession`/`revokeSessionByRefreshToken` clear the new
+    identity column; the auth.controller password-reset session
+    clears are untouched (every fresh issue overwrites the
+    column, so no stale value survives the next login).
+- Docs impact (AGENTS.md checklist): behavior changed only behind
+  disabled providers, so trust/help/partner/developers copy is
+  unchanged — no UI, approval, or benefit behavior changed and no
+  endpoint is advertised until a pilot enables it. Integration
+  documentation changed with the code: OpenAPI documents the
+  start/callback/finish contract with the assurance-union
+  schemas. No new public claims, coverage, institutions, or
+  contacts. School-account assurance and enrollment eligibility
+  stay separated in every response, UI label, and doc touched
+  here.
+- Unresolved: run the official `npm --prefix apps/backend run
+  test:postgres` from a volume with ≥3 GiB free (manual-cluster
+  evidence stands in). Follow-ups for B4: explicit
+  link/unlink writers with transactional revocation (B3 writes
+  the session provenance that makes the conditional clear
+  possible), reauth grants, onboarding UI, and the SSO assertion
+  reader; the CLI success path against a live database (failure
+  paths verified in source and compiled form; success is a thin
+  wrapper over the integration-tested function). Real-provider
+  acceptance still outstanding (all OIDC discovery mocked — no
+  network identity calls, ever).

@@ -1,4 +1,5 @@
 import { createHash, randomUUID } from 'node:crypto';
+import type { PoolClient } from 'pg';
 import { db } from '../../config/database.js';
 import { UnauthorizedError } from '../../common/errors/AppError.js';
 import { jwtService, type TokenPair, type TokenPayload } from './jwt.service.js';
@@ -34,7 +35,15 @@ const currentProfilePredicate = `
         ))
     )`;
 
-export async function issueSession(
+/**
+ * Transaction-scoped session writer. This is the only session-issuance SQL:
+ * password and SSO sign-ins share it (no parallel session system). It uses
+ * only the supplied client, so a caller that already holds the user lock
+ * never needs a second pool connection. Password provenance writes NULL;
+ * SSO callers overwrite the identity column in the same transaction.
+ */
+export async function issueSessionInTransaction(
+    tx: PoolClient,
     payload: TokenPayload,
     rememberMe: boolean = false,
     expectedPasswordHash?: string,
@@ -50,11 +59,12 @@ export async function issueSession(
         throw new UnauthorizedError('Invalid refresh token expiry');
     }
 
-    const result = await db.query(
+    const result = await tx.query(
         `UPDATE users
          SET refresh_token_hash = $2,
              refresh_token_expires_at = $3,
-             active_session_id = $6
+             active_session_id = $6,
+             active_session_auth_identity_id = NULL
          WHERE id = $1
            AND deleted_at IS NULL
            AND ($4::text IS NULL OR password_hash = $4)
@@ -76,6 +86,25 @@ export async function issueSession(
     }
 
     return tokens;
+}
+
+export async function issueSession(
+    payload: TokenPayload,
+    rememberMe: boolean = false,
+    expectedPasswordHash?: string,
+): Promise<TokenPair> {
+    const client = await db.getPool().connect();
+    try {
+        await client.query('BEGIN');
+        const tokens = await issueSessionInTransaction(client, payload, rememberMe, expectedPasswordHash);
+        await client.query('COMMIT');
+        return tokens;
+    } catch (error) {
+        await client.query('ROLLBACK').catch(() => undefined);
+        throw error;
+    } finally {
+        client.release();
+    }
 }
 
 export async function refreshSession(refreshToken: string): Promise<string> {
@@ -123,7 +152,8 @@ export async function revokeSession(userId: string): Promise<void> {
         `UPDATE users
          SET refresh_token_hash = NULL,
              refresh_token_expires_at = NULL,
-             active_session_id = NULL
+             active_session_id = NULL,
+             active_session_auth_identity_id = NULL
          WHERE id = $1`,
         [userId],
     );
@@ -134,7 +164,8 @@ export async function revokeSessionByRefreshToken(refreshToken: string): Promise
     let decoded: TokenPayload;
     try { decoded = jwtService.verifyRefreshToken(refreshToken); }
     catch { throw new UnauthorizedError('Invalid or expired refresh token'); }
-    await db.query(`UPDATE users SET refresh_token_hash = NULL, refresh_token_expires_at = NULL, active_session_id = NULL
+    await db.query(`UPDATE users SET refresh_token_hash = NULL, refresh_token_expires_at = NULL, active_session_id = NULL,
+        active_session_auth_identity_id = NULL
         WHERE id = $1 AND refresh_token_hash = $2`, [decoded.userId, refreshTokenHash(refreshToken)]);
 }
 

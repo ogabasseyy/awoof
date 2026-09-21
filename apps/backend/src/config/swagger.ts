@@ -235,6 +235,71 @@ Access tokens expire in 15 minutes. Use the refresh token endpoint to get a new 
                         },
                     },
                 },
+                StudentSsoStartResponse: {
+                    type: 'object',
+                    required: ['success', 'data'],
+                    properties: {
+                        success: { type: 'boolean', example: true },
+                        data: {
+                            type: 'object',
+                            required: ['attemptId', 'authorizationUrl', 'finishSecret', 'expiresAt', 'serverNow'],
+                            properties: {
+                                attemptId: { type: 'string', format: 'uuid' },
+                                authorizationUrl: { type: 'string', format: 'uri' },
+                                finishSecret: { type: 'string', description: 'Tab-held secret for finish; never placed in a URL.' },
+                                expiresAt: { type: 'string', format: 'date-time' },
+                                serverNow: { type: 'string', format: 'date-time' },
+                            },
+                        },
+                    },
+                },
+                StudentSsoFinishResponse: {
+                    type: 'object',
+                    required: ['success', 'data'],
+                    properties: {
+                        success: { type: 'boolean', example: true },
+                        data: {
+                            type: 'object',
+                            required: ['outcome'],
+                            discriminator: { propertyName: 'outcome' },
+                            description: 'Authenticated sessions carry tokens with studentAssurance (null only when assuranceStatus is unavailable); link_required carries a short-lived handoff instead.',
+                            properties: {
+                                outcome: { type: 'string', enum: ['authenticated', 'link_required'] },
+                            },
+                            allOf: [
+                                {
+                                    if: { properties: { outcome: { const: 'authenticated' } } },
+                                    then: {
+                                        type: 'object',
+                                        required: ['user', 'tokens', 'studentAssurance', 'assuranceStatus'],
+                                        properties: {
+                                            user: { $ref: '#/components/schemas/User' },
+                                            tokens: { $ref: '#/components/schemas/Tokens' },
+                                            studentAssurance: {
+                                                allOf: [{ $ref: '#/components/schemas/StudentAssurance' }],
+                                                nullable: true,
+                                                description: 'Null is permitted only with assuranceStatus unavailable; never treat it as verified.',
+                                            },
+                                            assuranceStatus: { type: 'string', enum: ['available', 'unavailable'] },
+                                        },
+                                    },
+                                },
+                                {
+                                    if: { properties: { outcome: { const: 'link_required' } } },
+                                    then: {
+                                        type: 'object',
+                                        required: ['handoffId', 'handoffSecret', 'expiresAt'],
+                                        properties: {
+                                            handoffId: { type: 'string', format: 'uuid' },
+                                            handoffSecret: { type: 'string', description: 'Tab-held handoff secret for explicit linking; never placed in a URL.' },
+                                            expiresAt: { type: 'string', format: 'date-time' },
+                                        },
+                                    },
+                                },
+                            ],
+                        },
+                    },
+                },
                 StudentProfile: {
                     type: 'object',
                     properties: {
