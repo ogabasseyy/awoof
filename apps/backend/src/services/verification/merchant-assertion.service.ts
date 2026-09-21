@@ -5,6 +5,7 @@ import { authenticateReportingKey } from '../auth/reporting-key.service.js';
 import { canonicalWidgetOrigin, prepareMerchantDisclosure } from './eligibility-merchant-context.service.js';
 import { getEffectiveEligibility } from './eligibility-read.service.js';
 import { BENEFIT_CURRENCY, computePricingVersion } from './merchant-benefit.service.js';
+import { timingSafeHashEqual } from './product-claim.service.js';
 
 const hash = (value: string) => createHash('sha256').update(value).digest('hex');
 async function transaction<T>(pool: Pool, operation: (tx: PoolClient) => Promise<T>): Promise<T> {
@@ -71,6 +72,7 @@ async function readCommittedReceipt(tx: PoolClient, vendorId: string, idempotenc
 }
 export async function exchangeMerchantAssertion(pool: Pool, key: string, input: {
     code: string; campaignId: string; idempotencyKey: string;
+    browserNonce?: string | undefined; merchantCheckoutId?: string | undefined;
 }): Promise<MerchantReceipt> {
     // Slow cryptographic authentication and quota admission happen before locks.
     // Authority is rechecked below after sorted participant locks, including rotation.
@@ -78,6 +80,14 @@ export async function exchangeMerchantAssertion(pool: Pool, key: string, input: 
     const candidate = await pool.query(`SELECT * FROM merchant_assertions WHERE code_hash=$1`, [hash(input.code)]);
     const assertion = candidate.rows[0];
     if (!assertion) throw new BadRequestError('Invalid verification code');
+    const claimSessionId = (assertion.claim_session_id as string | null | undefined) ?? null;
+    const hasSessionProof = input.browserNonce !== undefined || input.merchantCheckoutId !== undefined;
+    if (claimSessionId !== null && (input.browserNonce === undefined || input.merchantCheckoutId === undefined)) {
+        throw new BadRequestError('Claim session proof required');
+    }
+    if (claimSessionId === null && hasSessionProof) {
+        throw new BadRequestError('Unexpected claim session proof');
+    }
     return transaction(pool, async (tx) => {
         const merchant = await prepareMerchantDisclosure(tx, assertion.user_id, assertion.vendor_id, assertion.origin);
         if (!merchant || merchant.ownerUserId !== owner.user_id) throw new UnauthorizedError('Merchant unavailable');
@@ -90,6 +100,24 @@ export async function exchangeMerchantAssertion(pool: Pool, key: string, input: 
         if (input.campaignId !== assertion.campaign_id) throw new BadRequestError('Campaign mismatch');
         const previous = await readCommittedReceipt(tx, assertion.vendor_id, input.idempotencyKey, assertion.id);
         if (previous) return previous;
+        if (claimSessionId !== null) {
+            const session = await tx.query<{
+                browser_nonce_hash: string; checkout_id: string; expires_at: Date; consumed_at: Date | null;
+            }>(
+                `SELECT browser_nonce_hash, checkout_id, expires_at, consumed_at
+                 FROM merchant_claim_sessions WHERE id = $1 FOR UPDATE`,
+                [claimSessionId],
+            );
+            const row = session.rows[0];
+            const proofValid = !!row && row.consumed_at === null && row.expires_at.getTime() > Date.now()
+                && row.checkout_id === input.merchantCheckoutId
+                && timingSafeHashEqual(hash(input.browserNonce!), row.browser_nonce_hash);
+            if (!proofValid) {
+                const committed = await readCommittedReceipt(tx, assertion.vendor_id, input.idempotencyKey, assertion.id);
+                if (committed) return committed;
+                throw new ConflictError('Claim session expired, already redeemed, or bound to a different checkout');
+            }
+        }
         const eligibility = await getEffectiveEligibility(tx, assertion.user_id, {
             vendorId: assertion.vendor_id, origin: assertion.origin, purpose: assertion.purpose,
             grantId: assertion.disclosure_grant_id,
@@ -113,6 +141,15 @@ export async function exchangeMerchantAssertion(pool: Pool, key: string, input: 
             if (committed) return committed;
             throw new ConflictError('Verification code expired or already used');
         }
+        if (claimSessionId !== null) {
+            const redeemed = await tx.query(`UPDATE merchant_claim_sessions SET consumed_at=clock_timestamp()
+                WHERE id=$1 AND consumed_at IS NULL AND expires_at > clock_timestamp() RETURNING id`, [claimSessionId]);
+            if (redeemed.rowCount !== 1) {
+                const committed = await readCommittedReceipt(tx, assertion.vendor_id, input.idempotencyKey, assertion.id);
+                if (committed) return committed;
+                throw new ConflictError('Claim session expired or already redeemed');
+            }
+        }
         let benefitAuthorizationId: string | undefined;
         if (productId !== null) {
             const locked = await tx.query(
@@ -125,14 +162,14 @@ export async function exchangeMerchantAssertion(pool: Pool, key: string, input: 
             const authorization = await tx.query<{ id: string }>(
                 `INSERT INTO merchant_benefit_authorizations
                  (assertion_id,vendor_id,user_id,product_id,evidence_id,processing_grant_id,disclosure_grant_id,
-                  list_price_snapshot,student_price_snapshot,currency,pricing_version,expires_at)
-                 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,LEAST($12::timestamptz,clock_timestamp()+interval '2 minutes'))
+                  list_price_snapshot,student_price_snapshot,currency,pricing_version,expires_at,claim_session_id)
+                 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,LEAST($12::timestamptz,clock_timestamp()+interval '2 minutes'),$13)
                  RETURNING id`,
                 [assertion.id, assertion.vendor_id, assertion.user_id, productId,
                     eligibility.evidenceId, eligibility.processingGrantId, assertion.disclosure_grant_id,
                     quoted.price, quoted.student_price, BENEFIT_CURRENCY,
                     computePricingVersion(productId, BENEFIT_CURRENCY, quoted.price, quoted.student_price),
-                    eligibility.expiresAt],
+                    eligibility.expiresAt, claimSessionId],
             );
             benefitAuthorizationId = authorization.rows[0]!.id;
         }

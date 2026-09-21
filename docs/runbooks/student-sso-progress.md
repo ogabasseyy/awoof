@@ -380,3 +380,160 @@ Review disposition: `docs/runbooks/student-sso-review-disposition.md` (GO for Re
   test:postgres` from a volume with ≥3 GiB free; scheduling for the
   recurring authorization-cleanup CLI is operator-owned. This closes
   A2's unresolved item subject to that same official rerun.
+
+## Task A4: protect voucher and external-deal claims at the server
+
+- Task: A4 — protect voucher and external-deal claims at the server
+  (`docs/superpowers/plans/2026-09-20-institution-email-auth.md`,
+  Task A4).
+- Commit: `fix(vouchers): enforce student claims server-side`
+  on branch `codex/student-email-first-auth` (this commit; hash in completion
+  report).
+- Source changes:
+  - `services/verification/product-claim.service.ts` (new):
+    `toPublicProduct` allowlist projection (advertised prices stay,
+    voucher codes/discount URLs/fulfillment fields never leave, including
+    nested); `createMerchantClaimSession` (merchant-key bootstrap binding
+    one checkout to one product, ten-minute expiry, exact-retry returns the
+    same session, changed bindings conflict); `readMerchantClaimSession`
+    (public review projection: vendor/product/prices/registered handoff
+    origin — no hashes, codes, or handoff URLs);
+    `claimProductBenefit` (student claim resolving vendor/product/origin/
+    campaign from the session plus the disclosure grant — no
+    client-supplied vendor/origin/product — with current enrollment and
+    current disclosure rechecked at commit, returning an opaque assertion
+    plus `origin + /awoof/student-claim?assertion=…`). Unintegrated
+    merchants get 409 `MERCHANT_INTEGRATION_REQUIRED`; nothing claim-
+    related is logged.
+  - `merchant-assertion.service.ts`: claim-bound exchanges require the
+    merchant's cookie-derived nonce plus checkout binding over the
+    authenticated server connection (timing-safe hash match), consume the
+    session once atomically with the assertion, and propagate
+    `claim_session_id` to the benefit authorization. Same-operation
+    receipt replay still returns the committed receipt; a different order
+    conflicts. Lock order merchant → session → eligibility → product is
+    shared by claim and exchange.
+  - `merchant-verification.routes.ts`: new `POST /claim-sessions`
+    (merchant key, 201 new / 200 exact retry), `GET /claim-sessions/:id`
+    (student, no-store), `POST /product-claims` (student, strict
+    two-field schema, no-store + no-referrer), extended exchange schema
+    (optional nonce/checkout proof), full OpenAPI docs. Converted to a
+    `createMerchantVerificationRouter` factory with lazy default pool;
+    default export behavior unchanged.
+  - `routes/products.routes.ts`: converted to a `createProductsRouter`
+    factory; list/detail rows pass through `toPublicProduct`. Queries,
+    filters, and listing scope are unchanged.
+  - `apps/web/src/lib/student-benefit-claim.ts` (new): `ClaimStep`
+    union (`idle`/`loading`/`ready`/`claiming`/`verify_required`/
+    `redirecting`/`error`) with pure immutable transitions and a strict
+    handoff-URL validator (fixed path, single opaque assertion, HTTPS
+    except loopback).
+  - `marketplace/[id]/page.tsx` (extended in place): protected claim
+    card when `?claimSession=` is present (review summary, explicit
+    merchant-disclosure consent, claim, `Verify student status` with an
+    allowlisted relative return path, explicit retry — never auto-submit;
+    works from session introspection even where the public deal detail is
+    unavailable) plus distinct ordinary `Visit partner site` navigation
+    for external deals that conveys no verified-discount promise.
+  - `marketplace/page.tsx`: featured-card external-deal label
+    `Unavailable` → `Partner site` to match the distinct ordinary path.
+- Tests added (34):
+  - `controllers/product-claim.http.test.ts`: 13 — anonymous
+    list/detail hostile-field stripping (incl. nested), unknown product
+    404, merchant-key requirement, strict-schema rejection of
+    client vendor/origin/product, 201-vs-200 session semantics, student
+    auth, pending 403 naming enrollment (never school account),
+    expired/withdrawn/wrong-merchant fail-closed, 409
+    `MERCHANT_INTEGRATION_REQUIRED` code passthrough, no-store opaque
+    handoff shape, introspection auth/leak checks, exchange proof shape
+    validation.
+  - `testing/postgres/product-claim.integration.ts`: 8 — session
+    lifecycle/exact-retry/conflicts; full protected redemption through
+    a durable real-HTTP merchant stub (nonce cookies, append-only file
+    ledger, direct-link 403, replay 409, campaign mismatch, same-order
+    receipt equality); pending/expired/withdrawn fail-closed with no
+    assertion minted and session live; disclosure withdrawn immediately
+    before commit; revoked-key and suspended-widget 409s with code
+    assertion; introspection key-exactness; concurrent duplicate
+    exchange granting one redemption; proof required exactly for
+    claim-bound codes.
+  - `tests/auth/student-benefit-claim.test.ts`: 8 — ClaimStep
+    transitions (no claim without review, no auto-submit, retry returns
+    to ready) and handoff-URL validation incl. origin pinning.
+  - `tests/browser/student-benefit-claims.spec.ts`: 5 — end-to-end
+    claim handing only an opaque assertion to a real stub merchant;
+    pending → verify link with return path and zero auto-submit;
+    unintegrated → ordinary partner navigation; direct/shared handoff
+    links cannot redeem (403/409 stub-side); anonymous sign-in with the
+    claim preserved.
+- Tests intentionally updated: none. No existing test was modified,
+  weakened, or deleted.
+- Gate commands and results (from worktree root):
+  - `npm --prefix apps/backend test` → PASS (191 tests, 0 fail;
+    baseline 178 + 13 new).
+  - `npm --prefix apps/backend run type-check` → PASS (clean).
+  - `npm --prefix apps/backend run test:postgres` → PASS via the
+    official runner (259 tests: 258 pass, 0 fail, 1 skipped — the
+    dedicated compiled fallback smoke, skipped by design in source
+    mode). Volume space recovered to 6.7 GiB, so no manual-cluster
+    workaround was needed; an earlier identical manual run also passed.
+  - `npm --prefix apps/backend run test:artifact` → PASS (21
+    integration files incl. the new file, 57 staged migrations,
+    610 hashed files; OpenAPI parity; source-absent probes).
+  - `npm --prefix apps/web run test:auth` → PASS (73 tests, 0 fail).
+  - `npm --prefix apps/web run test:browser:typecheck` → PASS (clean).
+  - Browser (isolated temp 3117 config + `AWOOF_APP_ORIGIN`, deleted
+    after): `student-benefit-claims.spec.ts` 5/5 pass;
+    `student-design-regressions.spec.ts` + `savings-reporting.spec.ts`
+    15/15 pass (20 total, 0 fail). Protected 127.0.0.1:3107 preview
+    untouched (HTTP 200 before and after).
+  - Pre-change failure observation (test-first): new backend HTTP
+    suite failed to load (missing router factories), `test:auth`
+    failed on the missing web lib; integration failures observed and
+    fixed during development (immutable-evidence expiry now uses the
+    short-lived wait pattern; claim-load effect race fixed with a
+    cleanup-cleared ref).
+- Migration check: `056_student_benefit_authorizations.sql` present
+  (claim-session table and nullable FKs shipped there by A3, as the
+  plan requires); `057` still absent (B1 owns it). A4 adds no
+  migration.
+- Deviations:
+  - The accessible plan/spec text defines no `ClaimStep` union, so it
+    was defined in `student-benefit-claim.ts` mirroring the B5
+    `LoginStep` pattern (7 states, pure transitions, unit-tested).
+  - `merchant-assertion.service.ts` is extended (exchange nonce/
+    checkout proof, atomic session consumption, authorization
+    binding) although outside A4's Modify list: the plan's exchange
+    binding has no other home, and the change is additive.
+  - `testing/postgres/product-claim.integration.ts` is added beyond
+    the plan's file list as the durable-behavior proof (real DB plus
+    a real HTTP merchant stub); the plan's HTTP suite covers
+    routing/mapping only.
+  - Protected-claim campaign is the merchant checkout ID (resolved
+    from the session, matched at exchange): the merchant knows its
+    own checkout at callback time, so no new trusted campaign source
+    was needed.
+  - Claim-session introspection (`GET /claim-sessions/:id`) is added
+    so the claim page can review vendor/product/origin and grant
+    disclosure for the exact registered origin; it carries no
+    secrets.
+  - Public listing scope is unchanged (vouchers stay unlisted while
+    vendor voucher publishing is suspended); the claim page reads
+    session introspection instead of the public detail endpoint.
+  - The test merchant stub uses HttpOnly (non-Secure) loopback
+    cookies because Secure cookies are not sent over the stub's HTTP
+    origin; production merchants use Secure HttpOnly cookies per the
+    documented flow.
+- Docs impact (AGENTS.md checklist): behavior changed, so merchant
+  integration copy changed with it — the public developer guide gains
+  the claim-session example, the exchange nonce/checkout note, and
+  the claim-link separation; no new public claims, coverage, contacts,
+  or commitments. School-account assurance and enrollment eligibility
+  stay separated in every response, UI label, and doc touched here.
+  Trust/help/partner pages needed no other edits.
+- Unresolved: real-partner acceptance is still outstanding — an
+  integrated merchant must implement the fixed `/awoof/student-claim`
+  callback, the server-side exchange with nonce/checkout binding, and
+  one redemption per checkout in its own durable transaction before
+  any external enforcement is claimed live. This closes the A2/A3
+  unresolved item (official `test:postgres` now runs green).

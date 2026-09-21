@@ -62,7 +62,7 @@ export const developerExamples = [
   {
     title: '2. Merchant server exchanges the code (server key)',
     route: '/api/merchant-verification/exchange',
-    body: 'Server-to-server only, with your private key. Include the campaign and an idempotency key. Applies no payment, pricing, or coupon rules — your backend applies the benefit. Product-bound codes also return a benefitAuthorizationId for one discounted transaction report.',
+    body: 'Server-to-server only, with your private key. Include the campaign and an idempotency key. Applies no payment, pricing, or coupon rules — your backend applies the benefit. Product-bound codes also return a benefitAuthorizationId for one discounted transaction report. Codes from a protected product claim additionally require your browser nonce and merchant checkout binding.',
     request: [
       'POST /api/merchant-verification/exchange',
       'Authorization: Bearer YOUR_AWOOF_SERVER_KEY',
@@ -122,11 +122,35 @@ export const developerExamples = [
       '}',
     ].join('\n'),
   },
+  {
+    title: '4. Protected product claims bind one checkout (server key)',
+    route: 'POST /api/merchant-verification/claim-sessions',
+    body: 'For discounts redeemed on your site: set your own Secure HttpOnly browser nonce cookie, create a claim session server-to-server with its hash, then send the browser to the Awoof claim page. The student reviews and consents; Awoof hands your fixed /awoof/student-claim callback an opaque assertion only. Exchange it with your nonce and checkout binding — one redemption per checkout. Without this integration, protected claims answer 409 MERCHANT_INTEGRATION_REQUIRED and only ordinary navigation remains.',
+    request: [
+      'POST /api/merchant-verification/claim-sessions',
+      'Authorization: Bearer [REDACTED]',
+      '',
+      '{',
+      '  "productId": "00000000-0000-4000-8000-000000000003",',
+      '  "merchantCheckoutId": "order-12345",',
+      '  "browserNonceHash": "hex-sha256-of-your-browser-nonce"',
+      '}',
+    ].join('\n'),
+    response: [
+      '201 Created',
+      '',
+      '{',
+      '  "success": true,',
+      '  "data": { "claimSessionId": "60000000-0000-4000-8000-000000000001", "expiresAt": "2026-09-21T00:10:00Z" }',
+      '}',
+    ].join('\n'),
+  },
 ];
 
 export const developerSeparations = [
   'Sign-in is not eligibility. A logged-in student with no passing check is not eligible.',
   'Server keys are not browser keys. Keys live on your backend; nothing secret goes in pages, apps, or URLs.',
   'Receipt history is not new authorization. Replays return the committed receipt; only a fresh approved check creates a new one.',
-  'Errors are explicit: 400 invalid input, 401 invalid key or inactive merchant, 403 check no longer current, 409 expired or conflicting code, 429 quota exhausted.',
+  'Claim links are not redemptions. A shared handoff URL redeems nothing without your nonce-bound checkout session and a server-side exchange.',
+  'Errors are explicit: 400 invalid input, 401 invalid key or inactive merchant, 403 check no longer current, 409 expired, conflicting, or unintegrated claim, 429 quota exhausted.',
 ];
