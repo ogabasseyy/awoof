@@ -270,11 +270,19 @@ export default function StudentProfilePage() {
                                 </div>
                             </div>
                             {eligibilityKnown && !isVerified && (
-                                <p className="relative mt-5 text-sm text-blue-100 leading-relaxed flex items-start gap-2">
-                                    <Sparkles className="h-4 w-4 mt-0.5 shrink-0" />
-                                    Hey {getFirstName()} — verify your student status so deals unlock the moment they
-                                    go live.
-                                </p>
+                                <div className="relative mt-5">
+                                    <p className="text-sm text-blue-100 leading-relaxed flex items-start gap-2">
+                                        <Sparkles className="h-4 w-4 mt-0.5 shrink-0" />
+                                        Hey {getFirstName()} — verify your student status so deals unlock the moment they
+                                        go live.
+                                    </p>
+                                    <Link
+                                        href="/student/verification"
+                                        className="mt-3 inline-flex min-h-[44px] items-center rounded-full bg-white px-5 text-sm font-bold text-[#1D4ED8] hover:bg-blue-50"
+                                    >
+                                        Verify your student status
+                                    </Link>
+                                </div>
                             )}
                             {isVerified && (
                                 <p className="relative mt-5 text-sm text-blue-100 leading-relaxed">

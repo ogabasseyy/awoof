@@ -138,6 +138,12 @@ function VerificationForm() {
         <h1 className="text-2xl font-semibold">Student verification</h1>
         {error && <p role="alert" className="text-red-700">{error}</p>}
         {message && <p role="status">{message}</p>}
+        {status && <section aria-labelledby="status-overview" className="rounded-2xl border border-slate-200 bg-white p-4">
+            <h2 id="status-overview" className="text-lg font-semibold">Current status</h2>
+            {status.eligibility.eligible
+                ? <p className="mt-1 text-sm text-slate-700">State: eligible — no action needed.</p>
+                : <p className="mt-1 text-sm text-slate-700">State: action needed — complete the steps below or <Link href="/help" className="underline">Get verification help</Link>.</p>}
+        </section>}
         {!status ? <p>Loading verification…</p> : status.eligibility.eligible ? <>
             <p role="status">Your student eligibility is current.</p>
             <Link href="/marketplace" className="underline">Browse student offers</Link>
@@ -159,7 +165,7 @@ function VerificationForm() {
                 setMailboxConfirmed(true); setChallenge(''); setOtp(''); await loadStatus(); setMessage('School email confirmed.');
             }); }}>
                 <label className="block">Email code<input className="block rounded border p-2" value={otp} onChange={(event) => setOtp(event.target.value.replace(/\D/g, '').slice(0, 6))} inputMode="numeric" autoComplete="one-time-code" pattern="[0-9]{6}" required /></label>
-                <button disabled={busy || otp.length !== 6} className="underline">Confirm email</button>
+                <button disabled={busy || otp.length !== 6} className="inline-flex min-h-[44px] items-center underline">Confirm email</button>
             </form>}
             {registrationAvailable && mailboxConfirmed ? <form className="space-y-3" onSubmit={(event) => { event.preventDefault(); void run(async () => {
                 const processingGrantId = await processingGrant();
@@ -169,7 +175,7 @@ function VerificationForm() {
             }); }}>
                 <h2 className="font-semibold">Enrollment check</h2>
                 <label className="block">Registration number<input className="block rounded border p-2" value={registration} maxLength={100} required onChange={(event) => setRegistration(event.target.value)} /></label>
-                <button disabled={busy || !accepted || !registration.trim()} className="underline">Check enrollment</button>
+                <button disabled={busy || !accepted || !registration.trim()} className="inline-flex min-h-[44px] items-center underline">Check enrollment</button>
             </form> : <p>{registrationAvailable ? 'Confirm your school email above before checking enrollment.' : 'Enrollment verification is not currently available for your school.'}</p>}
         </>}
         <MicrosoftVerificationCard

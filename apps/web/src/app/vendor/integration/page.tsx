@@ -8,6 +8,7 @@
 
 import { useState, useEffect } from 'react';
 import { BarChart3, CreditCard, LayoutDashboard, LifeBuoy, Puzzle, Settings, ShoppingBag, Tag, Code, Key, Copy, Check, Webhook, CheckCircle2, AlertCircle } from 'lucide-react';
+import Link from 'next/link';
 import ProtectedRoute from '@/components/ProtectedRoute';
 import { useAuth } from '@/contexts/AuthContext';
 import { Button } from '@/components/ui/button';
@@ -504,8 +505,14 @@ export default function VendorIntegrationPage() {
                         <div className="space-y-6">
                             <div className="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm">
                                 <h2 className="mb-4 text-lg font-semibold text-slate-900">API Key Management</h2>
-                                <p className="mb-6 text-sm text-slate-600">
+                                <p className="mb-2 text-sm text-slate-600">
                                     Generate an API key to authenticate transaction reporting requests.
+                                </p>
+                                <p className="mb-6 text-sm text-slate-600">
+                                    Server keys live on your backend: use this key for server-to-server
+                                    calls only — never in a browser, an app bundle, or a URL. See the{' '}
+                                    <Link href="/developers" className="font-semibold text-[#1D4ED8] hover:underline">Developer guide</Link>{' '}
+                                    for the verification API.
                                 </p>
 
                                 <div className="space-y-4">
