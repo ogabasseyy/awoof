@@ -31,11 +31,14 @@ function getMigrationFiles(): string[] {
     const files = readdirSync(MIGRATIONS_DIR)
         .filter((file): file is string =>
             file.endsWith('.sql') && !file.startsWith('clear_')
+            // Basenames from readdirSync never contain separators; reject them
+            // anyway so a future refactor can never turn this into traversal.
+            && !file.includes('/') && !file.includes('\\') && !file.includes('\0')
         )
         .sort();
-    // semgrep: files are from readdirSync (filesystem), not user input; path constrained to MIGRATIONS_DIR
-    // nosemgrep: javascript.lang.security.audit.path-traversal.path-join-resolve-traversal.path-join-resolve-traversal
-    return files.map((f) => resolve(MIGRATIONS_DIR, f));
+    // Names come from readdirSync (filesystem), not user input, and cannot
+    // contain separators (see filter above); the resolve stays in MIGRATIONS_DIR.
+    return files.map((f) => resolve(MIGRATIONS_DIR, f)); // nosemgrep: javascript.lang.security.audit.path-traversal.path-join-resolve-traversal.path-join-resolve-traversal
 }
 
 /**

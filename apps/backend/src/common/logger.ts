@@ -1,8 +1,8 @@
 /**
  * Application logger
  * Use instead of console.* in app code. In production, only errors are logged to stdout.
- * All output is neutralized for log injection (CWE-117): newlines/control chars removed
- * via inline replace so CodeQL recognizes sanitization.
+ * All output is neutralized for log injection (CWE-117): every sink goes
+ * through safeMessage(), which strips newlines/control chars via neutralize().
  */
 
 import { config } from '../config/env.js';
@@ -32,7 +32,7 @@ export const appLogger = {
   info: (...args: unknown[]) => {
     if (!isProd) {
       const msg = safeMessage(args);
-      console.log(msg);
+      console.log(msg); // codeql[js/log-injection] msg neutralized by safeMessage/neutralize (CWE-117); sanitizer not modeled
     }
   },
   warn: (...args: unknown[]) => {

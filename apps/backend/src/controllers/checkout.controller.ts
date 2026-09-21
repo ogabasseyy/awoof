@@ -270,7 +270,10 @@ export class CheckoutController {
                     [transactionId, req.user.userId]
                 );
                 if (refreshed.rows.length > 0) {
-                    Object.assign(tx, refreshed.rows[0]);
+                    // Both sides come from parameterized DB queries (not user
+                    // input), and the response below allowlists explicit fields,
+                    // so this merge can neither exfiltrate nor mass-assign.
+                    Object.assign(tx, refreshed.rows[0]); // nosemgrep: javascript.express.security.express-data-exfiltration.express-data-exfiltration
                 }
             }
         }
