@@ -24,8 +24,11 @@ jobs:
       actions: read # only required for private repository by github/codeql-action/upload-sarif
     name: Scan
     runs-on: ubuntu-latest
-    # Skip any PR created by dependabot to avoid permission issues
-    if: github.actor != 'dependabot[bot]'
+    # Scan is a required check: it must run on every same-repo PR, including
+    # Dependabot's (same-repo branches can upload SARIF; only fork PRs lack
+    # security-events permission, so only forks skip). Skipping here would
+    # leave the required check permanently unreported and block the merge.
+    if: github.event.pull_request.head.repo.fork != true
     container:
       # Pin to specific version for reproducible builds
       image: semgrep/semgrep:1.99.0
