@@ -56,6 +56,14 @@ jobs:
             --exclude 'api\.paystack\.co|checkout\.paystack\.com|paystack\.com'
             --exclude 'npmjs\.com'
             --exclude 'widget\.awoof\.com'
+            # Test-fixture OIDC issuers (never real tenants) and the
+            # POST-only Google token endpoint (GET 404s by design).
+            --exclude 'login\.microsoftonline\.com/(common|tenant|tenant-[a-z]|11111111-1111-4111-8111-111111111111)/'
+            --exclude 'oauth2\.googleapis\.com/token'
+            # Reserved .example template hosts lychee parses as bare domains.
+            --exclude 'https://(pending|refund)/'
+            # In-branch public routes that 404 on production until deployed.
+            --exclude 'awoof\.tech/(trust|images/trust-og\.png)'
           fail: true
         env:
           GITHUB_TOKEN: ${{secrets.GITHUB_TOKEN}}
