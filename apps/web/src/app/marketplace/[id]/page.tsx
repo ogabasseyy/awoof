@@ -194,6 +194,9 @@ export default function ProductDetailPage() {
     const [merchantUnintegrated, setMerchantUnintegrated] = useState(false);
     const claimingRef = useRef(false);
     const claimLoadRef = useRef<string | null>(null);
+    // Bumped by explicit user retry so the loader below refires even when
+    // the same failing session is still selected.
+    const [claimReload, setClaimReload] = useState(0);
     const reduce = useReducedMotion();
 
     useEffect(() => {
@@ -206,8 +209,8 @@ export default function ProductDetailPage() {
     }, [productId]);
 
     useEffect(() => {
-        if (!claimSessionId || user?.role !== 'student' || claimLoadRef.current === claimSessionId) return;
-        claimLoadRef.current = claimSessionId;
+        if (!claimSessionId || user?.role !== 'student' || claimLoadRef.current === `${claimSessionId}#${claimReload}`) return;
+        claimLoadRef.current = `${claimSessionId}#${claimReload}`;
         let cancelled = false;
         setClaim((prev) => beginLoading(prev, claimSessionId));
         (async () => {
@@ -240,7 +243,7 @@ export default function ProductDetailPage() {
         })();
         return () => { cancelled = true; claimLoadRef.current = null; };
         // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [claimSessionId, user?.id, user?.role]);
+    }, [claimSessionId, user?.id, user?.role, claimReload]);
 
     const fetchProduct = async () => {
         try {
@@ -395,7 +398,7 @@ export default function ProductDetailPage() {
             consentAccepted={consentAccepted}
             onConsentChange={setConsentAccepted}
             onClaim={() => void handleClaim()}
-            onRetry={() => setClaim((prev) => retryClaim(prev))}
+            onRetry={() => { setClaimReload((n) => n + 1); setClaim((prev) => retryClaim(prev)); }}
             merchantUnintegrated={merchantUnintegrated}
             ordinaryWebsite={ordinaryWebsite}
         />

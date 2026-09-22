@@ -31,7 +31,7 @@ export const universityBody = [
 ];
 
 export const developerIntro =
-  'Integration concepts for the verification API that ships today: real route names, synthetic examples, and the separations that keep student data safe.';
+  'Integration concepts for the verification API now in integration: real route names, synthetic examples, and the separations that keep student data safe.';
 
 export const developerExamples = [
   {

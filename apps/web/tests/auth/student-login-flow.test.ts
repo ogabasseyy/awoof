@@ -15,6 +15,8 @@ import {
     parseLoginErrorCode,
     parseLoginOptions,
     parseSsoFinishResponse,
+    parseSsoLinkResponse,
+    parseSsoReauthResponse,
     parseSsoRestart,
     parseSsoStart,
     readSsoAttempt,
@@ -240,6 +242,40 @@ test('restart detection reads only the safe conflict code', () => {
     assert.equal(parseSsoRestart(409, { success: false, error: { code: 'OTHER' } }), false);
     assert.equal(parseSsoRestart(500, { success: false, error: { code: 'SSO_RESTART_REQUIRED' } }), false);
     assert.equal(parseSsoRestart(409, null), false);
+});
+
+test('reauth grant parsing requires a uuid id, opaque secret, and instant expiry', () => {
+    const grant = {
+        grantId: '60000000-0000-4000-8000-000000000001',
+        grantSecret: 'opaque-grant-secret',
+        expiresAt: new Date(Date.now() + 300_000).toISOString(),
+    };
+    assert.deepEqual(parseSsoReauthResponse({ success: true, data: grant }), grant);
+    assert.equal(parseSsoReauthResponse({ success: true, data: { ...grant, grantId: 'not-a-uuid' } }), null);
+    assert.equal(parseSsoReauthResponse({ success: true, data: { ...grant, grantSecret: '' } }), null);
+    assert.equal(parseSsoReauthResponse({ success: true, data: { ...grant, expiresAt: 'yesterday' } }), null);
+    assert.equal(parseSsoReauthResponse(null), null);
+});
+
+test('link result parsing separates linked, mismatch, and restart', () => {
+    assert.deepEqual(
+        parseSsoLinkResponse(201, {
+            success: true,
+            data: { outcome: 'linked', reactivated: false, schoolAssertion: 'recorded' },
+        }),
+        { kind: 'linked', reactivated: false, schoolAssertion: 'recorded' },
+    );
+    assert.deepEqual(
+        parseSsoLinkResponse(409, { success: false, error: { code: 'SSO_LINK_MISMATCH' } }),
+        { kind: 'mismatch' },
+    );
+    assert.deepEqual(
+        parseSsoLinkResponse(409, { success: false, error: { code: 'SSO_RESTART_REQUIRED' } }),
+        { kind: 'restart' },
+    );
+    assert.equal(parseSsoLinkResponse(201, { success: true, data: { outcome: 'linked' } }), null);
+    assert.equal(parseSsoLinkResponse(409, { success: false, error: { code: 'OTHER' } }), null);
+    assert.equal(parseSsoLinkResponse(500, null), null);
 });
 
 test('tab attempt storage round-trips and expires honestly', () => {

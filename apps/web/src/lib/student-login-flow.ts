@@ -243,6 +243,44 @@ export function parseSsoRestart(status: number | undefined, body: unknown): bool
     return asRecord(asRecord(body)?.error)?.code === 'SSO_RESTART_REQUIRED';
 }
 
+export type SsoReauthGrant = {
+    grantId: string;
+    grantSecret: string;
+    expiresAt: string;
+};
+
+/** Strictly validate a reauth grant: uuid id, opaque secret, instant expiry. */
+export function parseSsoReauthResponse(value: unknown): SsoReauthGrant | null {
+    const data = successData(value);
+    if (!data) return null;
+    if (!isUuid(data.grantId) || !isOpaqueSecret(data.grantSecret) || !isInstant(data.expiresAt)) return null;
+    return { grantId: data.grantId, grantSecret: data.grantSecret, expiresAt: data.expiresAt };
+}
+
+export type SsoLinkOutcome =
+    | { kind: 'linked'; reactivated: boolean; schoolAssertion: string }
+    | { kind: 'mismatch' }
+    | { kind: 'restart' };
+
+/**
+ * Strictly validate the link union. Linked is 200/201 with its outcome;
+ * mismatch and restart are 409s with their own codes — see parseSsoRestart.
+ */
+export function parseSsoLinkResponse(status: number | undefined, body: unknown): SsoLinkOutcome | null {
+    if (status === 200 || status === 201) {
+        const data = successData(body);
+        if (!data || data.outcome !== 'linked') return null;
+        if (typeof data.reactivated !== 'boolean' || typeof data.schoolAssertion !== 'string') return null;
+        return { kind: 'linked', reactivated: data.reactivated, schoolAssertion: data.schoolAssertion };
+    }
+    if (status === 409) {
+        const code = asRecord(asRecord(body)?.error)?.code;
+        if (code === 'SSO_LINK_MISMATCH') return { kind: 'mismatch' };
+        if (code === 'SSO_RESTART_REQUIRED') return { kind: 'restart' };
+    }
+    return null;
+}
+
 export type SsoAttemptRecord = {
     attemptId: string;
     finishSecret: string;

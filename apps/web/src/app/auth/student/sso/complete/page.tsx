@@ -168,7 +168,9 @@ function StudentSsoCompleteInner() {
                 </p>
                 <div className="mt-5 space-y-2">
                     <Button type="button" className="w-full rounded-full h-11 font-semibold" asChild>
-                        <Link href="/auth/student/login">Sign in with your password</Link>
+                        <Link href="/auth/student/login?redirect=%2Fauth%2Fstudent%2Fsso%2Fonboarding">
+                            Sign in with your password
+                        </Link>
                     </Button>
                     <Button type="button" variant="outline" className="w-full rounded-full h-11 font-semibold" asChild>
                         <Link href="/auth/student/register">Create an account</Link>

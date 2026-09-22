@@ -39,8 +39,8 @@ export const helpSections: HelpSection[] = [
   {
     heading: 'Account recovery',
     paragraphs: [
-      'If you lose access to your school email, use the password-reset flow for your account type to regain access with an address you control.',
-      'If you cannot sign in at all, create a path back through the reset flow first — account-specific help needs a signed-in session so support can see your real state.',
+      'Password-reset codes go to the email address already on your account. If that school mailbox is gone, reset cannot reach you: verify a mailbox you control by registering again with your current school address.',
+      'Receipts on the old account stay there as history. Account-specific help still needs a signed-in session so support can see your real state.',
     ],
   },
 ];
