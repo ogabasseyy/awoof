@@ -406,13 +406,14 @@ test('a bound provider cancellation returns to the Awoof email alternative witho
   // (re)issued only while the page is still on the held provider document
   // — i.e. only while no callback request could have been sent. Once the
   // navigation commits, stop and await the outcome.
-  await expect(page).toHaveURL(/login\.microsoftonline\.com/, { timeout: 10000 });
+  await expect(page).toHaveURL(/^https:\/\/login\.microsoftonline\.com\//, { timeout: 10000 });
   await expect.poll(async () => {
-    if (/login\.microsoftonline\.com/.test(page.url())) {
+    if (/^https:\/\/login\.microsoftonline\.com\//.test(page.url())) {
       await page.goto(`${provider.callbackUrl()}&error=access_denied`).catch(() => undefined);
     }
     return page.url();
-  }, { timeout: 15000 }).not.toMatch(/login\.microsoftonline\.com/);
+  }, { timeout: 15000 }).not.toMatch(/^https:\/\/login\.microsoftonline\.com\//);
+  await expect(page.getByRole('heading', { name: 'Connection needs attention' })).toBeVisible({ timeout: 10000 });
   await expect(page.getByText('The Microsoft connection was not completed. You can still verify using your school email.')).toBeVisible();
   await expect(page.getByRole('link', { name: 'Use school email verification' })).toBeVisible();
   const observed = await evidence(page);
