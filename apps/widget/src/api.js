@@ -11,10 +11,14 @@
  */
 export async function checkDomain(apiBaseUrl, domain, apiKey) {
   const url = new URL('/api/widget/domain-check', apiBaseUrl);
-  url.searchParams.set('domain', domain);
-  url.searchParams.set('apiKey', apiKey);
 
-  const res = await fetch(url.toString(), { method: 'GET' });
+  // POST with a JSON body: the API key must never travel in the URL, where
+  // it would land in access logs, proxy/CDN logs, history, and Referers.
+  const res = await fetch(url.toString(), {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ domain, apiKey }),
+  });
   const body = await res.json().catch(() => ({}));
 
   if (!res.ok) {

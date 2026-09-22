@@ -27,13 +27,21 @@ export function isEmailConfigured(): boolean {
     return typeof process.env.BREVO_API_KEY === 'string' && process.env.BREVO_API_KEY.trim().length > 0;
 }
 
+const HTML_ESCAPES: Record<string, string> = {
+    '&': '&amp;',
+    '<': '&lt;',
+    '>': '&gt;',
+    '"': '&quot;',
+    "'": '&#39;',
+};
+
+/**
+ * Escape text for HTML text-content positions (never for URLs or JS contexts).
+ * Single-pass replacement: each source char maps once, so output can never
+ * be double-escaped and no bypass ordering exists.
+ */
 function escapeHtml(value: string): string {
-    return value
-        .replaceAll('&', '&amp;')
-        .replaceAll('<', '&lt;')
-        .replaceAll('>', '&gt;')
-        .replaceAll('"', '&quot;')
-        .replaceAll("'", '&#39;');
+    return value.replace(/[&<>"']/g, (ch) => HTML_ESCAPES[ch] ?? ch);
 }
 
 /**

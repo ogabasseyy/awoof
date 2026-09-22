@@ -1,12 +1,14 @@
 #!/usr/bin/env node
 import { createServer } from 'node:net';
-import { mkdtempSync, mkdirSync, readdirSync, rmSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { basename, join, resolve } from 'node:path';
 import { randomBytes, randomUUID } from 'node:crypto';
 import { execFileSync, spawnSync } from 'node:child_process';
+import pg from 'pg';
 import process from 'node:process';
 import { cleanupOwnedCluster } from './test-postgres-lifecycle.mjs';
+import { selectPostgresTestMode } from './postgres-test-mode.mjs';
 
 const backendRoot = resolve(import.meta.dirname, '..');
 const scratch = mkdtempSync(join(tmpdir(), 'awoof-postgres-'));
@@ -56,13 +58,6 @@ function run(binary, args, timeout = 30_000) {
     }
 }
 
-function integrationFiles(directory) {
-    return readdirSync(directory, { withFileTypes: true }).flatMap((entry) => {
-        const path = join(directory, entry.name);
-        return entry.isDirectory() ? integrationFiles(path) : entry.name.endsWith('.integration.ts') ? [path] : [];
-    }).sort();
-}
-
 function stopAndRemove(pgCtl) {
     if (cleaned) return !retainedScratch;
     cleaned = true;
@@ -84,6 +79,8 @@ process.once('SIGINT', () => onSignal('SIGINT'));
 process.once('SIGTERM', () => onSignal('SIGTERM'));
 
 try {
+    // Validate the fixed source/compiled test plan before allocating the disposable cluster.
+    const mode = selectPostgresTestMode({ backendRoot, environment: process.env, nodeExecutable: process.execPath });
     requireDiskSpace();
     const initdb = findBinary('initdb');
     const pgCtl = findBinary('pg_ctl');
@@ -106,15 +103,24 @@ try {
         AWOOF_TEST_DATABASE_URL: databaseUrl,
         AWOOF_TEST_GUARD: randomBytes(32).toString('hex'),
     };
-    const migrate = spawnSync('./node_modules/.bin/tsx', ['src/database/migrations/run.ts'], { cwd: backendRoot, encoding: 'utf8', timeout: 60_000, env: childEnvironment });
+    const migrate = spawnSync(mode.migration, mode.migrationArgs, { cwd: backendRoot, encoding: 'utf8', timeout: 60_000, env: childEnvironment });
     if (migrate.status !== 0 || migrate.error) throw new Error(`Migration runner failed: ${(migrate.stderr || migrate.error?.message || '').slice(0, 8_000)}`);
-    const tests = integrationFiles(join(backendRoot, 'src'));
-    if (tests.length === 0) throw new Error('No .integration.ts tests were found.');
-    const result = spawnSync('./node_modules/.bin/tsx', ['--test', '--test-concurrency=1', ...tests], { cwd: backendRoot, encoding: 'utf8', timeout: 120_000, env: childEnvironment });
+    if (mode.label === 'compiled' && process.env.AWOOF_POSTGRES_ARTIFACT_RUNTIME === '1') {
+        const metadataPool = new pg.Pool({ connectionString: databaseUrl, max: 1, idleTimeoutMillis: 1_000, connectionTimeoutMillis: 2_000 });
+        try {
+            const applied = await metadataPool.query('SELECT filename FROM migrations ORDER BY filename');
+            const filenames = applied.rows.map((row) => row.filename);
+            if (filenames.length === 0 || filenames.some((filename) => typeof filename !== 'string')) throw new Error('Migration metadata query returned no ordered filenames.');
+            process.stdout.write(`Applied migration filenames: ${JSON.stringify(filenames)}\n`);
+        } finally {
+            await metadataPool.end();
+        }
+    }
+    const result = spawnSync(mode.runner, mode.testArgs, { cwd: backendRoot, encoding: 'utf8', timeout: 120_000, env: childEnvironment });
     process.stdout.write(result.stdout || '');
     process.stderr.write(result.stderr || '');
     if (result.status !== 0 || result.error) throw new Error(`Integration tests failed: ${result.error?.message || 'non-zero exit'}`);
-    process.stdout.write('Disposable PostgreSQL integration suite passed.\n');
+    process.stdout.write(`Disposable PostgreSQL ${mode.label} integration suite passed.\n`);
 } catch (error) {
     process.stderr.write(`${error instanceof Error ? error.message : String(error)}\n`);
     if (startupAttempted) process.stderr.write('Disposable PostgreSQL server output was withheld to avoid exposing fixture data.\n');

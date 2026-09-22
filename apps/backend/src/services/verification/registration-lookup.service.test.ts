@@ -13,6 +13,10 @@ import {
     type EnrollmentTransportResponse,
 } from './registration-lookup.service.js';
 
+// Synthetic TLS fixture for local HTTPS test servers only (CN=provider.school.test).
+// Generated for tests; never used outside this file. Scanners flag the PEM
+// block below as a private key: true syntactically, test-only by design
+// (dismissed as "used in tests" in code scanning).
 const testTlsPrivateKey = `-----BEGIN PRIVATE KEY-----
 MIIEvgIBADANBgkqhkiG9w0BAQEFAASCBKgwggSkAgEAAoIBAQDIedopQ+zbdD77
 rylu1lVdtI5/RwfprCvIRi4X+8WAbzyXHtpg4r+WQj1RkXCGfHgsYleBn5b8fSi3

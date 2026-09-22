@@ -4,8 +4,10 @@ import { readFileSync } from 'node:fs';
 import test, { after } from 'node:test';
 import type { Response } from 'express';
 import { CheckoutController } from '../../controllers/checkout.controller.js';
+import { rotateReportingKey } from '../../services/auth/reporting-key.service.js';
 import type { AuthRequest } from '../../middleware/auth.middleware.js';
 import { db } from '../../config/database.js';
+import { config } from '../../config/env.js';
 
 after(() => db.close());
 import type { PoolClient } from 'pg';
@@ -24,6 +26,7 @@ import {
 } from '../../services/verification/eligibility-evidence.service.js';
 import { updateInstitutionPolicy } from '../../services/verification/eligibility-policy.service.js';
 import { getEffectiveEligibility } from '../../services/verification/eligibility-read.service.js';
+import { exchangeMerchantAssertion, issueMerchantAssertion } from '../../services/verification/merchant-assertion.service.js';
 import { ENROLLMENT_SOURCE, type EnrollmentSnapshot, type StudentContext } from '../../services/verification/eligibility.types.js';
 import {
     MERCHANT_DISCLOSURE_NOTICE_VERSION,
@@ -199,6 +202,217 @@ async function issueEmailAssurance(client: PoolClient, fixture: Fixture): Promis
         });
     });
 }
+
+async function makeMicrosoftCurrent(
+    client: PoolClient,
+    fixture: Fixture,
+    expiresAt = "clock_timestamp() + interval '24 hours'",
+): Promise<{ microsoftEvidenceId: string; emailEvidenceId: string; proofId: string }> {
+    const email = (await client.query<{ id: string; email_proof_id: string; identity_version: number; policy_version: number }>(
+        `SELECT id, email_proof_id, identity_version, policy_version FROM eligibility_evidence
+         WHERE student_id=$1 AND method='student_email' AND revoked_at IS NULL
+         ORDER BY verified_at DESC, id DESC LIMIT 1`, [fixture.studentId],
+    )).rows[0]!;
+    const tenantId = randomUUID(); const objectId = randomUUID(); const identityId = randomUUID();
+    const consentId = randomUUID(); const attemptId = randomUUID(); const proofId = randomUUID();
+    await client.query(
+        `INSERT INTO institution_microsoft_policies
+             (university_id,tenant_id,enabled,mode,approved_until,approved_by,term_ends_at,max_evidence_hours,scopes,notice_version)
+         VALUES ($1,$2,true,'graph_enrollment',clock_timestamp()+interval '30 days',$3,clock_timestamp()+interval '20 days',24,
+                 ARRAY['https://graph.microsoft.com/EduRoster.ReadBasic','openid','profile'],'microsoft-v2')`,
+        [fixture.universityId, tenantId, fixture.adminId],
+    );
+    await client.query(`INSERT INTO microsoft_verification_consents
+        (id,user_id,university_id,processing_grant_id,provider_policy_version,notice_version,mode,scopes)
+        VALUES($1,$2,$3,$4,1,'microsoft-v2','graph_enrollment',ARRAY['https://graph.microsoft.com/EduRoster.ReadBasic','openid','profile'])`,
+    [consentId, fixture.userId, fixture.universityId, fixture.grantId]);
+    await client.query(`INSERT INTO microsoft_identities(id,user_id,university_id,tenant_id,object_id)
+        VALUES($1,$2,$3,$4,$5)`, [identityId, fixture.userId, fixture.universityId, tenantId, objectId]);
+    await client.query(`INSERT INTO microsoft_verification_attempts
+        (id,user_id,university_id,institution_policy_version,provider_policy_version,identity_version,processing_grant_id,provider_consent_id,server_session_id,state_hash,browser_secret_hash,finish_secret_hash,expires_at,status,result)
+        VALUES($1,$2,$3,$4,1,$5,$6,$7,$8,$9,'browser','finish',clock_timestamp()+interval '1 hour','ready','{}')`,
+    [attemptId, fixture.userId, fixture.universityId, email.policy_version, email.identity_version, fixture.grantId, consentId, randomUUID(), `microsoft-${randomUUID()}`]);
+    await client.query(`INSERT INTO microsoft_provider_proofs
+        (id,user_id,university_id,provider_consent_id,identity_id,provider_policy_version,attempt_id,observed_at,outcome,source)
+        VALUES($1,$2,$3,$4,$5,1,$6,clock_timestamp(),'student','microsoft-education:v1')`,
+    [proofId, fixture.userId, fixture.universityId, consentId, identityId, attemptId]);
+    const evidence = await client.query<{ id: string }>(`INSERT INTO eligibility_evidence
+        (student_id,university_id,email_proof_id,processing_grant_id,provider_proof_id,method,outcome,identity_version,policy_version,source,expires_at)
+        VALUES($1,$2,$3,$4,$5,'enrollment','verified',$6,$7,'microsoft-education:v1',${expiresAt}) RETURNING id`,
+    [fixture.studentId, fixture.universityId, email.email_proof_id, fixture.grantId, proofId, email.identity_version, email.policy_version]);
+    await client.query(`UPDATE student_eligibility_state SET current_evidence_id=$1 WHERE student_id=$2 AND university_id=$3`,
+        [evidence.rows[0]!.id, fixture.studentId, fixture.universityId]);
+    return { microsoftEvidenceId: evidence.rows[0]!.id, emailEvidenceId: email.id, proofId };
+}
+
+test('Microsoft-only invalidation falls back to the unchanged independently valid email evidence', async () => {
+    const originalEnabled = config.microsoftOidc.enabled;
+    config.microsoftOidc.enabled = true;
+    try {
+        for (const invalidation of ['expired', 'proof_revoked', 'identity_unlinked', 'policy_disabled', 'global_disabled'] as const) {
+            await withTestClient(async (client) => {
+                const fixture = await createFixture(client);
+                const microsoft = await makeMicrosoftCurrent(client, fixture,
+                    invalidation === 'expired' ? "clock_timestamp() - interval '1 second'" : undefined);
+                if (invalidation === 'proof_revoked') await client.query(`UPDATE microsoft_provider_proofs SET revoked_at=clock_timestamp() WHERE id=$1`, [microsoft.proofId]);
+                if (invalidation === 'identity_unlinked') await client.query(
+                    `UPDATE microsoft_identities SET revoked_at=clock_timestamp()
+                     WHERE id=(SELECT identity_id FROM microsoft_provider_proofs WHERE id=$1)`, [microsoft.proofId]);
+                if (invalidation === 'policy_disabled') await client.query(`UPDATE institution_microsoft_policies SET enabled=false WHERE university_id=$1`, [fixture.universityId]);
+                if (invalidation === 'global_disabled') config.microsoftOidc.enabled = false;
+                const result = await inTransaction(client, () => getEffectiveEligibility(client, fixture.userId));
+                assert.equal(result.eligible, true, invalidation);
+                if (result.eligible) {
+                    assert.equal(result.evidenceId, microsoft.emailEvidenceId);
+                    assert.equal(result.method, 'student_email');
+                    const email = await client.query<{ processing_grant_id: string; expires_at: Date; verified_at: Date }>(
+                        'SELECT processing_grant_id,expires_at,verified_at FROM eligibility_evidence WHERE id=$1', [microsoft.emailEvidenceId]);
+                    assert.equal(result.processingGrantId, email.rows[0]!.processing_grant_id);
+                    assert.deepEqual(result.expiresAt, email.rows[0]!.expires_at);
+                    assert.deepEqual(result.verifiedAt, email.rows[0]!.verified_at);
+                }
+                config.microsoftOidc.enabled = true;
+            });
+        }
+    } finally {
+        config.microsoftOidc.enabled = originalEnabled;
+    }
+});
+
+test('Microsoft fallback rejects globally stale email candidates and selects older valid email evidence', async () => {
+    const originalEnabled = config.microsoftOidc.enabled;
+    config.microsoftOidc.enabled = true;
+    try {
+        await withTestClient(async (client) => {
+            // A Microsoft parent withdrawal invalidates only its dependent proof
+            // and evidence. An independently issued email grant remains usable.
+            const separateGrant = await createFixture(client);
+            const separateMicrosoft = await makeMicrosoftCurrent(client, separateGrant);
+            const freshGrant = await inTransaction(client, () => grantVerificationProcessing(client, separateGrant.userId, separateGrant.universityId,
+                { accepted: true, noticeVersion: VERIFICATION_NOTICE_VERSION }));
+            await issueEmailAssurance(client, { ...separateGrant, grantId: freshGrant });
+            await client.query(`UPDATE student_eligibility_state SET current_evidence_id=$1 WHERE student_id=$2 AND university_id=$3`,
+                [separateMicrosoft.microsoftEvidenceId, separateGrant.studentId, separateGrant.universityId]);
+            await inTransaction(client, () => withdrawConsent(client, separateGrant.userId, separateGrant.grantId));
+            const separateResult = await inTransaction(client, () => getEffectiveEligibility(client, separateGrant.userId));
+            assert.equal(separateResult.eligible, true);
+            if (separateResult.eligible) assert.equal(separateResult.processingGrantId, freshGrant);
+
+            const fixture = await createFixture(client);
+            await issueEmailAssurance(client, fixture);
+            const emails = await client.query<{ id: string }>(`SELECT id FROM eligibility_evidence
+                WHERE student_id=$1 AND method='student_email' ORDER BY verified_at DESC,id DESC`, [fixture.studentId]);
+            await client.query(`UPDATE eligibility_evidence SET revoked_at=clock_timestamp() WHERE id=$1`, [emails.rows[0]!.id]);
+            const microsoft = await makeMicrosoftCurrent(client, fixture, "clock_timestamp() - interval '1 second'");
+            const fallback = await inTransaction(client, () => getEffectiveEligibility(client, fixture.userId));
+            assert.equal(fallback.eligible, true);
+            if (fallback.eligible) assert.equal(fallback.evidenceId, microsoft.emailEvidenceId);
+
+            for (const invalidation of ['email_revoked', 'parent_withdrawn', 'mailbox_changed', 'identity_changed', 'base_policy_changed', 'domain_removed', 'denial'] as const) {
+                const isolated = await createFixture(client);
+                const current = await makeMicrosoftCurrent(client, isolated, "clock_timestamp() - interval '1 second'");
+                if (invalidation === 'email_revoked') await client.query(`UPDATE eligibility_evidence SET revoked_at=clock_timestamp() WHERE id=$1`, [current.emailEvidenceId]);
+                if (invalidation === 'parent_withdrawn') await inTransaction(client, () => withdrawConsent(client, isolated.userId, isolated.grantId));
+                if (invalidation === 'mailbox_changed') await client.query(`UPDATE users SET email=$2 WHERE id=$1`, [isolated.userId, `changed-${uniqueLabel()}@students.school.example`]);
+                if (invalidation === 'identity_changed') await client.query(`UPDATE students SET name=name || ' changed' WHERE id=$1`, [isolated.studentId]);
+                if (invalidation === 'base_policy_changed') await client.query(`UPDATE universities SET verification_policy_version=verification_policy_version+1 WHERE id=$1`, [isolated.universityId]);
+                if (invalidation === 'domain_removed') await client.query(`UPDATE approved_student_email_domains SET is_active=false WHERE university_id=$1`, [isolated.universityId]);
+                if (invalidation === 'denial') await client.query(`UPDATE student_eligibility_state SET authoritative_denial=true WHERE student_id=$1 AND university_id=$2`, [isolated.studentId, isolated.universityId]);
+                const result = await inTransaction(client, () => getEffectiveEligibility(client, isolated.userId));
+                assert.equal(result.eligible, false, invalidation);
+                if (invalidation === 'denial') assert.deepEqual(result, { eligible: false, reason: 'enrollment_denied' });
+            }
+        });
+    } finally {
+        config.microsoftOidc.enabled = originalEnabled;
+    }
+});
+
+test('a Microsoft-bound merchant assertion rejects after fallback while a fresh email-bound assertion succeeds', async () => {
+    const originalEnabled = config.microsoftOidc.enabled;
+    config.microsoftOidc.enabled = true;
+    const pool = createTestPool();
+    try {
+        await withTestClient(async (client) => {
+            const fixture = await createFixture(client);
+            const microsoft = await makeMicrosoftCurrent(client, fixture);
+            const merchant = await createMerchantFixture(client);
+            const disclosure = await inTransaction(client, () => grantMerchantDisclosure(client, fixture.userId, {
+                vendorId: merchant.vendorId, origin: merchant.origin, purpose: 'student-discount', accepted: true,
+                noticeVersion: MERCHANT_DISCLOSURE_NOTICE_VERSION,
+            }));
+            const input = { vendorId: merchant.vendorId, origin: merchant.origin, purpose: 'student-discount', campaignId: 'microsoft-fallback', disclosureGrantId: disclosure };
+            const key = await rotateReportingKey(pool, merchant.ownerId);
+            const old = await issueMerchantAssertion(pool, fixture.userId, input);
+            await client.query(`UPDATE microsoft_provider_proofs SET revoked_at=clock_timestamp() WHERE id=$1`, [microsoft.proofId]);
+            await assert.rejects(exchangeMerchantAssertion(pool, key, {
+                code: old.code, campaignId: input.campaignId, idempotencyKey: randomUUID(),
+            }), /no longer eligible/i);
+            const fresh = await issueMerchantAssertion(pool, fixture.userId, input);
+            const receipt = await exchangeMerchantAssertion(pool, key, {
+                code: fresh.code, campaignId: input.campaignId, idempotencyKey: randomUUID(),
+            });
+            assert.equal(receipt.assuranceMethod, 'student_email');
+            const persisted = await client.query<{ evidence_id: string; processing_grant_id: string }>(
+                `SELECT evidence_id,processing_grant_id FROM merchant_assertions WHERE code_hash=encode(sha256($1::bytea),'hex')`, [Buffer.from(fresh.code)],
+            );
+            assert.equal(persisted.rows[0]!.evidence_id, microsoft.emailEvidenceId);
+            assert.equal(persisted.rows[0]!.processing_grant_id, fixture.grantId);
+        });
+    } finally {
+        config.microsoftOidc.enabled = originalEnabled;
+        await pool.end();
+    }
+});
+
+test('Microsoft fallback reads and withdrawal or authoritative denial contend in both commit orders', async () => {
+    const originalEnabled = config.microsoftOidc.enabled;
+    config.microsoftOidc.enabled = true;
+    try {
+        for (const mutation of ['withdrawal', 'denial'] as const) for (const order of ['reader_first', 'mutation_first'] as const) {
+            const pool = createTestPool();
+            const seed = await pool.connect(); const reader = await pool.connect(); const mutator = await pool.connect(); const observer = await pool.connect();
+            try {
+                // The denial writer uses the existing registration decision
+                // authority, so this fixture needs its normal active adapter.
+                const fixture = await createFixture(seed, { enrollment: true });
+                await makeMicrosoftCurrent(seed, fixture, "clock_timestamp() - interval '1 second'");
+                const snapshot = mutation === 'denial' ? await begin(seed, fixture) : undefined;
+                const mutate = async () => mutation === 'withdrawal'
+                    ? withdrawConsent(mutator, fixture.userId, fixture.grantId)
+                    : applyEnrollmentDecision(mutator, snapshot!, { outcome: 'denied', email: fixture.email, source: ENROLLMENT_SOURCE });
+                if (order === 'reader_first') {
+                    await beginWithLockTimeout(reader);
+                    assert.equal((await getEffectiveEligibility(reader, fixture.userId)).eligible, true);
+                    await beginWithLockTimeout(mutator);
+                    const mutatorPid = await clientPid(mutator);
+                    const readerPid = await clientPid(reader);
+                    const pending = mutate();
+                    await waitForBlockedBy(observer, mutatorPid, readerPid, `${mutation} after Microsoft fallback read`);
+                    await reader.query('COMMIT');
+                    await pending; await mutator.query('COMMIT');
+                    assert.equal((await inTransaction(seed, () => getEffectiveEligibility(seed, fixture.userId))).eligible, false);
+                } else {
+                    await beginWithLockTimeout(mutator);
+                    await mutate();
+                    await beginWithLockTimeout(reader);
+                    const readerPid = await clientPid(reader);
+                    const mutatorPid = await clientPid(mutator);
+                    const pending = getEffectiveEligibility(reader, fixture.userId);
+                    await waitForBlockedBy(observer, readerPid, mutatorPid, `Microsoft fallback read after ${mutation}`);
+                    await mutator.query('COMMIT');
+                    assert.equal((await pending).eligible, false);
+                    await reader.query('COMMIT');
+                }
+            } finally {
+                await reader.query('ROLLBACK').catch(() => undefined); await mutator.query('ROLLBACK').catch(() => undefined);
+                seed.release(); reader.release(); mutator.release(); observer.release(); await pool.end();
+            }
+        }
+    } finally {
+        config.microsoftOidc.enabled = originalEnabled;
+    }
+});
 
 async function begin(client: PoolClient, fixture: Fixture): Promise<EnrollmentSnapshot> {
     return inTransaction(client, () => beginEnrollmentCheck(client, fixture.userId, fixture.grantId));

@@ -66,6 +66,7 @@ test('password reset atomically clears the durable refresh session', async (t) =
     assert.deepEqual(calls[1].params, ['new-password-hash', userId]);
     assert.match(calls[1].text, /refresh_token_hash = NULL/);
     assert.match(calls[1].text, /refresh_token_expires_at = NULL/);
+    assert.match(calls[1].text, /active_session_id = NULL/);
     assert.equal((responses[0] as { message: string }).message, 'Password reset successfully');
 });
 
@@ -96,5 +97,6 @@ test('authenticated password change atomically clears the durable refresh sessio
     assert.deepEqual(calls[1].params, ['new-password-hash', userId]);
     assert.match(calls[1].text, /refresh_token_hash = NULL/);
     assert.match(calls[1].text, /refresh_token_expires_at = NULL/);
+    assert.match(calls[1].text, /active_session_id = NULL/);
     assert.equal((responses[0] as { message: string }).message, 'Password updated successfully');
 });

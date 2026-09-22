@@ -14,12 +14,12 @@ jobs:
     name: Lint & Type Check
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
 
       - name: Setup Node.js
-        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: '24'
           cache: 'npm'
@@ -66,6 +66,10 @@ jobs:
         working-directory: apps/backend
         run: npm test
 
+      - name: Test backend scripts
+        working-directory: apps/backend
+        run: npm run test:scripts
+
       - name: Test PostgreSQL authority and migration regressions
         working-directory: apps/backend
         run: POSTGRES_BIN_DIR="$(pg_config --bindir)" npm run test:postgres
@@ -89,6 +93,12 @@ jobs:
           AWOOF_BROWSER_MODE: dev
           PLAYWRIGHT_NO_COPY_PROMPT: '1'
 
+      - name: Test Microsoft browser flows
+        working-directory: apps/web
+        run: npm run test:browser:microsoft
+        env:
+          PLAYWRIGHT_NO_COPY_PROMPT: '1'
+
       - name: Build widget
         working-directory: apps/widget
         run: npm run build
@@ -98,12 +108,12 @@ jobs:
     runs-on: ubuntu-latest
     needs: lint-and-typecheck
     steps:
-      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
 
       - name: Setup Node.js
-        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: '24'
           cache: 'npm'
@@ -126,12 +136,12 @@ jobs:
     runs-on: ubuntu-latest
     needs: lint-and-typecheck
     steps:
-      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
 
       - name: Setup Node.js
-        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: '24'
           cache: 'npm'
@@ -146,3 +156,7 @@ jobs:
       - name: Build
         working-directory: apps/backend
         run: npm run build
+
+      - name: Test artifact parity and runtime
+        working-directory: apps/backend
+        run: npm run test:artifact

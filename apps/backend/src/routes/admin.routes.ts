@@ -17,6 +17,7 @@ import { adminVendorController } from '../controllers/admin-vendor.controller.js
 import { adminAnalyticsController } from '../controllers/admin-analytics.controller.js';
 import { getPlatformSettings, updatePlatformSettings } from '../controllers/admin-platform-settings.controller.js';
 import { ticketController } from '../controllers/ticket.controller.js';
+import verificationDiagnosticsRouter from './verification-diagnostics.routes.js';
 import { csvUpload } from '../config/upload.js';
 
 const router = Router();
@@ -25,6 +26,10 @@ const router = Router();
 router.use(authenticate);
 router.use(requireRole('admin'));
 router.use(requireCurrentAdmin);
+
+// Keep diagnostics inside this router so the shared authenticate -> role ->
+// current-admin gate applies before its transaction-local recheck.
+router.use('/verification-diagnostics', verificationDiagnosticsRouter);
 
 // Admin universities - order matters: segment-stats and csv-sample before :id
 router.get('/universities', asyncHandler(adminUniversityController.getUniversities.bind(adminUniversityController)));
@@ -123,5 +128,4 @@ router.patch(
 );
 
 export default router;
-
 

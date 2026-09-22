@@ -18,6 +18,7 @@ services:
     restart: unless-stopped
 
   backend:
+    image: awoof-backend
     container_name: awoof-backend
     build:
       context: ./apps/backend

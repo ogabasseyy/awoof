@@ -34,7 +34,7 @@ export function DashboardLayout({
                         'radial-gradient(ellipse 60% 40% at 80% 0%, rgba(29,78,216,0.08), transparent 50%)',
                 }}
             />
-            <div className="flex h-full">
+            <div className="flex h-full min-w-0">
                 <div className="hidden lg:block">
                     <DashboardSidebar
                         navItems={navItems}
@@ -66,7 +66,7 @@ export function DashboardLayout({
                     />
                 )}
 
-                <div className="flex min-h-0 flex-1 flex-col">
+                <div className="flex min-h-0 min-w-0 flex-1 flex-col">
                     <DashboardTopbar
                         actions={topbarActions}
                         user={user}
@@ -74,7 +74,7 @@ export function DashboardLayout({
                         isSidebarOpen={mobileNavOpen}
                     />
 
-                    <main className="flex-1 overflow-y-auto">
+                    <main className="min-w-0 flex-1 overflow-y-auto">
                         <div className="mx-auto w-full max-w-7xl px-4 py-6 sm:px-6 sm:py-8">
                             {(pageTitle || subtitle) && (
                                 <div className="mb-6 md:mb-8">

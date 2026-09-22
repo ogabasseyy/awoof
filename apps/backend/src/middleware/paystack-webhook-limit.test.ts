@@ -17,6 +17,8 @@ test('authentic webhook bursts bypass the shared IP abuse quota', async () => {
     assert.ok(address && typeof address !== 'string');
     const url = `http://127.0.0.1:${address.port}/`;
     const body = JSON.stringify({ event: 'synthetic' });
+    // Synthetic test-only HMAC key (no production secret); see test name.
+    // (Dismissed as used-in-tests in code scanning.)
     const signature = createHmac('sha512', 'synthetic-webhook-key').update(body).digest('hex');
     try {
         for (let i = 0; i < 120; i++) {

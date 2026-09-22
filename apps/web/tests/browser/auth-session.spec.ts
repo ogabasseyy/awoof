@@ -2,6 +2,7 @@ import { expect, test, type BrowserContext, type Page } from '@playwright/test';
 import { assertCleanFixture, collectBrowserFaults } from './browser-assertions';
 import {
   appOrigin,
+  apiOrigin,
   createGate,
   installSessionWriteControl,
   installSyntheticApi,
@@ -25,6 +26,10 @@ function storageFailureAlert(page: Page) {
   return page.getByRole('alert').filter({ hasText: /could not save your signed-out state/i });
 }
 
+function remainingTestBudgetMs(): number {
+  return Math.max(1, test.info().timeout - test.info().duration);
+}
+
 async function expectStudentMarketplaceIdentity(page: Page): Promise<void> {
   await expect(page.getByRole('link', { name: /^open profile$/i })).toBeVisible();
   await expect(page.getByRole('heading', { name: /hey student, savings are warming up/i })).toBeVisible();
@@ -32,6 +37,35 @@ async function expectStudentMarketplaceIdentity(page: Page): Promise<void> {
 
 async function expectSignedOutMarker(page: Page): Promise<void> {
   await expect.poll(() => page.evaluate(() => localStorage.getItem('awoof.session.v1'))).toContain('"state":"signed_out"');
+}
+
+async function waitForStudentLoginReadiness(page: Page, api: ApiFixture): Promise<void> {
+  const password = page.getByLabel('Password', { exact: true });
+  await expect(async () => {
+    if (await password.getAttribute('type') !== 'text') {
+      await page.getByRole('button', { name: 'Show password', exact: true }).click();
+    }
+    expect(await password.getAttribute('type')).toBe('text');
+    expect(api.loginCalls).toBe(0);
+  }).toPass({ timeout: remainingTestBudgetMs() });
+  await page.getByRole('button', { name: 'Hide password', exact: true }).click();
+  await expect(password).toHaveAttribute('type', 'password', { timeout: remainingTestBudgetMs() });
+}
+
+async function gotoStudentLogin(page: Page, path: string, api: ApiFixture): Promise<void> {
+  await page.goto(path, { waitUntil: 'domcontentloaded' });
+  // Toggling then restoring the empty PasswordInput proves its React handler
+  // has hydrated without submitting credentials.
+  await waitForStudentLoginReadiness(page, api);
+  expect(api.loginCalls).toBe(0);
+}
+
+async function gotoGuardedLogin(page: Page, path: string, api: ApiFixture): Promise<void> {
+  await page.goto(path, { waitUntil: 'domcontentloaded' });
+  await expect(page.getByLabel(/email/i)).toBeEnabled({ timeout: remainingTestBudgetMs() });
+  await expect(page.getByLabel(/^password$/i)).toBeEnabled({ timeout: remainingTestBudgetMs() });
+  await expect(page.getByRole('button', { name: /^login$/i })).toBeEnabled({ timeout: remainingTestBudgetMs() });
+  expect(api.loginCalls).toBe(0);
 }
 
 async function submitStudentLogin(page: Page): Promise<void> {
@@ -59,6 +93,18 @@ async function submitVendorRegistration(page: Page): Promise<void> {
   await page.getByRole('button', { name: /^continue$/i }).click();
 }
 
+async function gotoVendorRegistration(page: Page, api: ApiFixture): Promise<void> {
+  await page.goto('/auth/vendor/register', { waitUntil: 'domcontentloaded' });
+  // Step one is disabled in SSR and becomes enabled only when RHF's own
+  // readiness signal is live, preventing native pre-hydration form submits.
+  const companyName = page.getByLabel(/company.?s name/i);
+  const continueButton = page.getByRole('button', { name: 'Continue', exact: true });
+  await expect(companyName).toBeEnabled({ timeout: remainingTestBudgetMs() });
+  await expect(continueButton).toBeEnabled({ timeout: remainingTestBudgetMs() });
+  expect(api.registerCalls).toBe(0);
+  expect(vendorOnboardingRequests(api)).toEqual([]);
+}
+
 async function triggerVerifiedVendorReturn(page: Page): Promise<void> {
   await page.evaluate(() => {
     // Next synchronizes useSearchParams with native History updates, so this
@@ -69,7 +115,7 @@ async function triggerVerifiedVendorReturn(page: Page): Promise<void> {
 
 async function expectVendorDashboardIdentity(page: Page): Promise<void> {
   await expect(page.getByRole('heading', { name: /hey there, here’s your storefront/i })).toBeVisible();
-  await expect(page.getByRole('button', { name: /vendor@approved\.test vendor/i })).toBeVisible();
+  await expect(page.getByRole('button', { name: /^open account menu for vendor@approved\.test$/i })).toBeVisible();
   await expect(page.getByText(/^loading\.\.\.$/i)).toHaveCount(0);
 }
 
@@ -107,11 +153,51 @@ async function releaseAllAndDrain(gates: readonly Gate[], api: ApiFixture): Prom
   api.assertNoUnexpectedRequests();
 }
 
+test.describe('auth form pre-hydration guards', () => {
+  test.use({ javaScriptEnabled: false });
+
+  for (const scenario of [
+    {
+      name: 'vendor registration',
+      path: '/auth/vendor/register',
+      fields: [/company.?s name/i, /company.?s email/i, /full name/i, /phone number/i],
+      submit: 'Continue',
+    },
+    {
+      name: 'vendor login',
+      path: '/auth/vendor/login',
+      fields: [/company.?s email/i, /^password$/i],
+      submit: 'Login',
+    },
+    {
+      name: 'admin login',
+      path: '/auth/admin/login',
+      fields: [/^email$/i, /^password$/i],
+      submit: 'Login',
+    },
+  ] as const) {
+    test(`keeps ${scenario.name} SSR controls disabled before handlers attach`, async ({ page }) => {
+      const api = await installSyntheticApi(page);
+      const faults = collectBrowserFaults(page, api);
+
+      await page.goto(scenario.path, { waitUntil: 'domcontentloaded' });
+      for (const field of scenario.fields) await expect(page.getByLabel(field)).toBeDisabled();
+      await expect(page.getByRole('button', { name: scenario.submit, exact: true })).toBeDisabled();
+      await expect(page.locator('form')).toHaveAttribute('method', 'post');
+      await expect(page).toHaveURL(new RegExp(`${scenario.path}$`));
+      expect(api.loginCalls).toBe(0);
+      expect(api.registerCalls).toBe(0);
+      expect(vendorOnboardingRequests(api)).toEqual([]);
+      await assertCleanFixture(api, faults);
+    });
+  }
+});
+
 test('student login keeps a safe return destination after the submitted request completes', async ({ page }) => {
   const api = await installSyntheticApi(page);
   const faults = collectBrowserFaults(page, api);
 
-  await page.goto('/auth/student/login?redirect=%2Fmarketplace%3Ffrom%3Dauth-test');
+  await gotoStudentLogin(page, '/auth/student/login?redirect=%2Fmarketplace%3Ffrom%3Dauth-test', api);
   await submitStudentLogin(page);
   await api.waitForLoginCompleted(1);
 
@@ -149,7 +235,7 @@ test('storage denial renders login failure without authenticated navigation', as
   const api = await installSyntheticApi(page);
   const faults = collectBrowserFaults(page, api);
 
-  await page.goto('/auth/student/login');
+  await gotoStudentLogin(page, '/auth/student/login', api);
   await submitStudentLogin(page);
   await api.waitForLoginCompleted(1);
 
@@ -349,10 +435,14 @@ test('logout while refresh is pending cannot reauthenticate the rendered student
     refreshGate,
   });
   const faults = collectBrowserFaults(page, api);
+  const currentUserArrival = page.waitForRequest((request) => (
+    request.method() === 'GET' && request.url() === `${apiOrigin}/api/auth/me`
+  ));
   const other = await openStorageTab(context);
 
   try {
     await page.goto('/student/profile', { waitUntil: 'domcontentloaded' });
+    await currentUserArrival;
     await api.waitForCurrentUserCompleted(1);
     await api.waitForRefreshStarted(1);
     await writeSignedOutMarker(other);
@@ -377,12 +467,12 @@ test('external replacement wins a pending public login without inventing an auth
   const loginGate = createGate('pending student login');
   const api = await installSyntheticApi(page, { loginGate });
   const faults = collectBrowserFaults(page, api);
-  const other = await openStorageTab(context);
 
   try {
-    await page.goto('/auth/student/login');
+    await gotoStudentLogin(page, '/auth/student/login', api);
     await submitStudentLogin(page);
     await api.waitForLoginStarted(1);
+    const other = await openStorageTab(context);
     await replaceSession(other, 'vendor', 'external-login-replacement');
     await api.waitForCurrentUserCompleted(1);
     loginGate.release();
@@ -416,7 +506,7 @@ test('a real active-session logout invalidates a pending login before its stale 
     await api.waitForCurrentUserCompleted(1);
     await expect(activePage.getByRole('button', { name: /^log out$/i }).first()).toBeVisible();
 
-    await pendingPage.goto('/auth/student/login');
+    await gotoStudentLogin(pendingPage, '/auth/student/login', api);
     await api.waitForCurrentUserCompleted(2);
     await submitStudentLogin(pendingPage);
     await api.waitForLoginStarted(1);
@@ -447,7 +537,7 @@ test('a pending login reconciles a same-page replacement before its completion c
   const faults = collectBrowserFaults(page, api);
 
   try {
-    await page.goto('/auth/student/login');
+    await gotoStudentLogin(page, '/auth/student/login', api);
     await submitStudentLogin(page);
     await api.waitForLoginStarted(1);
     await replaceSession(page, 'vendor', 'same-page-replacement');
@@ -476,7 +566,7 @@ test('a replacement vendor session cancels held registration before the real for
   const other = await openStorageTab(context);
 
   try {
-    await page.goto('/auth/vendor/register');
+    await gotoVendorRegistration(page, api);
     await submitVendorRegistration(page);
     await api.waitForRegisterStarted(1);
 
@@ -517,7 +607,7 @@ test('a rendered vendor logout cancels held registration before the real form ca
     await api.waitForCurrentUserCompleted(1);
     await expect(activePage.getByRole('button', { name: /^log out$/i }).first()).toBeVisible();
 
-    await registrationPage.goto('/auth/vendor/register');
+    await gotoVendorRegistration(registrationPage, api);
     await submitVendorRegistration(registrationPage);
     await api.waitForRegisterStarted(1);
 
@@ -678,7 +768,7 @@ test('vendor registration keeps email-verification onboarding after all modeled 
   const api = await installSyntheticApi(page);
   const faults = collectBrowserFaults(page, api);
 
-  await page.goto('/auth/vendor/register');
+  await gotoVendorRegistration(page, api);
   await submitVendorRegistration(page);
   await api.waitForVendorRegistrationCompleted();
   await api.waitForVendorUploadCompleted();
@@ -695,21 +785,21 @@ for (const scenario of [
     login: '/auth/vendor/login',
     destination: '/vendor/dashboard',
     greeting: /hey there, here’s your storefront/i,
-    userControl: /vendor@approved\.test vendor/i,
+    userControl: /^open account menu for vendor@approved\.test$/i,
   },
   {
     role: 'admin',
     login: '/auth/admin/login',
     destination: '/admin/dashboard',
     greeting: /hey admin, here’s the pulse/i,
-    userControl: /admin admin/i,
+    userControl: /^open account menu for admin$/i,
   },
 ] as const) {
   test(`${scenario.role} login reaches only its own rendered destination`, async ({ page }) => {
     const api = await installSyntheticApi(page);
     const faults = collectBrowserFaults(page, api);
 
-    await page.goto(scenario.login);
+    await gotoGuardedLogin(page, scenario.login, api);
     await page.getByLabel(/email/i).fill(`${scenario.role}@approved.test`);
     await page.getByLabel(/^password/i).fill('Synthetic-Password1!');
     await page.getByRole('button', { name: /^login$/i }).click();

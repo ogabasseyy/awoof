@@ -16,12 +16,12 @@ jobs:
     permissions:
       contents: read
     steps:
-      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
 
       - name: Restore lychee cache
-        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: .lycheecache
           key: cache-lychee-${{ runner.os }}-${{ github.ref }}
@@ -30,13 +30,18 @@ jobs:
             cache-lychee-
 
       - name: Link Checker
-        uses: lycheeverse/lychee-action@7cd0af4c74a61395d455af97419279d86aafaede # v2.0.2
+        uses: lycheeverse/lychee-action@e7477775783ea5526144ba13e8db5eec57747ce8 # v2.9.0
         with:
+          # Excludes below cover URLs lychee can never verify: synthetic test
+          # origins/paths, auth-required APIs (401/400 by design), bot-blocked
+          # doc hosts (403), and the pre-launch widget CDN (404 until the
+          # "CDN deploy" todo ships — then drop the widget.awoof.com line).
           args: >-
             --verbose
             --no-progress
             './**/*.md' './**/*.html' './**/*.tsx' './**/*.ts'
-            --exclude-mail
+            --include-mail=false
+            --exclude-path 'node_modules'
             --exclude 'localhost|127\.0\.0\.1'
             --exclude 'github\.com'
             --exclude 'via\.placeholder\.com|example\.com|yourcdn\.com|yoursite\.com'
@@ -45,6 +50,12 @@ jobs:
             --exclude 'greensock\.com'
             --exclude 'react\.dev'
             --exclude 'facebook\.com'
+            --exclude 'alice\.github\.io|bob\.github\.io'
+            --exclude 'graph\.microsoft\.com'
+            --exclude 'login\.microsoftonline\.com/(authorize|never-store|other)'
+            --exclude 'api\.paystack\.co|checkout\.paystack\.com|paystack\.com'
+            --exclude 'npmjs\.com'
+            --exclude 'widget\.awoof\.com'
           fail: true
         env:
           GITHUB_TOKEN: ${{secrets.GITHUB_TOKEN}}

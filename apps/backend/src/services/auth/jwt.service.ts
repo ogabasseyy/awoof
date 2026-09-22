@@ -16,6 +16,7 @@ export interface TokenPayload {
     userId: string;
     email: string;
     role: 'student' | 'vendor' | 'admin';
+    sid?: string;
 }
 
 /**

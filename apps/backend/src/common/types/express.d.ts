@@ -15,6 +15,7 @@ declare global {
                 userId: string;
                 email: string;
                 role: 'student' | 'vendor' | 'admin';
+                sid?: string;
                 iat?: number;
                 exp?: number;
             };
@@ -33,4 +34,3 @@ declare global {
 }
 
 export { };
-

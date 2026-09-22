@@ -32,9 +32,6 @@ RUN npm config set fetch-timeout 120000 fetch-retries 5 fetch-retry-mintimeout 2
 
 # Copy built application
 COPY --from=builder --chown=nodejs:nodejs /usr/src/app/dist ./dist
-# Copy migration SQL files (run.js reads them from same dir)
-COPY --from=builder --chown=nodejs:nodejs /usr/src/app/src/database/migrations/*.sql ./dist/database/migrations/
-
 # Create uploads directory for vendor files (ownership set by entrypoint when volume is used)
 RUN mkdir -p /usr/src/app/uploads/vendors
 

@@ -1,4 +1,4 @@
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { db } from '../../config/database.js';
 import { UnauthorizedError } from '../../common/errors/AppError.js';
 import { jwtService, type TokenPair, type TokenPayload } from './jwt.service.js';
@@ -39,7 +39,10 @@ export async function issueSession(
     rememberMe: boolean = false,
     expectedPasswordHash?: string,
 ): Promise<TokenPair> {
-    const tokens = jwtService.generateTokenPair(payload, rememberMe);
+    // A fresh sign-in starts a new server-authoritative session family. Ignore
+    // any sid supplied by a caller or stale profile object.
+    const sid = randomUUID();
+    const tokens = jwtService.generateTokenPair({ ...payload, sid }, rememberMe);
     const decoded = jwtService.verifyRefreshToken(tokens.refreshToken);
     const expiry = decoded.exp;
 
@@ -50,7 +53,8 @@ export async function issueSession(
     const result = await db.query(
         `UPDATE users
          SET refresh_token_hash = $2,
-             refresh_token_expires_at = $3
+             refresh_token_expires_at = $3,
+             active_session_id = $6
          WHERE id = $1
            AND deleted_at IS NULL
            AND ($4::text IS NULL OR password_hash = $4)
@@ -63,6 +67,7 @@ export async function issueSession(
             new Date(expiry * 1000),
             expectedPasswordHash ?? null,
             payload.role,
+            sid,
         ],
     );
 
@@ -81,6 +86,10 @@ export async function refreshSession(refreshToken: string): Promise<string> {
         throw new UnauthorizedError('Invalid or expired refresh token');
     }
 
+    const sid = isUuid(decoded.sid) ? decoded.sid : undefined;
+    // Legacy tokens retain their existing non-Microsoft behavior, but cannot
+    // refresh across a newly bound session family.
+    const sidPredicate = sid === undefined ? 'AND u.active_session_id IS NULL' : 'AND u.active_session_id = $3::uuid';
     const result = await db.query<{ id: string; email: string; role: TokenPayload['role'] }>(
         `SELECT u.id, u.email, u.role
          FROM users u
@@ -88,8 +97,9 @@ export async function refreshSession(refreshToken: string): Promise<string> {
            AND u.refresh_token_hash = $2
            AND u.refresh_token_expires_at > CURRENT_TIMESTAMP
            AND u.deleted_at IS NULL
+           ${sidPredicate}
            AND ${currentProfilePredicate}`,
-        [decoded.userId, refreshTokenHash(refreshToken)],
+        sid === undefined ? [decoded.userId, refreshTokenHash(refreshToken)] : [decoded.userId, refreshTokenHash(refreshToken), sid],
     );
 
     if (result.rowCount === 0) {
@@ -104,6 +114,7 @@ export async function refreshSession(refreshToken: string): Promise<string> {
         userId: user.id,
         email: user.email,
         role: user.role,
+        ...(sid === undefined ? {} : { sid }),
     });
 }
 
@@ -111,7 +122,8 @@ export async function revokeSession(userId: string): Promise<void> {
     await db.query(
         `UPDATE users
          SET refresh_token_hash = NULL,
-             refresh_token_expires_at = NULL
+             refresh_token_expires_at = NULL,
+             active_session_id = NULL
          WHERE id = $1`,
         [userId],
     );
@@ -122,6 +134,11 @@ export async function revokeSessionByRefreshToken(refreshToken: string): Promise
     let decoded: TokenPayload;
     try { decoded = jwtService.verifyRefreshToken(refreshToken); }
     catch { throw new UnauthorizedError('Invalid or expired refresh token'); }
-    await db.query(`UPDATE users SET refresh_token_hash = NULL, refresh_token_expires_at = NULL
+    await db.query(`UPDATE users SET refresh_token_hash = NULL, refresh_token_expires_at = NULL, active_session_id = NULL
         WHERE id = $1 AND refresh_token_hash = $2`, [decoded.userId, refreshTokenHash(refreshToken)]);
+}
+
+function isUuid(value: unknown): value is string {
+    return typeof value === 'string'
+        && /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value);
 }

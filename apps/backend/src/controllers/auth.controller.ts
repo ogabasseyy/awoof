@@ -543,6 +543,7 @@ export class AuthController {
                  password_reset_otp_expires_at = NULL,
                  refresh_token_hash = NULL,
                  refresh_token_expires_at = NULL,
+                 active_session_id = NULL,
                  updated_at = CURRENT_TIMESTAMP
              WHERE id = $2`,
             [passwordHash, user.id]
@@ -613,6 +614,7 @@ export class AuthController {
              SET password_hash = $1, 
                  refresh_token_hash = NULL,
                  refresh_token_expires_at = NULL,
+                 active_session_id = NULL,
                  updated_at = CURRENT_TIMESTAMP
              WHERE id = $2`,
             [passwordHash, user.id]
