@@ -163,11 +163,92 @@ type SchoolEvidenceRow = {
     valid_until: Date;
 };
 
+type SsoSchoolRow = {
+    source: 'google_workspace' | 'microsoft_school';
+    valid_until: Date;
+};
+
+type SsoSchoolCandidates = {
+    valid: { method: Exclude<SchoolAccountMethod, null>; validUntil: string } | null;
+    expired: { method: Exclude<SchoolAccountMethod, null>; validUntil: string } | null;
+};
+
+/**
+ * B4 SSO assertion projection. Each source projects only while its provider
+ * is deployment-enabled, and every row must carry its immutable
+ * owner/university binding to a live login identity under a current policy
+ * version. Lifetime is capped at 90 days from attestation and by the live
+ * institution approval. These are non-locking projection reads like the
+ * enrollment flags: a label may lag a concurrent write but can never
+ * authorize.
+ */
+async function readSsoSchoolAccount(tx: PoolClient, userId: string, context: StudentContext): Promise<SsoSchoolCandidates> {
+    const empty: SsoSchoolCandidates = { valid: null, expired: null };
+    const googleEnabled = config.studentSso.google.enabled;
+    const microsoftEnabled = config.studentSso.microsoft.enabled;
+    if (!googleEnabled && !microsoftEnabled) return empty;
+    const params = [userId, context.universityId, context.identityVersion, googleEnabled, microsoftEnabled];
+    const valid = await tx.query<SsoSchoolRow>(
+        `SELECT a.source, LEAST(a.expires_at, a.verified_at + interval '90 days', p.approved_until) AS valid_until
+         FROM student_school_assertions a
+         JOIN student_auth_identities i
+           ON i.id = a.auth_identity_id
+          AND i.user_id = a.user_id
+          AND i.revoked_at IS NULL
+         JOIN institution_login_policies p
+           ON p.id = a.login_policy_id
+          AND p.enabled
+          AND p.approved_until > clock_timestamp()
+          AND p.version = a.policy_version
+          AND p.university_id = a.university_id
+         WHERE a.user_id = $1
+           AND a.university_id = $2
+           AND a.revoked_at IS NULL
+           AND a.identity_version = $3
+           AND ((a.source = 'google_workspace' AND $4) OR (a.source = 'microsoft_school' AND $5))
+           AND LEAST(a.expires_at, a.verified_at + interval '90 days', p.approved_until) > clock_timestamp()
+         ORDER BY valid_until DESC, a.verified_at DESC, a.id DESC
+         LIMIT 1`,
+        params,
+    );
+    const expired = await tx.query<SsoSchoolRow>(
+        `SELECT a.source, LEAST(a.expires_at, a.verified_at + interval '90 days', p.approved_until) AS valid_until
+         FROM student_school_assertions a
+         JOIN student_auth_identities i
+           ON i.id = a.auth_identity_id
+          AND i.user_id = a.user_id
+          AND i.revoked_at IS NULL
+         JOIN institution_login_policies p
+           ON p.id = a.login_policy_id
+          AND p.enabled
+          AND p.approved_until > clock_timestamp()
+          AND p.version = a.policy_version
+          AND p.university_id = a.university_id
+         WHERE a.user_id = $1
+           AND a.university_id = $2
+           AND a.revoked_at IS NULL
+           AND a.identity_version = $3
+           AND ((a.source = 'google_workspace' AND $4) OR (a.source = 'microsoft_school' AND $5))
+           AND LEAST(a.expires_at, a.verified_at + interval '90 days', p.approved_until) <= clock_timestamp()
+         ORDER BY valid_until DESC, a.verified_at DESC, a.id DESC
+         LIMIT 1`,
+        params,
+    );
+    const validRow = valid.rows[0];
+    const expiredRow = expired.rows[0];
+    return {
+        valid: validRow ? { method: validRow.source, validUntil: validRow.valid_until.toISOString() } : null,
+        expired: expiredRow ? { method: expiredRow.source, validUntil: expiredRow.valid_until.toISOString() } : null,
+    };
+}
+
 async function readSchoolAccount(tx: PoolClient, userId: string, context: StudentContext): Promise<SchoolAccountProjection> {
-    // Release A school assurance is mailbox proof only. It requires an active
-    // approved domain, matching identity/policy versions, a current
-    // processing grant, and unexpired evidence. The projection caps lifetime
-    // at 90 days from proof; it never extends old proof expiry.
+    // School assurance is mailbox proof plus SSO assertions. Mailbox proof
+    // requires an active approved domain, matching identity/policy versions,
+    // a current processing grant, and unexpired evidence. The projection caps
+    // lifetime at 90 days from proof; it never extends old proof expiry.
+    // When both sources are current, the later valid-until wins (ties prefer
+    // the SSO membership attestation); enrollment eligibility is untouched.
     const params = [
         context.studentId,
         context.universityId,
@@ -207,10 +288,15 @@ async function readSchoolAccount(tx: PoolClient, userId: string, context: Studen
         params,
     );
     const current = valid.rows[0];
-    if (current) {
+    const sso = await readSsoSchoolAccount(tx, userId, context);
+    const mailboxValid = current ? { method: 'email_otp' as const, validUntil: current.valid_until.toISOString() } : null;
+    const winner = mailboxValid && sso.valid
+        ? (mailboxValid.validUntil > sso.valid.validUntil ? mailboxValid : sso.valid)
+        : (mailboxValid ?? sso.valid);
+    if (winner) {
         return resolveSchoolAccount({
-            method: 'email_otp',
-            validUntil: current.valid_until.toISOString(),
+            method: winner.method,
+            validUntil: winner.validUntil,
             expiredValidUntil: null,
         });
     }
@@ -243,10 +329,14 @@ async function readSchoolAccount(tx: PoolClient, userId: string, context: Studen
         params,
     );
     const past = expired.rows[0];
+    const mailboxExpired = past ? { method: 'email_otp' as const, validUntil: past.valid_until.toISOString() } : null;
+    const last = mailboxExpired && sso.expired
+        ? (mailboxExpired.validUntil > sso.expired.validUntil ? mailboxExpired : sso.expired)
+        : (mailboxExpired ?? sso.expired);
     return resolveSchoolAccount({
-        method: 'email_otp',
+        method: last?.method ?? 'email_otp',
         validUntil: null,
-        expiredValidUntil: past ? past.valid_until.toISOString() : null,
+        expiredValidUntil: last ? last.validUntil : null,
     });
 }
 
@@ -354,12 +444,11 @@ async function readEnrollmentFlags(tx: PoolClient, context: StudentContext): Pro
     };
 }
 
-// Read-only status projection over current evidence. Release A reads existing
-// mailbox/evidence tables only; it must not depend on migration 057 (the B4
-// SSO assertion reader extends this module behind the provider flags).
-// Expiry, denial, and revocation take effect on the next read: nothing here
-// is cached in the session or JWT. A reader failure is a retryable status
-// error, never a fabricated positive result.
+// Read-only status projection over current evidence. Mailbox and enrollment
+// evidence carry the Release A projection; B4 adds SSO school assertions
+// behind the provider flags. Expiry, denial, and revocation take effect on
+// the next read: nothing here is cached in the session or JWT. A reader
+// failure is a retryable status error, never a fabricated positive result.
 export async function readStudentAssurance(tx: PoolClient, userId: string): Promise<StudentAssurance> {
     let context: StudentContext;
     try {

@@ -25,6 +25,16 @@ export type LoginOptions = {
     recovery: true;
 };
 
+/** An approved institution login policy with its pinned trust data (moved from the B3 flow module so link code shares it). */
+export type ApprovedLoginPolicy = {
+    id: string;
+    universityId: string;
+    provider: LoginProvider;
+    issuer: string;
+    realm: string;
+    version: number;
+};
+
 /** Institution SSO login adapter boundary (Task B2). Browser tab secrets stay with the B3 flow; adapters only observe. */
 export interface StudentOidcAdapter {
     authorize(input: { state: string; nonce: string; verifier: string; loginHint: string }): Promise<URL>;

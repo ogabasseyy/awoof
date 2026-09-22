@@ -32,7 +32,7 @@ type StateEvidence = {
     provider_proof_id: string | null;
 };
 
-type EvidenceCandidate = StateEvidence;
+export type EvidenceCandidate = StateEvidence;
 
 async function validMerchantDisclosure(
     tx: PoolClient,
@@ -101,7 +101,8 @@ function hasCurrentBaseAuthority(evidence: EvidenceCandidate, context: StudentCo
         && evidence.proof_email === context.email;
 }
 
-async function currentMicrosoftProof(
+/** Shared Microsoft membership predicate. SSO school assertions reuse it directly instead of forking a parallel Graph check. */
+export async function currentMicrosoftProof(
     tx: PoolClient,
     userId: string,
     context: StudentContext,

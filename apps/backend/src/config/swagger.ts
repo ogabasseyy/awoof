@@ -300,6 +300,78 @@ Access tokens expire in 15 minutes. Use the refresh token endpoint to get a new 
                         },
                     },
                 },
+                StudentSsoReauthResponse: {
+                    type: 'object',
+                    required: ['success', 'data'],
+                    properties: {
+                        success: { type: 'boolean', example: true },
+                        data: {
+                            type: 'object',
+                            required: ['grantId', 'grantSecret', 'expiresAt'],
+                            properties: {
+                                grantId: { type: 'string', format: 'uuid' },
+                                grantSecret: { type: 'string', description: 'Single-use grant secret, bound to the current user and session for five minutes.' },
+                                expiresAt: { type: 'string', format: 'date-time' },
+                            },
+                        },
+                    },
+                },
+                StudentSsoLinkResponse: {
+                    type: 'object',
+                    required: ['success', 'data'],
+                    properties: {
+                        success: { type: 'boolean', example: true },
+                        data: {
+                            type: 'object',
+                            required: ['outcome', 'identity', 'schoolAssertion', 'reactivated'],
+                            properties: {
+                                outcome: { type: 'string', enum: ['linked'] },
+                                identity: {
+                                    type: 'object',
+                                    required: ['id', 'provider', 'universityName', 'linkedAt'],
+                                    properties: {
+                                        id: { type: 'string', format: 'uuid' },
+                                        provider: { type: 'string', enum: ['google', 'microsoft'] },
+                                        universityName: { type: 'string' },
+                                        linkedAt: { type: 'string', format: 'date-time' },
+                                    },
+                                },
+                                schoolAssertion: {
+                                    type: 'string',
+                                    enum: ['recorded', 'not_attested'],
+                                    description: 'Whether membership evidence supported a school assertion. Linking never authorizes enrollment benefits.',
+                                },
+                                reactivated: { type: 'boolean', description: 'True when the original owner reactivated a revoked identity.' },
+                            },
+                        },
+                    },
+                },
+                StudentSsoIdentitiesResponse: {
+                    type: 'object',
+                    required: ['success', 'data'],
+                    properties: {
+                        success: { type: 'boolean', example: true },
+                        data: {
+                            type: 'object',
+                            required: ['identities'],
+                            properties: {
+                                identities: {
+                                    type: 'array',
+                                    items: {
+                                        type: 'object',
+                                        required: ['id', 'provider', 'universityName', 'linkedAt'],
+                                        properties: {
+                                            id: { type: 'string', format: 'uuid' },
+                                            provider: { type: 'string', enum: ['google', 'microsoft'] },
+                                            universityName: { type: 'string' },
+                                            linkedAt: { type: 'string', format: 'date-time' },
+                                        },
+                                    },
+                                },
+                            },
+                        },
+                    },
+                },
                 StudentProfile: {
                     type: 'object',
                     properties: {

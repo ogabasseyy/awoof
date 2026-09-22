@@ -14,14 +14,25 @@ import {
     hashMicrosoftAttemptSecret as hashSsoSecret,
 } from '../verification/microsoft-attempt-crypto.js';
 import { lockStudentContext } from '../verification/eligibility-context.service.js';
-import { normalizeStudentDomain } from '../verification/eligibility-policy.service.js';
 import { normalizeStudentLoginEmail } from './student-login-options.service.js';
 import { readStudentAssuranceOrNull } from '../verification/student-assurance.service.js';
 import type { StudentAssurance } from '../verification/student-assurance.types.js';
 import { issueSessionInTransaction } from './session.service.js';
 import type { TokenPair } from './jwt.service.js';
-import { GOOGLE_ISSUER } from './student-google-oidc.js';
-import type { LoginProvider, ProviderObservation, StudentOidcAdapter } from './student-sso.types.js';
+import type { ApprovedLoginPolicy, LoginProvider, ProviderObservation, StudentOidcAdapter } from './student-sso.types.js';
+import {
+    StudentSsoAuthorityInvalidatedError,
+    assertAdapterPolicy,
+    assertCurrentLoginPolicy,
+    decodeProviderObservation,
+    encodeProviderObservation,
+    hasCurrentMicrosoftMembership,
+    writeSsoSchoolAssertion,
+} from './student-sso-onboarding.service.js';
+
+/** Re-exported from the shared modules so existing importers keep working. */
+export { assertAdapterPolicy, type CurrentLoginPolicy } from './student-sso-onboarding.service.js';
+export type { ApprovedLoginPolicy } from './student-sso.types.js';
 
 /**
  * Browser-bound atomic SSO login (Task B3).
@@ -40,7 +51,6 @@ export const STUDENT_SSO_OPEN_ATTEMPT_LIMIT = 3;
 const STUDENT_SSO_RETURN_PATH_MAX_LENGTH = 2048;
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
-const TENANT_UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
 export type StudentSsoCallbackCookie = {
     name: string;
@@ -82,15 +92,6 @@ export type StudentSsoFinishResult =
     | StudentSsoAuthenticatedResult
     | { outcome: 'link_required'; handoffId: string; handoffSecret: string; expiresAt: string }
     | { outcome: 'restart_required' };
-
-export type ApprovedLoginPolicy = {
-    id: string;
-    universityId: string;
-    provider: LoginProvider;
-    issuer: string;
-    realm: string;
-    version: number;
-};
 
 export type StudentSsoOidcResolver = {
     forPolicy(policy: ApprovedLoginPolicy): StudentOidcAdapter;
@@ -147,13 +148,6 @@ function invalidAttempt(): ConflictError {
     return new ConflictError('Student SSO attempt is no longer valid');
 }
 
-/** Authority revoked after the cookie check: the browser gets a bounded redirect, not a raw error. */
-class StudentSsoAuthorityInvalidatedError extends ConflictError {
-    constructor() {
-        super('Student SSO attempt is no longer valid');
-    }
-}
-
 class StudentSsoAttemptExpiredError extends ConflictError {
     constructor(readonly attemptId: string) {
         super('Student SSO attempt is no longer valid');
@@ -201,62 +195,6 @@ export function resolveStudentSsoReturnPath(candidate: unknown, origin: string):
     return `${resolved.pathname}${resolved.search}${resolved.hash}`;
 }
 
-/** Fail closed on misconfigured policy trust data before any provider call. */
-export function assertAdapterPolicy(policy: ApprovedLoginPolicy): void {
-    if (policy.provider === 'google') {
-        try {
-            normalizeStudentDomain(policy.realm);
-        } catch {
-            throw invalidAttempt();
-        }
-        if (policy.issuer !== GOOGLE_ISSUER) throw invalidAttempt();
-        return;
-    }
-    if (!TENANT_UUID.test(policy.realm)) throw invalidAttempt();
-    if (policy.issuer !== `https://login.microsoftonline.com/${policy.realm}/v2.0`) throw invalidAttempt();
-}
-
-function encodeObservation(observation: ProviderObservation): string {
-    return JSON.stringify({
-        provider: observation.provider,
-        issuer: observation.issuer,
-        subject: observation.subject,
-        email: observation.email,
-        mailboxVerified: observation.mailboxVerified,
-        realm: observation.realm,
-        schoolMembershipAttested: observation.schoolMembershipAttested,
-    });
-}
-
-function decodeObservation(raw: string): ProviderObservation {
-    let parsed: unknown;
-    try {
-        parsed = JSON.parse(raw);
-    } catch {
-        throw invalidAttempt();
-    }
-    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) throw invalidAttempt();
-    const value = parsed as Record<string, unknown>;
-    if ((value.provider !== 'google' && value.provider !== 'microsoft')
-        || typeof value.issuer !== 'string' || value.issuer === ''
-        || typeof value.subject !== 'string' || value.subject === ''
-        || (typeof value.email !== 'string' && value.email !== null)
-        || typeof value.mailboxVerified !== 'boolean'
-        || typeof value.realm !== 'string'
-        || typeof value.schoolMembershipAttested !== 'boolean') {
-        throw invalidAttempt();
-    }
-    return {
-        provider: value.provider,
-        issuer: value.issuer,
-        subject: value.subject,
-        email: value.email,
-        mailboxVerified: value.mailboxVerified,
-        realm: value.realm,
-        schoolMembershipAttested: value.schoolMembershipAttested,
-    };
-}
-
 function validOpaque(value: unknown): value is string {
     return typeof value === 'string' && value.length > 0 && value.length <= 1024;
 }
@@ -299,54 +237,6 @@ export class StudentSsoFlowService {
         completionUrl.searchParams.set('attempt', attemptId);
         completionUrl.searchParams.set('outcome', 'connection_not_completed');
         return { attemptId, completionUrl, outcome: 'connection_not_completed' };
-    }
-
-    /**
-     * Current-policy recheck under the policy lock: enabled, live approval,
-     * pinned version, active university, active domain mapping. Trust edits
-     * increment the version under the same lock, so equality is meaningful.
-     */
-    private async assertCurrentPolicy(tx: PoolClient, policyId: string, version: number, mailbox: string): Promise<ApprovedLoginPolicy> {
-        await tx.query('SELECT id FROM institution_login_policies WHERE id = $1 FOR UPDATE', [policyId]);
-        const domain = mailbox.slice(mailbox.lastIndexOf('@') + 1);
-        const result = await tx.query<ApprovedLoginPolicy & { university_id: string; provider_realm: string }>(
-            `SELECT p.id, p.university_id, p.provider, p.issuer, p.provider_realm, p.version
-             FROM institution_login_policies p
-             JOIN universities u ON u.id = p.university_id AND u.is_active
-             JOIN institution_login_domain_providers dp
-               ON dp.policy_id = p.id
-              AND dp.university_id = p.university_id
-              AND dp.provider = p.provider
-             JOIN institution_login_domains d
-               ON d.domain = dp.domain
-              AND d.university_id = dp.university_id
-              AND d.is_active
-             WHERE p.id = $1
-               AND p.version = $2
-               AND p.enabled
-               AND p.approved_until IS NOT NULL
-               AND p.approved_until > clock_timestamp()
-               AND d.domain = $3`,
-            [policyId, version, domain],
-        );
-        const row = result.rows[0];
-        if (!row || (row.provider !== 'google' && row.provider !== 'microsoft')) {
-            throw new StudentSsoAuthorityInvalidatedError();
-        }
-        const policy: ApprovedLoginPolicy = {
-            id: row.id,
-            universityId: row.university_id,
-            provider: row.provider,
-            issuer: row.issuer,
-            realm: row.provider_realm,
-            version: row.version,
-        };
-        try {
-            assertAdapterPolicy(policy);
-        } catch {
-            throw new StudentSsoAuthorityInvalidatedError();
-        }
-        return policy;
     }
 
     async start(input: { provider: unknown; email: unknown; rememberMe?: unknown; returnPath?: unknown }): Promise<StudentSsoStartResult> {
@@ -493,7 +383,7 @@ export class StudentSsoFlowService {
                     throw invalidAttempt();
                 }
                 cookieAuthenticatedAttemptId = attempt.id;
-                const policy = await this.assertCurrentPolicy(tx, attempt.policy_id, attempt.policy_version, attempt.requested_email);
+                const policy = await assertCurrentLoginPolicy(tx, attempt.policy_id, attempt.policy_version, attempt.requested_email);
                 await tx.query('SELECT id FROM student_auth_attempts WHERE id = $1 FOR UPDATE', [attempt.id]);
                 const locked = await tx.query<SsoAttempt>('SELECT * FROM student_auth_attempts WHERE id = $1', [attempt.id]);
                 const clock = await tx.query<{ now: Date }>('SELECT clock_timestamp() AS now');
@@ -550,7 +440,7 @@ export class StudentSsoFlowService {
         try {
             await this.transaction(async (tx) => {
                 this.assertEnabled();
-                await this.assertCurrentPolicy(tx, claimed.attempt.policy_id, claimed.attempt.policy_version, claimed.attempt.requested_email);
+                await assertCurrentLoginPolicy(tx, claimed.attempt.policy_id, claimed.attempt.policy_version, claimed.attempt.requested_email);
                 await tx.query('SELECT id FROM student_auth_attempts WHERE id = $1 FOR UPDATE', [claimed.attempt.id]);
                 const row = await tx.query<SsoAttempt>('SELECT * FROM student_auth_attempts WHERE id = $1', [claimed.attempt.id]);
                 const attempt = row.rows[0];
@@ -564,7 +454,7 @@ export class StudentSsoFlowService {
                     `UPDATE student_auth_attempts
                      SET status = 'ready', encrypted_verifier = NULL, nonce = NULL, encrypted_observation = $2
                      WHERE id = $1 AND status = 'processing'`,
-                    [attempt.id, encryptSsoSecret(encodeObservation(observation), this.deps.attemptKey, attempt.id)],
+                    [attempt.id, encryptSsoSecret(encodeProviderObservation(observation), this.deps.attemptKey, attempt.id)],
                 );
                 if (updated.rowCount !== 1) throw invalidAttempt();
             });
@@ -627,7 +517,7 @@ export class StudentSsoFlowService {
                 if (attempt.status !== 'ready' || !attempt.encrypted_observation) throw invalidAttempt();
                 let observation: ProviderObservation;
                 try {
-                    observation = decodeObservation(decryptSsoSecret(attempt.encrypted_observation, this.deps.attemptKey, attempt.id));
+                    observation = decodeProviderObservation(decryptSsoSecret(attempt.encrypted_observation, this.deps.attemptKey, attempt.id));
                 } catch {
                     await this.terminalizeAttempt(tx, attempt.id);
                     await this.invalidateAbandonedAttempts(tx, attempt);
@@ -723,7 +613,7 @@ export class StudentSsoFlowService {
             throw error;
         }
         if (!context.active) throw new UnauthorizedError('Student SSO login is not available for this account');
-        const policy = await this.assertCurrentPolicy(tx, attempt.policy_id, attempt.policy_version, attempt.requested_email);
+        const policy = await assertCurrentLoginPolicy(tx, attempt.policy_id, attempt.policy_version, attempt.requested_email);
         if (policy.provider !== observation.provider || policy.issuer !== observation.issuer) throw invalidAttempt();
         const lockedIdentity = await tx.query<{ id: string; user_id: string; revoked_at: Date | null }>(
             'SELECT id, user_id, revoked_at FROM student_auth_identities WHERE id = $1 FOR UPDATE',
@@ -757,6 +647,25 @@ export class StudentSsoFlowService {
             [attempt.id],
         );
         if (consumed.rowCount !== 1) throw invalidAttempt();
+        // A linked sign-in refreshes the school assertion only when membership
+        // evidence is sufficient; guests and missing membership log in with no
+        // positive assertion. Enrollment evidence is never written here.
+        const microsoftMembershipAttested = observation.provider === 'microsoft'
+            && await hasCurrentMicrosoftMembership(tx, context.userId, context, policy.realm);
+        await writeSsoSchoolAssertion(tx, {
+            userId: context.userId,
+            universityId: context.universityId,
+            identityVersion: context.identityVersion,
+            identityId: identity.id,
+            policy: {
+                id: policy.id,
+                version: policy.version,
+                schoolAssertionDays: policy.schoolAssertionDays,
+                approvedUntil: policy.approvedUntil,
+            },
+            observation,
+            microsoftMembershipAttested,
+        });
         const profile = await tx.query<{ verification_status: string }>('SELECT verification_status FROM users WHERE id = $1', [context.userId]);
         // Commit issuance and consumed state together; tokens and assurance
         // go out only after commit.
@@ -779,7 +688,7 @@ export class StudentSsoFlowService {
         observation: ProviderObservation,
     ): Promise<Extract<StudentSsoFinishResult, { outcome: 'link_required' }> | { restart: true }> {
         // Lock order subset: policy → attempt, then the single handoff insert.
-        const policy = await this.assertCurrentPolicy(tx, attempt.policy_id, attempt.policy_version, attempt.requested_email);
+        const policy = await assertCurrentLoginPolicy(tx, attempt.policy_id, attempt.policy_version, attempt.requested_email);
         if (policy.provider !== observation.provider || policy.issuer !== observation.issuer) throw invalidAttempt();
         await tx.query('SELECT id FROM student_auth_attempts WHERE id = $1 FOR UPDATE', [attempt.id]);
         const locked = await tx.query<SsoAttempt>('SELECT * FROM student_auth_attempts WHERE id = $1', [attempt.id]);
@@ -804,7 +713,7 @@ export class StudentSsoFlowService {
              RETURNING expires_at`,
             [
                 handoffId, attempt.id, hashSsoSecret(handoffSecret),
-                encryptSsoSecret(encodeObservation(observation), this.deps.attemptKey, handoffId),
+                encryptSsoSecret(encodeProviderObservation(observation), this.deps.attemptKey, handoffId),
                 attempt.policy_id, attempt.policy_version, attempt.callback_cookie_hash,
             ],
         );
