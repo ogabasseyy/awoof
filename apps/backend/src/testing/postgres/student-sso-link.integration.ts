@@ -49,7 +49,13 @@ async function withLinkPool<T>(operation: (pool: Pool) => Promise<T>): Promise<T
 }
 
 function makeService(pool: Pool, attemptKey: string, overrides: Partial<StudentSsoLinkDependencies> = {}): StudentSsoLinkService {
-    return new StudentSsoLinkService({ pool, attemptKey, isEnabled: () => true, ...overrides });
+    return new StudentSsoLinkService({
+        pool,
+        attemptKey,
+        isEnabled: () => true,
+        isProviderEnabled: () => true,
+        ...overrides,
+    });
 }
 
 type SeededOwner = {
@@ -291,11 +297,14 @@ test('link binds a new google subject and records the school assertion', async (
                 [result.identity.id, owner.userId],
             );
             assert.equal(assertion.rowCount, 1);
-            const spent = await check.query<{ consumed_at: Date | null }>(
-                'SELECT consumed_at FROM student_auth_link_handoffs WHERE id = $1',
+            const spent = await check.query<{ consumed_at: Date | null; encrypted_observation: string }>(
+                'SELECT consumed_at, encrypted_observation FROM student_auth_link_handoffs WHERE id = $1',
                 [handoff.handoffId],
             );
             assert.notEqual(spent.rows[0]!.consumed_at, null);
+            // Consuming the handoff scrubs its ciphertext in the same write:
+            // no identity material waits out the tombstone window.
+            assert.equal(spent.rows[0]!.encrypted_observation, 'scrubbed');
             const audit = await check.query(
                 `SELECT 1 FROM verification_audit_events
                  WHERE user_id = $1 AND event_type = 'student_sso_identity_linked'`,
@@ -489,6 +498,58 @@ test('link fails closed on a password change after reauth', async () => {
             }),
             /no longer valid/,
         );
+    });
+});
+
+test('link refuses a provider disabled after the handoff was issued', async () => {
+    await withLinkPool(async (pool) => {
+        const attemptKey = randomBytes(32).toString('base64url');
+        const client = await pool.connect();
+        let owner;
+        let policy;
+        let handoff;
+        try {
+            owner = await seedOwner(client, {});
+            policy = await seedPolicy(client, owner.universityId, owner.email.split('@')[1]!);
+            handoff = await seedHandoff(
+                client,
+                attemptKey,
+                policy,
+                googleObservation(policy.realm, `killswitch-sub-${uniqueLabel()}`, owner.email),
+            );
+        } finally {
+            client.release();
+        }
+        // The aggregate gate stays on (the other provider keeps working);
+        // only this handoff's provider is switched off mid-flight.
+        const service = makeService(pool, attemptKey, { isProviderEnabled: () => false });
+        const grant = await mintGrant(service, owner.userId, owner.sid, PASSWORD);
+        await assert.rejects(
+            service.link({
+                userId: owner.userId,
+                sid: owner.sid,
+                handoffId: handoff.handoffId,
+                handoffSecret: handoff.handoffSecret,
+                browserCookies: cookiesFor(handoff.attemptId, handoff.cookieSecret),
+                grantId: grant.grantId,
+                grantSecret: grant.grantSecret,
+            }),
+            /no longer valid/,
+        );
+        // Nothing is consumed on the refused path: the grant survives for a
+        // re-enabled provider, and the handoff is not spent.
+        const check = await pool.connect();
+        try {
+            const leftovers = await check.query(
+                `SELECT (SELECT consumed_at FROM student_auth_reauth_grants WHERE id = $1) AS grant_consumed,
+                        (SELECT consumed_at FROM student_auth_link_handoffs WHERE id = $2) AS handoff_consumed`,
+                [grant.grantId, handoff.handoffId],
+            );
+            assert.equal(leftovers.rows[0]!.grant_consumed, null);
+            assert.equal(leftovers.rows[0]!.handoff_consumed, null);
+        } finally {
+            check.release();
+        }
     });
 });
 

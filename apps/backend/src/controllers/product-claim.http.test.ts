@@ -120,7 +120,12 @@ test('claim-session creation requires a merchant server key', async () => {
         },
     });
     await withServer(router, '/merchant-verification', async (baseUrl) => {
-        const body = JSON.stringify({ productId, merchantCheckoutId: 'checkout-1', browserNonceHash: nonceHash });
+        const body = JSON.stringify({
+            productId,
+            merchantCheckoutId: 'checkout-1',
+            browserNonceHash: nonceHash,
+            origin: 'https://shop.example',
+        });
         assert.equal((await fetch(`${baseUrl}/claim-sessions`, {
             method: 'POST', headers: { 'content-type': 'application/json' }, body,
         })).status, 401);
@@ -138,7 +143,7 @@ test('claim-session creation requires a merchant server key', async () => {
     });
 });
 
-test('claim-session creation rejects client-supplied vendor, origin and malformed bindings', async () => {
+test('claim-session creation requires the initiating origin and rejects malformed bindings', async () => {
     let calls = 0;
     const router = createMerchantVerificationRouter({
         createClaimSession: async () => {
@@ -150,10 +155,11 @@ test('claim-session creation rejects client-supplied vendor, origin and malforme
         const headers = { 'content-type': 'application/json', authorization: 'Bearer awoof_valid_test_key' };
         for (const body of [
             { productId, merchantCheckoutId: 'checkout-1', browserNonceHash: nonceHash, vendorId: productId },
-            { productId, merchantCheckoutId: 'checkout-1', browserNonceHash: nonceHash, origin: 'https://evil.example' },
-            { productId, merchantCheckoutId: 'checkout-1', browserNonceHash: 'not-a-hash' },
-            { productId, merchantCheckoutId: '', browserNonceHash: nonceHash },
-            { productId, browserNonceHash: nonceHash },
+            { productId, merchantCheckoutId: 'checkout-1', browserNonceHash: nonceHash, origin: 42 },
+            { productId, merchantCheckoutId: 'checkout-1', browserNonceHash: nonceHash },
+            { productId, merchantCheckoutId: 'checkout-1', browserNonceHash: 'not-a-hash', origin: 'https://shop.example' },
+            { productId, merchantCheckoutId: '', browserNonceHash: nonceHash, origin: 'https://shop.example' },
+            { productId, browserNonceHash: nonceHash, origin: 'https://shop.example' },
         ]) {
             const response = await fetch(`${baseUrl}/claim-sessions`, { method: 'POST', headers, body: JSON.stringify(body) });
             assert.equal(response.status, 422, JSON.stringify(body));
@@ -174,7 +180,12 @@ test('claim-session creation returns 201 for new sessions and 200 for exact retr
         const init = {
             method: 'POST',
             headers: { 'content-type': 'application/json', authorization: 'Bearer awoof_valid_test_key' },
-            body: JSON.stringify({ productId, merchantCheckoutId: 'checkout-1', browserNonceHash: nonceHash }),
+            body: JSON.stringify({
+                productId,
+                merchantCheckoutId: 'checkout-1',
+                browserNonceHash: nonceHash,
+                origin: 'https://shop.example',
+            }),
         };
         assert.equal((await fetch(`${baseUrl}/claim-sessions`, init)).status, 201);
         const retry = await fetch(`${baseUrl}/claim-sessions`, init);

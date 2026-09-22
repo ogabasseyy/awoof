@@ -14,8 +14,10 @@ import {
     resolveStudentStatus,
     type EnrollmentAssuranceFlags,
 } from './student-assurance.service.js';
-import type { StudentAssurance } from './student-assurance.types.js';
+import type { SchoolAccountMethod, StudentAssurance } from './student-assurance.types.js';
 import { VERIFICATION_NOTICE_VERSION } from './verification-notices.js';
+
+type SchoolWinner = { method: Exclude<SchoolAccountMethod, null>; validUntil: string } | null;
 
 /** Reporting pages are capped at 100 rows; the projection refuses more. */
 export const ADMIN_ASSURANCE_PAGE_MAX = 100;
@@ -242,7 +244,8 @@ export async function readAdminStudentAssurance(
          LEFT JOIN eligibility_evidence evidence ON evidence.id = state.current_evidence_id
          LEFT JOIN user_email_proofs proofs ON proofs.id = evidence.email_proof_id
          LEFT JOIN verification_consents processing ON processing.id = evidence.processing_grant_id
-         WHERE state.student_id = ANY($1::uuid[])`,
+         WHERE state.student_id = ANY($1::uuid[])
+           AND state.university_id = students.university_id`,
         [studentIds, VERIFICATION_NOTICE_VERSION],
     )).rows;
     const stateByStudent = new Map<string, StateRow>();
@@ -442,6 +445,67 @@ export async function readAdminStudentAssurance(
         [VERIFICATION_NOTICE_VERSION, contextsJson],
     )).rows.map((row) => [row.student_id, row] as const));
 
+    // Mirror the point reader's SSO projection: one live assertion per
+    // student behind the deployment provider flags, capped at 90 days from
+    // attestation and by the live institution approval. Owner, university,
+    // identity-version, and policy-version bindings match the point reader
+    // exactly; only the CHECK-constrained sources ever leave this query.
+    const googleSsoEnabled = config.studentSso.google.enabled;
+    const microsoftSsoEnabled = config.studentSso.microsoft.enabled;
+    const ssoValidByStudent = new Map((await store.query<{ student_id: string; source: string; valid_until: Date }>(
+        `SELECT DISTINCT ON (students.id) students.id AS student_id, a.source AS source,
+                LEAST(a.expires_at, a.verified_at + interval '90 days', p.approved_until) AS valid_until
+         FROM student_school_assertions a
+         JOIN student_auth_identities i
+           ON i.id = a.auth_identity_id
+          AND i.user_id = a.user_id
+          AND i.revoked_at IS NULL
+         JOIN institution_login_policies p
+           ON p.id = a.login_policy_id
+          AND p.enabled
+          AND p.approved_until > clock_timestamp()
+          AND p.version = a.policy_version
+          AND p.university_id = a.university_id
+         JOIN students ON students.user_id = a.user_id
+         JOIN jsonb_to_recordset($1::jsonb)
+              AS ctx(student_id uuid, university_id uuid, identity_version int, policy_version int, email text)
+              ON ctx.student_id = students.id
+             AND a.university_id = ctx.university_id
+             AND a.identity_version = ctx.identity_version
+         WHERE a.revoked_at IS NULL
+           AND ((a.source = 'google_workspace' AND $2) OR (a.source = 'microsoft_school' AND $3))
+           AND LEAST(a.expires_at, a.verified_at + interval '90 days', p.approved_until) > clock_timestamp()
+         ORDER BY students.id, valid_until DESC, a.verified_at DESC, a.id DESC`,
+        [contextsJson, googleSsoEnabled, microsoftSsoEnabled],
+    )).rows.map((row) => [row.student_id, row] as const));
+
+    const ssoExpiredByStudent = new Map((await store.query<{ student_id: string; source: string; valid_until: Date }>(
+        `SELECT DISTINCT ON (students.id) students.id AS student_id, a.source AS source,
+                LEAST(a.expires_at, a.verified_at + interval '90 days', p.approved_until) AS valid_until
+         FROM student_school_assertions a
+         JOIN student_auth_identities i
+           ON i.id = a.auth_identity_id
+          AND i.user_id = a.user_id
+          AND i.revoked_at IS NULL
+         JOIN institution_login_policies p
+           ON p.id = a.login_policy_id
+          AND p.enabled
+          AND p.approved_until > clock_timestamp()
+          AND p.version = a.policy_version
+          AND p.university_id = a.university_id
+         JOIN students ON students.user_id = a.user_id
+         JOIN jsonb_to_recordset($1::jsonb)
+              AS ctx(student_id uuid, university_id uuid, identity_version int, policy_version int, email text)
+              ON ctx.student_id = students.id
+             AND a.university_id = ctx.university_id
+             AND a.identity_version = ctx.identity_version
+         WHERE a.revoked_at IS NULL
+           AND ((a.source = 'google_workspace' AND $2) OR (a.source = 'microsoft_school' AND $3))
+           AND LEAST(a.expires_at, a.verified_at + interval '90 days', p.approved_until) <= clock_timestamp()
+         ORDER BY students.id, valid_until DESC, a.verified_at DESC, a.id DESC`,
+        [contextsJson, googleSsoEnabled, microsoftSsoEnabled],
+    )).rows.map((row) => [row.student_id, row] as const));
+
     for (const context of active) {
         const studentContext: StudentContext = {
             userId: context.user_id,
@@ -452,12 +516,41 @@ export async function readAdminStudentAssurance(
             policyVersion: context.policy_version,
             active: context.active,
         };
-        // Mirror the point reader's school precedence: an expired row is only
-        // consulted when no current row exists.
+        // Mirror the point reader's school precedence: later valid-until
+        // wins between mailbox and SSO, ties prefer the SSO attestation;
+        // an expired row is only consulted when no current row exists.
+        const mailboxValid = schoolValidByStudent.get(context.student_id);
+        const ssoValid = ssoValidByStudent.get(context.student_id);
+        const ssoSource = ssoValid?.source;
+        const ssoMethod = ssoSource === 'google_workspace' || ssoSource === 'microsoft_school' ? ssoSource : null;
+        const winner: SchoolWinner = mailboxValid && ssoValid && ssoMethod
+            ? (mailboxValid.valid_until.toISOString() > ssoValid.valid_until.toISOString()
+                ? { method: 'email_otp' as const, validUntil: mailboxValid.valid_until.toISOString() }
+                : { method: ssoMethod, validUntil: ssoValid.valid_until.toISOString() })
+            : mailboxValid
+              ? { method: 'email_otp' as const, validUntil: mailboxValid.valid_until.toISOString() }
+              : ssoValid && ssoMethod
+                ? { method: ssoMethod, validUntil: ssoValid.valid_until.toISOString() }
+                : null;
+        const mailboxExpired = schoolExpiredByStudent.get(context.student_id);
+        const ssoExpired = ssoExpiredByStudent.get(context.student_id);
+        const ssoExpiredSource = ssoExpired?.source;
+        const ssoExpiredMethod = ssoExpiredSource === 'google_workspace' || ssoExpiredSource === 'microsoft_school'
+            ? ssoExpiredSource
+            : null;
+        const last: SchoolWinner = mailboxExpired && ssoExpired && ssoExpiredMethod
+            ? (mailboxExpired.valid_until.toISOString() > ssoExpired.valid_until.toISOString()
+                ? { method: 'email_otp' as const, validUntil: mailboxExpired.valid_until.toISOString() }
+                : { method: ssoExpiredMethod, validUntil: ssoExpired.valid_until.toISOString() })
+            : mailboxExpired
+              ? { method: 'email_otp' as const, validUntil: mailboxExpired.valid_until.toISOString() }
+              : ssoExpired && ssoExpiredMethod
+                ? { method: ssoExpiredMethod, validUntil: ssoExpired.valid_until.toISOString() }
+                : null;
         const schoolProjection = resolveSchoolAccount({
-            method: 'email_otp',
-            validUntil: schoolValidByStudent.get(context.student_id)?.valid_until.toISOString() ?? null,
-            expiredValidUntil: schoolExpiredByStudent.get(context.student_id)?.valid_until.toISOString() ?? null,
+            method: winner?.method ?? 'email_otp',
+            validUntil: winner ? winner.validUntil : null,
+            expiredValidUntil: last ? last.validUntil : null,
         });
 
         const state = stateByStudent.get(context.student_id);

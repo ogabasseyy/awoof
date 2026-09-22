@@ -146,7 +146,7 @@ function json(res: ServerResponse, status: number, payload: unknown, setCookies:
  * Awoof services in-process; the browser-facing HTTP boundary (cookies,
  * handoff URLs, replays) is genuinely exercised over the loopback network.
  */
-async function startMerchantStub(pool: Pool, merchantKey: string): Promise<{
+async function startMerchantStub(pool: Pool, merchantKey: string, origin: string): Promise<{
     baseUrl: string; close: () => Promise<void>; ledger: () => Array<Record<string, unknown>>;
 }> {
     const scratch = mkdtempSync(join(tmpdir(), 'awoof-merchant-stub-'));
@@ -172,6 +172,7 @@ async function startMerchantStub(pool: Pool, merchantKey: string): Promise<{
                     productId: payload.productId,
                     merchantCheckoutId: payload.checkoutId,
                     browserNonceHash: sha256hex(nonce),
+                    origin,
                 });
                 json(res, session.created ? 201 : 200, { claimSessionId: session.claimSessionId }, [
                     `merchant_nonce=${encodeURIComponent(nonce)}; HttpOnly; SameSite=Lax; Path=/`,
@@ -243,10 +244,12 @@ test('claim sessions bind one checkout to one product with exact-retry semantics
         const nonceHash = sha256hex('browser-nonce-fixture');
         const created = await createMerchantClaimSession(pool, fixture.key, {
             productId: fixture.product, merchantCheckoutId: checkoutId, browserNonceHash: nonceHash,
+            origin: fixture.origin,
         });
         assert.equal(created.created, true);
         const retry = await createMerchantClaimSession(pool, fixture.key, {
             productId: fixture.product, merchantCheckoutId: checkoutId, browserNonceHash: nonceHash,
+            origin: fixture.origin,
         });
         assert.equal(retry.created, false);
         assert.equal(retry.claimSessionId, created.claimSessionId);
@@ -256,23 +259,37 @@ test('claim sessions bind one checkout to one product with exact-retry semantics
         )).rows[0].id as string;
         await assert.rejects(createMerchantClaimSession(pool, fixture.key, {
             productId: otherProduct, merchantCheckoutId: checkoutId, browserNonceHash: nonceHash,
+            origin: fixture.origin,
         }), /already bound to a different claim/);
         await assert.rejects(createMerchantClaimSession(pool, fixture.key, {
             productId: fixture.product, merchantCheckoutId: checkoutId, browserNonceHash: sha256hex('different-nonce'),
+            origin: fixture.origin,
+        }), /already bound to a different claim/);
+        await assert.rejects(createMerchantClaimSession(pool, fixture.key, {
+            productId: fixture.product, merchantCheckoutId: checkoutId, browserNonceHash: nonceHash,
+            origin: 'https://other-site.example',
         }), /already bound to a different claim/);
         await assert.rejects(createMerchantClaimSession(pool, 'awoof_' + '0'.repeat(64), {
             productId: fixture.product, merchantCheckoutId: `other-${checkoutId}`, browserNonceHash: nonceHash,
+            origin: fixture.origin,
         }), /Authentication failed/);
         await assert.rejects(createMerchantClaimSession(pool, fixture.key, {
             productId: randomUUID(), merchantCheckoutId: `other-${checkoutId}`, browserNonceHash: nonceHash,
+            origin: fixture.origin,
         }), /not available for this merchant/);
+        await assert.rejects(createMerchantClaimSession(pool, fixture.key, {
+            productId: fixture.product, merchantCheckoutId: `other-${checkoutId}`, browserNonceHash: nonceHash,
+            origin: 'https://unlisted.example',
+        }), /not an active allowed origin/);
         const stranger = await createClaimFixture(client, pool);
         await assert.rejects(createMerchantClaimSession(pool, fixture.key, {
             productId: stranger.product, merchantCheckoutId: `other-${checkoutId}`, browserNonceHash: nonceHash,
+            origin: fixture.origin,
         }), /not available for this merchant/);
         await client.query("UPDATE merchant_claim_sessions SET expires_at = clock_timestamp() - interval '1 second' WHERE id = $1", [created.claimSessionId]);
         await assert.rejects(createMerchantClaimSession(pool, fixture.key, {
             productId: fixture.product, merchantCheckoutId: checkoutId, browserNonceHash: nonceHash,
+            origin: fixture.origin,
         }), /already used or expired/);
     } finally { client.release(); await pool.end(); }
 });
@@ -282,7 +299,7 @@ test('protected redemption flows through a durable merchant server with one rede
     const client = await pool.connect();
     try {
         const fixture = await createClaimFixture(client, pool);
-        const live = await startMerchantStub(pool, fixture.key);
+        const live = await startMerchantStub(pool, fixture.key, fixture.origin);
         try {
             const baseUrl = live.baseUrl;
             const checkoutId = `order-${fixture.label.slice(0, 8)}`;
@@ -355,7 +372,7 @@ test('claims fail closed for pending, expired and consent-withdrawn students', a
             const checkoutId = `closed-${enrollment}-${fixture.label.slice(0, 8)}`;
             const session = await createMerchantClaimSession(pool, fixture.key, {
                 productId: fixture.product, merchantCheckoutId: checkoutId,
-                browserNonceHash: sha256hex(`nonce-${checkoutId}`),
+                browserNonceHash: sha256hex(`nonce-${checkoutId}`), origin: fixture.origin,
             });
             await assert.rejects(claimProductBenefit(pool, fixture.student, {
                 merchantClaimSessionId: session.claimSessionId, disclosureGrantId: fixture.disclosure,
@@ -371,7 +388,7 @@ test('claims fail closed for pending, expired and consent-withdrawn students', a
         await inTransaction(client, () => withdrawConsent(client, fixture.student, fixture.disclosure));
         const session = await createMerchantClaimSession(pool, fixture.key, {
             productId: fixture.product, merchantCheckoutId: `closed-withdrawn-${fixture.label.slice(0, 8)}`,
-            browserNonceHash: sha256hex('nonce-withdrawn'),
+            browserNonceHash: sha256hex('nonce-withdrawn'), origin: fixture.origin,
         });
         await assert.rejects(claimProductBenefit(pool, fixture.student, {
             merchantClaimSessionId: session.claimSessionId, disclosureGrantId: fixture.disclosure,
@@ -386,7 +403,7 @@ test('disclosure withdrawn immediately before commit cannot authorize a claim', 
         const fixture = await createClaimFixture(client, pool);
         const session = await createMerchantClaimSession(pool, fixture.key, {
             productId: fixture.product, merchantCheckoutId: `race-${fixture.label.slice(0, 8)}`,
-            browserNonceHash: sha256hex('nonce-race'),
+            browserNonceHash: sha256hex('nonce-race'), origin: fixture.origin,
         });
         await inTransaction(client, () => withdrawConsent(client, fixture.student, fixture.disclosure));
         await assert.rejects(claimProductBenefit(pool, fixture.student, {
@@ -408,7 +425,7 @@ test('claims require a deployed merchant integration at commit time', async () =
         const revoked = await createClaimFixture(client, pool);
         const revokedSession = await createMerchantClaimSession(pool, revoked.key, {
             productId: revoked.product, merchantCheckoutId: `nokey-${revoked.label.slice(0, 8)}`,
-            browserNonceHash: sha256hex('nonce-nokey'),
+            browserNonceHash: sha256hex('nonce-nokey'), origin: revoked.origin,
         });
         await client.query("UPDATE api_keys SET status = 'revoked' WHERE vendor_id = $1", [revoked.vendor]);
         await assert.rejects(claimProductBenefit(pool, revoked.student, {
@@ -425,7 +442,7 @@ test('claims require a deployed merchant integration at commit time', async () =
         const suspended = await createClaimFixture(client, pool);
         const suspendedSession = await createMerchantClaimSession(pool, suspended.key, {
             productId: suspended.product, merchantCheckoutId: `nowidget-${suspended.label.slice(0, 8)}`,
-            browserNonceHash: sha256hex('nonce-nowidget'),
+            browserNonceHash: sha256hex('nonce-nowidget'), origin: suspended.origin,
         });
         await client.query("UPDATE widget_configs SET status = 'suspended' WHERE vendor_id = $1", [suspended.vendor]);
         await assert.rejects(claimProductBenefit(pool, suspended.student, {
@@ -441,8 +458,29 @@ test('claim-session introspection exposes review data without hashes, codes or h
         const fixture = await createClaimFixture(client, pool);
         const session = await createMerchantClaimSession(pool, fixture.key, {
             productId: fixture.product, merchantCheckoutId: `intro-${fixture.label.slice(0, 8)}`,
-            browserNonceHash: sha256hex('nonce-intro'),
+            browserNonceHash: sha256hex('nonce-intro'), origin: fixture.origin,
         });
+        const multiOrigin = 'https://z-shop.example';
+        await client.query(
+            `UPDATE widget_configs SET allowed_origins = array_append(allowed_origins, $2)
+             WHERE vendor_id = $1 AND status = 'active'`,
+            [fixture.vendor, multiOrigin],
+        );
+        const second = await createMerchantClaimSession(pool, fixture.key, {
+            productId: fixture.product, merchantCheckoutId: `second-${fixture.label.slice(0, 8)}`,
+            browserNonceHash: sha256hex('nonce-second'), origin: multiOrigin,
+        });
+        // The handoff goes to the stored initiating site even when it sorts
+        // after the vendor's other allowed origin: never the alphabetical pick.
+        assert.equal((await readMerchantClaimSession(pool, second.claimSessionId)).handoffOrigin, multiOrigin);
+        // A session predating the origin binding stays unusable instead of
+        // guessing a destination.
+        const legacyId = (await client.query<{ id: string }>(
+            `INSERT INTO merchant_claim_sessions (vendor_id, product_id, checkout_id, browser_nonce_hash, expires_at)
+             VALUES ($1, $2, $3, $4, clock_timestamp() + interval '10 minutes') RETURNING id`,
+            [fixture.vendor, fixture.product, `legacy-${fixture.label.slice(0, 8)}`, sha256hex('nonce-legacy')],
+        )).rows[0]!.id;
+        await assert.rejects(readMerchantClaimSession(pool, legacyId), /expired or already redeemed/);
         const view = await readMerchantClaimSession(pool, session.claimSessionId);
         assert.deepEqual(Object.keys(view).sort(), [
             'claimSessionId', 'expiresAt', 'handoffOrigin', 'listPrice', 'productId',
@@ -468,6 +506,7 @@ test('concurrent duplicate exchanges grant a single redemption per checkout', as
         const nonce = randomBytes(32).toString('base64url');
         const session = await createMerchantClaimSession(pool, fixture.key, {
             productId: fixture.product, merchantCheckoutId: checkoutId, browserNonceHash: sha256hex(nonce),
+            origin: fixture.origin,
         });
         const claim = await claimProductBenefit(pool, fixture.student, {
             merchantClaimSessionId: session.claimSessionId, disclosureGrantId: fixture.disclosure,
@@ -515,6 +554,7 @@ test('exchange requires claim-session proof exactly for claim-bound codes', asyn
         const nonce = randomBytes(32).toString('base64url');
         const session = await createMerchantClaimSession(pool, fixture.key, {
             productId: fixture.product, merchantCheckoutId: checkoutId, browserNonceHash: sha256hex(nonce),
+            origin: fixture.origin,
         });
         const claim = await claimProductBenefit(pool, fixture.student, {
             merchantClaimSessionId: session.claimSessionId, disclosureGrantId: fixture.disclosure,

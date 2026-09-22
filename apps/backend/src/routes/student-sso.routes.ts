@@ -8,7 +8,7 @@ import { config } from '../config/env.js';
 import { getPool } from '../config/database.js';
 import { getRedisClient } from '../config/redis.js';
 import { STUDENT_SSO_COMPLETION_PATH, enabledStudentSsoProviders } from '../services/auth/student-oidc.config.js';
-import { checkSsoStartQuota, createRedisQuotaStore } from '../services/auth/student-login-options.service.js';
+import { checkSsoStartQuota, createRedisQuotaStore, normalizeStudentLoginEmail } from '../services/auth/student-login-options.service.js';
 import {
     STUDENT_SSO_COOKIE_PATH,
     StudentSsoFlowService,
@@ -253,6 +253,7 @@ function defaultFlow(): StudentSsoFlow {
         callbackUrls: { google: googleCallback, microsoft: microsoftCallback },
         completionUrl: sso.completionUrl,
         isEnabled: () => config.studentSso.google.enabled || config.studentSso.microsoft.enabled,
+        isProviderEnabled: (provider) => enabledStudentSsoProviders(config.studentSso).includes(provider),
     });
 }
 
@@ -265,6 +266,7 @@ function defaultLink(): StudentSsoLink {
         pool: getPool(),
         attemptKey: sso.attemptKey,
         isEnabled: () => config.studentSso.google.enabled || config.studentSso.microsoft.enabled,
+        isProviderEnabled: (provider) => enabledStudentSsoProviders(config.studentSso).includes(provider),
     });
 }
 
@@ -322,9 +324,12 @@ export function createStudentSsoRouter(factory: FlowFactory = defaultFlow, optio
         const provider = parseStudentSsoProvider(req.params.provider);
         if (!providersEnabled().includes(provider)) throw new NotFoundError('Student SSO is not available');
         const body = startBody(req);
+        // Quota and issuance share one canonical mailbox: case and
+        // whitespace variants must charge the same key the attempt uses.
+        const mailbox = normalizeStudentLoginEmail(body.email);
         const clientIp = typeof req.ip === 'string' && req.ip !== '' ? req.ip : 'unknown';
-        await checkStartQuota(clientIp, String(body.email));
-        const result = await factory().start({ provider, email: body.email, ...(body.rememberMe === undefined ? {} : { rememberMe: body.rememberMe }), ...(body.returnPath === undefined ? {} : { returnPath: body.returnPath }) });
+        await checkStartQuota(clientIp, mailbox);
+        const result = await factory().start({ provider, email: mailbox, ...(body.rememberMe === undefined ? {} : { rememberMe: body.rememberMe }), ...(body.returnPath === undefined ? {} : { returnPath: body.returnPath }) });
         responseHeaders(res);
         res.cookie(result.callbackCookie.name, result.callbackCookie.value, {
             maxAge: result.callbackCookie.maxAgeSeconds * 1000,

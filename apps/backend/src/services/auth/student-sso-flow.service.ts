@@ -105,6 +105,11 @@ export type StudentSsoFlowDependencies = {
     completionUrl: URL;
     /** Feature gates the service itself; adapters cannot re-enable an in-flight attempt. */
     isEnabled?: () => boolean;
+    /**
+     * Per-provider kill switch, checked at start, callback, and finish
+     * against the flow's own provider. Absent means disabled: fail closed.
+     */
+    isProviderEnabled?: (provider: LoginProvider) => boolean;
     /** Best-effort assurance read after commit; defaults to the shared reader. */
     readAssurance?: (userId: string) => Promise<StudentAssurance | null>;
 };
@@ -221,6 +226,10 @@ export class StudentSsoFlowService {
         if (this.deps.isEnabled?.() !== true) throw invalidAttempt();
     }
 
+    private assertProviderEnabled(provider: LoginProvider): void {
+        if (this.deps.isProviderEnabled?.(provider) !== true) throw invalidAttempt();
+    }
+
     private async failAttempt(attemptId: string): Promise<void> {
         await this.transaction(async (tx) => {
             await tx.query(
@@ -242,6 +251,7 @@ export class StudentSsoFlowService {
     async start(input: { provider: unknown; email: unknown; rememberMe?: unknown; returnPath?: unknown }): Promise<StudentSsoStartResult> {
         this.assertEnabled();
         const provider = parseStudentSsoProvider(input.provider);
+        this.assertProviderEnabled(provider);
         const mailbox = normalizeStudentLoginEmail(input.email);
         if (input.rememberMe !== undefined && typeof input.rememberMe !== 'boolean') {
             throw new BadRequestError('Student SSO remember-me flag is invalid');
@@ -362,6 +372,7 @@ export class StudentSsoFlowService {
     async callback(input: { provider: unknown; callbackUrl: URL; browserCookies: readonly { name: string; value: string }[] }): Promise<StudentSsoCallbackResult> {
         this.assertEnabled();
         const provider = parseStudentSsoProvider(input.provider);
+        this.assertProviderEnabled(provider);
         if (!fixedCallback(input.callbackUrl, this.deps.callbackUrls[provider])) throw invalidAttempt();
         const state = input.callbackUrl.searchParams.get('state');
         if (!state) throw invalidAttempt();
@@ -524,6 +535,9 @@ export class StudentSsoFlowService {
                     return { restart: true };
                 }
                 if (observation.provider !== attempt.provider) throw invalidAttempt();
+                // Kill switch: a provider disabled after the attempt went
+                // ready cannot finish to either a session or a handoff.
+                this.assertProviderEnabled(observation.provider);
 
                 try {
                     const identity = await tx.query<{ id: string; user_id: string; revoked_at: Date | null }>(

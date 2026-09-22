@@ -148,7 +148,16 @@ function makeOidc(): FakeOidc {
     };
 }
 
-function makeService(pool: Pool, oidc: FakeOidc['oidc'], overrides: { attemptKey?: string; isEnabled?: () => boolean; readAssurance?: (userId: string) => Promise<never> } = {}): { service: StudentSsoFlowService; attemptKey: string } {
+function makeService(
+    pool: Pool,
+    oidc: FakeOidc['oidc'],
+    overrides: {
+        attemptKey?: string;
+        isEnabled?: () => boolean;
+        isProviderEnabled?: (provider: 'google' | 'microsoft') => boolean;
+        readAssurance?: (userId: string) => Promise<never>;
+    } = {},
+): { service: StudentSsoFlowService; attemptKey: string } {
     const attemptKey = overrides.attemptKey ?? randomBytes(32).toString('base64url');
     const service = new StudentSsoFlowService({
         pool,
@@ -157,6 +166,7 @@ function makeService(pool: Pool, oidc: FakeOidc['oidc'], overrides: { attemptKey
         callbackUrls: { google: GOOGLE_CALLBACK, microsoft: MICROSOFT_CALLBACK },
         completionUrl: COMPLETION_URL,
         isEnabled: overrides.isEnabled ?? (() => true),
+        isProviderEnabled: overrides.isProviderEnabled ?? (() => true),
         ...(overrides.readAssurance ? { readAssurance: overrides.readAssurance } : {}),
     });
     return { service, attemptKey };
@@ -451,6 +461,31 @@ test('unlinked identity receives a handoff and retains the browser binding', asy
         } finally {
             check.release();
         }
+    });
+});
+
+test('finish refuses a provider disabled after the attempt went ready', async () => {
+    await withSsoPool(async (pool) => {
+        const fixture = await approvedGoogleFixture(pool);
+        const email = `killed-${uniqueLabel()}@${fixture.domain}`;
+        const oidc = makeOidc();
+        oidc.redeemWith(observationFor(fixture.realm, `killed-sub-${uniqueLabel()}`));
+        // One service drives start/callback while enabled; a second shares
+        // the pool and attempt key but sees the provider as disabled, as
+        // after a mid-flight kill-switch flip and restart.
+        const attemptKey = randomBytes(32).toString('base64url');
+        const live = makeService(pool, oidc.oidc, { attemptKey }).service;
+        const killed = makeService(pool, oidc.oidc, { attemptKey, isProviderEnabled: () => false }).service;
+        const { started, callbackUrl, cookies } = await startGoogle(live, oidc, email);
+        await live.callback({ provider: 'google', callbackUrl, browserCookies: cookies });
+        await assert.rejects(
+            killed.finish({
+                attemptId: started.publicResult.attemptId,
+                finishSecret: started.publicResult.finishSecret,
+                browserCookie: started.callbackCookie.value,
+            }),
+            /no longer valid/,
+        );
     });
 });
 

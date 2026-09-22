@@ -36,9 +36,11 @@ import type { LoginProvider } from './student-sso.types.js';
  * policies → identities → grants → verification authority → assertions.
  * Handoff rows are exclusively locked here; no other writer touches them.
  *
- * Disabled providers refuse link-purpose reauth and linking (outstanding
- * flows are cancelled on rollback) but keep unlink-purpose reauth, identity
- * listing, and unlink operational.
+ * A disabled provider refuses linking at the handoff's own provider flag,
+ * so outstanding flows for that provider die at link time; link-purpose
+ * reauth keeps the aggregate gate because a grant carries no provider, and
+ * unlink-purpose reauth, identity listing, and unlink stay operational so
+ * owners can always remove a method.
  */
 
 export const STUDENT_SSO_REAUTH_LIFETIME_SECONDS = 5 * 60;
@@ -80,6 +82,14 @@ export type StudentSsoLinkDependencies = {
     attemptKey: string;
     /** Deployment gate. Linking requires it; owner unlink and listing do not. */
     isEnabled?: () => boolean;
+    /**
+     * Per-provider kill switch. Linking checks the handoff's own provider
+     * after the policy match, so disabling one provider stops its links
+     * while the other keeps working. Absent means disabled: fail closed.
+     * Reauth has no provider context and keeps the aggregate gate; unlink
+     * deliberately stays aggregate so owners can always remove a method.
+     */
+    isProviderEnabled?: (provider: LoginProvider) => boolean;
     /** Bcrypt comparison; injectable so unit tests never hash. */
     comparePassword?: (password: string, hash: string) => Promise<boolean>;
 };
@@ -151,6 +161,10 @@ export class StudentSsoLinkService {
 
     private assertLinkingEnabled(): void {
         if (this.deps.isEnabled?.() !== true) throw invalidLink();
+    }
+
+    private assertProviderEnabled(provider: LoginProvider): void {
+        if (this.deps.isProviderEnabled?.(provider) !== true) throw invalidLink();
     }
 
     /**
@@ -314,6 +328,9 @@ export class StudentSsoLinkService {
                     return { outcome: 'restart', attemptId: handoff.attempt_id };
                 }
                 if (observation.provider !== policy.provider || observation.issuer !== policy.issuer) throw invalidLink();
+                // Kill switch: a provider disabled after the handoff was
+                // issued cannot link, even with a valid grant and mailbox.
+                this.assertProviderEnabled(observation.provider);
                 const existing = await tx.query<{ id: string; user_id: string; revoked_at: Date | null; linked_at: Date }>(
                     `SELECT id, user_id, revoked_at, linked_at FROM student_auth_identities
                      WHERE provider = $1 AND issuer = $2 AND subject = $3 FOR UPDATE`,
@@ -576,9 +593,16 @@ export class StudentSsoLinkService {
     }
 
     private async consumeHandoff(tx: PoolClient, handoffId: string, userId: string, sid: string): Promise<void> {
+        // The observation is decoded before use on the link and mismatch
+        // paths, and expired rows are terminal; in all cases nothing
+        // downstream needs the ciphertext, so it is scrubbed in the same
+        // write. A consumed handoff must never retain identity material for
+        // its 7-day tombstone window. The consume-once trigger permits this
+        // because the row is still unconsumed in OLD.
         await tx.query(
             `UPDATE student_auth_link_handoffs
-             SET consumed_at = clock_timestamp(), target_user_id = $2, target_sid = $3::uuid
+             SET consumed_at = clock_timestamp(), target_user_id = $2, target_sid = $3::uuid,
+                 encrypted_observation = 'scrubbed'
              WHERE id = $1 AND consumed_at IS NULL`,
             [handoffId, userId, sid],
         );

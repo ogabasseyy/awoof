@@ -25,6 +25,8 @@ import {
 import { readStudentAssurance } from '../../services/verification/student-assurance.service.js';
 import type { StudentAssurance } from '../../services/verification/student-assurance.types.js';
 import { VERIFICATION_NOTICE_VERSION } from '../../services/verification/verification-notices.js';
+import { GOOGLE_ISSUER } from '../../services/auth/student-google-oidc.js';
+import { config } from '../../config/env.js';
 import { inTransaction, withTestClient } from './test-database.js';
 
 after(() => db.close());
@@ -155,6 +157,81 @@ async function assertParity(client: PoolClient, userId: string, expectedStatus: 
     assert.deepEqual(projected, authoritative);
     return authoritative;
 }
+
+async function seedSsoAssertion(client: PoolClient, fixture: Fixture): Promise<void> {
+    const domain = fixture.email.split('@')[1]!;
+    const policyId = (await client.query<{ id: string }>(
+        `INSERT INTO institution_login_policies
+             (university_id, provider, issuer, provider_realm, version, enabled, approved_until, school_assertion_days)
+         VALUES ($1, 'google', $2, $3, 1, true, clock_timestamp() + interval '100 days', 90)
+         RETURNING id`,
+        [fixture.universityId, GOOGLE_ISSUER, domain],
+    )).rows[0]!.id;
+    await client.query(
+        'INSERT INTO institution_login_domains (domain, university_id, is_active) VALUES ($1, $2, true)',
+        [domain, fixture.universityId],
+    );
+    await client.query(
+        'INSERT INTO institution_login_domain_providers (domain, university_id, provider, policy_id) VALUES ($1, $2, $3, $4)',
+        [domain, fixture.universityId, 'google', policyId],
+    );
+    const identityId = (await client.query<{ id: string }>(
+        `INSERT INTO student_auth_identities (user_id, university_id, provider, issuer, subject, observed_email)
+         VALUES ($1, $2, 'google', $3, $4, $5) RETURNING id`,
+        [fixture.userId, fixture.universityId, GOOGLE_ISSUER, `parity-sub-${randomUUID()}`, fixture.email],
+    )).rows[0]!.id;
+    const versions = (await client.query<{ identity_version: number }>(
+        'SELECT identity_version FROM students WHERE id = $1',
+        [fixture.studentId],
+    )).rows[0]!;
+    await client.query(
+        `INSERT INTO student_school_assertions
+             (user_id, university_id, source, auth_identity_id, login_policy_id,
+              policy_version, identity_version, verified_at, expires_at)
+         VALUES ($1, $2, 'google_workspace', $3, $4, 1, $5, clock_timestamp(), clock_timestamp() + interval '100 days')`,
+        [fixture.userId, fixture.universityId, identityId, policyId, versions.identity_version],
+    );
+}
+
+test('admin projection matches the authoritative read for an SSO school account', async () => {
+    await withTestClient(async (client) => {
+        const fixture = await createFixture(client, {});
+        await seedSsoAssertion(client, fixture);
+        // The point reader gates SSO sources behind the deployment flags.
+        const googleWas = config.studentSso.google.enabled;
+        const microsoftWas = config.studentSso.microsoft.enabled;
+        config.studentSso.google.enabled = true;
+        config.studentSso.microsoft.enabled = false;
+        try {
+            const assurance = await assertParity(client, fixture.userId, 'pending');
+            // Both proofs are capped at 90 days from attestation, so the
+            // later SSO attestation carries the later valid-until and wins.
+            assert.equal(assurance.schoolAccountMethod, 'google_workspace');
+        } finally {
+            config.studentSso.google.enabled = googleWas;
+            config.studentSso.microsoft.enabled = microsoftWas;
+        }
+    });
+});
+
+test('admin projection scopes eligibility state to the current university', async () => {
+    await withTestClient(async (client) => {
+        const fixture = await createFixture(client, { enrollment: true, normalization: 'trim_upper' });
+        await applyRegistrationEnrollment(client, fixture, 'STALE-001');
+        // The student moves to a fresh institution with no evidence: the
+        // old institution's verified state row must not leak into the
+        // current projection.
+        const otherUniversityId = (await client.query<{ id: string }>(
+            `INSERT INTO universities (name, is_active) VALUES ($1, true) RETURNING id`,
+            [`Other School ${randomUUID().replaceAll('-', '').slice(0, 12)}`],
+        )).rows[0]!.id;
+        await client.query('UPDATE students SET university_id = $2 WHERE id = $1', [
+            fixture.studentId,
+            otherUniversityId,
+        ]);
+        await assertParity(client, fixture.userId, 'pending');
+    });
+});
 
 test('admin projection matches the authoritative read for a pending email-only student', async () => {
     await withTestClient(async (client) => {

@@ -123,7 +123,7 @@ import {
  * /api/merchant-verification/claim-sessions:
  *   post:
  *     summary: Create a merchant claim session binding one checkout to one product
- *     description: Merchant server-to-server bootstrap. The merchant sets its own Secure HttpOnly browser nonce cookie, creates this session with the nonce hash, then navigates the browser to Awoof's claim page. Sessions expire after ten minutes and are consumed once at exchange. Exact creation retries return the same session; changed product or nonce bindings conflict. Never put the nonce in a URL.
+ *     description: Merchant server-to-server bootstrap. The merchant sets its own Secure HttpOnly browser nonce cookie, creates this session with the nonce hash and the initiating origin, then navigates the browser to Awoof's claim page. Sessions expire after ten minutes and are consumed once at exchange. Exact creation retries return the same session; changed product, nonce, or origin bindings conflict. Never put the nonce in a URL.
  *     tags: [Merchant Verification]
  *     security: [{ merchantServerKey: [] }]
  *     requestBody:
@@ -133,11 +133,12 @@ import {
  *           schema:
  *             type: object
  *             additionalProperties: false
- *             required: [productId, merchantCheckoutId, browserNonceHash]
+ *             required: [productId, merchantCheckoutId, browserNonceHash, origin]
  *             properties:
  *               productId: { type: string, format: uuid, description: Active product of the calling merchant. }
  *               merchantCheckoutId: { type: string, minLength: 1, maxLength: 100, description: Merchant checkout reference. Unique per merchant; one redemption per checkout. }
  *               browserNonceHash: { type: string, pattern: '^[0-9a-f]{64}$', description: Hex SHA-256 of the merchant's browser nonce. }
+ *               origin: { type: string, maxLength: 512, description: Initiating merchant site. Must exactly match one of the vendor's active allowed origins; the handoff goes only there. }
  *     responses:
  *       '201': { description: Claim session created. }
  *       '200': { description: Exact creation retry; returns the same live session. }
@@ -211,7 +212,8 @@ const exchange = z.object({ code:z.string().regex(/^[A-Za-z0-9_-]{43}$/), campai
     idempotencyKey:bounded, browserNonce:z.string().min(16).max(512).optional(),
     merchantCheckoutId:bounded.optional() }).strict();
 const claimSessionCreation = z.object({ productId:z.string().uuid(), merchantCheckoutId:bounded,
-    browserNonceHash:z.string().regex(/^[0-9a-f]{64}$/) }).strict();
+    browserNonceHash:z.string().regex(/^[0-9a-f]{64}$/),
+    origin:z.string().max(512) }).strict();
 const productClaim = z.object({ merchantClaimSessionId:z.string().uuid(),
     disclosureGrantId:z.string().uuid() }).strict();
 const sessionIdParam = z.object({ id:z.string().uuid() }).strict();

@@ -59,7 +59,11 @@ export function toPublicProduct(row: Record<string, unknown>): PublicProduct {
 // ---------------------------------------------------------------------------
 
 export type ClaimSessionInput = {
-    productId: string; merchantCheckoutId: string; browserNonceHash: string;
+    productId: string;
+    merchantCheckoutId: string;
+    browserNonceHash: string;
+    /** Initiating merchant site; must exactly match an active allowed origin. */
+    origin: string;
 };
 
 export type ClaimSessionResult = {
@@ -85,32 +89,61 @@ export async function createMerchantClaimSession(
             [input.productId, vendorId],
         );
         if (product.rowCount !== 1) throw new BadRequestError('Product is not available for this merchant');
+        const reconcile = (session: {
+            id: string; product_id: string; browser_nonce_hash: string; origin: string | null; expires_at: Date; consumed_at: Date | null;
+        }) => {
+            if (session.product_id !== input.productId || session.browser_nonce_hash !== input.browserNonceHash
+                || (session.origin ?? null) !== input.origin) {
+                throw new ConflictError('Merchant checkout is already bound to a different claim; start a new checkout');
+            }
+            if (session.consumed_at !== null || session.expires_at.getTime() <= Date.now()) {
+                throw new ConflictError('Merchant checkout already used or expired; start a new checkout');
+            }
+            return { claimSessionId: session.id, expiresAt: session.expires_at.toISOString(), created: false };
+        };
+        const existing = await tx.query<{
+            id: string; product_id: string; browser_nonce_hash: string; origin: string | null; expires_at: Date; consumed_at: Date | null;
+        }>(
+            `SELECT id, product_id, browser_nonce_hash, origin, expires_at, consumed_at
+             FROM merchant_claim_sessions WHERE vendor_id = $1 AND checkout_id = $2 FOR UPDATE`,
+            [vendorId, input.merchantCheckoutId],
+        );
+        // A checkout that already exists is reconciled against its binding
+        // first: product, nonce, or origin drift means the caller is replaying
+        // another checkout's handoff, not registering a new one.
+        if (existing.rows[0]) return reconcile(existing.rows[0]);
+        // The initiating site is merchant-declared but server-validated: it
+        // must exactly match one of the vendor's active allowed origins, so
+        // a multi-site merchant cannot be handed another site's handoff.
+        const allowed = await tx.query<{ origin: string }>(
+            `SELECT unnest(allowed_origins) AS origin FROM widget_configs
+             WHERE vendor_id = $1 AND status = 'active'`,
+            [vendorId],
+        );
+        if (!allowed.rows.some((row) => row.origin === input.origin)) {
+            throw new BadRequestError('Claim origin is not an active allowed origin for this merchant');
+        }
         const inserted = await tx.query<{ id: string; expires_at: Date }>(
-            `INSERT INTO merchant_claim_sessions (vendor_id, product_id, checkout_id, browser_nonce_hash, expires_at)
-             VALUES ($1, $2, $3, $4, clock_timestamp() + interval '10 minutes')
+            `INSERT INTO merchant_claim_sessions (vendor_id, product_id, checkout_id, browser_nonce_hash, origin, expires_at)
+             VALUES ($1, $2, $3, $4, $5, clock_timestamp() + interval '10 minutes')
              ON CONFLICT (vendor_id, checkout_id) DO NOTHING
              RETURNING id, expires_at`,
-            [vendorId, input.productId, input.merchantCheckoutId, input.browserNonceHash],
+            [vendorId, input.productId, input.merchantCheckoutId, input.browserNonceHash, input.origin],
         );
         if (inserted.rows[0]) {
             return { claimSessionId: inserted.rows[0].id, expiresAt: inserted.rows[0].expires_at.toISOString(), created: true };
         }
-        const existing = await tx.query<{
-            id: string; product_id: string; browser_nonce_hash: string; expires_at: Date; consumed_at: Date | null;
+        // Lost an insert race with a concurrent create for the same checkout:
+        // reconcile against the winner's binding instead of failing.
+        const raced = await tx.query<{
+            id: string; product_id: string; browser_nonce_hash: string; origin: string | null; expires_at: Date; consumed_at: Date | null;
         }>(
-            `SELECT id, product_id, browser_nonce_hash, expires_at, consumed_at
+            `SELECT id, product_id, browser_nonce_hash, origin, expires_at, consumed_at
              FROM merchant_claim_sessions WHERE vendor_id = $1 AND checkout_id = $2 FOR UPDATE`,
             [vendorId, input.merchantCheckoutId],
         );
-        const session = existing.rows[0];
-        if (!session) throw new ConflictError('Merchant checkout conflict; start a new checkout');
-        if (session.product_id !== input.productId || session.browser_nonce_hash !== input.browserNonceHash) {
-            throw new ConflictError('Merchant checkout is already bound to a different claim; start a new checkout');
-        }
-        if (session.consumed_at !== null || session.expires_at.getTime() <= Date.now()) {
-            throw new ConflictError('Merchant checkout already used or expired; start a new checkout');
-        }
-        return { claimSessionId: session.id, expiresAt: session.expires_at.toISOString(), created: false };
+        if (!raced.rows[0]) throw new ConflictError('Merchant checkout conflict; start a new checkout');
+        return reconcile(raced.rows[0]);
     });
 }
 
@@ -122,13 +155,16 @@ export type ClaimSessionPublic = {
 
 export async function readMerchantClaimSession(pool: Pool, sessionId: string): Promise<ClaimSessionPublic> {
     const session = await pool.query<{
-        id: string; vendor_id: string; product_id: string; expires_at: Date; consumed_at: Date | null;
+        id: string; vendor_id: string; product_id: string; origin: string | null; expires_at: Date; consumed_at: Date | null;
     }>(
-        `SELECT id, vendor_id, product_id, expires_at, consumed_at FROM merchant_claim_sessions WHERE id = $1`,
+        `SELECT id, vendor_id, product_id, origin, expires_at, consumed_at FROM merchant_claim_sessions WHERE id = $1`,
         [sessionId],
     );
     const row = session.rows[0];
     if (!row) throw new NotFoundError('Claim session not found');
+    // Sessions predate the origin binding stay unusable: the initiating site
+    // is unknowable, so no handoff destination is guessed for them.
+    if (row.origin == null) throw new ConflictError('Claim session expired or already redeemed');
     if (row.consumed_at !== null || row.expires_at.getTime() <= Date.now()) {
         throw new ConflictError('Claim session expired or already redeemed');
     }
@@ -140,13 +176,6 @@ export async function readMerchantClaimSession(pool: Pool, sessionId: string): P
         `SELECT name, price, student_price, status, deleted_at, vendor_id FROM products WHERE id = $1`,
         [row.product_id],
     );
-    const origin = await pool.query<{ origin: string }>(
-        `SELECT origin FROM (
-             SELECT unnest(allowed_origins) AS origin FROM widget_configs
-             WHERE vendor_id = $1 AND status = 'active'
-         ) origins ORDER BY origin LIMIT 1`,
-        [row.vendor_id],
-    );
     const vendorRow = vendor.rows[0];
     const productRow = product.rows[0];
     if (!vendorRow || vendorRow.status !== 'active' || vendorRow.deleted_at !== null
@@ -154,7 +183,6 @@ export async function readMerchantClaimSession(pool: Pool, sessionId: string): P
         || productRow.vendor_id !== row.vendor_id) {
         throw new NotFoundError('Claim is no longer available');
     }
-    if (!origin.rows[0]) throw integrationRequired();
     return {
         claimSessionId: row.id,
         vendorId: row.vendor_id,
@@ -163,7 +191,7 @@ export async function readMerchantClaimSession(pool: Pool, sessionId: string): P
         productName: productRow.name,
         listPrice: productRow.price,
         studentPrice: productRow.student_price,
-        handoffOrigin: origin.rows[0].origin,
+        handoffOrigin: row.origin,
         expiresAt: row.expires_at.toISOString(),
     };
 }

@@ -97,7 +97,7 @@ function unreachablePool(): never {
     throw new Error('unreachable pool must not be touched');
 }
 
-function testService(): StudentSsoFlowService {
+function testService(overrides: { isEnabled?: () => boolean; isProviderEnabled?: (provider: 'google' | 'microsoft') => boolean } = {}): StudentSsoFlowService {
     return new StudentSsoFlowService({
         pool: { connect: async () => unreachablePool() } as never,
         oidc: { forPolicy: () => unreachablePool() },
@@ -107,9 +107,29 @@ function testService(): StudentSsoFlowService {
             microsoft: new URL('https://api.example.invalid/api/auth/student/sso/microsoft/callback'),
         },
         completionUrl: new URL('https://app.example.invalid/auth/student/sso/complete'),
-        isEnabled: () => true,
+        isEnabled: overrides.isEnabled ?? (() => true),
+        isProviderEnabled: overrides.isProviderEnabled ?? (() => true),
     });
 }
+
+test('start and callback refuse a disabled provider before touching storage', async () => {
+    const service = testService({ isProviderEnabled: () => false });
+    await assert.rejects(
+        service.start({ provider: 'google', email: 'a@b.example', rememberMe: false }),
+        /no longer valid/,
+    );
+    const callbackUrl = new URL('https://api.example.invalid/api/auth/student/sso/google/callback?state=x');
+    await assert.rejects(
+        service.callback({ provider: 'google', callbackUrl, browserCookies: [] }),
+        /no longer valid/,
+    );
+    // Selectivity is per provider, not aggregate: only google is refused here.
+    const selective = testService({ isProviderEnabled: (provider) => provider === 'microsoft' });
+    await assert.rejects(
+        selective.start({ provider: 'google', email: 'a@b.example', rememberMe: false }),
+        /no longer valid/,
+    );
+});
 
 test('start validates input before touching durable storage', async () => {
     const service = testService();

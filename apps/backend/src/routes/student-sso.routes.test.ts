@@ -196,6 +196,28 @@ test('start quota failures never reach the flow', async () => {
     });
 });
 
+test('start charges quota and issuance on one canonical mailbox', async () => {
+    const seen: { quota: string[]; flow: unknown[] } = { quota: [], flow: [] };
+    const flow = stubFlow({
+        start: async (input: never) => {
+            seen.flow.push((input as { email: string }).email);
+            return stubFlow().start({} as never);
+        },
+    });
+    await withServer(routerWith(flow, {
+        checkStartQuota: async (_clientIp: string, mailbox: string) => { seen.quota.push(mailbox); },
+    }), async (baseUrl) => {
+        const response = await fetch(`${baseUrl}/google/start`, {
+            method: 'POST',
+            headers: { 'content-type': 'application/json', origin: COMPLETION_ORIGIN },
+            body: JSON.stringify({ email: '  Ada@Students.School.Example ' }),
+        });
+        assert.equal(response.status, 201);
+        assert.deepEqual(seen.quota, ['ada@students.school.example']);
+        assert.deepEqual(seen.flow, ['ada@students.school.example']);
+    });
+});
+
 test('callback redirects to the fixed completion URL with no secret and keeps the cookie', async () => {
     await withServer(routerWith(stubFlow()), async (baseUrl) => {
         const response = await fetch(`${baseUrl}/google/callback?state=opaque-state&code=opaque-code`, {

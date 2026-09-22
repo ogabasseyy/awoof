@@ -258,6 +258,7 @@ test('email-only proofs fail every benefit consumer on the upgraded database', a
             productId: fixture.product,
             merchantCheckoutId: `cutover-checkout-${fixture.label}`,
             browserNonceHash: nonceHash(`cutover-nonce-${fixture.label}`),
+            origin: fixture.origin,
         });
         await assert.rejects(
             claimProductBenefit(pool, fixture.emailOnly, {
