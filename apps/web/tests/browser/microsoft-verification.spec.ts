@@ -398,8 +398,18 @@ test('a bound provider cancellation returns to the Awoof email alternative witho
 
   // A provider denial is an untrusted provider claim. It may end only the
   // already state-and-cookie-bound attempt; it must never become a finish.
-  await page.goto(`${provider.callbackUrl()}&error=access_denied`);
-  await expect(page.getByRole('heading', { name: 'Connection needs attention' })).toBeVisible();
+  // `arrived` fires at request interception, before the synthetic provider
+  // document commits — and the app may still be settling its own authorize
+  // navigation. Wait for the held provider document first, then drive the
+  // cancellation to its observed outcome, retrying the navigation (not the
+  // assertions) if a competing app navigation wins the race. Error
+  // callbacks are idempotent (no finish, no completion writes), so a repeat
+  // cannot disturb the evidence assertions below.
+  await expect(page).toHaveURL(/login\.microsoftonline\.com/, { timeout: 10000 });
+  await expect(async () => {
+    await page.goto(`${provider.callbackUrl()}&error=access_denied`).catch(() => undefined);
+    await expect(page.getByRole('heading', { name: 'Connection needs attention' })).toBeVisible({ timeout: 3000 });
+  }).toPass({ timeout: 15000 });
   await expect(page.getByText('The Microsoft connection was not completed. You can still verify using your school email.')).toBeVisible();
   await expect(page.getByRole('link', { name: 'Use school email verification' })).toBeVisible();
   const observed = await evidence(page);
