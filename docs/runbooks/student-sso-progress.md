@@ -1376,3 +1376,194 @@ Review disposition: `docs/runbooks/student-sso-review-disposition.md` (GO for Re
   Real-provider acceptance still outstanding (all OIDC discovery
   mocked; the provider redirect is proven only against a loopback
   stub — no network identity calls, ever).
+
+## Task B4: link SSO identities and preserve claim continuation
+
+- Task: B4 — bind first-use provider handoffs to freshly password-proven
+  owners, owner-only revocation, claim continuation preserved
+  (`docs/superpowers/plans/2026-09-20-institution-email-auth.md`,
+  Task B4).
+- Commit: `feat(auth): link SSO identities and preserve claim continuation`
+  (`3961ca5`) on branch `codex/student-email-first-auth`.
+- Source changes:
+  - `services/auth/student-sso-onboarding.service.ts` (new): the shared
+    canonical writer both the B3 finish path and B4 linking use —
+    `assertCurrentLoginPolicy` (pinned version, active university,
+    active domain mapping, live approval, adapter trust recheck),
+    provider-observation codec, `hasCurrentMicrosoftMembership` (reuses
+    the shared `currentMicrosoftProof` predicate instead of a parallel
+    Graph check), `writeSsoSchoolAssertion` (single-source evidence,
+    owner/university binding, 90-day cap), `revokeSsoSchoolAssertions`.
+    Lock order extends the B3 chain: users → students → universities →
+    handoffs → policies → identities → grants → verification
+    authority → assertions.
+  - `services/auth/student-sso-link.service.ts` (new): `reauth`
+    (password-backed 5-minute single-use purpose-bound grants pinned to
+    the verified password hash, session id, and active student role;
+    legacy/no-session tokens fail closed; passwordless accounts get
+    403), `link` (mailbox binding to an independently proven school
+    mailbox at the policy university, approved domain mapping, Google
+    account-mismatch spends the handoff and restarts, revoked subjects
+    reactivate for the original owner only, active-elsewhere subjects
+    fail owner-safely, school assertion recorded), `unlink` (another
+    usable login method must remain — usable password or second active
+    identity — else honest `last_method` with nothing consumed;
+    revocation plus assertion revocation; the session clears only when
+    it was issued by the removed identity), `listIdentities` (owner
+    listing, subject/issuer material never leaves).
+  - `database/migrations/058_student_sso_reauth_password_binding.sql`
+    (new): `password_hash` binding on `student_auth_reauth_grants`
+    (legacy NULL rows fail closed) plus the consume-once trigger
+    extended to pin the new column.
+  - `student-sso-flow.service.ts`: shared pieces moved into the
+    onboarding module (re-exported for existing importers, no behavior
+    change) plus one addition — a linked sign-in refreshes the school
+    assertion when membership evidence suffices; guests and missing
+    membership log in with no positive assertion. Enrollment evidence
+    is never written here.
+  - `student-assurance.service.ts`: B4 SSO assertion projection behind
+    the provider flags (live identity + current policy version + live
+    approval required, 90-day cap). Mailbox vs SSO later-valid-until
+    wins, ties prefer the SSO attestation; enrollment eligibility is
+    untouched. `eligibility-read.service.ts` only exports the shared
+    predicate/types; `student-sso.types.ts` only moves the policy type.
+  - `routes/student-sso.routes.ts`: four additive endpoints —
+    `POST reauth`, `POST link` (clears the per-attempt cookie on
+    linked/mismatch/restart), `GET identities` (no-store, no subject
+    material), `POST identities/:id/unlink` — each behind auth,
+    student role, its own rate-limit bucket, exact origin, and strict
+    JSON. `config/swagger.ts` documents the linking contract.
+- Tests added (37):
+  - `testing/postgres/student-sso-link.integration.ts` (new): 17 —
+    google link with assertion, password-change-after-reauth
+    fail-closed, stale/reused grants, consumed/expired handoff
+    restart, revoked-identity reactivation (owner-only, no transfer),
+    google mismatch restart, microsoft with/without membership,
+    unlink revocation with own-session clear, other-method session
+    preservation, last-method refusal, foreign-identity not-found,
+    concurrent unlink serialization, reauth grant minting, policy
+    uniqueness/validation, domain mapping, approval lookup,
+    identity uniqueness/immutability, mailbox composite key,
+    assertion binding/immutability, attempt payloads.
+  - `student-sso-link.service.test.ts` (new): 7 — purpose/body/sid
+    validation, disabled-provider behavior, secret-shape checks.
+  - `student-sso-onboarding.service.test.ts` (new): 5 — observation
+    codec round-trip/reject, adapter policy trust table.
+  - `routes/student-sso.routes.test.ts`: +8 — grant issuance shape,
+    auth/session gating, strict bodies/origin/JSON, handoff-cookie
+    clearing on all terminal link outcomes, last-method vs revoke,
+    identities listing shape, independent rate limits, OpenAPI
+    contract presence.
+- Tests intentionally updated: none. No existing test was modified,
+  weakened, or deleted.
+- Gate commands and results (from worktree root):
+  - `npm --prefix apps/backend test` → PASS (exit 0).
+  - `npm --prefix apps/backend run type-check` → PASS (clean).
+  - `npm --prefix apps/backend run test:postgres` → PASS (324 pass,
+    0 fail; the 17 new link tests included).
+  - `npm --prefix apps/backend run test:artifact` → PASS (59 staged
+    migrations incl. 058, OpenAPI parity, source-absent probes).
+  - `npm --prefix apps/web run test:auth` → PASS (99 tests, 0 fail).
+  - `npm --prefix apps/web run test:browser:typecheck` → PASS (clean).
+  - `npx tsc --noEmit -p tsconfig.json` (apps/web) → PASS (clean).
+  - Browser (isolated temp 3117 config + `AWOOF_APP_ORIGIN`, deleted
+    after): `sso-login.spec.ts` 13/13 pass. Protected 127.0.0.1:3107
+    preview untouched (free before and after).
+  - Perf: `audit-public-performance.mjs capture --label candidate` →
+    PASS (exit 0, all public routes). `compare` skipped: no baseline
+    artifact exists in this worktree and Release B's web delta is
+    auth-routes-only while the audit covers public pages.
+- Pre-change failure observation (test-first): the new integration
+  file failed during development on an uncast `jsonb_build_object`
+  parameter (fixed with the sibling `$3::text` convention), a
+  placeholder-then-rewrite handoff seed the consume-once trigger
+  forbids (single-INSERT seed with client-minted id), two schema
+  guesses (`created_at` vs `proven_at`, hardcoded membership
+  versions — now inherited from the live mailbox evidence row), a
+  random-UUID session pointer the FK rejects (now a real second
+  identity), and one REAL service gap: the password-change test
+  proved the grant did not bind the verified hash, fixed by
+  migration 058 plus the binding recheck (this entry's service
+  change, not a test weakening).
+- Migration check: `057` committed by B2; `058` added by B4
+  (rechecked at commit time). No other migration touched.
+- Deviations:
+  - The grant pins the exact verified password hash and the link/unlink
+    paths recheck it, instead of the plan-implied session check alone:
+    without this, a reset between reauth and link would succeed. The
+    early `password_hash == null` link gate was replaced by the
+    binding comparison (NULL-vs-NULL passes only for forged rows;
+    minted grants never have NULL bindings since reauth 403s
+    passwordless accounts).
+  - Unlink clears the session conditionally (`WHERE
+    active_session_auth_identity_id = $2`) rather than always: a
+    password-issued session survives removing an unused SSO method.
+  - The B5 entry's "B4 backend uncommitted" note is now closed by
+    `3961ca5`; the B5 "onboarding UI unlanded" note still stands —
+    B4 ships backend + routes only, no web linking UI.
+- Docs impact (AGENTS.md checklist): OpenAPI covers the new linking
+  contract; no trust/help/partner/developers changes (SSO UI stays
+  inert while providers are disabled; no page advertises SSO as
+  deployed). Rollout operator doc ships under C1.
+- Unresolved: B4 backend complete and committed; linking UI
+  (`/auth/student/sso/onboarding`) still unlanded (B5 note carries
+  over). Real-provider acceptance still outstanding (all OIDC
+  discovery mocked; loopback stub only).
+
+## Task C1: full validation and rollout docs
+
+- Task: C1 — full Release B validation plus operator rollout docs, no
+  merge/deploy/provider-enablement/institution-approval.
+- Commit: `docs(runbook): record B4 validation and SSO rollout` (this
+  commit) on branch `codex/student-email-first-auth`. Docs only:
+  `docs/runbooks/student-sso-progress.md` (B4 entry above, this C1
+  entry) and `docs/runbooks/student-sso-rollout.md` (new).
+- Source changes: none. The tree at C1 is `3961ca5` plus these docs.
+- Full validation gates (from worktree root, all on the B4 tree):
+  - `npm --prefix apps/backend test` → PASS (exit 0).
+  - `npm --prefix apps/backend run type-check` → PASS (clean).
+  - `npm --prefix apps/backend run test:postgres` → PASS (324 pass,
+    0 fail via the official runner; `/` held 6.5–7.0 GiB after
+    clearing 4.3 GiB of stale `jest_dx` cache from the session temp
+    dir — regenerable harness output, no user files touched).
+  - `npm --prefix apps/backend run test:artifact` → PASS (59 staged
+    migrations incl. 058, 676 hashed files, OpenAPI parity).
+  - `npm --prefix apps/web run test:auth` → PASS (99 tests, 0 fail).
+  - `npm --prefix apps/web run test:browser:typecheck` → PASS (clean).
+  - `npx tsc --noEmit -p tsconfig.json` (apps/web) → PASS (clean).
+  - Browser (isolated temp 3117 config + `AWOOF_APP_ORIGIN`, deleted
+    after): full suite 225 passed / 1 failed
+    (`student-design-regressions.spec.ts` profile-retry click detached
+    during a re-render under full-suite load); the single spec
+    re-run in isolation: 10/10 pass, confirming a flake — B4 ships
+    zero web files and the sibling assurance test passed in both
+    runs. `sso-login.spec.ts` 13/13 in both runs. Protected
+    127.0.0.1:3107 preview untouched (free before, during, and
+    after; all runs on 3117). `next-env.d.ts` dev-server churn
+    reverted, not committed.
+  - Perf: `audit-public-performance.mjs capture --label candidate` →
+    PASS (exit 0). `compare` has no baseline artifact in this
+    worktree; Release B's web delta is auth-routes-only while the
+    audit covers public pages, so the candidate capture stands as
+    the perf record.
+  - `npm --prefix apps/web run lint` → still the pre-existing
+    repo-wide failure (missing `react-hooks` plugin config),
+    untouched and not bypassed.
+- Rollout doc: `docs/runbooks/student-sso-rollout.md` — what ships
+  disabled (both provider flags default false, empty policy table
+  fails closed), preconditions (owner approvals, provider secrets,
+  attempt key + completion URL, Graph for Microsoft pilots, inbox
+  and /privacy /terms confirmations), NOT-RUN enablement sequence
+  with pilot canaries, safe rollback (re-disable flags; never delete
+  identity/assertion rows), and outstanding RUM.
+- Deviations: none from the no-merge/no-deploy boundary. The full
+  browser suite was run despite B4 touching no web file, because B4
+  changed the finish-path assertion write the SSO specs exercise.
+- Docs impact (AGENTS.md checklist): runbook-only change; no
+  behavior, copy, or API change.
+- Unresolved (carried, all operator/owner-owned): linking UI
+  (`/auth/student/sso/onboarding`) unlanded; real-provider
+  acceptance (live Google + Microsoft returns); `/privacy` `/terms`
+  publication; `support@awoof.tech` inbox confirmation; field
+  INP/CWV without RUM. No merge, deploy, provider enablement, or
+  institution approval performed — all await explicit approval.
