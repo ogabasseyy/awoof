@@ -362,7 +362,6 @@ export class TicketService {
             }
 
             await client.query('COMMIT');
-            transactionOpen = false;
         } catch (error) {
             if (transactionOpen) {
                 try {
