@@ -1,6 +1,6 @@
 import Link from 'next/link';
 import PublicShell from './PublicShell';
-import type { LegalDraftSection } from '@/content/public/legal-drafts';
+import { legalDocuments, legalDraftVersion, type LegalDraftSection } from '@/content/public/legal-drafts';
 
 export default function LegalDraftPage({
   title,
@@ -17,12 +17,18 @@ export default function LegalDraftPage({
         <div className="inline-flex rounded-full border border-[#afcc2a] bg-[#eaff8c] px-4 py-2 text-xs font-extrabold uppercase tracking-[0.12em] text-[#1b2d62]">
           Draft for owner and legal review
         </div>
+        <p className="mt-3 text-sm text-slate-600">{legalDraftVersion}</p>
+        <nav aria-label="Legal review documents" className="mt-5 flex flex-wrap gap-x-5 gap-y-3 text-sm font-semibold text-[#182d75] print:hidden">
+          <Link className="underline underline-offset-4" href="/legal">Review guide</Link>
+          {legalDocuments.map((document) => <Link key={document.href} className="underline underline-offset-4" href={document.href}>{document.label}</Link>)}
+        </nav>
         <div className="mt-8 grid gap-10 lg:grid-cols-[minmax(0,1fr)_16rem] lg:gap-16">
           <article className="min-w-0">
             <h1 className="max-w-3xl text-4xl font-extrabold tracking-tight text-slate-950 sm:text-5xl">{title}</h1>
             <p className="mt-5 max-w-2xl text-lg leading-relaxed text-slate-600">{intro}</p>
             <div className="mt-8 rounded-2xl border-l-4 border-[#244ee7] bg-white p-5 text-sm leading-relaxed text-slate-700 shadow-sm">
               This page is a working draft. It is not effective, should not be used as a live consent link, and does not replace an owner-approved policy.
+              {' '}Proposed obligations and operating assumptions require legal and operational approval before use.
             </div>
             <div className="mt-12 space-y-12">
               {sections.map((section, index) => (
@@ -39,6 +45,9 @@ export default function LegalDraftPage({
                           {section.points.map((point) => <li key={point}>{point}</li>)}
                         </ul>
                       )}
+                      {section.links && <ul className="mt-4 space-y-2">
+                        {section.links.map((link) => <li key={link.href}><Link className="font-semibold text-[#182d75] underline underline-offset-4" href={link.href}>{link.label}</Link></li>)}
+                      </ul>}
                     </div>
                   </div>
                 </section>
@@ -50,7 +59,7 @@ export default function LegalDraftPage({
               <a className="rounded-full border border-slate-300 px-5 py-3 text-sm font-bold text-[#182d75] hover:bg-white" href="mailto:support@awoof.tech">support@awoof.tech</a>
             </nav>
           </article>
-          <nav aria-label={`${title} sections`} className="h-fit rounded-2xl border border-slate-200 bg-white p-6 lg:sticky lg:top-8">
+          <nav aria-label={`${title} sections`} className="h-fit rounded-2xl border border-slate-200 bg-white p-6 lg:sticky lg:top-8 lg:max-h-[calc(100vh-4rem)] lg:overflow-y-auto print:hidden">
             <h2 className="text-xs font-extrabold uppercase tracking-[0.14em] text-[#244ee7]">On this page</h2>
             <ol className="mt-4 space-y-3">
               {sections.map((section) => (

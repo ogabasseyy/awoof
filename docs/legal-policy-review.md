@@ -2,6 +2,8 @@
 
 Status: **draft only — not an effective policy, not a Microsoft consent URL**. Prepared 2026-09-23 for owner and legal review. The `/privacy` and `/terms` routes intentionally use `noindex` and are absent from the footer, page-metadata registry and sitemap. Do not merge or deploy as published legal pages without resolving the gates below.
 
+The expanded package is indexed at `/legal`: student/website terms, privacy notice, `/cookies`, `/legal/merchant-terms` and `/legal/data-protection`. Every route carries draft status and noindex/nofollow. See [the counsel memorandum and completion schedules](legal-review-handoff.md) for the detailed source comparison, proposed retention periods, order form and decisions L01–L12. The draft text now lives in the individual `*-draft.ts` files under `apps/web/src/content/public/`, re-exported by `legal-drafts.ts`.
+
 The owner reported on 2026-09-23 that legally reviewed and approved policy text exists, but the exact approved files or text have not yet been supplied to this repository. The reader-facing candidate text in `apps/web/src/content/public/legal-drafts.ts` was rewritten after that report and has **not** been legally approved. Its visible draft notice must remain until this exact version has been reviewed, approved, versioned and made effective.
 
 ## Confirmed operator information
@@ -35,7 +37,7 @@ The drafts do **not** copy competitor terms, retention periods, security certifi
 
 ## Publication gates and owner decisions
 
-1. Confirm the owner-supplied address and privacy/legal channel against corporate and operational records. `/contact` currently says there is no public inbox or phone number; coordinate its copy before promoting the confirmed support address site-wide.
+1. Confirm the contracting proprietor/entity and registration designation from the CAC certificate; the supplied image says business name and does not establish an incorporated limited company. Confirm the owner-supplied address and privacy/legal channel against records. `/contact` has already been updated locally with the confirmed inbox; verify the release before promoting it site-wide.
 2. Inventory all data categories and recipients in the live release, including Microsoft/Google, universities, email delivery, hosting, payments, analytics, support and merchants. Verify cross-border transfers and contracts before describing safeguards.
 3. Map each purpose to the specific lawful basis, including school/account sign-in, enrollment evidence, merchant checks, payments, fraud/security records and marketing if any. Confirm whether the current consent capture matches those bases and whether any decision requires an automated-decision notice. The candidate deliberately does not claim that every activity relies on consent.
 4. Approve a full retention and deletion schedule: account data, linked identities, consent/evidence, receipts, payments, support, backups, logs and legal holds. The existing challenge/diagnostic cleanup is only a small part of this schedule.

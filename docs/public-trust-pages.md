@@ -2,6 +2,19 @@
 
 Research/repository review: 2026-09-20, inventory refreshed 2026-09-23. Status: first-batch pages shipped; `/privacy` and `/terms` have non-indexable review drafts only. They are not approved policies and are excluded from the public footer and sitemap. This file is internal planning, not public security assurance.
 
+### Legal-review package added 23 September 2026
+
+| Route | Local status and purpose | Publication decision |
+| --- | --- | --- |
+| `/legal` | Counsel reading guide, source links and unresolved approval items | Draft/noindex only |
+| `/privacy` | Expanded privacy notice, lawful-basis proposals, recipients, automated decisions and rights | Draft/noindex only |
+| `/terms` | Student/website terms, checkout responsibilities, IP, restrictions, liability and disputes | Draft/noindex only |
+| `/cookies` | Separate cookies/browser-storage notice | Draft/noindex only; production inventory still required |
+| `/legal/merchant-terms` | Proposed business terms requiring an accepted order form/payment schedule | Draft/noindex only; not an executed agreement |
+| `/legal/data-protection` | Proposed controller-sharing/processor modules and integration annex | Draft/noindex only; roles and annexes incomplete |
+
+These routes are connected through draft navigation, not the public footer or sitemap. Noindex is not access control. [Counsel handoff](legal-review-handoff.md) records research, source evidence, candidate retention periods, commercial choices and deployment/operational gaps. No source edit here enables a new integration or makes a draft legal commitment effective. Existing historical inventory below remains background; it does not supersede this review status.
+
 ## Repository evidence
 
 The read-only inventory checked the working tree and origin/main at 4e47ea0. The local branch is divergent; implementation should start from a fresh isolated origin/main worktree, preserving existing work.
