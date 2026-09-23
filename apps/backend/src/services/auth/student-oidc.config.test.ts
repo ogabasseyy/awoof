@@ -42,6 +42,13 @@ test('stale credentials while fully disabled never fail boot', () => {
     assert.equal(configuration.attemptKey, null);
 });
 
+test('full rollback retains a valid completion destination for in-flight returns', () => {
+    const configuration = readStudentSsoConfiguration({ completionUrl: COMPLETION });
+    assert.deepEqual(enabledStudentSsoProviders(configuration), []);
+    assert.equal(configuration.completionUrl?.href, 'https://app.awoof.example/auth/student/sso/complete');
+    assert.equal(configuration.attemptKey, null);
+});
+
 test('an enabled provider requires its client credentials and callback URL', () => {
     assert.throws(
         () => readStudentSsoConfiguration({ googleEnabled: 'true', completionUrl: COMPLETION, attemptKey: ATTEMPT_KEY }),

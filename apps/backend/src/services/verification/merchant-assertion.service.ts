@@ -129,7 +129,8 @@ export async function exchangeMerchantAssertion(pool: Pool, key: string, input: 
         const productId = (assertion.product_id as string | null | undefined) ?? null;
         if (productId !== null) {
             const available = await tx.query(
-                `SELECT id FROM products WHERE id = $1 AND vendor_id = $2 AND status = 'active' AND deleted_at IS NULL`,
+                `SELECT id FROM products
+                 WHERE id = $1 AND vendor_id = $2 AND status = 'active' AND deleted_at IS NULL AND stock > 0`,
                 [productId, assertion.vendor_id],
             );
             if (available.rowCount !== 1) throw new BadRequestError('Product is no longer available');
@@ -154,11 +155,28 @@ export async function exchangeMerchantAssertion(pool: Pool, key: string, input: 
         if (productId !== null) {
             const locked = await tx.query(
                 `SELECT id, price, student_price FROM products
-                 WHERE id = $1 AND vendor_id = $2 AND status = 'active' AND deleted_at IS NULL FOR UPDATE`,
+                 WHERE id = $1 AND vendor_id = $2 AND status = 'active' AND deleted_at IS NULL AND stock > 0 FOR UPDATE`,
                 [productId, assertion.vendor_id],
             );
-            const quoted = locked.rows[0];
-            if (!quoted) throw new BadRequestError('Product is no longer available');
+            const live = locked.rows[0];
+            if (!live) throw new BadRequestError('Product is no longer available');
+            // Claim-bound authorizations bind the session's quoted prices,
+            // not a resample: the vendor may have edited the catalog after
+            // the checkout started and the student reviewed this quote.
+            // Sessions without a quote (legacy rows) fall back to live.
+            let listPrice: string = live.price;
+            let studentPrice: string = live.student_price;
+            if (claimSessionId !== null) {
+                const quote = await tx.query<{ list_price_snapshot: string | null; student_price_snapshot: string | null }>(
+                    `SELECT list_price_snapshot, student_price_snapshot FROM merchant_claim_sessions WHERE id = $1`,
+                    [claimSessionId],
+                );
+                const sessionQuote = quote.rows[0];
+                if (sessionQuote?.list_price_snapshot != null && sessionQuote?.student_price_snapshot != null) {
+                    listPrice = sessionQuote.list_price_snapshot;
+                    studentPrice = sessionQuote.student_price_snapshot;
+                }
+            }
             const authorization = await tx.query<{ id: string }>(
                 `INSERT INTO merchant_benefit_authorizations
                  (assertion_id,vendor_id,user_id,product_id,evidence_id,processing_grant_id,disclosure_grant_id,
@@ -167,8 +185,8 @@ export async function exchangeMerchantAssertion(pool: Pool, key: string, input: 
                  RETURNING id`,
                 [assertion.id, assertion.vendor_id, assertion.user_id, productId,
                     eligibility.evidenceId, eligibility.processingGrantId, assertion.disclosure_grant_id,
-                    quoted.price, quoted.student_price, BENEFIT_CURRENCY,
-                    computePricingVersion(productId, BENEFIT_CURRENCY, quoted.price, quoted.student_price),
+                    listPrice, studentPrice, BENEFIT_CURRENCY,
+                    computePricingVersion(productId, BENEFIT_CURRENCY, listPrice, studentPrice),
                     eligibility.expiresAt, claimSessionId],
             );
             benefitAuthorizationId = authorization.rows[0]!.id;

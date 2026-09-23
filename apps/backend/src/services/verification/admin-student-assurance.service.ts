@@ -489,8 +489,6 @@ export async function readAdminStudentAssurance(
           AND i.revoked_at IS NULL
          JOIN institution_login_policies p
            ON p.id = a.login_policy_id
-          AND p.enabled
-          AND p.approved_until > clock_timestamp()
           AND p.version = a.policy_version
           AND p.university_id = a.university_id
          JOIN students ON students.user_id = a.user_id
@@ -503,6 +501,9 @@ export async function readAdminStudentAssurance(
            AND ((a.source = 'google_workspace' AND $2) OR (a.source = 'microsoft_school' AND $3))
            AND LEAST(a.expires_at, a.verified_at + interval '90 days', p.approved_until) <= clock_timestamp()
          ORDER BY students.id, valid_until DESC, a.verified_at DESC, a.id DESC`,
+        // Historical branch mirrors the point reader: the policy join
+        // above keeps binding predicates only, so lapsed approvals
+        // project expired instead of vanishing into unverified.
         [contextsJson, googleSsoEnabled, microsoftSsoEnabled],
     )).rows.map((row) => [row.student_id, row] as const));
 
@@ -548,7 +549,9 @@ export async function readAdminStudentAssurance(
                 ? { method: ssoExpiredMethod, validUntil: ssoExpired.valid_until.toISOString() }
                 : null;
         const schoolProjection = resolveSchoolAccount({
-            method: winner?.method ?? 'email_otp',
+            // Mirror the point reader: the expired winner's method labels
+            // the expired status, not a defaulted mailbox method.
+            method: winner?.method ?? last?.method ?? 'email_otp',
             validUntil: winner ? winner.validUntil : null,
             expiredValidUntil: last ? last.validUntil : null,
         });

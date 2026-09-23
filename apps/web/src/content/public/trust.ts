@@ -18,8 +18,9 @@ export const trustSections: TrustSection[] = [
   {
     heading: 'What merchants learn',
     paragraphs: [
-      'Merchants never see your documents, your email, or your Awoof account. For each approved check they receive an eligibility answer: whether you are eligible, which check passed, which institution it came from, and when the answer expires.',
+      'Eligibility answers never include your documents, your email, or your Awoof account. For each approved check the merchant receives only: whether you are eligible, which check passed, which institution it came from, and when the answer expires.',
       'Answers use a pseudonym scoped to that merchant, so one merchant cannot track you across another. Each check needs your current, explicit approval for that merchant.',
+      'If you then complete a purchase, that merchant sees the order contact details needed for fulfillment — your name and email — on that order only.',
     ],
     list: [
       'You approve a check inside your signed-in account.',

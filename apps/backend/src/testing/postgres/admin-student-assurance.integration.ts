@@ -159,7 +159,9 @@ async function assertParity(client: PoolClient, userId: string, expectedStatus: 
 }
 
 async function seedSsoAssertion(client: PoolClient, fixture: Fixture): Promise<void> {
-    const domain = fixture.email.split('@')[1]!;
+    // Unique per call: the suite shares one database and the domain table
+    // is globally unique.
+    const domain = `${uniqueLabel()}.${fixture.email.split('@')[1]!}`;
     const policyId = (await client.query<{ id: string }>(
         `INSERT INTO institution_login_policies
              (university_id, provider, issuer, provider_realm, version, enabled, approved_until, school_assertion_days)
@@ -206,6 +208,38 @@ test('admin projection matches the authoritative read for an SSO school account'
             const assurance = await assertParity(client, fixture.userId, 'pending');
             // Both proofs are capped at 90 days from attestation, so the
             // later SSO attestation carries the later valid-until and wins.
+            assert.equal(assurance.schoolAccountMethod, 'google_workspace');
+        } finally {
+            config.studentSso.google.enabled = googleWas;
+            config.studentSso.microsoft.enabled = microsoftWas;
+        }
+    });
+});
+
+test('lapsed policy approval projects expired instead of unverified', async () => {
+    await withTestClient(async (client) => {
+        const fixture = await createFixture(client, {});
+        // Revoke the mailbox proof (evidence is otherwise immutable) so
+        // the SSO assertion is the only school signal.
+        await client.query(
+            `UPDATE eligibility_evidence SET revoked_at = clock_timestamp() WHERE student_id = $1`,
+            [fixture.studentId],
+        );
+        await seedSsoAssertion(client, fixture);
+        await client.query(
+            `UPDATE institution_login_policies SET approved_until = clock_timestamp() - interval '1 hour'
+             WHERE university_id = $1 AND provider = 'google'`,
+            [fixture.universityId],
+        );
+        const googleWas = config.studentSso.google.enabled;
+        const microsoftWas = config.studentSso.microsoft.enabled;
+        config.studentSso.google.enabled = true;
+        config.studentSso.microsoft.enabled = false;
+        try {
+            // The assertion is otherwise live; only the policy approval
+            // lapsed, so both readers must say expired with its method.
+            const assurance = await assertParity(client, fixture.userId, 'pending');
+            assert.equal(assurance.schoolAccountStatus, 'expired');
             assert.equal(assurance.schoolAccountMethod, 'google_workspace');
         } finally {
             config.studentSso.google.enabled = googleWas;

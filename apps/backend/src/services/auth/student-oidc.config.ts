@@ -75,6 +75,17 @@ function readProvider(
     return { enabled: true, clientId, clientSecret, callbackUrl: callback };
 }
 
+function lenientCompletionUrl(value: string | undefined): URL | null {
+    if (!value) return null;
+    try {
+        const completionUrl = httpsUrl(value, 'Student SSO completion URL');
+        if (completionUrl.pathname !== STUDENT_SSO_COMPLETION_PATH) return null;
+        return completionUrl;
+    } catch {
+        return null;
+    }
+}
+
 function readAttemptKey(value: string | undefined): string {
     if (typeof value !== 'string' || !/^[A-Za-z0-9_-]+$/.test(value)) {
         throw new TypeError('Student SSO attempt key must decode from base64url to exactly 32 bytes');
@@ -94,9 +105,12 @@ export function readStudentSsoConfiguration(raw: RawStudentSsoConfiguration): St
     const google = readProvider(raw, 'google', 'Google', STUDENT_SSO_GOOGLE_CALLBACK_PATH);
     const microsoft = readProvider(raw, 'microsoft', 'Microsoft', STUDENT_SSO_MICROSOFT_CALLBACK_PATH);
     if (!google.enabled && !microsoft.enabled) {
-        // Disabled providers require no credentials: stale values while fully
-        // disabled are ignored so boot and tests never fail on them.
-        return { google, microsoft, completionUrl: null, attemptKey: null };
+        // Disabled providers require no credentials: stale values while
+        // fully disabled are ignored so boot and tests never fail on them.
+        // A valid completion destination is still retained: it is not a
+        // secret, and in-flight provider returns need it for their
+        // bounded restart redirect instead of a 503.
+        return { google, microsoft, completionUrl: lenientCompletionUrl(raw.completionUrl), attemptKey: null };
     }
     if (!raw.completionUrl) throw new TypeError('Student SSO completion URL is required when a provider is enabled');
     const completionUrl = httpsUrl(raw.completionUrl, 'Student SSO completion URL');

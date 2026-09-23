@@ -18,6 +18,7 @@ import { ENROLLMENT_SOURCE } from '../../services/verification/eligibility.types
 import { MERCHANT_DISCLOSURE_NOTICE_VERSION, VERIFICATION_NOTICE_VERSION } from '../../services/verification/verification-notices.js';
 import { rotateReportingKey } from '../../services/auth/reporting-key.service.js';
 import { exchangeMerchantAssertion, issueMerchantAssertion } from '../../services/verification/merchant-assertion.service.js';
+import { deleteExpiredClaimSessions } from '../../services/verification/merchant-benefit.service.js';
 import {
     MERCHANT_CLAIM_CALLBACK_PATH,
     claimProductBenefit,
@@ -322,6 +323,121 @@ test('claims require the disclosure grant origin to match the session origin', a
         await assert.rejects(claimProductBenefit(pool, fixture.student, {
             merchantClaimSessionId: created.claimSessionId, disclosureGrantId: fixture.disclosure,
         }), /expired or already redeemed/);
+    } finally { client.release(); await pool.end(); }
+});
+
+test('claim sessions and authorizations require sellable stock', async () => {
+    const pool = createTestPool();
+    const client = await pool.connect();
+    try {
+        const fixture = await createClaimFixture(client, pool);
+        await client.query('UPDATE products SET stock = 0 WHERE id = $1', [fixture.product]);
+        await assert.rejects(createMerchantClaimSession(pool, fixture.key, {
+            productId: fixture.product, merchantCheckoutId: `checkout-${fixture.label.slice(0, 8)}`,
+            browserNonceHash: sha256hex('stock-gate-nonce'), origin: fixture.origin,
+        }), /not available/);
+    } finally { client.release(); await pool.end(); }
+});
+
+test('authorizations bind the session quote, not a resampled catalog', async () => {
+    const pool = createTestPool();
+    const client = await pool.connect();
+    try {
+        const fixture = await createClaimFixture(client, pool);
+        const checkoutId = `quote-${fixture.label.slice(0, 8)}`;
+        const nonce = 'q'.repeat(43);
+        const created = await createMerchantClaimSession(pool, fixture.key, {
+            productId: fixture.product, merchantCheckoutId: checkoutId,
+            browserNonceHash: sha256hex(nonce), origin: fixture.origin,
+        });
+        // The vendor reprices after the checkout starts and the student
+        // reviews the original quote.
+        await client.query(
+            'UPDATE products SET price = 2000, student_price = 1500 WHERE id = $1', [fixture.product],
+        );
+        const reviewed = await readMerchantClaimSession(pool, created.claimSessionId);
+        assert.equal(reviewed.listPrice, '100.00');
+        assert.equal(reviewed.studentPrice, '80.00');
+        const claim = await claimProductBenefit(pool, fixture.student, {
+            merchantClaimSessionId: created.claimSessionId, disclosureGrantId: fixture.disclosure,
+        });
+        const exchanged = await exchangeMerchantAssertion(pool, fixture.key, {
+            code: claim.code, campaignId: checkoutId, idempotencyKey: `redeem-${checkoutId}`,
+            browserNonce: nonce, merchantCheckoutId: checkoutId,
+        });
+        assert.equal(typeof exchanged.benefitAuthorizationId, 'string');
+        const authorization = await client.query(
+            'SELECT list_price_snapshot, student_price_snapshot FROM merchant_benefit_authorizations WHERE id = $1',
+            [exchanged.benefitAuthorizationId!],
+        );
+        assert.equal(authorization.rows[0].list_price_snapshot, '100.00');
+        assert.equal(authorization.rows[0].student_price_snapshot, '80.00');
+    } finally { client.release(); await pool.end(); }
+});
+
+test('exchange refuses a product that sold out after the session started', async () => {
+    const pool = createTestPool();
+    const client = await pool.connect();
+    try {
+        const fixture = await createClaimFixture(client, pool);
+        const checkoutId = `soldout-${fixture.label.slice(0, 8)}`;
+        const nonce = 's'.repeat(43);
+        const created = await createMerchantClaimSession(pool, fixture.key, {
+            productId: fixture.product, merchantCheckoutId: checkoutId,
+            browserNonceHash: sha256hex(nonce), origin: fixture.origin,
+        });
+        const claim = await claimProductBenefit(pool, fixture.student, {
+            merchantClaimSessionId: created.claimSessionId, disclosureGrantId: fixture.disclosure,
+        });
+        await client.query('UPDATE products SET stock = 0 WHERE id = $1', [fixture.product]);
+        await assert.rejects(exchangeMerchantAssertion(pool, fixture.key, {
+            code: claim.code, campaignId: checkoutId, idempotencyKey: `redeem-${checkoutId}`,
+            browserNonce: nonce, merchantCheckoutId: checkoutId,
+        }), /no longer available/);
+    } finally { client.release(); await pool.end(); }
+});
+
+test('retention cleanup deletes spent sessions and detaches references', async () => {
+    const pool = createTestPool();
+    const client = await pool.connect();
+    try {
+        const fixture = await createClaimFixture(client, pool);
+        const checkoutId = `retire-${fixture.label.slice(0, 8)}`;
+        const nonce = 'r'.repeat(43);
+        const created = await createMerchantClaimSession(pool, fixture.key, {
+            productId: fixture.product, merchantCheckoutId: checkoutId,
+            browserNonceHash: sha256hex(nonce), origin: fixture.origin,
+        });
+        const claim = await claimProductBenefit(pool, fixture.student, {
+            merchantClaimSessionId: created.claimSessionId, disclosureGrantId: fixture.disclosure,
+        });
+        const exchanged = await exchangeMerchantAssertion(pool, fixture.key, {
+            code: claim.code, campaignId: checkoutId, idempotencyKey: `redeem-${checkoutId}`,
+            browserNonce: nonce, merchantCheckoutId: checkoutId,
+        });
+        const fresh = await createMerchantClaimSession(pool, fixture.key, {
+            productId: fixture.product, merchantCheckoutId: `fresh-${fixture.label.slice(0, 8)}`,
+            browserNonceHash: sha256hex('fresh-nonce-value'), origin: fixture.origin,
+        });
+        await client.query(
+            `UPDATE merchant_claim_sessions SET expires_at = clock_timestamp() - interval '8 days' WHERE id = $1`,
+            [created.claimSessionId],
+        );
+        const cutoff = new Date(Date.now() - 7 * 86_400_000);
+        assert.equal(await deleteExpiredClaimSessions(client, { expiredBefore: cutoff }), 1);
+        const sessions = await client.query(
+            'SELECT id FROM merchant_claim_sessions WHERE vendor_id = $1', [fixture.vendor],
+        );
+        assert.deepEqual(sessions.rows.map((row) => row.id as string), [fresh.claimSessionId]);
+        const authorization = await client.query(
+            'SELECT claim_session_id FROM merchant_benefit_authorizations WHERE id = $1',
+            [exchanged.benefitAuthorizationId!],
+        );
+        assert.equal(authorization.rows[0].claim_session_id, null);
+        const assertions = await client.query(
+            'SELECT claim_session_id FROM merchant_assertions WHERE vendor_id = $1', [fixture.vendor],
+        );
+        for (const row of assertions.rows) assert.equal(row.claim_session_id, null);
     } finally { client.release(); await pool.end(); }
 });
 

@@ -83,12 +83,16 @@ export async function createMerchantClaimSession(
         );
         if (vendor.rowCount !== 1) throw new UnauthorizedError('Merchant unavailable');
         const vendorId = vendor.rows[0]!.id;
-        const product = await tx.query<{ id: string }>(
-            `SELECT id FROM products
-             WHERE id = $1 AND vendor_id = $2 AND status = 'active' AND deleted_at IS NULL FOR UPDATE`,
+        // The checkout starts only against sellable stock, and the session
+        // quotes the catalog prices now: the later authorization binds
+        // this quote instead of resampling a possibly edited catalog.
+        const product = await tx.query<{ id: string; price: string; student_price: string }>(
+            `SELECT id, price, student_price FROM products
+             WHERE id = $1 AND vendor_id = $2 AND status = 'active' AND deleted_at IS NULL AND stock > 0 FOR UPDATE`,
             [input.productId, vendorId],
         );
-        if (product.rowCount !== 1) throw new BadRequestError('Product is not available for this merchant');
+        const quoted = product.rows[0];
+        if (!quoted) throw new BadRequestError('Product is not available for this merchant');
         const reconcile = (session: {
             id: string; product_id: string; browser_nonce_hash: string; origin: string | null; expires_at: Date; consumed_at: Date | null;
         }) => {
@@ -124,11 +128,14 @@ export async function createMerchantClaimSession(
             throw new BadRequestError('Claim origin is not an active allowed origin for this merchant');
         }
         const inserted = await tx.query<{ id: string; expires_at: Date }>(
-            `INSERT INTO merchant_claim_sessions (vendor_id, product_id, checkout_id, browser_nonce_hash, origin, expires_at)
-             VALUES ($1, $2, $3, $4, $5, clock_timestamp() + interval '10 minutes')
+            `INSERT INTO merchant_claim_sessions
+                 (vendor_id, product_id, checkout_id, browser_nonce_hash, origin,
+                  list_price_snapshot, student_price_snapshot, expires_at)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, clock_timestamp() + interval '10 minutes')
              ON CONFLICT (vendor_id, checkout_id) DO NOTHING
              RETURNING id, expires_at`,
-            [vendorId, input.productId, input.merchantCheckoutId, input.browserNonceHash, input.origin],
+            [vendorId, input.productId, input.merchantCheckoutId, input.browserNonceHash, input.origin,
+                quoted.price, quoted.student_price],
         );
         if (inserted.rows[0]) {
             return { claimSessionId: inserted.rows[0].id, expiresAt: inserted.rows[0].expires_at.toISOString(), created: true };
@@ -155,9 +162,12 @@ export type ClaimSessionPublic = {
 
 export async function readMerchantClaimSession(pool: Pool, sessionId: string): Promise<ClaimSessionPublic> {
     const session = await pool.query<{
-        id: string; vendor_id: string; product_id: string; origin: string | null; expires_at: Date; consumed_at: Date | null;
+        id: string; vendor_id: string; product_id: string; origin: string | null;
+        list_price_snapshot: string | null; student_price_snapshot: string | null;
+        expires_at: Date; consumed_at: Date | null;
     }>(
-        `SELECT id, vendor_id, product_id, origin, expires_at, consumed_at FROM merchant_claim_sessions WHERE id = $1`,
+        `SELECT id, vendor_id, product_id, origin, list_price_snapshot, student_price_snapshot, expires_at, consumed_at
+         FROM merchant_claim_sessions WHERE id = $1`,
         [sessionId],
     );
     const row = session.rows[0];
@@ -189,8 +199,11 @@ export async function readMerchantClaimSession(pool: Pool, sessionId: string): P
         vendorName: vendorRow.name,
         productId: row.product_id,
         productName: productRow.name,
-        listPrice: productRow.price,
-        studentPrice: productRow.student_price,
+        // The review shows the session's quote when present, so the
+        // student approves exactly what the authorization will bind.
+        // Legacy sessions without a quote fall back to live prices.
+        listPrice: row.list_price_snapshot ?? productRow.price,
+        studentPrice: row.student_price_snapshot ?? productRow.student_price,
         handoffOrigin: row.origin,
         expiresAt: row.expires_at.toISOString(),
     };

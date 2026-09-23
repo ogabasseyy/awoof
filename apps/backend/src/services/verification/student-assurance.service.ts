@@ -211,6 +211,11 @@ async function readSsoSchoolAccount(tx: PoolClient, userId: string, context: Stu
          LIMIT 1`,
         params,
     );
+    // Historical branch: the policy join keeps only the binding
+    // predicates (identity, version, university). Liveness predicates
+    // stay in the valid branch above: an assertion whose policy approval
+    // lapsed must project expired with its method, not vanish into
+    // unverified.
     const expired = await tx.query<SsoSchoolRow>(
         `SELECT a.source, LEAST(a.expires_at, a.verified_at + interval '90 days', p.approved_until) AS valid_until
          FROM student_school_assertions a
@@ -220,8 +225,6 @@ async function readSsoSchoolAccount(tx: PoolClient, userId: string, context: Stu
           AND i.revoked_at IS NULL
          JOIN institution_login_policies p
            ON p.id = a.login_policy_id
-          AND p.enabled
-          AND p.approved_until > clock_timestamp()
           AND p.version = a.policy_version
           AND p.university_id = a.university_id
          WHERE a.user_id = $1

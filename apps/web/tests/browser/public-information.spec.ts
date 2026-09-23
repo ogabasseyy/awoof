@@ -11,6 +11,7 @@ test('trust page explains checks, sharing, and limits', async ({ page }) => {
   await expect(page.locator('main h1')).toHaveCount(1);
   await expect(page.getByRole('heading', { name: 'Two checks, not one' })).toBeVisible();
   await expect(page.getByRole('heading', { name: 'What merchants learn' })).toBeVisible();
+  await expect(page.getByText('Eligibility answers never include your documents')).toBeVisible();
   await expect(page.getByRole('heading', { name: 'Limits' })).toBeVisible();
   await expect(page.getByRole('link', { name: 'Get help' })).toBeVisible();
 });
