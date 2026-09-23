@@ -295,6 +295,8 @@ export type SsoHandoffRecord = {
     handoffId: string;
     handoffSecret: string;
     expiresAt: string;
+    /** Validated same-origin return path carried over from the attempt. */
+    returnPath: string;
 };
 
 const SSO_ATTEMPT_KEY = 'awoof.sso.attempt.v1.tab';
@@ -383,10 +385,12 @@ export function ssoAttemptMatches(record: SsoAttemptRecord, attemptId: string, g
 /** Persist the unlinked-identity handoff in this tab only; never in a URL. */
 export function saveSsoHandoff(storage: Storage | null | undefined, record: SsoHandoffRecord): boolean {
     if (!isUuid(record.handoffId) || !isOpaqueSecret(record.handoffSecret) || !isInstant(record.expiresAt)) return false;
+    if (typeof record.returnPath !== 'string' || record.returnPath.length === 0) return false;
     return writeRecord(storage, SSO_HANDOFF_KEY, {
         handoffId: record.handoffId,
         handoffSecret: record.handoffSecret,
         expiresAt: record.expiresAt,
+        returnPath: record.returnPath,
     });
 }
 
@@ -395,7 +399,13 @@ export function readSsoHandoff(storage: Storage | null | undefined): SsoHandoffR
     if (!record || !isUuid(record.handoffId) || !isOpaqueSecret(record.handoffSecret) || !isInstant(record.expiresAt)) {
         return null;
     }
-    return { handoffId: record.handoffId, handoffSecret: record.handoffSecret, expiresAt: record.expiresAt };
+    if (typeof record.returnPath !== 'string' || record.returnPath.length === 0) return null;
+    return {
+        handoffId: record.handoffId,
+        handoffSecret: record.handoffSecret,
+        expiresAt: record.expiresAt,
+        returnPath: record.returnPath,
+    };
 }
 
 export function clearSsoHandoff(storage: Storage | null | undefined): void {

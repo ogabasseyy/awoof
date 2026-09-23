@@ -123,10 +123,13 @@ function StudentSsoCompleteInner() {
                 return;
             }
             if (finished.kind === 'link_required') {
+                // The attempt is cleared below, so the handoff carries the
+                // validated return path forward for post-link continuation.
                 const kept = saveSsoHandoff(storage, {
                     handoffId: finished.handoffId,
                     handoffSecret: finished.handoffSecret,
                     expiresAt: finished.expiresAt,
+                    returnPath: record.returnPath,
                 });
                 clearSsoAttempt(storage);
                 if (!kept) {

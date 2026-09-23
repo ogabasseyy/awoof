@@ -46,10 +46,10 @@ async function readTabAttempt(page: Page): Promise<SeedAttempt | null> {
     }, ATTEMPT_KEY);
 }
 
-async function readTabHandoff(page: Page): Promise<{ handoffId: string; handoffSecret: string; expiresAt: string } | null> {
+async function readTabHandoff(page: Page): Promise<{ handoffId: string; handoffSecret: string; expiresAt: string; returnPath: string } | null> {
     return page.evaluate((key) => {
         const raw = sessionStorage.getItem(key);
-        return raw ? JSON.parse(raw) as { handoffId: string; handoffSecret: string; expiresAt: string } : null;
+        return raw ? JSON.parse(raw) as { handoffId: string; handoffSecret: string; expiresAt: string; returnPath: string } : null;
     }, HANDOFF_KEY);
 }
 
@@ -361,6 +361,9 @@ test('an unlinked provider identity stays signed out with an explicit link-requi
     expect(await readTabAttempt(page)).toBeNull();
     const handoff = await readTabHandoff(page);
     expect(handoff?.handoffId).toBe(HANDOFF_ID);
+    // The cleared attempt's return path travels with the handoff so the
+    // onboarding page can continue to the initiating destination.
+    expect(handoff?.returnPath).toBe('/marketplace');
     expect(page.url()).not.toContain('synthetic-handoff-secret');
     api.assertNoUnexpectedRequests();
 });

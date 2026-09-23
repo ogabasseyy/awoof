@@ -310,7 +310,7 @@ test('tab storage failures fail closed without throwing', () => {
     };
     assert.equal(saveSsoAttempt(storage, record), false);
     assert.equal(readSsoAttempt(storage), null);
-    assert.equal(saveSsoHandoff(storage, { handoffId: HANDOFF_ID, handoffSecret: 's', expiresAt: record.expiresAt }), false);
+    assert.equal(saveSsoHandoff(storage, { handoffId: HANDOFF_ID, handoffSecret: 's', expiresAt: record.expiresAt, returnPath: '/marketplace' }), false);
     assert.equal(readSsoHandoff(storage), null);
     clearSsoAttempt(storage);
     clearSsoHandoff(storage);
@@ -318,13 +318,22 @@ test('tab storage failures fail closed without throwing', () => {
 
 test('handoff storage keeps linking secrets out of URLs', () => {
     const storage = memoryStorage();
-    const handoff = { handoffId: HANDOFF_ID, handoffSecret: 'handoff-secret', expiresAt: new Date(Date.now() + 600_000).toISOString() };
+    const handoff = { handoffId: HANDOFF_ID, handoffSecret: 'handoff-secret', expiresAt: new Date(Date.now() + 600_000).toISOString(), returnPath: '/marketplace' };
     assert.equal(saveSsoHandoff(storage, handoff), true);
     assert.deepEqual(readSsoHandoff(storage), handoff);
     assert.equal(saveSsoHandoff(storage, { ...handoff, handoffId: 'bad' }), false);
     assert.deepEqual(readSsoHandoff(storage), handoff);
     clearSsoHandoff(storage);
     assert.equal(readSsoHandoff(storage), null);
+});
+
+test('handoff storage carries the return path and rejects empties', () => {
+    const storage = memoryStorage();
+    const handoff = { handoffId: HANDOFF_ID, handoffSecret: 'handoff-secret', expiresAt: new Date(Date.now() + 600_000).toISOString(), returnPath: '/marketplace/deals/p1?claim=1' };
+    assert.equal(saveSsoHandoff(storage, handoff), true);
+    assert.equal(readSsoHandoff(storage)?.returnPath, '/marketplace/deals/p1?claim=1');
+    assert.equal(saveSsoHandoff(storage, { ...handoff, returnPath: '' }), false);
+    assert.equal(readSsoHandoff(storage)?.returnPath, '/marketplace/deals/p1?claim=1');
 });
 
 test('failure redirects carry a safe error taxonomy only', () => {

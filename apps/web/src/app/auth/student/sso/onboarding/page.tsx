@@ -3,7 +3,9 @@
  * The complete page stores the handoff in this tab and stays signed out;
  * this page binds it to the freshly password-proven owner (reauth, then
  * link) and preserves claim continuation. The handoff secret never leaves
- * tab storage except inside the link POST body.
+ * tab storage except inside the link POST body. Both calls carry the
+ * password session's Bearer token explicitly, since the SSO client
+ * installs no session interceptors.
  */
 
 'use client';
@@ -14,6 +16,7 @@ import axios from 'axios';
 import { AuthShell } from '@/components/auth/AuthShell';
 import { Button } from '@/components/ui/button';
 import { studentSsoApiClient } from '@/lib/api-client';
+import { getSessionSnapshot } from '@/lib/auth';
 import { resolveStudentReturn } from '@/lib/student-return';
 import {
     clearSsoAttempt,
@@ -21,7 +24,6 @@ import {
     isSsoAttemptLive,
     parseSsoLinkResponse,
     parseSsoReauthResponse,
-    readSsoAttempt,
     readSsoHandoff,
     type SsoHandoffRecord,
 } from '@/lib/student-login-flow';
@@ -47,8 +49,10 @@ function tabStorage(): Storage | null {
 
 function continuationPath(): string {
     const storage = tabStorage();
-    const attempt = readSsoAttempt(storage);
-    return resolveStudentReturn(attempt?.returnPath ?? null, window.location.origin);
+    // The complete page clears the attempt when the handoff is stored, so
+    // the handoff's carried return path is the continuation source.
+    const handoff = readSsoHandoff(storage);
+    return resolveStudentReturn(handoff?.returnPath ?? null, window.location.origin);
 }
 
 function forgetHandoff(): void {
@@ -69,6 +73,7 @@ function StudentSsoOnboardingInner() {
     const [view, setView] = useState<OnboardingView>({ kind: 'checking' });
     const [password, setPassword] = useState('');
     const startedRef = useRef(false);
+    const reauthFailures = useRef(0);
 
     useEffect(() => {
         if (startedRef.current) return;
@@ -85,17 +90,37 @@ function StudentSsoOnboardingInner() {
     const submit = async (event: React.FormEvent): Promise<void> => {
         event.preventDefault();
         if (view.kind !== 'ready' || view.busy || password.length === 0) return;
+        // Both endpoints require the password session: without a local
+        // access token no request is sent and the user signs in first.
+        // The token is attached explicitly — never via the refreshing
+        // session client, whose retry would clear the session on a wrong
+        // password.
+        const session = getSessionSnapshot();
+        if (!session.accessToken) {
+            setView({ kind: 'needs_signin' });
+            return;
+        }
+        const authHeaders = { Authorization: `Bearer ${session.accessToken}` };
         setView({ ...view, busy: true, error: null });
         let grant;
         try {
             const response = await studentSsoApiClient.post('/auth/student/sso/reauth', {
                 password,
                 purpose: 'link',
-            });
+            }, { headers: authHeaders });
             grant = parseSsoReauthResponse(response.data);
         } catch (cause: unknown) {
             if (statusOf(cause) === 401) {
-                setView({ kind: 'needs_signin' });
+                // The boundary redacts every 401 identically, so a signed-in
+                // 401 is read as a wrong password first; a repeat means the
+                // session itself is dead and the user signs in again.
+                reauthFailures.current += 1;
+                if (reauthFailures.current >= 2 || !getSessionSnapshot().accessToken) {
+                    setView({ kind: 'needs_signin' });
+                    return;
+                }
+                setPassword('');
+                setView({ ...view, busy: false, error: 'Current password is incorrect.' });
                 return;
             }
             setView({ kind: 'unavailable' });
@@ -105,15 +130,22 @@ function StudentSsoOnboardingInner() {
             setView({ kind: 'unavailable' });
             return;
         }
+        reauthFailures.current = 0;
         let result;
         try {
             const response = await studentSsoApiClient.post('/auth/student/sso/link', {
                 handoffId: view.handoff.handoffId,
                 handoffSecret: view.handoff.handoffSecret,
                 reauthGrant: { grantId: grant.grantId, grantSecret: grant.grantSecret },
-            });
+            }, { headers: authHeaders });
             result = parseSsoLinkResponse(response.status, response.data);
         } catch (cause: unknown) {
+            // The password already proved this session, so a link 401 means
+            // the session died mid-flow: sign in again, handoff retained.
+            if (statusOf(cause) === 401) {
+                setView({ kind: 'needs_signin' });
+                return;
+            }
             result = parseSsoLinkResponse(statusOf(cause), bodyOf(cause));
         }
         if (!result) {
