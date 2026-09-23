@@ -323,6 +323,44 @@ test('exact claim-session retries return the live session after catalog changes'
     } finally { client.release(); await pool.end(); }
 });
 
+test('claim creation rechecks the reporting key after acquiring the vendor lock', async () => {
+    const pool = createTestPool();
+    const client = await pool.connect();
+    try {
+        const fixture = await createClaimFixture(client, pool);
+        const input = {
+            productId: fixture.product, merchantCheckoutId: `checkout-${fixture.label.slice(0, 8)}`,
+            browserNonceHash: sha256hex('key-race-nonce'), origin: fixture.origin,
+        };
+        // Hold the vendor lock so the creation blocks after its pre-lock
+        // authentication but before its in-transaction recheck.
+        await client.query('BEGIN');
+        await client.query('SELECT id FROM vendors WHERE id = $1 FOR UPDATE', [fixture.vendor]);
+        const attempt = createMerchantClaimSession(pool, fixture.key, input);
+        try {
+            const deadline = Date.now() + 5000;
+            let blocked = 0;
+            do {
+                const waiting = await pool.query(`SELECT count(*)::int AS count FROM pg_stat_activity
+                    WHERE datname = current_database() AND wait_event_type = 'Lock'
+                    AND query LIKE '%FROM vendors WHERE user_id%'`);
+                blocked = waiting.rows[0].count;
+                if (blocked >= 1) break;
+                await new Promise((resolve) => setTimeout(resolve, 10));
+            } while (Date.now() < deadline);
+            assert.equal(blocked, 1, 'Claim creation must be observed waiting on the vendor lock');
+            // Revoke between authentication and the recheck: the outer auth
+            // already passed, so only the in-transaction recheck can stop it.
+            // A direct status flip takes no vendor lock, so it cannot block.
+            await pool.query("UPDATE api_keys SET status = 'revoked' WHERE vendor_id = $1 AND status = 'active'", [fixture.vendor]);
+        } finally {
+            await client.query('ROLLBACK');
+        }
+        await assert.rejects(attempt, /Merchant key unavailable/);
+        assert.equal((await client.query('SELECT count(*)::int AS count FROM merchant_claim_sessions WHERE vendor_id = $1', [fixture.vendor])).rows[0].count, 0);
+    } finally { client.release(); await pool.end(); }
+});
+
 test('claims require the disclosure grant origin to match the session origin', async () => {
     const pool = createTestPool();
     const client = await pool.connect();

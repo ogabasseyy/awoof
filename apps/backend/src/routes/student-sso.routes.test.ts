@@ -258,19 +258,28 @@ test('callback failure outcome clears the resolved cookie on redirect', async ()
 });
 
 test('callback client errors clear the resolved cookie while outages redirect bounded', async () => {
-    const failing = stubFlow({
-        callback: async () => { throw new ConflictError('Student SSO attempt is no longer valid'); },
-    });
-    await withServer(routerWith(failing), async (baseUrl) => {
-        const response = await fetch(`${baseUrl}/google/callback?state=opaque-state`, {
-            redirect: 'manual',
-            headers: { Cookie: `${COOKIE_NAME}=browser-secret` },
+    const { config } = await import('../config/env.js');
+    const googleEnabled = config.studentSso.google.enabled;
+    // Client errors stay bare JSON only while their provider is live; a
+    // disabled provider always lands on the bounded completion page.
+    Object.assign(config.studentSso.google, { enabled: true });
+    try {
+        const failing = stubFlow({
+            callback: async () => { throw new ConflictError('Student SSO attempt is no longer valid'); },
         });
-        assert.equal(response.status, 409);
-        const [setCookie] = parseSetCookies(response);
-        assert.ok(setCookie);
-        assert.match(setCookie, new RegExp(`^${COOKIE_NAME}=;`));
-    });
+        await withServer(routerWith(failing), async (baseUrl) => {
+            const response = await fetch(`${baseUrl}/google/callback?state=opaque-state`, {
+                redirect: 'manual',
+                headers: { Cookie: `${COOKIE_NAME}=browser-secret` },
+            });
+            assert.equal(response.status, 409);
+            const [setCookie] = parseSetCookies(response);
+            assert.ok(setCookie);
+            assert.match(setCookie, new RegExp(`^${COOKIE_NAME}=;`));
+        });
+    } finally {
+        Object.assign(config.studentSso.google, { enabled: googleEnabled });
+    }
 
     const outage = createStudentSsoRouter(
         () => { throw new ServiceUnavailableError('Student SSO is unavailable'); },
@@ -291,6 +300,36 @@ test('callback client errors clear the resolved cookie while outages redirect bo
         assert.ok(setCookie);
         assert.match(setCookie, new RegExp(`^${COOKIE_NAME}=;`));
     });
+});
+
+test('callbacks for a disabled provider redirect bounded while the other provider stays live', async () => {
+    const { config } = await import('../config/env.js');
+    const googleEnabled = config.studentSso.google.enabled;
+    const microsoftEnabled = config.studentSso.microsoft.enabled;
+    Object.assign(config.studentSso.google, { enabled: false });
+    Object.assign(config.studentSso.microsoft, { enabled: true });
+    try {
+        const failing = stubFlow({
+            callback: async () => { throw new ConflictError('Student SSO attempt is no longer valid'); },
+            callbackCookieNameForState: async () => null,
+        });
+        await withServer(routerWith(failing, {
+            pool: { query: async () => ({ rows: [{ id: ATTEMPT_ID }], rowCount: 1 }) } as never,
+        }), async (baseUrl) => {
+            const response = await fetch(`${baseUrl}/google/callback?state=opaque-state`, { redirect: 'manual' });
+            assert.equal(response.status, 303);
+            assert.equal(
+                response.headers.get('location'),
+                `${COMPLETION_ORIGIN}/auth/student/sso/complete?attempt=${ATTEMPT_ID}&outcome=connection_not_completed`,
+            );
+            const [setCookie] = parseSetCookies(response);
+            assert.ok(setCookie);
+            assert.match(setCookie, new RegExp(`^${COOKIE_NAME}=;`));
+        });
+    } finally {
+        Object.assign(config.studentSso.google, { enabled: googleEnabled });
+        Object.assign(config.studentSso.microsoft, { enabled: microsoftEnabled });
+    }
 });
 
 test('finish clears the cookie on authentication and restart but retains it for linking', async () => {
@@ -376,30 +415,37 @@ test('finish enforces strict JSON, exact origin, and no-store headers', async ()
 });
 
 test('failed callbacks consume the dedicated limit while completions are excused', async () => {
-    const failing = stubFlow({
-        callback: async () => { throw new ConflictError('Student SSO attempt is no longer valid'); },
-        callbackCookieNameForState: async () => null,
-    });
-    const limited = routerWith(failing, { callbackLimiterMax: 2 });
-    await withServer(limited, async (baseUrl) => {
-        for (let attempt = 0; attempt < 2; attempt += 1) {
-            const response = await fetch(`${baseUrl}/google/callback?state=opaque-state`, { redirect: 'manual' });
-            assert.equal(response.status, 409);
-        }
-        const throttled = await fetch(`${baseUrl}/google/callback?state=opaque-state`, { redirect: 'manual' });
-        assert.equal(throttled.status, 429);
-    });
+    const { config } = await import('../config/env.js');
+    const googleEnabled = config.studentSso.google.enabled;
+    Object.assign(config.studentSso.google, { enabled: true });
+    try {
+        const failing = stubFlow({
+            callback: async () => { throw new ConflictError('Student SSO attempt is no longer valid'); },
+            callbackCookieNameForState: async () => null,
+        });
+        const limited = routerWith(failing, { callbackLimiterMax: 2 });
+        await withServer(limited, async (baseUrl) => {
+            for (let attempt = 0; attempt < 2; attempt += 1) {
+                const response = await fetch(`${baseUrl}/google/callback?state=opaque-state`, { redirect: 'manual' });
+                assert.equal(response.status, 409);
+            }
+            const throttled = await fetch(`${baseUrl}/google/callback?state=opaque-state`, { redirect: 'manual' });
+            assert.equal(throttled.status, 429);
+        });
 
-    const succeeding = routerWith(stubFlow(), { callbackLimiterMax: 1 });
-    await withServer(succeeding, async (baseUrl) => {
-        for (let attempt = 0; attempt < 3; attempt += 1) {
-            const response = await fetch(`${baseUrl}/google/callback?state=opaque-state`, {
-                redirect: 'manual',
-                headers: { Cookie: `${COOKIE_NAME}=browser-secret` },
-            });
-            assert.equal(response.status, 303);
-        }
-    });
+        const succeeding = routerWith(stubFlow(), { callbackLimiterMax: 1 });
+        await withServer(succeeding, async (baseUrl) => {
+            for (let attempt = 0; attempt < 3; attempt += 1) {
+                const response = await fetch(`${baseUrl}/google/callback?state=opaque-state`, {
+                    redirect: 'manual',
+                    headers: { Cookie: `${COOKIE_NAME}=browser-secret` },
+                });
+                assert.equal(response.status, 303);
+            }
+        });
+    } finally {
+        Object.assign(config.studentSso.google, { enabled: googleEnabled });
+    }
 });
 
 test('SSO namespace predicates match only the student SSO paths', () => {

@@ -1,7 +1,7 @@
 import { createHash, randomBytes, timingSafeEqual } from 'node:crypto';
 import type { Pool, PoolClient } from 'pg';
 import { AppError, BadRequestError, ConflictError, ForbiddenError, NotFoundError, UnauthorizedError } from '../../common/errors/AppError.js';
-import { authenticateReportingKey } from '../auth/reporting-key.service.js';
+import { authenticateReportingKey, recheckReportingKeyInTransaction } from '../auth/reporting-key.service.js';
 import { prepareMerchantDisclosure } from './eligibility-merchant-context.service.js';
 import { getEffectiveEligibility } from './eligibility-read.service.js';
 
@@ -83,6 +83,12 @@ export async function createMerchantClaimSession(
         );
         if (vendor.rowCount !== 1) throw new UnauthorizedError('Merchant unavailable');
         const vendorId = vendor.rows[0]!.id;
+        // Rotation or revocation between the pre-lock authentication and
+        // this transaction must not mint or reconcile a session: recheck
+        // the key under the vendor lock, like exchange and report do.
+        if (!await recheckReportingKeyInTransaction(tx, merchantKey, vendorId)) {
+            throw new UnauthorizedError('Merchant key unavailable');
+        }
         const reconcile = (session: {
             id: string; product_id: string; browser_nonce_hash: string; origin: string | null; expires_at: Date; consumed_at: Date | null;
         }) => {

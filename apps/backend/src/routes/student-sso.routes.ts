@@ -341,6 +341,21 @@ export function createStudentSsoRouter(factory: FlowFactory = defaultFlow, optio
         res.status(201).json({ success: true, data: result.publicResult });
     }));
 
+    // Bounded completion redirect for a callback that arrives while its
+    // provider cannot serve: full outage (factory unavailable) or
+    // mixed-provider rollback (only this provider disabled). Returns false
+    // when no completion page is configured so the caller falls through.
+    const outageRedirect = async (res: Response, provider: LoginProvider, state: string | null): Promise<boolean> => {
+        const completionUrl = config.studentSso.completionUrl
+            ?? (completionOrigin ? new URL(STUDENT_SSO_COMPLETION_PATH, completionOrigin) : undefined);
+        if (!completionUrl) return false;
+        const completed = await ssoUnavailableCompletion(poolForRequest(), completionUrl, provider, state);
+        res.locals.outageRedirect = true;
+        for (const name of completed.clearCookies) clearSsoCookie(res, name);
+        res.redirect(303, completed.location);
+        return true;
+    };
+
     router.get('/:provider/callback', callbackLimiter, asyncHandler(async (req, res) => {
         responseHeaders(res);
         const provider = parseStudentSsoProvider(req.params.provider);
@@ -351,13 +366,8 @@ export function createStudentSsoRouter(factory: FlowFactory = defaultFlow, optio
             flow = factory();
         } catch (error) {
             if (!(error instanceof ServiceUnavailableError)) throw error;
-            const completionUrl = config.studentSso.completionUrl
-                ?? (completionOrigin ? new URL(STUDENT_SSO_COMPLETION_PATH, completionOrigin) : undefined);
-            if (!completionUrl) throw error;
-            const completed = await ssoUnavailableCompletion(poolForRequest(), completionUrl, provider, callbackUrl.searchParams.get('state'));
-            res.locals.outageRedirect = true;
-            for (const name of completed.clearCookies) clearSsoCookie(res, name);
-            return res.redirect(303, completed.location);
+            if (await outageRedirect(res, provider, callbackUrl.searchParams.get('state'))) return;
+            throw error;
         }
         const resolvedCookieName = await flow.callbackCookieNameForState(callbackUrl, provider);
         try {
@@ -370,6 +380,14 @@ export function createStudentSsoRouter(factory: FlowFactory = defaultFlow, optio
             }
             res.redirect(303, result.completionUrl.href);
         } catch (error) {
+            // Mixed-provider rollback: the factory still serves the live
+            // provider, so this provider's gate rejected the callback. Land
+            // the in-flight browser on the bounded completion page instead
+            // of a bare JSON error that retains the callback cookie.
+            if (!enabledStudentSsoProviders(config.studentSso).includes(provider)
+                && await outageRedirect(res, provider, callbackUrl.searchParams.get('state'))) {
+                return;
+            }
             if (resolvedCookieName && error instanceof AppError && error.statusCode >= 400 && error.statusCode < 500) {
                 clearSsoCookie(res, resolvedCookieName);
             }

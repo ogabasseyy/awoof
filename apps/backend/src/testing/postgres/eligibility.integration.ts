@@ -1043,6 +1043,55 @@ test('withdrawing one merchant disclosure revokes every grant for that merchant'
     });
 });
 
+test('concurrent sibling disclosure withdrawals serialize without deadlocking', async () => {
+    const pool = createTestPool();
+    const setup = await pool.connect();
+    try {
+        const fixture = await createFixture(setup);
+        const owner = (await setup.query<{ id: string }>(
+            `INSERT INTO users (email, role) VALUES ($1, 'vendor') RETURNING id`,
+            [`vendor-${uniqueLabel()}@example.invalid`],
+        )).rows[0]!.id;
+        const vendor = (await setup.query<{ id: string }>(
+            `INSERT INTO vendors (user_id, name, status) VALUES ($1, 'Vendor', 'active') RETURNING id`,
+            [owner],
+        )).rows[0]!.id;
+        await setup.query(
+            `INSERT INTO widget_configs (vendor_id, allowed_domains, allowed_origins, api_key, status)
+             VALUES ($1, ARRAY['shop.example'], ARRAY['https://shop.example'], 'public', 'active')`,
+            [vendor],
+        );
+        const grantA = await inTransaction(setup, () => grantMerchantDisclosure(setup, fixture.userId, {
+            vendorId: vendor, origin: 'https://shop.example', purpose: 'discount',
+            accepted: true, noticeVersion: MERCHANT_DISCLOSURE_NOTICE_VERSION,
+        }));
+        const grantB = await inTransaction(setup, () => grantMerchantDisclosure(setup, fixture.userId, {
+            vendorId: vendor, origin: 'https://shop.example', purpose: 'discount',
+            accepted: true, noticeVersion: MERCHANT_DISCLOSURE_NOTICE_VERSION,
+        }));
+        const first = await pool.connect();
+        const second = await pool.connect();
+        try {
+            await Promise.all([
+                inTransaction(first, () => withdrawConsent(first, fixture.userId, grantA)),
+                inTransaction(second, () => withdrawConsent(second, fixture.userId, grantB)),
+            ]);
+        } finally {
+            first.release();
+            second.release();
+        }
+        const withdrawn = (await setup.query<{ count: number }>(
+            `SELECT count(*)::int AS count FROM verification_consents
+             WHERE user_id = $1 AND kind = 'disclosure' AND vendor_id = $2 AND withdrawn_at IS NOT NULL`,
+            [fixture.userId, vendor],
+        )).rows[0]!.count;
+        assert.equal(withdrawn, 2);
+    } finally {
+        setup.release();
+        await pool.end();
+    }
+});
+
 test('records account-email ownership for a non-student account without granting eligibility', async () => {
     await withTestClient(async (client) => {
         const account = (await client.query<{ id: string }>(
