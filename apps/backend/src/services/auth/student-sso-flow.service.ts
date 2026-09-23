@@ -572,24 +572,30 @@ export class StudentSsoFlowService {
         if (finished.outcome !== 'authenticated') return finished;
         // Assurance reads only after commit: a status failure keeps the login
         // successful with explicitly unavailable assurance, never a 500.
+        // A null read (transient failure resolved, not thrown) is
+        // unavailable too: the web parser rejects null with available,
+        // which would discard an issued session client-side.
         try {
             const studentAssurance = await finished.readAssurance(finished.user.id);
-            return {
-                outcome: 'authenticated',
-                user: finished.user,
-                tokens: finished.tokens,
-                studentAssurance,
-                assuranceStatus: 'available',
-            };
+            if (studentAssurance !== null) {
+                return {
+                    outcome: 'authenticated',
+                    user: finished.user,
+                    tokens: finished.tokens,
+                    studentAssurance,
+                    assuranceStatus: 'available',
+                };
+            }
         } catch {
-            return {
-                outcome: 'authenticated',
-                user: finished.user,
-                tokens: finished.tokens,
-                studentAssurance: null,
-                assuranceStatus: 'unavailable',
-            };
+            // Fall through to the unavailable pairing below.
         }
+        return {
+            outcome: 'authenticated',
+            user: finished.user,
+            tokens: finished.tokens,
+            studentAssurance: null,
+            assuranceStatus: 'unavailable',
+        };
     }
 
     private async terminalizeAttempt(tx: PoolClient, attemptId: string): Promise<void> {

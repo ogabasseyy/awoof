@@ -176,7 +176,7 @@ function StudentSsoCompleteInner() {
                         </Link>
                     </Button>
                     <Button type="button" variant="outline" className="w-full rounded-full h-11 font-semibold" asChild>
-                        <Link href="/auth/student/register">Create an account</Link>
+                        <Link href="/auth/student/register?redirect=%2Fauth%2Fstudent%2Fsso%2Fonboarding">Create an account</Link>
                     </Button>
                 </div>
             </AuthShell>

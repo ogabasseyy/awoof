@@ -266,34 +266,30 @@ Access tokens expire in 15 minutes. Use the refresh token endpoint to get a new 
                             properties: {
                                 outcome: { type: 'string', enum: ['authenticated', 'link_required'] },
                             },
-                            allOf: [
+                            oneOf: [
                                 {
-                                    if: { properties: { outcome: { const: 'authenticated' } } },
-                                    then: {
-                                        type: 'object',
-                                        required: ['user', 'tokens', 'studentAssurance', 'assuranceStatus'],
-                                        properties: {
-                                            user: { $ref: '#/components/schemas/User' },
-                                            tokens: { $ref: '#/components/schemas/Tokens' },
-                                            studentAssurance: {
-                                                allOf: [{ $ref: '#/components/schemas/StudentAssurance' }],
-                                                nullable: true,
-                                                description: 'Null is permitted only with assuranceStatus unavailable; never treat it as verified.',
-                                            },
-                                            assuranceStatus: { type: 'string', enum: ['available', 'unavailable'] },
+                                    type: 'object',
+                                    required: ['outcome', 'user', 'tokens', 'studentAssurance', 'assuranceStatus'],
+                                    properties: {
+                                        outcome: { type: 'string', enum: ['authenticated'] },
+                                        user: { $ref: '#/components/schemas/User' },
+                                        tokens: { $ref: '#/components/schemas/Tokens' },
+                                        studentAssurance: {
+                                            allOf: [{ $ref: '#/components/schemas/StudentAssurance' }],
+                                            nullable: true,
+                                            description: 'Null is permitted only with assuranceStatus unavailable; never treat it as verified.',
                                         },
+                                        assuranceStatus: { type: 'string', enum: ['available', 'unavailable'] },
                                     },
                                 },
                                 {
-                                    if: { properties: { outcome: { const: 'link_required' } } },
-                                    then: {
-                                        type: 'object',
-                                        required: ['handoffId', 'handoffSecret', 'expiresAt'],
-                                        properties: {
-                                            handoffId: { type: 'string', format: 'uuid' },
-                                            handoffSecret: { type: 'string', description: 'Tab-held handoff secret for explicit linking; never placed in a URL.' },
-                                            expiresAt: { type: 'string', format: 'date-time' },
-                                        },
+                                    type: 'object',
+                                    required: ['outcome', 'handoffId', 'handoffSecret', 'expiresAt'],
+                                    properties: {
+                                        outcome: { type: 'string', enum: ['link_required'] },
+                                        handoffId: { type: 'string', format: 'uuid' },
+                                        handoffSecret: { type: 'string', description: 'Tab-held handoff secret for explicit linking; never placed in a URL.' },
+                                        expiresAt: { type: 'string', format: 'date-time' },
                                     },
                                 },
                             ],

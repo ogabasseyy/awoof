@@ -259,9 +259,9 @@ function defaultFlow(): StudentSsoFlow {
 
 function defaultLink(): StudentSsoLink {
     const sso = config.studentSso;
-    if (!sso.attemptKey) {
-        throw new ServiceUnavailableError('Student SSO is unavailable');
-    }
+    // No factory-level key requirement: the key is null when every
+    // provider is disabled, and owner recovery (list, unlink, reauth)
+    // must keep working then. Only link() gates on the key.
     return new StudentSsoLinkService({
         pool: getPool(),
         attemptKey: sso.attemptKey,

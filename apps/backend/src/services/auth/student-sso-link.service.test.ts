@@ -155,3 +155,22 @@ test('identity listing rejects malformed owners and exposes no subject material'
         linkedAt: '2026-09-01T00:00:00.000Z',
     }]);
 });
+
+test('link requires the attempt key but recovery works without it', async () => {
+    // Null key = every provider disabled (rollback): linking cannot open
+    // handoffs, while listing and unlink-purpose reauth stay available.
+    const linking = new StudentSsoLinkService({ pool: throwingPool(), attemptKey: null, isEnabled: () => true });
+    await assert.rejects(
+        linking.link({
+            userId: USER_ID, sid: SID, handoffId: HANDOFF_ID, handoffSecret: 'opaque-secret',
+            browserCookies: [], grantId: GRANT_ID, grantSecret: 'opaque-grant',
+        }),
+        /unavailable/,
+    );
+    const recovery = new StudentSsoLinkService({ pool: emptyPool(), attemptKey: null, isEnabled: () => false });
+    assert.deepEqual(await recovery.listIdentities(USER_ID), []);
+    await assert.rejects(
+        recovery.reauth({ userId: USER_ID, sid: SID, password: 'Secret!123', purpose: 'unlink' }),
+        /reauthentication failed/,
+    );
+});

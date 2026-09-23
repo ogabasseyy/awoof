@@ -5,6 +5,7 @@ import {
     ConflictError,
     ForbiddenError,
     NotFoundError,
+    ServiceUnavailableError,
     UnauthorizedError,
 } from '../../common/errors/AppError.js';
 import {
@@ -79,7 +80,12 @@ export type StudentSsoUnlinkResult =
 
 export type StudentSsoLinkDependencies = {
     pool: Pool;
-    attemptKey: string;
+    /**
+     * Handoff decryption key, null when every provider is disabled.
+     * Only link() needs it; owner unlink, listing, and reauth stay
+     * available so recovery works during rollback.
+     */
+    attemptKey: string | null;
     /** Deployment gate. Linking requires it; owner unlink and listing do not. */
     isEnabled?: () => boolean;
     /**
@@ -253,6 +259,10 @@ export class StudentSsoLinkService {
         grantSecret: unknown;
     }): Promise<StudentSsoLinkResult> {
         this.assertLinkingEnabled();
+        // The handoff ciphertext cannot be opened without the attempt key;
+        // recovery methods never reach this gate.
+        const attemptKey = this.deps.attemptKey;
+        if (!attemptKey) throw new ServiceUnavailableError('Student SSO is unavailable');
         if (!validUuid(input.userId) || !validUuid(input.sid)) throw unavailableAccount();
         if (!validUuid(input.handoffId) || !validUuid(input.grantId)
             || !validOpaque(input.handoffSecret) || !validOpaque(input.grantSecret)) {
@@ -323,7 +333,7 @@ export class StudentSsoLinkService {
                 }
                 let observation;
                 try {
-                    observation = decodeProviderObservation(decryptSsoSecret(handoff.encrypted_observation, this.deps.attemptKey, handoff.id));
+                    observation = decodeProviderObservation(decryptSsoSecret(handoff.encrypted_observation, attemptKey, handoff.id));
                 } catch {
                     return { outcome: 'restart', attemptId: handoff.attempt_id };
                 }

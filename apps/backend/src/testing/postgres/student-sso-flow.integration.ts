@@ -13,6 +13,7 @@ import { issueSessionInTransaction } from '../../services/auth/session.service.j
 import { jwtService } from '../../services/auth/jwt.service.js';
 import { GOOGLE_ISSUER, StudentOidcOperationalError } from '../../services/auth/student-google-oidc.js';
 import type { ProviderObservation, StudentOidcAdapter } from '../../services/auth/student-sso.types.js';
+import type { StudentAssurance } from '../../services/verification/student-assurance.types.js';
 import {
     decryptMicrosoftAttemptVerifier,
     encryptMicrosoftAttemptVerifier,
@@ -155,7 +156,7 @@ function makeService(
         attemptKey?: string;
         isEnabled?: () => boolean;
         isProviderEnabled?: (provider: 'google' | 'microsoft') => boolean;
-        readAssurance?: (userId: string) => Promise<never>;
+        readAssurance?: (userId: string) => Promise<StudentAssurance | null>;
     } = {},
 ): { service: StudentSsoFlowService; attemptKey: string } {
     const attemptKey = overrides.attemptKey ?? randomBytes(32).toString('base64url');
@@ -874,6 +875,40 @@ test('login succeeds with unavailable assurance when the status read fails', asy
         } finally {
             check.release();
         }
+    });
+});
+
+test('login maps a null assurance read to unavailable, never available', async () => {
+    await withSsoPool(async (pool) => {
+        const fixture = await approvedGoogleFixture(pool);
+        const email = `nullread-${uniqueLabel()}@${fixture.domain}`;
+        const subject = `nullread-sub-${uniqueLabel()}`;
+        const setup = await pool.connect();
+        try {
+            const userId = await createStudent(setup, fixture.universityId, email);
+            await createIdentity(setup, userId, fixture.universityId, { subject });
+        } finally {
+            setup.release();
+        }
+        const oidc = makeOidc();
+        oidc.redeemWith(observationFor(fixture.realm, subject));
+        // The default reader resolves null on transient failures instead
+        // of throwing; the web parser rejects a null pairing with
+        // available, so the finish must say unavailable.
+        const { service } = makeService(pool, oidc.oidc, { readAssurance: async () => null });
+        const { started, callbackUrl, cookies } = await startGoogle(service, oidc, email);
+        await service.callback({ provider: 'google', callbackUrl, browserCookies: cookies });
+
+        const finished = await service.finish({
+            attemptId: started.publicResult.attemptId,
+            finishSecret: started.publicResult.finishSecret,
+            browserCookie: started.callbackCookie.value,
+        });
+        assert.equal(finished.outcome, 'authenticated');
+        if (finished.outcome !== 'authenticated') throw new Error('unreachable');
+        assert.equal(finished.studentAssurance, null);
+        assert.equal(finished.assuranceStatus, 'unavailable');
+        assert.ok(finished.tokens.refreshToken);
     });
 });
 

@@ -374,7 +374,7 @@ test('an unlinked provider identity stays signed out with an explicit link-requi
     // The password link carries the user back to the stored handoff so the
     // link step resumes after sign-in instead of orphaning the handoff.
     await expect(page.getByRole('link', { name: 'Sign in with your password' })).toHaveAttribute('href', '/auth/student/login?redirect=%2Fauth%2Fstudent%2Fsso%2Fonboarding');
-    await expect(page.getByRole('link', { name: 'Create an account' })).toHaveAttribute('href', '/auth/student/register');
+    await expect(page.getByRole('link', { name: 'Create an account' })).toHaveAttribute('href', '/auth/student/register?redirect=%2Fauth%2Fstudent%2Fsso%2Fonboarding');
     expect(await readSessionEnvelope(page)).toBeNull();
     expect(await readTabAttempt(page)).toBeNull();
     const handoff = await readTabHandoff(page);
