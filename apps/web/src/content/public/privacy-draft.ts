@@ -19,7 +19,7 @@ export const privacyDraft: readonly LegalDraftSection[] = [
     'We receive information from you and from your use of Awoof. If you choose school sign-in, the provider returns information needed to identify that school account. If an institution connection is available, it may provide a current enrollment observation. Merchants and payment providers may return transaction or redemption information. The availability of an email domain does not by itself mean that the school has authorized an enrollment connection.',
   ] },
   { id: 'purposes', heading: 'Why we use information and our legal grounds', paragraphs: [
-    'The following describes the proposed allocation of processing purposes and legal grounds. Accepting our Terms or reading this notice is not, by itself, consent to optional processing. Where we ask for consent, the request describes the relevant activity and the effect of declining.',
+    'We use information for the purposes and on the legal grounds described below. Accepting our Terms or reading this notice is not, by itself, consent to optional processing. Where we ask for consent, the request describes the relevant activity and the effect of declining.',
   ], points: [
     'Account registration, authentication, requested support and transaction administration: information necessary to provide the service requested under our agreement with you, or to take steps at your request before that agreement.',
     'Optional school-account verification and a merchant-specific eligibility disclosure: the specific consent requested for that activity. A separate legal ground is required for any additional use of the result.',
@@ -56,7 +56,7 @@ export const privacyDraft: readonly LegalDraftSection[] = [
   ] },
   { id: 'storage', heading: 'Cookies and browser storage', paragraphs: [
     'Awoof uses browser storage for sessions and temporary sign-in information, and cookies for certain school-account redirects. Blocking or clearing these can sign you out or interrupt a verification attempt. Our separate storage notice explains the purposes and available browser controls.',
-  ], links: [{ href: '/cookies', label: 'Read the cookies and browser-storage draft' }] },
+  ], links: [{ href: '/cookies', label: 'Read the cookies and browser-storage notice' }] },
   { id: 'security', heading: 'How we protect information', paragraphs: [
     'Access controls, password hashing and checks on verification requests help protect the service. No website or transmission method can guarantee absolute security. Keep your credentials private, sign out on shared devices and report suspected unauthorized access to support@awoof.tech.',
     'Awoof remains responsible for its applicable security and breach-response obligations. Your use of the service does not waive rights relating to a security incident.',

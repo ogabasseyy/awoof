@@ -18,5 +18,5 @@ export const cookiesDraft: readonly LegalDraftSection[] = [
   ] },
   { id: 'contact', heading: 'Questions and updates', paragraphs: [
     'Contact support@awoof.tech for questions about browser storage or personal information. We will update this notice when the storage technologies or their purposes change.',
-  ], links: [{ href: '/privacy', label: 'Read the privacy-notice draft' }] },
+  ], links: [{ href: '/privacy', label: 'Read the privacy notice' }] },
 ];

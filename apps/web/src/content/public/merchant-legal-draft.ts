@@ -2,7 +2,7 @@ import { legalAddress, legalOperator, type LegalDraftSection } from './legal-typ
 
 export const merchantDraft: readonly LegalDraftSection[] = [
   { id: 'parties', heading: 'Parties, agreement and order of precedence', paragraphs: [
-    `These proposed business terms are between ${legalOperator}, at ${legalAddress}, and the merchant named in a signed or expressly accepted order form. Each signatory must have authority to bind its organization. Creating a trial account or reading this draft does not execute an agreement.`,
+    `These business terms are between ${legalOperator}, at ${legalAddress}, and the merchant named in a signed or expressly accepted order form. Each signatory must have authority to bind its organization. Creating a trial account or reading these terms does not execute an agreement.`,
     'The order form identifies the services, approved domains or channels, territory, term, charges, offer criteria and implementation conditions. The partner data-protection schedule governs personal-data matters; mandatory law prevails. An order form changes these standard terms only where it expressly identifies the change and both parties accept it. Student purchases remain subject to their own terms and statutory rights.',
   ] },
   { id: 'scope', heading: 'Services and activation', paragraphs: [
@@ -46,7 +46,7 @@ export const merchantDraft: readonly LegalDraftSection[] = [
   ] },
   { id: 'liability', heading: 'Business liability limits', paragraphs: [
     'Subject to the exceptions below and any expressly negotiated alternative, each party’s aggregate liability arising from a paid order is capped at the service fees paid or payable under that order for the twelve months before the event giving rise to the claim. Purchase proceeds held for the other party are not service fees. For a free pilot, the parties must agree a reasonable cap expressly; no zero-liability cap is implied.',
-    'For confidentiality breaches, breach of the data-protection schedule and the third-party indemnities, the proposed aggregate cap is twice that fee amount unless a different amount is expressly agreed. Losses too remote under applicable law and indirect commercial losses are excluded to the extent legally permitted. These allocations require express review before execution.',
+    'For confidentiality breaches, breach of the data-protection schedule and the third-party indemnities, the aggregate cap is twice that fee amount unless a different amount is expressly agreed. Losses too remote under applicable law and indirect commercial losses are excluded to the extent legally permitted. These allocations require express agreement before execution.',
     'No cap or exclusion applies to fraud, fraudulent misrepresentation, gross negligence, wilful misconduct, payment or remittance obligations, or liability that cannot lawfully be limited. No agreement between the parties restricts a regulator’s powers or a data subject’s or consumer’s statutory rights. Any allocation of responsibility between the parties for such claims must itself be lawful.',
   ] },
   { id: 'term', heading: 'Term, termination and exit', paragraphs: [

@@ -3,17 +3,12 @@ import LegalDraftPage from '@/components/public/LegalDraftPage';
 import { privacyDraft } from '@/content/public/legal-drafts';
 
 export const metadata: Metadata = {
-  title: 'Privacy Policy Draft | Awoof',
-  description: 'Working draft of Awoof privacy information, pending owner and legal review.',
-  robots: { index: false, follow: false },
+  title: 'Privacy Policy | Awoof',
+  description: 'How Awoof uses personal information, handles verification and supports your privacy rights.',
+  alternates: { canonical: 'https://awoof.tech/privacy' },
+  robots: { index: true, follow: true },
 };
 
-export default function PrivacyDraftPage() {
-  return (
-    <LegalDraftPage
-      title="Privacy policy"
-      intro="A review draft explaining the information involved when Awoof signs students in, checks eligibility and connects them with merchants."
-      sections={privacyDraft}
-    />
-  );
+export default function LegalPage() {
+  return <LegalDraftPage title="Privacy Policy" intro="How Awoof uses personal information, handles verification and supports your privacy rights." sections={privacyDraft} />;
 }

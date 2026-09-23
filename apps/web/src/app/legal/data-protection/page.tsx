@@ -3,11 +3,12 @@ import LegalDraftPage from '@/components/public/LegalDraftPage';
 import { dataProtectionDraft } from '@/content/public/legal-drafts';
 
 export const metadata: Metadata = {
-  title: 'Partner Data-protection Schedule Draft | Awoof',
-  description: 'Proposed partner data-sharing and processing schedule for legal review. Not executed.',
-  robots: { index: false, follow: false },
+  title: 'Partner Data-protection Schedule | Awoof',
+  description: 'Data-sharing and processing responsibilities for separately agreed Awoof partner integrations.',
+  alternates: { canonical: 'https://awoof.tech/legal/data-protection' },
+  robots: { index: true, follow: true },
 };
 
-export default function DataProtectionDraftPage() {
-  return <LegalDraftPage title="Partner data-protection schedule" intro="Proposed responsibilities for merchants and institutions, with separate provisions for sharing between controllers and processing on instructions." sections={dataProtectionDraft} />;
+export default function LegalPage() {
+  return <LegalDraftPage title="Partner Data-protection Schedule" intro="Data-sharing and processing responsibilities for separately agreed Awoof partner integrations." sections={dataProtectionDraft} />;
 }

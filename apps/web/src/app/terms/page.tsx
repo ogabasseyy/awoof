@@ -3,17 +3,12 @@ import LegalDraftPage from '@/components/public/LegalDraftPage';
 import { termsDraft } from '@/content/public/legal-drafts';
 
 export const metadata: Metadata = {
-  title: 'Terms of Service Draft | Awoof',
-  description: 'Working draft of Awoof terms, pending owner and legal review.',
-  robots: { index: false, follow: false },
+  title: 'Terms of Service | Awoof',
+  description: 'Terms for Awoof student accounts, verification and marketplace use.',
+  alternates: { canonical: 'https://awoof.tech/terms' },
+  robots: { index: true, follow: true },
 };
 
-export default function TermsDraftPage() {
-  return (
-    <LegalDraftPage
-      title="Terms of service"
-      intro="A review draft for student accounts, verification, marketplace offers and merchant integrations."
-      sections={termsDraft}
-    />
-  );
+export default function LegalPage() {
+  return <LegalDraftPage title="Terms of Service" intro="Terms for Awoof student accounts, verification and marketplace use." sections={termsDraft} />;
 }

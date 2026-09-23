@@ -45,10 +45,8 @@ test('marketplace uses the single shared footer with working deal navigation', a
   await expect(page.getByText('Student verification and access to benefits.')).toBeVisible();
   await expect(page.getByRole('button', { name: 'Get the app' })).toHaveCount(0);
   await expect(page.getByRole('link', { name: 'Marketplace' }).first()).toBeVisible();
-  // Privacy/Terms labels stay unpublished until owner-approved policy
-  // routes exist; the trust center must not stand in for them.
-  await expect(page.getByRole('link', { name: 'Privacy' })).toHaveCount(0);
-  await expect(page.getByRole('link', { name: 'Terms' })).toHaveCount(0);
+  await expect(page.getByRole('link', { name: 'Privacy', exact: true })).toHaveAttribute('href', '/privacy');
+  await expect(page.getByRole('link', { name: 'Terms', exact: true })).toHaveAttribute('href', '/terms');
 });
 
 test('authenticated role destinations survive on the public shell', async ({ page }) => {

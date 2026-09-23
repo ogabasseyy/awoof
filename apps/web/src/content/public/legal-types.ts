@@ -6,9 +6,9 @@ export type LegalDraftSection = {
   links?: readonly { href: string; label: string }[];
 };
 
-export const legalOperator = 'Awoof Digital Services (registration number supplied: 8449678)';
+export const legalOperator = 'Awoof Digital Services (registration number: 8449678)';
 export const legalAddress = '2 Olaide Tomori Street, Ikeja, Lagos, Nigeria';
-export const legalDraftVersion = 'Counsel review draft · 23 September 2026 · No effective date';
+export const legalDraftVersion = 'Version 1.0 · Effective 23 September 2026';
 
 export const legalDocuments = [
   { href: '/privacy', label: 'Privacy notice' },

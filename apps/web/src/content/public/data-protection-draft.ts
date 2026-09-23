@@ -2,7 +2,7 @@ import { type LegalDraftSection } from './legal-types';
 
 export const dataProtectionDraft: readonly LegalDraftSection[] = [
   { id: 'application', heading: 'When this schedule applies', paragraphs: [
-    'This proposed schedule supplements an executed Awoof merchant or institution agreement. It takes effect only when the parties incorporate its identified version and complete the processing annex. It is not a standalone authorization to access university records, use an identity provider or share personal data.',
+    'This schedule supplements an executed Awoof merchant or institution agreement. It takes effect only when the parties incorporate its identified version and complete the processing annex. It is not a standalone authorization to access university records, use an identity provider or share personal data.',
     'Personal data, controller and processor have the meanings in applicable data-protection law. The schedule governs personal-data matters where it conflicts with general commercial terms. It does not reduce a person’s statutory rights or a regulator’s powers.',
   ] },
   { id: 'roles', heading: 'Identify the role for each activity', paragraphs: [
