@@ -5,7 +5,8 @@ import { termsDraft } from '@/content/public/legal-drafts';
 export const metadata: Metadata = {
   title: 'Terms of Service | Awoof',
   description: 'Terms for Awoof student accounts, verification and marketplace use.',
-  alternates: { canonical: 'https://awoof.tech/terms' },
+  metadataBase: new URL('https://awoof.tech'),
+  alternates: { canonical: '/terms' },
   robots: { index: true, follow: true },
 };
 

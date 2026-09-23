@@ -5,7 +5,8 @@ import { merchantDraft } from '@/content/public/legal-drafts';
 export const metadata: Metadata = {
   title: 'Merchant Partnership Terms | Awoof',
   description: 'Business terms for Awoof merchant partnerships, applicable through a separately agreed order form.',
-  alternates: { canonical: 'https://awoof.tech/legal/merchant-terms' },
+  metadataBase: new URL('https://awoof.tech'),
+  alternates: { canonical: '/legal/merchant-terms' },
   robots: { index: true, follow: true },
 };
 

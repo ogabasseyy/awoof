@@ -5,7 +5,8 @@ import { cookiesDraft } from '@/content/public/legal-drafts';
 export const metadata: Metadata = {
   title: 'Cookies and Browser Storage | Awoof',
   description: 'How Awoof uses browser storage and the controls available to you.',
-  alternates: { canonical: 'https://awoof.tech/cookies' },
+  metadataBase: new URL('https://awoof.tech'),
+  alternates: { canonical: '/cookies' },
   robots: { index: true, follow: true },
 };
 

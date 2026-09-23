@@ -5,7 +5,8 @@ import { legalDocuments, legalAddress, legalOperator } from '@/content/public/le
 export const metadata: Metadata = {
   title: 'Legal Information | Awoof',
   description: 'Privacy, student terms, browser storage and partner agreements for Awoof.',
-  alternates: { canonical: 'https://awoof.tech/legal' },
+  metadataBase: new URL('https://awoof.tech'),
+  alternates: { canonical: '/legal' },
   robots: { index: true, follow: true },
 };
 
