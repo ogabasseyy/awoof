@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import {
     backToEmail,
+    choosePassword,
     chooseProvider,
     clearSsoAttempt,
     clearSsoHandoff,
@@ -90,6 +91,16 @@ test('discovery without providers falls back to password', () => {
     assert.equal(next.step, 'password');
     assert.equal(next.email, 'student@gmail.com');
     assert.equal(next.error, null);
+});
+
+test('school methods keep password hidden until explicitly selected', () => {
+    const methods = methodsResolved(submitEmail(state(), 'student@school.example'), 1, ['microsoft']);
+    assert.equal(methods.step, 'methods');
+    const password = choosePassword(methods);
+    assert.equal(password.step, 'password');
+    assert.equal(password.email, 'student@school.example');
+    assert.deepEqual([...password.providers], ['microsoft']);
+    assert.equal(choosePassword(state()).step, 'email');
 });
 
 test('back and retry keep the typed email without resubmitting', () => {

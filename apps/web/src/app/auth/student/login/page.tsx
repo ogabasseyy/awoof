@@ -23,6 +23,7 @@ import { getSessionSnapshot } from '@/lib/auth';
 import { resolveStudentReturn } from '@/lib/student-return';
 import {
     backToEmail,
+    choosePassword,
     chooseProvider,
     initialLoginState,
     loginErrorMessage,
@@ -69,6 +70,7 @@ function StudentLoginInner() {
     const { registerPath } = useStudentAuthLinks();
     const [error, setError] = useState<string | null>(null);
     const [isLoading, setIsLoading] = useState(false);
+    const [isReady, setIsReady] = useState(false);
     const [rememberMe, setRememberMe] = useState(false);
     const [flow, setFlow] = useState<LoginState>(initialLoginState);
     const flowRef = useRef(flow);
@@ -78,6 +80,11 @@ function StudentLoginInner() {
     useEffect(() => {
         flowRef.current = flow;
     }, [flow]);
+
+    useEffect(() => {
+        const frame = requestAnimationFrame(() => setIsReady(true));
+        return () => cancelAnimationFrame(frame);
+    }, []);
 
     useEffect(() => {
         if (noticeCode) noticeRef.current?.focus();
@@ -102,6 +109,7 @@ function StudentLoginInner() {
             document.getElementById('email')?.focus();
             return;
         }
+        setError(null);
         const next = submitEmail(flowRef.current, email);
         flowRef.current = next;
         setFlow(next);
@@ -165,6 +173,11 @@ function StudentLoginInner() {
         document.getElementById('email')?.focus();
     };
 
+    const usePassword = (): void => {
+        setFlow((previous) => choosePassword(previous));
+        requestAnimationFrame(() => document.getElementById('password')?.focus());
+    };
+
     const onSubmit = async (data: LoginFormData) => {
         try {
             setIsLoading(true);
@@ -183,7 +196,7 @@ function StudentLoginInner() {
         <AuthShell
             role="student"
             title="Welcome back"
-            subtitle="Log in to claim deals and manage your student account."
+            subtitle="Enter your email to find the right way to sign in."
             footer={
                 <p className="text-center text-sm text-slate-600">
                     Don&apos;t have an account?{' '}
@@ -214,7 +227,12 @@ function StudentLoginInner() {
                 </div>
             )}
 
-            <form onSubmit={handleSubmit(onSubmit)} className="space-y-5">
+            <form
+                onSubmit={flow.step === 'password'
+                    ? handleSubmit(onSubmit)
+                    : (event) => { event.preventDefault(); if (flow.step === 'email' || flow.step === 'error') void discover(); }}
+                className="space-y-5"
+            >
                 <div>
                     <Label htmlFor="email" className="text-left block mb-2">Email</Label>
                     <Input
@@ -223,7 +241,8 @@ function StudentLoginInner() {
                         autoComplete="username"
                         placeholder="Enter your email"
                         {...register('email')}
-                        disabled={isLoading}
+                        disabled={!isReady || isLoading}
+                        readOnly={flow.step === 'methods' || flow.step === 'password' || flow.step === 'redirecting'}
                         aria-invalid={errors.email ? 'true' : 'false'}
                         aria-describedby={errors.email ? 'student-login-email-error' : undefined}
                         className="w-full"
@@ -233,14 +252,14 @@ function StudentLoginInner() {
                     )}
                 </div>
 
-                <div>
+                {flow.step === 'password' && <div>
                     <Label htmlFor="password" className="text-left block mb-2">Password</Label>
                     <PasswordInput
                         id="password"
                         autoComplete="current-password"
-                        placeholder="Enter your password"
+                        placeholder="Enter your Awoof password"
                         {...register('password')}
-                        disabled={isLoading}
+                        disabled={!isReady || isLoading}
                         aria-invalid={errors.password ? 'true' : 'false'}
                         aria-describedby={errors.password ? 'student-login-password-error' : undefined}
                         className="w-full"
@@ -248,68 +267,36 @@ function StudentLoginInner() {
                     {errors.password && (
                         <p id="student-login-password-error" role="alert" className="mt-1 text-sm text-red-600 text-left">{errors.password.message}</p>
                     )}
-                </div>
+                </div>}
 
-                <div className="flex items-center justify-between">
+                {(flow.step === 'password' || flow.step === 'methods') && <div className="flex items-center justify-between">
                     <label className="flex items-center cursor-pointer">
                         <input
                             type="checkbox"
                             className="mr-2 w-4 h-4"
                             checked={rememberMe}
                             onChange={(event) => setRememberMe(event.target.checked)}
-                            disabled={isLoading}
+                            disabled={!isReady || isLoading}
                         />
                         <span className="text-sm text-gray-700">Remember me</span>
                     </label>
-                    <Link
+                    {flow.step === 'password' && <Link
                         href="/auth/student/forgot-password"
                         className="text-sm text-primary hover:underline"
                     >
                         Forgot password?
-                    </Link>
-                </div>
+                    </Link>}
+                </div>}
 
-                <Button type="submit" className="w-full rounded-full h-11 font-semibold" disabled={isLoading}>
-                    {isLoading ? 'Signing in...' : 'Login'}
-                </Button>
-            </form>
-
-            <section aria-labelledby="student-sso-heading" className="mt-6 border-t border-slate-200 pt-6">
-                <h2 id="student-sso-heading" className="text-left text-sm font-semibold text-slate-700">School account sign-in</h2>
-                <p className="mt-1 text-left text-sm text-slate-600">
-                    Enter your school email above, then find the sign-in options your school approved. Your password always works.
-                </p>
-                {(flow.step === 'email' || flow.step === 'password' || flow.step === 'error') && (
-                    <div className="mt-3 space-y-2">
-                        {flow.step === 'password' && (
-                            <p role="status" className="text-left text-sm text-slate-600">
-                                No school sign-in is available for this email. Use your password to sign in.
-                            </p>
-                        )}
-                        {flow.step === 'error' && flow.error && (
-                            <p role="alert" className="text-left text-sm text-red-600">{flow.error}</p>
-                        )}
-                        <Button
-                            type="button"
-                            variant="outline"
-                            className="w-full rounded-full h-11 font-semibold"
-                            onClick={() => void discover()}
-                            disabled={isLoading}
-                        >
-                            Find school sign-in options
-                        </Button>
-                    </div>
-                )}
+                {(flow.step === 'email' || flow.step === 'error') && <Button type="submit" className="w-full rounded-full h-11 font-semibold" disabled={!isReady || isLoading}>
+                    {flow.step === 'error' ? 'Try again' : 'Continue'}
+                </Button>}
                 {flow.step === 'loading_methods' && (
-                    <div className="mt-3 space-y-2">
-                        <Button type="button" variant="outline" className="w-full rounded-full h-11 font-semibold" disabled>
-                            Checking sign-in options…
-                        </Button>
-                        <p role="status" className="text-left text-sm text-slate-600">Checking sign-in options…</p>
-                    </div>
+                    <p role="status" className="text-left text-sm text-slate-600">Checking sign-in options…</p>
                 )}
                 {flow.step === 'methods' && (
-                    <div className="mt-3 space-y-2">
+                    <div className="space-y-3">
+                        <p className="text-left text-sm text-slate-600">Choose how to sign in with this email.</p>
                         {flow.error && (
                             <p role="alert" className="text-left text-sm text-red-600">{flow.error}</p>
                         )}
@@ -320,17 +307,26 @@ function StudentLoginInner() {
                                 variant="outline"
                                 className="w-full rounded-full h-11 font-semibold"
                                 onClick={() => void startProvider(provider)}
-                                disabled={isLoading}
+                                disabled={!isReady || isLoading}
                             >
                                 {PROVIDER_LABELS[provider]}
                             </Button>
                         ))}
-                        <p className="text-left text-sm text-slate-600">Your password above still works if you prefer it.</p>
-                        <button type="button" className="text-sm text-[#1D4ED8] hover:underline font-medium" onClick={useDifferentEmail}>
-                            Use a different email
+                        <button type="button" className="w-full text-sm text-[#1D4ED8] hover:underline font-medium" onClick={usePassword}>
+                            Use password instead
                         </button>
                     </div>
                 )}
+                {flow.step === 'password' && <Button type="submit" className="w-full rounded-full h-11 font-semibold" disabled={!isReady || isLoading}>
+                    {isLoading ? 'Signing in...' : 'Login'}
+                </Button>}
+                {flow.step === 'error' && flow.error && <p role="alert" className="text-left text-sm text-red-600">{flow.error}</p>}
+                {flow.step === 'error' && <button type="button" className="w-full text-sm text-[#1D4ED8] hover:underline font-medium" onClick={usePassword}>
+                    Use password instead
+                </button>}
+                {(flow.step === 'methods' || flow.step === 'password') && <button type="button" className="w-full text-sm text-[#1D4ED8] hover:underline font-medium" onClick={useDifferentEmail}>
+                    Use a different email
+                </button>}
                 {flow.step === 'redirecting' && (
                     <div className="mt-3 space-y-2">
                         <Button type="button" variant="outline" className="w-full rounded-full h-11 font-semibold" disabled>
@@ -339,7 +335,7 @@ function StudentLoginInner() {
                         <p role="status" className="text-left text-sm text-slate-600">Redirecting to your school sign-in…</p>
                     </div>
                 )}
-            </section>
+            </form>
         </AuthShell>
     );
 }

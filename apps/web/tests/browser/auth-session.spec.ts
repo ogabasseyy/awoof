@@ -54,10 +54,21 @@ async function waitForStudentLoginReadiness(page: Page, api: ApiFixture): Promis
 
 async function gotoStudentLogin(page: Page, path: string, api: ApiFixture): Promise<void> {
   await page.goto(path, { waitUntil: 'domcontentloaded' });
+  await revealStudentPassword(page, 'student@approved.test');
   // Toggling then restoring the empty PasswordInput proves its React handler
   // has hydrated without submitting credentials.
   await waitForStudentLoginReadiness(page, api);
   expect(api.loginCalls).toBe(0);
+}
+
+async function revealStudentPassword(page: Page, email: string): Promise<void> {
+  await page.route(`${apiOrigin}/api/auth/student/login-options`, (route) => route.fulfill({
+    headers: { 'access-control-allow-origin': appOrigin },
+    json: { success: true, data: { password: true, providers: [], registration: true, recovery: true } },
+  }));
+  await page.getByLabel(/^email$/i).fill(email);
+  await page.getByRole('button', { name: /^continue$/i }).click();
+  await expect(page.getByLabel(/^password$/i)).toBeVisible();
 }
 
 async function gotoGuardedLogin(page: Page, path: string, api: ApiFixture): Promise<void> {
@@ -69,7 +80,6 @@ async function gotoGuardedLogin(page: Page, path: string, api: ApiFixture): Prom
 }
 
 async function submitStudentLogin(page: Page): Promise<void> {
-  await page.getByLabel(/email/i).fill('student@approved.test');
   await page.getByLabel(/^password/i).fill('Synthetic-Password1!');
   await page.getByRole('button', { name: /^login$/i }).click();
 }
@@ -212,7 +222,7 @@ test('invalid credentials render a form error and never start refresh', async ({
   const faults = collectBrowserFaults(page, api);
 
   await page.goto('/auth/student/login');
-  await page.getByLabel(/email/i).fill('invalid@approved.test');
+  await revealStudentPassword(page, 'invalid@approved.test');
   await page.getByLabel(/^password/i).fill('Synthetic-Password1!');
   await page.getByRole('button', { name: /^login$/i }).click();
   await api.waitForLoginCompleted(1);
@@ -821,7 +831,7 @@ test.describe('mobile keyboard login', () => {
     const faults = collectBrowserFaults(page, api);
 
     await page.goto('/auth/student/login?redirect=%2Fmarketplace%3Ffrom%3Dmobile');
-    await page.getByLabel(/email/i).fill('student@approved.test');
+    await revealStudentPassword(page, 'student@approved.test');
     await page.getByLabel(/^password/i).fill('Synthetic-Password1!');
     await page.getByLabel(/^password/i).press('Enter');
     await api.waitForLoginCompleted(1);

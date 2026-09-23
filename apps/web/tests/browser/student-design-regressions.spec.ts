@@ -12,15 +12,20 @@ test('student login renders labelled fields with inline errors', async ({ page }
   await page.goto('/auth/student/login');
   await expect(page.getByRole('heading', { name: 'Welcome back' })).toBeVisible();
   await expect(page.getByLabel('Email')).toBeVisible();
-  await expect(page.getByLabel('Password', { exact: true })).toBeVisible();
-  await page.getByRole('button', { name: 'Login' }).click();
-  await expect(page.getByText('Invalid email address')).toBeVisible();
+  await expect(page.getByLabel('Password', { exact: true })).toHaveCount(0);
+  await page.getByRole('button', { name: 'Continue', exact: true }).click();
+  await expect(page.getByRole('alert').filter({ hasText: 'Enter your email first' })).toBeVisible();
 });
 
 test('student login shows server errors accessibly', async ({ page }) => {
   await installSyntheticApi(page);
+  await page.route(`${apiOrigin}/api/auth/student/login-options`, (route) => route.fulfill({
+    headers,
+    json: { success: true, data: { password: true, providers: [], registration: true, recovery: true } },
+  }));
   await page.goto('/auth/student/login');
   await page.getByLabel('Email').fill('invalid@approved.test');
+  await page.getByRole('button', { name: 'Continue', exact: true }).click();
   await page.getByLabel('Password', { exact: true }).fill('Wrongpass1');
   await page.getByRole('button', { name: 'Login' }).click();
   await expect(page.getByRole('alert').first()).toContainText(/invalid credentials/i);

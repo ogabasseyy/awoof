@@ -56,6 +56,12 @@ export function backToEmail(state: LoginState): LoginState {
     return { ...state, step: 'email', providers: [], error: null };
 }
 
+/** Password remains available without re-running discovery or changing the email. */
+export function choosePassword(state: LoginState): LoginState {
+    if (state.step !== 'methods' && state.step !== 'error') return state;
+    return { ...state, step: 'password', error: null };
+}
+
 export function chooseProvider(state: LoginState, provider: SsoLoginProvider): LoginState {
     if (state.step !== 'methods' || !state.providers.includes(provider)) return state;
     return { ...state, step: 'redirecting', error: null };

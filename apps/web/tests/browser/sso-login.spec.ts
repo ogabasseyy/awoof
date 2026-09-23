@@ -57,6 +57,16 @@ async function readSessionEnvelope(page: Page): Promise<string | null> {
     return page.evaluate((key) => localStorage.getItem(key), SESSION_KEY);
 }
 
+async function revealPassword(page: Page, email: string): Promise<void> {
+    await page.route(`${apiOrigin}/api/auth/student/login-options`, (route) => route.fulfill({
+        json: { success: true, data: { password: true, providers: [], registration: true, recovery: true } },
+        headers: { 'access-control-allow-origin': appOrigin },
+    }));
+    await page.getByLabel('Email', { exact: true }).fill(email);
+    await page.getByRole('button', { name: 'Continue', exact: true }).click();
+    await expect(page.getByLabel('Password', { exact: true })).toBeVisible();
+}
+
 function studentJwt(): string {
     const payload = Buffer.from(JSON.stringify({ userId: 'student-1', email: 's@school.example', role: 'student' })).toString('base64');
     return `header.${payload}.signature`;
@@ -105,7 +115,7 @@ async function startProviderStub(): Promise<{ baseUrl: string; hits: string[]; c
     };
 }
 
-test('the student login keeps one email field with password fallback and manager-friendly autocomplete', async ({ page }) => {
+test('the student login starts with only email, then offers the discovered school method', async ({ page }) => {
     let discoveryCalls = 0;
     await installSyntheticApi(page);
     await page.route(`${apiOrigin}/api/auth/student/login-options`, (route) => {
@@ -120,15 +130,23 @@ test('the student login keeps one email field with password fallback and manager
     const email = page.getByLabel('Email', { exact: true });
     const password = page.getByLabel('Password', { exact: true });
     await expect(email).toBeVisible();
-    await expect(password).toBeVisible();
+    await expect(password).toHaveCount(0);
+    await expect(page.getByRole('button', { name: 'Continue', exact: true })).toBeVisible();
     await expect(email).toHaveAttribute('autocomplete', 'username');
-    await expect(password).toHaveAttribute('autocomplete', 'current-password');
 
     // Typing alone never triggers discovery or navigation.
     await email.fill('student@school.example');
     await page.waitForTimeout(300);
     expect(discoveryCalls).toBe(0);
     await expect(page).toHaveURL(/\/auth\/student\/login/);
+    await page.getByRole('button', { name: 'Continue', exact: true }).click();
+    await expect(page.getByRole('button', { name: 'Continue with Microsoft' })).toBeVisible();
+    await expect(password).toHaveCount(0);
+    await expect(page.getByRole('button', { name: 'Use password instead' })).toBeVisible();
+    await page.getByRole('button', { name: 'Use password instead' }).click();
+    await expect(password).toBeVisible();
+    await expect(password).toHaveAttribute('autocomplete', 'current-password');
+    expect(discoveryCalls).toBe(1);
 });
 
 test('school sign-in options appear only after an explicit continue', async ({ page }) => {
@@ -145,7 +163,7 @@ test('school sign-in options appear only after an explicit continue', async ({ p
     await page.goto('/auth/student/login');
     await expect(page.getByRole('button', { name: 'Continue with Microsoft' })).toHaveCount(0);
     await page.getByLabel('Email', { exact: true }).fill('student@school.example');
-    await page.getByRole('button', { name: 'Find school sign-in options' }).click();
+    await page.getByRole('button', { name: 'Continue', exact: true }).click();
     await expect(page.getByRole('button', { name: 'Continue with Microsoft' })).toBeVisible();
     await expect(page.getByRole('button', { name: 'Continue with Google' })).toBeVisible();
     expect(bodies).toHaveLength(1);
@@ -162,8 +180,8 @@ test('unknown domains fall back to password with honest copy', async ({ page }) 
 
     await page.goto('/auth/student/login');
     await page.getByLabel('Email', { exact: true }).fill('student@gmail.com');
-    await page.getByRole('button', { name: 'Find school sign-in options' }).click();
-    await expect(page.getByText('No school sign-in is available for this email. Use your password to sign in.')).toBeVisible();
+    await page.getByRole('button', { name: 'Continue', exact: true }).click();
+    await expect(page.getByLabel('Password', { exact: true })).toBeVisible();
     await expect(page.getByRole('button', { name: 'Continue with Microsoft' })).toHaveCount(0);
 
     // The password path still signs in.
@@ -204,7 +222,7 @@ test('starting SSO stores only the tab attempt and redirects to the school provi
 
         await page.goto('/auth/student/login?redirect=%2Fmarketplace%3Ffrom%3Dsso-test');
         await page.getByLabel('Email', { exact: true }).fill('student@school.example');
-        await page.getByRole('button', { name: 'Find school sign-in options' }).click();
+        await page.getByRole('button', { name: 'Continue', exact: true }).click();
         await page.getByRole('button', { name: 'Continue with Microsoft' }).click();
         await page.waitForURL(`${stub.baseUrl}/**`);
         expect(stub.hits.length).toBeGreaterThan(0);
@@ -410,7 +428,7 @@ test('an expired attempt recovers through a password sign-in', async ({ page }) 
     await page.waitForURL('**/auth/student/login?error=sso_expired**');
     await expect(page.locator('#student-login-notice')).toContainText('expired');
 
-    await page.getByLabel('Email', { exact: true }).fill('student@approved.test');
+    await revealPassword(page, 'student@approved.test');
     await page.getByLabel('Password', { exact: true }).fill('Synthetic-Password1!');
     await page.getByRole('button', { name: 'Login', exact: true }).click();
     await page.waitForURL('**/marketplace?from=sso-test');
@@ -467,7 +485,7 @@ test('an expired student session recovers through the current password login', a
     await page.waitForURL('**/auth/student/login?error=session_expired**');
     await expect(page.locator('#student-login-notice')).toContainText('Sign in again with your password');
 
-    await page.getByLabel('Email', { exact: true }).fill('student@approved.test');
+    await revealPassword(page, 'student@approved.test');
     await page.getByLabel('Password', { exact: true }).fill('Synthetic-Password1!');
     await page.getByRole('button', { name: 'Login', exact: true }).click();
     await page.waitForURL('**/marketplace');
@@ -497,13 +515,13 @@ test('discovery errors keep the typed email and stay usable at mobile width with
     await page.goto('/auth/student/login');
     const email = page.getByLabel('Email', { exact: true });
     await email.fill('student@school.example');
-    const find = page.getByRole('button', { name: 'Find school sign-in options' });
+    const find = page.getByRole('button', { name: 'Continue', exact: true });
     await find.focus();
     await page.keyboard.press('Enter');
     await expect(page.getByText('temporarily unavailable')).toBeVisible();
     await expect(email).toHaveValue('student@school.example');
 
-    await find.focus();
+    await page.getByRole('button', { name: 'Try again' }).focus();
     await page.keyboard.press('Enter');
     await expect(page.getByRole('button', { name: 'Continue with Google' })).toBeVisible();
     expect(discoveryCalls).toBe(2);
