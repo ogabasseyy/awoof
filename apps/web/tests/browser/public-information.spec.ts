@@ -14,6 +14,8 @@ test('trust page explains checks, sharing, and limits', async ({ page }) => {
   await expect(page.getByText('Eligibility answers never include your documents')).toBeVisible();
   await expect(page.getByRole('heading', { name: 'Limits' })).toBeVisible();
   await expect(page.getByRole('link', { name: 'Get help' })).toBeVisible();
+  await expect(page.locator('main')).toContainText('privacy notice and terms are published, owner-approved policies');
+  await expect(page.locator('main')).not.toContainText('Until then, this trust center');
 });
 
 test('help page is usable without login and guides pending states honestly', async ({ page }) => {

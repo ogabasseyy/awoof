@@ -36,7 +36,7 @@ const {
   refreshToken,
 } = studentSignupTestData;
 const universityId = fixtureUniversities[0]!.id;
-const terms = { version: '2026-09-23.v1' };
+const terms = { version: '1.0' };
 
 async function waitForSignupFormReadiness(page: Page): Promise<void> {
   const university = page.getByLabel(/^University/);
@@ -145,7 +145,7 @@ function confirmationResponse() {
 }
 
 async function checkAgreements(page: Page): Promise<void> {
-  await checkAgreements(page);
+  await page.getByRole('checkbox', { name: 'I agree to student verification processing' }).check();
   await page.getByRole('checkbox', { name: 'I accept the Awoof Terms of Service' }).check();
 }
 

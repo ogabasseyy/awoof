@@ -2,7 +2,7 @@
 
 Research/repository review: 2026-09-20, inventory refreshed 2026-09-23. Status: first-batch pages shipped; legal policies published as approved release v1.0 (see below). This file is internal planning, not public security assurance.
 
-### Legal publication — approved release v1.0, 23 September 2026 (current)
+## Legal publication — approved release v1.0, 23 September 2026 (current)
 
 The owner reported lawyer approval of the five-document package and authorized publication ([authorization record](legal-publication-approval.md)). Release v1.0 publishes these routes indexed (`index, follow`), linked from the public footer, auth navigation and sitemap:
 
@@ -71,9 +71,11 @@ Use existing Awoof visual tokens, public header/footer and an accessible editori
 - Supported-institutions directory: only with approved runtime capabilities; an email-domain seed list is not live integration coverage.
 - Certifications, audit reports, subprocessors, DPA and case studies: publish only accurate approved material with the necessary operational/legal evidence. Do not invent them for marketing completeness.
 
-## Agent handoff and acceptance
+## Agent handoff and acceptance (completed September 2026 — historical)
 
-After approval of the page set, assign one frontend agent ownership of the approved public page routes, reusable public-page component, footer/sitemap updates and focused tests. The coordinator owns AGENTS.md, this inventory, source-backed claim review and legal/operational blockers. Agents must preserve others' changes and follow applicable skills and isolated-worktree instructions.
+The page-set implementation this section planned is finished and shipped (see the publication record above); do not re-assign ownership or restart pre-coding work from these instructions.
+
+Historical instructions, retained for context: after approval of the page set, assign one frontend agent ownership of the approved public page routes, reusable public-page component, footer/sitemap updates and focused tests. The coordinator owns AGENTS.md, this inventory, source-backed claim review and legal/operational blockers. Agents must preserve others' changes and follow applicable skills and isolated-worktree instructions.
 
 Before coding, inspect fresh main and record the exact paths to avoid conflicting routes. Before completion, test route rendering, internal links, metadata, public versus authenticated navigation, keyboard access, heading order and mobile layout. Report local checks separately from deployed checks. No deployment is implied by this document.
 

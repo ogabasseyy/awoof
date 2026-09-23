@@ -37,6 +37,17 @@ test('privacy draft separates account, school-account and enrollment checks', as
   await expect(page.locator('main')).toContainText('People who cannot sign in can contact support@awoof.tech');
 });
 
+test('privacy notice records the terms-acceptance record and its retention', async ({ page }) => {
+  await page.goto('/privacy');
+  await expect(page.locator('#information')).toContainText('which Terms of Service version was accepted and when');
+  await expect(page.locator('#retention')).toContainText('record of the agreement under which the account was provided');
+});
+
+test('privacy notice keeps security reports on the in-app path', async ({ page }) => {
+  await page.goto('/privacy');
+  await expect(page.locator('#security')).toContainText('through in-app support after signing in');
+});
+
 test('terms draft does not promise discounts or universal school support', async ({ page }) => {
   await page.goto('/terms');
   await expect(page.locator('main')).toContainText('Awoof account access alone does not establish current enrollment');

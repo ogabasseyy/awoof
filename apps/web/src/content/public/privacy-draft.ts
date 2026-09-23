@@ -8,7 +8,7 @@ export const privacyDraft: readonly LegalDraftSection[] = [
   { id: 'information', heading: 'What personal information we collect', paragraphs: [
     'The information involved depends on the features you use. Please give accurate details and only provide another person’s information if you are authorized to do so. Do not put passwords, payment-card security codes or unnecessary identity documents in support messages.',
   ], points: [
-    'Account and profile: name, email, institution, student or registration number, contact details when supplied, account role, linked sign-in identities and account status. Password-based accounts use a stored password hash.',
+    'Account and profile: name, email, institution, student or registration number, contact details when supplied, account role, linked sign-in identities and account status. Password-based accounts use a stored password hash. Registration also records which Terms of Service version was accepted and when.',
     'Verification: school email, code challenges, identity information returned by an available school sign-in provider, enrollment evidence from an approved source where available, method, result, dates and expiry, and records needed to investigate an incorrect result.',
     'Consent and merchant checks: the choice made, purpose, merchant, time and policy version where recorded; withdrawal history; merchant-specific identifiers, eligibility results and receipts.',
     'Marketplace and payments: offer and order details, amounts, payment references, payment and refund status, and relevant seller or settlement records. Payment entry is handled through the payment flow; do not send card details to our support inbox.',
@@ -48,7 +48,7 @@ export const privacyDraft: readonly LegalDraftSection[] = [
   { id: 'retention', heading: 'How long information is kept', paragraphs: [
     'Retention depends on the record’s purpose, whether the account or transaction remains active, an outstanding complaint or investigation, and a specific legal record-keeping requirement. A request to close an account is considered separately from records needed to settle a payment or handle a legal claim.',
   ], points: [
-    'Account and linked identity records support access and account integrity while needed for those purposes; closure should trigger a review of continued retention rather than automatic indefinite storage.',
+    'Account and linked identity records support access and account integrity while needed for those purposes; closure should trigger a review of continued retention rather than automatic indefinite storage. The registered Terms of Service acceptance (version and time) is kept as the record of the agreement under which the account was provided, and may be retained after closure where needed to establish, exercise or defend a legal claim.',
     'Short-lived verification secrets are intended for the relevant verification attempt. Evidence, results and audit references may outlast the secret to explain a decision or investigate misuse.',
     'Consent and merchant receipts document the authorization and disclosure that occurred. A withdrawal is recorded alongside that history rather than rewriting it.',
     'Payment, refund, settlement and dispute records may need to remain after account closure to reconcile money and meet applicable accounting or legal requirements.',
@@ -58,7 +58,7 @@ export const privacyDraft: readonly LegalDraftSection[] = [
     'Awoof uses browser storage for sessions and temporary sign-in information, and cookies for certain school-account redirects. Blocking or clearing these can sign you out or interrupt a verification attempt. Our separate storage notice explains the purposes and available browser controls.',
   ], links: [{ href: '/cookies', label: 'Read the cookies and browser-storage notice' }] },
   { id: 'security', heading: 'How we protect information', paragraphs: [
-    'Access controls, password hashing and checks on verification requests help protect the service. No website or transmission method can guarantee absolute security. Keep your credentials private, sign out on shared devices and report suspected unauthorized access to support@awoof.tech.',
+    'Access controls, password hashing and checks on verification requests help protect the service. No website or transmission method can guarantee absolute security. Keep your credentials private, sign out on shared devices and report suspected unauthorized access through in-app support after signing in, so it reaches the team with your account context.',
     'Awoof remains responsible for its applicable security and breach-response obligations. Your use of the service does not waive rights relating to a security incident.',
   ] },
   { id: 'children', heading: 'Children and people requiring assistance', paragraphs: [

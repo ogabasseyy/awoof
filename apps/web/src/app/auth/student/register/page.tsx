@@ -767,8 +767,10 @@ function StudentRegisterInner() {
                                     id="student-terms"
                                     ref={termsRef}
                                     type="checkbox"
+                                    required
                                     checked={termsChecked}
                                     onChange={(event) => handleTerms(event.target.checked)}
+                                    aria-invalid={!!termsError}
                                     aria-describedby="terms-error"
                                     className="mt-1 h-4 w-4"
                                 />
