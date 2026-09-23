@@ -1,12 +1,12 @@
 # Public trust and partner pages
 
-Research/repository review: 2026-09-20. Status: inventory and proposed page scope; page implementation not started. This file is internal planning, not public security assurance.
+Research/repository review: 2026-09-20, inventory refreshed 2026-09-23. Status: first-batch pages shipped; `/privacy` and `/terms` remain deferred. This file is internal planning, not public security assurance.
 
 ## Repository evidence
 
 The read-only inventory checked the working tree and origin/main at 4e47ea0. The local branch is divergent; implementation should start from a fresh isolated origin/main worktree, preserving existing work.
 
-Public footer destinations `/contact`, `/partner`, `/privacy` and `/terms` have no matching page routes. There are no dedicated public trust, security, help or developer pages. Recheck before implementation. Relevant entry points are `apps/web/src/app/components/Footer.tsx`, `apps/web/src/app/marketplace/layout.tsx`, homepage FAQ components, `apps/web/src/app/sitemap.ts`, and the authenticated vendor integration/support journeys.
+Shipped since the first review: `/trust`, `/help`, `/contact`, `/partner`, and `/developers` now have matching page routes. Still deferred with no page routes: `/privacy` and `/terms`. Relevant entry points are `apps/web/src/app/components/Footer.tsx`, `apps/web/src/app/marketplace/layout.tsx`, homepage FAQ components, `apps/web/src/app/sitemap.ts`, and the authenticated vendor integration/support journeys.
 
 The broken links are specifically in the inline footer in `apps/web/src/app/marketplace/page.tsx`; the homepage has a separate Footer component. The root layout does not mount shared public navigation, so provide an explicit reusable public shell. Homepage social links use `#` and should not be presented as real destinations.
 

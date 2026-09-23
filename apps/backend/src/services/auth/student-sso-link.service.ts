@@ -331,8 +331,8 @@ export class StudentSsoLinkService {
                 // Kill switch: a provider disabled after the handoff was
                 // issued cannot link, even with a valid grant and mailbox.
                 this.assertProviderEnabled(observation.provider);
-                const existing = await tx.query<{ id: string; user_id: string; revoked_at: Date | null; linked_at: Date }>(
-                    `SELECT id, user_id, revoked_at, linked_at FROM student_auth_identities
+                const existing = await tx.query<{ id: string; user_id: string; university_id: string; revoked_at: Date | null; linked_at: Date }>(
+                    `SELECT id, user_id, university_id, revoked_at, linked_at FROM student_auth_identities
                      WHERE provider = $1 AND issuer = $2 AND subject = $3 FOR UPDATE`,
                     [observation.provider, observation.issuer, observation.subject],
                 );
@@ -340,6 +340,13 @@ export class StudentSsoLinkService {
                 if (found && (found.revoked_at === null || found.user_id !== userId)) {
                     // Active anywhere, or revoked for another owner: no link,
                     // no transfer, and no revelation of the match.
+                    throw new ConflictError('Student SSO identity is already linked');
+                }
+                if (found && found.university_id !== policy.universityId) {
+                    // Revoked under another university: reactivating here
+                    // would move a foreign binding onto this policy. The
+                    // owner unlinks and links fresh instead; same opaque
+                    // conflict, no revelation of the match.
                     throw new ConflictError('Student SSO identity is already linked');
                 }
                 const grant = await tx.query<GrantRow>(
@@ -421,7 +428,7 @@ export class StudentSsoLinkService {
                     );
                 }
                 const microsoftMembershipAttested = observation.provider === 'microsoft'
-                    && await hasCurrentMicrosoftMembership(tx, userId, context, policy.realm);
+                    && await hasCurrentMicrosoftMembership(tx, userId, context, policy.realm, observation.objectId);
                 const schoolAssertion = await writeSsoSchoolAssertion(tx, {
                     userId,
                     universityId: context.universityId,

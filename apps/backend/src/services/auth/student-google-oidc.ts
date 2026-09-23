@@ -266,6 +266,7 @@ export class StudentGoogleOidc implements StudentOidcAdapter {
                 mailboxVerified: true,
                 realm: hostedDomain ?? '',
                 schoolMembershipAttested: hostedDomain !== null && hostedDomain.toLowerCase() === this.hostedDomain,
+                objectId: null,
             };
         } catch (error) {
             if (error instanceof StudentOidcOperationalError) throw error;

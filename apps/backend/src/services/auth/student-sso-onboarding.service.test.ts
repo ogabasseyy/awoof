@@ -18,6 +18,7 @@ const GOOGLE_OBSERVATION: ProviderObservation = {
     mailboxVerified: true,
     realm: 'students.school.example',
     schoolMembershipAttested: true,
+    objectId: null,
 };
 
 function throwingClient(): PoolClient {
@@ -54,6 +55,7 @@ test('observation codec preserves a null Microsoft email', () => {
         mailboxVerified: false,
         realm: 'tenant',
         schoolMembershipAttested: false,
+        objectId: '33333333-3333-4333-8333-333333333333',
     };
     assert.deepEqual(decodeProviderObservation(encodeProviderObservation(microsoft)), microsoft);
 });
@@ -79,9 +81,27 @@ test('observation decode rejects malformed and mistyped payloads before use', ()
 
 test('Microsoft membership with a malformed tenant fails closed without storage', async () => {
     assert.equal(
-        await hasCurrentMicrosoftMembership(throwingClient(), studentContext().userId, studentContext(), 'not-a-uuid'),
+        await hasCurrentMicrosoftMembership(throwingClient(), studentContext().userId, studentContext(), 'not-a-uuid', '33333333-3333-4333-8333-333333333333'),
         false,
     );
+});
+
+test('Microsoft membership with a missing or malformed object id fails closed without storage', async () => {
+    const tenant = '11111111-1111-4111-8111-111111111111';
+    assert.equal(
+        await hasCurrentMicrosoftMembership(throwingClient(), studentContext().userId, studentContext(), tenant, null),
+        false,
+    );
+    assert.equal(
+        await hasCurrentMicrosoftMembership(throwingClient(), studentContext().userId, studentContext(), tenant, 'not-a-uuid'),
+        false,
+    );
+});
+
+test('observation decode maps a pre-binding payload to a null object id', () => {
+    const { objectId: _dropped, ...legacy } = GOOGLE_OBSERVATION;
+    assert.equal(_dropped, null);
+    assert.equal(decodeProviderObservation(JSON.stringify(legacy)).objectId, null);
 });
 
 test('assertion writer records nothing for unattested observations without storage', async () => {

@@ -16,6 +16,12 @@ export type ProviderObservation = {
     mailboxVerified: boolean;
     realm: string;
     schoolMembershipAttested: boolean;
+    /**
+     * Microsoft directory object id (oid claim) for the returned identity,
+     * null for Google. The identity row key stays `subject`; this binds
+     * membership evidence to the exact identity that signed in.
+     */
+    objectId: string | null;
 };
 
 export type LoginOptions = {

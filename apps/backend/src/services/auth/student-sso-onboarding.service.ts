@@ -64,6 +64,7 @@ export function encodeProviderObservation(observation: ProviderObservation): str
         mailboxVerified: observation.mailboxVerified,
         realm: observation.realm,
         schoolMembershipAttested: observation.schoolMembershipAttested,
+        objectId: observation.objectId,
     });
 }
 
@@ -82,7 +83,8 @@ export function decodeProviderObservation(raw: string): ProviderObservation {
         || (typeof value.email !== 'string' && value.email !== null)
         || typeof value.mailboxVerified !== 'boolean'
         || typeof value.realm !== 'string'
-        || typeof value.schoolMembershipAttested !== 'boolean') {
+        || typeof value.schoolMembershipAttested !== 'boolean'
+        || (value.objectId !== undefined && typeof value.objectId !== 'string' && value.objectId !== null)) {
         throw invalidAttempt();
     }
     return {
@@ -93,6 +95,9 @@ export function decodeProviderObservation(raw: string): ProviderObservation {
         mailboxVerified: value.mailboxVerified,
         realm: value.realm,
         schoolMembershipAttested: value.schoolMembershipAttested,
+        // Observations sealed before the oid binding decode to null and
+        // fail the membership match below: login proceeds, unattested.
+        objectId: typeof value.objectId === 'string' ? value.objectId : null,
     };
 }
 
@@ -219,10 +224,11 @@ export async function readProvenSchoolMailbox(
 }
 
 /**
- * Trusted Microsoft membership for the login tenant: every tenant-scoped
- * Microsoft enrollment candidate is validated through the shared
- * currentMicrosoftProof predicate (live consent, tenant-bound identity,
- * outcome student). Guests and missing membership return false, which
+ * Trusted Microsoft membership for the exact identity that signed in:
+ * candidates must match the returned directory object id, not just the
+ * tenant, before the shared currentMicrosoftProof predicate validates
+ * them (live consent, tenant-bound identity, outcome student). Guests,
+ * mismatched identities, and missing membership return false, which
  * permits linked login but records no positive school assertion.
  */
 export async function hasCurrentMicrosoftMembership(
@@ -230,8 +236,10 @@ export async function hasCurrentMicrosoftMembership(
     userId: string,
     context: StudentContext,
     tenantId: string,
+    objectId: string | null,
 ): Promise<boolean> {
     if (!TENANT_UUID.test(tenantId)) return false;
+    if (typeof objectId !== 'string' || !TENANT_UUID.test(objectId)) return false;
     const candidates = await tx.query<EvidenceCandidate>(
         `SELECT evidence.id AS evidence_id, evidence.method, evidence.outcome,
                 evidence.verified_at, evidence.expires_at, evidence.revoked_at,
@@ -256,6 +264,7 @@ export async function hasCurrentMicrosoftMembership(
            AND evidence.provider_proof_id IS NOT NULL
            AND evidence.expires_at > clock_timestamp()
            AND identity.tenant_id = $7::uuid
+           AND identity.object_id = $8::uuid
          ORDER BY evidence.verified_at DESC, evidence.id DESC`,
         [
             context.studentId,
@@ -265,6 +274,7 @@ export async function hasCurrentMicrosoftMembership(
             context.email,
             MICROSOFT_ENROLLMENT_SOURCE,
             tenantId,
+            objectId,
         ],
     );
     for (const candidate of candidates.rows) {

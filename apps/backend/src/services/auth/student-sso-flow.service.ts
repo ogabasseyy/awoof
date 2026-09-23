@@ -629,12 +629,18 @@ export class StudentSsoFlowService {
         if (!context.active) throw new UnauthorizedError('Student SSO login is not available for this account');
         const policy = await assertCurrentLoginPolicy(tx, attempt.policy_id, attempt.policy_version, attempt.requested_email);
         if (policy.provider !== observation.provider || policy.issuer !== observation.issuer) throw invalidAttempt();
-        const lockedIdentity = await tx.query<{ id: string; user_id: string; revoked_at: Date | null }>(
-            'SELECT id, user_id, revoked_at FROM student_auth_identities WHERE id = $1 FOR UPDATE',
+        // University binding, mirroring the link flow: Google shares one
+        // issuer across universities, so without this check an identity
+        // linked under university A could authenticate through university
+        // B's live policy, bypassing A's disabled or expired policy.
+        if (context.universityId !== policy.universityId) throw invalidAttempt();
+        const lockedIdentity = await tx.query<{ id: string; user_id: string; university_id: string; revoked_at: Date | null }>(
+            'SELECT id, user_id, university_id, revoked_at FROM student_auth_identities WHERE id = $1 FOR UPDATE',
             [linked.id],
         );
         const identity = lockedIdentity.rows[0];
         if (!identity || identity.user_id !== context.userId || identity.revoked_at !== null) throw invalidAttempt();
+        if (identity.university_id !== policy.universityId) throw invalidAttempt();
         await tx.query('SELECT id FROM student_auth_attempts WHERE id = $1 FOR UPDATE', [attempt.id]);
         const locked = await tx.query<SsoAttempt>('SELECT * FROM student_auth_attempts WHERE id = $1', [attempt.id]);
         const finalClock = await tx.query<{ now: Date }>('SELECT clock_timestamp() AS now');
@@ -665,7 +671,7 @@ export class StudentSsoFlowService {
         // evidence is sufficient; guests and missing membership log in with no
         // positive assertion. Enrollment evidence is never written here.
         const microsoftMembershipAttested = observation.provider === 'microsoft'
-            && await hasCurrentMicrosoftMembership(tx, context.userId, context, policy.realm);
+            && await hasCurrentMicrosoftMembership(tx, context.userId, context, policy.realm, observation.objectId);
         await writeSsoSchoolAssertion(tx, {
             userId: context.userId,
             universityId: context.universityId,

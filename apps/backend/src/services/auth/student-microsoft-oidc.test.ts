@@ -146,6 +146,7 @@ test('redeem binds tenant, object, and subject without asserting school membersh
         mailboxVerified: false,
         realm: tenantId,
         schoolMembershipAttested: false,
+        objectId,
     });
 });
 

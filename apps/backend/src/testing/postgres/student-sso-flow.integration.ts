@@ -194,6 +194,7 @@ function observationFor(realm: string, subject: string): ProviderObservation {
         mailboxVerified: true,
         realm,
         schoolMembershipAttested: true,
+        objectId: null,
     };
 }
 
@@ -269,6 +270,46 @@ test('linked owner signs in with one atomic session and separated assurance', as
                 [started.publicResult.attemptId],
             );
             assert.deepEqual(attempts.rows[0], { status: 'consumed', encrypted_verifier: null, nonce: null, encrypted_observation: null });
+        } finally {
+            check.release();
+        }
+    });
+});
+
+test('linked finish rejects an identity bound to another university', async () => {
+    await withSsoPool(async (pool) => {
+        // Google shares one issuer across universities, so the account
+        // chooser can return an identity linked under university A while
+        // the attempt runs under university B's live policy. The finish
+        // must not let B's policy authenticate A's identity.
+        const fixtureA = await approvedGoogleFixture(pool);
+        const fixtureB = await approvedGoogleFixture(pool);
+        const email = `mover-${uniqueLabel()}@${fixtureB.domain}`;
+        const subject = `moved-sub-${uniqueLabel()}`;
+        const setup = await pool.connect();
+        let userId: string;
+        try {
+            userId = await createStudent(setup, fixtureB.universityId, email);
+            await createIdentity(setup, userId, fixtureA.universityId, { subject });
+        } finally {
+            setup.release();
+        }
+        const oidc = makeOidc();
+        oidc.redeemWith(observationFor(fixtureB.realm, subject));
+        const { service } = makeService(pool, oidc.oidc);
+        const { started, callbackUrl, cookies } = await startGoogle(service, oidc, email);
+        await service.callback({ provider: 'google', callbackUrl, browserCookies: cookies });
+        await assert.rejects(service.finish({
+            attemptId: started.publicResult.attemptId,
+            finishSecret: started.publicResult.finishSecret,
+            browserCookie: started.callbackCookie.value,
+        }), /no longer valid/);
+        const check = await pool.connect();
+        try {
+            const users = await check.query<{ active_session_id: string | null }>(
+                'SELECT active_session_id FROM users WHERE id = $1', [userId],
+            );
+            assert.equal(users.rows[0]!.active_session_id, null);
         } finally {
             check.release();
         }

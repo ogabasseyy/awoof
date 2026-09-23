@@ -165,6 +165,7 @@ type Observation = {
     mailboxVerified: boolean;
     realm: string;
     schoolMembershipAttested: boolean;
+    objectId: string | null;
 };
 
 type SeededHandoff = {
@@ -229,6 +230,7 @@ function googleObservation(realm: string, subject: string, email: string, overri
         mailboxVerified: true,
         realm,
         schoolMembershipAttested: true,
+        objectId: null,
         ...overrides,
     };
 }
@@ -748,7 +750,7 @@ async function seedMicrosoftMembership(
     owner: SeededOwner,
     adminId: string,
     tenantId: string,
-): Promise<void> {
+): Promise<{ objectId: string }> {
     await client.query(
         `INSERT INTO institution_microsoft_policies
              (university_id, tenant_id, enabled, mode, approved_until, approved_by,
@@ -769,6 +771,7 @@ async function seedMicrosoftMembership(
     )).rows[0]!;
     const consentId = randomUUID();
     const identityId = randomUUID();
+    const objectId = randomUUID();
     const attemptId = randomUUID();
     const proofId = randomUUID();
     await client.query(
@@ -782,7 +785,7 @@ async function seedMicrosoftMembership(
     await client.query(
         `INSERT INTO microsoft_identities (id, user_id, university_id, tenant_id, object_id)
          VALUES ($1, $2, $3, $4, $5)`,
-        [identityId, owner.userId, owner.universityId, tenantId, randomUUID()],
+        [identityId, owner.userId, owner.universityId, tenantId, objectId],
     );
     await client.query(
         `INSERT INTO microsoft_verification_attempts
@@ -810,6 +813,7 @@ async function seedMicrosoftMembership(
         [owner.studentId, owner.universityId, email.email_proof_id, owner.grantId, proofId,
             email.identity_version, email.policy_version],
     );
+    return { objectId };
 }
 
 test('link records a school assertion for microsoft with trusted membership', async () => {
@@ -827,7 +831,7 @@ test('link records a school assertion for microsoft with trusted membership', as
                 `INSERT INTO users (email, role) VALUES ($1, 'admin') RETURNING id`,
                 [`msadmin-${uniqueLabel()}@example.invalid`],
             )).rows[0]!.id;
-            await seedMicrosoftMembership(client, owner, adminId, MICROSOFT_TENANT);
+            const membership = await seedMicrosoftMembership(client, owner, adminId, MICROSOFT_TENANT);
             policy = await seedPolicy(client, owner.universityId, owner.email.split('@')[1]!, {
                 provider: 'microsoft',
                 realm: MICROSOFT_TENANT,
@@ -840,6 +844,9 @@ test('link records a school assertion for microsoft with trusted membership', as
                 mailboxVerified: false,
                 realm: MICROSOFT_TENANT,
                 schoolMembershipAttested: false,
+                // The returned identity is the one the evidence was issued
+                // for: directory object id must match, not just the tenant.
+                objectId: membership.objectId,
             });
         } finally {
             client.release();
@@ -868,6 +875,68 @@ test('link records a school assertion for microsoft with trusted membership', as
     });
 });
 
+test('link with a different tenant identity records no school assertion', async () => {
+    await withLinkPool(async (pool) => {
+        const attemptKey = randomBytes(32).toString('base64url');
+        const service = makeService(pool, attemptKey);
+        const client = await pool.connect();
+        let owner;
+        let policy;
+        let handoff;
+        let adminId = '';
+        try {
+            owner = await seedOwner(client, {});
+            adminId = (await client.query<{ id: string }>(
+                `INSERT INTO users (email, role) VALUES ($1, 'admin') RETURNING id`,
+                [`msadmin-${uniqueLabel()}@example.invalid`],
+            )).rows[0]!.id;
+            // A dedicated tenant: the shared suite database already holds
+            // the constant tenant's policy from the sibling test.
+            const tenant = randomUUID();
+            await seedMicrosoftMembership(client, owner, adminId, tenant);
+            policy = await seedPolicy(client, owner.universityId, owner.email.split('@')[1]!, {
+                provider: 'microsoft',
+                realm: tenant,
+            });
+            // Membership evidence exists for another identity in the same
+            // tenant; the returned identity supplied none, so the login
+            // succeeds but stays unattested instead of borrowing it.
+            handoff = await seedHandoff(client, attemptKey, policy, {
+                provider: 'microsoft',
+                issuer: policy.issuer,
+                subject: `ms-other-${uniqueLabel()}`,
+                email: owner.email,
+                mailboxVerified: false,
+                realm: tenant,
+                schoolMembershipAttested: false,
+                objectId: randomUUID(),
+            });
+        } finally {
+            client.release();
+        }
+        const grant = await mintGrant(service, owner.userId, owner.sid, PASSWORD);
+        const originalOidc = config.microsoftOidc.enabled;
+        config.microsoftOidc.enabled = true;
+        let result;
+        try {
+            result = await service.link({
+                userId: owner.userId,
+                sid: owner.sid,
+                handoffId: handoff.handoffId,
+                handoffSecret: handoff.handoffSecret,
+                browserCookies: cookiesFor(handoff.attemptId, handoff.cookieSecret),
+                grantId: grant.grantId,
+                grantSecret: grant.grantSecret,
+            });
+        } finally {
+            config.microsoftOidc.enabled = originalOidc;
+        }
+        assert.equal(result.outcome, 'linked');
+        if (result.outcome !== 'linked') throw new Error('Microsoft link did not succeed');
+        assert.equal(result.schoolAssertion, 'not_attested');
+    });
+});
+
 test('link permits microsoft login without membership but records no assertion', async () => {
     await withLinkPool(async (pool) => {
         const attemptKey = randomBytes(32).toString('base64url');
@@ -890,6 +959,7 @@ test('link permits microsoft login without membership but records no assertion',
                 mailboxVerified: false,
                 realm: MICROSOFT_TENANT,
                 schoolMembershipAttested: false,
+                objectId: randomUUID(),
             });
         } finally {
             client.release();

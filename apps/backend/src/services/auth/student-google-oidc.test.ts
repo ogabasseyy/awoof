@@ -163,6 +163,7 @@ test('redeem returns an attested school-membership observation for the approved 
         mailboxVerified: true,
         realm: hostedDomain,
         schoolMembershipAttested: true,
+        objectId: null,
     });
     assert.ok(requested.every((href) => !href.includes('tokeninfo')), 'login must never call tokeninfo');
 });

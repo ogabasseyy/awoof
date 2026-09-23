@@ -238,6 +238,7 @@ export class StudentMicrosoftOidc implements StudentOidcAdapter {
                 mailboxVerified: false,
                 realm: tenantId,
                 schoolMembershipAttested: false,
+                objectId,
             };
         } catch (error) {
             if (error instanceof StudentOidcOperationalError) throw error;

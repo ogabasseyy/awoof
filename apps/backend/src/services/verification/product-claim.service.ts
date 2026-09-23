@@ -216,14 +216,19 @@ export function timingSafeHashEqual(actualHash: string, expectedHash: string): b
 
 export async function claimProductBenefit(pool: Pool, userId: string, input: ProductClaimInput): Promise<ProductClaimResult> {
     const candidateSession = await pool.query<{
-        id: string; vendor_id: string; product_id: string; checkout_id: string; expires_at: Date; consumed_at: Date | null;
+        id: string; vendor_id: string; product_id: string; checkout_id: string;
+        origin: string | null; expires_at: Date; consumed_at: Date | null;
     }>(
-        `SELECT id, vendor_id, product_id, checkout_id, expires_at, consumed_at
+        `SELECT id, vendor_id, product_id, checkout_id, origin, expires_at, consumed_at
          FROM merchant_claim_sessions WHERE id = $1`,
         [input.merchantClaimSessionId],
     );
     const session = candidateSession.rows[0];
     if (!session) throw new NotFoundError('Claim session not found');
+    // Sessions that predate the origin binding stay unusable, matching
+    // the read path: the initiating site is unknowable, so no handoff
+    // destination is guessed for them.
+    if (session.origin == null) throw new ConflictError('Claim session expired or already redeemed');
     if (session.consumed_at !== null || session.expires_at.getTime() <= Date.now()) {
         throw new ConflictError('Claim session expired or already redeemed');
     }
@@ -238,6 +243,12 @@ export async function claimProductBenefit(pool: Pool, userId: string, input: Pro
     if (grant.user_id !== userId) throw new ForbiddenError('Disclosure grant belongs to another user');
     if (grant.vendor_id !== session.vendor_id || !grant.origin || !grant.purpose) {
         throw new ForbiddenError('Disclosure grant is for a different merchant');
+    }
+    // A multi-site vendor's grant for origin B must not redeem a session
+    // initiated on origin A: the assertion and handoff URL would go to the
+    // wrong site. Exact match only; both sides are server-validated.
+    if (grant.origin !== session.origin) {
+        throw new ForbiddenError('Disclosure grant is for a different origin');
     }
     return transaction(pool, async (tx) => {
         const merchant = await prepareMerchantDisclosure(tx, userId, session.vendor_id, grant.origin!);

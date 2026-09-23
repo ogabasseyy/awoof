@@ -21,8 +21,8 @@ import {
  *   securitySchemes:
  *     merchantServerKey:
  *       type: http
- *       scheme: Bearer [REDACTED]
- *       description: Private awoof_ reporting server key. Never send this key to a browser. JWTs and public widget keys are not accepted.
+ *       scheme: bearer
+ *       description: Private awoof_ reporting server key sent as a Bearer token. Never send this key to a browser. JWTs and public widget keys are not accepted.
  *   schemas:
  *     MerchantVerificationReceipt:
  *       type: object

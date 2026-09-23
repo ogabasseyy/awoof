@@ -294,6 +294,37 @@ test('claim sessions bind one checkout to one product with exact-retry semantics
     } finally { client.release(); await pool.end(); }
 });
 
+test('claims require the disclosure grant origin to match the session origin', async () => {
+    const pool = createTestPool();
+    const client = await pool.connect();
+    try {
+        const fixture = await createClaimFixture(client, pool);
+        const otherOrigin = `https://second-shop-${fixture.label.slice(0, 8)}.example`.toLowerCase();
+        await client.query(
+            'UPDATE widget_configs SET allowed_origins = allowed_origins || $2 WHERE vendor_id = $1',
+            [fixture.vendor, [otherOrigin]],
+        );
+        const otherDisclosure = await inTransaction(client, () => grantMerchantDisclosure(client, fixture.student, {
+            vendorId: fixture.vendor, origin: otherOrigin, purpose: 'student-discount', accepted: true,
+            noticeVersion: MERCHANT_DISCLOSURE_NOTICE_VERSION,
+        }));
+        const created = await createMerchantClaimSession(pool, fixture.key, {
+            productId: fixture.product, merchantCheckoutId: `checkout-${fixture.label.slice(0, 8)}`,
+            browserNonceHash: sha256hex('origin-mismatch-nonce'), origin: fixture.origin,
+        });
+        // Same vendor, but the grant was issued for the vendor's other site:
+        // the assertion must not be handed to origin B for origin A's session.
+        await assert.rejects(claimProductBenefit(pool, fixture.student, {
+            merchantClaimSessionId: created.claimSessionId, disclosureGrantId: otherDisclosure,
+        }), /different origin/);
+        // Legacy sessions predate the origin binding and stay unusable.
+        await client.query('UPDATE merchant_claim_sessions SET origin = NULL WHERE id = $1', [created.claimSessionId]);
+        await assert.rejects(claimProductBenefit(pool, fixture.student, {
+            merchantClaimSessionId: created.claimSessionId, disclosureGrantId: fixture.disclosure,
+        }), /expired or already redeemed/);
+    } finally { client.release(); await pool.end(); }
+});
+
 test('protected redemption flows through a durable merchant server with one redemption per checkout', async () => {
     const pool = createTestPool();
     const client = await pool.connect();
