@@ -6,6 +6,7 @@ import {
   parseSignupReceipt,
   signupRetryAt,
   studentSignupFormSchema,
+  studentSignupIdentitySchema,
 } from '../../src/lib/student-signup';
 
 const notice = { version: '2026-09-05.v1', text: 'Synthetic verification processing notice.' };
@@ -98,6 +99,17 @@ test('retry deadline prefers operational details and never guesses one', () => {
   for (const invalid of [undefined, 'nonsense', '-1', Infinity]) {
     assert.equal(signupRetryAt({}, invalid, 1000), null);
   }
+});
+
+test('identity schema binds agreements without requiring valid passwords', () => {
+  const parsed = studentSignupIdentitySchema.safeParse({ ...validForm, password: 'short', confirmPassword: 'short' });
+  assert.equal(parsed.success, true);
+  if (parsed.success) {
+    assert.equal(parsed.data.email, email);
+    assert.equal(parsed.data.matricNumber, null);
+  }
+  assert.equal(studentSignupIdentitySchema.safeParse({ ...validForm, email: 'not-an-email' }).success, false);
+  assert.equal(studentSignupFormSchema.safeParse({ ...validForm, password: 'short', confirmPassword: 'short' }).success, false);
 });
 
 test('student form canonicalizes identity while retaining the untrimmed password in memory', () => {

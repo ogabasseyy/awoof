@@ -48,18 +48,25 @@
 
 - Student signup is now proof-bound and must use only the dedicated public
   endpoints: `POST /auth/student/register-request` followed by
-  `POST /auth/student/register-confirm`. The request stores no password and
+  `POST /auth/student/register-confirm`. Both use strict schemas requiring
+  the literal `verificationConsent: true` + current `noticeVersion` pair and
+  the literal `termsAccepted: true` + current `termsVersion` pair; omitting
+  either pair fails validation. The request stores no password and
   only returns a challenge receipt after email delivery; its challenge is
   bounded to a 10-minute code, five failed guesses, and a 60-second resend
-  cooldown. Confirmation repeats the immutable identity and current
-  processing-notice action, creates the new student account/proof/processing
-  grant/evidence in one transaction, and returns authoritative eligibility.
+  cooldown. Confirmation repeats the immutable identity, the current
+  processing-notice action and the current terms acceptance, creates the new
+  student account/proof/processing grant/terms acceptance/evidence in one
+  transaction, and returns authoritative eligibility.
   Never infer merchant disclosure consent or eligibility from the legacy
   `verification_status` field.
 - `POST /auth/verify-student-email` is a public domain-support preflight, not
   mailbox proof. Its successful response always includes the current
-  `verificationNotice` version and text; clients must display it before asking
-  for the literal affirmative processing action. A supported domain is not an
+  `verificationNotice` version and text plus the current `studentTerms`
+  version; clients must display the notice before asking
+  for the literal affirmative processing action, and must capture distinct
+  acceptance of the current Terms of Service version before requesting a
+  code. A supported domain is not an
   account lookup, enrollment result, or `verified` claim. Generic
   `POST /auth/register` with `role: student` returns 410 and vendors keep the
   established registration path.

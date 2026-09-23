@@ -36,6 +36,7 @@ test('contact page links real support with sign-in expectations', async ({ page 
   await expect(page.getByRole('link', { name: 'Student sign in' })).toHaveAttribute('href', '/auth/student/login');
   await expect(page.getByRole('link', { name: 'Vendor sign in' })).toHaveAttribute('href', '/auth/vendor/login');
   await expect(page.getByRole('link', { name: 'support@awoof.tech' })).toHaveAttribute('href', 'mailto:support@awoof.tech');
+  await expect(page.getByRole('navigation', { name: 'Contact and sign-in options' })).toBeVisible();
   await expect(page.locator('main')).not.toContainText('No public inbox or phone line');
   await expect(page.locator('main').getByText(/inside your account/i).first()).toBeVisible();
 });

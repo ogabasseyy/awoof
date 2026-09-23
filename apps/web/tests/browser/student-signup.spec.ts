@@ -224,6 +224,41 @@ test('supported school email still requires affirmative processing consent', asy
   await assertCleanFixture(api, faults);
 });
 
+test('agreements checked before valid passwords still bind once passwords are fixed', async ({ page }) => {
+  const api = await installSyntheticApi(page, {
+    signup: {
+      preflight: [preflightResponse()],
+      request: [{ response: { status: 200, body: signupReceipt() }, expectedBody: requestBody() }],
+    },
+  });
+  const faults = collectBrowserFaults(page, api);
+  await gotoStudentSignup(page);
+  const university = page.getByLabel(/^University/);
+  await waitForSignupFormReadiness(page);
+  await page.getByLabel('Full Name', { exact: true }).fill(name);
+  await page.getByLabel('Student Email', { exact: true }).fill(email);
+  await university.fill('aau');
+  const approvedUniversity = page.getByRole('option', { name: /^Approved Alpha University/ });
+  await expect(approvedUniversity).toBeVisible();
+  await approvedUniversity.click();
+  await page.getByLabel('Password', { exact: true }).fill('short');
+  await page.getByLabel('Confirm Password', { exact: true }).fill('short');
+  const consent = page.getByRole('checkbox', { name: 'I agree to student verification processing' });
+  const termsAcceptance = page.getByRole('checkbox', { name: 'I accept the Awoof Terms of Service' });
+  await expect(consent).toBeVisible();
+  await checkAgreements(page);
+  await expect(consent).toBeChecked();
+  await expect(termsAcceptance).toBeChecked();
+  await page.getByLabel('Password', { exact: true }).fill(password);
+  await page.getByLabel('Confirm Password', { exact: true }).fill(password);
+  await page.getByRole('button', { name: 'Continue', exact: true }).click();
+  await expect(page.getByLabel('Verification Code', { exact: true })).toBeFocused();
+  expect(api.signupRequests.filter((request) => request.endpoint === 'request')).toHaveLength(1);
+  expect(api.signupRequests.every((request) => request.matchesExpectedBody)).toBe(true);
+  expect(api.refreshCalls).toBe(0);
+  await assertCleanFixture(api, faults);
+});
+
 test('supported school email still requires distinct terms acceptance', async ({ page }) => {
   const api = await installSyntheticApi(page, {
     signup: {

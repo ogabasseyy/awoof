@@ -41,7 +41,7 @@ export type ConfirmSignupResult =
 
 const passwordSpecialCharacter = /[!@#$%^&*(),.?":\{\}|<>\[\]\-_=+~`]/;
 
-export const studentSignupFormSchema = z.object({
+const studentSignupBaseSchema = z.object({
   name: z.string().trim().min(2, 'Name must be at least 2 characters').max(255, 'Name must be at most 255 characters'),
   email: z.string().trim().toLowerCase().email('Invalid email address'),
   university: z.string().uuid('Invalid university ID'),
@@ -54,7 +54,17 @@ export const studentSignupFormSchema = z.object({
     .refine((value) => /[0-9]/.test(value), 'Password must contain at least one number')
     .refine((value) => passwordSpecialCharacter.test(value), 'Password must contain at least one special character'),
   confirmPassword: z.string(),
-}).superRefine((value, context) => {
+});
+
+/** Identity fields the signup agreements bind; password validity must not strand checked boxes. */
+export const studentSignupIdentitySchema = studentSignupBaseSchema.pick({
+  email: true,
+  name: true,
+  university: true,
+  matricNumber: true,
+});
+
+export const studentSignupFormSchema = studentSignupBaseSchema.superRefine((value, context) => {
   if (value.password !== value.confirmPassword) {
     context.addIssue({
       code: z.ZodIssueCode.custom,

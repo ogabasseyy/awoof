@@ -48,6 +48,11 @@ test('privacy notice keeps security reports on the in-app path', async ({ page }
   await expect(page.locator('#security')).toContainText('through in-app support after signing in');
 });
 
+test('terms keep payment disputes on verified paths', async ({ page }) => {
+  await page.goto('/terms');
+  await expect(page.locator('#payments')).toContainText('in-app support after signing in for Awoof’s involvement');
+});
+
 test('terms draft does not promise discounts or universal school support', async ({ page }) => {
   await page.goto('/terms');
   await expect(page.locator('main')).toContainText('Awoof account access alone does not establish current enrollment');

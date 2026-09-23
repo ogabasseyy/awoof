@@ -29,6 +29,7 @@ import {
     parseSignupReceipt,
     signupRetryAt,
     studentSignupFormSchema,
+    studentSignupIdentitySchema,
     type ConfirmSignupResult,
     type SignupPreflight,
     type SignupReceipt,
@@ -88,7 +89,9 @@ function supportIdentity(email: string | undefined, university: string | undefin
     };
 }
 
-function claimsFor(values: StudentSignupFormValues, preflight: SignupPreflight): StudentSignupClaims {
+type AgreementIdentity = Pick<StudentSignupFormValues, 'email' | 'name' | 'university' | 'matricNumber'>;
+
+function claimsFor(values: AgreementIdentity, preflight: SignupPreflight): StudentSignupClaims {
     return {
         email: values.email,
         name: values.name,
@@ -324,14 +327,21 @@ function StudentRegisterInner() {
         return () => window.clearTimeout(timeout);
     }, [retryAt]);
 
-    const refreshBinding = useCallback((consent: boolean, terms: boolean): void => {
+    const refreshBinding = useCallback((consent: boolean, terms: boolean, toggled: 'consent' | 'terms'): void => {
         if (!consent || !terms) {
             consentBindingRef.current = null;
             return;
         }
-        const parsed = studentSignupFormSchema.safeParse(getValues());
+        // Agreements bind the identity claims only: password validity must
+        // not strand checked boxes without a binding (submit still enforces
+        // the full form through handleSubmit before the request runs).
+        const parsed = studentSignupIdentitySchema.safeParse(getValues());
         if (!parsed.success || !isCurrentSupport(support, identity)) {
             consentBindingRef.current = null;
+            setConsentChecked(false);
+            setTermsChecked(false);
+            if (toggled === 'consent') setConsentError('Your consent is required before we can send a verification code.');
+            else setTermsError('Please accept the Terms of Service before we can send a verification code.');
             return;
         }
         consentBindingRef.current = { claims: claimsFor(parsed.data, support.preflight) };
@@ -342,13 +352,13 @@ function StudentRegisterInner() {
     const handleConsent = useCallback((checked: boolean): void => {
         setConsentChecked(checked);
         setConsentError(null);
-        refreshBinding(checked, termsChecked);
+        refreshBinding(checked, termsChecked, 'consent');
     }, [refreshBinding, termsChecked]);
 
     const handleTerms = useCallback((checked: boolean): void => {
         setTermsChecked(checked);
         setTermsError(null);
-        refreshBinding(consentChecked, checked);
+        refreshBinding(consentChecked, checked, 'terms');
     }, [consentChecked, refreshBinding]);
 
     const handleInitialRequest = useCallback(async (values: StudentSignupFormValues): Promise<void> => {
