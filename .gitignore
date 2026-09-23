@@ -79,3 +79,4 @@ SECURITY_MEASURES.md
 apps/web/**/*.md
 apps/backend/**/*.md
 apps/widget/**/*.md
+/apps/web/.performance-artifacts/

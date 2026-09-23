@@ -47,6 +47,8 @@ export type EnrollmentDecision =
 
 export const ENROLLMENT_SOURCE = 'institution-registration:v1';
 
+export const MICROSOFT_ENROLLMENT_SOURCE = 'microsoft-education:v1';
+
 export type StudentEmailChallengeBindings = {
     userId: string;
     studentId: string;

@@ -248,7 +248,7 @@ test('request records only an immutable signup challenge and wrong confirmation 
     });
 });
 
-test('confirmation binds every pending identity claim and policy generation before atomically creating one eligible student', async () => {
+test('confirmation binds every pending identity claim and policy generation before atomically creating one student pending enrollment', async () => {
     await withPool(async (pool) => {
         const client = await pool.connect();
         const fixture = await createFixture(client);
@@ -303,7 +303,9 @@ test('confirmation binds every pending identity claim and policy generation befo
         const completion = await service.confirm({ ...input, challengeId: request.challengeId, otp, password: 'StrongPass123!' });
         assert.equal(completion.user.email, fixture.email);
         assert.equal(completion.user.role, 'student');
-        assert.equal(completion.eligibility.eligible, true);
+        // Account creation succeeds with mailbox proof while enrollment is
+        // pending; only current enrollment authorizes benefits.
+        assert.deepEqual(completion.eligibility, { eligible: false, reason: 'unverified' });
         assert.match(completion.expectedPasswordHash, /^\$2[aby]\$/);
 
         const rows = await pool.query<{

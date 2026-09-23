@@ -5,8 +5,20 @@
 'use client';
 
 import { redemptionUrl, dealUnavailable } from '@/lib/marketplace-policy';
+import {
+    beginClaim,
+    beginLoading,
+    failClaim,
+    markReady,
+    parseMerchantHandoffUrl,
+    requireEnrollmentVerification,
+    retryClaim,
+    startRedirect,
+    type ClaimState,
+} from '@/lib/student-benefit-claim';
+import { resolveStudentReturn } from '@/lib/student-return';
 
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { useParams, useRouter } from 'next/navigation';
 import {
     ArrowLeft,
@@ -51,6 +63,121 @@ interface Product {
     created_at: string;
 }
 
+interface ClaimSessionView {
+    claimSessionId: string;
+    vendorId: string;
+    vendorName: string;
+    productId: string;
+    productName: string;
+    listPrice: string;
+    studentPrice: string;
+    handoffOrigin: string;
+    expiresAt: string;
+}
+
+function apiErrorDetails(error: unknown): { status: number | null; code: string | null } {
+    const response = (error as { response?: { status?: number; data?: { error?: { code?: string } } } })?.response;
+    return { status: response?.status ?? null, code: response?.data?.error?.code ?? null };
+}
+
+function ClaimCard(props: {
+    claim: ClaimState;
+    sessionView: ClaimSessionView | null;
+    disclosureNotice: { version: string; text: string } | null;
+    consentAccepted: boolean;
+    onConsentChange: (accepted: boolean) => void;
+    onClaim: () => void;
+    onRetry: () => void;
+    merchantUnintegrated: boolean;
+    ordinaryWebsite: string | null;
+}) {
+    const { claim, sessionView, disclosureNotice, consentAccepted, onConsentChange, onClaim, onRetry, merchantUnintegrated, ordinaryWebsite } = props;
+    return (
+        <div className="rounded-3xl border border-[#1D4ED8]/10 bg-white p-5 shadow-lg shadow-[#1D4ED8]/10" data-testid="student-claim-card">
+            <h2 className="font-bold text-slate-900">Student discount claim</h2>
+            {claim.step === 'loading' || claim.step === 'idle' ? (
+                <p role="status" className="mt-2 text-sm text-slate-600">Loading claim…</p>
+            ) : merchantUnintegrated ? (
+                <div className="mt-2 space-y-3">
+                    <p className="text-sm leading-relaxed text-slate-600">
+                        Verified student discounts are not available with this partner yet.
+                    </p>
+                    {ordinaryWebsite && (
+                        <a href={ordinaryWebsite} target="_blank" rel="noopener noreferrer" className="font-semibold text-[#1D4ED8] hover:underline">
+                            Visit partner site
+                        </a>
+                    )}
+                </div>
+            ) : claim.step === 'verify_required' ? (
+                <div className="mt-2 space-y-3">
+                    <p className="text-sm leading-relaxed text-slate-600">
+                        Your current enrollment could not be confirmed. School-account sign-in alone does not unlock student discounts.
+                    </p>
+                    <div className="flex flex-wrap items-center gap-3">
+                        <Link
+                            href={`/student/verification?redirect=${encodeURIComponent(claim.verifyReturnPath ?? '/marketplace')}`}
+                            className="inline-flex h-11 items-center rounded-full bg-[#1D4ED8] px-5 text-sm font-bold text-white hover:bg-[#1E40AF]"
+                        >
+                            Verify student status
+                        </Link>
+                        <Button variant="ghost" onClick={onRetry} className="rounded-full">
+                            Retry claim
+                        </Button>
+                    </div>
+                </div>
+            ) : claim.step === 'redirecting' ? (
+                <p role="status" className="mt-2 text-sm text-slate-600">Redirecting to partner…</p>
+            ) : claim.step === 'error' ? (
+                <div className="mt-2 space-y-3">
+                    <p role="alert" className="text-sm leading-relaxed text-slate-600">{claim.error ?? 'Claim failed.'}</p>
+                    <Button variant="ghost" onClick={onRetry} className="rounded-full">
+                        Retry claim
+                    </Button>
+                </div>
+            ) : (
+                <div className="mt-2 space-y-4">
+                    {sessionView && (
+                        <dl className="space-y-1 text-sm">
+                            <div className="flex justify-between gap-4">
+                                <dt className="text-slate-500">Deal</dt>
+                                <dd className="font-semibold text-slate-800">{sessionView.productName}</dd>
+                            </div>
+                            <div className="flex justify-between gap-4">
+                                <dt className="text-slate-500">Partner</dt>
+                                <dd className="font-semibold text-slate-800">{sessionView.vendorName}</dd>
+                            </div>
+                            <div className="flex justify-between gap-4">
+                                <dt className="text-slate-500">Student price</dt>
+                                <dd className="font-semibold text-slate-800">{formatCurrency(Number(sessionView.studentPrice))}</dd>
+                            </div>
+                        </dl>
+                    )}
+                    {disclosureNotice ? (
+                        <label className="flex cursor-pointer items-start gap-3 text-sm leading-relaxed text-slate-600">
+                            <input
+                                type="checkbox"
+                                checked={consentAccepted}
+                                onChange={(event) => onConsentChange(event.target.checked)}
+                                className="mt-1 h-4 w-4 shrink-0 accent-[#1D4ED8]"
+                            />
+                            <span>{disclosureNotice.text}</span>
+                        </label>
+                    ) : (
+                        <p role="status" className="text-sm text-slate-500">Loading disclosure notice…</p>
+                    )}
+                    <Button
+                        onClick={onClaim}
+                        disabled={claim.step !== 'ready' || !disclosureNotice}
+                        className="h-12 w-full rounded-full bg-[#1D4ED8] text-base font-bold hover:bg-[#1E40AF] disabled:opacity-60"
+                    >
+                        {claim.step === 'claiming' ? 'Claiming…' : claim.attempt > 0 ? 'Retry claim' : 'Claim student discount'}
+                    </Button>
+                </div>
+            )}
+        </div>
+    );
+}
+
 export default function ProductDetailPage() {
     const params = useParams();
     const router = useRouter();
@@ -59,14 +186,71 @@ export default function ProductDetailPage() {
     const [product, setProduct] = useState<Product | null>(null);
     const [isLoading, setIsLoading] = useState(true);
     const [isPurchasing, setIsPurchasing] = useState(false);
+    const [claimSessionId, setClaimSessionId] = useState<string | null>(null);
+    const [claim, setClaim] = useState<ClaimState>({ step: 'idle', sessionId: null, verifyReturnPath: null, error: null, attempt: 0 });
+    const [sessionView, setSessionView] = useState<ClaimSessionView | null>(null);
+    const [disclosureNotice, setDisclosureNotice] = useState<{ version: string; text: string } | null>(null);
+    const [consentAccepted, setConsentAccepted] = useState(false);
+    const [merchantUnintegrated, setMerchantUnintegrated] = useState(false);
+    const claimingRef = useRef(false);
+    const claimLoadRef = useRef<string | null>(null);
+    // Bumped by explicit user retry so the loader below refires even when
+    // the same failing session is still selected.
+    const [claimReload, setClaimReload] = useState(0);
     const reduce = useReducedMotion();
 
     useEffect(() => {
         if (productId) {
             void fetchProduct();
         }
+        const session = new URLSearchParams(window.location.search).get('claimSession');
+        setClaimSessionId(session && session.length > 0 ? session : null);
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [productId]);
+
+    useEffect(() => {
+        if (!claimSessionId || user?.role !== 'student' || claimLoadRef.current === `${claimSessionId}#${claimReload}`) return;
+        claimLoadRef.current = `${claimSessionId}#${claimReload}`;
+        let cancelled = false;
+        setClaim((prev) => beginLoading(prev, claimSessionId));
+        (async () => {
+            try {
+                const [sessionRes, statusRes] = await Promise.all([
+                    apiClient.get(`/merchant-verification/claim-sessions/${claimSessionId}`),
+                    apiClient.get('/verification/status'),
+                ]);
+                if (cancelled) return;
+                const view = sessionRes.data.data as ClaimSessionView;
+                // A claim link for another product must not authorize under
+                // this page's imagery and pricing: move to the session's
+                // canonical product before showing anything claimable.
+                if (view.productId !== productId) {
+                    router.replace(`/marketplace/${view.productId}?claimSession=${encodeURIComponent(claimSessionId)}`);
+                    return;
+                }
+                setSessionView(view);
+                const notice = statusRes.data.data?.notices?.merchantDisclosure as { version?: string; text?: string } | undefined;
+                if (notice?.version && notice?.text) {
+                    setDisclosureNotice({ version: notice.version, text: notice.text });
+                }
+                setClaim((prev) => markReady(prev, {
+                    vendorName: view.vendorName,
+                    productName: view.productName,
+                    studentPrice: String(view.studentPrice),
+                }));
+            } catch (error) {
+                if (cancelled) return;
+                if (apiErrorDetails(error).code === 'MERCHANT_INTEGRATION_REQUIRED') {
+                    setMerchantUnintegrated(true);
+                    setClaim((prev) => failClaim(prev, 'Verified student discounts are not available with this partner yet.'));
+                    return;
+                }
+                setClaim((prev) => failClaim(prev, 'This claim link is unknown, expired, or already redeemed.'));
+            }
+        })();
+        return () => { cancelled = true; claimLoadRef.current = null; };
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [claimSessionId, user?.id, user?.role, claimReload]);
 
     const fetchProduct = async () => {
         try {
@@ -129,6 +313,56 @@ export default function ProductDetailPage() {
         }
     };
 
+    const handleClaim = async () => {
+        if (!claimSessionId || !sessionView || claim.step !== 'ready' || claimingRef.current) return;
+        if (!disclosureNotice) {
+            toast.error('The merchant disclosure notice is unavailable. Please retry.');
+            return;
+        }
+        if (!consentAccepted) {
+            toast.error('Please accept the merchant disclosure first.');
+            return;
+        }
+        claimingRef.current = true;
+        setClaim((prev) => beginClaim(prev));
+        try {
+            const disclosureRes = await apiClient.post('/verification/disclosures', {
+                vendorId: sessionView.vendorId,
+                origin: sessionView.handoffOrigin,
+                purpose: 'Student discount claim',
+                accepted: true,
+                noticeVersion: disclosureNotice.version,
+            });
+            const grantId = disclosureRes.data.data?.grantId as string | undefined;
+            if (!grantId) throw new Error('disclosure grant missing');
+            const claimRes = await apiClient.post('/merchant-verification/product-claims', {
+                merchantClaimSessionId: claimSessionId,
+                disclosureGrantId: grantId,
+            });
+            const handoff = parseMerchantHandoffUrl(claimRes.data.data?.handoffUrl, sessionView.handoffOrigin);
+            if (!handoff) throw new Error('invalid merchant handoff');
+            setClaim((prev) => startRedirect(prev, handoff));
+            window.location.assign(handoff);
+        } catch (error) {
+            if (apiErrorDetails(error).status === 403) {
+                const returnPath = resolveStudentReturn(
+                    `/marketplace/${productId}?claimSession=${encodeURIComponent(claimSessionId)}`,
+                    window.location.origin,
+                );
+                setClaim((prev) => requireEnrollmentVerification(prev, returnPath));
+                return;
+            }
+            if (apiErrorDetails(error).code === 'MERCHANT_INTEGRATION_REQUIRED') {
+                setMerchantUnintegrated(true);
+                setClaim((prev) => failClaim(prev, 'Verified student discounts are not available with this partner yet.'));
+                return;
+            }
+            setClaim((prev) => failClaim(prev, getApiErrorMessage(error, 'Claim failed')));
+        } finally {
+            claimingRef.current = false;
+        }
+    };
+
     const discount = product
         ? Math.round(((product.price - product.student_price) / product.price) * 100)
         : 0;
@@ -136,6 +370,8 @@ export default function ProductDetailPage() {
     const isExternal =
         product?.deal_type === 'voucher' || product?.vendor_payment_method === 'vendor_website';
     const isUnavailable = dealUnavailable(product);
+    const ordinaryWebsite = redemptionUrl(product?.vendor_website);
+    const showClaimFlow = claimSessionId !== null && user?.role === 'student';
 
     const avatarLetter = (() => {
         const profile = (user as { profile?: { name?: string } } | null)?.profile;
@@ -161,7 +397,61 @@ export default function ProductDetailPage() {
         );
     }
 
+    const claimSection = showClaimFlow ? (
+        <ClaimCard
+            claim={claim}
+            sessionView={sessionView}
+            disclosureNotice={disclosureNotice}
+            consentAccepted={consentAccepted}
+            onConsentChange={setConsentAccepted}
+            onClaim={() => void handleClaim()}
+            onRetry={() => { setClaimReload((n) => n + 1); setClaim((prev) => retryClaim(prev)); }}
+            merchantUnintegrated={merchantUnintegrated}
+            ordinaryWebsite={ordinaryWebsite}
+        />
+    ) : claimSessionId && !user ? (
+        <div className="rounded-3xl border border-[#1D4ED8]/10 bg-white p-5 shadow-lg shadow-[#1D4ED8]/10">
+            <h2 className="font-bold text-slate-900">Student discount claim</h2>
+            <p className="mt-2 text-sm leading-relaxed text-slate-600">Sign in to claim this student discount.</p>
+            <Link
+                href={`/auth/student/login?redirect=${encodeURIComponent(`/marketplace/${productId}?claimSession=${claimSessionId}`)}`}
+                className="mt-4 inline-flex h-11 items-center rounded-full bg-[#1D4ED8] px-5 text-sm font-bold text-white hover:bg-[#1E40AF]"
+            >
+                Sign in
+            </Link>
+        </div>
+    ) : isExternal && ordinaryWebsite ? (
+        <div className="rounded-2xl border border-[#1D4ED8]/10 bg-white p-5">
+            <p className="text-sm leading-relaxed text-slate-600">
+                This deal is redeemed on the partner site. Student discounts are claimed through the partner&apos;s checkout.
+            </p>
+            <a href={ordinaryWebsite} target="_blank" rel="noopener noreferrer" className="mt-3 inline-block font-semibold text-[#1D4ED8] hover:underline">
+                Visit partner site
+            </a>
+        </div>
+    ) : null;
+
     if (!product) {
+        if (claimSessionId) {
+            return (
+                <div className="min-h-screen bg-[#F4F7FD] pb-10 text-slate-900">
+                    <MarketplaceAtmosphere />
+                    <header className="sticky top-0 z-40 border-b border-slate-200/80 bg-white/80 backdrop-blur-md">
+                        <div className="mx-auto flex max-w-6xl items-center gap-2 px-4 py-3">
+                            <Link href="/marketplace">
+                                <Button variant="ghost" size="sm" className="rounded-full gap-1.5">
+                                    <ArrowLeft className="h-4 w-4" />
+                                    Back
+                                </Button>
+                            </Link>
+                        </div>
+                    </header>
+                    <main className="mx-auto max-w-xl px-4 py-8">
+                        <FadeIn>{claimSection}</FadeIn>
+                    </main>
+                </div>
+            );
+        }
         return (
             <div className="flex min-h-screen flex-col items-center justify-center bg-[#F4F7FD] px-4">
                 <MarketplaceAtmosphere />
@@ -298,6 +588,12 @@ export default function ProductDetailPage() {
                                 </p>
                             </div>
                         </FadeIn>
+
+                        {claimSection && (
+                            <FadeIn delay={0.16}>
+                                {claimSection}
+                            </FadeIn>
+                        )}
 
                         <FadeIn delay={0.18}>
                             <div className="flex flex-wrap items-center gap-3">

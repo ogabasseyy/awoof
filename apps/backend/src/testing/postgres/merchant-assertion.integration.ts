@@ -6,10 +6,45 @@ import { grantMerchantDisclosure, grantVerificationProcessing, withdrawConsent }
 import { updateInstitutionPolicy } from '../../services/verification/eligibility-policy.service.js';
 import { lockStudentContext } from '../../services/verification/eligibility-context.service.js';
 import { requestChallenge, consumeChallenge } from '../../services/verification/challenge.service.js';
-import { recordEmailAssurance } from '../../services/verification/eligibility-evidence.service.js';
+import { applyEnrollmentDecision, beginEnrollmentCheck, recordEmailAssurance } from '../../services/verification/eligibility-evidence.service.js';
+import { ENROLLMENT_SOURCE } from '../../services/verification/eligibility.types.js';
 import { MERCHANT_DISCLOSURE_NOTICE_VERSION, VERIFICATION_NOTICE_VERSION } from '../../services/verification/verification-notices.js';
 import { rotateReportingKey } from '../../services/auth/reporting-key.service.js';
 import { issueMerchantAssertion, exchangeMerchantAssertion } from '../../services/verification/merchant-assertion.service.js';
+
+test('merchant assertion issuance rejects an email-only student without current enrollment evidence', async () => {
+    const pool = createTestPool();
+    const client = await pool.connect();
+    try {
+        const label = randomUUID();
+        const student = (await client.query('INSERT INTO users (email,role) VALUES ($1,$2) RETURNING id', [`student-${label}@students.example`,'student'])).rows[0].id as string;
+        const owner = (await client.query('INSERT INTO users (email,role) VALUES ($1,$2) RETURNING id', [`vendor-${label}@example.invalid`,'vendor'])).rows[0].id as string;
+        const admin = (await client.query('INSERT INTO users (email,role) VALUES ($1,$2) RETURNING id', [`admin-${label}@example.invalid`,'admin'])).rows[0].id as string;
+        const university = (await client.query('INSERT INTO universities (name,is_active) VALUES ($1,true) RETURNING id',[label])).rows[0].id;
+        await client.query('INSERT INTO students (user_id,name,university_id) VALUES ($1,$2,$3)',[student,label,university]);
+        await inTransaction(client,()=>updateInstitutionPolicy(client,admin,university,{
+            domains:['students.example'], emailEvidenceValidityDays:90,enrollmentValidityDays:30,registrationNormalization:null,isActive:true,
+        }));
+        const processing = await inTransaction(client,()=>grantVerificationProcessing(client,student,university,
+            {accepted:true,noticeVersion:VERIFICATION_NOTICE_VERSION}));
+        await inTransaction(client,async()=>{
+            const context = await lockStudentContext(client,student);
+            const issued = await requestChallenge(client,{purpose:'student_email',subjectKey:student,
+                bindings:{...context,processingGrantId:processing,noticeVersion:VERIFICATION_NOTICE_VERSION}});
+            assert.equal(issued.status,'issued'); if(issued.status!=='issued') throw new Error('Challenge fixture failed');
+            await consumeChallenge(client,{purpose:'student_email',subjectKey:student,challengeId:issued.challengeId,code:issued.code});
+            await recordEmailAssurance(client,student,{challengeId:issued.challengeId,processingGrantId:processing});
+        });
+        const vendor = (await client.query("INSERT INTO vendors (user_id,name,status) VALUES ($1,$2,'active') RETURNING id",[owner,label])).rows[0].id;
+        const origin = 'https://email-only.example';
+        await client.query("INSERT INTO widget_configs (vendor_id,allowed_domains,allowed_origins,api_key,status) VALUES ($1,ARRAY['email-only.example'],ARRAY[$2],$3,'active')",[vendor,origin,label]);
+        const disclosure = await inTransaction(client,()=>grantMerchantDisclosure(client,student,{
+            vendorId:vendor,origin,purpose:'student-discount',accepted:true,noticeVersion:MERCHANT_DISCLOSURE_NOTICE_VERSION,
+        }));
+        await assert.rejects(issueMerchantAssertion(pool,student,{vendorId:vendor,origin,purpose:'student-discount',campaignId:'email-only',disclosureGrantId:disclosure}),
+            /Current student eligibility/);
+    } finally {client.release();await pool.end();}
+});
 
 test('merchant assertion authority: exact bindings, single use, immutable retry and withdrawal', async () => {
     const pool = createTestPool();
@@ -35,6 +70,13 @@ test('merchant assertion authority: exact bindings, single use, immutable retry 
             await consumeChallenge(client,{purpose:'student_email',subjectKey:student,challengeId:issued.challengeId,code:issued.code});
             await recordEmailAssurance(client,student,{challengeId:issued.challengeId,processingGrantId:processing});
         });
+        await client.query(`INSERT INTO university_verification_methods (university_id,method_type,api_endpoint,is_active)
+            VALUES ($1,'registration','https://institution.example/verify',true)`,[university]);
+        await client.query(`UPDATE universities SET registration_normalization='trim_upper' WHERE id=$1`,[university]);
+        const snapshot = await inTransaction(client,()=>beginEnrollmentCheck(client,student,processing));
+        const studentEmail = (await client.query(`SELECT lower(btrim(email)) AS email FROM users WHERE id=$1`,[student])).rows[0].email as string;
+        assert.equal((await inTransaction(client,()=>applyEnrollmentDecision(client,snapshot,{outcome:'verified',email:studentEmail,
+            registrationNumber:'MERCHANT-1',validUntil:new Date(Date.now()+30*86_400_000),source:ENROLLMENT_SOURCE}))).eligible,true);
         const vendor = (await client.query("INSERT INTO vendors (user_id,name,status) VALUES ($1,$2,'active') RETURNING id",[owner,label])).rows[0].id;
         const origin = 'https://ogabassey.example';
         await client.query("INSERT INTO widget_configs (vendor_id,allowed_domains,allowed_origins,api_key,status) VALUES ($1,ARRAY['ogabassey.example'],ARRAY[$2],$3,'active')",[vendor,origin,label]);

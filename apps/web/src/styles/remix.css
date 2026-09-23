@@ -1,0 +1,54 @@
+.remix-home-hero{background:var(--public-blue);color:white}
+.remix-audience{font-family:var(--public-display);padding-top:90px;padding-bottom:60px}
+.remix-audience h2{font-size:clamp(36px,4.8vw,62px);font-weight:600;line-height:1.05;letter-spacing:-.045em;color:var(--public-ink)}
+.remix-audience h3{color:var(--public-ink);font-size:28px}
+.remix-audience .grid>div{border:0;padding:32px;min-height:270px}
+.remix-audience .grid>div:nth-child(1){background:#e6edfd}
+.remix-audience .grid>div:nth-child(2){background:#f8eee1}
+.remix-audience .grid>div:nth-child(3){background:#e6eccb}
+.remix-hero{max-width:1280px;margin:auto;padding:68px 6% 32px;text-align:center;font-family:var(--public-display)}
+.remix-eyebrow{font-size:11px;font-weight:750;text-transform:uppercase;letter-spacing:.16em}
+.remix-hero h1{margin:26px auto 0;font-size:clamp(48px,7.4vw,104px);line-height:.98;letter-spacing:-.065em;font-weight:650;text-align:center}
+.remix-hero h1 em{font-family:Georgia,serif;font-weight:400;color:var(--public-accent)}
+.remix-lead{max-width:680px;margin:30px auto 0;font-size:17px;line-height:1.65}
+.remix-actions{display:flex;justify-content:center;gap:14px;flex-wrap:wrap;margin-top:28px}
+.remix-button{display:inline-flex;align-items:center;justify-content:center;gap:20px;min-height:52px;border:1px solid #ffffffb3;padding:14px 24px;border-radius:999px;font-size:14px;font-weight:700}
+.remix-primary{background:var(--public-accent);color:var(--public-ink);border-color:var(--public-accent)}
+.remix-stage{position:relative;height:405px;max-width:870px;margin:55px auto 0;text-align:left}
+.remix-pass{position:absolute;z-index:2;width:360px;left:calc(50% - 180px);top:4px;padding:25px;border-radius:20px;background:var(--public-accent);color:var(--public-ink);transform:rotate(-5deg);box-shadow:0 20px 40px #102e9b44}
+.remix-pass-header{display:flex;align-items:center;justify-content:space-between;gap:12px}
+.remix-pass-header img{height:auto}
+.remix-pass-header span{font-size:9px;text-transform:uppercase;letter-spacing:.07em}
+.remix-pass-title{font-size:48px;font-weight:650;line-height:.98;letter-spacing:-.045em;margin:32px 0 24px}
+.remix-pass-title em{font-family:Georgia,serif;font-weight:400}
+.remix-pass-bottom{display:flex;justify-content:space-between;align-items:center;font-size:10px;text-transform:uppercase;letter-spacing:.1em}
+.remix-status{display:flex;gap:24px;border-top:1px dashed #172e6866;margin-top:12px;padding-top:15px;font-size:10px}
+.remix-status dd{font-size:12px;font-weight:750;margin-top:6px}
+.remix-mini{position:absolute;top:46px;width:230px;min-height:265px;padding:23px;border-radius:18px;background:#f8eee1;color:var(--public-ink);display:flex;flex-direction:column;gap:15px}
+.remix-mini .remix-eyebrow{font-size:9px}
+.remix-mini-title{font-size:26px;line-height:1.08;font-weight:750;letter-spacing:-.04em}
+.remix-mini small{font-size:11px}
+.remix-sketch{width:62px;height:62px}
+.remix-food{left:0;transform:rotate(-12deg)}
+.remix-tech{right:0;transform:rotate(10deg);background:#c3d5f7}
+.remix-star{position:absolute;right:190px;top:-28px;z-index:3}
+.remix-note{font-size:11px;color:#e5eaff}
+.remix-band{text-align:center;padding:23px 20px;border-bottom:1px solid var(--public-line);color:var(--public-ink);background:var(--public-paper);font-size:12px;letter-spacing:.1em;text-transform:uppercase}
+@media(hover:hover){.remix-button:hover{box-shadow:inset 0 0 0 1px currentColor}}
+@media(max-width:760px){
+ .remix-hero{padding:40px 6% 28px}
+ .remix-hero h1{font-size:clamp(32px,8.9vw,67px)}
+ .remix-lead{font-size:16px}
+ .remix-stage{height:365px;margin-top:40px}
+ .remix-pass{width:76%;left:12%;padding:20px}
+ .remix-pass-title{font-size:36px}
+ .remix-mini{width:37%;padding:14px;top:82px;min-height:210px}
+ .remix-mini-title{font-size:19px}
+ .remix-mini small,.remix-mini .remix-eyebrow{display:none}
+ .remix-sketch{width:40px;height:40px}
+ .remix-food{transform:rotate(-9deg)}
+ .remix-tech{transform:rotate(9deg)}
+ .remix-star{right:0;top:-18px;width:45px}
+ .remix-pass-header span{max-width:65px}
+ .remix-note{max-width:280px;margin:auto;line-height:1.6}
+}

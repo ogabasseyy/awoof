@@ -25,6 +25,7 @@ import { FadeIn } from '@/app/marketplace/_components/ExpectancyUI';
 import { useConfirm } from '@/components/ui/ConfirmDialog';
 import { StudentHeaderActions } from '@/components/student/StudentHeaderActions';
 import apiClient from '@/lib/api-client';
+import { isStudentVerified, parseStudentAssurance, schoolAccountLabel, studentStatusLabel, type StudentAssurance } from '@/lib/student-assurance';
 
 type MenuItem = {
     href?: string;
@@ -40,16 +41,23 @@ export default function StudentProfilePage() {
     const confirm = useConfirm();
     const [darkMode, setDarkMode] = useState(false);
     const [unreadCount, setUnreadCount] = useState(0);
-    const [eligibility, setEligibility] = useState<{ userId: string; eligible: boolean } | null>(null);
+    const [verification, setVerification] = useState<{ userId: string; assurance: StudentAssurance | null; eligibleFallback: boolean | null } | null>(null);
+    const [statusReload, setStatusReload] = useState(0);
     useEffect(() => {
         if (!user?.id) return;
         let cancelled = false;
         const userId = user.id;
         void apiClient.get('/verification/status').then((response) => {
-            if (!cancelled) setEligibility({ userId, eligible: response.data.data.eligibility.eligible === true });
-        }).catch(() => { if (!cancelled) setEligibility(null); });
+            if (cancelled) return;
+            const data = response.data.data as { studentAssurance?: unknown; eligibility?: { eligible?: unknown } };
+            setVerification({
+                userId,
+                assurance: parseStudentAssurance(data.studentAssurance),
+                eligibleFallback: typeof data.eligibility?.eligible === 'boolean' ? data.eligibility.eligible : null,
+            });
+        }).catch(() => { if (!cancelled) setVerification(null); });
         return () => { cancelled = true; };
-    }, [user?.id]);
+    }, [user?.id, statusReload]);
 
     useEffect(() => {
         apiClient
@@ -85,8 +93,10 @@ export default function StudentProfilePage() {
         return name.split(' ')[0] || 'there';
     };
 
-    const eligibilityKnown = eligibility !== null && eligibility.userId === user?.id;
-    const isVerified = eligibilityKnown && eligibility.eligible;
+    const current = verification !== null && verification.userId === user?.id ? verification : null;
+    const statusKnown = current !== null && (current.assurance !== null || current.eligibleFallback !== null);
+    const isVerified = current !== null
+        && (current.assurance ? isStudentVerified(current.assurance) : current.eligibleFallback === true);
 
     const handleSignOut = async () => {
         const ok = await confirm({
@@ -262,19 +272,40 @@ export default function StudentProfilePage() {
                                             </span>
                                         ) : (
                                             <span className="inline-flex items-center gap-1 bg-white/20 text-white text-[11px] font-bold px-2 py-0.5 rounded-full">
-                                                {eligibilityKnown ? 'Unverified' : 'Verification unavailable'}
+                                                {statusKnown ? 'Unverified' : 'Verification unavailable'}
                                             </span>
                                         )}
                                     </div>
                                     <p className="text-sm text-blue-100 truncate">{user?.email}</p>
+                                    {current?.assurance ? (
+                                        <dl className="mt-2 space-y-0.5 text-xs text-blue-100">
+                                            <div className="flex flex-wrap gap-x-1.5"><dt className="font-semibold">School account:</dt><dd>{schoolAccountLabel(current.assurance)}</dd></div>
+                                            <div className="flex flex-wrap gap-x-1.5"><dt className="font-semibold">Student status:</dt><dd>{studentStatusLabel(current.assurance)}</dd></div>
+                                        </dl>
+                                    ) : statusKnown ? (
+                                        <p className="mt-2 text-xs text-blue-100">Student status: {isVerified ? 'Verified' : 'Unverified'}</p>
+                                    ) : (
+                                        <div className="mt-2 text-xs text-blue-100">
+                                            <p>Verification status is temporarily unavailable.</p>
+                                            <button type="button" onClick={() => setStatusReload((count) => count + 1)} className="mt-1 inline-flex min-h-[44px] items-center underline">Retry verification status</button>
+                                        </div>
+                                    )}
                                 </div>
                             </div>
-                            {eligibilityKnown && !isVerified && (
-                                <p className="relative mt-5 text-sm text-blue-100 leading-relaxed flex items-start gap-2">
-                                    <Sparkles className="h-4 w-4 mt-0.5 shrink-0" />
-                                    Hey {getFirstName()} — verify your student status so deals unlock the moment they
-                                    go live.
-                                </p>
+                            {statusKnown && !isVerified && (
+                                <div className="relative mt-5">
+                                    <p className="text-sm text-blue-100 leading-relaxed flex items-start gap-2">
+                                        <Sparkles className="h-4 w-4 mt-0.5 shrink-0" />
+                                        Hey {getFirstName()} — verify your student status so deals unlock the moment they
+                                        go live.
+                                    </p>
+                                    <Link
+                                        href="/student/verification"
+                                        className="mt-3 inline-flex min-h-[44px] items-center rounded-full bg-white px-5 text-sm font-bold text-[#1D4ED8] hover:bg-blue-50"
+                                    >
+                                        Verify your student status
+                                    </Link>
+                                </div>
                             )}
                             {isVerified && (
                                 <p className="relative mt-5 text-sm text-blue-100 leading-relaxed">

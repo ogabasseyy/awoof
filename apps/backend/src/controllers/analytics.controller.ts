@@ -109,9 +109,9 @@ export class AnalyticsController {
 
         // Get student analytics
         const studentAnalyticsResult = await db.query(
-            `SELECT 
+            `SELECT
                 COUNT(DISTINCT t.student_id) as total_students,
-                COUNT(DISTINCT CASE WHEN t.status = 'completed' THEN t.student_id END) as verified_students,
+                COUNT(DISTINCT CASE WHEN t.status = 'completed' THEN t.student_id END) as purchasing_students,
                 COUNT(DISTINCT CASE 
                     WHEN t.student_id IN (
                         SELECT student_id 
@@ -192,7 +192,12 @@ export class AnalyticsController {
                 })),
                 students: {
                     totalStudents: parseInt(studentAnalyticsResult.rows[0].total_students),
-                    verifiedStudents: parseInt(studentAnalyticsResult.rows[0].verified_students),
+                    // Transaction-derived count of students with a completed
+                    // order. It is not a count of current student
+                    // verification. verifiedStudents is the deprecated alias.
+                    purchasingStudents: parseInt(studentAnalyticsResult.rows[0].purchasing_students),
+                    /** @deprecated Use purchasingStudents. Removed once clients migrate. */
+                    verifiedStudents: parseInt(studentAnalyticsResult.rows[0].purchasing_students),
                     repeatCustomers: parseInt(studentAnalyticsResult.rows[0].repeat_customers),
                 },
                 topProducts: topProductsResult.rows.map((row) => ({

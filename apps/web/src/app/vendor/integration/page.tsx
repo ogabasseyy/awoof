@@ -8,6 +8,7 @@
 
 import { useState, useEffect } from 'react';
 import { BarChart3, CreditCard, LayoutDashboard, LifeBuoy, Puzzle, Settings, ShoppingBag, Tag, Code, Key, Copy, Check, Webhook, CheckCircle2, AlertCircle } from 'lucide-react';
+import Link from 'next/link';
 import ProtectedRoute from '@/components/ProtectedRoute';
 import { useAuth } from '@/contexts/AuthContext';
 import { Button } from '@/components/ui/button';
@@ -504,8 +505,14 @@ export default function VendorIntegrationPage() {
                         <div className="space-y-6">
                             <div className="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm">
                                 <h2 className="mb-4 text-lg font-semibold text-slate-900">API Key Management</h2>
-                                <p className="mb-6 text-sm text-slate-600">
+                                <p className="mb-2 text-sm text-slate-600">
                                     Generate an API key to authenticate transaction reporting requests.
+                                </p>
+                                <p className="mb-6 text-sm text-slate-600">
+                                    Server keys live on your backend: use this key for server-to-server
+                                    calls only — never in a browser, an app bundle, or a URL. See the{' '}
+                                    <Link href="/developers" className="font-semibold text-[#1D4ED8] hover:underline">Developer guide</Link>{' '}
+                                    for the verification API.
                                 </p>
 
                                 <div className="space-y-4">
@@ -562,6 +569,10 @@ export default function VendorIntegrationPage() {
                                 <h2 className="mb-4 text-lg font-semibold text-slate-900">Transaction Reporting API</h2>
                                 <p className="mb-6 text-sm text-slate-600">
                                     Report transactions after successful payments on your website.
+                                    Each report needs the benefit authorization from exchanging a
+                                    product-bound merchant assertion; it settles only while the
+                                    student holds current enrollment. Legacy verification tokens
+                                    are retired and always fail.
                                 </p>
 
                                 <div className="space-y-4">
@@ -594,7 +605,7 @@ export default function VendorIntegrationPage() {
                                     <div>
                                         <Label>Example Request</Label>
                                         <div className="relative mt-2">
-                                            <pre className="overflow-x-auto rounded-lg bg-slate-900 p-4 text-xs text-slate-100">
+                                            <pre tabIndex={0} aria-label="Example transaction reporting request" className="overflow-x-auto rounded-lg bg-slate-900 p-4 text-xs text-slate-100">
                                                 {`fetch('${apiBaseUrl}/api/vendors/transactions/report', {
   method: 'POST',
   headers: {
@@ -602,7 +613,7 @@ export default function VendorIntegrationPage() {
     'Content-Type': 'application/json'
   },
   body: JSON.stringify({
-    verificationToken: window.verificationToken,
+    benefitAuthorizationId: 'authorization_from_exchange',
     paymentReference: 'paystack_ref_123',
     amount: 15000,
     productId: 'product-uuid',
@@ -630,7 +641,7 @@ export default function VendorIntegrationPage() {
     'Content-Type': 'application/json'
   },
   body: JSON.stringify({
-    verificationToken: window.verificationToken,
+    benefitAuthorizationId: 'authorization_from_exchange',
     paymentReference: 'paystack_ref_123',
     amount: 15000,
     productId: 'product-uuid',
@@ -659,7 +670,7 @@ export default function VendorIntegrationPage() {
                                     <div className="rounded-lg bg-slate-50 p-4">
                                         <h3 className="mb-2 text-sm font-semibold text-slate-900">Request Parameters:</h3>
                                         <ul className="space-y-1 text-xs text-slate-600">
-                                            <li><strong>verificationToken:</strong> Token received from widget verification</li>
+                                            <li><strong>benefitAuthorizationId:</strong> Authorization from exchanging a product-bound merchant assertion (one discounted report per authorization)</li>
                                             <li><strong>paymentReference:</strong> Payment reference from your payment gateway</li>
                                             <li><strong>amount:</strong> Transaction amount in kobo (for Naira)</li>
                                             <li><strong>productId:</strong> UUID of the product purchased</li>

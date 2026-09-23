@@ -1,74 +1,64 @@
-'use client';
-
-import {
-  Accordion,
-  AccordionContent,
-  AccordionItem,
-  AccordionTrigger,
-} from '@/components/ui/accordion';
-import { ScrollReveal } from '@/components/motion/Reveal';
-
 function FAQ() {
   const questions = [
     {
-      question: 'Is Awoof free to use?',
+      question: 'Is Awoof free for students?',
       answer:
-        'Yes — free for students. Sign up, verify once, and access exclusive discounts with no subscription fees.',
+        'Creating a student account is free. Each participating merchant sets its own offer terms.',
     },
     {
-      question: 'Where can I use Awoof deals?',
+      question: 'What does verification check?',
       answer:
-        'At partner businesses — restaurants, tech, fashion, travel, and more. Each deal shows where it can be redeemed.',
+        'That depends on the benefit. A school mailbox check and a current-enrollment check are different things, and your status always says which one passed.',
     },
     {
-      question: 'Can I access deals without verifying?',
+      question: 'Why is my status pending?',
       answer:
-        'No. Verification keeps savings for real students and protects partners who offer student-only pricing.',
+        'Usually an evidence source could not be reached. Nothing is guessed — pending stays pending until a check completes.',
     },
     {
-      question: 'What kind of businesses can join Awoof?',
+      question: 'Where can I use benefits?',
       answer:
-        'Any business that wants verified student customers — from campus cafés to national brands. Create an account and list deals.',
+        'At participating merchants in the marketplace. Each benefit states where and how it applies.',
     },
     {
-      question: 'Is there a cost to list deals on Awoof?',
+      question: 'I run a business. How do I offer student benefits?',
       answer:
-        'Basic listing options are available to reach our student community. Premium visibility options help maximize reach when you need them.',
+        'Create a vendor account, configure your offer, and let student consent and verification handle eligibility.',
     },
   ];
 
   return (
     <section
       id="faq"
-      className="flex flex-col justify-center items-center px-4 sm:px-6 scroll-mt-24 py-16 sm:py-20"
+      className="flex scroll-mt-24 flex-col items-center justify-center px-4 py-16 sm:px-6 sm:py-20"
     >
-      <ScrollReveal className="text-center max-w-2xl">
-        <h2 className="text-3xl sm:text-4xl lg:text-5xl font-extrabold tracking-tight text-slate-900">
+      <div className="max-w-2xl text-center">
+        <h2 className="text-3xl font-extrabold tracking-tight text-slate-900 sm:text-4xl lg:text-5xl">
           Frequently asked
         </h2>
-        <p className="mt-3 text-slate-600 text-base sm:text-lg">
+        <p className="mt-3 text-base text-slate-600 sm:text-lg">
           Quick answers for students and partners.
         </p>
-      </ScrollReveal>
+      </div>
 
-      <ScrollReveal delay={0.08} className="w-full max-w-3xl mt-10">
-        <Accordion type="single" collapsible className="w-full space-y-3">
-          {questions.map((item, index) => (
-            <AccordionItem
-              key={index}
-              value={`item-${index}`}
-              className="rounded-2xl border border-[#1D4ED8]/10 bg-white px-5 data-[state=open]:shadow-sm"
-            >
-              <AccordionTrigger className="text-left font-semibold text-slate-900 hover:no-underline py-4">
+      <div className="mt-10 w-full max-w-3xl space-y-3">
+        {questions.map((item) => (
+          <details
+            key={item.question}
+            className="group rounded-2xl border border-[#1D4ED8]/10 bg-white px-5"
+          >
+            <summary className="cursor-pointer list-none py-4 font-semibold text-slate-900 [&::-webkit-details-marker]:hidden">
+              <span className="flex items-center justify-between gap-4">
                 {item.question}
-              </AccordionTrigger>
-              <AccordionContent className="text-slate-600 pb-4 leading-relaxed">
-                {item.answer}
-              </AccordionContent>
-            </AccordionItem>
-          ))}
-        </Accordion>
-      </ScrollReveal>
+                <span aria-hidden="true" className="text-xl leading-none text-[#1D4ED8] group-open:rotate-45">
+                  +
+                </span>
+              </span>
+            </summary>
+            <p className="pb-4 leading-relaxed text-slate-600">{item.answer}</p>
+          </details>
+        ))}
+      </div>
     </section>
   );
 }

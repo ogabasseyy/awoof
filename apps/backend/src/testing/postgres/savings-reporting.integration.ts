@@ -79,7 +79,7 @@ test('marketplace settlement persists exactly the credited savings and duplicate
         const product = (await client.query(`INSERT INTO products(vendor_id, name, price, student_price, stock, status) VALUES ($1, 'Synthetic', 900, 400, 4, 'active') RETURNING id`, [vendor])).rows[0].id;
         await client.query(`INSERT INTO transactions(student_id, product_id, vendor_id, amount, commission, status, list_price_snapshot, paystack_reference)
             VALUES ($1,$2,$3,80,4,'pending',100,$4)`, [student, product, vendor, label]);
-        const eligible = async () => ({ eligible: true as const, studentId: student, universityId: randomUUID(), evidenceId: randomUUID(), processingGrantId: randomUUID(), method: 'student_email' as const, verifiedAt: new Date(), expiresAt: new Date('2100-01-01') });
+        const eligible = async () => ({ eligible: true as const, studentId: student, universityId: randomUUID(), evidenceId: randomUUID(), processingGrantId: randomUUID(), method: 'enrollment' as const, verifiedAt: new Date(), expiresAt: new Date('2100-01-01') });
         await completeMarketplaceTransactionWithClient(client, label, 80, eligible);
         await client.query('UPDATE transactions SET list_price_snapshot=800 WHERE paystack_reference=$1', [label]);
         await completeMarketplaceTransactionWithClient(client, label, 80, eligible);

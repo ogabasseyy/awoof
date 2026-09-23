@@ -42,20 +42,23 @@ function controller(overrides: Partial<ConstructorParameters<typeof AuthControll
             confirm: async () => ({
                 user: { id: '250c68b1-9164-4a99-9780-3b646a750ea5', email: 'ada@students.school.example', role: 'student' as const },
                 eligibility: {
-                    eligible: true as const,
-                    studentId: '40f8aaa7-86c4-4ce7-ac2e-381007c3c36d',
-                    universityId,
-                    evidenceId: '58b42e6a-ec09-4e36-bd47-894c1bb2147a',
-                    processingGrantId: '3ff35e80-3044-4bfa-ae7b-d17b6ef4aa5e',
-                    method: 'student_email' as const,
-                    verifiedAt: new Date('2026-09-05T12:00:00.000Z'),
-                    expiresAt: new Date('2026-12-04T12:00:00.000Z'),
+                    eligible: false as const,
+                    reason: 'unverified' as const,
                 },
                 expectedPasswordHash: '$2a$12$still-internal-only',
             }),
         },
         studentEmailPreflight: async () => ({ supported: false, reason: 'This school email domain is not approved.' }),
         issueSession: async () => ({ accessToken: 'access-token', refreshToken: 'refresh-token' }),
+        readStudentAssurance: async () => ({
+            schoolAccountStatus: 'verified' as const,
+            schoolAccountMethod: 'email_otp' as const,
+            schoolAccountValidUntil: '2026-10-01T00:00:00.000Z',
+            studentStatus: 'pending' as const,
+            enrollmentMethod: null,
+            studentValidUntil: null,
+            reason: 'awaiting_enrollment' as const,
+        }),
         ...overrides,
     });
 }
@@ -98,7 +101,16 @@ test('uses the production student handlers for preflight, request, confirm, and 
         });
         assert.equal(confirmation.status, 201);
         const confirmationBody = await confirmation.json();
-        assert.equal(confirmationBody.data.user.eligibility.eligible, true);
+        assert.deepEqual(confirmationBody.data.user.eligibility, { eligible: false, reason: 'unverified' });
+        assert.deepEqual(confirmationBody.data.user.studentAssurance, {
+            schoolAccountStatus: 'verified',
+            schoolAccountMethod: 'email_otp',
+            schoolAccountValidUntil: '2026-10-01T00:00:00.000Z',
+            studentStatus: 'pending',
+            enrollmentMethod: null,
+            studentValidUntil: null,
+            reason: 'awaiting_enrollment',
+        });
         assert.equal(confirmationBody.data.tokens.accessToken, 'access-token');
         assert.equal(confirmationBody.data.redirectTo, '/marketplace');
         assert.equal(JSON.stringify(confirmationBody).includes('expectedPasswordHash'), false);

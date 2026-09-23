@@ -1,0 +1,76 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Awoof design prototypes — comparison index (synthetic content)</title>
+<meta name="description" content="Comparison index for Awoof Task 1A design prototypes. Synthetic content only; links to direction-a v1 and direction-b v1 samples.">
+<meta name="robots" content="noindex, nofollow">
+<style>
+  :root { color-scheme: light; }
+  * { box-sizing: border-box; }
+  body { margin: 0; font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; line-height: 1.6; color: #0f172a; background: #f8fafc; }
+  .banner { margin: 0; padding: .75rem 1rem; background: #fef9c3; color: #422006; border-bottom: 1px solid #e2e8f0; font-size: .95rem; }
+  .wrap { max-width: 56rem; margin: 0 auto; padding: 2rem 1rem 3rem; }
+  h1 { font-size: clamp(1.5rem, 4vw, 2rem); line-height: 1.25; margin: 0 0 .5rem; }
+  .lede { color: #475569; max-width: 44rem; }
+  .cards { display: grid; gap: 1rem; margin-top: 1.5rem; grid-template-columns: repeat(auto-fit, minmax(16rem, 1fr)); }
+  .card { background: #fff; border: 1px solid #e2e8f0; border-radius: .625rem; padding: 1.25rem; }
+  .card h2 { font-size: 1.15rem; margin: 0 0 .25rem; }
+  .version { display: inline-block; font-size: .85rem; font-weight: 600; background: #eff6ff; color: #1e40af; border-radius: 999px; padding: .15rem .7rem; margin-bottom: .5rem; }
+  .card p { margin: .5rem 0; color: #334155; }
+  .card a.btn { display: inline-block; margin-top: .75rem; padding: .65rem 1.1rem; min-height: 44px; line-height: 1.4; background: #1d4ed8; color: #fff; text-decoration: none; border-radius: .5rem; font-weight: 600; }
+  .card a.btn:hover { background: #1e40af; }
+  .card a.btn:focus-visible, a:focus-visible { outline: 3px solid #b45309; outline-offset: 2px; }
+  .skip-link { position: absolute; left: -9999px; }
+  .skip-link:focus { left: 1rem; top: 1rem; z-index: 10; background: #fff; padding: .5rem 1rem; border: 2px solid #1d4ed8; }
+  footer { margin-top: 2rem; padding-top: 1rem; border-top: 1px solid #e2e8f0; color: #475569; font-size: .9rem; }
+  code { font-family: ui-monospace, monospace; font-size: .9em; }
+</style>
+</head>
+<body>
+<a class="skip-link" href="#main-content">Skip to content</a>
+<p class="banner" role="note"><strong>Design prototype &mdash; synthetic content.</strong> Comparison index only. Both samples are static, illustrative, and run no real check or transaction.</p>
+<main id="main-content">
+<div class="wrap">
+  <h1>Awoof homepage prototypes &mdash; comparison index</h1>
+  <p class="lede">Task 1A produced two independent static homepage samples. Each link below opens a self-contained sample with synthetic content only: no real forms, accounts, verification, offers, API calls, tracking, or downloads.</p>
+  <div class="cards">
+    <article class="card" aria-labelledby="dir-a-title">
+      <p class="version">direction-a v1 &middot; 2026-09-21</p>
+      <h2 id="dir-a-title">Direction A &mdash; verification-first editorial</h2>
+      <p>Light editorial layout: eyebrow + H1 + lede, two CTAs, and a static 3-step verification sample card. System sans, 1120px measure.</p>
+      <a class="btn" href="direction-a/">Open direction-a v1 sample</a>
+    </article>
+    <article class="card" aria-labelledby="dir-b-title">
+      <p class="version">direction-b v1 &middot; 2026-09-21</p>
+      <h2 id="dir-b-title">Direction B &mdash; &ldquo;The Verification Ledger&rdquo;</h2>
+      <p>Editorial ledger concept: serif display, numbered sections, assurance-ledger panel separating login, mailbox proof, and enrollment.</p>
+      <a class="btn" href="direction-b/">Open direction-b v1 sample</a>
+    </article>
+    <article class="card" aria-labelledby="astra-c-title">
+      <p class="version">astra-campus v1 &middot; 2026-09-21 &middot; reviewed, not approved</p>
+      <h2 id="astra-c-title">Astra Campus &mdash; &ldquo;Campus Club&rdquo; (Prototype C)</h2>
+      <p>Split hero on Awoof blue with lime accent; tilted ticket card showing Confirmed/Pending states; benefit grid and 3-step explanation.</p>
+      <a class="btn" href="astra-campus/">Open astra-campus v1 sample</a>
+    </article>
+    <article class="card" aria-labelledby="astra-d-title">
+      <p class="version">astra-open-doors v1 &middot; 2026-09-21 &middot; reviewed, not approved</p>
+      <h2 id="astra-d-title">Astra &mdash; &ldquo;Open Doors&rdquo; (Prototype D)</h2>
+      <p>Third post-swarm direction; registered for completeness. Not rendered by coordinator.</p>
+      <a class="btn" href="astra-open-doors/">Open astra-open-doors v1 sample</a>
+    </article>
+    <article class="card" aria-labelledby="astra-e-title">
+      <p class="version">astra-campus-remix v1 &middot; 2026-09-21 &middot; APPROVED</p>
+      <h2 id="astra-e-title">Astra Campus Remix &mdash; &ldquo;All Access&rdquo; (Prototype E)</h2>
+      <p>Centered high-energy hero with access-pass composition; approved design direction. See docs/design/design-approval.md.</p>
+      <a class="btn" href="astra-campus-remix/">Open astra-campus-remix v1 sample</a>
+    </article>
+  </div>
+  <footer>
+    <p>Preview: serve this directory (<code>docs/design/prototypes</code>) on port 3117, then open <code>/</code>, <code>/direction-a/</code>, <code>/direction-b/</code>. This index uses inline styles and relative links only; no external requests.</p>
+  </footer>
+</div>
+</main>
+</body>
+</html>

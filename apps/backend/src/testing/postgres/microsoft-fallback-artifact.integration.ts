@@ -154,6 +154,23 @@ async function makeMicrosoftCurrent(client: PoolClient, fixture: Fixture): Promi
     return { evidenceId, emailEvidenceId: email.id, proofId, consentId, identityId, attemptId };
 }
 
+async function makeRegistrationCurrent(client: PoolClient, fixture: Fixture): Promise<string> {
+    const email = (await client.query<{ email_proof_id: string; identity_version: number; policy_version: number }>(
+        `SELECT email_proof_id,identity_version,policy_version FROM eligibility_evidence
+         WHERE student_id=$1 AND method='student_email' AND revoked_at IS NULL ORDER BY verified_at DESC,id DESC LIMIT 1`,
+        [fixture.studentId],
+    )).rows[0]!;
+    const evidenceId = (await client.query<{ id: string }>(
+        `INSERT INTO eligibility_evidence
+             (student_id,university_id,email_proof_id,processing_grant_id,method,outcome,identity_version,policy_version,source,expires_at)
+         VALUES($1,$2,$3,$4,'enrollment','verified',$5,$6,'institution-registration:v1',clock_timestamp()+interval '30 days') RETURNING id`,
+        [fixture.studentId, fixture.universityId, email.email_proof_id, fixture.processingGrantId, email.identity_version, email.policy_version],
+    )).rows[0]!.id;
+    await client.query(`UPDATE student_eligibility_state SET current_evidence_id=$1 WHERE student_id=$2 AND university_id=$3`,
+        [evidenceId, fixture.studentId, fixture.universityId]);
+    return evidenceId;
+}
+
 async function seedExpiredIndependentEmail(client: PoolClient, fixture: Fixture, evidenceId: string): Promise<void> {
     // Keep expiry immutable: revoke the original disposable proof, then create
     // a distinct consumed challenge and mailbox proof for the historical row.
@@ -276,14 +293,15 @@ test('dedicated compiled fallback smoke runs the bounded compiled retention clea
     });
 });
 
-test('disabled compiled fallback selects only independent email authority and fails closed for Microsoft-only states', { concurrency: false }, async () => {
+test('disabled compiled fallback selects only independent enrollment authority and fails closed for Microsoft-only states', { concurrency: false }, async () => {
     assertMicrosoftDisabled();
     await withTestClient(async (client) => {
         const mixed = await createFixture(client);
-        const mixedMicrosoft = await makeMicrosoftCurrent(client, mixed);
+        await makeMicrosoftCurrent(client, mixed);
+        const registrationId = await makeRegistrationCurrent(client, mixed);
         const mixedResult = await inTransaction(client, () => getEffectiveEligibility(client, mixed.userId));
         assert.equal(mixedResult.eligible, true);
-        if (mixedResult.eligible) assert.deepEqual({ evidenceId: mixedResult.evidenceId, method: mixedResult.method }, { evidenceId: mixedMicrosoft.emailEvidenceId, method: 'student_email' });
+        if (mixedResult.eligible) assert.deepEqual({ evidenceId: mixedResult.evidenceId, method: mixedResult.method }, { evidenceId: registrationId, method: 'enrollment' });
 
         for (const invalidation of ['microsoft_only', 'provider_consent_microsoft_only', 'provider_proof_microsoft_only', 'provider_policy_disabled', 'base_institution_disabled', 'email_expired', 'authoritative_denial'] as const) {
             const fixture = await createFixture(client);
@@ -301,13 +319,10 @@ test('disabled compiled fallback selects only independent email authority and fa
             if (invalidation === 'base_institution_disabled') await client.query(`UPDATE universities SET is_active=false WHERE id=$1`, [fixture.universityId]);
             if (invalidation === 'email_expired') await seedExpiredIndependentEmail(client, fixture, microsoft.emailEvidenceId);
             if (invalidation === 'authoritative_denial') await client.query(`UPDATE student_eligibility_state SET authoritative_denial=true WHERE student_id=$1 AND university_id=$2`, [fixture.studentId, fixture.universityId]);
+            // Mailbox evidence never authorizes benefits; with Microsoft
+            // disabled and no valid enrollment, every state fails closed.
             const result = await inTransaction(client, () => getEffectiveEligibility(client, fixture.userId));
-            if (invalidation === 'provider_policy_disabled') {
-                assert.equal(result.eligible, true, `${invalidation} must preserve independent email`);
-                if (result.eligible) assert.equal(result.evidenceId, microsoft.emailEvidenceId);
-            } else {
-                assert.equal(result.eligible, false, invalidation);
-            }
+            assert.equal(result.eligible, false, invalidation);
         }
     });
 });
@@ -319,6 +334,7 @@ test('disabled compiled fallback keeps assertion binding and historical receipt 
         await withTestClient(async (client) => {
             const fixture = await createFixture(client);
             const microsoft = await makeMicrosoftCurrent(client, fixture);
+            const registrationId = await makeRegistrationCurrent(client, fixture);
             const merchant = await createMerchant(client);
             const disclosureGrantId = await inTransaction(client, () => grantMerchantDisclosure(client, fixture.userId, {
                 vendorId: merchant.vendorId, origin: merchant.origin, purpose: 'student-discount', accepted: true, noticeVersion: MERCHANT_DISCLOSURE_NOTICE_VERSION,
@@ -335,11 +351,11 @@ test('disabled compiled fallback keeps assertion binding and historical receipt 
             const fresh = await issueMerchantAssertion(pool, fixture.userId, input);
             const receiptIdempotencyKey = randomUUID();
             const receipt = await exchangeMerchantAssertion(pool, key, { code: fresh.code, campaignId: input.campaignId, idempotencyKey: receiptIdempotencyKey });
-            assert.equal(receipt.assuranceMethod, 'student_email');
+            assert.equal(receipt.assuranceMethod, 'enrollment');
             const persistedFresh = (await client.query<{ evidence_id: string; processing_grant_id: string }>(
                 `SELECT evidence_id,processing_grant_id FROM merchant_assertions WHERE code_hash=encode(sha256($1::bytea),'hex')`, [Buffer.from(fresh.code)],
             )).rows[0]!;
-            assert.deepEqual(persistedFresh, { evidence_id: microsoft.emailEvidenceId, processing_grant_id: fixture.processingGrantId });
+            assert.deepEqual(persistedFresh, { evidence_id: registrationId, processing_grant_id: fixture.processingGrantId });
             await client.query(`UPDATE student_eligibility_state SET authoritative_denial=true WHERE student_id=$1 AND university_id=$2`, [fixture.studentId, fixture.universityId]);
             const replay = await exchangeMerchantAssertion(pool, key, { code: fresh.code, campaignId: input.campaignId, idempotencyKey: receiptIdempotencyKey });
             assert.deepEqual(replay, receipt, 'stored receipt replay must not become a fresh authorization');

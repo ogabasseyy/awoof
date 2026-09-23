@@ -1321,9 +1321,9 @@ test('actual parent and provider withdrawals serialize Microsoft-bound merchant 
                 const preservedAfterWithdrawal = await withTestClient(async (client) => (await client.query<{ id: string; expires_at: Date; revoked_at: Date | null }>(`SELECT id,expires_at,revoked_at FROM eligibility_evidence WHERE id=$1`, [preservedEmail.id])).rows[0]);
                 assert.deepEqual(preservedAfterWithdrawal, { ...preservedEmail, revoked_at: null }, 'provider withdrawal preserves independent email evidence and expiry');
                 await assert.rejects(() => exchangeMerchantAssertion(db.getPool(), merchant.key, { code: staleMicrosoftAssertion.code, campaignId: `${merchant.input.campaignId}-stale`, idempotencyKey: randomUUID() }), /no longer eligible/i);
-                const emailAssertion = await issueMerchantAssertion(db.getPool(), flow.data.userId, { ...merchant.input, campaignId: `${merchant.input.campaignId}-email` });
-                const emailReceipt = await exchangeMerchantAssertion(db.getPool(), merchant.key, { code: emailAssertion.code, campaignId: `${merchant.input.campaignId}-email`, idempotencyKey: randomUUID() });
-                assert.equal(emailReceipt.assuranceMethod, 'student_email');
+                // The preserved mailbox evidence stays audit proof, but only
+                // current enrollment authorizes a fresh merchant assertion.
+                await assert.rejects(() => issueMerchantAssertion(db.getPool(), flow.data.userId, { ...merchant.input, campaignId: `${merchant.input.campaignId}-email` }), /Current student eligibility/);
             }
         } finally {
             await keyHolder.query('ROLLBACK').catch(() => undefined); await withdrawal.query('ROLLBACK').catch(() => undefined);
@@ -2002,7 +2002,7 @@ test('owner unlink remains available off-policy, uses the captured identity inst
         if (challenge.status !== 'issued') throw new Error('Expected current-school email challenge');
         const consumed = await consumeChallenge(client, { purpose: 'student_email', subjectKey: data.userId, challengeId: challenge.challengeId, code: challenge.code });
         if (consumed.status !== 'verified') throw new Error('Expected current-school email verification');
-        assert.equal((await recordEmailAssurance(client, data.userId, { challengeId: challenge.challengeId, processingGrantId: emailGrant })).eligible, true);
+        assert.equal((await recordEmailAssurance(client, data.userId, { challengeId: challenge.challengeId, processingGrantId: emailGrant })).eligible, false);
         await client.query('UPDATE institution_microsoft_policies SET enabled=false WHERE university_id=$1', [data.universityId]);
         return { consent, identity, proof, pending: pending.id };
     }));
@@ -2024,8 +2024,9 @@ test('owner unlink remains available off-policy, uses the captured identity inst
         assert.notEqual((await client.query<{ revoked_at: Date | null }>('SELECT revoked_at FROM microsoft_provider_proofs WHERE id=$1', [seeded.proof])).rows[0]!.revoked_at, null);
         assert.deepEqual((await client.query<{ status: string; finish_secret_hash: string | null }>('SELECT status,finish_secret_hash FROM microsoft_verification_attempts WHERE id=$1', [seeded.pending])).rows[0], { status: 'failed', finish_secret_hash: beforeUnlink.finish_secret_hash });
         const effective = await getEffectiveEligibility(client, data.userId);
-        assert.equal(effective.eligible, true);
-        assert.equal(effective.method, 'student_email', 'unlinking Microsoft data must not revoke independent current-school email eligibility');
+        assert.equal(effective.eligible, false);
+        const mailboxProof = await client.query(`SELECT 1 FROM user_email_proofs WHERE user_id = $1`, [data.userId]);
+        assert.equal(mailboxProof.rowCount, 1, 'unlinking Microsoft data must not revoke independent current-school mailbox proof');
         assert.equal((await client.query(`SELECT count(*)::int AS count FROM verification_audit_events WHERE user_id=$1 AND event_type='microsoft_identity_unlinked'`, [data.userId])).rows[0]!.count, 1);
     });
     await new MicrosoftRetentionService({ pool: db.getPool() }).cleanup();

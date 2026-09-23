@@ -779,7 +779,7 @@ export default function VendorPaymentPage() {
     'Content-Type': 'application/json'
   },
   body: JSON.stringify({
-    verificationToken: 'token_from_widget',
+    benefitAuthorizationId: 'authorization_from_exchange',
     paymentReference: 'paystack_ref_123',
     amount: 15000,
     productId: 'product-uuid',
@@ -800,7 +800,7 @@ export default function VendorPaymentPage() {
     'Content-Type': 'application/json'
   },
   body: JSON.stringify({
-    verificationToken: 'token_from_widget',
+    benefitAuthorizationId: 'authorization_from_exchange',
     paymentReference: 'paystack_ref_123',
     amount: 15000,
     productId: 'product-uuid',

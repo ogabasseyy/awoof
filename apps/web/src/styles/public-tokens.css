@@ -1,0 +1,44 @@
+/* Approved public tokens (astra-campus-remix v1). Scoped rules below apply
+   only inside .public-shell so authenticated surfaces cannot regress. */
+
+:root {
+  --public-blue: #244ee7;
+  --public-ink: #172e68;
+  --public-paper: #fcfbf7;
+  --public-line: #d8dcec;
+  --public-accent: #d4f565;
+  --public-tint-1: #e6edfd;
+  --public-tint-2: #f3e6db;
+  --public-tint-3: #e6eccb;
+  --public-focus: #df671e;
+  --public-display: "Avenir Next", "Trebuchet MS", system-ui, sans-serif;
+}
+
+.public-shell :focus-visible {
+  outline: 3px solid var(--public-focus);
+  outline-offset: 3px;
+  border-radius: 4px;
+}
+
+.public-shell .public-skip-link {
+  position: absolute;
+  left: 1rem;
+  top: -4rem;
+  z-index: 60;
+  background: #fff;
+  color: var(--public-ink);
+  font-weight: 700;
+  padding: 0.75rem 1.25rem;
+  border-radius: 999px;
+  transition: top 160ms ease-out;
+}
+
+.public-shell .public-skip-link:focus-visible {
+  top: 1rem;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .public-shell .public-skip-link {
+    transition: none;
+  }
+}

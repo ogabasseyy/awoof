@@ -146,6 +146,79 @@ Access tokens expire in 15 minutes. Use the refresh token endpoint to get a new 
                             type: 'string',
                             enum: ['unverified', 'verified', 'expired'],
                             example: 'verified',
+                            deprecated: true,
+                            description: 'Legacy compatibility flag. It never authorizes student benefits; use studentAssurance instead.',
+                        },
+                        studentAssurance: {
+                            allOf: [
+                                { $ref: '#/components/schemas/StudentAssurance' },
+                            ],
+                            nullable: true,
+                            description: 'Present for student accounts only. Null means the status read is temporarily unavailable; retry without assuming a positive state.',
+                        },
+                    },
+                },
+                StudentAssurance: {
+                    type: 'object',
+                    description: 'Independent school-account and current-enrollment status projected from current evidence. Only studentStatus verified authorizes student benefits.',
+                    required: [
+                        'schoolAccountStatus',
+                        'schoolAccountMethod',
+                        'schoolAccountValidUntil',
+                        'studentStatus',
+                        'enrollmentMethod',
+                        'studentValidUntil',
+                        'reason',
+                    ],
+                    properties: {
+                        schoolAccountStatus: {
+                            type: 'string',
+                            enum: ['unverified', 'verified', 'expired'],
+                            example: 'verified',
+                        },
+                        schoolAccountMethod: {
+                            type: 'string',
+                            enum: ['email_otp', 'google_workspace', 'microsoft_school'],
+                            nullable: true,
+                            example: 'email_otp',
+                        },
+                        schoolAccountValidUntil: {
+                            type: 'string',
+                            format: 'date-time',
+                            nullable: true,
+                            example: '2026-10-01T00:00:00.000Z',
+                        },
+                        studentStatus: {
+                            type: 'string',
+                            enum: ['pending', 'verified', 'expired', 'denied', 'revoked', 'inactive'],
+                            example: 'pending',
+                        },
+                        enrollmentMethod: {
+                            type: 'string',
+                            enum: ['registration', 'microsoft_graph'],
+                            nullable: true,
+                            example: null,
+                        },
+                        studentValidUntil: {
+                            type: 'string',
+                            format: 'date-time',
+                            nullable: true,
+                            example: null,
+                        },
+                        reason: {
+                            type: 'string',
+                            enum: [
+                                'awaiting_enrollment',
+                                'evidence_expired',
+                                'enrollment_denied',
+                                'consent_withdrawn',
+                                'identity_changed',
+                                'policy_changed',
+                                'inactive',
+                                'provider_unavailable',
+                            ],
+                            nullable: true,
+                            example: 'awaiting_enrollment',
                         },
                     },
                 },
@@ -159,6 +232,139 @@ Access tokens expire in 15 minutes. Use the refresh token endpoint to get a new 
                         refreshToken: {
                             type: 'string',
                             example: 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...',
+                        },
+                    },
+                },
+                StudentSsoStartResponse: {
+                    type: 'object',
+                    required: ['success', 'data'],
+                    properties: {
+                        success: { type: 'boolean', example: true },
+                        data: {
+                            type: 'object',
+                            required: ['attemptId', 'authorizationUrl', 'finishSecret', 'expiresAt', 'serverNow'],
+                            properties: {
+                                attemptId: { type: 'string', format: 'uuid' },
+                                authorizationUrl: { type: 'string', format: 'uri' },
+                                finishSecret: { type: 'string', description: 'Tab-held secret for finish; never placed in a URL.' },
+                                expiresAt: { type: 'string', format: 'date-time' },
+                                serverNow: { type: 'string', format: 'date-time' },
+                            },
+                        },
+                    },
+                },
+                StudentSsoFinishResponse: {
+                    type: 'object',
+                    required: ['success', 'data'],
+                    properties: {
+                        success: { type: 'boolean', example: true },
+                        data: {
+                            type: 'object',
+                            required: ['outcome'],
+                            discriminator: { propertyName: 'outcome' },
+                            description: 'Authenticated sessions carry tokens with studentAssurance (null only when assuranceStatus is unavailable); link_required carries a short-lived handoff instead.',
+                            properties: {
+                                outcome: { type: 'string', enum: ['authenticated', 'link_required'] },
+                            },
+                            oneOf: [
+                                {
+                                    type: 'object',
+                                    required: ['outcome', 'user', 'tokens', 'studentAssurance', 'assuranceStatus'],
+                                    properties: {
+                                        outcome: { type: 'string', enum: ['authenticated'] },
+                                        user: { $ref: '#/components/schemas/User' },
+                                        tokens: { $ref: '#/components/schemas/Tokens' },
+                                        studentAssurance: {
+                                            allOf: [{ $ref: '#/components/schemas/StudentAssurance' }],
+                                            nullable: true,
+                                            description: 'Null is permitted only with assuranceStatus unavailable; never treat it as verified.',
+                                        },
+                                        assuranceStatus: { type: 'string', enum: ['available', 'unavailable'] },
+                                    },
+                                },
+                                {
+                                    type: 'object',
+                                    required: ['outcome', 'handoffId', 'handoffSecret', 'expiresAt'],
+                                    properties: {
+                                        outcome: { type: 'string', enum: ['link_required'] },
+                                        handoffId: { type: 'string', format: 'uuid' },
+                                        handoffSecret: { type: 'string', description: 'Tab-held handoff secret for explicit linking; never placed in a URL.' },
+                                        expiresAt: { type: 'string', format: 'date-time' },
+                                    },
+                                },
+                            ],
+                        },
+                    },
+                },
+                StudentSsoReauthResponse: {
+                    type: 'object',
+                    required: ['success', 'data'],
+                    properties: {
+                        success: { type: 'boolean', example: true },
+                        data: {
+                            type: 'object',
+                            required: ['grantId', 'grantSecret', 'expiresAt'],
+                            properties: {
+                                grantId: { type: 'string', format: 'uuid' },
+                                grantSecret: { type: 'string', description: 'Single-use grant secret, bound to the current user and session for five minutes.' },
+                                expiresAt: { type: 'string', format: 'date-time' },
+                            },
+                        },
+                    },
+                },
+                StudentSsoLinkResponse: {
+                    type: 'object',
+                    required: ['success', 'data'],
+                    properties: {
+                        success: { type: 'boolean', example: true },
+                        data: {
+                            type: 'object',
+                            required: ['outcome', 'identity', 'schoolAssertion', 'reactivated'],
+                            properties: {
+                                outcome: { type: 'string', enum: ['linked'] },
+                                identity: {
+                                    type: 'object',
+                                    required: ['id', 'provider', 'universityName', 'linkedAt'],
+                                    properties: {
+                                        id: { type: 'string', format: 'uuid' },
+                                        provider: { type: 'string', enum: ['google', 'microsoft'] },
+                                        universityName: { type: 'string' },
+                                        linkedAt: { type: 'string', format: 'date-time' },
+                                    },
+                                },
+                                schoolAssertion: {
+                                    type: 'string',
+                                    enum: ['recorded', 'not_attested'],
+                                    description: 'Whether membership evidence supported a school assertion. Linking never authorizes enrollment benefits.',
+                                },
+                                reactivated: { type: 'boolean', description: 'True when the original owner reactivated a revoked identity.' },
+                            },
+                        },
+                    },
+                },
+                StudentSsoIdentitiesResponse: {
+                    type: 'object',
+                    required: ['success', 'data'],
+                    properties: {
+                        success: { type: 'boolean', example: true },
+                        data: {
+                            type: 'object',
+                            required: ['identities'],
+                            properties: {
+                                identities: {
+                                    type: 'array',
+                                    items: {
+                                        type: 'object',
+                                        required: ['id', 'provider', 'universityName', 'linkedAt'],
+                                        properties: {
+                                            id: { type: 'string', format: 'uuid' },
+                                            provider: { type: 'string', enum: ['google', 'microsoft'] },
+                                            universityName: { type: 'string' },
+                                            linkedAt: { type: 'string', format: 'date-time' },
+                                        },
+                                    },
+                                },
+                            },
                         },
                     },
                 },

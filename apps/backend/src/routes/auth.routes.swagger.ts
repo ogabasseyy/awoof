@@ -296,3 +296,84 @@
  *         $ref: '#/components/responses/Unauthorized'
  */
 
+/**
+ * @swagger
+ * /api/auth/student/login-options:
+ *   post:
+ *     summary: Resolve approved login methods for an email domain
+ *     description: >
+ *       Returns the password and provider methods approved for the email
+ *       domain. Discovery never reveals whether an account exists and never
+ *       authorizes student benefits; school-account assurance and enrollment
+ *       eligibility stay separate.
+ *     tags: [Authentication]
+ *     security: []
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required:
+ *               - email
+ *             additionalProperties: false
+ *             properties:
+ *               email:
+ *                 type: string
+ *                 format: email
+ *                 maxLength: 254
+ *                 example: student@students.school.example
+ *     responses:
+ *       200:
+ *         description: Login methods resolved
+ *         headers:
+ *           Cache-Control:
+ *             schema:
+ *               type: string
+ *               example: no-store
+ *         content:
+ *           application/json:
+ *             schema:
+ *               allOf:
+ *                 - $ref: '#/components/schemas/SuccessResponse'
+ *                 - type: object
+ *                   properties:
+ *                     data:
+ *                       type: object
+ *                       required:
+ *                         - password
+ *                         - providers
+ *                         - registration
+ *                         - recovery
+ *                       properties:
+ *                         password:
+ *                           type: boolean
+ *                           example: true
+ *                         providers:
+ *                           type: array
+ *                           items:
+ *                             type: string
+ *                             enum: [google, microsoft]
+ *                           example: []
+ *                         registration:
+ *                           type: boolean
+ *                           example: true
+ *                         recovery:
+ *                           type: boolean
+ *                           example: true
+ *       400:
+ *         $ref: '#/components/responses/BadRequest'
+ *       429:
+ *         description: Too many discovery requests for this client
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Error'
+ *       503:
+ *         description: Discovery temporarily unavailable; retry without changing the request
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Error'
+ */
+

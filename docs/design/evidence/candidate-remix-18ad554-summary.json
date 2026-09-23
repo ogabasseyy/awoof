@@ -1,0 +1,163 @@
+{
+  "label": "candidate",
+  "capturedAt": "2026-09-21T09:22:42.329Z",
+  "runDir": "/private/tmp/awoof-audit/apps/web/.performance-artifacts/candidate/2026-09-21T09-17-50-057Z",
+  "sha": "18ad5545dee634852e95e236ee5a7af959d12fef",
+  "toolVersions": {
+    "node": "v24.11.1",
+    "lighthouse": "13.5.0",
+    "chromeLauncher": "1.2.1",
+    "chrome": "Google Chrome 152.0.7977.84",
+    "platform": "darwin 27.0.0",
+    "cpus": 10
+  },
+  "configHash": "5ce8164b8107677d293be2df6350e6355602569a448f351c5677dba1e508fb1c",
+  "datasetHash": "1cc4ca3307f41dbab10f56dd6b154c936915a7176da1adc41bfeeb0a99bbd405",
+  "imageHashes": {
+    "/images/products/deal-alpha.png": "3c4feabd29c225dbc1ba78548d36df46a702254fc43ff3b23e95683587611df9",
+    "/images/products/deal-beta.png": "3cf5fbdd22bb7d8ac7054071c6fa8ebd6ba64afe74e4e09dc216badc5756d2e3",
+    "/images/products/voucher-gamma.png": "8a9e75edc6ba9efbad39c6a18580bbab9ca791832136f0293ff3540de9d9479b",
+    "/images/vendors/vendor-acme.png": "83b84592446123bd437286339710b52df38b09cdcdc324f0e371c8839f1ee1e3"
+  },
+  "imageDelivery": "api-origin-unoptimized",
+  "buildEnv": {
+    "NEXT_PUBLIC_API_URL": "http://127.0.0.1:3108"
+  },
+  "screenProfile": "mobile 390x844 simulate rtt150/1638kbps/cpu4",
+  "cachePolicy": "browser-cold/server-warm, storage reset per run",
+  "routes": {
+    "/": {
+      "h1": "Student verification. With more in it.",
+      "runs": 5,
+      "lcpElements": [
+        "main#main-content > div#hero > div.remix-hero > p.remix-lead"
+      ],
+      "median": {
+        "lcpMs": 2047.054,
+        "cls": 0,
+        "tbtMs": 55,
+        "scriptBytes": 328114
+      },
+      "worst": {
+        "lcpMs": 2644.7752499999997,
+        "cls": 0.01420847020258469,
+        "tbtMs": 56,
+        "scriptBytes": 328114
+      }
+    },
+    "/marketplace": {
+      "h1": "Hey there , savings are warming up",
+      "runs": 5,
+      "lcpElements": [
+        "section.relative > div.relative > div.max-w-xl > h1.text-3xl"
+      ],
+      "median": {
+        "lcpMs": 4030.6488,
+        "cls": 0,
+        "tbtMs": 60.5,
+        "scriptBytes": 372310
+      },
+      "worst": {
+        "lcpMs": 4186.970499999999,
+        "cls": 0,
+        "tbtMs": 65.00000000000045,
+        "scriptBytes": 372310
+      }
+    },
+    "/trust": {
+      "h1": "Security and trust",
+      "runs": 5,
+      "lcpElements": [
+        "div.mt-8 > div.max-w-3xl > section > p.mt-3"
+      ],
+      "median": {
+        "lcpMs": 2030.9845000000003,
+        "cls": 0,
+        "tbtMs": 49.5,
+        "scriptBytes": 283223
+      },
+      "worst": {
+        "lcpMs": 2630.4042499999996,
+        "cls": 0,
+        "tbtMs": 72.31219999999985,
+        "scriptBytes": 283223
+      }
+    },
+    "/help": {
+      "h1": "Help with verification",
+      "runs": 5,
+      "lcpElements": [
+        "div.mt-8 > div.max-w-3xl > section > p.mt-3"
+      ],
+      "median": {
+        "lcpMs": 2031.1560000000002,
+        "cls": 0,
+        "tbtMs": 52,
+        "scriptBytes": 283223
+      },
+      "worst": {
+        "lcpMs": 2184.3208750000003,
+        "cls": 0,
+        "tbtMs": 72.89869999999996,
+        "scriptBytes": 283223
+      }
+    },
+    "/contact": {
+      "h1": "Contact Awoof",
+      "runs": 5,
+      "lcpElements": [
+        "div.mt-8 > div.max-w-3xl > section > p.mt-3"
+      ],
+      "median": {
+        "lcpMs": 2030.8486249999999,
+        "cls": 0,
+        "tbtMs": 49.5,
+        "scriptBytes": 358743
+      },
+      "worst": {
+        "lcpMs": 2031.4876250000002,
+        "cls": 0,
+        "tbtMs": 54.99999999999977,
+        "scriptBytes": 358743
+      }
+    },
+    "/partner": {
+      "h1": "Student verification for partners",
+      "runs": 5,
+      "lcpElements": [
+        "div.public-shell > main#main-content > div.mx-auto > p.mt-4"
+      ],
+      "median": {
+        "lcpMs": 2030.9044999999999,
+        "cls": 0,
+        "tbtMs": 49.5,
+        "scriptBytes": 283223
+      },
+      "worst": {
+        "lcpMs": 2031.0790000000002,
+        "cls": 0,
+        "tbtMs": 70.90890000000013,
+        "scriptBytes": 283223
+      }
+    },
+    "/developers": {
+      "h1": "Developer integration guide",
+      "runs": 5,
+      "lcpElements": [
+        "div.public-shell > main#main-content > div.mx-auto > p.mt-4"
+      ],
+      "median": {
+        "lcpMs": 2031.5755,
+        "cls": 0,
+        "tbtMs": 49.5,
+        "scriptBytes": 283223
+      },
+      "worst": {
+        "lcpMs": 2632.4676249999998,
+        "cls": 0,
+        "tbtMs": 73.70647500000018,
+        "scriptBytes": 283223
+      }
+    }
+  }
+}

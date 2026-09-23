@@ -8,6 +8,7 @@
 import { z } from 'zod';
 import dotenv from 'dotenv';
 import { readMicrosoftOidcConfiguration } from '../services/verification/microsoft-oidc.config.js';
+import { readStudentSsoConfiguration } from '../services/auth/student-oidc.config.js';
 
 // Load environment variables
 // override: false ensures docker-compose env vars take precedence
@@ -77,6 +78,18 @@ const envSchema = z.object({
     MICROSOFT_OIDC_CALLBACK_URL: z.string().optional(),
     MICROSOFT_OIDC_FRONTEND_COMPLETION_URL: z.string().optional(),
     MICROSOFT_ATTEMPT_ENCRYPTION_KEY: z.string().optional(),
+
+    // Student SSO login is deliberately opt-in; providers stay disabled until piloted.
+    GOOGLE_LOGIN_ENABLED: z.enum(['true', 'false']).default('false'),
+    GOOGLE_LOGIN_CLIENT_ID: z.string().optional(),
+    GOOGLE_LOGIN_CLIENT_SECRET: z.string().optional(),
+    GOOGLE_LOGIN_CALLBACK_URL: z.string().optional(),
+    MICROSOFT_LOGIN_ENABLED: z.enum(['true', 'false']).default('false'),
+    MICROSOFT_LOGIN_CLIENT_ID: z.string().optional(),
+    MICROSOFT_LOGIN_CLIENT_SECRET: z.string().optional(),
+    MICROSOFT_LOGIN_CALLBACK_URL: z.string().optional(),
+    STUDENT_SSO_COMPLETION_URL: z.string().optional(),
+    STUDENT_SSO_ATTEMPT_KEY: z.string().optional(),
 });
 
 /**
@@ -114,6 +127,19 @@ const microsoftOidc = readMicrosoftOidcConfiguration({
     frontendCompletionUrl: env.MICROSOFT_OIDC_FRONTEND_COMPLETION_URL,
 });
 validateMicrosoftFrontendOrigin(env.FRONTEND_URL, microsoftOidc);
+
+const studentSso = readStudentSsoConfiguration({
+    googleEnabled: env.GOOGLE_LOGIN_ENABLED,
+    googleClientId: env.GOOGLE_LOGIN_CLIENT_ID,
+    googleClientSecret: env.GOOGLE_LOGIN_CLIENT_SECRET,
+    googleCallbackUrl: env.GOOGLE_LOGIN_CALLBACK_URL,
+    microsoftEnabled: env.MICROSOFT_LOGIN_ENABLED,
+    microsoftClientId: env.MICROSOFT_LOGIN_CLIENT_ID,
+    microsoftClientSecret: env.MICROSOFT_LOGIN_CLIENT_SECRET,
+    microsoftCallbackUrl: env.MICROSOFT_LOGIN_CALLBACK_URL,
+    completionUrl: env.STUDENT_SSO_COMPLETION_URL,
+    attemptKey: env.STUDENT_SSO_ATTEMPT_KEY,
+});
 
 /**
  * Configuration object
@@ -200,6 +226,7 @@ export const config = {
     },
 
     microsoftOidc,
+    studentSso,
     // This trusted frontend setting is intentionally independent from OIDC
     // credentials so owner/history routes can remain available while issuance
     // is disabled.

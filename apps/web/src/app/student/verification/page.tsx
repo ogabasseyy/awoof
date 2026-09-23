@@ -7,6 +7,7 @@ import ProtectedRoute from '@/components/ProtectedRoute';
 import apiClient from '@/lib/api-client';
 import { useAuth } from '@/contexts/AuthContext';
 import { getSessionSnapshot, isCurrentSession, subscribeSessionChanges } from '@/lib/auth';
+import { parseStudentAssurance, schoolAccountLabel, studentStatusLabel } from '@/lib/student-assurance';
 import MicrosoftVerificationCard from './MicrosoftVerificationCard';
 
 type Consent = { id: string; kind: 'processing' | 'disclosure'; acceptedAt: string; withdrawnAt: string | null; origin?: string | null; purpose?: string | null };
@@ -19,6 +20,7 @@ type VerificationStatus = {
     email: string;
     universityId: string | null;
     eligibility: { eligible: boolean; reason?: string };
+    studentAssurance: unknown;
     notices: { verification: { version: string; text: string } };
 };
 
@@ -133,16 +135,40 @@ function VerificationForm() {
     }
     const emailAvailable = status?.emailDomainApproved === true && methods?.some((method) => method.methodType === 'email' && method.isAvailable) === true;
     const registrationAvailable = methods?.some((method) => method.methodType === 'registration' && method.isAvailable) === true;
+    const microsoftAvailable = methods?.some((method) => method.methodType === 'microsoft' && method.isAvailable) === true;
+    const assurance = status ? parseStudentAssurance(status.studentAssurance) : null;
+    async function retryStatus() {
+        await run(async () => {
+            await loadStatus();
+            await loadConsents().catch(() => undefined);
+        });
+    }
     return <main className="mx-auto max-w-lg space-y-5 p-6">
         <Link href="/student/profile" className="underline">Back to profile</Link>
         <h1 className="text-2xl font-semibold">Student verification</h1>
         {error && <p role="alert" className="text-red-700">{error}</p>}
+        {!status && error && <button type="button" className="underline" onClick={() => void retryStatus()}>Retry</button>}
         {message && <p role="status">{message}</p>}
+        {status && <section aria-labelledby="status-overview" className="rounded-2xl border border-slate-200 bg-white p-4">
+            <h2 id="status-overview" className="text-lg font-semibold">Current status</h2>
+            {assurance
+                ? <dl className="mt-1 space-y-1 text-sm text-slate-700">
+                    <div className="flex flex-wrap gap-x-2"><dt className="font-semibold">School account:</dt><dd>{schoolAccountLabel(assurance)}</dd></div>
+                    <div className="flex flex-wrap gap-x-2"><dt className="font-semibold">Student status:</dt><dd>{studentStatusLabel(assurance)}</dd></div>
+                </dl>
+                : <div className="mt-1 text-sm text-slate-700">
+                    <p>Verification details are temporarily unavailable.</p>
+                    <button type="button" className="underline" onClick={() => void retryStatus()}>Retry status</button>
+                </div>}
+            {status.eligibility.eligible
+                ? <p className="mt-1 text-sm text-slate-700">State: eligible — no action needed.</p>
+                : <p className="mt-1 text-sm text-slate-700">State: action needed — complete the steps below or <Link href="/help" className="underline">Get verification help</Link>.</p>}
+        </section>}
         {!status ? <p>Loading verification…</p> : status.eligibility.eligible ? <>
             <p role="status">Your student eligibility is current.</p>
             <Link href="/marketplace" className="underline">Browse student offers</Link>
         </> : !status.universityId ? <p>Your school profile is incomplete. Contact support to update your school before verifying.</p> : <>
-            <p>Confirm your school email to renew your verification. Some schools also require a current enrollment check.</p>
+            <p>Confirm your school email to prove you control the mailbox. Student discounts need a separate current-enrollment check below.</p>
             <p className="break-words">{status.email}</p>
             <label className="flex gap-3"><input type="checkbox" checked={accepted} disabled={busy || Boolean(grant)} onChange={(event) => setAccepted(event.target.checked)} />{status.notices.verification.text}</label>
             <button type="button" className="rounded bg-blue-700 px-4 py-2 text-white disabled:opacity-50" disabled={busy || !accepted || !emailAvailable} onClick={() => void run(async () => {
@@ -159,7 +185,7 @@ function VerificationForm() {
                 setMailboxConfirmed(true); setChallenge(''); setOtp(''); await loadStatus(); setMessage('School email confirmed.');
             }); }}>
                 <label className="block">Email code<input className="block rounded border p-2" value={otp} onChange={(event) => setOtp(event.target.value.replace(/\D/g, '').slice(0, 6))} inputMode="numeric" autoComplete="one-time-code" pattern="[0-9]{6}" required /></label>
-                <button disabled={busy || otp.length !== 6} className="underline">Confirm email</button>
+                <button disabled={busy || otp.length !== 6} className="inline-flex min-h-[44px] items-center underline">Confirm email</button>
             </form>}
             {registrationAvailable && mailboxConfirmed ? <form className="space-y-3" onSubmit={(event) => { event.preventDefault(); void run(async () => {
                 const processingGrantId = await processingGrant();
@@ -169,8 +195,11 @@ function VerificationForm() {
             }); }}>
                 <h2 className="font-semibold">Enrollment check</h2>
                 <label className="block">Registration number<input className="block rounded border p-2" value={registration} maxLength={100} required onChange={(event) => setRegistration(event.target.value)} /></label>
-                <button disabled={busy || !accepted || !registration.trim()} className="underline">Check enrollment</button>
+                <button disabled={busy || !accepted || !registration.trim()} className="inline-flex min-h-[44px] items-center underline">Check enrollment</button>
             </form> : <p>{registrationAvailable ? 'Confirm your school email above before checking enrollment.' : 'Enrollment verification is not currently available for your school.'}</p>}
+            {methods !== null && assurance && assurance.studentStatus !== 'verified' && assurance.studentStatus !== 'inactive'
+                && !registrationAvailable && !microsoftAvailable
+                && <p>The school connection is not yet available for your school — confirming your school email proves mailbox control but cannot unlock discounts.</p>}
         </>}
         <MicrosoftVerificationCard
             available={methods?.some((method) => method.methodType === 'microsoft' && method.isAvailable) === true}

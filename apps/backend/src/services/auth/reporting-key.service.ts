@@ -1,9 +1,10 @@
 import { createHash, pbkdf2, randomBytes, timingSafeEqual } from 'node:crypto';
 import { promisify } from 'node:util';
-import type { Pool } from 'pg';
+import type { Pool, PoolClient } from 'pg';
 import { UnauthorizedError, RateLimitError } from '../../common/errors/AppError.js';
 
 const derive = promisify(pbkdf2);
+// codeql[js/insufficient-password-hash]: index fingerprint over a 256-bit random token, not a password hash; authentication verifies PBKDF2-100k.
 const lookup = (token: string) => createHash('sha256').update(token).digest('hex');
 type Database = Pick<Pool, 'query' | 'connect'>;
 
@@ -77,4 +78,18 @@ export async function authenticateReportingKey(pool: Pick<Pool, 'query'>, token:
     );
     if (admitted.rows.length !== 1) throw new RateLimitError('Reporting key is unavailable or its hourly limit has been reached');
     return admitted.rows[0] as { user_id: string; email: string };
+}
+
+/**
+ * Re-authenticate a reporting key inside a commit transaction, after the
+ * merchant-context locks. Rotation or revocation between the pre-lock
+ * admission and this locked re-read fails closed.
+ */
+export async function recheckReportingKeyInTransaction(tx: PoolClient, token: string, vendorId: string): Promise<boolean> {
+    const current = await tx.query(
+        `SELECT id FROM api_keys WHERE lookup_hash=$1 AND vendor_id=$2 AND status='active'
+         AND (expires_at IS NULL OR expires_at > clock_timestamp()) FOR UPDATE`,
+        [lookup(token), vendorId],
+    );
+    return current.rowCount === 1;
 }

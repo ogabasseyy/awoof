@@ -1,86 +1,39 @@
-'use client';
-
-import React from 'react';
 import Link from 'next/link';
-import { motion, useReducedMotion } from 'framer-motion';
-import { ArrowRight } from 'lucide-react';
-import { Button } from '@/components/ui/button';
-import Applestore from './applestore';
-import Googleplaystore from './googleplaystore';
+import { ArrowUpRight, Coffee, Command, Sparkle } from 'lucide-react';
+import Logo from '../logo';
 
 export default function Banner() {
-  const reduce = useReducedMotion();
-
   return (
-    <div className="relative z-30 flex flex-col items-start justify-center min-h-[calc(100vh-5rem)] lg:min-h-[calc(100vh-6rem)] py-16 lg:py-20 pr-0 lg:pr-[38%] xl:pr-[42%]">
-      <motion.p
-        className="text-sm font-semibold text-blue-100/90 mb-4"
-        initial={reduce ? false : { opacity: 0, y: 12 }}
-        animate={{ opacity: 1, y: 0 }}
-        transition={{ duration: 0.45, ease: [0.22, 1, 0.36, 1] }}
-      >
-        Verified student marketplace
-      </motion.p>
-
-      <motion.h1
-        className="text-white font-extrabold text-[clamp(2.25rem,5vw,4.25rem)] leading-[1.05] tracking-tight max-w-xl text-balance"
-        style={{ textWrap: 'balance' as never }}
-        initial={reduce ? false : { opacity: 0, y: 20 }}
-        animate={{ opacity: 1, y: 0 }}
-        transition={{ duration: 0.55, delay: 0.08, ease: [0.22, 1, 0.36, 1] }}
-      >
-        Your student ID just got more powerful
-      </motion.h1>
-
-      <motion.p
-        className="mt-5 text-base sm:text-lg text-blue-50/95 leading-relaxed max-w-md"
-        initial={reduce ? false : { opacity: 0, y: 16 }}
-        animate={{ opacity: 1, y: 0 }}
-        transition={{ duration: 0.5, delay: 0.18, ease: [0.22, 1, 0.36, 1] }}
-      >
-        Unlock exclusive discounts on food, tech, and travel — only for verified students.
-      </motion.p>
-
-      <motion.div
-        className="mt-8 flex flex-col sm:flex-row items-stretch sm:items-center gap-3 w-full max-w-md"
-        initial={reduce ? false : { opacity: 0, y: 14 }}
-        animate={{ opacity: 1, y: 0 }}
-        transition={{ duration: 0.5, delay: 0.28, ease: [0.22, 1, 0.36, 1] }}
-      >
-        <Link href="/marketplace" className="flex-1 sm:flex-none">
-          <Button
-            size="lg"
-            className="w-full sm:w-auto rounded-full bg-white text-[#1D4ED8] hover:bg-blue-50 font-bold px-7 h-12 shadow-lg shadow-blue-900/20 transition-transform hover:-translate-y-0.5"
-          >
-            Browse deals
-            <ArrowRight className="h-4 w-4" />
-          </Button>
-        </Link>
-        <Link href="/auth/student/register" className="flex-1 sm:flex-none">
-          <Button
-            size="lg"
-            variant="outline"
-            className="w-full sm:w-auto rounded-full border-2 border-white/80 bg-transparent text-white hover:bg-white/15 font-bold px-7 h-12 transition-transform hover:-translate-y-0.5"
-          >
-            Sign up free
-          </Button>
-        </Link>
-      </motion.div>
-
-      <motion.div
-        className="mt-10 flex flex-col gap-3"
-        initial={reduce ? false : { opacity: 0 }}
-        animate={{ opacity: 1 }}
-        transition={{ duration: 0.5, delay: 0.45 }}
-      >
-        <p className="text-xs font-medium uppercase tracking-wide text-blue-100/70">
-          Also on mobile
-        </p>
-        <div className="flex flex-wrap items-center gap-3 opacity-90 scale-90 origin-left">
-          <Googleplaystore />
-          <Applestore />
+    <div className="remix-hero">
+      <p className="remix-eyebrow">Your student chapter. Turned up.</p>
+      <h1>Student verification.<br /><em>With more in it.</em></h1>
+      <p className="remix-lead">Big ideas. Everyday essentials. A little more possibility.<br className="hidden sm:block" /> Awoof connects student verification to your next advantage.</p>
+      <div className="remix-actions">
+        <Link href="/marketplace" className="remix-button remix-primary">Find student benefits <ArrowUpRight size={20} aria-hidden="true" /></Link>
+        <Link href="#how-it-works" className="remix-button">How verification works <span aria-hidden="true">→</span></Link>
+      </div>
+      <div className="remix-stage" role="img" aria-label="Illustrative student pass and benefit categories">
+        <div className="remix-mini remix-food">
+          <p className="remix-eyebrow">The study break</p>
+          <Coffee className="remix-sketch" aria-hidden="true" strokeWidth={1.2} />
+          <p className="remix-mini-title">Good fuel.<br />Great ideas.</p>
+          <small>Food &amp; everyday essentials</small>
         </div>
-      </motion.div>
+        <div className="remix-pass">
+          <div className="remix-pass-header"><Logo color="blue" width={106} height={32} /><span>Illustrative sample</span></div>
+          <p className="remix-pass-title">Made for<br /><em>what&apos;s next.</em></p>
+          <div className="remix-pass-bottom"><span>Your student chapter</span><ArrowUpRight size={42} strokeWidth={1} aria-hidden="true" /></div>
+          <dl className="remix-status"><div><dt>School account</dt><dd>Confirmed</dd></div><div><dt>Current enrollment</dt><dd>Pending</dd></div></dl>
+        </div>
+        <div className="remix-mini remix-tech">
+          <p className="remix-eyebrow">The next big thing</p>
+          <Command className="remix-sketch" aria-hidden="true" strokeWidth={1.2} />
+          <p className="remix-mini-title">More power<br />to your plans.</p>
+          <small>Tech &amp; learning</small>
+        </div>
+        <Sparkle className="remix-star" size={65} strokeWidth={1} aria-hidden="true" />
+      </div>
+      <p className="remix-note">Sample states and categories for illustration — not your account or live offers.</p>
     </div>
   );
 }

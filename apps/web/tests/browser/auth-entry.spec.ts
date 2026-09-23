@@ -1,7 +1,9 @@
-import { expect, test, type Locator } from '@playwright/test';
+import { expect, test, type Locator, type Page } from '@playwright/test';
 import { assertCleanFixture, collectBrowserFaults } from './browser-assertions';
 import {
   createGate,
+  apiOrigin,
+  appOrigin,
   installSyntheticApi,
   studentSignupTestData,
 } from './fixtures';
@@ -11,6 +13,16 @@ const safeWidgetRedirect = '%2Fmarketplace%3Fsource%3Dwidget';
 const safeStudentRegisterPath = `/auth/student/register?redirect=${safeWidgetRedirect}`;
 const safeStudentLoginPath = `/auth/student/login?redirect=${safeWidgetRedirect}`;
 const fallbackStudentRegisterPath = '/auth/student/register?redirect=%2Fmarketplace';
+
+async function revealStudentPassword(page: Page, address: string): Promise<void> {
+  await page.route(`${apiOrigin}/api/auth/student/login-options`, (route) => route.fulfill({
+    headers: { 'access-control-allow-origin': appOrigin },
+    json: { success: true, data: { password: true, providers: [], registration: true, recovery: true } },
+  }));
+  await page.getByLabel('Email', { exact: true }).fill(address);
+  await page.getByRole('button', { name: 'Continue', exact: true }).click();
+  await expect(page.getByLabel('Password', { exact: true })).toBeVisible();
+}
 
 async function expectKeyboardPasswordToggle(input: Locator): Promise<void> {
   const field = input.locator('xpath=..');
@@ -99,6 +111,7 @@ for (const viewport of [{ width: 1280, height: 900 }, { width: 390, height: 844 
     const faults = collectBrowserFaults(page, api);
 
     await page.goto('/auth/student/login');
+    await revealStudentPassword(page, email);
     const input = page.getByLabel('Password', { exact: true });
     await expectKeyboardPasswordToggle(input);
     await expect(input).toHaveAttribute('autocomplete', 'current-password');
@@ -122,13 +135,15 @@ test('student login exposes associated live validation errors', async ({ page })
   const faults = collectBrowserFaults(page, api);
 
   await page.goto('/auth/student/login');
-  await page.getByRole('button', { name: 'Login', exact: true }).click();
+  await page.getByRole('button', { name: 'Continue', exact: true }).click();
 
   const emailInput = page.getByLabel('Email', { exact: true });
-  const passwordInput = page.getByLabel('Password', { exact: true });
   await expect(emailInput).toHaveAttribute('aria-describedby', 'student-login-email-error');
-  await expect(passwordInput).toHaveAttribute('aria-describedby', 'student-login-password-error');
   await expect(page.locator('#student-login-email-error')).toHaveAttribute('role', 'alert');
+  await revealStudentPassword(page, email);
+  await page.getByRole('button', { name: 'Login', exact: true }).click();
+  const passwordInput = page.getByLabel('Password', { exact: true });
+  await expect(passwordInput).toHaveAttribute('aria-describedby', 'student-login-password-error');
   await expect(page.locator('#student-login-password-error')).toHaveAttribute('role', 'alert');
   expect(api.loginCalls).toBe(0);
   await assertCleanFixture(api, faults);
@@ -141,7 +156,7 @@ test('student login submits once by Enter and locks password controls while pend
 
   try {
     await page.goto('/auth/student/login');
-    await page.getByLabel('Email', { exact: true }).fill(email);
+    await revealStudentPassword(page, email);
     const passwordInput = page.getByLabel('Password', { exact: true });
     await passwordInput.fill(password);
     await passwordInput.press('Enter');
@@ -155,7 +170,6 @@ test('student login submits once by Enter and locks password controls while pend
 
     loginGate.release();
     await api.waitForLoginCompleted(1);
-    await api.waitForCurrentUserCompleted(1);
     await expect(page).toHaveURL(/\/marketplace$/);
     await assertCleanFixture(api, faults);
   } finally {

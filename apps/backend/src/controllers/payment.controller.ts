@@ -17,16 +17,15 @@ import { appLogger } from '../common/logger.js';
 import type { AuthRequest } from '../middleware/auth.middleware.js';
 import { z } from 'zod';
 import { rotateReportingKey } from '../services/auth/reporting-key.service.js';
-import { validateAndConsumeToken } from '../services/verification/verification-token.service.js';
+import { reportMerchantBenefit } from '../services/verification/merchant-benefit.service.js';
 import {
     createPaystackSubaccount,
     PaystackMutationRejectedError,
     listPaystackBanks,
     resolvePaystackAccount,
     updatePaystackSubaccount,
-    verifyPaystackPayment,
 } from '../services/payment/paystack.service.js';
-import { getPlatformFeePercent, effectiveVendorCommissionRate, calculateMarketplaceCommission } from '../services/payment/checkout.service.js';
+import { getPlatformFeePercent, effectiveVendorCommissionRate } from '../services/payment/checkout.service.js';
 import { NotificationService } from '../services/notification/notification.service.js';
 
 /**
@@ -53,12 +52,14 @@ const updatePaystackSubaccountSchema = z.object({
 });
 
 const reportTransactionSchema = z.object({
-    verificationToken: z.string().min(1, 'Verification token is required'),
-    paymentReference: z.string().min(1, 'Payment reference is required'),
-    amount: z.coerce.number().positive('Amount must be positive'),
+    benefitAuthorizationId: z.string().uuid('Invalid benefit authorization ID'),
+    // Trimmed at the boundary: the reference doubles as the idempotency
+    // key and must fit transactions.vendor_payment_reference VARCHAR(255).
+    paymentReference: z.string().trim().min(1, 'Payment reference is required').max(255, 'Payment reference must fit 255 characters'),
+    amount: z.coerce.number().int().positive('Amount must be a positive integer in minor units'),
     productId: z.string().uuid('Invalid product ID'),
     paymentGateway: z.string().min(1, 'Payment gateway is required'),
-});
+}).strict();
 
 /**
  * Payment Controller
@@ -322,12 +323,14 @@ export class PaymentController {
 
         // Build query
         let query = `
-            SELECT 
+            SELECT
                 t.id,
                 t.amount,
                 t.commission,
                 t.status,
                 t.paystack_reference,
+                t.vendor_payment_reference,
+                t.payment_source,
                 t.created_at,
                 p.name as product_name
             FROM transactions t
@@ -366,7 +369,9 @@ export class PaymentController {
         const total = parseInt(countResult.rows[0].total);
         const totalPages = Math.ceil(total / limit);
 
-        // Format payments
+        // Format payments. Reported merchant transactions carry their
+        // identifier in vendor_payment_reference (the key the merchant
+        // needs for reconciliation), not paystack_reference.
         const payments = result.rows.map((row) => ({
             id: row.id,
             amount: parseFloat(row.amount),
@@ -374,6 +379,8 @@ export class PaymentController {
             earnings: parseFloat(row.amount) - parseFloat(row.commission),
             status: row.status,
             paystackReference: row.paystack_reference,
+            vendorPaymentReference: row.vendor_payment_reference,
+            paymentSource: row.payment_source,
             productName: row.product_name,
             createdAt: row.created_at,
         }));
@@ -611,186 +618,63 @@ export class PaymentController {
     }
 
     /**
-     * Report transaction (for vendor website payments)
+     * Report transaction (for vendor website payments). Settles only against a
+     * product-bound benefit authorization with current enrollment authority;
+     * exact committed retries return the original result without new benefit.
      */
     public async reportTransaction(req: AuthRequest, res: Response): Promise<void> {
-        // This endpoint can be called with API key authentication
-        // For now, we'll support both JWT and API key auth
-        // API key auth will be handled by middleware later
-
-        // Validate request body
         const validated = reportTransactionSchema.parse(req.body);
 
-        // Get vendor ID
-        const vendorResult = await db.query(
-            `SELECT id FROM vendors
-             WHERE user_id = $1 AND deleted_at IS NULL AND status = 'active'`,
-            [req.user?.userId]
-        );
-
-        if (vendorResult.rows.length === 0) {
-            throw new NotFoundError('Vendor profile not found');
+        if (!req.user || req.user.role !== 'vendor') {
+            throw new UnauthorizedError('Only vendors can report transactions');
         }
 
-        const vendorId = vendorResult.rows[0].id;
+        const header = req.headers?.authorization;
+        const bearer = typeof header === 'string' && header.startsWith('Bearer ') ? header.slice(7) : '';
+        const result = await reportMerchantBenefit(getPool(), {
+            ownerUserId: req.user.userId,
+            ...(bearer.startsWith('awoof_') ? { apiKey: bearer } : {}),
+        }, {
+            benefitAuthorizationId: validated.benefitAuthorizationId,
+            productId: validated.productId,
+            paymentReference: validated.paymentReference,
+            amountKobo: validated.amount,
+            paymentGateway: validated.paymentGateway,
+        });
 
-        // 1. Validate and consume verification token
-        const tokenData = await validateAndConsumeToken(validated.verificationToken, vendorId);
-        if (tokenData.productId && tokenData.productId !== validated.productId) {
-            throw new BadRequestError('Verification token is scoped to a different product');
-        }
-
-        // 2. Verify product exists and belongs to vendor
-        const productResult = await db.query(
-            `SELECT id, name, price, student_price, vendor_id, status, stock
-             FROM products
-             WHERE id = $1 AND vendor_id = $2 AND deleted_at IS NULL`,
-            [validated.productId, vendorId]
-        );
-
-        if (productResult.rows.length === 0) {
-            throw new NotFoundError('Product not found or does not belong to vendor');
-        }
-
-        const product = productResult.rows[0];
-        if (product.status !== 'active') {
-            throw new BadRequestError('This deal is no longer available');
-        }
-
-        // 3. Validate payment amount matches product price (allow small variance for rounding)
-        const expectedAmount = parseFloat(product.student_price.toString());
-        const reportedAmount = validated.amount / 100; // Convert from kobo to naira
-        const variance = Math.abs(expectedAmount - reportedAmount);
-        const allowedVariance = 0.01; // Allow 1 kobo variance
-
-        if (variance > allowedVariance) {
-            throw new BadRequestError(
-                `Payment amount (${reportedAmount}) does not match product price (${expectedAmount})`
-            );
-        }
-
-        // 4. Validate payment reference (if Paystack)
-        if (validated.paymentGateway === 'paystack') {
-            const paymentVerification = await verifyPaystackPayment(validated.paymentReference);
-
-            if (!paymentVerification.verified) {
-                throw new BadRequestError(
-                    paymentVerification.error || 'Payment verification failed'
+        if (result.newlyCompleted) {
+            try {
+                await NotificationService.notifyPurchaseConfirmation(
+                    result.studentId,
+                    result.productName,
+                    result.listPriceNaira,
+                    result.discountNaira,
+                    result.transactionId
                 );
-            }
 
-            // Verify payment amount matches
-            if (paymentVerification.amount == null || !Number.isFinite(paymentVerification.amount) || Math.abs(paymentVerification.amount - reportedAmount) > allowedVariance) {
-                throw new BadRequestError(
-                    `Paystack payment amount (${paymentVerification.amount}) does not match reported amount (${reportedAmount})`
+                const savingsResult = await getPool().query(
+                    'SELECT total_savings FROM savings_stats WHERE student_id = $1',
+                    [result.studentId]
                 );
+                await NotificationService.notifySavingsMilestone(
+                    result.studentId,
+                    parseFloat((savingsResult.rows[0]?.total_savings ?? 0).toString())
+                );
+            } catch (error) {
+                appLogger.error('Error creating notification:', error);
             }
-        }
-
-        const commissionRate = effectiveVendorCommissionRate(
-            (await db.query('SELECT commission_rate FROM vendors WHERE id = $1', [vendorId])).rows[0]
-                ?.commission_rate, await getPlatformFeePercent()
-        );
-        const { commission, vendorNet: earnings } = calculateMarketplaceCommission(reportedAmount, commissionRate);
-        const discountAmount = parseFloat(product.price.toString()) - reportedAmount;
-
-        const client = await getPool().connect();
-        let transaction: { id: string; status: string; created_at: Date };
-        let totalSavings = 0;
-        try {
-            await client.query('BEGIN');
-
-            const transactionResult = await client.query(
-                `INSERT INTO transactions (
-                    student_id, product_id, vendor_id, amount, commission, list_price_snapshot,
-                    status, verification_token, payment_source, vendor_payment_reference, verified_at, inventory_consumed, recorded_savings_delta
-                )
-                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, CURRENT_TIMESTAMP, true, $11)
-                RETURNING id, status, created_at`,
-                [
-                    tokenData.studentId,
-                    validated.productId,
-                    vendorId,
-                    reportedAmount,
-                    commission,
-                    parseFloat(product.price.toString()),
-                    'completed',
-                    validated.verificationToken,
-                    validated.paymentGateway === 'paystack' ? 'vendor_paystack' : 'vendor_other',
-                    validated.paymentReference,
-                    discountAmount,
-                ]
-            );
-            transaction = transactionResult.rows[0];
-
-            const stockUpdate = await client.query(
-                `UPDATE products
-                 SET stock = stock - 1, updated_at = CURRENT_TIMESTAMP
-                 WHERE id = $1 AND vendor_id = $2 AND stock > 0 AND deleted_at IS NULL AND status = 'active'
-                 RETURNING id`,
-                [validated.productId, vendorId]
-            );
-            if (stockUpdate.rows.length === 0) {
-                throw new BadRequestError('This deal is no longer available');
-            }
-
-            await client.query(
-                `INSERT INTO savings_stats (student_id, total_savings, total_purchases, last_updated)
-                 VALUES ($1, $2, 1, CURRENT_TIMESTAMP)
-                 ON CONFLICT (student_id)
-                 DO UPDATE SET
-                     total_savings = savings_stats.total_savings + $2,
-                     total_purchases = savings_stats.total_purchases + 1,
-                     last_updated = CURRENT_TIMESTAMP`,
-                [tokenData.studentId, discountAmount]
-            );
-
-            const savingsResult = await client.query(
-                'SELECT total_savings FROM savings_stats WHERE student_id = $1',
-                [tokenData.studentId]
-            );
-            totalSavings = savingsResult.rows[0]?.total_savings || 0;
-            await client.query('COMMIT');
-        } catch (error) {
-            await client.query('ROLLBACK');
-            const code = (error as { code?: string }).code;
-            if (code === '23505') {
-                throw new BadRequestError('Payment reference has already been used');
-            }
-            throw error;
-        } finally {
-            client.release();
-        }
-
-        // 10. Create purchase confirmation notification
-        try {
-            await NotificationService.notifyPurchaseConfirmation(
-                tokenData.studentId,
-                product.name,
-                parseFloat(product.price.toString()),
-                discountAmount,
-                transaction.id
-            );
-
-            // Check for savings milestone
-            await NotificationService.notifySavingsMilestone(
-                tokenData.studentId,
-                parseFloat(totalSavings.toString())
-            );
-        } catch (error) {
-            appLogger.error('Error creating notification:', error);
         }
 
         success(res, {
             message: 'Transaction reported successfully',
             data: {
-                transactionId: transaction.id,
-                status: transaction.status,
-                amount: reportedAmount,
-                commission,
-                earnings,
-                createdAt: transaction.created_at,
+                transactionId: result.transactionId,
+                status: result.status,
+                amount: result.amountNaira,
+                commission: result.commission,
+                earnings: result.earnings,
+                createdAt: result.createdAt,
             },
-        }, 201);
+        }, result.newlyCompleted ? 201 : 200);
     }
 }

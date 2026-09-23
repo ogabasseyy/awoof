@@ -82,8 +82,9 @@ export async function withdrawConsent(tx: PoolClient, userId: string, grantId: s
         user_id: string;
         kind: 'processing' | 'disclosure';
         university_id: string | null;
+        vendor_id: string | null;
     }>(
-        `SELECT user_id, kind, university_id
+        `SELECT user_id, kind, university_id, vendor_id
          FROM verification_consents
          WHERE id = $1`,
         [grantId],
@@ -121,27 +122,59 @@ export async function withdrawConsent(tx: PoolClient, userId: string, grantId: s
         }
     }
 
+    // Withdrawing one merchant disclosure stops all future checks for that
+    // merchant: every approval creates its own grant row, and leaving
+    // siblings active would keep issuance and exchange usable after the
+    // student withdrew. Lock every matching active grant in deterministic
+    // id order BEFORE the per-grant re-read below, so concurrent
+    // withdrawals of sibling grants serialize instead of deadlocking.
+    let merchantGrantIds: string[] | null = null;
+    if (target.kind === 'disclosure' && target.vendor_id !== null) {
+        const siblings = await tx.query<{ id: string }>(
+            `SELECT id FROM verification_consents
+             WHERE user_id = $1 AND kind = 'disclosure' AND vendor_id = $2 AND withdrawn_at IS NULL
+             ORDER BY id FOR UPDATE`,
+            [userId, target.vendor_id],
+        );
+        merchantGrantIds = siblings.rows.map((grant) => grant.id);
+    }
+
     const consent = await tx.query<{
         user_id: string;
         kind: 'processing' | 'disclosure';
         university_id: string | null;
+        vendor_id: string | null;
     }>(
-        `SELECT user_id, kind, university_id
+        `SELECT user_id, kind, university_id, vendor_id
          FROM verification_consents
          WHERE id = $1 AND user_id = $2
          FOR UPDATE`,
         [grantId, userId],
     );
     const row = consent.rows[0];
-    if (!row || row.user_id !== target.user_id || row.kind !== target.kind || row.university_id !== target.university_id) {
+    if (!row || row.user_id !== target.user_id || row.kind !== target.kind
+        || row.university_id !== target.university_id || row.vendor_id !== target.vendor_id) {
         throw new ConflictError('Consent changed while preparing withdrawal');
     }
-    await tx.query(
-        `UPDATE verification_consents
-         SET withdrawn_at = COALESCE(withdrawn_at, clock_timestamp())
-         WHERE id = $1`,
-        [grantId],
-    );
+    let siblingGrantsWithdrawn = 0;
+    if (merchantGrantIds !== null) {
+        if (merchantGrantIds.length > 0) {
+            await tx.query(
+                `UPDATE verification_consents
+                 SET withdrawn_at = clock_timestamp()
+                 WHERE id = ANY($1::uuid[])`,
+                [merchantGrantIds],
+            );
+        }
+        siblingGrantsWithdrawn = merchantGrantIds.includes(grantId) ? Math.max(merchantGrantIds.length - 1, 0) : merchantGrantIds.length;
+    } else {
+        await tx.query(
+            `UPDATE verification_consents
+             SET withdrawn_at = COALESCE(withdrawn_at, clock_timestamp())
+             WHERE id = $1`,
+            [grantId],
+        );
+    }
     if (row.kind === 'processing') {
         await tx.query(
             `UPDATE eligibility_evidence
@@ -169,7 +202,8 @@ export async function withdrawConsent(tx: PoolClient, userId: string, grantId: s
     }
     await tx.query(
         `INSERT INTO verification_audit_events (user_id, university_id, event_type, metadata)
-         VALUES ($1, $2, 'verification_consent_withdrawn', jsonb_build_object('kind', $3::text))`,
-        [userId, row.university_id, row.kind],
+         VALUES ($1, $2, 'verification_consent_withdrawn',
+                 jsonb_build_object('kind', $3::text, 'vendorId', $4::text, 'siblingGrantsWithdrawn', $5::int))`,
+        [userId, row.university_id, row.kind, row.vendor_id, siblingGrantsWithdrawn],
     );
 }

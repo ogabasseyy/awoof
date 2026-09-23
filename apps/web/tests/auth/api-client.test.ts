@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import axios from 'axios';
-import apiClient, { microsoftVerificationApiClient, publicApiClient } from '../../src/lib/api-client';
+import apiClient, { microsoftVerificationApiClient, publicApiClient, studentSsoApiClient } from '../../src/lib/api-client';
 import { clearTokens, getAccessToken, isSessionStorageQuarantined, storeTokens } from '../../src/lib/auth';
 
 type Deferred<T> = {
@@ -51,6 +51,7 @@ async function withStorage(
   const navigation: string[] = [];
   const location = {
     pathname,
+    search: '',
     get href() { return navigation.at(-1) ?? '/marketplace'; },
     set href(value: string) { navigation.push(value); },
     assign(value: string) { navigation.push(value); },
@@ -336,6 +337,81 @@ test('a successful terminal 401 on an auth path persists signed-out without navi
       clearTokens();
     }
   }, '/auth/student/login');
+});
+
+function studentJwt(): string {
+  const payload = Buffer.from(JSON.stringify({ userId: 'student-1', email: 's@school.example', role: 'student' })).toString('base64');
+  return `header.${payload}.signature`;
+}
+
+test('an expired student session recovers through the current student password login', async () => {
+  const storage = createStorage();
+  await withStorage(storage, async (navigation) => {
+    storeTokens({ accessToken: studentJwt(), refreshToken: 'student-refresh' });
+    const oldApiAdapter = apiClient.defaults.adapter;
+    const oldAxiosAdapter = axios.defaults.adapter;
+    try {
+      apiClient.defaults.adapter = async (config) => Promise.reject({ config, response: { status: 401 } });
+      axios.defaults.adapter = async () => Promise.reject(new Error('refresh rejected'));
+
+      await apiClient.get('/terminal-student-401').catch(() => undefined);
+
+      assert.equal(getAccessToken(), null);
+      assert.match(storage.getItem('awoof.session.v1') ?? '', /"state":"signed_out"/);
+      assert.deepEqual(navigation, ['/auth/student/login?error=session_expired&redirect=%2Fmarketplace']);
+    } finally {
+      apiClient.defaults.adapter = oldApiAdapter;
+      axios.defaults.adapter = oldAxiosAdapter;
+      clearTokens();
+    }
+  });
+});
+
+test('an expired non-student session keeps the generic login recovery', async () => {
+  const storage = createStorage();
+  await withStorage(storage, async (navigation) => {
+    storeTokens({ accessToken: 'opaque-access', refreshToken: 'opaque-refresh' });
+    const oldApiAdapter = apiClient.defaults.adapter;
+    const oldAxiosAdapter = axios.defaults.adapter;
+    try {
+      apiClient.defaults.adapter = async (config) => Promise.reject({ config, response: { status: 401 } });
+      axios.defaults.adapter = async () => Promise.reject(new Error('refresh rejected'));
+
+      await apiClient.get('/terminal-opaque-401').catch(() => undefined);
+
+      assert.equal(getAccessToken(), null);
+      assert.deepEqual(navigation, ['/auth/login']);
+    } finally {
+      apiClient.defaults.adapter = oldApiAdapter;
+      axios.defaults.adapter = oldAxiosAdapter;
+      clearTokens();
+    }
+  });
+});
+
+test('the student SSO client carries cookies only within the SSO namespace', async () => {
+  await withStorage(createStorage(), async () => {
+    storeTokens({ accessToken: 'access-a', refreshToken: 'refresh-a' });
+    const oldSsoAdapter = studentSsoApiClient.defaults.adapter;
+    const seen: Array<{ credentials: boolean; authorization: string }> = [];
+    try {
+      studentSsoApiClient.defaults.adapter = async (config) => {
+        seen.push({ credentials: config.withCredentials === true, authorization: String(config.headers?.Authorization ?? '') });
+        return ok(config, { ok: true });
+      };
+      await studentSsoApiClient.post('/auth/student/sso/finish', { attemptId: 'a', finishSecret: 'b' });
+      // Pre-session SSO calls never refresh, clear, or carry the browser session.
+      assert.deepEqual(seen, [{ credentials: true, authorization: '' }]);
+      assert.equal(getAccessToken(), 'access-a');
+      await assert.rejects(
+        studentSsoApiClient.get('/auth/me'),
+        /Student credentialed client only permits student SSO paths/,
+      );
+    } finally {
+      studentSsoApiClient.defaults.adapter = oldSsoAdapter;
+      clearTokens();
+    }
+  });
 });
 
 test('a Microsoft 401 refreshes and retries through the credentialed Microsoft client only', async () => {

@@ -1,48 +1,43 @@
-'use client';
-
-import { Stagger, StaggerItem } from '@/components/motion/Reveal';
-
 export default function AboutSteps() {
   const steps = [
     {
       number: 1,
-      title: 'Sign up & verify',
+      title: 'Connect your school account',
       description:
-        'Use your school email, pick your university, and confirm with a one-time code.',
+        'Start with your school email. Proving you can access a school mailbox is the first step — not proof you are currently enrolled.',
     },
     {
       number: 2,
-      title: 'Explore student-only deals',
+      title: 'Confirm current enrollment',
       description:
-        'Food, tech, fashion, travel — offers tailored for verified students like you.',
+        'Current student status needs an approved evidence source. When it cannot be reached, your status stays pending — never guessed.',
     },
     {
       number: 3,
-      title: 'Redeem & enjoy',
+      title: 'Merchants apply the benefit',
       description:
-        'Claim on Awoof or at partner sites, show your proof, and save — simple as that.',
+        'When eligibility is confirmed, participating merchants decide and apply their own student benefit. Offer terms still apply.',
     },
   ];
 
   return (
-    <Stagger className="max-w-lg w-full space-y-4">
+    <ol className="w-full max-w-lg space-y-4">
       {steps.map((step) => (
-        <StaggerItem key={step.number}>
-          <div className="flex gap-4 p-1">
-            <div className="flex-shrink-0">
-              <div className="w-11 h-11 rounded-full bg-[#1D4ED8] text-white flex items-center justify-center font-bold text-lg shadow-md shadow-blue-900/15">
-                {step.number}
-              </div>
-            </div>
-            <div className="flex-1 rounded-2xl bg-white border border-[#1D4ED8]/10 px-5 py-4 shadow-sm hover:shadow-md hover:border-[#1D4ED8]/20 transition-shadow">
-              <h3 className="font-bold text-lg text-slate-900">{step.title}</h3>
-              <p className="mt-1 text-slate-600 text-sm leading-relaxed">
-                {step.description}
-              </p>
+        <li key={step.number} className="flex gap-4 p-1">
+          <div className="flex-shrink-0">
+            <div
+              aria-hidden="true"
+              className="flex h-11 w-11 items-center justify-center rounded-full bg-[#1D4ED8] text-lg font-bold text-white"
+            >
+              {step.number}
             </div>
           </div>
-        </StaggerItem>
+          <div className="flex-1 rounded-2xl border border-[#1D4ED8]/10 bg-white px-5 py-4">
+            <h3 className="text-lg font-bold text-slate-900">{step.title}</h3>
+            <p className="mt-1 text-sm leading-relaxed text-slate-600">{step.description}</p>
+          </div>
+        </li>
       ))}
-    </Stagger>
+    </ol>
   );
 }

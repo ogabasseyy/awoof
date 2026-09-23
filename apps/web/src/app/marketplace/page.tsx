@@ -25,6 +25,7 @@ import { useAuth } from '@/contexts/AuthContext';
 import { formatCurrency, formatSavings } from '@/lib/format';
 import { DealSkeletonRail, ExpectancyEmpty, FadeIn } from './_components/ExpectancyUI';
 import { StudentHeaderActions } from '@/components/student/StudentHeaderActions';
+import PublicFooter from '@/components/public/PublicFooter';
 
 interface Product {
     id: string;
@@ -299,8 +300,8 @@ export default function MarketplacePage() {
 
             <main className="mx-auto max-w-6xl px-4 py-8 md:py-10 space-y-10">
                 {/* Welcome + expectancy */}
-                <FadeIn>
-                    <section className="relative overflow-hidden rounded-3xl bg-[#1D4ED8] text-white px-6 py-8 md:px-10 md:py-10 shadow-xl shadow-[#1D4ED8]/20">
+                {/* No entrance animation here: the hero H1 is the LCP element and must paint with first render. */}
+                <section className="relative overflow-hidden rounded-3xl bg-[#1D4ED8] text-white px-6 py-8 md:px-10 md:py-10 shadow-xl shadow-[#1D4ED8]/20">
                         <div
                             aria-hidden
                             className="absolute -right-16 -top-16 h-56 w-56 rounded-full bg-white/10 blur-2xl"
@@ -350,8 +351,7 @@ export default function MarketplacePage() {
                                 </div>
                             </div>
                         </div>
-                    </section>
-                </FadeIn>
+                </section>
 
                 {/* Savings journey */}
                 <FadeIn delay={0.06}>
@@ -391,7 +391,7 @@ export default function MarketplacePage() {
                 {categories.length > 0 && (
                     <FadeIn delay={0.1}>
                         <div>
-                            <p className="text-xs font-semibold uppercase tracking-wider text-slate-500 mb-3">
+                            <p className="text-xs font-semibold uppercase tracking-wider text-slate-600 mb-3">
                                 Browse by vibe
                             </p>
                             <div className="-mx-1 px-1 flex gap-4 md:gap-6 overflow-x-auto pt-3 pb-3 scrollbar-hide justify-start md:justify-center">
@@ -429,7 +429,7 @@ export default function MarketplacePage() {
                                             </div>
                                             <span
                                                 className={`text-xs md:text-sm font-semibold whitespace-nowrap ${
-                                                    isActive ? 'text-[#1D4ED8]' : 'text-slate-600'
+                                                    isActive ? 'text-[#1D4ED8]' : 'text-slate-800'
                                                 }`}
                                             >
                                                 {category.name}
@@ -451,11 +451,12 @@ export default function MarketplacePage() {
                                     <h2 className="text-xl md:text-2xl font-extrabold tracking-tight text-slate-900">
                                         {getSelectedCategoryName()}
                                     </h2>
-                                    <p className="text-sm text-slate-500 mt-0.5">Hand-picked for this category</p>
+                                    <p className="text-sm text-slate-600 mt-0.5">Hand-picked for this category</p>
                                 </div>
                                 {categoryProducts.length > 0 && (
                                     <Link
                                         href={`/marketplace/search?categoryId=${selectedCategory}`}
+                                        prefetch={false}
                                         className="text-sm font-semibold text-[#1D4ED8] hover:underline shrink-0"
                                     >
                                         See all
@@ -472,6 +473,7 @@ export default function MarketplacePage() {
                                         <Link
                                             key={product.id}
                                             href={`/marketplace/${product.id}`}
+                                            prefetch={false}
                                             className="shrink-0 w-72 bg-white rounded-2xl border border-slate-200/80 overflow-hidden hover:border-[#1D4ED8]/30 hover:-translate-y-0.5 transition-all duration-200"
                                         >
                                             <div className="relative h-40 bg-slate-100">
@@ -488,7 +490,7 @@ export default function MarketplacePage() {
                                                         <ShoppingBag className="h-10 w-10" />
                                                     </div>
                                                 )}
-                                                <div className="absolute top-2 right-2 bg-emerald-500 text-white text-[11px] font-bold px-2 py-1 rounded-full">
+                                                <div className="absolute top-2 right-2 bg-emerald-700 text-white text-[11px] font-bold px-2 py-1 rounded-full">
                                                     {calculateDiscount(product.price, product.student_price)}% OFF
                                                 </div>
                                             </div>
@@ -517,10 +519,10 @@ export default function MarketplacePage() {
                                 <h2 className="text-xl md:text-2xl font-extrabold tracking-tight text-slate-900">
                                     Vouchers
                                 </h2>
-                                <p className="text-sm text-slate-500 mt-0.5">Codes & campus perks</p>
+                                <p className="text-sm text-slate-600 mt-0.5">Codes & campus perks</p>
                             </div>
                             {voucherProducts.length > 0 && (
-                                <Link href="/marketplace/search?deal_type=voucher" className="text-sm font-semibold text-[#1D4ED8] hover:underline">
+                                <Link prefetch={false} href="/marketplace/search?deal_type=voucher" className="text-sm font-semibold text-[#1D4ED8] hover:underline">
                                     See all
                                 </Link>
                             )}
@@ -537,6 +539,7 @@ export default function MarketplacePage() {
                                         <Link
                                             key={product.id}
                                             href={`/marketplace/${product.id}`}
+                                            prefetch={false}
                                             className="shrink-0 w-[380px] md:w-[440px] bg-white rounded-2xl overflow-hidden flex border border-dashed border-[#1D4ED8]/50 hover:border-[#1D4ED8] transition-colors"
                                         >
                                             <div className="flex items-center justify-center px-3 py-6 bg-[#1D4ED8] min-w-[56px]">
@@ -571,10 +574,10 @@ export default function MarketplacePage() {
                                 <h2 className="text-xl md:text-2xl font-extrabold tracking-tight text-slate-900">
                                     Featured deals
                                 </h2>
-                                <p className="text-sm text-slate-500 mt-0.5">What everyone’s talking about</p>
+                                <p className="text-sm text-slate-600 mt-0.5">What everyone’s talking about</p>
                             </div>
                             {featuredProducts.length > 0 && (
-                                <Link href="/marketplace/search" className="text-sm font-semibold text-[#1D4ED8] hover:underline">
+                                <Link prefetch={false} href="/marketplace/search" className="text-sm font-semibold text-[#1D4ED8] hover:underline">
                                     See all
                                 </Link>
                             )}
@@ -591,6 +594,7 @@ export default function MarketplacePage() {
                                         <Link
                                             key={product.id}
                                             href={`/marketplace/${product.id}`}
+                                            prefetch={false}
                                             className="shrink-0 w-72 md:w-80 bg-white rounded-2xl border border-slate-200/80 overflow-hidden hover:-translate-y-0.5 transition-transform duration-200"
                                         >
                                             <div className="relative h-36 bg-slate-100">
@@ -639,7 +643,7 @@ export default function MarketplacePage() {
                                                     </span>
                                                     <span className="text-xs font-semibold text-slate-500">
                                                         {product.vendor_payment_method === 'vendor_website' || product.deal_type === 'voucher'
-                                                            ? 'Unavailable'
+                                                            ? 'Partner site'
                                                             : 'Buy'}
                                                     </span>
                                                 </div>
@@ -653,44 +657,7 @@ export default function MarketplacePage() {
                 </FadeIn>
             </main>
 
-            <footer className="bg-[#1D4ED8] text-white mt-4">
-                <div className="mx-auto max-w-6xl px-4 py-8">
-                    <div className="flex flex-col md:flex-row md:items-center justify-between gap-6">
-                        <Image
-                            src="/images/awoofLogo.png"
-                            alt="Awoof"
-                            width={100}
-                            height={34}
-                            className="object-contain brightness-0 invert"
-                        />
-                        <div className="flex flex-wrap gap-x-6 gap-y-2 text-sm text-blue-100">
-                            <Link href="/contact" className="hover:text-white">
-                                Contact
-                            </Link>
-                            <Link href="/partner" className="hover:text-white">
-                                Partner
-                            </Link>
-                            <Link href="/privacy" className="hover:text-white">
-                                Privacy
-                            </Link>
-                            <Link href="/terms" className="hover:text-white">
-                                Terms
-                            </Link>
-                        </div>
-                        <Button
-                            variant="outline"
-                            size="sm"
-                            className="rounded-full border-white/40 bg-white/10 text-white hover:bg-white/20 w-fit"
-                        >
-                            <Smartphone className="h-4 w-4 mr-2" />
-                            Get the app
-                        </Button>
-                    </div>
-                    <p className="mt-6 text-center text-xs text-blue-200">
-                        © {new Date().getFullYear()} Awoof — Empowering students, one discount at a time
-                    </p>
-                </div>
-            </footer>
+            <PublicFooter />
         </div>
     );
 }
