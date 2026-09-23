@@ -122,10 +122,16 @@ and a recorded result before proceeding.
    `npm --prefix apps/backend run tokens:retire` (sets `revoked_at` on
    unused legacy tokens only). Verify: unused rows revoked, used rows
    untouched, second run revokes zero.
-5. NOT RUN — Drain old instances, then prove canaries: one negative
+5. NOT RUN — Install, run once, and verify alerting for the recurring
+   `benefits:cleanup:prod` job BEFORE reopening benefits. Exchange
+   reserves stock immediately and only that job releases abandoned
+   reservations; without it, ordinary abandonment exhausts sellable
+   inventory. Record the schedule, the successful manual run, and the
+   monitor here.
+6. NOT RUN — Drain old instances, then prove canaries: one negative
    canary per consumer §2 (email-only fails) and one positive canary per
    §4c (enrolled succeeds), then reopen benefits.
-6. NOT RUN — Real-partner acceptance stays outstanding: an integrated
+7. NOT RUN — Real-partner acceptance stays outstanding: an integrated
    merchant must implement the fixed `/awoof/student-claim` callback, the
    server-side exchange with nonce/checkout binding, and one redemption
    per checkout before external enforcement is claimed live.

@@ -123,7 +123,7 @@ export async function exchangeMerchantAssertion(pool: Pool, key: string, input: 
         if (previous) return previous;
         if (claimSessionId !== null) {
             const session = await tx.query<{
-                browser_nonce_hash: string; checkout_id: string; expires_at: Date; consumed_at: Date | null;
+                browser_nonce_hash: string | null; checkout_id: string; expires_at: Date; consumed_at: Date | null;
             }>(
                 `SELECT browser_nonce_hash, checkout_id, expires_at, consumed_at
                  FROM merchant_claim_sessions WHERE id = $1 FOR UPDATE`,
@@ -131,7 +131,7 @@ export async function exchangeMerchantAssertion(pool: Pool, key: string, input: 
             );
             const row = session.rows[0];
             const proofValid = !!row && row.consumed_at === null && row.expires_at.getTime() > Date.now()
-                && row.checkout_id === input.merchantCheckoutId
+                && row.checkout_id === input.merchantCheckoutId && row.browser_nonce_hash !== null
                 && timingSafeHashEqual(hash(input.browserNonce!), row.browser_nonce_hash);
             if (!proofValid) {
                 const committed = await readCommittedReceipt(tx, assertion.vendor_id, input.idempotencyKey, assertion.id);

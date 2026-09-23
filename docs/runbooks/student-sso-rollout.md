@@ -51,9 +51,14 @@ operator, and a recorded result before proceeding.
 
 ## 3. Enablement sequence (all NOT RUN)
 
-1. NOT RUN — Apply migrations through `058` on a disposable copy
-   first; confirm `057`/`058` apply cleanly and the consume-once
-   triggers reject rewritten handoffs/grants.
+1. NOT RUN — Apply ALL release migrations (currently through `066`,
+   not just `058`) on a disposable copy first; confirm they apply
+   cleanly and the consume-once triggers reject rewritten handoffs
+   /grants. The release code reads and writes columns introduced
+   after `058` (for example `users.active_session_issued_at` from
+   `064`, benefit snapshots from `065`, claim-session tombstones from
+   `066`), so stopping at an older migration breaks linked finishes
+   and merchant exchanges with missing-column errors.
 2. NOT RUN — Deploy the Release B build to all API instances; confirm
    every instance serves it (mixed-version window stays closed).
 3. NOT RUN — With providers still disabled, prove discovery returns

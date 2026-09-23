@@ -223,6 +223,44 @@ async function startGoogle(service: StudentSsoFlowService, oidc: FakeOidc, email
     return { started, captured, callbackUrl, cookies };
 }
 
+test('start rechecks the provider kill switch after authorize resolves', async () => {
+    await withSsoPool(async (pool) => {
+        const fixture = await approvedGoogleFixture(pool);
+        let googleLive = true;
+        const base = makeOidc();
+        const oidc = {
+            forPolicy: (policy: ApprovedLoginPolicy) => {
+                const adapter = base.oidc.forPolicy(policy);
+                return {
+                    authorize: async (input: { state: string; nonce: string; verifier: string; loginHint: string }) => {
+                        // The provider is disabled while authorize() is in flight.
+                        googleLive = false;
+                        return adapter.authorize(input);
+                    },
+                    redeem: adapter.redeem,
+                };
+            },
+        };
+        const { service } = makeService(pool, oidc, {
+            isEnabled: () => true,
+            isProviderEnabled: (provider) => (provider === 'google' ? googleLive : true),
+        });
+        const email = `late-${uniqueLabel()}@${fixture.domain}`;
+        await assert.rejects(service.start({ provider: 'google', email }), /no longer valid/);
+        const check = await pool.connect();
+        try {
+            const rows = await check.query(
+                `SELECT count(*)::int AS count FROM student_auth_attempts
+                 WHERE requested_email = $1 AND status IN ('pending', 'processing', 'ready')`,
+                [email],
+            );
+            assert.equal(rows.rows[0]!.count, 0);
+        } finally {
+            check.release();
+        }
+    });
+});
+
 test('linked owner signs in with one atomic session and separated assurance', async () => {
     await withSsoPool(async (pool) => {
         const fixture = await approvedGoogleFixture(pool);

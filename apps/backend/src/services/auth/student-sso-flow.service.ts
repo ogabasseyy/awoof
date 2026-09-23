@@ -350,6 +350,16 @@ export class StudentSsoFlowService {
             await this.failAttempt(prepared.attemptId);
             throw invalidAttempt();
         }
+        // The provider may have been disabled while authorize() was in
+        // flight. The aggregate check above still passes when the other
+        // provider is live, so recheck this provider before returning a
+        // redirect the kill switch must stop.
+        try {
+            this.assertProviderEnabled(provider);
+        } catch {
+            await this.failAttempt(prepared.attemptId);
+            throw invalidAttempt();
+        }
         return {
             publicResult: {
                 attemptId: prepared.attemptId,

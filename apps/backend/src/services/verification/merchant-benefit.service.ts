@@ -112,30 +112,23 @@ export async function deleteExpiredUnusedBenefitAuthorizations(
     return deleted.rows[0]?.deleted ?? 0;
 }
 
-/** Lifecycle cleanup for spent claim sessions. The nullable
- *  assertion/authorization references are detached first (those rows
- *  outlive the session), then sessions past retention are deleted so
- *  checkout linkage (checkout id, nonce digest, origin) is not kept
- *  indefinitely. */
-export async function deleteExpiredClaimSessions(
+/** Lifecycle cleanup for spent claim sessions. Sessions past retention
+ *  become tombstones instead of being deleted: the (vendor_id,
+ *  checkout_id) row must survive so a reused checkout keeps failing
+ *  closed, and assertion/authorization references stay attached so exact
+ *  retries still resolve their committed receipts. Only the nonce digest
+ *  and origin are scrubbed. Returns the number newly tombstoned. */
+export async function tombstoneExpiredClaimSessions(
     tx: PoolClient,
     options: { expiredBefore: Date },
 ): Promise<number> {
-    await tx.query(
-        `UPDATE merchant_assertions SET claim_session_id = NULL
-         WHERE claim_session_id IN (SELECT id FROM merchant_claim_sessions WHERE expires_at < $1)`,
+    const tombstoned = await tx.query(
+        `UPDATE merchant_claim_sessions
+         SET browser_nonce_hash = NULL, origin = NULL, tombstoned_at = clock_timestamp()
+         WHERE expires_at < $1 AND tombstoned_at IS NULL`,
         [options.expiredBefore],
     );
-    await tx.query(
-        `UPDATE merchant_benefit_authorizations SET claim_session_id = NULL
-         WHERE claim_session_id IN (SELECT id FROM merchant_claim_sessions WHERE expires_at < $1)`,
-        [options.expiredBefore],
-    );
-    const deleted = await tx.query(
-        `DELETE FROM merchant_claim_sessions WHERE expires_at < $1`,
-        [options.expiredBefore],
-    );
-    return deleted.rowCount ?? 0;
+    return tombstoned.rowCount ?? 0;
 }
 
 export type ReportBenefitInput = {

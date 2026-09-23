@@ -18,7 +18,7 @@ import { ENROLLMENT_SOURCE } from '../../services/verification/eligibility.types
 import { MERCHANT_DISCLOSURE_NOTICE_VERSION, VERIFICATION_NOTICE_VERSION } from '../../services/verification/verification-notices.js';
 import { rotateReportingKey } from '../../services/auth/reporting-key.service.js';
 import { exchangeMerchantAssertion, issueMerchantAssertion } from '../../services/verification/merchant-assertion.service.js';
-import { deleteExpiredClaimSessions } from '../../services/verification/merchant-benefit.service.js';
+import { tombstoneExpiredClaimSessions } from '../../services/verification/merchant-benefit.service.js';
 import {
     MERCHANT_CLAIM_CALLBACK_PATH,
     claimProductBenefit,
@@ -463,7 +463,7 @@ test('exchange refuses a product that sold out after the session started', async
     } finally { client.release(); await pool.end(); }
 });
 
-test('retention cleanup deletes spent sessions and detaches references', async () => {
+test('retention cleanup tombstones spent sessions and keeps single-use retries working', async () => {
     const pool = createTestPool();
     const client = await pool.connect();
     try {
@@ -490,20 +490,43 @@ test('retention cleanup deletes spent sessions and detaches references', async (
             [created.claimSessionId],
         );
         const cutoff = new Date(Date.now() - 7 * 86_400_000);
-        assert.equal(await deleteExpiredClaimSessions(client, { expiredBefore: cutoff }), 1);
+        assert.equal(await tombstoneExpiredClaimSessions(client, { expiredBefore: cutoff }), 1);
+        // The tombstone survives with secrets scrubbed; the fresh session
+        // is untouched.
+        const tombstone = (await client.query(
+            `SELECT browser_nonce_hash, origin, tombstoned_at, consumed_at
+             FROM merchant_claim_sessions WHERE id = $1`,
+            [created.claimSessionId],
+        )).rows[0]!;
+        assert.equal(tombstone.browser_nonce_hash, null);
+        assert.equal(tombstone.origin, null);
+        assert.ok(tombstone.tombstoned_at instanceof Date);
+        assert.ok(tombstone.consumed_at instanceof Date);
         const sessions = await client.query(
-            'SELECT id FROM merchant_claim_sessions WHERE vendor_id = $1', [fixture.vendor],
+            'SELECT id FROM merchant_claim_sessions WHERE vendor_id = $1 ORDER BY created_at', [fixture.vendor],
         );
-        assert.deepEqual(sessions.rows.map((row) => row.id as string), [fresh.claimSessionId]);
+        assert.deepEqual(sessions.rows.map((row) => row.id as string), [created.claimSessionId, fresh.claimSessionId]);
+        // References stay attached: the authorization and assertion still
+        // point at the tombstoned session.
         const authorization = await client.query(
             'SELECT claim_session_id FROM merchant_benefit_authorizations WHERE id = $1',
             [exchanged.benefitAuthorizationId!],
         );
-        assert.equal(authorization.rows[0].claim_session_id, null);
+        assert.equal(authorization.rows[0].claim_session_id, created.claimSessionId);
         const assertions = await client.query(
             'SELECT claim_session_id FROM merchant_assertions WHERE vendor_id = $1', [fixture.vendor],
         );
-        for (const row of assertions.rows) assert.equal(row.claim_session_id, null);
+        for (const row of assertions.rows) assert.equal(row.claim_session_id, created.claimSessionId);
+        // Reusing the tombstoned checkout fails closed as spent, and an
+        // exact exchange retry still replays its committed receipt.
+        await assert.rejects(createMerchantClaimSession(pool, fixture.key, {
+            productId: fixture.product, merchantCheckoutId: checkoutId,
+            browserNonceHash: sha256hex(nonce), origin: fixture.origin,
+        }), /already used or expired/);
+        assert.deepEqual(await exchangeMerchantAssertion(pool, fixture.key, {
+            code: claim.code, campaignId: checkoutId, idempotencyKey: `redeem-${checkoutId}`,
+            browserNonce: nonce, merchantCheckoutId: checkoutId,
+        }), exchanged);
     } finally { client.release(); await pool.end(); }
 });
 

@@ -90,8 +90,14 @@ export async function createMerchantClaimSession(
             throw new UnauthorizedError('Merchant key unavailable');
         }
         const reconcile = (session: {
-            id: string; product_id: string; browser_nonce_hash: string; origin: string | null; expires_at: Date; consumed_at: Date | null;
+            id: string; product_id: string; browser_nonce_hash: string | null; origin: string | null;
+            expires_at: Date; consumed_at: Date | null; tombstoned_at: Date | null;
         }) => {
+            // A tombstoned checkout is dead regardless of binding: retention
+            // scrubbed the proof material, but the single-use contract stands.
+            if (session.tombstoned_at !== null) {
+                throw new ConflictError('Merchant checkout already used or expired; start a new checkout');
+            }
             if (session.product_id !== input.productId || session.browser_nonce_hash !== input.browserNonceHash
                 || (session.origin ?? null) !== input.origin) {
                 throw new ConflictError('Merchant checkout is already bound to a different claim; start a new checkout');
@@ -102,9 +108,10 @@ export async function createMerchantClaimSession(
             return { claimSessionId: session.id, expiresAt: session.expires_at.toISOString(), created: false };
         };
         const existing = await tx.query<{
-            id: string; product_id: string; browser_nonce_hash: string; origin: string | null; expires_at: Date; consumed_at: Date | null;
+            id: string; product_id: string; browser_nonce_hash: string | null; origin: string | null;
+            expires_at: Date; consumed_at: Date | null; tombstoned_at: Date | null;
         }>(
-            `SELECT id, product_id, browser_nonce_hash, origin, expires_at, consumed_at
+            `SELECT id, product_id, browser_nonce_hash, origin, expires_at, consumed_at, tombstoned_at
              FROM merchant_claim_sessions WHERE vendor_id = $1 AND checkout_id = $2 FOR UPDATE`,
             [vendorId, input.merchantCheckoutId],
         );
@@ -151,9 +158,10 @@ export async function createMerchantClaimSession(
         // Lost an insert race with a concurrent create for the same checkout:
         // reconcile against the winner's binding instead of failing.
         const raced = await tx.query<{
-            id: string; product_id: string; browser_nonce_hash: string; origin: string | null; expires_at: Date; consumed_at: Date | null;
+            id: string; product_id: string; browser_nonce_hash: string | null; origin: string | null;
+            expires_at: Date; consumed_at: Date | null; tombstoned_at: Date | null;
         }>(
-            `SELECT id, product_id, browser_nonce_hash, origin, expires_at, consumed_at
+            `SELECT id, product_id, browser_nonce_hash, origin, expires_at, consumed_at, tombstoned_at
              FROM merchant_claim_sessions WHERE vendor_id = $1 AND checkout_id = $2 FOR UPDATE`,
             [vendorId, input.merchantCheckoutId],
         );
