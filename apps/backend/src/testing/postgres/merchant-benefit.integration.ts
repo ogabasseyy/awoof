@@ -237,6 +237,9 @@ test('legacy verification tokens fail closed on the reporting route and retired 
         await client.query(`INSERT INTO verification_tokens (token,student_id,vendor_id,product_id,expires_at)
             VALUES ($1,$2,$3,$4,now() + interval '10 minutes')`,
             [uuidShapedLegacy, fixture.studentProfile, fixture.vendor, fixture.product]);
+        const { benefitAuthorizationId } = await productAuthorization(pool, fixture);
+        // The mint above reserves one unit; rejected reports must not move
+        // the ledger (including stock) from here on.
         const before = await ledgerSnapshot(client, fixture);
         const auth = `Bearer ${vendorJwt(fixture)}`;
         const base = { productId: fixture.product, paymentReference: randomUUID(), amount: 8000, paymentGateway: 'other' };
@@ -244,7 +247,6 @@ test('legacy verification tokens fail closed on the reporting route and retired 
         assert.equal((await postReport(server.endpoint, auth, { ...base, benefitAuthorizationId: legacyToken })).status, 422);
         assert.equal((await postReport(server.endpoint, auth, { ...base, benefitAuthorizationId: uuidShapedLegacy })).status, 404);
         assert.equal((await postReport(server.endpoint, auth, { ...base, benefitAuthorizationId: randomUUID() })).status, 404);
-        const { benefitAuthorizationId } = await productAuthorization(pool, fixture);
         const strict = await postReport(server.endpoint, auth, {
             ...base, benefitAuthorizationId, injected: 'nope',
         });
@@ -511,11 +513,14 @@ for (const lapsed of ['expired', 'denied', 'processing_withdrawn', 'disclosure_w
                 await client.query("UPDATE students SET status = 'suspended' WHERE id = $1", [fixture.studentProfile]);
             }
             const before = await ledgerSnapshot(client, fixture);
+            const reference = randomUUID();
             const refused = await postReport(server.endpoint, `Bearer ${vendorJwt(fixture)}`, {
-                benefitAuthorizationId, productId: fixture.product, paymentReference: randomUUID(),
+                benefitAuthorizationId, productId: fixture.product, paymentReference: reference,
                 amount: 8000, paymentGateway: 'other',
             });
-            assert.equal(refused.status, 403);
+            assert.equal(refused.status, 409);
+            assert.match(JSON.stringify(refused.body), /reconcil/i);
+            assert.equal(((refused.body.error as Record<string, unknown>).details as Record<string, unknown>).paymentReference, reference);
             assert.deepEqual(await ledgerSnapshot(client, fixture), before);
             assert.equal((await client.query('SELECT transaction_id FROM merchant_benefit_authorizations WHERE id = $1', [benefitAuthorizationId])).rows[0].transaction_id, null);
         } finally {
@@ -525,6 +530,42 @@ for (const lapsed of ['expired', 'denied', 'processing_withdrawn', 'disclosure_w
         }
     });
 }
+
+test('paystack reports reconcile when consent lapses after a verified payment', async () => {
+    const { default: axios } = await import('axios');
+    const { config } = await import('../../config/env.js');
+    const originalGet = axios.get;
+    const oldKey = config.paystack.secretKey;
+    Object.assign(config.paystack, { secretKey: 'synthetic-test-key' });
+    const pool = createTestPool();
+    const client = await pool.connect();
+    const server = await startReportServer();
+    try {
+        await assertFixtureDatabase(client);
+        const fixture = await enrolledFixture(pool, client);
+        const { benefitAuthorizationId } = await productAuthorization(pool, fixture);
+        await inTransaction(client, () => withdrawConsent(client, fixture.student, fixture.disclosure));
+        axios.get = (async () => ({
+            data: { data: { status: 'success', amount: 8000, customer: { email: 'student@example.invalid' }, metadata: {} } },
+        })) as typeof axios.get;
+        const reference = randomUUID();
+        const refused = await postReport(server.endpoint, `Bearer ${vendorJwt(fixture)}`, {
+            benefitAuthorizationId, productId: fixture.product, paymentReference: reference,
+            amount: 8000, paymentGateway: 'paystack',
+        });
+        assert.equal(refused.status, 409);
+        assert.match(JSON.stringify(refused.body), /reconcil/i);
+        assert.equal(((refused.body.error as Record<string, unknown>).details as Record<string, unknown>).paymentReference, reference);
+        assert.equal((await client.query('SELECT count(*)::int AS count FROM transactions WHERE vendor_id = $1', [fixture.vendor])).rows[0].count, 0);
+        assert.equal((await client.query('SELECT transaction_id FROM merchant_benefit_authorizations WHERE id = $1', [benefitAuthorizationId])).rows[0].transaction_id, null);
+    } finally {
+        axios.get = originalGet;
+        Object.assign(config.paystack, { secretKey: oldKey });
+        await server.close();
+        client.release();
+        await pool.end();
+    }
+});
 
 test('email-only students cannot mint product authorizations or report', async () => {
     const pool = createTestPool();
@@ -753,7 +794,7 @@ test('late first reports require explicit reconciliation without minting new aut
     }
 });
 
-test('stock-out first reports require explicit reconciliation without ledger writes', async () => {
+test('legacy unreserved authorizations still reconcile on stock-out without ledger writes', async () => {
     const pool = createTestPool();
     const client = await pool.connect();
     const server = await startReportServer();
@@ -761,6 +802,10 @@ test('stock-out first reports require explicit reconciliation without ledger wri
         await assertFixtureDatabase(client);
         const fixture = await enrolledFixture(pool, client, { stock: 1 });
         const { benefitAuthorizationId } = await productAuthorization(pool, fixture);
+        // Reshape the row into a pre-reservation authorization (no unit was
+        // set aside), then let another channel sell the last unit.
+        await client.query('UPDATE merchant_benefit_authorizations SET stock_reserved = false WHERE id = $1', [benefitAuthorizationId]);
+        await client.query('UPDATE products SET stock = 1 WHERE id = $1', [fixture.product]);
         await client.query('UPDATE products SET stock = 0 WHERE id = $1', [fixture.product]);
         const reference = randomUUID();
         const refused = await postReport(server.endpoint, `Bearer ${vendorJwt(fixture)}`, {
@@ -769,9 +814,37 @@ test('stock-out first reports require explicit reconciliation without ledger wri
         });
         assert.equal(refused.status, 409);
         assert.match(JSON.stringify(refused.body), /reconcil/i);
+        assert.equal(((refused.body.error as Record<string, unknown>).details as Record<string, unknown>).paymentReference, reference);
         assert.equal((await client.query('SELECT count(*)::int AS count FROM transactions WHERE vendor_id = $1', [fixture.vendor])).rows[0].count, 0);
         assert.equal((await client.query('SELECT stock FROM products WHERE id = $1', [fixture.product])).rows[0].stock, 0);
         assert.equal((await client.query('SELECT transaction_id FROM merchant_benefit_authorizations WHERE id = $1', [benefitAuthorizationId])).rows[0].transaction_id, null);
+    } finally {
+        await server.close();
+        client.release();
+        await pool.end();
+    }
+});
+
+test('exchange reserves stock so outstanding authorizations cannot exceed availability', async () => {
+    const pool = createTestPool();
+    const client = await pool.connect();
+    const server = await startReportServer();
+    try {
+        await assertFixtureDatabase(client);
+        const fixture = await enrolledFixture(pool, client, { stock: 1 });
+        const first = await productAuthorization(pool, fixture);
+        assert.equal((await client.query('SELECT stock FROM products WHERE id = $1', [fixture.product])).rows[0].stock, 0);
+        assert.equal((await client.query('SELECT stock_reserved FROM merchant_benefit_authorizations WHERE id = $1', [first.benefitAuthorizationId])).rows[0].stock_reserved, true);
+        await assert.rejects(productAuthorization(pool, fixture), /no longer available/);
+        assert.equal((await client.query('SELECT count(*)::int AS count FROM merchant_benefit_authorizations WHERE vendor_id = $1', [fixture.vendor])).rows[0].count, 1);
+        const settled = await postReport(server.endpoint, `Bearer ${vendorJwt(fixture)}`, {
+            benefitAuthorizationId: first.benefitAuthorizationId, productId: fixture.product,
+            paymentReference: randomUUID(), amount: 8000, paymentGateway: 'other',
+        });
+        assert.equal(settled.status, 201);
+        // Settling consumes the reservation without decrementing again.
+        assert.equal((await client.query('SELECT stock FROM products WHERE id = $1', [fixture.product])).rows[0].stock, 0);
+        assert.equal((await client.query('SELECT count(*)::int AS count FROM transactions WHERE vendor_id = $1', [fixture.vendor])).rows[0].count, 1);
     } finally {
         await server.close();
         client.release();
@@ -903,8 +976,14 @@ test('authorization cleanup deletes only expired unused rows past retention', as
         assert.equal(committed.status, 201);
         await client.query("UPDATE merchant_benefit_authorizations SET expires_at = clock_timestamp() - interval '8 days' WHERE id = ANY($1::uuid[])",
             [[aged.benefitAuthorizationId, used.benefitAuthorizationId]]);
+        // Three exchanges reserved three of four units; settling the used
+        // authorization consumed its reservation without a second decrement.
+        assert.equal((await client.query('SELECT stock FROM products WHERE id = $1', [fixture.product])).rows[0].stock, 1);
         const cutoff = new Date(Date.now() - 7 * 86_400_000);
         assert.equal(await deleteExpiredUnusedBenefitAuthorizations(client, { expiredBefore: cutoff }), 1);
+        // Only the abandoned reservation is restored; the settled unit and
+        // the live reservation stay out of stock.
+        assert.equal((await client.query('SELECT stock FROM products WHERE id = $1', [fixture.product])).rows[0].stock, 2);
         const remaining = (await client.query('SELECT id FROM merchant_benefit_authorizations WHERE vendor_id = $1 ORDER BY created_at', [fixture.vendor])).rows
             .map((row) => row.id as string);
         assert.equal(remaining.includes(aged.benefitAuthorizationId), false);

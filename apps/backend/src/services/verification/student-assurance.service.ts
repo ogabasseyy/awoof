@@ -198,6 +198,7 @@ async function readSsoSchoolAccount(tx: PoolClient, userId: string, context: Stu
          JOIN institution_login_policies p
            ON p.id = a.login_policy_id
           AND p.enabled
+          AND p.approved_by IS NOT NULL
           AND p.approved_until > clock_timestamp()
           AND p.version = a.policy_version
           AND p.university_id = a.university_id

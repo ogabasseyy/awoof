@@ -172,11 +172,11 @@ test('R3: assurance reader ignores SSO storage on the upgraded database', async 
         const policyId = (await client.query<{ id: string }>(
             `INSERT INTO institution_login_policies
                  (university_id, provider, issuer, provider_realm, enabled,
-                  approved_until, school_assertion_days)
+                  approved_until, approved_by, school_assertion_days)
              VALUES ($1, 'google', 'https://accounts.google.com', 'students.school.example',
-                     true, clock_timestamp() + interval '30 days', 90)
+                     true, clock_timestamp() + interval '30 days', $2, 90)
              RETURNING id`,
-            [fixture.universityId],
+            [fixture.universityId, fixture.adminId],
         )).rows[0]!.id;
         const identityId = (await client.query<{ id: string }>(
             `INSERT INTO student_auth_identities

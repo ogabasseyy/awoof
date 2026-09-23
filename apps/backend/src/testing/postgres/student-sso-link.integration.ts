@@ -133,18 +133,26 @@ async function seedPolicy(
     client: PoolClient,
     universityId: string,
     domain: string,
-    options: { provider?: string; issuer?: string; realm?: string; approvedUntil?: string } = {},
+    options: { provider?: string; issuer?: string; realm?: string; approvedUntil?: string; approvedBy?: string | null } = {},
 ): Promise<SeededPolicy> {
     const provider = options.provider ?? 'google';
     const realm = options.realm ?? domain;
     const issuer = options.issuer
         ?? (provider === 'google' ? GOOGLE_ISSUER : `https://login.microsoftonline.com/${realm}/v2.0`);
+    // Enabled policies require a recorded approver; seed one unless the
+    // caller explicitly opts out with approvedBy: null (negative tests).
+    const approvedBy = options.approvedBy !== undefined
+        ? options.approvedBy
+        : (await client.query<{ id: string }>(
+            'INSERT INTO users (email, role) VALUES ($1, $2) RETURNING id',
+            [`sso-admin-${uniqueLabel()}@example.invalid`, 'admin'],
+        )).rows[0]!.id;
     const row = (await client.query<{ id: string; version: number }>(
         `INSERT INTO institution_login_policies
-             (university_id, provider, issuer, provider_realm, version, enabled, approved_until, school_assertion_days)
-         VALUES ($1, $2, $3, $4, 1, true, $5, 90)
+             (university_id, provider, issuer, provider_realm, version, enabled, approved_until, approved_by, school_assertion_days)
+         VALUES ($1, $2, $3, $4, 1, true, $5, $6, 90)
          RETURNING id, version`,
-        [universityId, provider, issuer, realm, options.approvedUntil ?? new Date(Date.now() + 30 * 86_400_000).toISOString()],
+        [universityId, provider, issuer, realm, options.approvedUntil ?? new Date(Date.now() + 30 * 86_400_000).toISOString(), approvedBy],
     )).rows[0]!;
     await client.query(
         'INSERT INTO institution_login_domains (domain, university_id, is_active) VALUES ($1, $2, true)',

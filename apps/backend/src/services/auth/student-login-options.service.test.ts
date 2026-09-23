@@ -162,6 +162,7 @@ test('discovery joins only policy, domain-provider, domain, and university table
 
 test('discovery requires enabled policies, live approvals, and active universities and domains', () => {
     assert.ok(STUDENT_LOGIN_OPTIONS_QUERY.includes('p.enabled'));
+    assert.ok(STUDENT_LOGIN_OPTIONS_QUERY.includes('p.approved_by IS NOT NULL'));
     assert.ok(STUDENT_LOGIN_OPTIONS_QUERY.includes('p.approved_until IS NOT NULL'));
     assert.ok(STUDENT_LOGIN_OPTIONS_QUERY.includes('p.approved_until > clock_timestamp()'));
     assert.ok(STUDENT_LOGIN_OPTIONS_QUERY.includes('u.is_active'));

@@ -55,6 +55,12 @@ async function createPolicy(
     universityId: string,
     options: PolicyOptions = {},
 ): Promise<string> {
+    const enabled = options.enabled ?? true;
+    // Enabled policies require a recorded approver; seed one unless the
+    // caller explicitly opts out with approvedBy: null (negative tests).
+    const approvedBy = options.approvedBy !== undefined
+        ? options.approvedBy
+        : enabled ? await createUser(client, 'admin') : null;
     return (await client.query<{ id: string }>(
         `INSERT INTO institution_login_policies
              (university_id, provider, issuer, provider_realm, version, enabled,
@@ -67,9 +73,9 @@ async function createPolicy(
             options.issuer ?? 'https://accounts.google.com',
             options.realm ?? 'students.school.example',
             options.version ?? 1,
-            options.enabled ?? true,
+            enabled,
             options.approvedUntil ?? new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString(),
-            options.approvedBy ?? null,
+            approvedBy,
             options.assertionDays ?? 90,
         ],
     )).rows[0]!.id;
@@ -255,6 +261,21 @@ test('login policy validates provider, version, and assertion window', async () 
         )).rows[0]!;
         assert.equal(row.enabled, false);
         assert.equal(row.version, 1);
+    });
+});
+
+test('enabling a login policy without an approver is rejected', async () => {
+    await withTestClient(async (client) => {
+        const universityId = await createUniversity(client);
+        await assertPgError(createPolicy(client, universityId, { approvedBy: null }), '23514');
+        const draftId = await createPolicy(client, universityId, { enabled: false, approvedBy: null });
+        await assert.rejects(
+            client.query(
+                'UPDATE institution_login_policies SET enabled = true WHERE id = $1',
+                [draftId],
+            ),
+            /institution_login_policies_enabled_requires_approver/,
+        );
     });
 });
 

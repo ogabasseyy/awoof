@@ -139,6 +139,7 @@ export async function assertCurrentLoginPolicy(
          WHERE p.id = $1
            AND p.version = $2
            AND p.enabled
+           AND p.approved_by IS NOT NULL
            AND p.approved_until IS NOT NULL
            AND p.approved_until > clock_timestamp()
            AND d.domain = $3`,

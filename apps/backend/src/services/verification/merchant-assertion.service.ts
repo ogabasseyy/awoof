@@ -153,9 +153,15 @@ export async function exchangeMerchantAssertion(pool: Pool, key: string, input: 
         }
         let benefitAuthorizationId: string | undefined;
         if (productId !== null) {
+            // Reserve one unit atomically: the row lock serializes
+            // concurrent exchanges and the stock predicate fails closed,
+            // so outstanding authorizations can never exceed availability.
+            // The reservation is consumed by the report path, or restored
+            // when an expired unused authorization is cleaned up.
             const locked = await tx.query(
-                `SELECT id, price, student_price FROM products
-                 WHERE id = $1 AND vendor_id = $2 AND status = 'active' AND deleted_at IS NULL AND stock > 0 FOR UPDATE`,
+                `UPDATE products SET stock = stock - 1, updated_at = clock_timestamp()
+                 WHERE id = $1 AND vendor_id = $2 AND status = 'active' AND deleted_at IS NULL AND stock > 0
+                 RETURNING id, price, student_price`,
                 [productId, assertion.vendor_id],
             );
             const live = locked.rows[0];
@@ -180,8 +186,8 @@ export async function exchangeMerchantAssertion(pool: Pool, key: string, input: 
             const authorization = await tx.query<{ id: string }>(
                 `INSERT INTO merchant_benefit_authorizations
                  (assertion_id,vendor_id,user_id,product_id,evidence_id,processing_grant_id,disclosure_grant_id,
-                  list_price_snapshot,student_price_snapshot,currency,pricing_version,expires_at,claim_session_id)
-                 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,LEAST($12::timestamptz,clock_timestamp()+interval '2 minutes'),$13)
+                  list_price_snapshot,student_price_snapshot,currency,pricing_version,expires_at,claim_session_id,stock_reserved)
+                 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,LEAST($12::timestamptz,clock_timestamp()+interval '2 minutes'),$13,true)
                  RETURNING id`,
                 [assertion.id, assertion.vendor_id, assertion.user_id, productId,
                     eligibility.evidenceId, eligibility.processingGrantId, assertion.disclosure_grant_id,

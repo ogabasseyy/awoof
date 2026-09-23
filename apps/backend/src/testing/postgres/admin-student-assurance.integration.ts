@@ -164,10 +164,10 @@ async function seedSsoAssertion(client: PoolClient, fixture: Fixture): Promise<v
     const domain = `${uniqueLabel()}.${fixture.email.split('@')[1]!}`;
     const policyId = (await client.query<{ id: string }>(
         `INSERT INTO institution_login_policies
-             (university_id, provider, issuer, provider_realm, version, enabled, approved_until, school_assertion_days)
-         VALUES ($1, 'google', $2, $3, 1, true, clock_timestamp() + interval '100 days', 90)
+             (university_id, provider, issuer, provider_realm, version, enabled, approved_until, approved_by, school_assertion_days)
+         VALUES ($1, 'google', $2, $3, 1, true, clock_timestamp() + interval '100 days', $4, 90)
          RETURNING id`,
-        [fixture.universityId, GOOGLE_ISSUER, domain],
+        [fixture.universityId, GOOGLE_ISSUER, domain, fixture.adminId],
     )).rows[0]!.id;
     await client.query(
         'INSERT INTO institution_login_domains (domain, university_id, is_active) VALUES ($1, $2, true)',

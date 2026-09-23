@@ -70,13 +70,19 @@ async function createStudent(client: PoolClient, universityId: string, email: st
 async function createLoginPolicy(
     client: PoolClient,
     universityId: string,
-    overrides: { provider?: string; issuer?: string; realm?: string; version?: number; enabled?: boolean; approvedUntil?: string | null } = {},
+    overrides: { provider?: string; issuer?: string; realm?: string; version?: number; enabled?: boolean; approvedUntil?: string | null; approvedBy?: string | null } = {},
 ): Promise<{ id: string; version: number }> {
     const provider = overrides.provider ?? 'google';
+    const enabled = overrides.enabled ?? true;
+    // Enabled policies require a recorded approver; seed one unless the
+    // caller explicitly opts out with approvedBy: null (negative tests).
+    const approvedBy = overrides.approvedBy !== undefined
+        ? overrides.approvedBy
+        : enabled ? await createAdmin(client) : null;
     const row = (await client.query<{ id: string; version: number }>(
         `INSERT INTO institution_login_policies
-             (university_id, provider, issuer, provider_realm, version, enabled, approved_until, school_assertion_days)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, 90)
+             (university_id, provider, issuer, provider_realm, version, enabled, approved_until, approved_by, school_assertion_days)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 90)
          RETURNING id, version`,
         [
             universityId,
@@ -84,11 +90,19 @@ async function createLoginPolicy(
             overrides.issuer ?? (provider === 'google' ? GOOGLE_ISSUER : `https://login.microsoftonline.com/${overrides.realm ?? randomUUID()}/v2.0`),
             overrides.realm ?? `flow${uniqueLabel()}.school.example`,
             overrides.version ?? 1,
-            overrides.enabled ?? true,
+            enabled,
             overrides.approvedUntil !== undefined ? overrides.approvedUntil : new Date(Date.now() + 30 * 86_400_000).toISOString(),
+            approvedBy,
         ],
     )).rows[0]!;
     return { id: row.id, version: row.version };
+}
+
+async function createAdmin(client: PoolClient): Promise<string> {
+    return (await client.query<{ id: string }>(
+        'INSERT INTO users (email, role) VALUES ($1, $2) RETURNING id',
+        [`sso-admin-${uniqueLabel()}@example.invalid`, 'admin'],
+    )).rows[0]!.id;
 }
 
 async function createLoginDomain(client: PoolClient, domain: string, universityId: string, provider: string, policyId: string): Promise<void> {

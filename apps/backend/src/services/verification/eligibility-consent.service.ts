@@ -125,8 +125,9 @@ export async function withdrawConsent(tx: PoolClient, userId: string, grantId: s
         user_id: string;
         kind: 'processing' | 'disclosure';
         university_id: string | null;
+        vendor_id: string | null;
     }>(
-        `SELECT user_id, kind, university_id
+        `SELECT user_id, kind, university_id, vendor_id
          FROM verification_consents
          WHERE id = $1 AND user_id = $2
          FOR UPDATE`,
@@ -142,6 +143,20 @@ export async function withdrawConsent(tx: PoolClient, userId: string, grantId: s
          WHERE id = $1`,
         [grantId],
     );
+    // Withdrawing one merchant disclosure stops all future checks for that
+    // merchant: every approval creates its own grant row, and leaving
+    // siblings active would keep issuance and exchange usable after the
+    // student withdrew. Revoke all matching active grants atomically.
+    let siblingGrantsWithdrawn = 0;
+    if (row.kind === 'disclosure' && row.vendor_id !== null) {
+        const siblings = await tx.query(
+            `UPDATE verification_consents
+             SET withdrawn_at = COALESCE(withdrawn_at, clock_timestamp())
+             WHERE user_id = $1 AND kind = 'disclosure' AND vendor_id = $2 AND withdrawn_at IS NULL`,
+            [userId, row.vendor_id],
+        );
+        siblingGrantsWithdrawn = siblings.rowCount ?? 0;
+    }
     if (row.kind === 'processing') {
         await tx.query(
             `UPDATE eligibility_evidence
@@ -169,7 +184,8 @@ export async function withdrawConsent(tx: PoolClient, userId: string, grantId: s
     }
     await tx.query(
         `INSERT INTO verification_audit_events (user_id, university_id, event_type, metadata)
-         VALUES ($1, $2, 'verification_consent_withdrawn', jsonb_build_object('kind', $3::text))`,
-        [userId, row.university_id, row.kind],
+         VALUES ($1, $2, 'verification_consent_withdrawn',
+                 jsonb_build_object('kind', $3::text, 'vendorId', $4::text, 'siblingGrantsWithdrawn', $5::int))`,
+        [userId, row.university_id, row.kind, row.vendor_id, siblingGrantsWithdrawn],
     );
 }

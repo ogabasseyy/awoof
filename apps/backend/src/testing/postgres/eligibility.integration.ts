@@ -995,6 +995,54 @@ test('keeps merchant disclosures independent and requires a configured exact ori
     });
 });
 
+test('withdrawing one merchant disclosure revokes every grant for that merchant', async () => {
+    await withTestClient(async (client) => {
+        const fixture = await createFixture(client);
+        const owner = (await client.query<{ id: string }>(
+            `INSERT INTO users (email, role) VALUES ($1, 'vendor') RETURNING id`,
+            [`vendor-${uniqueLabel()}@example.invalid`],
+        )).rows[0]!.id;
+        const vendor = (await client.query<{ id: string }>(
+            `INSERT INTO vendors (user_id, name, status) VALUES ($1, 'Vendor', 'active') RETURNING id`,
+            [owner],
+        )).rows[0]!.id;
+        await client.query(
+            `INSERT INTO widget_configs (vendor_id, allowed_domains, allowed_origins, api_key, status)
+             VALUES ($1, ARRAY['shop.example'], ARRAY['https://shop.example'], 'public', 'active')`,
+            [vendor],
+        );
+        // Every approval creates its own grant row, even for repeat checks.
+        const first = await inTransaction(client, () => grantMerchantDisclosure(client, fixture.userId, {
+            vendorId: vendor, origin: 'https://shop.example', purpose: 'discount',
+            accepted: true, noticeVersion: MERCHANT_DISCLOSURE_NOTICE_VERSION,
+        }));
+        const second = await inTransaction(client, () => grantMerchantDisclosure(client, fixture.userId, {
+            vendorId: vendor, origin: 'https://shop.example', purpose: 'discount',
+            accepted: true, noticeVersion: MERCHANT_DISCLOSURE_NOTICE_VERSION,
+        }));
+        await inTransaction(client, () => withdrawConsent(client, fixture.userId, first));
+        const withdrawn = (await client.query<{ count: number }>(
+            `SELECT count(*)::int AS count FROM verification_consents
+             WHERE user_id = $1 AND kind = 'disclosure' AND vendor_id = $2 AND withdrawn_at IS NOT NULL`,
+            [fixture.userId, vendor],
+        )).rows[0]!.count;
+        assert.equal(withdrawn, 2);
+        assert.deepEqual(
+            await inTransaction(client, () => getEffectiveEligibility(client, fixture.userId, {
+                vendorId: vendor, grantId: second, origin: 'https://shop.example', purpose: 'discount',
+            })),
+            { eligible: false, reason: 'consent_required' },
+        );
+        const audit = (await client.query<{ metadata: { vendorId: string; siblingGrantsWithdrawn: number } }>(
+            `SELECT metadata FROM verification_audit_events
+             WHERE user_id = $1 AND event_type = 'verification_consent_withdrawn'`,
+            [fixture.userId],
+        )).rows[0]!.metadata;
+        assert.equal(audit.vendorId, vendor);
+        assert.equal(audit.siblingGrantsWithdrawn, 1);
+    });
+});
+
 test('records account-email ownership for a non-student account without granting eligibility', async () => {
     await withTestClient(async (client) => {
         const account = (await client.query<{ id: string }>(

@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 import type { Pool, PoolClient } from 'pg';
-import { BadRequestError, ConflictError, ForbiddenError, NotFoundError, UnauthorizedError } from '../../common/errors/AppError.js';
+import { BadRequestError, ConflictError, NotFoundError, UnauthorizedError } from '../../common/errors/AppError.js';
 import { recheckReportingKeyInTransaction } from '../auth/reporting-key.service.js';
 import { verifyPaystackPayment } from '../payment/paystack.service.js';
 import { calculateMarketplaceCommission, effectiveVendorCommissionRate } from '../payment/checkout.service.js';
@@ -51,15 +51,31 @@ export function nairaToKobo(naira: number | string): number {
 }
 
 /** Lifecycle cleanup for unused authorization rows only. Rows attached to a
- *  committed transaction are retained; receipts are never deleted here. */
+ *  committed transaction are retained; receipts are never deleted here.
+ *  Deleting an expired reservation restores its unit to catalog stock so
+ *  abandoned checkouts never leak inventory. */
 export async function deleteExpiredUnusedBenefitAuthorizations(
     tx: PoolClient,
     options: { expiredBefore: Date },
 ): Promise<number> {
-    const deleted = await tx.query(
-        `DELETE FROM merchant_benefit_authorizations WHERE transaction_id IS NULL AND expires_at < $1`,
+    const deleted = await tx.query<{ product_id: string; stock_reserved: boolean }>(
+        `DELETE FROM merchant_benefit_authorizations WHERE transaction_id IS NULL AND expires_at < $1
+         RETURNING product_id, stock_reserved`,
         [options.expiredBefore],
     );
+    const reserved = (deleted.rows ?? []).filter((row) => row.stock_reserved);
+    if (reserved.length > 0) {
+        const restored = new Map<string, number>();
+        for (const row of reserved) {
+            restored.set(row.product_id, (restored.get(row.product_id) ?? 0) + 1);
+        }
+        for (const [productId, units] of restored) {
+            await tx.query(
+                'UPDATE products SET stock = stock + $2, updated_at = CURRENT_TIMESTAMP WHERE id = $1',
+                [productId, units],
+            );
+        }
+    }
     return deleted.rowCount ?? 0;
 }
 
@@ -131,6 +147,7 @@ type BenefitAuthorizationRow = {
     pricing_version: string;
     expires_at: Date;
     transaction_id: string | null;
+    stock_reserved: boolean;
 };
 
 type AssertionBinding = {
@@ -305,15 +322,24 @@ export async function reportMerchantBenefit(
         const product = (await tx.query(
             'SELECT id, vendor_id, name, status, deleted_at FROM products WHERE id = $1 FOR UPDATE', [input.productId],
         )).rows[0];
+        // First-use reports always follow an externally collected payment
+        // (verified for Paystack, merchant-asserted otherwise), so every
+        // authority lapse here — consent, enrollment, or evidence drift —
+        // is a reconciliation outcome, never a plain refusal.
         if (!eligibility.eligible) {
-            if (eligibility.reason === 'consent_required') {
-                throw new ForbiddenError('Current merchant disclosure consent is required to report this discount');
-            }
-            throw new ForbiddenError('Current student enrollment is required to report this discount');
+            throw new ConflictError(
+                eligibility.reason === 'consent_required'
+                    ? 'Merchant disclosure consent lapsed after payment; reconcile the external payment with the merchant instead of retrying'
+                    : 'Student enrollment lapsed after payment; reconcile the external payment with the merchant instead of retrying',
+                { reconciliation: 'required', paymentReference: input.paymentReference },
+            );
         }
         if (eligibility.evidenceId !== authorization.evidence_id
             || eligibility.processingGrantId !== authorization.processing_grant_id) {
-            throw new ForbiddenError('Current student enrollment is required to report this discount');
+            throw new ConflictError(
+                'Student enrollment changed after payment; reconcile the external payment with the merchant instead of retrying',
+                { reconciliation: 'required', paymentReference: input.paymentReference },
+            );
         }
         if (authorization.product_id !== input.productId || assertion.product_id !== input.productId) {
             throw new BadRequestError('Report product does not match the benefit authorization');
@@ -367,18 +393,24 @@ export async function reportMerchantBenefit(
                 commission, listPrice, paymentSource, input.paymentReference, discount,
             ],
         )).rows[0];
-        const stockUpdate = await tx.query(
-            `UPDATE products
-             SET stock = stock - 1, updated_at = CURRENT_TIMESTAMP
-             WHERE id = $1 AND vendor_id = $2 AND stock > 0 AND deleted_at IS NULL AND status = 'active'
-             RETURNING id`,
-            [input.productId, authorization.vendor_id],
-        );
-        if (stockUpdate.rows.length === 0) {
-            throw new ConflictError(
-                'Discounted stock is unavailable after payment; reconcile the external payment with the merchant instead of retrying',
-                { reconciliation: 'required', paymentReference: input.paymentReference },
+        // Reserved authorizations already decremented stock atomically at
+        // exchange; settling consumes the reservation. Legacy
+        // authorizations minted before reservation still decrement here
+        // and fail closed into reconciliation when stock is gone.
+        if (!authorization.stock_reserved) {
+            const stockUpdate = await tx.query(
+                `UPDATE products
+                 SET stock = stock - 1, updated_at = CURRENT_TIMESTAMP
+                 WHERE id = $1 AND vendor_id = $2 AND stock > 0 AND deleted_at IS NULL AND status = 'active'
+                 RETURNING id`,
+                [input.productId, authorization.vendor_id],
             );
+            if (stockUpdate.rows.length === 0) {
+                throw new ConflictError(
+                    'Discounted stock is unavailable after payment; reconcile the external payment with the merchant instead of retrying',
+                    { reconciliation: 'required', paymentReference: input.paymentReference },
+                );
+            }
         }
         await tx.query(
             `INSERT INTO savings_stats (student_id, total_savings, total_purchases, last_updated)

@@ -276,6 +276,7 @@ export class StudentSsoFlowService {
                   AND d.university_id = dp.university_id
                   AND d.is_active
                  WHERE p.enabled
+                   AND p.approved_by IS NOT NULL
                    AND p.approved_until IS NOT NULL
                    AND p.approved_until > clock_timestamp()
                    AND d.domain = $1
