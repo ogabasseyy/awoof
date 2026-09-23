@@ -60,6 +60,7 @@ export async function prepareMerchantDisclosure(
     userId: string,
     vendorId: string,
     origin: string,
+    options: { requireOrigin?: boolean } = {},
 ): Promise<MerchantDisclosureContext | null> {
     const candidate = await tx.query<CandidateMerchant>(
         'SELECT user_id FROM vendors WHERE id = $1',
@@ -96,16 +97,21 @@ export async function prepareMerchantDisclosure(
         return null;
     }
 
-    const widget = await tx.query(
-        `SELECT id
-         FROM widget_configs
-         WHERE vendor_id = $1
-           AND status = 'active'
-           AND $2 = ANY(allowed_origins)
-         FOR UPDATE`,
-        [vendorId, origin],
-    );
-    if (widget.rowCount === 0) return null;
+    // Historical reads (committed report retries) keep merchant and key
+    // authentication but must not require the origin to still be
+    // configured: removing a site cannot rewrite settled history.
+    if (options.requireOrigin !== false) {
+        const widget = await tx.query(
+            `SELECT id
+             FROM widget_configs
+             WHERE vendor_id = $1
+               AND status = 'active'
+               AND $2 = ANY(allowed_origins)
+             FOR UPDATE`,
+            [vendorId, origin],
+        );
+        if (widget.rowCount === 0) return null;
+    }
 
     return { vendorId, ownerUserId: candidateOwnerId, origin };
 }

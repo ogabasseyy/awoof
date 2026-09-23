@@ -111,6 +111,22 @@ function StudentSsoCompleteInner() {
                 const status = axios.isAxiosError(cause) ? cause.response?.status : undefined;
                 const body = axios.isAxiosError(cause) ? cause.response?.data : undefined;
                 if (parseSsoRestart(status, body)) {
+                    // The server refuses to overwrite a session that appeared
+                    // while this attempt was in flight: surface the surviving
+                    // concurrent sign-in instead of expiring to the login page.
+                    const latest = getSessionSnapshot();
+                    if (latest.accessToken || latest.refreshToken) {
+                        clearSsoAttempt(storage);
+                        if (latest.generation === record.generation) {
+                            setView({
+                                kind: 'already_signed_in',
+                                continuePath: resolveStudentReturn(record.returnPath, window.location.origin),
+                            });
+                        } else {
+                            setView({ kind: 'discarded' });
+                        }
+                        return;
+                    }
                     failToLogin('sso_expired', record.returnPath);
                     return;
                 }

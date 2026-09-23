@@ -321,12 +321,14 @@ export class PaymentController {
 
         // Build query
         let query = `
-            SELECT 
+            SELECT
                 t.id,
                 t.amount,
                 t.commission,
                 t.status,
                 t.paystack_reference,
+                t.vendor_payment_reference,
+                t.payment_source,
                 t.created_at,
                 p.name as product_name
             FROM transactions t
@@ -365,7 +367,9 @@ export class PaymentController {
         const total = parseInt(countResult.rows[0].total);
         const totalPages = Math.ceil(total / limit);
 
-        // Format payments
+        // Format payments. Reported merchant transactions carry their
+        // identifier in vendor_payment_reference (the key the merchant
+        // needs for reconciliation), not paystack_reference.
         const payments = result.rows.map((row) => ({
             id: row.id,
             amount: parseFloat(row.amount),
@@ -373,6 +377,8 @@ export class PaymentController {
             earnings: parseFloat(row.amount) - parseFloat(row.commission),
             status: row.status,
             paystackReference: row.paystack_reference,
+            vendorPaymentReference: row.vendor_payment_reference,
+            paymentSource: row.payment_source,
             productName: row.product_name,
             createdAt: row.created_at,
         }));

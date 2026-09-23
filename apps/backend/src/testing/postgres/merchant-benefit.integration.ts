@@ -728,6 +728,80 @@ test('exact committed retries return the original result while changed bindings 
     }
 });
 
+test('committed retries return the original result after the origin is removed', async () => {
+    const pool = createTestPool();
+    const client = await pool.connect();
+    const server = await startReportServer();
+    try {
+        await assertFixtureDatabase(client);
+        const fixture = await enrolledFixture(pool, client);
+        const { benefitAuthorizationId } = await productAuthorization(pool, fixture);
+        const fresh = await productAuthorization(pool, fixture);
+        const auth = `Bearer ${vendorJwt(fixture)}`;
+        const committed = {
+            benefitAuthorizationId, productId: fixture.product, paymentReference: randomUUID(),
+            amount: 8000, paymentGateway: 'other',
+        };
+        const first = await postReport(server.endpoint, auth, committed);
+        assert.equal(first.status, 201);
+        // The merchant later removes the site from its integration. A lost
+        // 201 response must still replay the settled result, not 401.
+        await client.query('UPDATE widget_configs SET allowed_origins = $2 WHERE vendor_id = $1', [fixture.vendor, ['https://elsewhere.example']]);
+        const retry = await postReport(server.endpoint, auth, committed);
+        assert.equal(retry.status, 200);
+        assert.deepEqual(retry.body.data, first.body.data);
+        assert.equal((await client.query('SELECT count(*)::int AS count FROM transactions WHERE vendor_id = $1', [fixture.vendor])).rows[0].count, 1);
+        // Fresh settlements still require a live origin configuration.
+        const refused = await postReport(server.endpoint, auth, {
+            benefitAuthorizationId: fresh.benefitAuthorizationId, productId: fixture.product,
+            paymentReference: randomUUID(), amount: 8000, paymentGateway: 'other',
+        });
+        assert.equal(refused.status, 401);
+    } finally {
+        await server.close();
+        client.release();
+        await pool.end();
+    }
+});
+
+test('reported transactions surface vendor references in history with honest receipts', async () => {
+    const pool = createTestPool();
+    const client = await pool.connect();
+    const server = await startReportServer();
+    try {
+        await assertFixtureDatabase(client);
+        const fixture = await enrolledFixture(pool, client);
+        const { benefitAuthorizationId } = await productAuthorization(pool, fixture);
+        const auth = `Bearer ${vendorJwt(fixture)}`;
+        const reference = randomUUID();
+        const first = await postReport(server.endpoint, auth, {
+            benefitAuthorizationId, productId: fixture.product, paymentReference: reference,
+            amount: 8000, paymentGateway: 'other',
+        });
+        assert.equal(first.status, 201);
+        const historyUrl = new URL('/vendors/payment/history', server.endpoint).href;
+        const historyResponse = await fetch(historyUrl, { headers: { authorization: auth } });
+        assert.equal(historyResponse.status, 200);
+        const history = await historyResponse.json() as { data: { payments: Record<string, unknown>[] } };
+        assert.equal(history.data.payments.length, 1);
+        assert.equal(history.data.payments[0]!.vendorPaymentReference, reference);
+        assert.equal(history.data.payments[0]!.paymentSource, 'vendor_other');
+        assert.equal(history.data.payments[0]!.paystackReference, null);
+        // The reporting path delivers no email: the confirmation must not
+        // promise a receipt in the student's mailbox.
+        const notice = (await client.query(
+            'SELECT message FROM notifications WHERE user_id = $1 AND kind = $2 ORDER BY created_at DESC LIMIT 1',
+            [fixture.student, 'purchase'],
+        )).rows[0]?.message as string | undefined;
+        assert.ok(notice);
+        assert.doesNotMatch(notice, /email/i);
+    } finally {
+        await server.close();
+        client.release();
+        await pool.end();
+    }
+});
+
 test('retry after expiry returns the original result only with current merchant authentication', async () => {
     const pool = createTestPool();
     const client = await pool.connect();

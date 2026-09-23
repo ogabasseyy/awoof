@@ -64,6 +64,7 @@ export async function issueSessionInTransaction(
          SET refresh_token_hash = $2,
              refresh_token_expires_at = $3,
              active_session_id = $6,
+             active_session_issued_at = clock_timestamp(),
              active_session_auth_identity_id = NULL
          WHERE id = $1
            AND deleted_at IS NULL
@@ -153,6 +154,7 @@ export async function revokeSession(userId: string): Promise<void> {
          SET refresh_token_hash = NULL,
              refresh_token_expires_at = NULL,
              active_session_id = NULL,
+             active_session_issued_at = NULL,
              active_session_auth_identity_id = NULL
          WHERE id = $1`,
         [userId],
@@ -165,7 +167,7 @@ export async function revokeSessionByRefreshToken(refreshToken: string): Promise
     try { decoded = jwtService.verifyRefreshToken(refreshToken); }
     catch { throw new UnauthorizedError('Invalid or expired refresh token'); }
     await db.query(`UPDATE users SET refresh_token_hash = NULL, refresh_token_expires_at = NULL, active_session_id = NULL,
-        active_session_auth_identity_id = NULL
+        active_session_issued_at = NULL, active_session_auth_identity_id = NULL
         WHERE id = $1 AND refresh_token_hash = $2`, [decoded.userId, refreshTokenHash(refreshToken)]);
 }
 

@@ -253,7 +253,9 @@ async function readCommittedReportAfterConflict(
         if (!candidate || candidate.vendor_id !== vendorId) {
             throw new ConflictError('Transaction report conflicts with another committed report');
         }
-        const merchant = await prepareMerchantDisclosure(tx, candidate.user_id, candidate.vendor_id, candidate.origin);
+        // This path only ever returns already-committed results, so live
+        // origin configuration is not required; merchant/key checks stay.
+        const merchant = await prepareMerchantDisclosure(tx, candidate.user_id, candidate.vendor_id, candidate.origin, { requireOrigin: false });
         if (!merchant || merchant.ownerUserId !== auth.ownerUserId) throw new UnauthorizedError('Merchant unavailable');
         if (auth.apiKey !== undefined && !await recheckReportingKeyInTransaction(tx, auth.apiKey, candidate.vendor_id)) {
             throw new UnauthorizedError('Merchant key unavailable');
@@ -322,7 +324,15 @@ export async function reportMerchantBenefit(
     const tx = await pool.connect();
     try {
         await tx.query('BEGIN');
-        const merchant = await prepareMerchantDisclosure(tx, candidate.user_id, candidate.vendor_id, candidate.origin);
+        // Committed retries are historical bookkeeping: the pre-read
+        // transaction id tells us whether live origin configuration is
+        // required (first settlement) or must not gate the original
+        // result (a retry after the merchant removed the origin). A
+        // commit that lands between the pre-read and this transaction
+        // still resolves on retry.
+        const merchant = await prepareMerchantDisclosure(tx, candidate.user_id, candidate.vendor_id, candidate.origin, {
+            requireOrigin: candidate.transaction_id === null,
+        });
         if (!merchant || merchant.ownerUserId !== auth.ownerUserId) throw new UnauthorizedError('Merchant unavailable');
         if (auth.apiKey !== undefined && !await recheckReportingKeyInTransaction(tx, auth.apiKey, candidate.vendor_id)) {
             throw new UnauthorizedError('Merchant key unavailable');

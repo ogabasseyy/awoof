@@ -80,9 +80,11 @@ export class NotificationService {
         discount: number,
         transactionId: string
     ): Promise<void> {
+        // In-app only: this reporting path delivers no email, so the copy
+        // must not promise a receipt in the student's mailbox.
         await this.notifyStudentByProfileId(studentId, {
             title: 'Purchase confirmed',
-            message: `Your purchase of ${productName} is confirmed. Receipt sent to your email.`,
+            message: `Your purchase of ${productName} is confirmed.`,
             type: 'success',
             kind: 'purchase',
             metadata: { transactionId, productName, amount, discount },

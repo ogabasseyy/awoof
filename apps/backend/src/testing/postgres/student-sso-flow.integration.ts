@@ -291,6 +291,105 @@ test('linked owner signs in with one atomic session and separated assurance', as
     });
 });
 
+test('finish yields to a session issued after the attempt started', async () => {
+    await withSsoPool(async (pool) => {
+        const fixture = await approvedGoogleFixture(pool);
+        const email = `owner-${uniqueLabel()}@${fixture.domain}`;
+        const setup = await pool.connect();
+        let userId: string;
+        const subject = `owner-sub-${uniqueLabel()}`;
+        try {
+            userId = await createStudent(setup, fixture.universityId, email);
+            await createIdentity(setup, userId, fixture.universityId, { subject });
+        } finally {
+            setup.release();
+        }
+        const oidc = makeOidc();
+        oidc.redeemWith(observationFor(fixture.realm, subject));
+        const { service } = makeService(pool, oidc.oidc);
+
+        const { started, callbackUrl, cookies } = await startGoogle(service, oidc, email);
+        const callback = await service.callback({ provider: 'google', callbackUrl, browserCookies: cookies });
+        assert.equal(callback.outcome, undefined);
+
+        // Another tab signs this account in after the attempt started.
+        const issuer = await pool.connect();
+        let concurrentSid: string;
+        let concurrentHash: string;
+        try {
+            await issuer.query('BEGIN');
+            const concurrent = await issueSessionInTransaction(issuer, { userId, email, role: 'student' });
+            await issuer.query('COMMIT');
+            concurrentSid = jwtService.verifyRefreshToken(concurrent.refreshToken).sid as string;
+            concurrentHash = refreshHash(concurrent.refreshToken);
+        } finally {
+            issuer.release();
+        }
+
+        const finished = await service.finish({
+            attemptId: started.publicResult.attemptId,
+            finishSecret: started.publicResult.finishSecret,
+            browserCookie: started.callbackCookie.value,
+        });
+        assert.equal(finished.outcome, 'restart_required');
+
+        // The concurrent session survives untouched; the attempt is spent.
+        const check = await pool.connect();
+        try {
+            const users = await check.query<{ refresh_token_hash: string; active_session_id: string }>(
+                'SELECT refresh_token_hash, active_session_id FROM users WHERE id = $1',
+                [userId],
+            );
+            assert.equal(users.rows[0]!.active_session_id, concurrentSid);
+            assert.equal(users.rows[0]!.refresh_token_hash, concurrentHash);
+            const attempts = await check.query(
+                'SELECT status, encrypted_observation FROM student_auth_attempts WHERE id = $1',
+                [started.publicResult.attemptId],
+            );
+            assert.deepEqual(attempts.rows[0], { status: 'failed', encrypted_observation: null });
+        } finally {
+            check.release();
+        }
+    });
+});
+
+test('finish still replaces a session that predates the attempt', async () => {
+    await withSsoPool(async (pool) => {
+        const fixture = await approvedGoogleFixture(pool);
+        const email = `owner-${uniqueLabel()}@${fixture.domain}`;
+        const setup = await pool.connect();
+        let userId: string;
+        const subject = `owner-sub-${uniqueLabel()}`;
+        try {
+            userId = await createStudent(setup, fixture.universityId, email);
+            await createIdentity(setup, userId, fixture.universityId, { subject });
+        } finally {
+            setup.release();
+        }
+        // A stale pre-existing session is replaced, not preserved.
+        const stale = await pool.connect();
+        try {
+            await stale.query('BEGIN');
+            await issueSessionInTransaction(stale, { userId, email, role: 'student' });
+            await stale.query('COMMIT');
+        } finally {
+            stale.release();
+        }
+        const oidc = makeOidc();
+        oidc.redeemWith(observationFor(fixture.realm, subject));
+        const { service } = makeService(pool, oidc.oidc);
+
+        const { started, callbackUrl, cookies } = await startGoogle(service, oidc, email);
+        await service.callback({ provider: 'google', callbackUrl, browserCookies: cookies });
+        const finished = await service.finish({
+            attemptId: started.publicResult.attemptId,
+            finishSecret: started.publicResult.finishSecret,
+            browserCookie: started.callbackCookie.value,
+        });
+        assert.equal(finished.outcome, 'authenticated');
+    });
+});
+
 test('linked finish rejects an identity bound to another university', async () => {
     await withSsoPool(async (pool) => {
         // Google shares one issuer across universities, so the account

@@ -660,6 +660,24 @@ export class StudentSsoFlowService {
         }
         if (locked.rows[0].status !== 'ready') throw invalidAttempt();
         if (locked.rows[0].expires_at <= finalClock.rows[0]!.now) throw new StudentSsoAttemptExpiredError(locked.rows[0].id);
+        // Another tab may have signed this account in after the attempt
+        // started. The browser keeps that concurrent session and discards
+        // this finish, so issuing here would destroy a live session while
+        // delivering tokens nobody adopts. Yield with a restart instead of
+        // overwriting; a session that predates the attempt is still
+        // replaced, preserving established replace semantics.
+        const currentSession = await tx.query<{ active_session_id: string | null; active_session_issued_at: Date | null }>(
+            'SELECT active_session_id, active_session_issued_at FROM users WHERE id = $1',
+            [context.userId],
+        );
+        const live = currentSession.rows[0];
+        if (live?.active_session_id != null
+            && live.active_session_issued_at != null
+            && live.active_session_issued_at.getTime() > locked.rows[0].created_at.getTime()) {
+            await this.terminalizeAttempt(tx, attempt.id);
+            await this.invalidateAbandonedAttempts(tx, attempt);
+            return { restart: true };
+        }
         this.assertEnabled();
         const tokens = await issueSessionInTransaction(
             tx,
