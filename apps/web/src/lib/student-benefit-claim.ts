@@ -62,7 +62,9 @@ export function failClaim(state: ClaimState, error: string): ClaimState {
 
 export function retryClaim(state: ClaimState): ClaimState {
     if (state.step !== 'error' && state.step !== 'verify_required') return state;
-    return { ...state, step: 'ready', error: null };
+    // Reloading re-enters loading (not ready) so a failed reload stays
+    // failure-reportable: failClaim only accepts loading or claiming.
+    return { ...state, step: 'loading', error: null };
 }
 
 export function startRedirect(state: ClaimState, handoffUrl: string): ClaimState {

@@ -295,6 +295,34 @@ test('claim sessions bind one checkout to one product with exact-retry semantics
     } finally { client.release(); await pool.end(); }
 });
 
+test('exact claim-session retries return the live session after catalog changes', async () => {
+    const pool = createTestPool();
+    const client = await pool.connect();
+    try {
+        const fixture = await createClaimFixture(client, pool);
+        const checkoutId = `checkout-${fixture.label.slice(0, 8)}`;
+        const nonceHash = sha256hex('retry-after-change-nonce');
+        const created = await createMerchantClaimSession(pool, fixture.key, {
+            productId: fixture.product, merchantCheckoutId: checkoutId, browserNonceHash: nonceHash,
+            origin: fixture.origin,
+        });
+        assert.equal(created.created, true);
+        // The first response was lost; the catalog changed before the retry.
+        await client.query("UPDATE products SET status = 'inactive', stock = 0 WHERE id = $1", [fixture.product]);
+        const retry = await createMerchantClaimSession(pool, fixture.key, {
+            productId: fixture.product, merchantCheckoutId: checkoutId, browserNonceHash: nonceHash,
+            origin: fixture.origin,
+        });
+        assert.equal(retry.created, false);
+        assert.equal(retry.claimSessionId, created.claimSessionId);
+        // Availability still governs genuinely new checkouts.
+        await assert.rejects(createMerchantClaimSession(pool, fixture.key, {
+            productId: fixture.product, merchantCheckoutId: `other-${checkoutId}`, browserNonceHash: nonceHash,
+            origin: fixture.origin,
+        }), /not available/);
+    } finally { client.release(); await pool.end(); }
+});
+
 test('claims require the disclosure grant origin to match the session origin', async () => {
     const pool = createTestPool();
     const client = await pool.connect();

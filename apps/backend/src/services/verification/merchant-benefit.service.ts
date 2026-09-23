@@ -50,33 +50,66 @@ export function nairaToKobo(naira: number | string): number {
     return Math.round(amount * 100);
 }
 
+/** Release the catalog units held by expired unused reservations. Runs at
+ *  authorization expiry, independently of row retention, so an abandoned
+ *  checkout stops holding a sellable unit within minutes instead of days.
+ *  Single statement: the flag update and the stock restore commit
+ *  atomically even when the caller runs in autocommit. Returns the number
+ *  of units restored. */
+export async function restoreExpiredBenefitReservations(
+    tx: PoolClient,
+    options: { expiredBefore: Date },
+): Promise<number> {
+    const restored = await tx.query<{ units: number }>(
+        `WITH expired AS (
+             UPDATE merchant_benefit_authorizations
+             SET stock_restored_at = clock_timestamp()
+             WHERE transaction_id IS NULL AND expires_at < $1
+               AND stock_reserved AND stock_restored_at IS NULL
+             RETURNING product_id
+         ),
+         restocked AS (
+             UPDATE products AS p
+             SET stock = p.stock + e.units, updated_at = CURRENT_TIMESTAMP
+             FROM (SELECT product_id, count(*)::int AS units FROM expired GROUP BY product_id) AS e
+             WHERE p.id = e.product_id
+             RETURNING p.id
+         )
+         SELECT (SELECT count(*)::int FROM expired) AS units`,
+        [options.expiredBefore],
+    );
+    return restored.rows[0]?.units ?? 0;
+}
+
 /** Lifecycle cleanup for unused authorization rows only. Rows attached to a
  *  committed transaction are retained; receipts are never deleted here.
- *  Deleting an expired reservation restores its unit to catalog stock so
- *  abandoned checkouts never leak inventory. */
+ *  Single statement: rows whose reservations were never restored (for
+ *  example, cleanup ran while restores were skipped) release their units
+ *  in the same atomic step, so a crash between delete and restock cannot
+ *  strand inventory. Returns the number of rows deleted. */
 export async function deleteExpiredUnusedBenefitAuthorizations(
     tx: PoolClient,
     options: { expiredBefore: Date },
 ): Promise<number> {
-    const deleted = await tx.query<{ product_id: string; stock_reserved: boolean }>(
-        `DELETE FROM merchant_benefit_authorizations WHERE transaction_id IS NULL AND expires_at < $1
-         RETURNING product_id, stock_reserved`,
+    const deleted = await tx.query<{ deleted: number }>(
+        `WITH deleted AS (
+             DELETE FROM merchant_benefit_authorizations
+             WHERE transaction_id IS NULL AND expires_at < $1
+             RETURNING product_id, stock_reserved, stock_restored_at
+         ),
+         restocked AS (
+             UPDATE products AS p
+             SET stock = p.stock + d.units, updated_at = CURRENT_TIMESTAMP
+             FROM (SELECT product_id, count(*)::int AS units FROM deleted
+                   WHERE stock_reserved AND stock_restored_at IS NULL
+                   GROUP BY product_id) AS d
+             WHERE p.id = d.product_id
+             RETURNING p.id
+         )
+         SELECT (SELECT count(*)::int FROM deleted) AS deleted`,
         [options.expiredBefore],
     );
-    const reserved = (deleted.rows ?? []).filter((row) => row.stock_reserved);
-    if (reserved.length > 0) {
-        const restored = new Map<string, number>();
-        for (const row of reserved) {
-            restored.set(row.product_id, (restored.get(row.product_id) ?? 0) + 1);
-        }
-        for (const [productId, units] of restored) {
-            await tx.query(
-                'UPDATE products SET stock = stock + $2, updated_at = CURRENT_TIMESTAMP WHERE id = $1',
-                [productId, units],
-            );
-        }
-    }
-    return deleted.rowCount ?? 0;
+    return deleted.rows[0]?.deleted ?? 0;
 }
 
 /** Lifecycle cleanup for spent claim sessions. The nullable

@@ -83,16 +83,6 @@ export async function createMerchantClaimSession(
         );
         if (vendor.rowCount !== 1) throw new UnauthorizedError('Merchant unavailable');
         const vendorId = vendor.rows[0]!.id;
-        // The checkout starts only against sellable stock, and the session
-        // quotes the catalog prices now: the later authorization binds
-        // this quote instead of resampling a possibly edited catalog.
-        const product = await tx.query<{ id: string; price: string; student_price: string }>(
-            `SELECT id, price, student_price FROM products
-             WHERE id = $1 AND vendor_id = $2 AND status = 'active' AND deleted_at IS NULL AND stock > 0 FOR UPDATE`,
-            [input.productId, vendorId],
-        );
-        const quoted = product.rows[0];
-        if (!quoted) throw new BadRequestError('Product is not available for this merchant');
         const reconcile = (session: {
             id: string; product_id: string; browser_nonce_hash: string; origin: string | null; expires_at: Date; consumed_at: Date | null;
         }) => {
@@ -113,9 +103,21 @@ export async function createMerchantClaimSession(
             [vendorId, input.merchantCheckoutId],
         );
         // A checkout that already exists is reconciled against its binding
-        // first: product, nonce, or origin drift means the caller is replaying
-        // another checkout's handoff, not registering a new one.
+        // before any availability check: if the first creation committed
+        // but its response was lost, a retry must return the live session
+        // even when the catalog has since changed. Availability governs
+        // only genuinely new sessions.
         if (existing.rows[0]) return reconcile(existing.rows[0]);
+        // The checkout starts only against sellable stock, and the session
+        // quotes the catalog prices now: the later authorization binds
+        // this quote instead of resampling a possibly edited catalog.
+        const product = await tx.query<{ id: string; price: string; student_price: string }>(
+            `SELECT id, price, student_price FROM products
+             WHERE id = $1 AND vendor_id = $2 AND status = 'active' AND deleted_at IS NULL AND stock > 0 FOR UPDATE`,
+            [input.productId, vendorId],
+        );
+        const quoted = product.rows[0];
+        if (!quoted) throw new BadRequestError('Product is not available for this merchant');
         // The initiating site is merchant-declared but server-validated: it
         // must exactly match one of the vendor's active allowed origins, so
         // a multi-site merchant cannot be handed another site's handoff.

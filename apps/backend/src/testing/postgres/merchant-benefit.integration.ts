@@ -22,6 +22,7 @@ import {
     BENEFIT_CURRENCY,
     computePricingVersion,
     deleteExpiredUnusedBenefitAuthorizations,
+    restoreExpiredBenefitReservations,
 } from '../../services/verification/merchant-benefit.service.js';
 import {
     createVerificationToken,
@@ -989,6 +990,51 @@ test('authorization cleanup deletes only expired unused rows past retention', as
         assert.equal(remaining.includes(aged.benefitAuthorizationId), false);
         assert.equal(remaining.includes(used.benefitAuthorizationId), true);
         assert.equal(remaining.includes(fresh.benefitAuthorizationId), true);
+    } finally {
+        await server.close();
+        client.release();
+        await pool.end();
+    }
+});
+
+test('expired reservations release stock at authorization expiry, independent of row retention', async () => {
+    const pool = createTestPool();
+    const client = await pool.connect();
+    const server = await startReportServer();
+    try {
+        await assertFixtureDatabase(client);
+        const fixture = await enrolledFixture(pool, client);
+        const abandoned = await productAuthorization(pool, fixture);
+        const settled = await productAuthorization(pool, fixture);
+        const live = await productAuthorization(pool, fixture);
+        const committed = await postReport(server.endpoint, `Bearer ${vendorJwt(fixture)}`, {
+            benefitAuthorizationId: settled.benefitAuthorizationId, productId: fixture.product,
+            paymentReference: randomUUID(), amount: 8000, paymentGateway: 'other',
+        });
+        assert.equal(committed.status, 201);
+        assert.equal((await client.query('SELECT stock FROM products WHERE id = $1', [fixture.product])).rows[0].stock, 1);
+        await client.query("UPDATE merchant_benefit_authorizations SET expires_at = clock_timestamp() - interval '1 minute' WHERE id = ANY($1::uuid[])",
+            [[abandoned.benefitAuthorizationId, settled.benefitAuthorizationId]]);
+        // The restore sweeps every vendor, so only fixture-scoped effects
+        // are asserted exactly; the global count is a lower bound.
+        assert.ok(await restoreExpiredBenefitReservations(client, { expiredBefore: new Date() }) >= 1);
+        assert.equal((await client.query('SELECT stock FROM products WHERE id = $1', [fixture.product])).rows[0].stock, 2);
+        const flags = (await client.query(
+            'SELECT id, stock_restored_at FROM merchant_benefit_authorizations WHERE vendor_id = $1',
+            [fixture.vendor],
+        )).rows as { id: string; stock_restored_at: Date | null }[];
+        const flagById = new Map(flags.map((row) => [row.id, row.stock_restored_at]));
+        const restoredAt = flagById.get(abandoned.benefitAuthorizationId);
+        assert.ok(restoredAt instanceof Date);
+        assert.equal(flagById.get(settled.benefitAuthorizationId), null);
+        assert.equal(flagById.get(live.benefitAuthorizationId), null);
+        // Idempotent: a second pass never re-restores this fixture's rows.
+        await restoreExpiredBenefitReservations(client, { expiredBefore: new Date() });
+        assert.equal((await client.query('SELECT stock FROM products WHERE id = $1', [fixture.product])).rows[0].stock, 2);
+        const reread = (await client.query<{ stock_restored_at: Date }>(
+            'SELECT stock_restored_at FROM merchant_benefit_authorizations WHERE id = $1', [abandoned.benefitAuthorizationId],
+        )).rows[0]!.stock_restored_at;
+        assert.equal(reread.getTime(), (restoredAt as Date).getTime());
     } finally {
         await server.close();
         client.release();

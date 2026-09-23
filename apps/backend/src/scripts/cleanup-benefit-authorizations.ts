@@ -1,6 +1,6 @@
 import pg from 'pg';
 import dotenv from 'dotenv';
-import { deleteExpiredClaimSessions, deleteExpiredUnusedBenefitAuthorizations } from '../services/verification/merchant-benefit.service.js';
+import { deleteExpiredClaimSessions, deleteExpiredUnusedBenefitAuthorizations, restoreExpiredBenefitReservations } from '../services/verification/merchant-benefit.service.js';
 
 dotenv.config({ override: false, quiet: true });
 
@@ -40,9 +40,12 @@ async function main(): Promise<void> {
         const client = await pool.connect();
         try {
             const expiredBefore = new Date(Date.now() - RETENTION_DAYS * 86_400_000);
+            // Abandoned checkouts release their reserved units at
+            // authorization expiry, independent of the row-retention window.
+            const restored = await restoreExpiredBenefitReservations(client, { expiredBefore: new Date() });
             const deleted = await deleteExpiredUnusedBenefitAuthorizations(client, { expiredBefore });
             const sessions = await deleteExpiredClaimSessions(client, { expiredBefore });
-            process.stdout.write(`benefit authorization cleanup complete: deleted=${deleted} sessions=${sessions}\n`);
+            process.stdout.write(`benefit authorization cleanup complete: restored=${restored} deleted=${deleted} sessions=${sessions}\n`);
         } finally {
             client.release();
         }

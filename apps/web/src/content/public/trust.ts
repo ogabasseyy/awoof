@@ -46,7 +46,7 @@ export const trustSections: TrustSection[] = [
   {
     heading: 'Limits',
     paragraphs: [
-      'This page describes the verification product as designed and shipped. Awoof does not claim security certifications, audits, or accreditations it has not earned, and does not promise integrations, response times, or enforcement behavior beyond what the current release supports.',
+      'This page describes the verification product as designed and currently implemented. Awoof does not claim security certifications, audits, or accreditations it has not earned, and does not promise integrations, response times, or enforcement behavior beyond what is implemented, deployed, and evidenced in the cutover record.',
       'There is currently no public bug-bounty or guaranteed-timeline security process. If you find a security problem, report it through in-app support after signing in so it reaches the team with your account context.',
       'Privacy and terms documents ship only with owner-approved legal content. Until then, this trust center and the help pages are the public record — not a substitute policy.',
     ],

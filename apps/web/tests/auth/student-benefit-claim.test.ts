@@ -61,17 +61,19 @@ test('enrollment failures route to explicit verification without auto-submit', (
     assert.equal(requireEnrollmentVerification(next, '/marketplace/p').step, 'verify_required');
 });
 
-test('retry returns to ready for an explicit second attempt, never to claiming', () => {
+test('retry reloads through loading so a failed reload stays failure-reportable', () => {
     const verifying = requireEnrollmentVerification(beginClaim(markReady(beginLoading(idle(), 's'), {
         vendorName: 'V', productName: 'P', studentPrice: '1.00',
     })), '/marketplace/p');
     const retried = retryClaim(verifying);
-    assert.equal(retried.step, 'ready');
+    assert.equal(retried.step, 'loading');
     assert.equal(retried.attempt, 1);
     const failed = failClaim(beginClaim(markReady(beginLoading(idle(), 's'), {
         vendorName: 'V', productName: 'P', studentPrice: '1.00',
     })), 'network');
-    assert.equal(retryClaim(failed).step, 'ready');
+    const reloading = retryClaim(failed);
+    assert.equal(reloading.step, 'loading');
+    assert.equal(failClaim(reloading, 'again').step, 'error');
     assert.equal(retryClaim(idle()).step, 'idle');
 });
 
