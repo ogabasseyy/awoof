@@ -4,8 +4,7 @@ import type { Pool, PoolClient } from 'pg';
 import { UnauthorizedError, RateLimitError } from '../../common/errors/AppError.js';
 
 const derive = promisify(pbkdf2);
-// codeql[js/insufficient-password-hash]: index fingerprint over a 256-bit
-// random token, not a password hash; authentication verifies PBKDF2-100k.
+// codeql[js/insufficient-password-hash]: index fingerprint over a 256-bit random token, not a password hash; authentication verifies PBKDF2-100k.
 const lookup = (token: string) => createHash('sha256').update(token).digest('hex');
 type Database = Pick<Pool, 'query' | 'connect'>;
 
