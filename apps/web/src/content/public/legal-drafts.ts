@@ -10,65 +10,81 @@ export const legalOperator = 'Awoof Digital Services (RC 8449678)';
 export const privacyDraft: readonly LegalDraftSection[] = [
   {
     id: 'operator',
-    heading: 'Who operates Awoof',
+    heading: 'Who we are and how to reach us',
     paragraphs: [
-      `${legalOperator} operates the Awoof service from 2 Olaide Tomori Street, Ikeja, Lagos, Nigeria. This draft covers students, merchants and other people who use our website, accounts, verification and support features.`,
-      'For privacy and legal requests, contact support@awoof.tech. Until the data-handling and retention review is complete, this draft is not an effective privacy policy.',
+      `${legalOperator} operates Awoof from 2 Olaide Tomori Street, Ikeja, Lagos, Nigeria. This notice is for people using Awoof as students or merchants, and for people who contact our support team.`,
+      'You can ask us about your personal information at support@awoof.tech, including if you cannot sign in to your account.',
     ],
   },
   {
     id: 'information',
-    heading: 'Information the service handles',
+    heading: 'Information we collect',
     paragraphs: [
-      'Account and profile records can include your name, email address, institution, registration number or phone number when provided, role, account status and a password hash if you use a password. We do not ask for your school-account password when you sign in through Microsoft or Google.',
-      'Verification features handle code challenges, school-mailbox evidence, linked provider identity information, institutional or enrollment observations when an approved source is available, verification status and expiry, and consent history. Marketplace, merchant, payment and support features can also create offer, transaction, payment-reference, integration and ticket records.',
-      'The website uses browser storage for account sessions and short-lived cookies for sign-in or verification redirects. Technical request and diagnostic records help operate and protect those flows. A final policy needs an operational review of each category and provider.',
+      'When you create or use an account, we handle details such as your name, email address, institution, student or registration number if supplied, contact details, account role and status. If you use an Awoof password, we store a protected password hash rather than the password itself.',
+      'When you request verification, we handle the school email address, code-challenge records, sign-in identity returned by a school-account provider, verification method, result and expiry. Where an enrollment source is available, we also handle the evidence and decision needed to check current-student status. Microsoft or Google handles your school-account password; you do not enter it into Awoof.',
+      'If you use offers, payments, merchant tools or support, we may handle offer activity, transaction and payment references, merchant integration records, consent choices and support messages. We also receive technical information needed to run and protect the service, such as session and request records.',
+    ],
+  },
+  {
+    id: 'sources',
+    heading: 'Where information comes from',
+    paragraphs: [
+      'Some information comes from you. A school-account provider can return identity details after you choose its sign-in. A participating institution or another approved source may provide enrollment evidence where that connection is available. Merchants and payment providers may return the status of an offer, checkout or payment. We do not assume every school has an active connection to Awoof.',
     ],
   },
   {
     id: 'verification',
     heading: 'Verification is more than a school sign-in',
     paragraphs: [
-      'An Awoof account login establishes access to that account. A school email code or Microsoft/Google sign-in can establish control of a school account. Neither, on its own, establishes that a person is currently enrolled.',
-      'Current-student eligibility requires separate, current enrollment evidence from a configured source. If that evidence is missing, unavailable, expired or revoked, the account must not be treated as eligible for an enrollment-only benefit. Which methods are available depends on the institution and the configured release.',
+      'Signing in to Awoof shows that you can access your Awoof account. Receiving a code at a school email address or signing in with Microsoft or Google can show control of that school account. Neither step, by itself, proves that you are currently enrolled.',
+      'For a benefit that requires current enrollment, Awoof needs separate, current enrollment evidence from a configured source. If that evidence is unavailable, expired or withdrawn, an account should not be treated as eligible for that benefit. Available checks differ by institution and release.',
     ],
   },
   {
     id: 'purposes',
-    heading: 'Why the service handles information',
+    heading: 'How we use information',
     paragraphs: [
-      'Awoof uses these records to create and secure accounts, perform requested verification checks, determine benefit eligibility, record consent, provide offers or transaction features, answer support requests, and detect misuse. The lawful basis for each processing purpose still needs owner and legal confirmation before publication.',
+      'We use information to set up and secure accounts, carry out the checks you request, record verification and consent choices, determine eligibility for applicable benefits, support marketplace and payment flows, respond to requests, and investigate misuse or service problems.',
+      'We ask for a processing consent before certain verification actions and a separate merchant-specific disclosure grant before a merchant check. Other account, transaction and security records may be needed to provide the service or meet legal duties. Withdrawing a consent can stop future processing based on that consent, but may not undo a completed transaction or remove records we must keep for another lawful reason.',
     ],
   },
   {
     id: 'merchants',
     heading: 'Merchant disclosures',
     paragraphs: [
-      'A merchant verification check requires a grant scoped to that merchant and purpose. The server-side exchange can return an eligibility result, merchant-specific pseudonym, assurance method, institution identifier, verification and expiry times, campaign identifier, and receipt or benefit-authorization identifier. This is not the same as giving the merchant the student’s Awoof account ID, email address or verification documents.',
-      'A merchant may separately receive information you give it directly during its own checkout. Merchants set their offers and operate their own checkout and privacy practices. Withdrawing an Awoof disclosure grant stops future checks; it does not erase a receipt already issued.',
+      'A merchant can request an Awoof eligibility result only through the applicable merchant-specific authorization flow. If you grant that request, Awoof may return whether you are eligible, a merchant-specific identifier, the verification method, institution identifier, verification and expiry times, and a receipt or benefit-authorization identifier. The standard result does not give the merchant your Awoof account ID, school email address or verification documents.',
+      'A merchant may obtain other information directly from you at its own checkout. Its offer, checkout and privacy practices are separate from Awoof’s. If you withdraw a merchant disclosure grant, that stops future checks under the grant; it does not erase results or receipts already issued.',
     ],
   },
   {
     id: 'providers',
-    heading: 'Schools, identity providers and service providers',
+    heading: 'Who else handles information',
     paragraphs: [
-      'When you choose an available school sign-in, Microsoft or Google authenticates that school account and returns limited identity information to Awoof. An approved institution integration may return separate enrollment evidence. Email delivery, hosting, payments and support infrastructure may process the information needed to perform their functions. The final policy needs a verified provider and transfer inventory; this draft does not assert where every provider stores data.',
+      'Depending on the feature you use, school-account providers, participating institutions, email-delivery providers, hosting providers, payment processors and support-service providers may handle information needed for their part of the service. Awoof may also disclose information when required by law or to protect the service and its users, subject to applicable law.',
+      'Some providers may process information outside Nigeria. Awoof does not promise that all information stays in Nigeria. Cross-border handling must follow applicable data-protection law; contact us if you want to ask where a particular service processes your information.',
+    ],
+  },
+  {
+    id: 'storage',
+    heading: 'Cookies and account security',
+    paragraphs: [
+      'Awoof uses browser storage for account sessions and short-lived cookies during some sign-in and verification redirects. We use technical records to help maintain and protect those flows. Please protect your account and tell us at support@awoof.tech if you believe someone else has accessed it.',
     ],
   },
   {
     id: 'retention',
     heading: 'Retention and deletion',
     paragraphs: [
-      'The code scrubs expired verification challenge payloads and digests after a bounded delay, while keeping non-secret tombstone identifiers needed by linked evidence. It also deletes Microsoft diagnostic events older than 30 days. Those narrow technical rules are not a complete retention schedule.',
-      'Account, identity, consent, verification evidence, merchant receipts, transactions, payment references and support records may have different retention requirements. Their final periods, deletion process, backups and any legal holds need operational and legal confirmation before this page can become a policy. Do not assume that unlinking a school account or withdrawing consent deletes historical records.',
+      'We keep different records for different reasons: operating an account, checking eligibility, recording consent, supporting a transaction, resolving a complaint, protecting the service or meeting a legal obligation. How long a record is kept depends on its purpose and any applicable record-keeping requirement.',
+      'Unlinking a school account or withdrawing consent does not automatically delete earlier transaction, consent or merchant-receipt records. You may contact us to ask what we hold and to request deletion where the law permits.',
     ],
   },
   {
     id: 'choices',
     heading: 'Your choices and rights',
     paragraphs: [
-      'Signed-in students can inspect verification status and consent history and withdraw applicable grants. Depending on the circumstances, you may also have rights to information, access, correction, deletion, objection and withdrawal of consent under applicable law, and to complain to the Nigeria Data Protection Commission.',
-      'People who cannot sign in can contact support@awoof.tech about privacy requests. The final policy must explain how requests are authenticated and handled.',
+      'Signed-in students can view their verification status and consent history and withdraw applicable grants. You may also ask about access, correction, deletion or other rights available under Nigerian data-protection law. We may need to check your identity before acting on a request so that we do not disclose or change someone else’s information.',
+      'People who cannot sign in can contact support@awoof.tech. If you are dissatisfied with our response, you may raise a complaint with the Nigeria Data Protection Commission.',
     ],
   },
 ];
@@ -76,55 +92,65 @@ export const privacyDraft: readonly LegalDraftSection[] = [
 export const termsDraft: readonly LegalDraftSection[] = [
   {
     id: 'operator',
-    heading: 'About the service',
+    heading: 'About Awoof and these terms',
     paragraphs: [
-      `${legalOperator} operates Awoof from 2 Olaide Tomori Street, Ikeja, Lagos, Nigeria. These proposed terms describe student accounts, verification, the marketplace and merchant integrations. They are a review draft, not an agreement currently offered for acceptance.`,
-      'Legal questions can be sent to support@awoof.tech. The effective date, governing-law and dispute provisions require review before these terms can be published.',
+      `${legalOperator} operates Awoof from 2 Olaide Tomori Street, Ikeja, Lagos, Nigeria. Awoof provides student-account and verification features, a place to discover offers, and tools that let participating merchants check eligibility. These terms describe how to use those services.`,
+      'Questions about these terms can be sent to support@awoof.tech.',
     ],
   },
   {
     id: 'accounts',
-    heading: 'Accounts and school sign-in',
+    heading: 'Your account and school sign-in',
     paragraphs: [
-      'A student may create an Awoof account using an available registration method. Keep account credentials private and provide accurate information. Awoof may require a new sign-in or verification when security, school policy or evidence expiry requires it.',
-      'Microsoft or Google school sign-in authenticates with that provider. Awoof does not ask for the provider password. Schools and identity providers control their own accounts, permissions and availability.',
+      'Give accurate information when you create or update an account, keep your sign-in credentials private and tell us if you suspect unauthorized access. Do not use someone else’s account or let someone else use yours to claim a student benefit. We may ask you to sign in or verify again when evidence expires or a security check requires it.',
+      'If you choose Microsoft or Google school sign-in, that provider authenticates you. Awoof does not ask for your school-account password. Your school and its identity provider control whether that account is available and which information it can return.',
     ],
   },
   {
     id: 'eligibility',
     heading: 'Eligibility and offers',
     paragraphs: [
-      'Awoof account access alone does not establish current enrollment. A school-account check and a current-enrollment check are distinct. An enrollment-only benefit requires valid enrollment evidence and any required merchant-specific consent at the time of the check.',
-      'Merchants set the terms of their own offers, including availability, exclusions, prices and redemption rules. An Awoof verification result does not guarantee that a merchant will accept a purchase or provide a discount. Supported institutions and methods may change; a school email domain is not a promise of live integration.',
+      'Awoof account access alone does not establish current enrollment. Control of a school email account is also different from proof of current enrollment. Where a benefit requires current-student status, you must have current enrollment evidence accepted for that benefit and make any required merchant-specific disclosure choice. If a check cannot establish eligibility, you cannot use that enrollment-only benefit through Awoof.',
+      'Merchants set the terms of their own offers, including prices, availability, exclusions and redemption rules. Check the offer and checkout details before proceeding. Awoof verification does not guarantee that a merchant will complete a sale or honor an offer that has ended. A school email domain does not mean its institution has a live enrollment integration.',
     ],
   },
   {
     id: 'merchants',
     heading: 'Merchant integrations',
     paragraphs: [
-      'Participating merchants must use their own server-side credentials to exchange an authorized, short-lived verification code and apply the result to their checkout. A merchant is responsible for its offer, transaction terms and handling of information it collects directly from a customer.',
-      'Awoof does not authorize placing private merchant keys in a browser or using a shared coupon or public URL as proof that a person is eligible.',
-    ],
-  },
-  {
-    id: 'use',
-    heading: 'Responsible use',
-    paragraphs: [
-      'The proposed rules would prohibit false enrollment claims, use of another person’s account, sharing verification codes or merchant keys, attempts to bypass eligibility checks, and interference with the service. Exact enforcement, suspension, appeal and termination wording must be reviewed against the implemented account processes before these terms take effect.',
+      'If you operate a merchant integration, use the credentials and server-side exchange provided for your own organization and only for the approved purpose. Do not put private merchant keys in a public webpage, share them with another merchant or treat a copied code or public URL as proof of eligibility.',
+      'You are responsible for the offers you publish, your own customer checkout, fulfillment and refund terms, and information you collect directly from customers. An Awoof eligibility result must be used only for its permitted purpose and duration.',
     ],
   },
   {
     id: 'payments',
-    heading: 'Transactions and payments',
+    heading: 'Purchases, payments and refunds',
     paragraphs: [
-      'Some offers may lead to a merchant checkout or a payment flow. The applicable price, fulfillment, refund and payment terms must be shown for the specific transaction. This draft does not assign responsibility for every transaction or promise that all advertised offers are immediately redeemable.',
+      'Some offers send you to a merchant’s checkout; others may use a payment flow started through Awoof. Review the price, seller, payment method and applicable terms shown for the particular purchase before you pay. A payment processor may handle the payment, and its own terms may also apply.',
+      'For a merchant-hosted checkout, ask the merchant about the order, delivery or refund under its stated terms. For a purchase started through Awoof, contact support@awoof.tech with the transaction reference if you need help identifying the responsible seller or resolving a payment issue. A successful eligibility check is not a completed purchase.',
+    ],
+  },
+  {
+    id: 'use',
+    heading: 'Using Awoof responsibly',
+    paragraphs: [
+      'Do not make a false enrollment claim, use another person’s identity, share verification codes, interfere with security checks, probe accounts or systems without permission, or use Awoof to deceive a merchant or another student. Do not use merchant tools to collect or disclose student information beyond the approved check.',
+      'We may restrict a feature or account while investigating misuse, a security risk or a legal requirement. If you believe a restriction is a mistake, contact support@awoof.tech so we can review it. Access to a particular offer may also end when its eligibility evidence or merchant authorization expires.',
+    ],
+  },
+  {
+    id: 'privacy',
+    heading: 'Privacy and your choices',
+    paragraphs: [
+      'Our privacy notice explains what information Awoof handles and how to ask about it. A school-account sign-in and a merchant-specific disclosure are separate choices. Withdrawing a merchant disclosure grant stops future checks under that grant but cannot retract a result already sent or reverse a completed purchase.',
     ],
   },
   {
     id: 'changes',
-    heading: 'Changes and questions',
+    heading: 'Changes and contact',
     paragraphs: [
-      'Before these terms become effective, Awoof must approve the final wording, effective date, notice process and legal contact. Material updates should be identified to users through an approved notice process. For current product guidance, see the help and trust pages; neither replaces effective legal terms.',
+      'We may update these terms as the service changes. We will show the effective date of a new version and give notice of material changes through an appropriate account or service channel before they apply. If you do not agree to a future effective version, you should stop using the affected service and contact us about your account.',
+      'Contact support@awoof.tech with questions about your account, an eligibility result or these terms. Your rights under applicable law are not removed by these terms.',
     ],
   },
 ];
