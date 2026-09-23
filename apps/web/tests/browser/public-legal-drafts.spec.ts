@@ -43,6 +43,17 @@ test('terms draft does not promise discounts or universal school support', async
   await expect(page.locator('main')).toContainText('Merchants set the terms of their own offers');
 });
 
+test('cookies notice discloses the homepage first-visit preference', async ({ page }) => {
+  await page.goto('/cookies');
+  await expect(page.locator('#essential')).toContainText('first-visit preference in local storage');
+});
+
+test('legal notice states merchant-order and schedule-annex conditions separately', async ({ page }) => {
+  await page.goto('/legal/merchant-terms');
+  await expect(page.locator('main')).toContainText('Merchant terms apply only through a separately accepted order form');
+  await expect(page.locator('main')).toContainText('completed annexes, before personal data is exchanged');
+});
+
 test('legal navigation and sitemap expose approved policies with partner execution boundaries', async ({ page }) => {
   await page.goto('/legal');
   const navigation = page.getByRole('navigation', { name: 'Legal documents', exact: true });

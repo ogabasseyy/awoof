@@ -22,7 +22,7 @@ import {
 import { normalizeMailbox } from '../services/verification/eligibility-policy.service.js';
 import { readStudentAssuranceOrNull } from '../services/verification/student-assurance.service.js';
 import type { StudentAssurance } from '../services/verification/student-assurance.types.js';
-import { VERIFICATION_NOTICE_TEXT, VERIFICATION_NOTICE_VERSION } from '../services/verification/verification-notices.js';
+import { STUDENT_TERMS_VERSION, VERIFICATION_NOTICE_TEXT, VERIFICATION_NOTICE_VERSION } from '../services/verification/verification-notices.js';
 import {
     AppError,
     BadRequestError,
@@ -782,6 +782,8 @@ export class AuthController {
             matricNumber: z.string().max(100, 'Matric number must be at most 100 characters').nullable().optional(),
             verificationConsent: z.literal(true),
             noticeVersion: z.literal(VERIFICATION_NOTICE_VERSION),
+            termsAccepted: z.literal(true),
+            termsVersion: z.literal(STUDENT_TERMS_VERSION),
         }).strict();
 
         const validated = schema.parse(req.body);
@@ -794,6 +796,8 @@ export class AuthController {
                 matricNumber: validated.matricNumber ?? null,
                 verificationConsent: validated.verificationConsent,
                 noticeVersion: validated.noticeVersion,
+                termsAccepted: validated.termsAccepted,
+                termsVersion: validated.termsVersion,
             });
             success(res, {
                 message: 'Signup code sent. Please enter it to complete registration.',
@@ -823,6 +827,8 @@ export class AuthController {
             challengeId: z.string().uuid('Invalid signup challenge ID'),
             verificationConsent: z.literal(true),
             noticeVersion: z.literal(VERIFICATION_NOTICE_VERSION),
+            termsAccepted: z.literal(true),
+            termsVersion: z.literal(STUDENT_TERMS_VERSION),
         }).strict();
 
         const validated = schema.parse(req.body);
@@ -839,6 +845,8 @@ export class AuthController {
                 matricNumber: validated.matricNumber ?? null,
                 verificationConsent: validated.verificationConsent,
                 noticeVersion: validated.noticeVersion,
+                termsAccepted: validated.termsAccepted,
+                termsVersion: validated.termsVersion,
                 challengeId: validated.challengeId,
                 otp: validated.otp,
                 password: validated.password,
@@ -885,6 +893,9 @@ export class AuthController {
                 verificationNotice: {
                     version: VERIFICATION_NOTICE_VERSION,
                     text: VERIFICATION_NOTICE_TEXT,
+                },
+                studentTerms: {
+                    version: STUDENT_TERMS_VERSION,
                 },
             },
         });

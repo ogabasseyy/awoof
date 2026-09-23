@@ -32,15 +32,19 @@ function hasValidCanonicalOutput(value: unknown): boolean {
 }
 
 test('preflight requires explicit support and a usable server notice', () => {
-  assert.equal(parseSignupPreflight({ success: true, data: { supported: 'true', verificationNotice: notice } }), null);
-  assert.equal(parseSignupPreflight({ success: false, data: { supported: true, verificationNotice: notice } }), null);
-  assert.equal(parseSignupPreflight({ success: true, data: { supported: true, verificationNotice: { version: '', text: 'x' } } }), null);
-  const unsupported = parseSignupPreflight({ success: true, data: { supported: false, verificationNotice: notice } });
+  const terms = { version: '2026-09-23.v1' };
+  assert.equal(parseSignupPreflight({ success: true, data: { supported: 'true', verificationNotice: notice, studentTerms: terms } }), null);
+  assert.equal(parseSignupPreflight({ success: false, data: { supported: true, verificationNotice: notice, studentTerms: terms } }), null);
+  assert.equal(parseSignupPreflight({ success: true, data: { supported: true, verificationNotice: { version: '', text: 'x' }, studentTerms: terms } }), null);
+  assert.equal(parseSignupPreflight({ success: true, data: { supported: true, verificationNotice: notice } }), null);
+  assert.equal(parseSignupPreflight({ success: true, data: { supported: true, verificationNotice: notice, studentTerms: { version: '' } } }), null);
+  const unsupported = parseSignupPreflight({ success: true, data: { supported: false, verificationNotice: notice, studentTerms: terms } });
   assert.equal(
     unsupported !== null
       && unsupported.supported === false
       && unsupported.verificationNotice.version === notice.version
-      && unsupported.verificationNotice.text === notice.text,
+      && unsupported.verificationNotice.text === notice.text
+      && unsupported.studentTerms.version === terms.version,
     true,
   );
 });

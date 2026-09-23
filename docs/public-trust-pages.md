@@ -1,25 +1,31 @@
 # Public trust and partner pages
 
-Research/repository review: 2026-09-20, inventory refreshed 2026-09-23. Status: first-batch pages shipped; `/privacy` and `/terms` have non-indexable review drafts only. They are not approved policies and are excluded from the public footer and sitemap. This file is internal planning, not public security assurance.
+Research/repository review: 2026-09-20, inventory refreshed 2026-09-23. Status: first-batch pages shipped; legal policies published as approved release v1.0 (see below). This file is internal planning, not public security assurance.
 
-### Legal-review package added 23 September 2026
+### Legal publication — approved release v1.0, 23 September 2026 (current)
 
-| Route | Local status and purpose | Publication decision |
+The owner reported lawyer approval of the five-document package and authorized publication ([authorization record](legal-publication-approval.md)). Release v1.0 publishes these routes indexed (`index, follow`), linked from the public footer, auth navigation and sitemap:
+
+| Route | Published purpose | Standing condition |
 | --- | --- | --- |
-| `/legal` | Counsel reading guide, source links and unresolved approval items | Draft/noindex only |
-| `/privacy` | Expanded privacy notice, lawful-basis proposals, recipients, automated decisions and rights | Draft/noindex only |
-| `/terms` | Student/website terms, checkout responsibilities, IP, restrictions, liability and disputes | Draft/noindex only |
-| `/cookies` | Separate cookies/browser-storage notice | Draft/noindex only; production inventory still required |
-| `/legal/merchant-terms` | Proposed business terms requiring an accepted order form/payment schedule | Draft/noindex only; not an executed agreement |
-| `/legal/data-protection` | Proposed controller-sharing/processor modules and integration annex | Draft/noindex only; roles and annexes incomplete |
+| `/legal` | Reader-facing legal directory | Version 1.0; no internal review notes |
+| `/privacy` | Privacy notice: purposes, lawful bases, recipients, automated decisions, rights | Version 1.0; storage inventory per `/cookies` |
+| `/terms` | Student/website terms, checkout responsibilities, IP, restrictions, liability and disputes | Version 1.0; acceptance captured at registration |
+| `/cookies` | Cookies/browser-storage notice | Version 1.0 |
+| `/legal/merchant-terms` | Business terms requiring an accepted order form/payment schedule | Terms alone execute no agreement |
+| `/legal/data-protection` | Controller-sharing/processor modules and integration annex | Personal-data exchange requires completed annexes |
 
-These routes are connected through draft navigation, not the public footer or sitemap. Noindex is not access control. [Counsel handoff](legal-review-handoff.md) records research, source evidence, candidate retention periods, commercial choices and deployment/operational gaps. No source edit here enables a new integration or makes a draft legal commitment effective. Existing historical inventory below remains background; it does not supersede this review status.
+[Counsel handoff](legal-review-handoff.md) records research, source evidence, candidate retention periods, commercial choices and deployment/operational gaps. Publication does not execute merchant agreements, create historical terms acceptance, or represent new operational controls. Existing historical inventory below remains background.
+
+### Historical note (superseded 23 September 2026)
+
+Before owner authorization, the same routes existed as draft/noindex review copies excluded from the footer and sitemap: `/legal` as a counsel reading guide, `/privacy` and `/terms` as candidate notices, `/cookies` pending a production inventory, and the merchant/data-protection pages as proposed modules. The draft-only guidance is retained in git history and in the superseded sections of [legal-policy-review.md](legal-policy-review.md); do not follow it for the published routes.
 
 ## Repository evidence
 
 The read-only inventory checked the working tree and origin/main at 4e47ea0. The local branch is divergent; implementation should start from a fresh isolated origin/main worktree, preserving existing work.
 
-Shipped since the first review: `/trust`, `/help`, `/contact`, `/partner`, and `/developers` now have matching page routes. `/privacy` and `/terms` now have draft routes for owner/legal review only; do not use them as effective policies or Microsoft consent links. Relevant entry points are the public footer, `apps/web/src/app/sitemap.ts`, homepage FAQ components, and the authenticated vendor integration/support journeys.
+Shipped since the first review: `/trust`, `/help`, `/contact`, `/partner`, and `/developers` now have matching page routes, and the six legal routes are published as approved release v1.0 (indexed, footer/sitemap/auth-navigation linked) per the publication record above; do not use them as Microsoft consent links. Relevant entry points are the public footer, `apps/web/src/app/sitemap.ts`, homepage FAQ components, and the authenticated vendor integration/support journeys.
 
 The broken links are specifically in the inline footer in `apps/web/src/app/marketplace/page.tsx`; the homepage has a separate Footer component. The root layout does not mount shared public navigation, so provide an explicit reusable public shell. Homepage social links use `#` and should not be presented as real destinations.
 
@@ -54,7 +60,7 @@ Use existing Awoof visual tokens, public header/footer and an accessible editori
 
 ### Required content with publication dependencies
 
-- `/privacy` and `/terms`: review-only routes now exist with `noindex` and a visible draft notice, but they are not effective policies and must not be linked from the public footer, sitemap, signup notices, or Microsoft consent. They need a confirmed registered address, public privacy/legal contact, verified processing/provider inventory, retention schedule, lawful-basis mapping, owner approval and legal review. Track remaining decisions in `docs/legal-policy-review.md` and add public links only after approval.
+- `/privacy` and `/terms`: published as approved release v1.0 (indexed, footer/sitemap/auth-navigation linked) after owner-reported lawyer approval — see `docs/legal-publication-approval.md`. They must not be used as Microsoft consent links. Remaining operating work (retention schedule, provider inventory verification, Azure branding URLs) is tracked in `docs/legal-policy-review.md` and the counsel handoff; future text changes need fresh review and sign-off before becoming effective.
 - `/developers`: add after validating actual public API contracts, authentication, failure modes and merchant examples against source/tests. Link the authenticated integration screen appropriately. Never publish private keys, guessed endpoints or planned interfaces as live.
 - Security reporting: include a `/trust` section once a monitored reporting channel is confirmed. A separate disclosure policy or security.txt requires approved contact/expiry and policy details; no invented bug bounty or safe-harbor commitments.
 - Accessibility information: add a short help/contact section for reporting access barriers; a formal conformance statement requires an audit.

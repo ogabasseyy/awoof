@@ -8,6 +8,8 @@ export type StudentSignupClaims = Readonly<{
   matricNumber: string | null;
   verificationConsent: true;
   noticeVersion: string;
+  termsAccepted: true;
+  termsVersion: string;
 }>;
 
 export type SignupReceipt = Readonly<{
@@ -20,6 +22,7 @@ export type SignupReceipt = Readonly<{
 export type SignupPreflight = Readonly<{
   supported: boolean;
   verificationNotice: Readonly<{ version: string; text: string }>;
+  studentTerms: Readonly<{ version: string }>;
 }>;
 
 export type SignupConfirmation = StudentSignupClaims & Readonly<{
@@ -88,6 +91,7 @@ function hasSuccessfulOuterResponse(value: unknown): Record<string, unknown> | n
 export function parseSignupPreflight(body: unknown): SignupPreflight | null {
   const data = hasSuccessfulOuterResponse(body);
   const verificationNotice = asRecord(data?.verificationNotice);
+  const studentTerms = asRecord(data?.studentTerms);
   if (
     !data
     || typeof data.supported !== 'boolean'
@@ -96,12 +100,18 @@ export function parseSignupPreflight(body: unknown): SignupPreflight | null {
     || verificationNotice.version.trim().length === 0
     || typeof verificationNotice.text !== 'string'
     || verificationNotice.text.trim().length === 0
+    || !studentTerms
+    || typeof studentTerms.version !== 'string'
+    || studentTerms.version.trim().length === 0
   ) return null;
   return {
     supported: data.supported,
     verificationNotice: {
       version: verificationNotice.version,
       text: verificationNotice.text,
+    },
+    studentTerms: {
+      version: studentTerms.version,
     },
   };
 }

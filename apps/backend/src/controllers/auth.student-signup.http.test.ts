@@ -6,7 +6,7 @@ import { AuthController } from './auth.controller.js';
 import { errorHandler } from '../common/middleware/errorHandler.js';
 import { createAuthRouter } from '../routes/auth.routes.js';
 import { StudentSignupRateLimitError } from '../services/auth/student-signup.service.js';
-import { VERIFICATION_NOTICE_TEXT, VERIFICATION_NOTICE_VERSION } from '../services/verification/verification-notices.js';
+import { STUDENT_TERMS_VERSION, VERIFICATION_NOTICE_TEXT, VERIFICATION_NOTICE_VERSION } from '../services/verification/verification-notices.js';
 
 const universityId = '4f088fa7-79d9-4c64-a48c-9ecbbbc3c4a3';
 
@@ -74,6 +74,7 @@ test('uses the production student handlers for preflight, request, confirm, and 
             supported: false,
             reason: 'This school email domain is not approved.',
             verificationNotice: { version: VERIFICATION_NOTICE_VERSION, text: VERIFICATION_NOTICE_TEXT },
+            studentTerms: { version: STUDENT_TERMS_VERSION },
         });
 
         const request = await fetch(`${baseUrl}/student/register-request`, {
@@ -81,6 +82,7 @@ test('uses the production student handlers for preflight, request, confirm, and 
             body: JSON.stringify({
                 universityId, email: 'ada@students.school.example', name: 'Ada Student',
                 verificationConsent: true, noticeVersion: VERIFICATION_NOTICE_VERSION,
+                termsAccepted: true, termsVersion: STUDENT_TERMS_VERSION,
             }),
         });
         assert.equal(request.status, 200);
@@ -97,6 +99,7 @@ test('uses the production student handlers for preflight, request, confirm, and 
                 universityId, email: 'ada@students.school.example', name: 'Ada Student', password: 'StrongPass123!',
                 challengeId: 'f996cc5f-04e8-4a74-a11e-4de10f00af10', otp: '123456',
                 verificationConsent: true, noticeVersion: VERIFICATION_NOTICE_VERSION,
+                termsAccepted: true, termsVersion: STUDENT_TERMS_VERSION,
             }),
         });
         assert.equal(confirmation.status, 201);
@@ -136,15 +139,28 @@ test('rejects stale notice data before confirmation and maps a service cooldown 
                 universityId, email: 'ada@students.school.example', name: 'Ada Student', password: 'StrongPass123!',
                 challengeId: 'f996cc5f-04e8-4a74-a11e-4de10f00af10', otp: '123456',
                 verificationConsent: true, noticeVersion: 'stale-notice',
+                termsAccepted: true, termsVersion: STUDENT_TERMS_VERSION,
             }),
         });
         assert.equal(stale.status, 422);
+
+        const staleTerms = await fetch(`${baseUrl}/student/register-confirm`, {
+            method: 'POST', headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({
+                universityId, email: 'ada@students.school.example', name: 'Ada Student', password: 'StrongPass123!',
+                challengeId: 'f996cc5f-04e8-4a74-a11e-4de10f00af10', otp: '123456',
+                verificationConsent: true, noticeVersion: VERIFICATION_NOTICE_VERSION,
+                termsAccepted: true, termsVersion: 'stale-terms',
+            }),
+        });
+        assert.equal(staleTerms.status, 422);
 
         const cooldown = await fetch(`${baseUrl}/student/register-request`, {
             method: 'POST', headers: { 'content-type': 'application/json' },
             body: JSON.stringify({
                 universityId, email: 'ada@students.school.example', name: 'Ada Student',
                 verificationConsent: true, noticeVersion: VERIFICATION_NOTICE_VERSION,
+                termsAccepted: true, termsVersion: STUDENT_TERMS_VERSION,
             }),
         });
         assert.equal(cooldown.status, 429);
@@ -165,6 +181,7 @@ test('returns the current notice for a supported preflight without claiming veri
         assert.deepEqual(body.data, {
             supported: true,
             verificationNotice: { version: VERIFICATION_NOTICE_VERSION, text: VERIFICATION_NOTICE_TEXT },
+            studentTerms: { version: STUDENT_TERMS_VERSION },
         });
         assert.equal('verified' in body.data, false);
         assert.equal('studentData' in body.data, false);

@@ -1,10 +1,16 @@
 # Awoof legal-page review ledger
 
-Status: **draft only — not an effective policy, not a Microsoft consent URL**. Prepared 2026-09-23 for owner and legal review. The `/privacy` and `/terms` routes intentionally use `noindex` and are absent from the footer, page-metadata registry and sitemap. Do not merge or deploy as published legal pages without resolving the gates below.
+## Publication status — 23 September 2026 (release v1.0, current)
 
-The expanded package is indexed at `/legal`: student/website terms, privacy notice, `/cookies`, `/legal/merchant-terms` and `/legal/data-protection`. Every route carries draft status and noindex/nofollow. See [the counsel memorandum and completion schedules](legal-review-handoff.md) for the detailed source comparison, proposed retention periods, order form and decisions L01–L12. The draft text now lives in the individual `*-draft.ts` files under `apps/web/src/content/public/`, re-exported by `legal-drafts.ts`.
+The owner reported lawyer approval of the five-document package and explicitly authorized publication; see [the publication authorization record](legal-publication-approval.md). Release v1.0 (effective 23 September 2026) publishes `/legal`, `/privacy`, `/terms`, `/cookies`, `/legal/merchant-terms` and `/legal/data-protection` as indexed (`index, follow`) routes linked from the footer, auth navigation and sitemap. The sections below are the retained pre-publication review ledger: operator facts, source evidence, research and gates stay valid background, but the draft-only status, noindex instructions and "do not publish" gates are superseded for this exact approved version. Future text changes need fresh review, versioning and sign-off before they become effective.
 
-The owner reported on 2026-09-23 that legally reviewed and approved policy text exists, but the exact approved files or text have not yet been supplied to this repository. The reader-facing candidate text in `apps/web/src/content/public/legal-drafts.ts` was rewritten after that report and has **not** been legally approved. Its visible draft notice must remain until this exact version has been reviewed, approved, versioned and made effective.
+## Historical review status (superseded at publication)
+
+Prepared 2026-09-23 for owner and legal review. Before authorization, `/privacy` and `/terms` intentionally used `noindex` and were absent from the footer, page-metadata registry and sitemap.
+
+The expanded package was indexed at `/legal`: student/website terms, privacy notice, `/cookies`, `/legal/merchant-terms` and `/legal/data-protection`. Every route carried draft status and noindex/nofollow. See [the counsel memorandum and completion schedules](legal-review-handoff.md) for the detailed source comparison, proposed retention periods, order form and decisions L01–L12. The draft text lives in the individual `*-draft.ts` files under `apps/web/src/content/public/`, re-exported by `legal-drafts.ts`.
+
+The owner first reported on 2026-09-23 that legally reviewed text existed elsewhere, then reviewed this exact package locally, reported approval and instructed publication. The authorization, scope and limits of that approval are recorded in [legal-publication-approval.md](legal-publication-approval.md).
 
 ## Confirmed operator information
 
@@ -47,6 +53,6 @@ The drafts do **not** copy competitor terms, retention periods, security certifi
 
 ## Tests and release boundary
 
-- Focused browser test: `apps/web/tests/browser/public-legal-drafts.spec.ts` checks both routes, H1, visible review status, operator identity, noindex and the core verification/offer boundary.
-- Existing sitemap test enforces the currently launched allowlist, which excludes legal drafts.
-- No Azure setting, production site, footer link, or deployed service was changed by this branch.
+- Focused browser test: `apps/web/tests/browser/public-legal-drafts.spec.ts` checks the published routes, H1, version label, operator identity, `index, follow` metadata, sitemap/footer destinations and the merchant execution boundary.
+- The sitemap allowlist includes the six published legal routes.
+- Publication adds footer/auth-navigation links for the legal routes; no Azure setting, production site configuration, or deployed service was changed by the review branch itself — live publication still requires PR checks, merge, deploy success and HTTP/content checks.

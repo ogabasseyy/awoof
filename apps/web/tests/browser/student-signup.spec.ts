@@ -36,6 +36,7 @@ const {
   refreshToken,
 } = studentSignupTestData;
 const universityId = fixtureUniversities[0]!.id;
+const terms = { version: '2026-09-23.v1' };
 
 async function waitForSignupFormReadiness(page: Page): Promise<void> {
   const university = page.getByLabel(/^University/);
@@ -70,11 +71,11 @@ async function fillDetails(page: Page): Promise<void> {
   await page.getByLabel('Confirm Password', { exact: true }).fill(password);
 }
 
-function preflightResponse(verificationNotice = notice, supported = true) {
+function preflightResponse(verificationNotice = notice, supported = true, studentTerms = terms) {
   return {
     response: {
       status: 200,
-      body: { success: true, data: { supported, verificationNotice } },
+      body: { success: true, data: { supported, verificationNotice, studentTerms } },
     },
   } as const;
 }
@@ -86,6 +87,8 @@ type SignupRequestBody = {
   matricNumber: string | null;
   verificationConsent: true;
   noticeVersion: string;
+  termsAccepted: true;
+  termsVersion: string;
 };
 
 type SignupReceiptOverrides = Partial<{
@@ -120,6 +123,8 @@ function requestBody(overrides: Partial<SignupRequestBody> = {}): SignupRequestB
     matricNumber: null,
     verificationConsent: true,
     noticeVersion: notice.version,
+    termsAccepted: true,
+    termsVersion: terms.version,
     ...overrides,
   };
 }
@@ -139,11 +144,16 @@ function confirmationResponse() {
   };
 }
 
+async function checkAgreements(page: Page): Promise<void> {
+  await checkAgreements(page);
+  await page.getByRole('checkbox', { name: 'I accept the Awoof Terms of Service' }).check();
+}
+
 async function enterOtp(page: Page): Promise<void> {
   await fillDetails(page);
   const consent = page.getByRole('checkbox', { name: 'I agree to student verification processing' });
   await expect(consent).toBeVisible();
-  await consent.check();
+  await checkAgreements(page);
   await page.getByRole('button', { name: 'Continue', exact: true }).click();
   await expect(page.getByLabel('Verification Code', { exact: true })).toBeFocused();
 }
@@ -195,7 +205,7 @@ test('supported school email still requires affirmative processing consent', asy
       preflight: [{
         response: {
           status: 200,
-          body: { success: true, data: { supported: true, verificationNotice: notice } },
+          body: { success: true, data: { supported: true, verificationNotice: notice, studentTerms: terms } },
         },
       }],
     },
@@ -209,6 +219,33 @@ test('supported school email still requires affirmative processing consent', asy
   await page.getByRole('button', { name: 'Continue', exact: true }).click();
   await expect(page.locator('#consent-error')).toContainText('consent');
   await expect(consent).toBeFocused();
+  expect(api.signupRequests.filter((request) => request.endpoint === 'request')).toHaveLength(0);
+  expect(api.refreshCalls).toBe(0);
+  await assertCleanFixture(api, faults);
+});
+
+test('supported school email still requires distinct terms acceptance', async ({ page }) => {
+  const api = await installSyntheticApi(page, {
+    signup: {
+      preflight: [{
+        response: {
+          status: 200,
+          body: { success: true, data: { supported: true, verificationNotice: notice, studentTerms: terms } },
+        },
+      }],
+    },
+  });
+  const faults = collectBrowserFaults(page, api);
+  await gotoStudentSignup(page);
+  await fillDetails(page);
+  const consent = page.getByRole('checkbox', { name: 'I agree to student verification processing' });
+  const termsAcceptance = page.getByRole('checkbox', { name: 'I accept the Awoof Terms of Service' });
+  await expect(termsAcceptance).not.toBeChecked();
+  await expect(page.getByText(`Creating an account accepts version ${terms.version} of the`)).toBeVisible();
+  await consent.check();
+  await page.getByRole('button', { name: 'Continue', exact: true }).click();
+  await expect(page.locator('#terms-error')).toContainText(/Terms of Service/);
+  await expect(termsAcceptance).toBeFocused();
   expect(api.signupRequests.filter((request) => request.endpoint === 'request')).toHaveLength(0);
   expect(api.refreshCalls).toBe(0);
   await assertCleanFixture(api, faults);
@@ -299,7 +336,7 @@ test('committed OTP input receives focus when the original animation frame arriv
   try {
     await gotoStudentSignup(page);
     await fillDetails(page);
-    await page.getByRole('checkbox', { name: 'I agree to student verification processing' }).check();
+    await checkAgreements(page);
     await page.getByRole('button', { name: 'Continue', exact: true }).click();
     await api.waitForSignupStarted('request', 1);
     await runNextAnimationFrameBeforeReactCommit(page);
@@ -374,7 +411,7 @@ for (const scenario of [
     const faults = collectBrowserFaults(page, api);
     await gotoStudentSignup(page);
     await fillDetails(page);
-    await page.getByRole('checkbox', { name: 'I agree to student verification processing' }).check();
+    await checkAgreements(page);
     await page.getByRole('button', { name: 'Continue', exact: true }).click();
     await expect(page.locator('#signup-flow-error')).toContainText(/could not start/i);
     await expect(page.getByLabel('Student Email', { exact: true })).toBeVisible();
@@ -762,10 +799,13 @@ for (const change of [
     await gotoStudentSignup(page);
     await fillDetails(page);
     const consent = page.getByRole('checkbox', { name: 'I agree to student verification processing' });
+    const termsAcceptance = page.getByRole('checkbox', { name: 'I accept the Awoof Terms of Service' });
     await expect(consent).toBeVisible();
     await consent.check();
+    await termsAcceptance.check();
     await page.getByLabel(change.label).fill(change.next);
     await expect(consent).not.toBeChecked();
+    await expect(termsAcceptance).not.toBeChecked();
     await page.getByRole('button', { name: 'Continue', exact: true }).click();
     await expect(page.locator('#consent-error')).toContainText(/consent/i);
     expect(api.signupRequests.filter((request) => request.endpoint === 'request')).toHaveLength(0);
@@ -824,7 +864,7 @@ test('Back cancels a held initial proof request and restores editable identity f
   try {
     await gotoStudentSignup(page);
     await fillDetails(page);
-    await page.getByRole('checkbox', { name: 'I agree to student verification processing' }).check();
+    await checkAgreements(page);
     await page.getByRole('button', { name: 'Continue', exact: true }).click();
     await api.waitForSignupStarted('request', 1);
     await page.getByRole('button', { name: 'Back', exact: true }).click();
@@ -834,9 +874,12 @@ test('Back cancels a held initial proof request and restores editable identity f
     const emailField = page.getByLabel('Student Email', { exact: true });
     await expect(emailField).toBeFocused();
     const consent = page.getByRole('checkbox', { name: 'I agree to student verification processing' });
+    const termsAcceptance = page.getByRole('checkbox', { name: 'I accept the Awoof Terms of Service' });
     await expect(consent).toBeVisible();
     await expect(consent).not.toBeChecked();
+    await expect(termsAcceptance).not.toBeChecked();
     await consent.check();
+    await termsAcceptance.check();
     await page.getByRole('button', { name: 'Continue', exact: true }).click();
     await expect(page.getByLabel('Verification Code', { exact: true })).toBeFocused();
     expect(api.signupRequests.filter((request) => request.endpoint === 'request')).toHaveLength(2);
@@ -868,7 +911,7 @@ test('Back edit and retry keeps an old request from replacing newer canonical pr
   try {
     await gotoStudentSignup(page);
     await fillDetails(page);
-    await page.getByRole('checkbox', { name: 'I agree to student verification processing' }).check();
+    await checkAgreements(page);
     await page.getByRole('button', { name: 'Continue', exact: true }).click();
     await api.waitForSignupStarted('request', 1);
     await page.getByRole('button', { name: 'Back', exact: true }).click();
@@ -878,8 +921,10 @@ test('Back edit and retry keeps an old request from replacing newer canonical pr
     await page.getByLabel('Student Email', { exact: true }).fill(changedEmail);
     await expect(page.getByText(replacementNotice.text, { exact: true })).toBeVisible();
     const consent = page.getByRole('checkbox', { name: 'I agree to student verification processing' });
+    const termsAcceptance = page.getByRole('checkbox', { name: 'I accept the Awoof Terms of Service' });
     await expect(consent).not.toBeChecked();
     await consent.check();
+    await termsAcceptance.check();
     await page.getByRole('button', { name: 'Continue', exact: true }).click();
     await api.waitForSignupStarted('request', 2);
     const otp = page.getByLabel('Verification Code', { exact: true });
@@ -916,7 +961,7 @@ test('leaving through Sign in cancels a held initial proof request', async ({ pa
   try {
     await gotoStudentSignup(page, '/auth/student/register?redirect=%2Fmarketplace%3Fsource%3Dwidget');
     await fillDetails(page);
-    await page.getByRole('checkbox', { name: 'I agree to student verification processing' }).check();
+    await checkAgreements(page);
     await page.getByRole('button', { name: 'Continue', exact: true }).click();
     await api.waitForSignupStarted('request', 1);
     await page.getByRole('link', { name: 'Sign in', exact: true }).click();
@@ -956,6 +1001,7 @@ test('Back cancels a held confirmation and restores a fresh details phase', asyn
     const consent = page.getByRole('checkbox', { name: 'I agree to student verification processing' });
     await expect(consent).toBeVisible();
     await expect(consent).not.toBeChecked();
+    await expect(page.getByRole('checkbox', { name: 'I accept the Awoof Terms of Service' })).not.toBeChecked();
     expect(await hasActiveSession(page)).toBe(false);
   } finally {
     heldConfirmation.release();
@@ -1098,9 +1144,13 @@ for (const viewport of [
     await gotoStudentSignup(page);
     await fillDetails(page);
     const consent = page.getByRole('checkbox', { name: 'I agree to student verification processing' });
+    const termsAcceptance = page.getByRole('checkbox', { name: 'I accept the Awoof Terms of Service' });
     await consent.focus();
     await consent.press('Space');
     await expect(consent).toBeChecked();
+    await termsAcceptance.focus();
+    await termsAcceptance.press('Space');
+    await expect(termsAcceptance).toBeChecked();
     await page.getByRole('button', { name: 'Continue', exact: true }).click();
     const otp = page.getByLabel('Verification Code', { exact: true });
     await expect(otp).toHaveAttribute('inputmode', 'numeric');

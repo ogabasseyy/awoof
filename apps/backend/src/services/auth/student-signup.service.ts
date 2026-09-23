@@ -12,7 +12,7 @@ import { grantVerificationProcessing } from '../verification/eligibility-consent
 import { recordEmailAssurance, recordMailboxProof } from '../verification/eligibility-evidence.service.js';
 import { getInstitutionPolicy, normalizeMailbox } from '../verification/eligibility-policy.service.js';
 import type { EligibilityResult, SignupChallengeBindings } from '../verification/eligibility.types.js';
-import { VERIFICATION_NOTICE_VERSION } from '../verification/verification-notices.js';
+import { STUDENT_TERMS_VERSION, VERIFICATION_NOTICE_VERSION } from '../verification/verification-notices.js';
 
 export type StudentSignupIdentity = {
     email: string;
@@ -21,10 +21,13 @@ export type StudentSignupIdentity = {
     matricNumber: string | null;
     verificationConsent: true;
     noticeVersion: string;
+    termsAccepted: true;
+    termsVersion: string;
 };
 
-export type StudentSignupInput = Omit<StudentSignupIdentity, 'verificationConsent'> & {
+export type StudentSignupInput = Omit<StudentSignupIdentity, 'verificationConsent' | 'termsAccepted'> & {
     verificationConsent: boolean;
+    termsAccepted: boolean;
     otp?: string;
 };
 
@@ -76,6 +79,9 @@ export function normalizeStudentSignupRequest(input: StudentSignupInput): Studen
     if (input.verificationConsent !== true || input.noticeVersion !== VERIFICATION_NOTICE_VERSION) {
         throw new BadRequestError('Current verification processing consent required');
     }
+    if (input.termsAccepted !== true || input.termsVersion !== STUDENT_TERMS_VERSION) {
+        throw new BadRequestError('Current student terms acceptance required');
+    }
     if (input.otp !== undefined && !/^\d{6}$/.test(input.otp)) {
         throw new BadRequestError('Signup OTP must be six digits');
     }
@@ -86,6 +92,8 @@ export function normalizeStudentSignupRequest(input: StudentSignupInput): Studen
         matricNumber,
         verificationConsent: true,
         noticeVersion: input.noticeVersion,
+        termsAccepted: true,
+        termsVersion: input.termsVersion,
     };
 }
 
@@ -142,7 +150,9 @@ function sameSignupBindings(
         && bindings.matricNumber === identity.matricNumber
         && bindings.policyVersion === policyVersion
         && bindings.verificationConsent === true
-        && bindings.noticeVersion === identity.noticeVersion;
+        && bindings.noticeVersion === identity.noticeVersion
+        && bindings.termsAccepted === true
+        && bindings.termsVersion === identity.termsVersion;
 }
 
 function passwordHashFor(password: string): Promise<string> {
@@ -173,6 +183,8 @@ export function createStudentSignupService(dependencies: StudentSignupDependenci
                     policyVersion: policy.policyVersion,
                     verificationConsent: true,
                     noticeVersion: identity.noticeVersion,
+                    termsAccepted: true,
+                    termsVersion: identity.termsVersion,
                 } satisfies SignupChallengeBindings,
             });
             if (requested.status !== 'issued') return requested;
@@ -253,6 +265,11 @@ export function createStudentSignupService(dependencies: StudentSignupDependenci
                 accepted: true,
                 noticeVersion: identity.noticeVersion,
             });
+            await tx.query(
+                `INSERT INTO terms_acceptances (user_id, kind, terms_version)
+                 VALUES ($1, 'student_terms', $2)`,
+                [user.id, identity.termsVersion],
+            );
             await recordMailboxProof(tx, user.id, consumed.challengeId);
             const eligibility = await recordEmailAssurance(tx, user.id, {
                 challengeId: consumed.challengeId,

@@ -27,7 +27,7 @@ export default function LegalDraftPage({
             <h1 className="max-w-3xl text-4xl font-extrabold tracking-tight text-slate-950 sm:text-5xl">{title}</h1>
             <p className="mt-5 max-w-2xl text-lg leading-relaxed text-slate-600">{intro}</p>
             <div className="mt-8 rounded-2xl border-l-4 border-[#244ee7] bg-white p-5 text-sm leading-relaxed text-slate-700 shadow-sm">
-              Questions about these documents? Contact support@awoof.tech. Merchant terms and the partner data-protection schedule apply only through a separately agreed contract and completed annexes.
+              Questions about these documents? Contact support@awoof.tech. Merchant terms apply only through a separately accepted order form. The partner data-protection schedule and its processing annexes apply only through the agreed contract and completed annexes, before personal data is exchanged.
             </div>
             <div className="mt-12 space-y-12">
               {sections.map((section, index) => (
