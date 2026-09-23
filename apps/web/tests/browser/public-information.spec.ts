@@ -33,6 +33,8 @@ test('contact page links real support with sign-in expectations', async ({ page 
   await expect(page.locator('main h1')).toHaveCount(1);
   await expect(page.getByRole('link', { name: 'Student sign in' })).toHaveAttribute('href', '/auth/student/login');
   await expect(page.getByRole('link', { name: 'Vendor sign in' })).toHaveAttribute('href', '/auth/vendor/login');
+  await expect(page.getByRole('link', { name: 'support@awoof.tech' })).toHaveAttribute('href', 'mailto:support@awoof.tech');
+  await expect(page.locator('main')).not.toContainText('No public inbox or phone line');
   await expect(page.locator('main').getByText(/inside your account/i).first()).toBeVisible();
 });
 
@@ -44,6 +46,6 @@ for (const path of ['/trust', '/help', '/contact']) {
     await expect(main.getByText(/ISO\s?27001|SOC\s?2|PCI DSS/i)).toHaveCount(0);
     await expect(main.getByText(/thousands of verified/i)).toHaveCount(0);
     await expect(main.getByText(/\+2348000000000/)).toHaveCount(0);
-    await expect(main.getByText(/support@awoof\.tech/)).toHaveCount(0);
+    if (path !== '/contact') await expect(main.getByText(/support@awoof\.tech/)).toHaveCount(0);
   });
 }

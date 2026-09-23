@@ -15,9 +15,9 @@ export const contactSections = [
     ],
   },
   {
-    heading: 'No public inbox or phone line',
+    heading: 'Privacy and legal requests',
     paragraphs: [
-      'Awoof does not offer a public support email address or phone number, so this page lists none. Account-specific questions need a signed-in session; anything else starts at the help pages or trust center.',
+      'You can email support@awoof.tech even if you cannot sign in. For account-specific support, signing in helps us check your actual verification state. We do not list a public phone number.',
     ],
   },
 ];
