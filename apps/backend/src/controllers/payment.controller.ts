@@ -53,7 +53,9 @@ const updatePaystackSubaccountSchema = z.object({
 
 const reportTransactionSchema = z.object({
     benefitAuthorizationId: z.string().uuid('Invalid benefit authorization ID'),
-    paymentReference: z.string().min(1, 'Payment reference is required'),
+    // Trimmed at the boundary: the reference doubles as the idempotency
+    // key and must fit transactions.vendor_payment_reference VARCHAR(255).
+    paymentReference: z.string().trim().min(1, 'Payment reference is required').max(255, 'Payment reference must fit 255 characters'),
     amount: z.coerce.number().int().positive('Amount must be a positive integer in minor units'),
     productId: z.string().uuid('Invalid product ID'),
     paymentGateway: z.string().min(1, 'Payment gateway is required'),

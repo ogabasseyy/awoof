@@ -140,6 +140,8 @@ export type SsoStart = {
     authorizationUrl: string;
     finishSecret: string;
     expiresAt: string;
+    /** Server clock at issuance; null when the backend omits it. */
+    serverNow: string | null;
 };
 
 function isLoopbackHttp(url: URL): boolean {
@@ -173,6 +175,7 @@ export function parseSsoStart(value: unknown): SsoStart | null {
         authorizationUrl,
         finishSecret: data.finishSecret,
         expiresAt: data.expiresAt,
+        serverNow: isInstant(data.serverNow) ? data.serverNow : null,
     };
 }
 
@@ -295,6 +298,8 @@ export type SsoAttemptRecord = {
     generation: number;
     /** Validated same-origin return path; the server never echoes it back. */
     returnPath: string;
+    /** Server clock minus device clock (ms) at save; expiry is server-authoritative. */
+    serverSkewMs: number;
 };
 
 export type SsoHandoffRecord = {
@@ -303,6 +308,8 @@ export type SsoHandoffRecord = {
     expiresAt: string;
     /** Validated same-origin return path carried over from the attempt. */
     returnPath: string;
+    /** Server skew inherited from the attempt; handoff expiry is server-authoritative. */
+    serverSkewMs: number;
 };
 
 const SSO_ATTEMPT_KEY = 'awoof.sso.attempt.v1.tab';
@@ -349,17 +356,23 @@ function isAttemptRecord(value: Record<string, unknown> | null): value is Record
         && typeof value.returnPath === 'string' && value.returnPath.length > 0;
 }
 
-/** Persist the tab attempt; only id, finish secret, expiry, generation, return path. */
+function readSkewMs(value: unknown): number {
+    return typeof value === 'number' && Number.isFinite(value) ? value : 0;
+}
+
+/** Persist the tab attempt; only id, finish secret, expiry, generation, return path, clock skew. */
 export function saveSsoAttempt(storage: Storage | null | undefined, record: SsoAttemptRecord): boolean {
     if (!isUuid(record.attemptId) || !isOpaqueSecret(record.finishSecret) || !isInstant(record.expiresAt)) return false;
     if (!Number.isInteger(record.generation) || record.generation < 0) return false;
     if (typeof record.returnPath !== 'string' || record.returnPath.length === 0) return false;
+    if (typeof record.serverSkewMs !== 'number' || !Number.isFinite(record.serverSkewMs)) return false;
     return writeRecord(storage, SSO_ATTEMPT_KEY, {
         attemptId: record.attemptId,
         finishSecret: record.finishSecret,
         expiresAt: record.expiresAt,
         generation: record.generation,
         returnPath: record.returnPath,
+        serverSkewMs: record.serverSkewMs,
     });
 }
 
@@ -372,6 +385,8 @@ export function readSsoAttempt(storage: Storage | null | undefined): SsoAttemptR
         expiresAt: record.expiresAt,
         generation: record.generation,
         returnPath: record.returnPath,
+        // Tolerate records written before clock-skew tracking shipped.
+        serverSkewMs: readSkewMs(record.serverSkewMs),
     };
 }
 
@@ -379,8 +394,14 @@ export function clearSsoAttempt(storage: Storage | null | undefined): void {
     clearRecord(storage, SSO_ATTEMPT_KEY);
 }
 
-export function isSsoAttemptLive(record: Pick<SsoAttemptRecord, 'expiresAt'>, nowMs: number): boolean {
-    return Date.parse(record.expiresAt) > nowMs;
+/** Expiry is server-authoritative: the saved skew maps the device clock onto the server clock. */
+export function isSsoAttemptLive(record: Pick<SsoAttemptRecord, 'expiresAt' | 'serverSkewMs'>, nowMs: number): boolean {
+    return Date.parse(record.expiresAt) > nowMs + record.serverSkewMs;
+}
+
+/** Server clock minus device clock (ms) at the moment of the call; 0 when the backend omits its clock. */
+export function serverSkewSince(serverNow: string | null): number {
+    return serverNow ? Date.parse(serverNow) - Date.now() : 0;
 }
 
 /** The stored attempt must match the completion URL and the tab generation. */
@@ -392,11 +413,13 @@ export function ssoAttemptMatches(record: SsoAttemptRecord, attemptId: string, g
 export function saveSsoHandoff(storage: Storage | null | undefined, record: SsoHandoffRecord): boolean {
     if (!isUuid(record.handoffId) || !isOpaqueSecret(record.handoffSecret) || !isInstant(record.expiresAt)) return false;
     if (typeof record.returnPath !== 'string' || record.returnPath.length === 0) return false;
+    if (typeof record.serverSkewMs !== 'number' || !Number.isFinite(record.serverSkewMs)) return false;
     return writeRecord(storage, SSO_HANDOFF_KEY, {
         handoffId: record.handoffId,
         handoffSecret: record.handoffSecret,
         expiresAt: record.expiresAt,
         returnPath: record.returnPath,
+        serverSkewMs: record.serverSkewMs,
     });
 }
 
@@ -411,6 +434,8 @@ export function readSsoHandoff(storage: Storage | null | undefined): SsoHandoffR
         handoffSecret: record.handoffSecret,
         expiresAt: record.expiresAt,
         returnPath: record.returnPath,
+        // Tolerate records written before clock-skew tracking shipped.
+        serverSkewMs: readSkewMs(record.serverSkewMs),
     };
 }
 

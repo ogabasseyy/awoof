@@ -29,22 +29,30 @@ export async function issueMerchantAssertion(pool: Pool, userId: string, input: 
             vendorId: input.vendorId, origin, purpose: input.purpose, grantId: input.disclosureGrantId,
         });
         if (!eligibility.eligible) throw new ForbiddenError('Current student eligibility and merchant consent required');
+        // Product-bound assertions snapshot the catalog quote now: exchange
+        // must bind the prices the student reviewed, not whatever is live
+        // when the merchant redeems the code minutes later.
+        let listPriceSnapshot: string | null = null;
+        let studentPriceSnapshot: string | null = null;
         if (input.productId !== undefined) {
-            const product = await tx.query(
-                `SELECT id FROM products WHERE id = $1 AND vendor_id = $2 AND status = 'active' AND deleted_at IS NULL`,
+            const product = await tx.query<{ id: string; price: string; student_price: string }>(
+                `SELECT id, price, student_price FROM products WHERE id = $1 AND vendor_id = $2 AND status = 'active' AND deleted_at IS NULL`,
                 [input.productId, input.vendorId],
             );
             if (product.rowCount !== 1) throw new BadRequestError('Product is not available for this merchant');
+            listPriceSnapshot = product.rows[0]!.price;
+            studentPriceSnapshot = product.rows[0]!.student_price;
         }
         const code = randomBytes(32).toString('base64url');
         const inserted = await tx.query<{ expires_at: Date }>(
             `INSERT INTO merchant_assertions
-             (code_hash,user_id,vendor_id,origin,purpose,campaign_id,disclosure_grant_id,evidence_id,processing_grant_id,product_id,expires_at)
-             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,LEAST($11::timestamptz,clock_timestamp()+interval '2 minutes'))
+             (code_hash,user_id,vendor_id,origin,purpose,campaign_id,disclosure_grant_id,evidence_id,processing_grant_id,product_id,
+              list_price_snapshot,student_price_snapshot,expires_at)
+             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,LEAST($13::timestamptz,clock_timestamp()+interval '2 minutes'))
              RETURNING expires_at`,
             [hash(code), userId, input.vendorId, origin, input.purpose, input.campaignId,
                 input.disclosureGrantId, eligibility.evidenceId, eligibility.processingGrantId,
-                input.productId ?? null, eligibility.expiresAt],
+                input.productId ?? null, listPriceSnapshot, studentPriceSnapshot, eligibility.expiresAt],
         );
         return { code, expiresAt: inserted.rows[0]!.expires_at.toISOString() };
     });
@@ -88,8 +96,21 @@ export async function exchangeMerchantAssertion(pool: Pool, key: string, input: 
     if (claimSessionId === null && hasSessionProof) {
         throw new BadRequestError('Unexpected claim session proof');
     }
+    // Exact retries of a committed exchange are historical reads: receipts
+    // are immutable once written, so an unlocked pre-read tells us whether
+    // live origin configuration may gate this call. Merchant, key, and
+    // idempotency binding are still enforced inside the transaction; a
+    // receipt that commits between this hint and the transaction still
+    // resolves on retry.
+    const receiptHint = await pool.query<{ assertion_id: string }>(
+        'SELECT assertion_id FROM merchant_assertion_receipts WHERE vendor_id = $1 AND idempotency_key = $2',
+        [assertion.vendor_id, input.idempotencyKey],
+    );
+    const looksLikeCommittedRetry = (receiptHint.rows[0]?.assertion_id ?? null) === assertion.id;
     return transaction(pool, async (tx) => {
-        const merchant = await prepareMerchantDisclosure(tx, assertion.user_id, assertion.vendor_id, assertion.origin);
+        const merchant = await prepareMerchantDisclosure(tx, assertion.user_id, assertion.vendor_id, assertion.origin, {
+            requireOrigin: !looksLikeCommittedRetry,
+        });
         if (!merchant || merchant.ownerUserId !== owner.user_id) throw new UnauthorizedError('Merchant unavailable');
         const currentKey = await tx.query(
             `SELECT id FROM api_keys WHERE lookup_hash=$1 AND vendor_id=$2 AND status='active'
@@ -166,10 +187,10 @@ export async function exchangeMerchantAssertion(pool: Pool, key: string, input: 
             );
             const live = locked.rows[0];
             if (!live) throw new BadRequestError('Product is no longer available');
-            // Claim-bound authorizations bind the session's quoted prices,
-            // not a resample: the vendor may have edited the catalog after
-            // the checkout started and the student reviewed this quote.
-            // Sessions without a quote (legacy rows) fall back to live.
+            // Authorizations bind reviewed prices, never a resample: the
+            // claim session's quote wins when present, otherwise the
+            // assertion's issuance quote. Only legacy rows without either
+            // snapshot fall back to live catalog prices.
             let listPrice: string = live.price;
             let studentPrice: string = live.student_price;
             if (claimSessionId !== null) {
@@ -181,6 +202,13 @@ export async function exchangeMerchantAssertion(pool: Pool, key: string, input: 
                 if (sessionQuote?.list_price_snapshot != null && sessionQuote?.student_price_snapshot != null) {
                     listPrice = sessionQuote.list_price_snapshot;
                     studentPrice = sessionQuote.student_price_snapshot;
+                }
+            } else {
+                const issuedList = assertion.list_price_snapshot as string | null | undefined;
+                const issuedStudent = assertion.student_price_snapshot as string | null | undefined;
+                if (issuedList != null && issuedStudent != null) {
+                    listPrice = issuedList;
+                    studentPrice = issuedStudent;
                 }
             }
             const authorization = await tx.query<{ id: string }>(

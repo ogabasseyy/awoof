@@ -221,6 +221,13 @@ export default function ProductDetailPage() {
                 ]);
                 if (cancelled) return;
                 const view = sessionRes.data.data as ClaimSessionView;
+                // A claim link for another product must not authorize under
+                // this page's imagery and pricing: move to the session's
+                // canonical product before showing anything claimable.
+                if (view.productId !== productId) {
+                    router.replace(`/marketplace/${view.productId}?claimSession=${encodeURIComponent(claimSessionId)}`);
+                    return;
+                }
                 setSessionView(view);
                 const notice = statusRes.data.data?.notices?.merchantDisclosure as { version?: string; text?: string } | undefined;
                 if (notice?.version && notice?.text) {

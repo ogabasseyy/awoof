@@ -33,6 +33,7 @@ import {
     parseLoginOptions,
     parseSsoStart,
     saveSsoAttempt,
+    serverSkewSince,
     startFailed,
     submitEmail,
     type LoginState,
@@ -153,6 +154,7 @@ function StudentLoginInner() {
                 expiresAt: started.expiresAt,
                 generation: getSessionSnapshot().generation,
                 returnPath: returnPathFor(),
+                serverSkewMs: serverSkewSince(started.serverNow),
             });
             if (!saved) {
                 setFlow((previous) => startFailed(previous, START_STORAGE_BLOCKED));

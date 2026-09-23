@@ -58,10 +58,17 @@ operator, and a recorded result before proceeding.
    every instance serves it (mixed-version window stays closed).
 3. NOT RUN — With providers still disabled, prove discovery returns
    password-only and the login page shows the no-provider note.
-4. NOT RUN — Approve exactly one pilot institution (policy row
+4. NOT RUN — Install, run once, and verify alerting for the recurring
+   `sso:cleanup:prod` job BEFORE enabling any provider. Without it,
+   expired attempts retain encrypted verifier/observation material,
+   unconsumed handoffs retain encrypted identity observations, and
+   reauthentication grants accumulate instead of meeting the
+   one-hour scrub and seven-day deletion contract. Record the
+   schedule, the successful manual run, and the monitor here.
+5. NOT RUN — Approve exactly one pilot institution (policy row
    enabled, bounded `approved_until`, named `approved_by`), then
    enable exactly one provider for the pilot.
-5. NOT RUN — Canaries, each with a named test account:
+6. NOT RUN — Canaries, each with a named test account:
    - password login still works; discovery advertises the provider
      for a pilot-domain email and password-only elsewhere;
    - provider return with no matching mailbox stays signed out
@@ -74,7 +81,7 @@ operator, and a recorded result before proceeding.
    - school-account assurance never authorizes benefits: an
      email-only/linked-without-enrollment account still fails every
      benefit consumer.
-6. NOT RUN — Real-provider acceptance: one live Google and one live
+7. NOT RUN — Real-provider acceptance: one live Google and one live
    Microsoft return against the pilot institution (all OIDC
    discovery so far is mocked; the redirect is proven only against
    a loopback stub). No network identity calls except through the

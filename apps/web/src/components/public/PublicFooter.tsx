@@ -24,23 +24,15 @@ const columns = [
       { label: 'Contact', href: '/contact' },
     ],
   },
-  // Owner-approved privacy/terms content does not exist yet, so no
-  // standalone policy routes are published (see public-trust-pages.md).
-  // The trust center is the honest interim destination: its Limits
-  // section records the status of both documents.
-  {
-    heading: 'Legal',
-    links: [
-      { label: 'Privacy', href: '/trust' },
-      { label: 'Terms', href: '/trust' },
-    ],
-  },
+  // Privacy/Terms labels stay unpublished until owner-approved policy
+  // routes exist: pointing them at /trust misrepresents the trust
+  // center as their replacement (see public-trust-pages.md).
 ];
 
 export default function PublicFooter() {
   return (
     <footer className="w-full border-t border-slate-200 bg-white px-6 py-12 md:px-12">
-      <div className="mx-auto grid max-w-7xl grid-cols-1 gap-10 md:grid-cols-5">
+      <div className="mx-auto grid max-w-7xl grid-cols-1 gap-10 md:grid-cols-4">
         <div>
           <Logo color="blue" width={128} height={34} />
           <p className="mt-4 max-w-sm text-base leading-relaxed text-slate-600">

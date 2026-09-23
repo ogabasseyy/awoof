@@ -168,6 +168,17 @@ test('start responses require a safe provider authorization URL', () => {
     });
     assert.equal(parsed?.attemptId, ATTEMPT_ID);
     assert.equal(parsed?.authorizationUrl, 'https://accounts.google.com/o/oauth2/auth?client_id=x');
+    assert.equal(parsed?.serverNow, null);
+    const withClock = parseSsoStart({
+        success: true,
+        data: { ...base, authorizationUrl: 'https://accounts.google.com/o/oauth2/auth?client_id=x', serverNow: new Date().toISOString() },
+    });
+    assert.ok(withClock?.serverNow);
+    const badClock = parseSsoStart({
+        success: true,
+        data: { ...base, authorizationUrl: 'https://accounts.google.com/o/oauth2/auth?client_id=x', serverNow: 'yesterday' },
+    });
+    assert.equal(badClock?.serverNow, null);
     // Loopback http exists only so local tests can prove redirect intent without touching a real provider.
     const loopback = parseSsoStart({
         success: true,
@@ -298,6 +309,7 @@ test('tab attempt storage round-trips and expires honestly', () => {
         expiresAt: new Date(Date.now() + 600_000).toISOString(),
         generation: 7,
         returnPath: '/marketplace',
+        serverSkewMs: 0,
     };
     assert.equal(saveSsoAttempt(storage, record), true);
     assert.deepEqual(readSsoAttempt(storage), record);
@@ -310,6 +322,26 @@ test('tab attempt storage round-trips and expires honestly', () => {
     assert.equal(readSsoAttempt(storage), null);
 });
 
+test('attempt expiry follows the server clock, not a skewed device clock', () => {
+    const now = Date.now();
+    // Device clock 11 minutes ahead: without the saved skew the fresh
+    // attempt would read expired and skip /finish.
+    const ahead = {
+        attemptId: ATTEMPT_ID,
+        finishSecret: 'finish-secret',
+        expiresAt: new Date(now + 600_000).toISOString(),
+        generation: 1,
+        returnPath: '/marketplace',
+        serverSkewMs: -660_000,
+    };
+    assert.equal(isSsoAttemptLive(ahead, now + 660_000), true);
+    assert.equal(isSsoAttemptLive({ ...ahead, serverSkewMs: 0 }, now + 660_000), false);
+    // Device clock behind: an attempt the server already expired must
+    // read expired instead of lingering.
+    const behind = { ...ahead, serverSkewMs: 660_000, expiresAt: new Date(now + 600_000).toISOString() };
+    assert.equal(isSsoAttemptLive(behind, now), false);
+});
+
 test('tab storage failures fail closed without throwing', () => {
     const storage = throwingStorage();
     const record = {
@@ -318,10 +350,11 @@ test('tab storage failures fail closed without throwing', () => {
         expiresAt: new Date(Date.now() + 600_000).toISOString(),
         generation: 1,
         returnPath: '/marketplace',
+        serverSkewMs: 0,
     };
     assert.equal(saveSsoAttempt(storage, record), false);
     assert.equal(readSsoAttempt(storage), null);
-    assert.equal(saveSsoHandoff(storage, { handoffId: HANDOFF_ID, handoffSecret: 's', expiresAt: record.expiresAt, returnPath: '/marketplace' }), false);
+    assert.equal(saveSsoHandoff(storage, { handoffId: HANDOFF_ID, handoffSecret: 's', expiresAt: record.expiresAt, returnPath: '/marketplace', serverSkewMs: 0 }), false);
     assert.equal(readSsoHandoff(storage), null);
     clearSsoAttempt(storage);
     clearSsoHandoff(storage);
@@ -329,7 +362,7 @@ test('tab storage failures fail closed without throwing', () => {
 
 test('handoff storage keeps linking secrets out of URLs', () => {
     const storage = memoryStorage();
-    const handoff = { handoffId: HANDOFF_ID, handoffSecret: 'handoff-secret', expiresAt: new Date(Date.now() + 600_000).toISOString(), returnPath: '/marketplace' };
+    const handoff = { handoffId: HANDOFF_ID, handoffSecret: 'handoff-secret', expiresAt: new Date(Date.now() + 600_000).toISOString(), returnPath: '/marketplace', serverSkewMs: 0 };
     assert.equal(saveSsoHandoff(storage, handoff), true);
     assert.deepEqual(readSsoHandoff(storage), handoff);
     assert.equal(saveSsoHandoff(storage, { ...handoff, handoffId: 'bad' }), false);
@@ -340,7 +373,7 @@ test('handoff storage keeps linking secrets out of URLs', () => {
 
 test('handoff storage carries the return path and rejects empties', () => {
     const storage = memoryStorage();
-    const handoff = { handoffId: HANDOFF_ID, handoffSecret: 'handoff-secret', expiresAt: new Date(Date.now() + 600_000).toISOString(), returnPath: '/marketplace/deals/p1?claim=1' };
+    const handoff = { handoffId: HANDOFF_ID, handoffSecret: 'handoff-secret', expiresAt: new Date(Date.now() + 600_000).toISOString(), returnPath: '/marketplace/deals/p1?claim=1', serverSkewMs: 0 };
     assert.equal(saveSsoHandoff(storage, handoff), true);
     assert.equal(readSsoHandoff(storage)?.returnPath, '/marketplace/deals/p1?claim=1');
     assert.equal(saveSsoHandoff(storage, { ...handoff, returnPath: '' }), false);

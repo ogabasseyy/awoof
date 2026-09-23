@@ -277,3 +277,23 @@ test('anonymous visitors are asked to sign in with the claim preserved', async (
     expect(decodeURIComponent(href ?? '')).toContain(`claimSession=${sessionId}`);
     expect(claims).toBe(0);
 });
+
+test('a claim link for another product redirects to the session product', async ({ page }) => {
+    await installSyntheticApi(page);
+    await seedSession(page, 'student');
+    await stubClaimSession(page, 'https://merchant.example');
+    await page.route(`${apiOrigin}/api/verification/status`, (route) => route.fulfill({
+        json: { success: true, data: { notices: { merchantDisclosure: notice } } },
+        headers: { 'access-control-allow-origin': '*' },
+    }));
+    const otherProduct = '30000000-0000-4000-8000-000000000009';
+    for (const id of [otherProduct, productId]) {
+        await page.route(`${apiOrigin}/api/products/${id}`, (route) => route.fulfill({
+            status: 404, json: { success: false, error: { message: 'Product not found', code: 'NOT_FOUND', statusCode: 404 } },
+            headers: { 'access-control-allow-origin': '*' },
+        }));
+    }
+    await page.goto(`/marketplace/${otherProduct}?claimSession=${sessionId}`);
+    await page.waitForURL(`/marketplace/${productId}?claimSession=${sessionId}`);
+    await expect(page.getByTestId('student-claim-card')).toBeVisible();
+});

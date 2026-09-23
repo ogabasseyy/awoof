@@ -223,6 +223,31 @@ async function ledgerSnapshot(client: PoolClient, fixture: BenefitFixture): Prom
     };
 }
 
+test('payment references are trimmed and bounded at the request boundary', async () => {
+    const pool = createTestPool();
+    const client = await pool.connect();
+    const server = await startReportServer();
+    try {
+        await assertFixtureDatabase(client);
+        const fixture = await enrolledFixture(pool, client);
+        const { benefitAuthorizationId } = await productAuthorization(pool, fixture);
+        const auth = `Bearer ${vendorJwt(fixture)}`;
+        const base = {
+            benefitAuthorizationId, productId: fixture.product, amount: 8000, paymentGateway: 'other',
+        };
+        assert.equal((await postReport(server.endpoint, auth, { ...base, paymentReference: 'x'.repeat(256) })).status, 422);
+        assert.equal((await postReport(server.endpoint, auth, { ...base, paymentReference: '   ' })).status, 422);
+        const reference = randomUUID();
+        const stored = await postReport(server.endpoint, auth, { ...base, paymentReference: `  ${reference}  ` });
+        assert.equal(stored.status, 201);
+        assert.equal((await client.query('SELECT vendor_payment_reference FROM transactions WHERE vendor_id = $1', [fixture.vendor])).rows[0].vendor_payment_reference, reference);
+    } finally {
+        await server.close();
+        client.release();
+        await pool.end();
+    }
+});
+
 test('legacy verification tokens fail closed on the reporting route and retired entrypoints stay sealed', async () => {
     const pool = createTestPool();
     const client = await pool.connect();
@@ -797,6 +822,64 @@ test('reported transactions surface vendor references in history with honest rec
         assert.doesNotMatch(notice, /email/i);
     } finally {
         await server.close();
+        client.release();
+        await pool.end();
+    }
+});
+
+test('direct authorizations bind issuance prices, not later catalog edits', async () => {
+    const pool = createTestPool();
+    const client = await pool.connect();
+    try {
+        await assertFixtureDatabase(client);
+        const fixture = await enrolledFixture(pool, client);
+        const campaignId = `quote-${fixture.label.slice(0, 8)}`;
+        const issued = await issueMerchantAssertion(pool, fixture.student, {
+            vendorId: fixture.vendor, origin: fixture.origin, purpose: 'student-discount',
+            campaignId, disclosureGrantId: fixture.disclosure, productId: fixture.product,
+        });
+        // The vendor edits the catalog after the student reviewed the quote.
+        await client.query('UPDATE products SET price = 20000, student_price = 16000 WHERE id = $1', [fixture.product]);
+        const receipt = await exchangeMerchantAssertion(pool, fixture.key, {
+            code: issued.code, campaignId, idempotencyKey: `quote-${randomUUID()}`,
+        }) as unknown as Record<string, unknown>;
+        assert.equal(typeof receipt.benefitAuthorizationId, 'string');
+        const snapshots = (await client.query(
+            'SELECT list_price_snapshot, student_price_snapshot FROM merchant_benefit_authorizations WHERE id = $1',
+            [receipt.benefitAuthorizationId as string],
+        )).rows[0]!;
+        assert.equal(parseFloat(snapshots.list_price_snapshot), 100);
+        assert.equal(parseFloat(snapshots.student_price_snapshot), 80);
+    } finally {
+        client.release();
+        await pool.end();
+    }
+});
+
+test('committed exchange retries return the receipt after the origin is removed', async () => {
+    const pool = createTestPool();
+    const client = await pool.connect();
+    try {
+        await assertFixtureDatabase(client);
+        const fixture = await enrolledFixture(pool, client);
+        const campaignId = `retry-${fixture.label.slice(0, 8)}`;
+        const issue = () => issueMerchantAssertion(pool, fixture.student, {
+            vendorId: fixture.vendor, origin: fixture.origin, purpose: 'student-discount',
+            campaignId, disclosureGrantId: fixture.disclosure, productId: fixture.product,
+        });
+        const first = await issue();
+        const pending = await issue();
+        const idempotencyKey = `retry-${randomUUID()}`;
+        const receipt = await exchangeMerchantAssertion(pool, fixture.key, { code: first.code, campaignId, idempotencyKey });
+        await client.query('UPDATE widget_configs SET allowed_origins = $2 WHERE vendor_id = $1', [fixture.vendor, ['https://elsewhere.example']]);
+        const replayed = await exchangeMerchantAssertion(pool, fixture.key, { code: first.code, campaignId, idempotencyKey });
+        assert.deepEqual(replayed, receipt);
+        // Fresh exchanges still require a live origin configuration.
+        await assert.rejects(
+            exchangeMerchantAssertion(pool, fixture.key, { code: pending.code, campaignId, idempotencyKey: `retry-${randomUUID()}` }),
+            /Merchant unavailable/,
+        );
+    } finally {
         client.release();
         await pool.end();
     }

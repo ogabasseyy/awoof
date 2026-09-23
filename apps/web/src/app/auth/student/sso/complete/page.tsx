@@ -146,6 +146,7 @@ function StudentSsoCompleteInner() {
                     handoffSecret: finished.handoffSecret,
                     expiresAt: finished.expiresAt,
                     returnPath: record.returnPath,
+                    serverSkewMs: record.serverSkewMs,
                 });
                 clearSsoAttempt(storage);
                 if (!kept) {
