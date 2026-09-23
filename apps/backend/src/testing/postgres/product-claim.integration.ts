@@ -463,7 +463,7 @@ test('exchange refuses a product that sold out after the session started', async
     } finally { client.release(); await pool.end(); }
 });
 
-test('retention cleanup tombstones spent sessions and keeps single-use retries working', async () => {
+test('retention cleanup tombstones consumed sessions, deletes abandoned ones, and keeps single-use retries working', async () => {
     const pool = createTestPool();
     const client = await pool.connect();
     try {
@@ -485,12 +485,17 @@ test('retention cleanup tombstones spent sessions and keeps single-use retries w
             productId: fixture.product, merchantCheckoutId: `fresh-${fixture.label.slice(0, 8)}`,
             browserNonceHash: sha256hex('fresh-nonce-value'), origin: fixture.origin,
         });
+        const abandonedCheckoutId = `abandoned-${fixture.label.slice(0, 8)}`;
+        const abandoned = await createMerchantClaimSession(pool, fixture.key, {
+            productId: fixture.product, merchantCheckoutId: abandonedCheckoutId,
+            browserNonceHash: sha256hex('abandoned-nonce-value'), origin: fixture.origin,
+        });
         await client.query(
-            `UPDATE merchant_claim_sessions SET expires_at = clock_timestamp() - interval '8 days' WHERE id = $1`,
-            [created.claimSessionId],
+            `UPDATE merchant_claim_sessions SET expires_at = clock_timestamp() - interval '8 days' WHERE id = ANY($1)`,
+            [[created.claimSessionId, abandoned.claimSessionId]],
         );
         const cutoff = new Date(Date.now() - 7 * 86_400_000);
-        assert.equal(await tombstoneExpiredClaimSessions(client, { expiredBefore: cutoff }), 1);
+        assert.equal(await tombstoneExpiredClaimSessions(client, { expiredBefore: cutoff }), 2);
         // The tombstone survives with secrets scrubbed; the fresh session
         // is untouched.
         const tombstone = (await client.query(
@@ -517,6 +522,15 @@ test('retention cleanup tombstones spent sessions and keeps single-use retries w
             'SELECT claim_session_id FROM merchant_assertions WHERE vendor_id = $1', [fixture.vendor],
         );
         for (const row of assertions.rows) assert.equal(row.claim_session_id, created.claimSessionId);
+        // The abandoned session is deleted (nothing redeemed), so its
+        // checkout is reusable for a fresh claim after retention.
+        const gone = await client.query('SELECT id FROM merchant_claim_sessions WHERE id = $1', [abandoned.claimSessionId]);
+        assert.equal(gone.rowCount, 0);
+        const retried = await createMerchantClaimSession(pool, fixture.key, {
+            productId: fixture.product, merchantCheckoutId: abandonedCheckoutId,
+            browserNonceHash: sha256hex('abandoned-nonce-value'), origin: fixture.origin,
+        });
+        assert.equal(retried.created, true);
         // Reusing the tombstoned checkout fails closed as spent, and an
         // exact exchange retry still replays its committed receipt.
         await assert.rejects(createMerchantClaimSession(pool, fixture.key, {

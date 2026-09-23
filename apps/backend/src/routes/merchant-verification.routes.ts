@@ -123,7 +123,7 @@ import {
  * /api/merchant-verification/claim-sessions:
  *   post:
  *     summary: Create a merchant claim session binding one checkout to one product
- *     description: Merchant server-to-server bootstrap. The merchant sets its own Secure HttpOnly browser nonce cookie, creates this session with the nonce hash and the initiating origin, then navigates the browser to Awoof's claim page. Sessions expire after ten minutes and are consumed once at exchange. Exact creation retries return the same session; changed product, nonce, or origin bindings conflict. Never put the nonce in a URL.
+ *     description: Merchant server-to-server bootstrap. The merchant sets its own Secure HttpOnly browser nonce cookie, creates this session with the nonce hash and the initiating origin, then navigates the browser to Awoof's claim page. Sessions expire after ten minutes and are consumed once at exchange. Exact creation retries return the same session; changed product, nonce, or origin bindings conflict. Never put the nonce in a URL. Retention keeps a redeemed checkout ID permanently bound (a single-use tombstone retains checkout/vendor/product bindings and timestamps after proof material is scrubbed, so never reuse a redeemed checkout ID), while an abandoned checkout becomes reusable after the 7-day retention window.
  *     tags: [Merchant Verification]
  *     security: [{ merchantServerKey: [] }]
  *     requestBody:

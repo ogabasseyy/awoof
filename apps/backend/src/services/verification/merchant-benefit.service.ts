@@ -112,12 +112,15 @@ export async function deleteExpiredUnusedBenefitAuthorizations(
     return deleted.rows[0]?.deleted ?? 0;
 }
 
-/** Lifecycle cleanup for spent claim sessions. Sessions past retention
- *  become tombstones instead of being deleted: the (vendor_id,
- *  checkout_id) row must survive so a reused checkout keeps failing
- *  closed, and assertion/authorization references stay attached so exact
- *  retries still resolve their committed receipts. Only the nonce digest
- *  and origin are scrubbed. Returns the number newly tombstoned. */
+/** Lifecycle cleanup for spent claim sessions. Consumed sessions past
+ *  retention become tombstones instead of being deleted: the
+ *  (vendor_id, checkout_id) row must survive so a reused checkout
+ *  keeps failing closed, and assertion/authorization references stay
+ *  attached so exact retries still resolve their committed receipts.
+ *  Only the nonce digest and origin are scrubbed. Abandoned
+ *  (never-consumed) sessions are detached and deleted instead — nothing
+ *  redeemed, so the merchant may reuse the checkout for a fresh claim
+ *  after retention. Returns the number of sessions retired. */
 export async function tombstoneExpiredClaimSessions(
     tx: PoolClient,
     options: { expiredBefore: Date },
@@ -125,10 +128,22 @@ export async function tombstoneExpiredClaimSessions(
     const tombstoned = await tx.query(
         `UPDATE merchant_claim_sessions
          SET browser_nonce_hash = NULL, origin = NULL, tombstoned_at = clock_timestamp()
-         WHERE expires_at < $1 AND tombstoned_at IS NULL`,
+         WHERE expires_at < $1 AND tombstoned_at IS NULL AND consumed_at IS NOT NULL`,
         [options.expiredBefore],
     );
-    return tombstoned.rowCount ?? 0;
+    const abandoned = `SELECT id FROM merchant_claim_sessions WHERE expires_at < $1 AND consumed_at IS NULL`;
+    await tx.query(
+        `UPDATE merchant_assertions SET claim_session_id = NULL WHERE claim_session_id IN (${abandoned})`,
+        [options.expiredBefore],
+    );
+    await tx.query(
+        `UPDATE merchant_benefit_authorizations SET claim_session_id = NULL WHERE claim_session_id IN (${abandoned})`,
+        [options.expiredBefore],
+    );
+    const deleted = await tx.query(`DELETE FROM merchant_claim_sessions WHERE expires_at < $1 AND consumed_at IS NULL`, [
+        options.expiredBefore,
+    ]);
+    return (tombstoned.rowCount ?? 0) + (deleted.rowCount ?? 0);
 }
 
 export type ReportBenefitInput = {

@@ -127,7 +127,7 @@ export const developerExamples = [
   {
     title: '4. Protected product claims bind one checkout (server key)',
     route: 'POST /api/merchant-verification/claim-sessions',
-    body: 'For discounts redeemed on your site: set your own Secure HttpOnly browser nonce cookie, create a claim session server-to-server with its hash, then send the browser to the Awoof claim page. The student reviews and consents; Awoof hands your fixed /awoof/student-claim callback an opaque assertion only. Exchange it with your nonce and checkout binding — one redemption per checkout. Without this integration, protected claims answer 409 MERCHANT_INTEGRATION_REQUIRED and only ordinary navigation remains.',
+    body: 'For discounts redeemed on your site: set your own Secure HttpOnly browser nonce cookie, create a claim session server-to-server with its hash, then send the browser to the Awoof claim page. The student reviews and consents; Awoof hands your fixed /awoof/student-claim callback an opaque assertion only. Exchange it with your nonce and checkout binding — one redemption per checkout. A redeemed checkout ID stays permanently bound and must never be reused; an abandoned checkout becomes reusable after the 7-day retention window. Without this integration, protected claims answer 409 MERCHANT_INTEGRATION_REQUIRED and only ordinary navigation remains.',
     request: [
       'POST /api/merchant-verification/claim-sessions',
       'Authorization: Bearer [REDACTED]',
