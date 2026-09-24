@@ -12,5 +12,5 @@ export const metadata: Metadata = {
 };
 
 export default function LegalPage() {
-  return <LegalDraftPage title="Privacy Policy" intro="How Awoof uses personal information, handles verification and supports your privacy rights." versionLabel={studentPolicyVersion} sections={privacyDraft} />;
+  return <LegalDraftPage title="Privacy Policy" intro="How Awoof uses personal information, handles verification and supports your privacy rights." versionLabel={studentPolicyVersion} contextNote="This page shows version 1.1. The archived version 1.0 notice is linked above." sections={privacyDraft} />;
 }

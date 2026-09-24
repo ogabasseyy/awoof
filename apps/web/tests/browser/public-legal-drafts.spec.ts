@@ -76,6 +76,51 @@ test('current terms and legal index link the version 1.0 archive', async ({ page
   expect(await sitemap.text()).toContain('/terms/v1-0</loc>');
 });
 
+test('/privacy/v1-0 publishes the archived version 1.0 notice', async ({ page }) => {
+  const route = '/privacy/v1-0';
+  const response = await page.goto(route);
+  expect(response?.status()).toBe(200);
+  await expect(page.locator('main h1')).toHaveCount(1);
+  await expect(page.locator('main h1')).toHaveText('Privacy Policy (Version 1.0)');
+  await expect(page.locator('main')).toContainText('Version 1.0 · Effective 23 September 2026');
+  await expect(page.locator('main')).not.toContainText('working draft');
+  await expect(page.locator('main')).not.toContainText('Decisions requiring counsel');
+  await expect(page.locator('main')).not.toContainText('proposed allocation');
+  await expect(page.locator('main')).toContainText('Awoof Digital Services');
+  await expect(page.locator('main')).toContainText('8449678');
+  await expect(page.locator('main')).toContainText('2 Olaide Tomori Street, Ikeja, Lagos');
+  await expect(page.getByRole('link', { name: 'support@awoof.tech' })).toHaveAttribute('href', 'mailto:support@awoof.tech');
+  await expect(page.locator('meta[name="robots"]')).toHaveAttribute('content', 'index, follow');
+  await expect(page.locator('link[rel="canonical"]')).toHaveAttribute('href', `https://awoof.tech${route}`);
+  const anchors = page.locator('main nav a[href^="#"]');
+  for (const href of await anchors.evaluateAll((links) => links.map((link) => link.getAttribute('href')!))) {
+    await expect(page.locator(href)).toHaveCount(1);
+    await expect(page.locator(`${href} h2`)).toHaveCount(1);
+  }
+  await page.setViewportSize({ width: 320, height: 740 });
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+});
+
+test('archived notice keeps the version 1.0 collection and retention text', async ({ page }) => {
+  await page.goto('/privacy/v1-0');
+  await expect(page.locator('#information')).toContainText('Registration also records which Terms of Service version was accepted and when');
+  await expect(page.locator('#information')).not.toContainText('self-declaration that you are 18 or older');
+  await expect(page.locator('#retention')).not.toContainText('age declaration');
+  await page.goto('/privacy');
+  await expect(page.locator('#information')).toContainText('self-declaration that you are 18 or older');
+});
+
+test('current notice and legal index link the version 1.0 privacy archive', async ({ page }) => {
+  await page.goto('/privacy');
+  await expect(page.getByRole('navigation', { name: 'Legal documents', exact: true }).locator('a[href="/privacy/v1-0"]')).toHaveCount(1);
+  await expect(page.locator('main')).toContainText('archived version 1.0 notice is linked above');
+  await page.goto('/legal');
+  await expect(page.getByRole('navigation', { name: 'Legal documents', exact: true }).locator('a[href="/privacy/v1-0"]')).toHaveCount(1);
+  const sitemap = await page.request.get('/sitemap.xml');
+  expect(sitemap.ok()).toBe(true);
+  expect(await sitemap.text()).toContain('/privacy/v1-0</loc>');
+});
+
 test('privacy draft separates account, school-account and enrollment checks', async ({ page }) => {
   await page.goto('/privacy');
   await expect(page.locator('#verification')).toContainText('Current enrollment is a separate question');

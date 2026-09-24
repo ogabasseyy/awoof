@@ -480,7 +480,7 @@ test('completes a pre-cutover challenge under Terms 1.0 without mixing contracts
     });
 });
 
-test('serves a pre-cutover resend from the live challenge without issuing a new one', async () => {
+test('reissues a pre-cutover resend with a real code anchored to the original deadline', async () => {
     await withPool(async (pool) => {
         const setup = await pool.connect();
         const fixture = await createFixture(setup);
@@ -507,12 +507,12 @@ test('serves a pre-cutover resend from the live challenge without issuing a new 
         assert.equal(issued.status, 'issued');
         if (issued.status !== 'issued') throw new Error('legacy challenge was not issued');
 
-        let deliveries = 0;
+        const delivered: string[] = [];
         const service = createStudentSignupService({
             pool,
             isEmailConfigured: () => true,
-            deliverOtp: async () => {
-                deliveries += 1;
+            deliverOtp: async (_email, code) => {
+                delivered.push(code);
                 return { success: true };
             },
         });
@@ -528,7 +528,7 @@ test('serves a pre-cutover resend from the live challenge without issuing a new 
             termsVersion: '1.0',
         };
         // The seeded challenge is fresh, so the first legacy resend lands in
-        // its real cooldown and keeps the original receipt usable.
+        // its real cooldown and the original receipt stays usable.
         await assert.rejects(service.request(legacy), StudentSignupRateLimitError);
         const subject = challengeSubjectDigest('student_signup', fixture.email);
         await pool.query(
@@ -538,22 +538,24 @@ test('serves a pre-cutover resend from the live challenge without issuing a new 
             [subject],
         );
         const receipt = await service.request(legacy);
-        assert.equal(receipt.challengeId, issued.challengeId);
+        assert.notEqual(receipt.challengeId, issued.challengeId);
         assert.equal(receipt.expiresAt.getTime(), issued.expiresAt.getTime());
-        assert.equal(deliveries, 0);
-        const challenges = await pool.query<{ count: string }>(
-            `SELECT count(*) FROM verification_challenges
+        assert.equal(delivered.length, 1);
+        const rows = await pool.query<{ id: string; superseded: boolean }>(
+            `SELECT id, superseded_at IS NOT NULL AS superseded
+             FROM verification_challenges
              WHERE purpose = 'student_signup' AND subject_digest = $1`,
             [subject],
         );
-        assert.equal(challenges.rows[0]!.count, '1');
+        assert.equal(rows.rows.length, 2);
+        assert.equal(rows.rows.find((row) => row.id === issued.challengeId)?.superseded, true);
         await assert.rejects(service.request(legacy), StudentSignupRateLimitError);
         await assert.rejects(
             service.request({ ...legacy, name: 'Changed Name' }),
             StudentSignupContractOutdatedError,
         );
         const completion = await service.confirm({
-            ...legacy, challengeId: receipt.challengeId, otp: issued.code, password: 'StrongPass123!',
+            ...legacy, challengeId: receipt.challengeId, otp: delivered[0]!, password: 'StrongPass123!',
         });
         assert.equal(completion.user.email, fixture.email);
 

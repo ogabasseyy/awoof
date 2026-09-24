@@ -12,6 +12,7 @@ The owner reported lawyer approval of the five-document package and authorized i
 | `/privacy` | Privacy notice: purposes, lawful bases, recipients, automated decisions, rights | v1.0 published; proposed v1.1 discloses the self-declared age field and server-recorded acceptance |
 | `/terms` | Student/website terms, checkout responsibilities, IP, restrictions, liability and disputes | v1.0 published; proposed v1.1 requires self-declared age 18+ and acceptance for student signup |
 | `/terms/v1-0` | Frozen public archive of the version 1.0 student/website terms | Byte-identical to the v1.0 release; linked from `/terms` and `/legal`, in sitemap |
+| `/privacy/v1-0` | Frozen public archive of the version 1.0 privacy notice | Byte-identical to the v1.0 release; linked from `/privacy` and `/legal`, in sitemap |
 | `/cookies` | Cookies/browser-storage notice | Version 1.0 |
 | `/legal/merchant-terms` | Business terms requiring an accepted order form/payment schedule | Terms alone execute no agreement |
 | `/legal/data-protection` | Controller-sharing/processor modules and integration annex | Personal-data exchange requires completed annexes |

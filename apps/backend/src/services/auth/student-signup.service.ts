@@ -241,20 +241,24 @@ function passwordHashFor(password: string): Promise<string> {
 
 export function createStudentSignupService(dependencies: StudentSignupDependencies) {
     /**
-     * Serves a pre-cutover bundle's resend without issuing anything new: when
-     * its original challenge is still live, the stale client gets that same
-     * receipt back, so its saved proof survives the tap and the code already
-     * in its inbox stays valid. Anything else fails as an outdated contract.
+     * Serves a pre-cutover bundle's resend with a real replacement code. The
+     * replacement inherits the live challenge's expiry, so the grace can
+     * never extend past the original ten-minute window no matter how often
+     * it is reissued; anything without a live pre-cutover challenge fails
+     * as an outdated contract, so no new 1.0 signup can start.
      */
     async function requestLegacyResend(input: StudentSignupInput): Promise<StudentSignupRequestResult> {
         const identity = normalizeLegacySignupInput(input);
-        return inTransaction(dependencies.pool, async (tx) => {
+        if (!dependencies.isEmailConfigured()) {
+            throw new ServiceUnavailableError('Signup email delivery is temporarily unavailable. Please try again later.');
+        }
+        const reissued = await inTransaction(dependencies.pool, async (tx) => {
             const policy = await getInstitutionPolicy(tx, identity.universityId);
             assertPolicyAllowsSignup(policy, identity.email);
             await assertNoExistingIdentity(tx, identity.email);
             const subject = challengeSubjectDigest('student_signup', identity.email);
-            const budget = (await tx.query<{ current_challenge_id: string | null; resend_available_at: Date }>(
-                `SELECT current_challenge_id, resend_available_at
+            const budget = (await tx.query<{ current_challenge_id: string | null }>(
+                `SELECT current_challenge_id
                  FROM verification_challenge_budgets
                  WHERE purpose = 'student_signup' AND subject_digest = $1
                  FOR UPDATE`,
@@ -272,35 +276,62 @@ export function createStudentSignupService(dependencies: StudentSignupDependenci
             if (!challenge || !sameSignupBindings(challenge.bindings, identity, policy.policyVersion)) {
                 throw new StudentSignupContractOutdatedError();
             }
-            const cooling = (await tx.query<{ resend_available_at: Date }>(
-                `SELECT resend_available_at FROM verification_challenge_budgets
-                 WHERE purpose = 'student_signup' AND subject_digest = $1
-                   AND resend_available_at > clock_timestamp()`,
-                [subject],
-            )).rows[0];
-            if (cooling) {
+            const replacement = await requestChallenge(tx, {
+                purpose: 'student_signup',
+                subjectKey: identity.email,
+                bindings: {
+                    email: identity.email,
+                    name: identity.name,
+                    universityId: identity.universityId,
+                    matricNumber: identity.matricNumber,
+                    policyVersion: policy.policyVersion,
+                    verificationConsent: true,
+                    noticeVersion: identity.noticeVersion,
+                    termsAccepted: true,
+                    termsVersion: identity.termsVersion,
+                },
+            });
+            if (replacement.status !== 'issued') {
                 throw new StudentSignupRateLimitError(
-                    'Please wait before requesting another signup code.',
-                    cooling.resend_available_at,
+                    replacement.status === 'locked'
+                        ? 'Too many signup attempts. Please try again later.'
+                        : 'Please wait before requesting another signup code.',
+                    replacement.retryAt,
                 );
             }
-            const bumped = (await tx.query<{ resend_available_at: Date }>(
-                // Mirrors the standard resend cooldown without minting a new
-                // challenge or email; the original code remains the proof.
-                `UPDATE verification_challenge_budgets
-                 SET resend_available_at = clock_timestamp() + INTERVAL '60 seconds'
-                 WHERE purpose = 'student_signup' AND subject_digest = $1
-                 RETURNING resend_available_at`,
+            // Anchor the replacement to the original deadline: reissues must
+            // never extend the pre-cutover grace window.
+            await tx.query(
+                `UPDATE verification_challenges
+                 SET expires_at = LEAST(expires_at, $2::timestamptz)
+                 WHERE id = $1`,
+                [replacement.challengeId, challenge.expires_at],
+            );
+            const resend = await tx.query<{ resend_available_at: Date }>(
+                `SELECT resend_available_at
+                 FROM verification_challenge_budgets
+                 WHERE purpose = 'student_signup' AND subject_digest = $1`,
                 [subject],
-            )).rows[0];
-            if (!bumped) throw new Error('Signup challenge resend time was not returned');
-            return {
-                email: identity.email,
-                challengeId: challenge.id,
-                expiresAt: challenge.expires_at,
-                resendAvailableAt: bumped.resend_available_at,
-            };
+            );
+            const resendAvailableAt = resend.rows[0]?.resend_available_at;
+            if (!resendAvailableAt) throw new Error('Signup challenge resend time was not returned');
+            return { ...replacement, expiresAt: challenge.expires_at, resendAvailableAt };
         });
+
+        try {
+            const delivered = await dependencies.deliverOtp(identity.email, reissued.code, identity.name);
+            if (!delivered.success) throw new Error('delivery rejected');
+        } catch {
+            // The committed replacement and its cooldown intentionally remain;
+            // a later legacy resend reissues again against the same deadline.
+            throw new ServiceUnavailableError('We could not deliver a signup code. Please wait before trying again.');
+        }
+        return {
+            email: identity.email,
+            challengeId: reissued.challengeId,
+            expiresAt: reissued.expiresAt,
+            resendAvailableAt: reissued.resendAvailableAt,
+        };
     }
 
     async function request(input: StudentSignupInput): Promise<StudentSignupRequestResult> {

@@ -15,6 +15,7 @@ export default function sitemap(): MetadataRoute.Sitemap {
     ...[
       { path: '/legal', lastModified: '2026-09-24' },
       { path: '/privacy', lastModified: '2026-09-24' },
+      { path: '/privacy/v1-0', lastModified: '2026-09-24' },
       { path: '/terms', lastModified: '2026-09-24' },
       { path: '/terms/v1-0', lastModified: '2026-09-24' },
       { path: '/cookies', lastModified: '2026-09-23' },
