@@ -91,7 +91,10 @@ test('privacy notice records the terms-acceptance record and its retention', asy
     { exact: true },
   )).toBeVisible();
   await expect(page.locator('#retention')).toContainText('record of the agreement under which the account was provided');
-  await expect(page.locator('#retention')).toContainText('age declaration');
+  await expect(page.locator('#retention').getByText(
+    'Account and linked identity records support access and account integrity while needed for those purposes; closure should trigger a review of continued retention rather than automatic indefinite storage. The registered Terms of Service acceptance (version and time, and an age declaration where recorded) is kept as the record of the agreement under which the account was provided, and may be retained after closure where needed to establish, exercise or defend a legal claim.',
+    { exact: true },
+  )).toBeVisible();
 });
 
 test('privacy notice keeps security reports on the in-app path', async ({ page }) => {

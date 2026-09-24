@@ -26,8 +26,9 @@ Implementation evidence: `apps/backend/src/database/migrations/068_student_terms
 
 The generic legal-page wrapper no longer presents merchant order-form execution and completed processing annexes as conditions applying to student Terms or the privacy notice. Those boundaries appear only on the relevant merchant and partner data-protection pages. No merchant agreement is created by this change.
 
-### Required before rollout (merge/deploy gate)
+### Owner-directed rollout exception — 24 September 2026
 
-- Legal/operational review of the version 1.1 legal-text changes is **outstanding**. The version 1.0 counsel approval covered the exact version 1.0 package only and does not cover the new 18+ eligibility self-declaration or the privacy-notice collection/retention updates.
-- Do not merge or deploy this branch until that review is recorded here with reviewer, date, scope (student Terms 1.1 eligibility declaration; privacy notice age-declaration collection and retention wording) and outcome. Merging publishes the new indexed text and begins requiring acceptance of version 1.1.
+- After being shown the exact version 1.1 eligibility, collection and retention wording and asked whether approval was from counsel or the business owner, the owner explicitly answered: “business owner approved. fix what u said to fix and merge”. This records business-owner approval and an explicit instruction to proceed despite the previously documented counsel-review gate; it is not lawyer approval or a legal-compliance opinion.
+- Scope: the 18+ self-declaration requirement, collection of the declaration with Terms version and server timestamp, and retention with agreement evidence, qualified as “version and time, and an age declaration where recorded” so historical records are not misrepresented.
+- Independent legal review of version 1.1 remains unconfirmed. The version 1.0 counsel approval is not extended to version 1.1. This owner-directed exception supersedes the previous merge/deploy hold for this release only; normal CI and technical review gates remain required. Merging publishes the new indexed text and begins requiring acceptance of version 1.1.
 - The public label states version 1.1 as effective 24 September 2026. If rollout slips past that date, update the label to the actual publication date before merge.
