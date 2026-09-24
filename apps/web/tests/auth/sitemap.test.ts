@@ -23,6 +23,7 @@ test('sitemap covers exactly the launched public routes', () => {
     // Exact host match: a startsWith check would also accept
     // https://awoof.tech.evil.example.
     assert.equal(new URL(entry.url).hostname, 'awoof.tech');
+    assert.equal(new URL(entry.url).protocol, 'https:');
     const path: string = new URL(entry.url).pathname;
     assert.ok(!path.startsWith('/auth'));
     assert.ok(!path.startsWith('/admin'));
