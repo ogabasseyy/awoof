@@ -42,8 +42,10 @@ test('privacy draft separates account, school-account and enrollment checks', as
 
 test('privacy notice records the terms-acceptance record and its retention', async ({ page }) => {
   await page.goto('/privacy');
-  await expect(page.locator('#information')).toContainText('self-declaration that you are 18 or older');
-  await expect(page.locator('#information')).toContainText('server-recorded time');
+  await expect(page.locator('#information').getByText(
+    'Account and profile: name, email, institution, student or registration number, contact details when supplied, account role, linked sign-in identities and account status. Password-based accounts use a stored password hash. Student registration records your self-declaration that you are 18 or older, the Terms of Service version accepted and the server-recorded time. We do not independently verify age through this declaration.',
+    { exact: true },
+  )).toBeVisible();
   await expect(page.locator('#retention')).toContainText('record of the agreement under which the account was provided');
 });
 
