@@ -33,7 +33,8 @@ for (const route of draftRoutes) {
 }
 
 test('/terms/v1-0 publishes the archived version 1.0 terms', async ({ page }) => {
-  const response = await page.goto('/terms/v1-0');
+  const route = '/terms/v1-0';
+  const response = await page.goto(route);
   expect(response?.status()).toBe(200);
   await expect(page.locator('main h1')).toHaveCount(1);
   await expect(page.locator('main h1')).toHaveText('Terms of Service (Version 1.0)');
@@ -46,7 +47,7 @@ test('/terms/v1-0 publishes the archived version 1.0 terms', async ({ page }) =>
   await expect(page.locator('main')).toContainText('2 Olaide Tomori Street, Ikeja, Lagos');
   await expect(page.getByRole('link', { name: 'support@awoof.tech' })).toHaveAttribute('href', 'mailto:support@awoof.tech');
   await expect(page.locator('meta[name="robots"]')).toHaveAttribute('content', 'index, follow');
-  await expect(page.locator('link[rel="canonical"]')).toHaveAttribute('href', 'https://awoof.tech/terms/v1-0');
+  await expect(page.locator('link[rel="canonical"]')).toHaveAttribute('href', `https://awoof.tech${route}`);
   const anchors = page.locator('main nav a[href^="#"]');
   for (const href of await anchors.evaluateAll((links) => links.map((link) => link.getAttribute('href')!))) {
     await expect(page.locator(href)).toHaveCount(1);
