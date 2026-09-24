@@ -2,6 +2,19 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { test } from 'node:test';
 import { join } from 'node:path';
+import { createHash } from 'node:crypto';
+import { termsV1_0Archive } from '../../src/content/public/terms-v1-0-archive';
+
+// Derived from termsDraft at approved release 889bb391b6a743ce397433e70e2a1eb6ccb2800c,
+// with legalOperator/legalAddress resolved from that same release's legal-types.ts.
+// Hash the complete ordered content, not TypeScript formatting. Never regenerate
+// this baseline from the current archive: amendments require a new policy version.
+const approvedV1Digest = '02a915dae17f488ff71758bf3d474d2856d9271170e9cc237afa08373f120003';
+
+test('complete archived Terms match the approved version 1.0 reading copy', () => {
+  const actual = createHash('sha256').update(JSON.stringify(termsV1_0Archive)).digest('hex');
+  assert.equal(actual, approvedV1Digest, 'An archived clause differs from the approved version 1.0 Terms');
+});
 
 test('version 1.0 terms archive snapshots operator values instead of shared constants', () => {
   const source = readFileSync(
