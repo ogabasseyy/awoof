@@ -297,3 +297,25 @@ test('a claim link for another product redirects to the session product', async 
     await page.waitForURL(`/marketplace/${productId}?claimSession=${sessionId}`);
     await expect(page.getByTestId('student-claim-card')).toBeVisible();
 });
+
+test('a malformed claim session never reaches the claim-sessions API', async ({ page }) => {
+    await installSyntheticApi(page);
+    await seedSession(page, 'student');
+    await page.route(`${apiOrigin}/api/products/${productId}`, (route) => route.fulfill({
+        status: 404, json: { success: false, error: { message: 'Product not found', code: 'NOT_FOUND', statusCode: 404 } },
+        headers: { 'access-control-allow-origin': '*' },
+    }));
+    let sessionRequests = 0;
+    await page.route(`${apiOrigin}/api/merchant-verification/claim-sessions/**`, (route) => {
+        sessionRequests += 1;
+        return route.fulfill({
+            status: 500, json: { success: false, error: { message: 'must not be requested', code: 'UNREACHABLE', statusCode: 500 } },
+            headers: { 'access-control-allow-origin': '*' },
+        });
+    });
+    await page.goto(`/marketplace/${productId}?claimSession=${encodeURIComponent('../../admin/users')}`);
+    await expect(page.getByText('unknown, expired, or already redeemed')).toBeVisible();
+    await page.goto(`/marketplace/${productId}?claimSession=${encodeURIComponent('not-a-uuid')}`);
+    await expect(page.getByText('unknown, expired, or already redeemed')).toBeVisible();
+    expect(sessionRequests).toBe(0);
+});

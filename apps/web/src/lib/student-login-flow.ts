@@ -100,7 +100,7 @@ function asRecord(value: unknown): Record<string, unknown> | null {
         : null;
 }
 
-function isUuid(value: unknown): value is string {
+export function isUuid(value: unknown): value is string {
     return typeof value === 'string' && UUID_PATTERN.test(value);
 }
 
