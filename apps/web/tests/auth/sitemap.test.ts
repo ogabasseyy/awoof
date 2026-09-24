@@ -20,7 +20,9 @@ test('sitemap covers exactly the launched public routes', () => {
   const paths = entries.map((entry) => new URL(entry.url).pathname);
   assert.deepEqual([...paths].sort(), [...ALLOWLIST].sort());
   for (const entry of entries) {
-    assert.ok(entry.url.startsWith('https://awoof.tech'));
+    // Exact host match: a startsWith check would also accept
+    // https://awoof.tech.evil.example.
+    assert.equal(new URL(entry.url).hostname, 'awoof.tech');
     const path: string = new URL(entry.url).pathname;
     assert.ok(!path.startsWith('/auth'));
     assert.ok(!path.startsWith('/admin'));
