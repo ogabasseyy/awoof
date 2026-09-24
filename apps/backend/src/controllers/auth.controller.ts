@@ -865,10 +865,37 @@ export class AuthController {
             termsAccepted: z.literal(true),
             termsVersion: z.literal(STUDENT_TERMS_VERSION),
         }).strict();
+        // Exact pre-cutover confirm shape: no age declaration, Terms 1.0.
+        // Accepted only to complete challenges issued before the rollout;
+        // the service rejects it against any challenge carrying an
+        // attestation, and new requests never accept this shape.
+        const legacySchema = z.object({
+            email: z.string().email('Invalid email address'),
+            otp: z.string().regex(/^\d{6}$/, 'OTP must be six digits'),
+            password: z.string().min(8, 'Password must be at least 8 characters'),
+            name: z.string().min(2, 'Name must be at least 2 characters'),
+            universityId: z.string().uuid('Invalid university ID'),
+            matricNumber: z.string().max(100, 'Matric number must be at most 100 characters').nullable().optional(),
+            challengeId: z.string().uuid('Invalid signup challenge ID'),
+            verificationConsent: z.literal(true),
+            noticeVersion: z.literal(VERIFICATION_NOTICE_VERSION),
+            termsAccepted: z.literal(true),
+            termsVersion: z.literal('1.0'),
+        }).strict();
 
-        let validated: z.infer<typeof schema>;
+        let validated: z.infer<typeof schema> | z.infer<typeof legacySchema>;
         try {
-            validated = schema.parse(req.body);
+            const current = schema.safeParse(req.body);
+            if (current.success) {
+                validated = current.data;
+            } else {
+                const legacy = legacySchema.safeParse(req.body);
+                if (legacy.success) {
+                    validated = legacy.data;
+                } else {
+                    throw current.error;
+                }
+            }
         } catch (error: unknown) {
             const contractError = toStudentSignupContractError(error);
             if (contractError) throw contractError;
@@ -887,7 +914,7 @@ export class AuthController {
                 matricNumber: validated.matricNumber ?? null,
                 verificationConsent: validated.verificationConsent,
                 noticeVersion: validated.noticeVersion,
-                ageAttested: validated.ageAttested,
+                ageAttested: 'ageAttested' in validated ? validated.ageAttested : false,
                 termsAccepted: validated.termsAccepted,
                 termsVersion: validated.termsVersion,
                 challengeId: validated.challengeId,

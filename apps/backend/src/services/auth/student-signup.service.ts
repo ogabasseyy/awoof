@@ -26,6 +26,18 @@ export type StudentSignupIdentity = {
     termsVersion: string;
 };
 
+/**
+ * Pre-cutover confirm identity: Terms 1.0 without an age declaration.
+ * Valid only against challenges issued before the rollout (whose stored
+ * bindings carry no attestation); the live request path never produces it.
+ */
+export type LegacyStudentSignupIdentity = Omit<StudentSignupIdentity, 'ageAttested' | 'termsVersion'> & {
+    ageAttested: false;
+    termsVersion: '1.0';
+};
+
+export const LEGACY_SIGNUP_TERMS_VERSION = '1.0';
+
 export type StudentSignupInput = Omit<StudentSignupIdentity, 'verificationConsent' | 'ageAttested' | 'termsAccepted'> & {
     verificationConsent: boolean;
     ageAttested: boolean;
@@ -103,6 +115,47 @@ export function normalizeStudentSignupRequest(input: StudentSignupInput): Studen
     };
 }
 
+/**
+ * Validates a pre-cutover confirm payload: the exact legacy shape (Terms 1.0,
+ * no age declaration) with otherwise current identity and consent checks.
+ * Mixed shapes fail closed so a legacy confirm can never mint or match a
+ * current-contract challenge.
+ */
+export function normalizeLegacySignupConfirmation(input: StudentSignupInput): LegacyStudentSignupIdentity {
+    const email = normalizeMailbox(input.email);
+    const name = typeof input.name === 'string' ? input.name.trim() : '';
+    const matricNumber = input.matricNumber === null || input.matricNumber === undefined
+        ? null
+        : typeof input.matricNumber === 'string' && input.matricNumber.trim() !== ''
+            ? input.matricNumber.trim()
+            : null;
+    if (name.length < 2 || name.length > 255) throw new BadRequestError('Student name must be between 2 and 255 characters');
+    if (matricNumber !== null && matricNumber.length > 100) throw new BadRequestError('Matric number must be at most 100 characters');
+    if (input.verificationConsent !== true || input.noticeVersion !== VERIFICATION_NOTICE_VERSION) {
+        throw new BadRequestError('Current verification processing consent required');
+    }
+    if (input.ageAttested !== false) {
+        throw new BadRequestError('Legacy signup confirmation must not carry an age declaration');
+    }
+    if (input.termsAccepted !== true || input.termsVersion !== LEGACY_SIGNUP_TERMS_VERSION) {
+        throw new BadRequestError('Legacy signup confirmation requires Terms version 1.0');
+    }
+    if (input.otp !== undefined && !/^\d{6}$/.test(input.otp)) {
+        throw new BadRequestError('Signup OTP must be six digits');
+    }
+    return {
+        email,
+        name,
+        universityId: input.universityId,
+        matricNumber,
+        verificationConsent: true,
+        noticeVersion: input.noticeVersion,
+        ageAttested: false,
+        termsAccepted: true,
+        termsVersion: LEGACY_SIGNUP_TERMS_VERSION,
+    };
+}
+
 async function inTransaction<T>(pool: PoolLike, operation: (tx: PoolClient) => Promise<T>): Promise<T> {
     const tx = await pool.connect();
     let active = false;
@@ -145,11 +198,13 @@ async function assertNoExistingIdentity(tx: PoolClient, email: string): Promise<
 
 function sameSignupBindings(
     value: unknown,
-    identity: StudentSignupIdentity,
+    identity: StudentSignupIdentity | LegacyStudentSignupIdentity,
     policyVersion: number,
 ): value is SignupChallengeBindings {
     if (value === null || typeof value !== 'object' || Array.isArray(value)) return false;
     const bindings = value as Partial<SignupChallengeBindings>;
+    // Pre-cutover bindings carry no attestation key; a missing key matches
+    // only the legacy identity, so contracts cannot be mixed across stages.
     return bindings.email === identity.email
         && bindings.name === identity.name
         && bindings.universityId === identity.universityId
@@ -157,7 +212,7 @@ function sameSignupBindings(
         && bindings.policyVersion === policyVersion
         && bindings.verificationConsent === true
         && bindings.noticeVersion === identity.noticeVersion
-        && bindings.ageAttested === true
+        && (bindings.ageAttested ?? false) === identity.ageAttested
         && bindings.termsAccepted === true
         && bindings.termsVersion === identity.termsVersion;
 }
@@ -232,7 +287,12 @@ export function createStudentSignupService(dependencies: StudentSignupDependenci
     }
 
     async function confirm(input: StudentSignupConfirmationInput): Promise<StudentSignupCompletion> {
-        const identity = normalizeStudentSignupRequest(input);
+        // A legacy payload completes only a pre-cutover challenge; the stored
+        // bindings check below rejects it against any attested challenge, and
+        // the request path never issues unattested challenges, so this grace
+        // self-expires with the ten-minute challenge TTL.
+        const legacy = input.ageAttested !== true || input.termsVersion !== STUDENT_TERMS_VERSION;
+        const identity = legacy ? normalizeLegacySignupConfirmation(input) : normalizeStudentSignupRequest(input);
         const outcome = await inTransaction(dependencies.pool, async (tx) => {
             // This locks the canonical institution before the signup budget. The
             // account is deliberately absent until a verified proof is consumed.
@@ -275,8 +335,8 @@ export function createStudentSignupService(dependencies: StudentSignupDependenci
             });
             await tx.query(
                 `INSERT INTO terms_acceptances (user_id, kind, terms_version, age_attested)
-                 VALUES ($1, 'student_terms', $2, true)`,
-                [user.id, identity.termsVersion],
+                 VALUES ($1, 'student_terms', $2, $3)`,
+                [user.id, identity.termsVersion, identity.ageAttested],
             );
             await recordMailboxProof(tx, user.id, consumed.challengeId);
             const eligibility = await recordEmailAssurance(tx, user.id, {

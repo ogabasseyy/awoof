@@ -246,3 +246,72 @@ test('returns the current notice for a supported preflight without claiming veri
         assert.equal('studentData' in body.data, false);
     });
 });
+
+test('passes a pre-cutover confirmation to the service while legacy requests stay rejected', async () => {
+    const seen: unknown[] = [];
+    await withServer(controller({
+        studentSignupService: {
+            request: async () => { throw new Error('legacy request must not reach the service'); },
+            confirm: async (input: unknown) => {
+                seen.push(input);
+                return {
+                    user: { id: '250c68b1-9164-4a99-9780-3b646a750ea5', email: 'ada@students.school.example', role: 'student' as const },
+                    eligibility: {
+                        eligible: false as const,
+                        reason: 'unverified' as const,
+                    },
+                    expectedPasswordHash: '$2a$12$still-internal-only',
+                };
+            },
+        },
+    }), async (baseUrl) => {
+        const legacy = await fetch(`${baseUrl}/student/register-confirm`, {
+            method: 'POST', headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({
+                universityId, email: 'ada@students.school.example', name: 'Ada Student', password: 'StrongPass123!',
+                challengeId: 'f996cc5f-04e8-4a74-a11e-4de10f00af10', otp: '123456',
+                verificationConsent: true, noticeVersion: VERIFICATION_NOTICE_VERSION,
+                termsAccepted: true, termsVersion: '1.0',
+            }),
+        });
+        assert.equal(legacy.status, 201);
+        assert.deepEqual(seen, [{
+            email: 'ada@students.school.example',
+            name: 'Ada Student',
+            universityId,
+            matricNumber: null,
+            verificationConsent: true,
+            noticeVersion: VERIFICATION_NOTICE_VERSION,
+            ageAttested: false,
+            termsAccepted: true,
+            termsVersion: '1.0',
+            challengeId: 'f996cc5f-04e8-4a74-a11e-4de10f00af10',
+            otp: '123456',
+            password: 'StrongPass123!',
+        }]);
+
+        const legacyRequest = await fetch(`${baseUrl}/student/register-request`, {
+            method: 'POST', headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({
+                universityId, email: 'ada@students.school.example', name: 'Ada Student',
+                verificationConsent: true, noticeVersion: VERIFICATION_NOTICE_VERSION,
+                termsAccepted: true, termsVersion: '1.0',
+            }),
+        });
+        assert.equal(legacyRequest.status, 422);
+        assert.equal(((await legacyRequest.json()) as { error: { code: string } }).error.code, 'SIGNUP_CONTRACT_OUTDATED');
+
+        const mixed = await fetch(`${baseUrl}/student/register-confirm`, {
+            method: 'POST', headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({
+                universityId, email: 'ada@students.school.example', name: 'Ada Student', password: 'StrongPass123!',
+                challengeId: 'f996cc5f-04e8-4a74-a11e-4de10f00af10', otp: '123456',
+                verificationConsent: true, noticeVersion: VERIFICATION_NOTICE_VERSION,
+                ageAttested: true, termsAccepted: true, termsVersion: '1.0',
+            }),
+        });
+        assert.equal(mixed.status, 422);
+        assert.equal(((await mixed.json()) as { error: { code: string } }).error.code, 'SIGNUP_CONTRACT_OUTDATED');
+        assert.equal(seen.length, 1);
+    });
+});

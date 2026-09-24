@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { normalizeStudentSignupRequest } from './student-signup.service.js';
+import { normalizeLegacySignupConfirmation, normalizeStudentSignupRequest } from './student-signup.service.js';
 import { isEmailConfigured } from '../email/email.service.js';
 import { STUDENT_TERMS_VERSION, VERIFICATION_NOTICE_VERSION } from '../verification/verification-notices.js';
 
@@ -103,6 +103,50 @@ test('rejects non-six-digit signup confirmation codes', () => {
         termsVersion: STUDENT_TERMS_VERSION,
         otp: '12345x',
     }), /six digits/);
+});
+
+test('normalizes the exact pre-cutover confirmation shape as unattested Terms 1.0', () => {
+    const legacy = normalizeLegacySignupConfirmation({
+        email: '  Ada@Students.School.Example ',
+        name: '  Ada Student  ',
+        universityId: '4f088fa7-79d9-4c64-a48c-9ecbbbc3c4a3',
+        matricNumber: '   ',
+        verificationConsent: true,
+        noticeVersion: VERIFICATION_NOTICE_VERSION,
+        ageAttested: false,
+        termsAccepted: true,
+        termsVersion: '1.0',
+    });
+    assert.deepEqual(legacy, {
+        email: 'ada@students.school.example',
+        name: 'Ada Student',
+        universityId: '4f088fa7-79d9-4c64-a48c-9ecbbbc3c4a3',
+        matricNumber: null,
+        verificationConsent: true,
+        noticeVersion: VERIFICATION_NOTICE_VERSION,
+        ageAttested: false,
+        termsAccepted: true,
+        termsVersion: '1.0',
+    });
+});
+
+test('legacy confirmation fails closed on mixed contracts and stale consent', () => {
+    const input = {
+        email: 'ada@students.school.example',
+        name: 'Ada Student',
+        universityId: '4f088fa7-79d9-4c64-a48c-9ecbbbc3c4a3',
+        matricNumber: null,
+        verificationConsent: true,
+        noticeVersion: VERIFICATION_NOTICE_VERSION,
+        ageAttested: false,
+        termsAccepted: true,
+        termsVersion: '1.0',
+    };
+    assert.throws(() => normalizeLegacySignupConfirmation({ ...input, ageAttested: true }), /must not carry an age declaration/);
+    assert.throws(() => normalizeLegacySignupConfirmation({ ...input, termsVersion: STUDENT_TERMS_VERSION }), /Terms version 1.0/);
+    assert.throws(() => normalizeLegacySignupConfirmation({ ...input, termsAccepted: false }), /Terms version 1.0/);
+    assert.throws(() => normalizeLegacySignupConfirmation({ ...input, noticeVersion: 'stale-notice' }), /Current verification processing consent required/);
+    assert.throws(() => normalizeLegacySignupConfirmation({ ...input, name: 'A' }), /between 2 and 255/);
 });
 
 test('treats only a non-empty Brevo key as configured email delivery', () => {

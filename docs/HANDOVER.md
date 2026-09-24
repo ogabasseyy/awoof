@@ -54,7 +54,12 @@
   `termsAccepted: true` + current `termsVersion` pair; omitting or
   backdating any of them fails with coded 422 `SIGNUP_CONTRACT_OUTDATED`,
   which clients must treat as a reload-the-current-form signal rather than
-  a retryable field error. The request stores no password and
+  a retryable field error. As a bounded cutover grace, confirmation also
+  accepts the exact pre-cutover shape (Terms 1.0, no age declaration) but
+  only against challenges issued before the rollout, completing those
+  accounts under Terms 1.0 unattested like other historical records; the
+  request path never issues such challenges, so the grace self-expires
+  with the ten-minute challenge TTL. The request stores no password and
   only returns a challenge receipt after email delivery; its challenge is
   bounded to a 10-minute code, five failed guesses, and a 60-second resend
   cooldown. Confirmation repeats the immutable identity, the current
