@@ -49,13 +49,17 @@
 - Student signup is now proof-bound and must use only the dedicated public
   endpoints: `POST /auth/student/register-request` followed by
   `POST /auth/student/register-confirm`. Both use strict schemas requiring
-  the literal `verificationConsent: true` + current `noticeVersion` pair and
-  the literal `termsAccepted: true` + current `termsVersion` pair; omitting
-  either pair fails validation. The request stores no password and
+  the literal `verificationConsent: true` + current `noticeVersion` pair,
+  the literal `ageAttested: true` 18+ self-declaration, and the literal
+  `termsAccepted: true` + current `termsVersion` pair; omitting or
+  backdating any of them fails with coded 422 `SIGNUP_CONTRACT_OUTDATED`,
+  which clients must treat as a reload-the-current-form signal rather than
+  a retryable field error. The request stores no password and
   only returns a challenge receipt after email delivery; its challenge is
   bounded to a 10-minute code, five failed guesses, and a 60-second resend
   cooldown. Confirmation repeats the immutable identity, the current
-  processing-notice action and the current terms acceptance, creates the new
+  processing-notice action, the 18+ self-declaration and the current terms
+  acceptance, creates the new
   student account/proof/processing grant/terms acceptance/evidence in one
   transaction, and returns authoritative eligibility.
   Never infer merchant disclosure consent or eligibility from the legacy
@@ -64,9 +68,9 @@
   mailbox proof. Its successful response always includes the current
   `verificationNotice` version and text plus the current `studentTerms`
   version; clients must display the notice before asking
-  for the literal affirmative processing action, and must capture distinct
-  acceptance of the current Terms of Service version before requesting a
-  code. A supported domain is not an
+  for the literal affirmative processing action, and must capture both the
+  18+ self-declaration and distinct acceptance of the current Terms of
+  Service version before requesting a code. A supported domain is not an
   account lookup, enrollment result, or `verified` claim. Generic
   `POST /auth/register` with `role: student` returns 410 and vendors keep the
   established registration path.

@@ -3,7 +3,7 @@ import { test } from 'node:test';
 import sitemap from '../../src/app/sitemap';
 import { publicPageMetadata } from '../../src/content/public/page-metadata';
 
-const ALLOWLIST = ['/', '/marketplace', '/trust', '/help', '/contact', '/partner', '/developers', '/legal', '/privacy', '/terms', '/cookies', '/legal/merchant-terms', '/legal/data-protection'];
+const ALLOWLIST = ['/', '/marketplace', '/trust', '/help', '/contact', '/partner', '/developers', '/legal', '/privacy', '/terms', '/terms/v1-0', '/cookies', '/legal/merchant-terms', '/legal/data-protection'];
 
 test('sitemap covers exactly the launched public routes', () => {
   const entries = sitemap();

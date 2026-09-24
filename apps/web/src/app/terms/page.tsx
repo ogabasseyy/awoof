@@ -12,5 +12,5 @@ export const metadata: Metadata = {
 };
 
 export default function LegalPage() {
-  return <LegalDraftPage title="Terms of Service" intro="Terms for Awoof student accounts, verification and marketplace use." versionLabel={studentPolicyVersion} sections={termsDraft} />;
+  return <LegalDraftPage title="Terms of Service" intro="Terms for Awoof student accounts, verification and marketplace use." versionLabel={studentPolicyVersion} contextNote="This page shows version 1.1 for new student accounts. The archived version 1.0 accepted by existing accounts is linked above." sections={termsDraft} />;
 }

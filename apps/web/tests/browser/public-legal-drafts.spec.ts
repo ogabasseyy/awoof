@@ -32,6 +32,49 @@ for (const route of draftRoutes) {
   });
 }
 
+test('/terms/v1-0 publishes the archived version 1.0 terms', async ({ page }) => {
+  const response = await page.goto('/terms/v1-0');
+  expect(response?.status()).toBe(200);
+  await expect(page.locator('main h1')).toHaveCount(1);
+  await expect(page.locator('main h1')).toHaveText('Terms of Service (Version 1.0)');
+  await expect(page.locator('main')).toContainText('Version 1.0 · Effective 23 September 2026');
+  await expect(page.locator('main')).not.toContainText('working draft');
+  await expect(page.locator('main')).not.toContainText('Decisions requiring counsel');
+  await expect(page.locator('main')).not.toContainText('proposed allocation');
+  await expect(page.locator('main')).toContainText('Awoof Digital Services');
+  await expect(page.locator('main')).toContainText('8449678');
+  await expect(page.locator('main')).toContainText('2 Olaide Tomori Street, Ikeja, Lagos');
+  await expect(page.getByRole('link', { name: 'support@awoof.tech' })).toHaveAttribute('href', 'mailto:support@awoof.tech');
+  await expect(page.locator('meta[name="robots"]')).toHaveAttribute('content', 'index, follow');
+  await expect(page.locator('link[rel="canonical"]')).toHaveAttribute('href', 'https://awoof.tech/terms/v1-0');
+  const anchors = page.locator('main nav a[href^="#"]');
+  for (const href of await anchors.evaluateAll((links) => links.map((link) => link.getAttribute('href')!))) {
+    await expect(page.locator(href)).toHaveCount(1);
+    await expect(page.locator(`${href} h2`)).toHaveCount(1);
+  }
+  await page.setViewportSize({ width: 320, height: 740 });
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+});
+
+test('archived terms keep the version 1.0 eligibility text', async ({ page }) => {
+  await page.goto('/terms/v1-0');
+  await expect(page.locator('#eligibility')).toContainText('legal capacity to enter the applicable agreement');
+  await expect(page.locator('#eligibility')).not.toContainText('declare that you meet this age requirement');
+  await page.goto('/terms');
+  await expect(page.locator('#eligibility')).toContainText('declare that you meet this age requirement');
+});
+
+test('current terms and legal index link the version 1.0 archive', async ({ page }) => {
+  await page.goto('/terms');
+  await expect(page.getByRole('navigation', { name: 'Legal documents', exact: true }).locator('a[href="/terms/v1-0"]')).toHaveCount(1);
+  await expect(page.locator('main')).toContainText('archived version 1.0 accepted by existing accounts');
+  await page.goto('/legal');
+  await expect(page.getByRole('navigation', { name: 'Legal documents', exact: true }).locator('a[href="/terms/v1-0"]')).toHaveCount(1);
+  const sitemap = await page.request.get('/sitemap.xml');
+  expect(sitemap.ok()).toBe(true);
+  expect(await sitemap.text()).toContain('/terms/v1-0</loc>');
+});
+
 test('privacy draft separates account, school-account and enrollment checks', async ({ page }) => {
   await page.goto('/privacy');
   await expect(page.locator('#verification')).toContainText('Current enrollment is a separate question');

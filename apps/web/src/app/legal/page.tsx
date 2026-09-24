@@ -20,7 +20,7 @@ export default function LegalPage() {
       'Merchant terms apply through a separately accepted order form. The data-protection schedule requires incorporation into a partner agreement and completed processing annexes before data is exchanged. Publication does not establish a partnership or authorize access to university records.',
     ], links: legalDocuments },
     { id: 'versions', heading: 'Versions and changes', paragraphs: [
-      'Each document identifies its version and date. Publishing a new version does not retrospectively change an earlier contract or substitute for consent where required. Contact support@awoof.tech to request the version applicable to your agreement.',
+      'Each document identifies its version and date. Publishing a new version does not retrospectively change an earlier contract or substitute for consent where required. Superseded student terms remain available as archived reading copies linked above. Contact support@awoof.tech to request the version applicable to your agreement.',
     ] },
   ]} />;
 }
