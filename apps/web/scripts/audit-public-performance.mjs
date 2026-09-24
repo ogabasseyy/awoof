@@ -53,22 +53,22 @@ function lighthouseConfigHash() {
   return sha256Hex(readFileSync(join(webRoot, 'lighthouse.public.cjs')));
 }
 
-function toolVersions() {
-  const lighthouse = requireFromWeb('lighthouse/package.json').version;
-  const chromeLauncher = requireFromWeb('chrome-launcher/package.json').version;
-  let chrome = 'unknown';
+function chromeVersion() {
   try {
     const launcherModule = requireFromWeb('chrome-launcher');
     const chromePath = launcherModule.getChromePath
       ? launcherModule.getChromePath()
       : '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome';
-    chrome = execFileSync(chromePath, ['--version'], { encoding: 'utf8' }).trim();
+    return execFileSync(chromePath, ['--version'], { encoding: 'utf8' }).trim();
   } catch {
-    chrome = 'unresolved';
-  }
-  if (chrome === 'unknown' || chrome === 'unresolved') {
     throw new Error('Unable to resolve the Chrome version. Refusing to capture without version evidence.');
   }
+}
+
+function toolVersions() {
+  const lighthouse = requireFromWeb('lighthouse/package.json').version;
+  const chromeLauncher = requireFromWeb('chrome-launcher/package.json').version;
+  const chrome = chromeVersion();
   return { node: process.version, lighthouse, chromeLauncher, chrome, platform: `${platform()} ${release()}`, cpus: cpus().length, totalmem };
 }
 
@@ -376,6 +376,7 @@ async function capture(label) {
       cachePolicy: 'browser-cold/server-warm, storage reset per run',
       routes: summaryRoutes,
     };
+    // codeql[js/http-to-file-access]: local-only audit report by design; fixed artifact path (allowlisted label) with JSON-encoded capture data.
     writeFileSync(join(runDir, 'summary.json'), `${JSON.stringify(summary, null, 2)}\n`);
     if (label === 'candidate') {
       writeFileSync(join(ARTIFACT_ROOT, 'candidate', 'latest.json'), JSON.stringify({ runDir }));

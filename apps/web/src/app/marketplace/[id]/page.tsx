@@ -17,6 +17,7 @@ import {
     type ClaimState,
 } from '@/lib/student-benefit-claim';
 import { resolveStudentReturn } from '@/lib/student-return';
+import { isUuid } from '@/lib/student-login-flow';
 
 import { useState, useEffect, useRef } from 'react';
 import { useParams, useRouter } from 'next/navigation';
@@ -210,13 +211,21 @@ export default function ProductDetailPage() {
 
     useEffect(() => {
         if (!claimSessionId || user?.role !== 'student' || claimLoadRef.current === `${claimSessionId}#${claimReload}`) return;
+        // The session id comes from the URL query string, so it must be a
+        // well-formed UUID before it is interpolated into an authenticated
+        // same-origin request; anything else fails exactly like an unknown
+        // claim link without issuing the request.
+        if (!isUuid(claimSessionId)) {
+            setClaim((prev) => failClaim(beginLoading(prev, claimSessionId), 'This claim link is unknown, expired, or already redeemed.'));
+            return;
+        }
         claimLoadRef.current = `${claimSessionId}#${claimReload}`;
         let cancelled = false;
         setClaim((prev) => beginLoading(prev, claimSessionId));
         (async () => {
             try {
                 const [sessionRes, statusRes] = await Promise.all([
-                    apiClient.get(`/merchant-verification/claim-sessions/${claimSessionId}`),
+                    apiClient.get(`/merchant-verification/claim-sessions/${encodeURIComponent(claimSessionId)}`),
                     apiClient.get('/verification/status'),
                 ]);
                 if (cancelled) return;
