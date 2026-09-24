@@ -27,3 +27,13 @@ test('version 1.0 terms archive snapshots operator values instead of shared cons
   assert.equal(source.includes('legalAddress'), false);
   assert.match(source, /import type \{ LegalDraftSection \}/);
 });
+
+test('version 1.0 archive route uses the frozen label, not shared version constants', () => {
+  const page = readFileSync(
+    join(process.cwd(), 'src/app/terms/v1-0/page.tsx'),
+    'utf8',
+  );
+  assert.equal(page.includes('termsV1_0VersionLabel'), true);
+  assert.equal(page.includes('legalDraftVersion'), false);
+  assert.equal(page.includes('studentPolicyVersion'), false);
+});

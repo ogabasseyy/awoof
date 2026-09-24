@@ -1,7 +1,6 @@
 import type { Metadata } from 'next';
 import LegalDraftPage from '@/components/public/LegalDraftPage';
-import { termsV1_0Archive } from '@/content/public/legal-drafts';
-import { legalDraftVersion } from '@/content/public/legal-types';
+import { termsV1_0Archive, termsV1_0VersionLabel } from '@/content/public/legal-drafts';
 
 export const metadata: Metadata = {
   title: 'Terms of Service (Version 1.0) | Awoof',
@@ -12,5 +11,5 @@ export const metadata: Metadata = {
 };
 
 export default function LegalPage() {
-  return <LegalDraftPage title="Terms of Service (Version 1.0)" intro="Archived student and website terms accepted by accounts created under version 1.0." versionLabel={legalDraftVersion} contextNote="This is an archived copy. New student accounts accept the current Terms of Service linked above." sections={termsV1_0Archive} />;
+  return <LegalDraftPage title="Terms of Service (Version 1.0)" intro="Archived student and website terms accepted by accounts created under version 1.0." versionLabel={termsV1_0VersionLabel} contextNote="This is an archived copy. New student accounts accept the current Terms of Service linked above." sections={termsV1_0Archive} />;
 }

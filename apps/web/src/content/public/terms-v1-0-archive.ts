@@ -10,6 +10,11 @@ import type { LegalDraftSection } from './legal-types';
  * operator updates cannot rewrite this archive. New terms go in
  * terms-draft.ts.
  */
+
+/** Frozen display label for the v1.0 archive route. Never derive this from
+ *  the shared version constants: those track the current documents and will
+ *  move on while this archive must keep reading Version 1.0. */
+export const termsV1_0VersionLabel = 'Version 1.0 · Effective 23 September 2026';
 export const termsV1_0Archive: readonly LegalDraftSection[] = [
   { id: 'operator', heading: 'Who provides Awoof and when these terms apply', paragraphs: [
     'Awoof Digital Services (registration number: 8449678), at 2 Olaide Tomori Street, Ikeja, Lagos, Nigeria, provides the Awoof website, student accounts, verification features and marketplace. “Awoof”, “we” and “us” refer to that operator. You can contact us at support@awoof.tech.',
