@@ -8,6 +8,7 @@ export type StudentSignupClaims = Readonly<{
   matricNumber: string | null;
   verificationConsent: true;
   noticeVersion: string;
+  ageAttested: true;
   termsAccepted: true;
   termsVersion: string;
 }>;

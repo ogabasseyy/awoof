@@ -12,6 +12,7 @@ test('normalizes the mailbox and preserves a null or trimmed self-declared matri
         matricNumber: '   ',
         verificationConsent: true,
         noticeVersion: VERIFICATION_NOTICE_VERSION,
+        ageAttested: true,
         termsAccepted: true,
         termsVersion: STUDENT_TERMS_VERSION,
     });
@@ -22,6 +23,7 @@ test('normalizes the mailbox and preserves a null or trimmed self-declared matri
         matricNumber: null,
         verificationConsent: true,
         noticeVersion: VERIFICATION_NOTICE_VERSION,
+        ageAttested: true,
         termsAccepted: true,
         termsVersion: STUDENT_TERMS_VERSION,
     });
@@ -40,6 +42,7 @@ test('rejects a missing affirmative notice action and stale notice version', () 
         matricNumber: null,
         verificationConsent: false,
         noticeVersion: VERIFICATION_NOTICE_VERSION,
+        ageAttested: true,
         termsAccepted: true,
         termsVersion: STUDENT_TERMS_VERSION,
     };
@@ -59,6 +62,7 @@ test('rejects a missing terms acceptance and stale terms version', () => {
         matricNumber: null,
         verificationConsent: true,
         noticeVersion: VERIFICATION_NOTICE_VERSION,
+        ageAttested: true,
         termsAccepted: false,
         termsVersion: STUDENT_TERMS_VERSION,
     };
@@ -70,6 +74,22 @@ test('rejects a missing terms acceptance and stale terms version', () => {
     }), /Current student terms acceptance required/);
 });
 
+test('rejects signup unless the applicant affirmatively declares they are at least 18', () => {
+    const input = {
+        email: 'ada@students.school.example',
+        name: 'Ada Student',
+        universityId: '4f088fa7-79d9-4c64-a48c-9ecbbbc3c4a3',
+        matricNumber: null,
+        verificationConsent: true,
+        noticeVersion: VERIFICATION_NOTICE_VERSION,
+        termsAccepted: true,
+        termsVersion: STUDENT_TERMS_VERSION,
+    };
+    assert.throws(() => normalizeStudentSignupRequest(input), /18 or older/);
+    assert.throws(() => normalizeStudentSignupRequest({ ...input, ageAttested: false }), /18 or older/);
+    assert.equal(normalizeStudentSignupRequest({ ...input, ageAttested: true }).ageAttested, true);
+});
+
 test('rejects non-six-digit signup confirmation codes', () => {
     assert.throws(() => normalizeStudentSignupRequest({
         email: 'ada@students.school.example',
@@ -78,6 +98,7 @@ test('rejects non-six-digit signup confirmation codes', () => {
         matricNumber: null,
         verificationConsent: true,
         noticeVersion: VERIFICATION_NOTICE_VERSION,
+        ageAttested: true,
         termsAccepted: true,
         termsVersion: STUDENT_TERMS_VERSION,
         otp: '12345x',

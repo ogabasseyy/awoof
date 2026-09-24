@@ -99,6 +99,7 @@ function claimsFor(values: AgreementIdentity, preflight: SignupPreflight): Stude
         matricNumber: values.matricNumber,
         verificationConsent: true,
         noticeVersion: preflight.verificationNotice.version,
+        ageAttested: true,
         termsAccepted: true,
         termsVersion: preflight.studentTerms.version,
     };
@@ -112,6 +113,7 @@ function sameClaims(left: StudentSignupClaims | undefined, right: StudentSignupC
         && left.matricNumber === right.matricNumber
         && left.verificationConsent === right.verificationConsent
         && left.noticeVersion === right.noticeVersion
+        && left.ageAttested === right.ageAttested
         && left.termsAccepted === right.termsAccepted
         && left.termsVersion === right.termsVersion;
 }
@@ -341,7 +343,7 @@ function StudentRegisterInner() {
             setConsentChecked(false);
             setTermsChecked(false);
             if (toggled === 'consent') setConsentError('Your consent is required before we can send a verification code.');
-            else setTermsError('Please accept the Terms of Service before we can send a verification code.');
+            else setTermsError('Please confirm you are 18 or older and accept the Terms before we can send a verification code.');
             return;
         }
         consentBindingRef.current = { claims: claimsFor(parsed.data, support.preflight) };
@@ -377,7 +379,7 @@ function StudentRegisterInner() {
             return;
         }
         if (!termsChecked) {
-            setTermsError('Please accept the Terms of Service before we can send a verification code.');
+            setTermsError('Please confirm you are 18 or older and accept the Terms before we can send a verification code.');
             termsRef.current?.focus();
             return;
         }
@@ -766,7 +768,7 @@ function StudentRegisterInner() {
                         <fieldset className="space-y-2 rounded-xl border border-slate-200 bg-slate-50 p-4">
                             <legend className="sr-only">Student terms acceptance</legend>
                             <p className="text-left text-sm text-slate-700">
-                                Creating an account accepts version {supported.preflight.studentTerms.version} of the{' '}
+                                Creating an account records your self-declared age and acceptance of version {supported.preflight.studentTerms.version} of the{' '}
                                 <Link href="/terms" target="_blank" rel="noreferrer" className="font-semibold text-[#182d75] underline underline-offset-4">
                                     Terms of Service
                                 </Link>
@@ -785,7 +787,7 @@ function StudentRegisterInner() {
                                     className="mt-1 h-4 w-4"
                                 />
                                 <label htmlFor="student-terms" className="text-left text-sm text-slate-800">
-                                    I accept the Awoof Terms of Service
+                                    I am 18 or older and accept the Terms
                                 </label>
                             </div>
                             <p id="terms-error" role="alert" className="text-left text-sm text-red-600">

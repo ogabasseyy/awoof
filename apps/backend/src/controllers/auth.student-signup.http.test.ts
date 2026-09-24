@@ -65,6 +65,26 @@ function controller(overrides: Partial<ConstructorParameters<typeof AuthControll
 
 test('uses the production student handlers for preflight, request, confirm, and the retired generic route', async () => {
     await withServer(controller(), async (baseUrl) => {
+        const missingAge = await fetch(`${baseUrl}/student/register-request`, {
+            method: 'POST', headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({
+                universityId, email: 'ada@students.school.example', name: 'Ada Student',
+                verificationConsent: true, noticeVersion: VERIFICATION_NOTICE_VERSION,
+                termsAccepted: true, termsVersion: STUDENT_TERMS_VERSION,
+            }),
+        });
+        assert.equal(missingAge.status, 422);
+
+        const underAge = await fetch(`${baseUrl}/student/register-request`, {
+            method: 'POST', headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({
+                universityId, email: 'ada@students.school.example', name: 'Ada Student',
+                verificationConsent: true, noticeVersion: VERIFICATION_NOTICE_VERSION,
+                ageAttested: false, termsAccepted: true, termsVersion: STUDENT_TERMS_VERSION,
+            }),
+        });
+        assert.equal(underAge.status, 422);
+
         const preflight = await fetch(`${baseUrl}/verify-student-email`, {
             method: 'POST', headers: { 'content-type': 'application/json' },
             body: JSON.stringify({ universityId, email: 'ada@students.school.example' }),
@@ -82,7 +102,7 @@ test('uses the production student handlers for preflight, request, confirm, and 
             body: JSON.stringify({
                 universityId, email: 'ada@students.school.example', name: 'Ada Student',
                 verificationConsent: true, noticeVersion: VERIFICATION_NOTICE_VERSION,
-                termsAccepted: true, termsVersion: STUDENT_TERMS_VERSION,
+                ageAttested: true, termsAccepted: true, termsVersion: STUDENT_TERMS_VERSION,
             }),
         });
         assert.equal(request.status, 200);
@@ -99,7 +119,7 @@ test('uses the production student handlers for preflight, request, confirm, and 
                 universityId, email: 'ada@students.school.example', name: 'Ada Student', password: 'StrongPass123!',
                 challengeId: 'f996cc5f-04e8-4a74-a11e-4de10f00af10', otp: '123456',
                 verificationConsent: true, noticeVersion: VERIFICATION_NOTICE_VERSION,
-                termsAccepted: true, termsVersion: STUDENT_TERMS_VERSION,
+                ageAttested: true, termsAccepted: true, termsVersion: STUDENT_TERMS_VERSION,
             }),
         });
         assert.equal(confirmation.status, 201);
@@ -133,13 +153,35 @@ test('rejects stale notice data before confirmation and maps a service cooldown 
             confirm: async () => { throw new Error('not reached'); },
         },
     }), async (baseUrl) => {
+        const missingAge = await fetch(`${baseUrl}/student/register-confirm`, {
+            method: 'POST', headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({
+                universityId, email: 'ada@students.school.example', name: 'Ada Student', password: 'StrongPass123!',
+                challengeId: 'f996cc5f-04e8-4a74-a11e-4de10f00af10', otp: '123456',
+                verificationConsent: true, noticeVersion: VERIFICATION_NOTICE_VERSION,
+                termsAccepted: true, termsVersion: STUDENT_TERMS_VERSION,
+            }),
+        });
+        assert.equal(missingAge.status, 422);
+
+        const underAge = await fetch(`${baseUrl}/student/register-confirm`, {
+            method: 'POST', headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({
+                universityId, email: 'ada@students.school.example', name: 'Ada Student', password: 'StrongPass123!',
+                challengeId: 'f996cc5f-04e8-4a74-a11e-4de10f00af10', otp: '123456',
+                verificationConsent: true, noticeVersion: VERIFICATION_NOTICE_VERSION,
+                ageAttested: false, termsAccepted: true, termsVersion: STUDENT_TERMS_VERSION,
+            }),
+        });
+        assert.equal(underAge.status, 422);
+
         const stale = await fetch(`${baseUrl}/student/register-confirm`, {
             method: 'POST', headers: { 'content-type': 'application/json' },
             body: JSON.stringify({
                 universityId, email: 'ada@students.school.example', name: 'Ada Student', password: 'StrongPass123!',
                 challengeId: 'f996cc5f-04e8-4a74-a11e-4de10f00af10', otp: '123456',
                 verificationConsent: true, noticeVersion: 'stale-notice',
-                termsAccepted: true, termsVersion: STUDENT_TERMS_VERSION,
+                ageAttested: true, termsAccepted: true, termsVersion: STUDENT_TERMS_VERSION,
             }),
         });
         assert.equal(stale.status, 422);
@@ -150,7 +192,7 @@ test('rejects stale notice data before confirmation and maps a service cooldown 
                 universityId, email: 'ada@students.school.example', name: 'Ada Student', password: 'StrongPass123!',
                 challengeId: 'f996cc5f-04e8-4a74-a11e-4de10f00af10', otp: '123456',
                 verificationConsent: true, noticeVersion: VERIFICATION_NOTICE_VERSION,
-                termsAccepted: true, termsVersion: 'stale-terms',
+                ageAttested: true, termsAccepted: true, termsVersion: 'stale-terms',
             }),
         });
         assert.equal(staleTerms.status, 422);
@@ -160,7 +202,7 @@ test('rejects stale notice data before confirmation and maps a service cooldown 
             body: JSON.stringify({
                 universityId, email: 'ada@students.school.example', name: 'Ada Student',
                 verificationConsent: true, noticeVersion: VERIFICATION_NOTICE_VERSION,
-                termsAccepted: true, termsVersion: STUDENT_TERMS_VERSION,
+                ageAttested: true, termsAccepted: true, termsVersion: STUDENT_TERMS_VERSION,
             }),
         });
         assert.equal(cooldown.status, 429);

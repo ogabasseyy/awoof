@@ -7,7 +7,10 @@ for (const route of draftRoutes) {
     const response = await page.goto(route);
     expect(response?.status()).toBe(200);
     await expect(page.locator('main h1')).toHaveCount(1);
-    await expect(page.locator('main')).toContainText('Version 1.0 · Effective 23 September 2026');
+    const version = ['/privacy', '/terms'].includes(route)
+      ? 'Version 1.1 · Approved 24 September 2026'
+      : 'Version 1.0 · Effective 23 September 2026';
+    await expect(page.locator('main')).toContainText(version);
     await expect(page.locator('main')).not.toContainText('working draft');
     await expect(page.locator('main')).not.toContainText('Decisions requiring counsel');
     await expect(page.locator('main')).not.toContainText('proposed allocation');
@@ -39,7 +42,8 @@ test('privacy draft separates account, school-account and enrollment checks', as
 
 test('privacy notice records the terms-acceptance record and its retention', async ({ page }) => {
   await page.goto('/privacy');
-  await expect(page.locator('#information')).toContainText('which Terms of Service version was accepted and when');
+  await expect(page.locator('#information')).toContainText('self-declaration that you are 18 or older');
+  await expect(page.locator('#information')).toContainText('server-recorded time');
   await expect(page.locator('#retention')).toContainText('record of the agreement under which the account was provided');
 });
 
@@ -70,10 +74,15 @@ test('cookies notice discloses the homepage first-visit preference', async ({ pa
   await expect(page.locator('#essential')).toContainText('first-visit preference in local storage');
 });
 
-test('legal notice states merchant-order and schedule-annex conditions separately', async ({ page }) => {
+test('merchant-order and schedule-annex conditions stay on partner legal pages', async ({ page }) => {
+  await page.goto('/terms');
+  await expect(page.locator('main')).not.toContainText('These terms apply only through a separately accepted order form');
+  await expect(page.locator('main')).not.toContainText('completed processing annexes govern personal-data matters');
   await page.goto('/legal/merchant-terms');
-  await expect(page.locator('main')).toContainText('Merchant terms apply only through a separately accepted order form');
-  await expect(page.locator('main')).toContainText('completed annexes, before personal data is exchanged');
+  await expect(page.locator('main')).toContainText('These terms apply only through a separately accepted order form');
+  await expect(page.locator('main')).toContainText('completed processing annexes govern personal-data matters before exchange');
+  await page.goto('/legal/data-protection');
+  await expect(page.locator('main')).toContainText('incorporate its identified version into an agreement and complete the required processing annexes');
 });
 
 test('legal navigation and sitemap expose approved policies with partner execution boundaries', async ({ page }) => {

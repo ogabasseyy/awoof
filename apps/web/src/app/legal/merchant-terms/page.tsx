@@ -11,5 +11,5 @@ export const metadata: Metadata = {
 };
 
 export default function LegalPage() {
-  return <LegalDraftPage title="Merchant Partnership Terms" intro="Business terms for Awoof merchant partnerships, applicable through a separately agreed order form." sections={merchantDraft} />;
+  return <LegalDraftPage title="Merchant Partnership Terms" intro="Business terms for Awoof merchant partnerships, applicable through a separately agreed order form." contextNote="These terms apply only through a separately accepted order form. The partner data-protection schedule and completed processing annexes govern personal-data matters before exchange." sections={merchantDraft} />;
 }

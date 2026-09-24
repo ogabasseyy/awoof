@@ -33,7 +33,7 @@ function hasValidCanonicalOutput(value: unknown): boolean {
 }
 
 test('preflight requires explicit support and a usable server notice', () => {
-  const terms = { version: '1.0' };
+  const terms = { version: '1.1' };
   assert.equal(parseSignupPreflight({ success: true, data: { supported: 'true', verificationNotice: notice, studentTerms: terms } }), null);
   assert.equal(parseSignupPreflight({ success: false, data: { supported: true, verificationNotice: notice, studentTerms: terms } }), null);
   assert.equal(parseSignupPreflight({ success: true, data: { supported: true, verificationNotice: { version: '', text: 'x' }, studentTerms: terms } }), null);

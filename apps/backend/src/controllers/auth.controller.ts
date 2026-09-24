@@ -782,6 +782,7 @@ export class AuthController {
             matricNumber: z.string().max(100, 'Matric number must be at most 100 characters').nullable().optional(),
             verificationConsent: z.literal(true),
             noticeVersion: z.literal(VERIFICATION_NOTICE_VERSION),
+            ageAttested: z.literal(true),
             termsAccepted: z.literal(true),
             termsVersion: z.literal(STUDENT_TERMS_VERSION),
         }).strict();
@@ -796,6 +797,7 @@ export class AuthController {
                 matricNumber: validated.matricNumber ?? null,
                 verificationConsent: validated.verificationConsent,
                 noticeVersion: validated.noticeVersion,
+                ageAttested: validated.ageAttested,
                 termsAccepted: validated.termsAccepted,
                 termsVersion: validated.termsVersion,
             });
@@ -827,6 +829,7 @@ export class AuthController {
             challengeId: z.string().uuid('Invalid signup challenge ID'),
             verificationConsent: z.literal(true),
             noticeVersion: z.literal(VERIFICATION_NOTICE_VERSION),
+            ageAttested: z.literal(true),
             termsAccepted: z.literal(true),
             termsVersion: z.literal(STUDENT_TERMS_VERSION),
         }).strict();
@@ -845,6 +848,7 @@ export class AuthController {
                 matricNumber: validated.matricNumber ?? null,
                 verificationConsent: validated.verificationConsent,
                 noticeVersion: validated.noticeVersion,
+                ageAttested: validated.ageAttested,
                 termsAccepted: validated.termsAccepted,
                 termsVersion: validated.termsVersion,
                 challengeId: validated.challengeId,

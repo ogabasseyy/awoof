@@ -21,12 +21,14 @@ export type StudentSignupIdentity = {
     matricNumber: string | null;
     verificationConsent: true;
     noticeVersion: string;
+    ageAttested: true;
     termsAccepted: true;
     termsVersion: string;
 };
 
-export type StudentSignupInput = Omit<StudentSignupIdentity, 'verificationConsent' | 'termsAccepted'> & {
+export type StudentSignupInput = Omit<StudentSignupIdentity, 'verificationConsent' | 'ageAttested' | 'termsAccepted'> & {
     verificationConsent: boolean;
+    ageAttested: boolean;
     termsAccepted: boolean;
     otp?: string;
 };
@@ -79,6 +81,9 @@ export function normalizeStudentSignupRequest(input: StudentSignupInput): Studen
     if (input.verificationConsent !== true || input.noticeVersion !== VERIFICATION_NOTICE_VERSION) {
         throw new BadRequestError('Current verification processing consent required');
     }
+    if (input.ageAttested !== true) {
+        throw new BadRequestError('You must confirm you are 18 or older to create an account');
+    }
     if (input.termsAccepted !== true || input.termsVersion !== STUDENT_TERMS_VERSION) {
         throw new BadRequestError('Current student terms acceptance required');
     }
@@ -92,6 +97,7 @@ export function normalizeStudentSignupRequest(input: StudentSignupInput): Studen
         matricNumber,
         verificationConsent: true,
         noticeVersion: input.noticeVersion,
+        ageAttested: true,
         termsAccepted: true,
         termsVersion: input.termsVersion,
     };
@@ -151,6 +157,7 @@ function sameSignupBindings(
         && bindings.policyVersion === policyVersion
         && bindings.verificationConsent === true
         && bindings.noticeVersion === identity.noticeVersion
+        && bindings.ageAttested === true
         && bindings.termsAccepted === true
         && bindings.termsVersion === identity.termsVersion;
 }
@@ -183,6 +190,7 @@ export function createStudentSignupService(dependencies: StudentSignupDependenci
                     policyVersion: policy.policyVersion,
                     verificationConsent: true,
                     noticeVersion: identity.noticeVersion,
+                    ageAttested: true,
                     termsAccepted: true,
                     termsVersion: identity.termsVersion,
                 } satisfies SignupChallengeBindings,
@@ -266,8 +274,8 @@ export function createStudentSignupService(dependencies: StudentSignupDependenci
                 noticeVersion: identity.noticeVersion,
             });
             await tx.query(
-                `INSERT INTO terms_acceptances (user_id, kind, terms_version)
-                 VALUES ($1, 'student_terms', $2)`,
+                `INSERT INTO terms_acceptances (user_id, kind, terms_version, age_attested)
+                 VALUES ($1, 'student_terms', $2, true)`,
                 [user.id, identity.termsVersion],
             );
             await recordMailboxProof(tx, user.id, consumed.challengeId);

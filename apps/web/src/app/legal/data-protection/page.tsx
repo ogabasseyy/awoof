@@ -11,5 +11,5 @@ export const metadata: Metadata = {
 };
 
 export default function LegalPage() {
-  return <LegalDraftPage title="Partner Data-protection Schedule" intro="Data-sharing and processing responsibilities for separately agreed Awoof partner integrations." sections={dataProtectionDraft} />;
+  return <LegalDraftPage title="Partner Data-protection Schedule" intro="Data-sharing and processing responsibilities for separately agreed Awoof partner integrations." contextNote="This schedule applies only when the parties incorporate its identified version into an agreement and complete the required processing annexes before personal data is exchanged." sections={dataProtectionDraft} />;
 }

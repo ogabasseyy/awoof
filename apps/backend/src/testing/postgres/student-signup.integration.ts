@@ -51,6 +51,7 @@ function requestInput(fixture: Fixture) {
         matricNumber: null,
         verificationConsent: true as const,
         noticeVersion: VERIFICATION_NOTICE_VERSION,
+        ageAttested: true as const,
         termsAccepted: true as const,
         termsVersion: STUDENT_TERMS_VERSION,
     };
@@ -70,6 +71,27 @@ async function withPool(operation: (pool: pg.Pool) => Promise<void>): Promise<vo
         await pool.end();
     }
 }
+
+test('a Terms acceptance without an affirmative age declaration remains unattested and uses server time', async () => {
+    await withPool(async (pool) => {
+        const email = `legacy-terms-${randomUUID()}@example.invalid`;
+        const before = Date.now();
+        const user = await pool.query<{ id: string }>(
+            `INSERT INTO users (email, role) VALUES ($1, 'student') RETURNING id`,
+            [email],
+        );
+        const acceptance = await pool.query<{ age_attested: boolean; accepted_at: Date }>(
+            `INSERT INTO terms_acceptances (user_id, kind, terms_version)
+             VALUES ($1, 'student_terms', '1.0')
+             RETURNING age_attested, accepted_at`,
+            [user.rows[0]!.id],
+        );
+        const after = Date.now();
+        assert.equal(acceptance.rows[0]!.age_attested, false);
+        assert.ok(acceptance.rows[0]!.accepted_at.getTime() >= before - 1_000);
+        assert.ok(acceptance.rows[0]!.accepted_at.getTime() <= after + 1_000);
+    });
+});
 
 type SignupRows = {
     budgets: string;
@@ -317,7 +339,7 @@ test('confirmation binds every pending identity claim and policy generation befo
         const rows = await pool.query<{
             name: string; university_id: string; registration_number: string | null; proof_count: string;
             processing_grants: string; disclosure_grants: string; evidence_count: string; reservations: string;
-            terms_version: string; terms_accepted_at: Date;
+            terms_version: string; age_attested: boolean; terms_accepted_at: Date;
         }>(
             `SELECT students.name, students.university_id, students.registration_number,
                     (SELECT count(*) FROM user_email_proofs WHERE user_id = users.id) AS proof_count,
@@ -326,6 +348,7 @@ test('confirmation binds every pending identity claim and policy generation befo
                     (SELECT count(*) FROM eligibility_evidence WHERE student_id = students.id) AS evidence_count,
                     (SELECT count(*) FROM verified_registration_identities WHERE student_id = students.id) AS reservations,
                     (SELECT terms_version FROM terms_acceptances WHERE user_id = users.id AND kind = 'student_terms') AS terms_version,
+                    (SELECT age_attested FROM terms_acceptances WHERE user_id = users.id AND kind = 'student_terms') AS age_attested,
                     (SELECT accepted_at FROM terms_acceptances WHERE user_id = users.id AND kind = 'student_terms') AS terms_accepted_at
              FROM users JOIN students ON students.user_id = users.id
              WHERE users.id = $1`,
@@ -341,6 +364,7 @@ test('confirmation binds every pending identity claim and policy generation befo
             evidence_count: '1',
             reservations: '0',
             terms_version: STUDENT_TERMS_VERSION,
+            age_attested: true,
             terms_accepted_at: rows.rows[0]!.terms_accepted_at,
         });
         assert.ok(rows.rows[0]!.terms_accepted_at instanceof Date);

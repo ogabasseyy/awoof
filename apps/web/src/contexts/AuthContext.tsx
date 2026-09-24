@@ -412,6 +412,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
             matricNumber: input.matricNumber,
             verificationConsent: true,
             noticeVersion: input.noticeVersion,
+            ageAttested: true,
             termsAccepted: true,
             termsVersion: input.termsVersion,
             password: input.password,
