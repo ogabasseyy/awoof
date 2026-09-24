@@ -53,6 +53,12 @@ test('terms keep payment disputes on verified paths', async ({ page }) => {
   await expect(page.locator('#payments')).toContainText('in-app support after signing in for Awoof’s involvement');
 });
 
+test('terms route result queries and complaints through in-app support', async ({ page }) => {
+  await page.goto('/terms');
+  await expect(page.locator('#verification')).toContainText('Query a result through in-app support after signing in');
+  await expect(page.locator('#disputes')).toContainText('Send a complaint through in-app support after signing in');
+});
+
 test('terms draft does not promise discounts or universal school support', async ({ page }) => {
   await page.goto('/terms');
   await expect(page.locator('main')).toContainText('Awoof account access alone does not establish current enrollment');

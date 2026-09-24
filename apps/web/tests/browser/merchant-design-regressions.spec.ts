@@ -15,6 +15,8 @@ test('integration API tab explains server-side key scope', async ({ page }) => {
   await page.getByRole('button', { name: 'API Configuration' }).click();
   await expect(page.getByText(/server keys live on your backend/i)).toBeVisible();
   await expect(page.getByRole('link', { name: 'Developer guide' })).toHaveAttribute('href', '/developers');
+  await expect(page.getByRole('link', { name: 'Merchant Partnership Terms' })).toHaveAttribute('href', '/legal/merchant-terms');
+  await expect(page.getByRole('link', { name: 'Partner Data-Protection Schedule' })).toHaveAttribute('href', '/legal/data-protection');
 });
 
 test('existing key stays hidden with scope guidance', async ({ page }) => {

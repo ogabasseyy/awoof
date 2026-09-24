@@ -17,7 +17,7 @@ export const termsDraft: readonly LegalDraftSection[] = [
   { id: 'verification', heading: 'Verification, expiry and disputed results', paragraphs: [
     'Awoof account access alone does not establish current enrollment. A school-account check and an enrollment check answer different questions. An enrollment-only benefit requires valid current enrollment evidence under the applicable policy and the required merchant-specific authorization.',
     'A result reflects the source, method and time of the check. It can expire, be withdrawn or require a fresh check. We cannot guarantee that every institution provides a usable source, that an external provider will remain available or that submitted information will establish eligibility.',
-    'A pending or unsuccessful result is not necessarily a finding that you are not a student. Contact support@awoof.tech to query a result or correct inaccurate information. No decision under these terms removes a right to challenge processing or request human intervention where applicable law provides it.',
+    'A pending or unsuccessful result is not necessarily a finding that you are not a student. Query a result through in-app support after signing in; the Privacy Notice explains how to request correction of inaccurate information. No decision under these terms removes a right to challenge processing or request human intervention where applicable law provides it.',
   ] },
   { id: 'offers', heading: 'Offers, merchants and purchases', paragraphs: [
     'Merchants set the terms of their own offers, including price, availability, stock, eligible products, exclusions, redemption limits and expiry. Check these details before buying. A successful verification does not reserve stock, complete a purchase or guarantee future discounts.',
@@ -55,7 +55,7 @@ export const termsDraft: readonly LegalDraftSection[] = [
     'Our Privacy Notice explains information use and your rights. A school-account sign-in, enrollment check and merchant disclosure may involve different choices. Withdrawal can stop future consent-based checks, but cannot recall information already lawfully disclosed or reverse a completed purchase. We do not make accepting all future data uses a condition of these terms.',
   ], links: [{ href: '/privacy', label: 'Read the privacy notice' }] },
   { id: 'disputes', heading: 'Complaints, governing law and disputes', paragraphs: [
-    'Send a complaint to support@awoof.tech with enough information to identify the account, order or issue. We will consider it and seek a practical resolution. You can still approach the appropriate regulator, seek urgent relief or exercise any other mandatory right without first completing an exclusive Awoof process.',
+    'Send a complaint through in-app support after signing in, with enough information to identify the account, order or issue. We will consider it and seek a practical resolution. You can still approach the appropriate regulator, seek urgent relief or exercise any other mandatory right without first completing an exclusive Awoof process.',
     'These terms are governed by Nigerian law, subject to mandatory protections that apply to you. Disputes may be brought before a court of competent jurisdiction in Nigeria or another forum that applicable mandatory law permits. These terms do not impose compulsory private arbitration, waive collective rights or shorten a statutory period for bringing a claim.',
   ] },
   { id: 'changes', heading: 'Updates, notices and general provisions', paragraphs: [
