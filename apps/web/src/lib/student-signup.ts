@@ -35,7 +35,7 @@ export type SignupConfirmation = StudentSignupClaims & Readonly<{
 export type ConfirmSignupResult =
   | { kind: 'completed' }
   | { kind: 'not_started'; reason: 'active_session' | 'storage_unavailable' }
-  | { kind: 'rejected'; reason: 'validation' | 'proof' | 'conflict' | 'other' }
+  | { kind: 'rejected'; reason: 'validation' | 'proof' | 'conflict' | 'contract_outdated' | 'other' }
   | { kind: 'account_created'; reason: 'session_issuance' | 'storage'; signInPath: string }
   | { kind: 'outcome_unknown'; reason: 'transport' | 'invalid_response' | 'server'; signInPath: string }
   | { kind: 'cancelled'; reason: 'aborted' | 'superseded'; serverOutcome: 'not_dispatched' | 'unknown' | 'created' };
@@ -154,6 +154,29 @@ export function parseSignupAuthentication(
   const authentication = parseAuthenticationResponse(body);
   if (!authentication || authentication.user.role !== 'student' || authentication.user.email !== expectedEmail) return null;
   return authentication;
+}
+
+export function isSignupContractOutdated(body: unknown): boolean {
+  return asRecord(asRecord(body)?.error)?.code === 'SIGNUP_CONTRACT_OUTDATED';
+}
+
+const contractReloadKey = 'awoof:student-signup:contract-reload';
+
+/**
+ * Single-reload guard for stale-contract recovery. Returns true only for the
+ * first outdated-contract hit in the tab session, so a persistently skewed
+ * deployment degrades to an explicit manual-reload message instead of an
+ * unbounded reload loop. Never throws; unavailable storage means no reload.
+ */
+export function consumeSignupContractReload(): boolean {
+  try {
+    if (typeof window === 'undefined' || !window.sessionStorage) return false;
+    if (window.sessionStorage.getItem(contractReloadKey) !== null) return false;
+    window.sessionStorage.setItem(contractReloadKey, '1');
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 export function signupRetryAt(body: unknown, retryAfter: unknown, now: number): number | null {

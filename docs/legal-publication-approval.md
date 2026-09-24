@@ -25,3 +25,9 @@ The approved 1.0 student Terms reading copy is preserved at immutable merge comm
 Implementation evidence: `apps/backend/src/database/migrations/068_student_terms_age_attestation.sql`, `services/auth/student-signup.service.ts`, `controllers/auth.controller.ts`, `apps/web/src/app/auth/student/register/page.tsx`, and the focused signup/browser tests. The update is source and test evidence only until merged and deployed; the public site remains on release 1.0 until then. No live provider, production setting or customer record was changed by this branch.
 
 The generic legal-page wrapper no longer presents merchant order-form execution and completed processing annexes as conditions applying to student Terms or the privacy notice. Those boundaries appear only on the relevant merchant and partner data-protection pages. No merchant agreement is created by this change.
+
+### Required before rollout (merge/deploy gate)
+
+- Legal/operational review of the version 1.1 legal-text changes is **outstanding**. The version 1.0 counsel approval covered the exact version 1.0 package only and does not cover the new 18+ eligibility self-declaration or the privacy-notice collection/retention updates.
+- Do not merge or deploy this branch until that review is recorded here with reviewer, date, scope (student Terms 1.1 eligibility declaration; privacy notice age-declaration collection and retention wording) and outcome. Merging publishes the new indexed text and begins requiring acceptance of version 1.1.
+- The public label states version 1.1 as effective 24 September 2026. If rollout slips past that date, update the label to the actual publication date before merge.

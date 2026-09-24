@@ -484,6 +484,73 @@ test('a pasted six-digit rejected proof stays local without refresh', async ({ p
   await assertCleanFixture(api, faults);
 });
 
+test('an outdated signup contract reloads the form once, then asks for a manual reload', async ({ page }) => {
+  const outdated = {
+    response: {
+      status: 422,
+      body: { success: false, error: { code: 'SIGNUP_CONTRACT_OUTDATED', message: 'The signup terms were updated.' } },
+    },
+  } as const;
+  const api = await installSyntheticApi(page, {
+    signup: {
+      preflight: [preflightResponse(), preflightResponse()],
+      request: [
+        { ...outdated, expectedBody: requestBody() },
+        { ...outdated, expectedBody: requestBody() },
+      ],
+    },
+  });
+  const faults = collectBrowserFaults(page, api);
+  await gotoStudentSignup(page);
+  await fillDetails(page);
+  await checkAgreements(page);
+  await page.getByRole('button', { name: 'Continue', exact: true }).click();
+  await page.waitForFunction(() => window.sessionStorage.getItem('awoof:student-signup:contract-reload') === '1');
+  await page.waitForLoadState('load');
+  await waitForSignupFormReadiness(page);
+  await expect(page.getByLabel('Full Name', { exact: true })).toHaveValue('');
+  await fillDetails(page);
+  await checkAgreements(page);
+  await page.getByRole('button', { name: 'Continue', exact: true }).click();
+  await expect(page.locator('#signup-flow-error')).toContainText(/reload this page/i);
+  await expect(page.getByLabel('Full Name', { exact: true })).toHaveValue(name);
+  expect(api.signupRequests.filter((request) => request.endpoint === 'request')).toHaveLength(2);
+  expect(api.signupRequests.filter((request) => request.endpoint === 'confirm')).toHaveLength(0);
+  expect(api.signupRequests.every((request) => request.matchesExpectedBody)).toBe(true);
+  expect(await hasActiveSession(page)).toBe(false);
+  expect(api.refreshCalls).toBe(0);
+  expectSafePublicRequests(api);
+  await assertCleanFixture(api, faults);
+});
+
+test('an outdated signup contract during confirmation reloads the form', async ({ page }) => {
+  const api = await installSyntheticApi(page, {
+    signup: {
+      preflight: [preflightResponse()],
+      request: [{ response: { status: 200, body: signupReceipt() }, expectedBody: requestBody() }],
+      confirm: [{
+        response: { status: 422, body: { success: false, error: { code: 'SIGNUP_CONTRACT_OUTDATED' } } },
+        expectedBody: confirmationBody(),
+      }],
+    },
+  });
+  const faults = collectBrowserFaults(page, api);
+  await gotoStudentSignup(page);
+  await enterOtp(page);
+  await page.getByLabel('Verification Code', { exact: true }).fill(validOtp);
+  await page.getByRole('button', { name: 'Create Account', exact: true }).click();
+  await page.waitForFunction(() => window.sessionStorage.getItem('awoof:student-signup:contract-reload') === '1');
+  await page.waitForLoadState('load');
+  await waitForSignupFormReadiness(page);
+  await expect(page.getByLabel('Full Name', { exact: true })).toHaveValue('');
+  expect(api.signupRequests.filter((request) => request.endpoint === 'confirm')).toHaveLength(1);
+  expect(api.signupRequests.every((request) => request.matchesExpectedBody)).toBe(true);
+  expect(await hasActiveSession(page)).toBe(false);
+  expect(api.refreshCalls).toBe(0);
+  expectSafePublicRequests(api);
+  await assertCleanFixture(api, faults);
+});
+
 for (const [invalidOtpIndex, invalidOtp] of invalidOtps.entries()) {
   test('invalid OTP case ' + (invalidOtpIndex + 1) + ' never dispatches confirmation', async ({ page }) => {
     const api = await installSyntheticApi(page, {

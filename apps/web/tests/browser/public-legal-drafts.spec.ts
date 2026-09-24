@@ -8,7 +8,7 @@ for (const route of draftRoutes) {
     expect(response?.status()).toBe(200);
     await expect(page.locator('main h1')).toHaveCount(1);
     const version = ['/privacy', '/terms'].includes(route)
-      ? 'Version 1.1 · Approved 24 September 2026'
+      ? 'Version 1.1 · Effective 24 September 2026'
       : 'Version 1.0 · Effective 23 September 2026';
     await expect(page.locator('main')).toContainText(version);
     await expect(page.locator('main')).not.toContainText('working draft');
@@ -47,6 +47,7 @@ test('privacy notice records the terms-acceptance record and its retention', asy
     { exact: true },
   )).toBeVisible();
   await expect(page.locator('#retention')).toContainText('record of the agreement under which the account was provided');
+  await expect(page.locator('#retention')).toContainText('age declaration');
 });
 
 test('privacy notice keeps security reports on the in-app path', async ({ page }) => {

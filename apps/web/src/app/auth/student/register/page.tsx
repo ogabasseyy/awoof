@@ -25,6 +25,8 @@ import { PasswordInput } from '@/components/ui/PasswordInput';
 import { useAuth } from '@/contexts/AuthContext';
 import { publicApiClient } from '@/lib/api-client';
 import {
+    consumeSignupContractReload,
+    isSignupContractOutdated,
     parseSignupPreflight,
     parseSignupReceipt,
     signupRetryAt,
@@ -236,6 +238,15 @@ function StudentRegisterInner() {
         setTermsError(null);
     }, []);
 
+    const recoverStaleContract = useCallback((): void => {
+        if (consumeSignupContractReload()) {
+            setFlowError('The signup terms were updated. Reloading the latest signup form…');
+            window.location.reload();
+            return;
+        }
+        setFlowError('The signup terms were updated. Please reload this page to get the latest signup form, then review the current Terms and try again.');
+    }, []);
+
     useEffect(() => {
         mountedRef.current = true;
         return () => {
@@ -420,6 +431,10 @@ function StudentRegisterInner() {
         } catch (error: unknown) {
             if (!isCurrent()) return;
             updatePending(null);
+            if (axios.isAxiosError(error) && isSignupContractOutdated(error.response?.data)) {
+                recoverStaleContract();
+                return;
+            }
             setFlowError(errorMessage(error, 'We could not start verification. Please try again.'));
         } finally {
             if (!isCurrentAttempt()) return;
@@ -431,6 +446,7 @@ function StudentRegisterInner() {
         changePhase,
         consentChecked,
         identity,
+        recoverStaleContract,
         requestCommittedFocus,
         support,
         termsChecked,
@@ -476,6 +492,10 @@ function StudentRegisterInner() {
         } catch (error: unknown) {
             if (!isCurrent()) return;
             const response = axios.isAxiosError(error) ? error.response : undefined;
+            if (response?.status === 422 && isSignupContractOutdated(response.data)) {
+                recoverStaleContract();
+                return;
+            }
             // A definite cooldown rejection does not supersede the previous challenge.
             if (response?.status === 429) updatePending(frozen);
             const deadline = response?.status === 429
@@ -492,7 +512,7 @@ function StudentRegisterInner() {
             submissionControllerRef.current = null;
             setIsResending(false);
         }
-    }, [cancelSubmission, isConfirming, isRequesting, isResending, retryAt, updatePending]);
+    }, [cancelSubmission, isConfirming, isRequesting, isResending, recoverStaleContract, retryAt, updatePending]);
 
     const finishRecovery = useCallback((result: Extract<ConfirmSignupResult, { kind: 'account_created' | 'outcome_unknown' }>): void => {
         updatePending(null);
@@ -560,6 +580,10 @@ function StudentRegisterInner() {
                 return;
             }
             if (result.kind === 'rejected') {
+                if (result.reason === 'contract_outdated') {
+                    recoverStaleContract();
+                    return;
+                }
                 if (result.reason === 'proof') {
                     setOtpError('The verification code is invalid or expired. Request a new code.');
                     return;
@@ -580,6 +604,7 @@ function StudentRegisterInner() {
         confirmStudentSignup,
         finishRecovery,
         otp,
+        recoverStaleContract,
         search,
         updatePending,
     ]);

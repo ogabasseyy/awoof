@@ -32,7 +32,7 @@ import {
 import { success } from '../common/utils/response.js';
 import { appLogger } from '../common/logger.js';
 import type { AuthRequest } from '../middleware/auth.middleware.js';
-import { z } from 'zod';
+import { z, ZodError } from 'zod';
 
 /**
  * Validation schemas
@@ -68,6 +68,31 @@ const loginSchema = z.object({
 const refreshTokenSchema = z.object({
     refreshToken: z.string().min(1, 'Refresh token is required'),
 });
+
+/** Agreement fields whose validation failure means the client predates the current signup contract. */
+const STUDENT_SIGNUP_CONTRACT_FIELDS = new Set([
+    'verificationConsent',
+    'noticeVersion',
+    'ageAttested',
+    'termsAccepted',
+    'termsVersion',
+]);
+
+/**
+ * Maps a stale-contract validation failure to a machine-readable 422 so
+ * clients can reload the current signup form instead of retrying a payload
+ * the server can never accept. Returns null for unrelated validation errors.
+ */
+function toStudentSignupContractError(error: unknown): AppError | null {
+    if (!(error instanceof ZodError)) return null;
+    const stale = error.issues.some((issue) => STUDENT_SIGNUP_CONTRACT_FIELDS.has(String(issue.path[0])));
+    if (!stale) return null;
+    return new AppError(
+        'The signup terms were updated. Please reload this page to get the latest signup form, then review the current Terms and try again.',
+        422,
+        'SIGNUP_CONTRACT_OUTDATED',
+    );
+}
 
 /**
  * Authentication Controller
@@ -787,7 +812,14 @@ export class AuthController {
             termsVersion: z.literal(STUDENT_TERMS_VERSION),
         }).strict();
 
-        const validated = schema.parse(req.body);
+        let validated: z.infer<typeof schema>;
+        try {
+            validated = schema.parse(req.body);
+        } catch (error: unknown) {
+            const contractError = toStudentSignupContractError(error);
+            if (contractError) throw contractError;
+            throw error;
+        }
 
         try {
             const request = await this.studentSignupService.request({
@@ -834,7 +866,14 @@ export class AuthController {
             termsVersion: z.literal(STUDENT_TERMS_VERSION),
         }).strict();
 
-        const validated = schema.parse(req.body);
+        let validated: z.infer<typeof schema>;
+        try {
+            validated = schema.parse(req.body);
+        } catch (error: unknown) {
+            const contractError = toStudentSignupContractError(error);
+            if (contractError) throw contractError;
+            throw error;
+        }
 
         const passwordValidation = passwordService.validatePassword(validated.password);
         if (!passwordValidation.valid) {

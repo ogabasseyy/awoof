@@ -2,7 +2,7 @@
 
 ## Publication status — 24 September 2026 (v1.0 published; v1.1 source update pending rollout)
 
-The owner reported lawyer approval of the five-document package and explicitly authorized its publication; see [the publication authorization record](legal-publication-approval.md). Release v1.0 remains the published version until the v1.1 Terms/privacy source update merges and deploys. The proposed update reflects the owner-authorized 18+ self-declaration. The sections below are retained pre-publication research and historical gates; the draft-only status, noindex instructions and superseded publication gates do not describe current route status. Future legal text changes need fresh review, versioning and sign-off before they become effective.
+The owner reported lawyer approval of the five-document package and explicitly authorized its publication; see [the publication authorization record](legal-publication-approval.md). Release v1.0 remains the published version until the v1.1 Terms/privacy source update merges and deploys. The proposed update reflects the owner-authorized 18+ self-declaration. Legal/operational review of the v1.1 text is outstanding and gates merge/deploy; see the rollout gate in the publication authorization record. The sections below are retained pre-publication research and historical gates; the draft-only status, noindex instructions and superseded publication gates do not describe current route status. Future legal text changes need fresh review, versioning and sign-off before they become effective.
 
 ## Historical review status (superseded at publication)
 

@@ -74,6 +74,7 @@ test('uses the production student handlers for preflight, request, confirm, and 
             }),
         });
         assert.equal(missingAge.status, 422);
+        assert.equal(((await missingAge.json()) as { error: { code: string } }).error.code, 'SIGNUP_CONTRACT_OUTDATED');
 
         const underAge = await fetch(`${baseUrl}/student/register-request`, {
             method: 'POST', headers: { 'content-type': 'application/json' },
@@ -84,6 +85,18 @@ test('uses the production student handlers for preflight, request, confirm, and 
             }),
         });
         assert.equal(underAge.status, 422);
+        assert.equal(((await underAge.json()) as { error: { code: string } }).error.code, 'SIGNUP_CONTRACT_OUTDATED');
+
+        const invalidEmail = await fetch(`${baseUrl}/student/register-request`, {
+            method: 'POST', headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({
+                universityId, email: 'not-an-email', name: 'Ada Student',
+                verificationConsent: true, noticeVersion: VERIFICATION_NOTICE_VERSION,
+                ageAttested: true, termsAccepted: true, termsVersion: STUDENT_TERMS_VERSION,
+            }),
+        });
+        assert.equal(invalidEmail.status, 422);
+        assert.equal(((await invalidEmail.json()) as { error: { code: string } }).error.code, 'VALIDATION_ERROR');
 
         const preflight = await fetch(`${baseUrl}/verify-student-email`, {
             method: 'POST', headers: { 'content-type': 'application/json' },
@@ -163,6 +176,7 @@ test('rejects stale notice data before confirmation and maps a service cooldown 
             }),
         });
         assert.equal(missingAge.status, 422);
+        assert.equal(((await missingAge.json()) as { error: { code: string } }).error.code, 'SIGNUP_CONTRACT_OUTDATED');
 
         const underAge = await fetch(`${baseUrl}/student/register-confirm`, {
             method: 'POST', headers: { 'content-type': 'application/json' },
@@ -174,6 +188,7 @@ test('rejects stale notice data before confirmation and maps a service cooldown 
             }),
         });
         assert.equal(underAge.status, 422);
+        assert.equal(((await underAge.json()) as { error: { code: string } }).error.code, 'SIGNUP_CONTRACT_OUTDATED');
 
         const stale = await fetch(`${baseUrl}/student/register-confirm`, {
             method: 'POST', headers: { 'content-type': 'application/json' },
@@ -185,6 +200,7 @@ test('rejects stale notice data before confirmation and maps a service cooldown 
             }),
         });
         assert.equal(stale.status, 422);
+        assert.equal(((await stale.json()) as { error: { code: string } }).error.code, 'SIGNUP_CONTRACT_OUTDATED');
 
         const staleTerms = await fetch(`${baseUrl}/student/register-confirm`, {
             method: 'POST', headers: { 'content-type': 'application/json' },
@@ -196,6 +212,7 @@ test('rejects stale notice data before confirmation and maps a service cooldown 
             }),
         });
         assert.equal(staleTerms.status, 422);
+        assert.equal(((await staleTerms.json()) as { error: { code: string } }).error.code, 'SIGNUP_CONTRACT_OUTDATED');
 
         const cooldown = await fetch(`${baseUrl}/student/register-request`, {
             method: 'POST', headers: { 'content-type': 'application/json' },
