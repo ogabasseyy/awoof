@@ -29,7 +29,9 @@ async function startClaimStub(): Promise<ClaimStub> {
         }
         if (req.method === 'GET' && url.pathname === '/awoof/student-claim') {
             hits.push({ url: req.url ?? '', cookie: req.headers.cookie });
-            const cookies: Record<string, string> = {};
+            // Null prototype: cookie names are remote input and must never
+            // resolve through Object.prototype when used as lookup keys.
+            const cookies: Record<string, string> = Object.create(null);
             for (const part of (req.headers.cookie ?? '').split(';')) {
                 const index = part.indexOf('=');
                 if (index > 0) cookies[part.slice(0, index).trim()] = part.slice(index + 1).trim();
