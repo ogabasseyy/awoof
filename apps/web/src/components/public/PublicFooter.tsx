@@ -22,11 +22,12 @@ const columns = [
     links: [
       { label: 'Trust center', href: '/trust' },
       { label: 'Contact', href: '/contact' },
+      { label: 'Privacy', href: '/privacy' },
+      { label: 'Terms', href: '/terms' },
+      { label: 'Cookies', href: '/cookies' },
+      { label: 'Legal information', href: '/legal' },
     ],
   },
-  // Privacy/Terms labels stay unpublished until owner-approved policy
-  // routes exist: pointing them at /trust misrepresents the trust
-  // center as their replacement (see public-trust-pages.md).
 ];
 
 export default function PublicFooter() {

@@ -16,6 +16,14 @@ test('partner page covers merchants and universities honestly', async ({ page })
   await expect(page.locator('main').getByText(/thousands of verified|guaranteed|case stud/i)).toHaveCount(0);
 });
 
+test('partner journey links the merchant terms and data-protection schedule', async ({ page }) => {
+  await installSyntheticApi(page);
+  await page.goto('/partner');
+  const legal = page.getByRole('navigation', { name: 'Partner legal documents' });
+  await expect(legal.getByRole('link', { name: 'Merchant partnership terms' })).toHaveAttribute('href', '/legal/merchant-terms');
+  await expect(legal.getByRole('link', { name: 'Partner data-protection schedule' })).toHaveAttribute('href', '/legal/data-protection');
+});
+
 test('partner university anchor resolves to the universities section', async ({ page }) => {
   await installSyntheticApi(page);
   await page.goto('/partner#universities');

@@ -58,6 +58,30 @@ export default function PartnerPage() {
             </Link>
           </nav>
         </section>
+        <section aria-labelledby="partner-legal">
+          <h2 id="partner-legal" className="text-2xl font-extrabold tracking-tight text-slate-900">
+            Partner legal documents
+          </h2>
+          <p className="mt-3 leading-relaxed text-slate-600">
+            Business use is governed by an accepted order under the Merchant Partnership Terms.
+            Personal-data exchange additionally needs the Partner Data-Protection Schedule with
+            completed annexes.
+          </p>
+          <nav aria-label="Partner legal documents" className="mt-4 flex flex-col gap-3 sm:flex-row">
+            <Link
+              href="/legal/merchant-terms"
+              className="inline-flex min-h-[44px] items-center justify-center rounded-full border-2 border-[#244ee7]/40 px-6 text-sm font-bold text-[#182d75] hover:bg-white"
+            >
+              Merchant partnership terms
+            </Link>
+            <Link
+              href="/legal/data-protection"
+              className="inline-flex min-h-[44px] items-center justify-center rounded-full border-2 border-[#244ee7]/40 px-6 text-sm font-bold text-[#182d75] hover:bg-white"
+            >
+              Partner data-protection schedule
+            </Link>
+          </nav>
+        </section>
         <section aria-labelledby="universities-heading" id="universities" className="scroll-mt-24">
           <h2 id="universities-heading" className="text-2xl font-extrabold tracking-tight text-slate-900">
             For universities

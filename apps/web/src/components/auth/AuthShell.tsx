@@ -120,6 +120,10 @@ export function AuthShell({
                         {children}
                     </FadeIn>
 
+                    <nav aria-label="Legal information" className="mt-6 flex flex-wrap gap-4 text-sm text-slate-600">
+                        <Link href="/privacy" className="underline underline-offset-4">Privacy notice</Link>
+                        <Link href="/terms" className="underline underline-offset-4">Terms of service</Link>
+                    </nav>
                     {footer && (
                         <FadeIn delay={0.18} className="mt-8">
                             {footer}

@@ -12,5 +12,8 @@ export default function sitemap(): MetadataRoute.Sitemap {
     { url: `${baseUrl}/contact`, lastModified: launched, changeFrequency: 'monthly', priority: 0.6 },
     { url: `${baseUrl}/partner`, lastModified: launched, changeFrequency: 'monthly', priority: 0.8 },
     { url: `${baseUrl}/developers`, lastModified: launched, changeFrequency: 'monthly', priority: 0.6 },
+    ...['/legal', '/privacy', '/terms', '/cookies', '/legal/merchant-terms', '/legal/data-protection'].map((path) => ({
+      url: `${baseUrl}${path}`, lastModified: '2026-09-23', changeFrequency: 'yearly' as const, priority: 0.4,
+    })),
   ]
 }

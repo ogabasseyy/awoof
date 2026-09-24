@@ -29,6 +29,7 @@ import {
     parseSignupReceipt,
     signupRetryAt,
     studentSignupFormSchema,
+    studentSignupIdentitySchema,
     type ConfirmSignupResult,
     type SignupPreflight,
     type SignupReceipt,
@@ -88,7 +89,9 @@ function supportIdentity(email: string | undefined, university: string | undefin
     };
 }
 
-function claimsFor(values: StudentSignupFormValues, preflight: SignupPreflight): StudentSignupClaims {
+type AgreementIdentity = Pick<StudentSignupFormValues, 'email' | 'name' | 'university' | 'matricNumber'>;
+
+function claimsFor(values: AgreementIdentity, preflight: SignupPreflight): StudentSignupClaims {
     return {
         email: values.email,
         name: values.name,
@@ -96,6 +99,8 @@ function claimsFor(values: StudentSignupFormValues, preflight: SignupPreflight):
         matricNumber: values.matricNumber,
         verificationConsent: true,
         noticeVersion: preflight.verificationNotice.version,
+        termsAccepted: true,
+        termsVersion: preflight.studentTerms.version,
     };
 }
 
@@ -106,7 +111,9 @@ function sameClaims(left: StudentSignupClaims | undefined, right: StudentSignupC
         && left.universityId === right.universityId
         && left.matricNumber === right.matricNumber
         && left.verificationConsent === right.verificationConsent
-        && left.noticeVersion === right.noticeVersion;
+        && left.noticeVersion === right.noticeVersion
+        && left.termsAccepted === right.termsAccepted
+        && left.termsVersion === right.termsVersion;
 }
 
 function isCurrentSupport(
@@ -133,6 +140,8 @@ function StudentRegisterInner() {
     const [supportRevision, setSupportRevision] = useState(0);
     const [consentChecked, setConsentChecked] = useState(false);
     const [consentError, setConsentError] = useState<string | null>(null);
+    const [termsChecked, setTermsChecked] = useState(false);
+    const [termsError, setTermsError] = useState<string | null>(null);
     const [flowError, setFlowError] = useState<string | null>(null);
     const [otpError, setOtpError] = useState<string | null>(null);
     const [otp, setOtp] = useState('');
@@ -155,6 +164,7 @@ function StudentRegisterInner() {
     const pendingRef = useRef<PendingSignup | null>(null);
     const emailRef = useRef<HTMLInputElement | null>(null);
     const consentRef = useRef<HTMLInputElement | null>(null);
+    const termsRef = useRef<HTMLInputElement | null>(null);
     const otpRef = useRef<HTMLInputElement | null>(null);
     const focusIntentRef = useRef<FocusIntent | null>(null);
 
@@ -220,6 +230,8 @@ function StudentRegisterInner() {
         consentBindingRef.current = null;
         setConsentChecked(false);
         setConsentError(null);
+        setTermsChecked(false);
+        setTermsError(null);
     }, []);
 
     useEffect(() => {
@@ -315,22 +327,39 @@ function StudentRegisterInner() {
         return () => window.clearTimeout(timeout);
     }, [retryAt]);
 
-    const handleConsent = useCallback((checked: boolean): void => {
-        if (!checked) {
-            clearConsent();
+    const refreshBinding = useCallback((consent: boolean, terms: boolean, toggled: 'consent' | 'terms'): void => {
+        if (!consent || !terms) {
+            consentBindingRef.current = null;
             return;
         }
-        const parsed = studentSignupFormSchema.safeParse(getValues());
+        // Agreements bind the identity claims only: password validity must
+        // not strand checked boxes without a binding (submit still enforces
+        // the full form through handleSubmit before the request runs).
+        const parsed = studentSignupIdentitySchema.safeParse(getValues());
         if (!parsed.success || !isCurrentSupport(support, identity)) {
-            clearConsent();
-            setConsentError('Your consent is required before we can send a verification code.');
+            consentBindingRef.current = null;
+            setConsentChecked(false);
+            setTermsChecked(false);
+            if (toggled === 'consent') setConsentError('Your consent is required before we can send a verification code.');
+            else setTermsError('Please accept the Terms of Service before we can send a verification code.');
             return;
         }
-        const claims = claimsFor(parsed.data, support.preflight);
-        consentBindingRef.current = { claims };
-        setConsentChecked(true);
+        consentBindingRef.current = { claims: claimsFor(parsed.data, support.preflight) };
         setConsentError(null);
-    }, [clearConsent, getValues, identity, support]);
+        setTermsError(null);
+    }, [getValues, identity, support]);
+
+    const handleConsent = useCallback((checked: boolean): void => {
+        setConsentChecked(checked);
+        setConsentError(null);
+        refreshBinding(checked, termsChecked, 'consent');
+    }, [refreshBinding, termsChecked]);
+
+    const handleTerms = useCallback((checked: boolean): void => {
+        setTermsChecked(checked);
+        setTermsError(null);
+        refreshBinding(consentChecked, checked, 'terms');
+    }, [consentChecked, refreshBinding]);
 
     const handleInitialRequest = useCallback(async (values: StudentSignupFormValues): Promise<void> => {
         setFlowError(null);
@@ -342,7 +371,17 @@ function StudentRegisterInner() {
             return;
         }
         const claims = claimsFor(values, support.preflight);
-        if (!consentChecked || !sameClaims(consentBindingRef.current?.claims, claims)) {
+        if (!consentChecked) {
+            setConsentError('Your consent is required before we can send a verification code.');
+            consentRef.current?.focus();
+            return;
+        }
+        if (!termsChecked) {
+            setTermsError('Please accept the Terms of Service before we can send a verification code.');
+            termsRef.current?.focus();
+            return;
+        }
+        if (!sameClaims(consentBindingRef.current?.claims, claims)) {
             setConsentError('Your consent is required before we can send a verification code.');
             consentRef.current?.focus();
             return;
@@ -392,6 +431,7 @@ function StudentRegisterInner() {
         identity,
         requestCommittedFocus,
         support,
+        termsChecked,
         updatePending,
     ]);
 
@@ -718,6 +758,38 @@ function StudentRegisterInner() {
                             </div>
                             <p id="consent-error" role="alert" className="text-left text-sm text-red-600">
                                 {consentError ?? ''}
+                            </p>
+                        </fieldset>
+                    )}
+
+                    {supported && (
+                        <fieldset className="space-y-2 rounded-xl border border-slate-200 bg-slate-50 p-4">
+                            <legend className="sr-only">Student terms acceptance</legend>
+                            <p className="text-left text-sm text-slate-700">
+                                Creating an account accepts version {supported.preflight.studentTerms.version} of the{' '}
+                                <Link href="/terms" target="_blank" rel="noreferrer" className="font-semibold text-[#182d75] underline underline-offset-4">
+                                    Terms of Service
+                                </Link>
+                                . Acceptance and its version are recorded with your account.
+                            </p>
+                            <div className="flex items-start gap-2">
+                                <input
+                                    id="student-terms"
+                                    ref={termsRef}
+                                    type="checkbox"
+                                    required
+                                    checked={termsChecked}
+                                    onChange={(event) => handleTerms(event.target.checked)}
+                                    aria-invalid={!!termsError}
+                                    aria-describedby="terms-error"
+                                    className="mt-1 h-4 w-4"
+                                />
+                                <label htmlFor="student-terms" className="text-left text-sm text-slate-800">
+                                    I accept the Awoof Terms of Service
+                                </label>
+                            </div>
+                            <p id="terms-error" role="alert" className="text-left text-sm text-red-600">
+                                {termsError ?? ''}
                             </p>
                         </fieldset>
                     )}

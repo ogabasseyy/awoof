@@ -8,6 +8,8 @@ export type StudentSignupClaims = Readonly<{
   matricNumber: string | null;
   verificationConsent: true;
   noticeVersion: string;
+  termsAccepted: true;
+  termsVersion: string;
 }>;
 
 export type SignupReceipt = Readonly<{
@@ -20,6 +22,7 @@ export type SignupReceipt = Readonly<{
 export type SignupPreflight = Readonly<{
   supported: boolean;
   verificationNotice: Readonly<{ version: string; text: string }>;
+  studentTerms: Readonly<{ version: string }>;
 }>;
 
 export type SignupConfirmation = StudentSignupClaims & Readonly<{
@@ -38,7 +41,7 @@ export type ConfirmSignupResult =
 
 const passwordSpecialCharacter = /[!@#$%^&*(),.?":\{\}|<>\[\]\-_=+~`]/;
 
-export const studentSignupFormSchema = z.object({
+const studentSignupBaseSchema = z.object({
   name: z.string().trim().min(2, 'Name must be at least 2 characters').max(255, 'Name must be at most 255 characters'),
   email: z.string().trim().toLowerCase().email('Invalid email address'),
   university: z.string().uuid('Invalid university ID'),
@@ -51,7 +54,17 @@ export const studentSignupFormSchema = z.object({
     .refine((value) => /[0-9]/.test(value), 'Password must contain at least one number')
     .refine((value) => passwordSpecialCharacter.test(value), 'Password must contain at least one special character'),
   confirmPassword: z.string(),
-}).superRefine((value, context) => {
+});
+
+/** Identity fields the signup agreements bind; password validity must not strand checked boxes. */
+export const studentSignupIdentitySchema = studentSignupBaseSchema.pick({
+  email: true,
+  name: true,
+  university: true,
+  matricNumber: true,
+});
+
+export const studentSignupFormSchema = studentSignupBaseSchema.superRefine((value, context) => {
   if (value.password !== value.confirmPassword) {
     context.addIssue({
       code: z.ZodIssueCode.custom,
@@ -88,6 +101,7 @@ function hasSuccessfulOuterResponse(value: unknown): Record<string, unknown> | n
 export function parseSignupPreflight(body: unknown): SignupPreflight | null {
   const data = hasSuccessfulOuterResponse(body);
   const verificationNotice = asRecord(data?.verificationNotice);
+  const studentTerms = asRecord(data?.studentTerms);
   if (
     !data
     || typeof data.supported !== 'boolean'
@@ -96,12 +110,18 @@ export function parseSignupPreflight(body: unknown): SignupPreflight | null {
     || verificationNotice.version.trim().length === 0
     || typeof verificationNotice.text !== 'string'
     || verificationNotice.text.trim().length === 0
+    || !studentTerms
+    || typeof studentTerms.version !== 'string'
+    || studentTerms.version.trim().length === 0
   ) return null;
   return {
     supported: data.supported,
     verificationNotice: {
       version: verificationNotice.version,
       text: verificationNotice.text,
+    },
+    studentTerms: {
+      version: studentTerms.version,
     },
   };
 }

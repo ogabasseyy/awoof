@@ -13,7 +13,7 @@ import { createAuthRouter } from '../../routes/auth.routes.js';
 import { createStudentSignupService, StudentSignupRateLimitError } from '../../services/auth/student-signup.service.js';
 import { challengeSubjectDigest } from '../../services/verification/challenge.service.js';
 import { createStudentEmailPreflight } from '../../services/verification/student-email-verification.service.js';
-import { VERIFICATION_NOTICE_VERSION } from '../../services/verification/verification-notices.js';
+import { STUDENT_TERMS_VERSION, VERIFICATION_NOTICE_VERSION } from '../../services/verification/verification-notices.js';
 import { assertFixtureDatabase, createTestPool } from './test-database.js';
 
 type Fixture = {
@@ -51,6 +51,8 @@ function requestInput(fixture: Fixture) {
         matricNumber: null,
         verificationConsent: true as const,
         noticeVersion: VERIFICATION_NOTICE_VERSION,
+        termsAccepted: true as const,
+        termsVersion: STUDENT_TERMS_VERSION,
     };
 }
 
@@ -284,6 +286,10 @@ test('confirmation binds every pending identity claim and policy generation befo
             service.confirm({ ...input, noticeVersion: 'stale-notice', challengeId: request.challengeId, otp, password: 'StrongPass123!' }),
             BadRequestError,
         );
+        await assert.rejects(
+            service.confirm({ ...input, termsVersion: 'stale-terms', challengeId: request.challengeId, otp, password: 'StrongPass123!' }),
+            BadRequestError,
+        );
         await pool.query(
             `UPDATE universities
              SET verification_policy_version = verification_policy_version + 1
@@ -311,13 +317,16 @@ test('confirmation binds every pending identity claim and policy generation befo
         const rows = await pool.query<{
             name: string; university_id: string; registration_number: string | null; proof_count: string;
             processing_grants: string; disclosure_grants: string; evidence_count: string; reservations: string;
+            terms_version: string; terms_accepted_at: Date;
         }>(
             `SELECT students.name, students.university_id, students.registration_number,
                     (SELECT count(*) FROM user_email_proofs WHERE user_id = users.id) AS proof_count,
                     (SELECT count(*) FROM verification_consents WHERE user_id = users.id AND kind = 'processing') AS processing_grants,
                     (SELECT count(*) FROM verification_consents WHERE user_id = users.id AND kind = 'disclosure') AS disclosure_grants,
                     (SELECT count(*) FROM eligibility_evidence WHERE student_id = students.id) AS evidence_count,
-                    (SELECT count(*) FROM verified_registration_identities WHERE student_id = students.id) AS reservations
+                    (SELECT count(*) FROM verified_registration_identities WHERE student_id = students.id) AS reservations,
+                    (SELECT terms_version FROM terms_acceptances WHERE user_id = users.id AND kind = 'student_terms') AS terms_version,
+                    (SELECT accepted_at FROM terms_acceptances WHERE user_id = users.id AND kind = 'student_terms') AS terms_accepted_at
              FROM users JOIN students ON students.user_id = users.id
              WHERE users.id = $1`,
             [completion.user.id],
@@ -331,7 +340,10 @@ test('confirmation binds every pending identity claim and policy generation befo
             disclosure_grants: '0',
             evidence_count: '1',
             reservations: '0',
+            terms_version: STUDENT_TERMS_VERSION,
+            terms_accepted_at: rows.rows[0]!.terms_accepted_at,
         });
+        assert.ok(rows.rows[0]!.terms_accepted_at instanceof Date);
         await assert.rejects(
             service.confirm({ ...input, challengeId: request.challengeId, otp, password: 'StrongPass123!' }),
             ConflictError,

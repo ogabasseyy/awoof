@@ -514,6 +514,13 @@ export default function VendorIntegrationPage() {
                                     <Link href="/developers" className="font-semibold text-[#1D4ED8] hover:underline">Developer guide</Link>{' '}
                                     for the verification API.
                                 </p>
+                                <p className="mb-6 text-sm text-slate-600">
+                                    Business use is governed by the{' '}
+                                    <Link href="/legal/merchant-terms" className="font-semibold text-[#1D4ED8] hover:underline">Merchant Partnership Terms</Link>{' '}
+                                    under an accepted order; personal-data exchange needs the{' '}
+                                    <Link href="/legal/data-protection" className="font-semibold text-[#1D4ED8] hover:underline">Partner Data-Protection Schedule</Link>{' '}
+                                    with completed annexes.
+                                </p>
 
                                 <div className="space-y-4">
                                     <div>

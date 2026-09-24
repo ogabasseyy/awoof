@@ -22,7 +22,13 @@ export default function ContactPage() {
             ))}
           </section>
         ))}
-        <nav aria-label="Sign in for support" className="flex flex-col gap-3 pt-2 sm:flex-row">
+        <nav aria-label="Contact and sign-in options" className="flex flex-col gap-3 pt-2 sm:flex-row">
+          <a
+            href="mailto:support@awoof.tech"
+            className="inline-flex min-h-[44px] items-center justify-center rounded-full border-2 border-[#244ee7]/40 px-6 text-sm font-bold text-[#182d75] hover:bg-white"
+          >
+            support@awoof.tech
+          </a>
           <Link
             href="/auth/student/login"
             className="inline-flex min-h-[44px] items-center justify-center rounded-full bg-[#244ee7] px-6 text-sm font-bold text-white hover:brightness-110"
