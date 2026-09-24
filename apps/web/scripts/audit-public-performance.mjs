@@ -376,6 +376,7 @@ async function capture(label) {
       cachePolicy: 'browser-cold/server-warm, storage reset per run',
       routes: summaryRoutes,
     };
+    // codeql[js/http-to-file-access]: local-only audit report by design; fixed artifact path (allowlisted label) with JSON-encoded capture data.
     writeFileSync(join(runDir, 'summary.json'), `${JSON.stringify(summary, null, 2)}\n`);
     if (label === 'candidate') {
       writeFileSync(join(ARTIFACT_ROOT, 'candidate', 'latest.json'), JSON.stringify({ runDir }));
