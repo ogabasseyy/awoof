@@ -1,5 +1,6 @@
 import type { Pool, PoolClient } from 'pg';
 import {
+    AppError,
     BadRequestError,
     ConflictError,
     RateLimitError,
@@ -7,7 +8,7 @@ import {
     UnauthorizedError,
 } from '../../common/errors/AppError.js';
 import { passwordService } from './password.service.js';
-import { consumeChallenge, requestChallenge } from '../verification/challenge.service.js';
+import { challengeSubjectDigest, consumeChallenge, requestChallenge } from '../verification/challenge.service.js';
 import { grantVerificationProcessing } from '../verification/eligibility-consent.service.js';
 import { recordEmailAssurance, recordMailboxProof } from '../verification/eligibility-evidence.service.js';
 import { getInstitutionPolicy, normalizeMailbox } from '../verification/eligibility-policy.service.js';
@@ -80,6 +81,21 @@ export class StudentSignupRateLimitError extends RateLimitError {
     }
 }
 
+/**
+ * The client's signup contract predates the live backend. New bundles reload
+ * the current form on this code; stale bundles surface its message wherever
+ * they render server errors.
+ */
+export class StudentSignupContractOutdatedError extends AppError {
+    constructor() {
+        super(
+            'The signup terms were updated. Please reload this page to get the latest signup form, then review the current Terms and try again.',
+            422,
+            'SIGNUP_CONTRACT_OUTDATED',
+        );
+    }
+}
+
 export function normalizeStudentSignupRequest(input: StudentSignupInput): StudentSignupIdentity {
     const email = normalizeMailbox(input.email);
     const name = typeof input.name === 'string' ? input.name.trim() : '';
@@ -116,12 +132,12 @@ export function normalizeStudentSignupRequest(input: StudentSignupInput): Studen
 }
 
 /**
- * Validates a pre-cutover confirm payload: the exact legacy shape (Terms 1.0,
- * no age declaration) with otherwise current identity and consent checks.
- * Mixed shapes fail closed so a legacy confirm can never mint or match a
+ * Validates a pre-cutover payload: the exact legacy shape (Terms 1.0, no age
+ * declaration) with otherwise current identity and consent checks. Mixed
+ * shapes fail closed so legacy input can never mint or match a
  * current-contract challenge.
  */
-export function normalizeLegacySignupConfirmation(input: StudentSignupInput): LegacyStudentSignupIdentity {
+export function normalizeLegacySignupInput(input: StudentSignupInput): LegacyStudentSignupIdentity {
     const email = normalizeMailbox(input.email);
     const name = typeof input.name === 'string' ? input.name.trim() : '';
     const matricNumber = input.matricNumber === null || input.matricNumber === undefined
@@ -224,7 +240,72 @@ function passwordHashFor(password: string): Promise<string> {
 }
 
 export function createStudentSignupService(dependencies: StudentSignupDependencies) {
+    /**
+     * Serves a pre-cutover bundle's resend without issuing anything new: when
+     * its original challenge is still live, the stale client gets that same
+     * receipt back, so its saved proof survives the tap and the code already
+     * in its inbox stays valid. Anything else fails as an outdated contract.
+     */
+    async function requestLegacyResend(input: StudentSignupInput): Promise<StudentSignupRequestResult> {
+        const identity = normalizeLegacySignupInput(input);
+        return inTransaction(dependencies.pool, async (tx) => {
+            const policy = await getInstitutionPolicy(tx, identity.universityId);
+            assertPolicyAllowsSignup(policy, identity.email);
+            await assertNoExistingIdentity(tx, identity.email);
+            const subject = challengeSubjectDigest('student_signup', identity.email);
+            const budget = (await tx.query<{ current_challenge_id: string | null; resend_available_at: Date }>(
+                `SELECT current_challenge_id, resend_available_at
+                 FROM verification_challenge_budgets
+                 WHERE purpose = 'student_signup' AND subject_digest = $1
+                 FOR UPDATE`,
+                [subject],
+            )).rows[0];
+            const challenge = budget?.current_challenge_id
+                ? (await tx.query<{ id: string; bindings: unknown; expires_at: Date }>(
+                    `SELECT id, bindings, expires_at
+                     FROM verification_challenges
+                     WHERE id = $1 AND consumed_at IS NULL AND superseded_at IS NULL
+                       AND expires_at > clock_timestamp()`,
+                    [budget.current_challenge_id],
+                )).rows[0]
+                : undefined;
+            if (!challenge || !sameSignupBindings(challenge.bindings, identity, policy.policyVersion)) {
+                throw new StudentSignupContractOutdatedError();
+            }
+            const cooling = (await tx.query<{ resend_available_at: Date }>(
+                `SELECT resend_available_at FROM verification_challenge_budgets
+                 WHERE purpose = 'student_signup' AND subject_digest = $1
+                   AND resend_available_at > clock_timestamp()`,
+                [subject],
+            )).rows[0];
+            if (cooling) {
+                throw new StudentSignupRateLimitError(
+                    'Please wait before requesting another signup code.',
+                    cooling.resend_available_at,
+                );
+            }
+            const bumped = (await tx.query<{ resend_available_at: Date }>(
+                // Mirrors the standard resend cooldown without minting a new
+                // challenge or email; the original code remains the proof.
+                `UPDATE verification_challenge_budgets
+                 SET resend_available_at = clock_timestamp() + INTERVAL '60 seconds'
+                 WHERE purpose = 'student_signup' AND subject_digest = $1
+                 RETURNING resend_available_at`,
+                [subject],
+            )).rows[0];
+            if (!bumped) throw new Error('Signup challenge resend time was not returned');
+            return {
+                email: identity.email,
+                challengeId: challenge.id,
+                expiresAt: challenge.expires_at,
+                resendAvailableAt: bumped.resend_available_at,
+            };
+        });
+    }
+
     async function request(input: StudentSignupInput): Promise<StudentSignupRequestResult> {
+        const legacy = input.ageAttested !== true || input.termsVersion !== STUDENT_TERMS_VERSION;
+        if (legacy) return requestLegacyResend(input);
         const identity = normalizeStudentSignupRequest(input);
         if (!dependencies.isEmailConfigured()) {
             throw new ServiceUnavailableError('Signup email delivery is temporarily unavailable. Please try again later.');
@@ -292,7 +373,7 @@ export function createStudentSignupService(dependencies: StudentSignupDependenci
         // the request path never issues unattested challenges, so this grace
         // self-expires with the ten-minute challenge TTL.
         const legacy = input.ageAttested !== true || input.termsVersion !== STUDENT_TERMS_VERSION;
-        const identity = legacy ? normalizeLegacySignupConfirmation(input) : normalizeStudentSignupRequest(input);
+        const identity = legacy ? normalizeLegacySignupInput(input) : normalizeStudentSignupRequest(input);
         const outcome = await inTransaction(dependencies.pool, async (tx) => {
             // This locks the canonical institution before the signup budget. The
             // account is deliberately absent until a verified proof is consumed.

@@ -16,6 +16,7 @@ import { isEmailConfigured, sendPasswordResetOTP, sendEmailVerificationOTP } fro
 import { preflightStudentEmail, type StudentEmailPreflight } from '../services/verification/student-email-verification.service.js';
 import {
     createStudentSignupService,
+    StudentSignupContractOutdatedError,
     StudentSignupRateLimitError,
     type StudentSignupService,
 } from '../services/auth/student-signup.service.js';
@@ -87,11 +88,7 @@ function toStudentSignupContractError(error: unknown): AppError | null {
     if (!(error instanceof ZodError)) return null;
     const stale = error.issues.some((issue) => STUDENT_SIGNUP_CONTRACT_FIELDS.has(String(issue.path[0])));
     if (!stale) return null;
-    return new AppError(
-        'The signup terms were updated. Please reload this page to get the latest signup form, then review the current Terms and try again.',
-        422,
-        'SIGNUP_CONTRACT_OUTDATED',
-    );
+    return new StudentSignupContractOutdatedError();
 }
 
 /**
@@ -811,10 +808,33 @@ export class AuthController {
             termsAccepted: z.literal(true),
             termsVersion: z.literal(STUDENT_TERMS_VERSION),
         }).strict();
+        // Exact pre-cutover request shape. The service serves it only as a
+        // resend against a live pre-cutover challenge; anything else fails as
+        // an outdated contract, so no new 1.0 signup can start.
+        const legacySchema = z.object({
+            email: z.string().email('Invalid email address'),
+            name: z.string().min(2, 'Name must be at least 2 characters'),
+            universityId: z.string().uuid('Invalid university ID'),
+            matricNumber: z.string().max(100, 'Matric number must be at most 100 characters').nullable().optional(),
+            verificationConsent: z.literal(true),
+            noticeVersion: z.literal(VERIFICATION_NOTICE_VERSION),
+            termsAccepted: z.literal(true),
+            termsVersion: z.literal('1.0'),
+        }).strict();
 
-        let validated: z.infer<typeof schema>;
+        let validated: z.infer<typeof schema> | z.infer<typeof legacySchema>;
         try {
-            validated = schema.parse(req.body);
+            const current = schema.safeParse(req.body);
+            if (current.success) {
+                validated = current.data;
+            } else {
+                const legacy = legacySchema.safeParse(req.body);
+                if (legacy.success) {
+                    validated = legacy.data;
+                } else {
+                    throw current.error;
+                }
+            }
         } catch (error: unknown) {
             const contractError = toStudentSignupContractError(error);
             if (contractError) throw contractError;
@@ -829,7 +849,7 @@ export class AuthController {
                 matricNumber: validated.matricNumber ?? null,
                 verificationConsent: validated.verificationConsent,
                 noticeVersion: validated.noticeVersion,
-                ageAttested: validated.ageAttested,
+                ageAttested: 'ageAttested' in validated ? validated.ageAttested : false,
                 termsAccepted: validated.termsAccepted,
                 termsVersion: validated.termsVersion,
             });

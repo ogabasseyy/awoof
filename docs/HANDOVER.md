@@ -57,9 +57,12 @@
   a retryable field error. As a bounded cutover grace, confirmation also
   accepts the exact pre-cutover shape (Terms 1.0, no age declaration) but
   only against challenges issued before the rollout, completing those
-  accounts under Terms 1.0 unattested like other historical records; the
-  request path never issues such challenges, so the grace self-expires
-  with the ten-minute challenge TTL. The request stores no password and
+  accounts under Terms 1.0 unattested like other historical records;
+  resends in the old shape return the live pre-cutover receipt instead of
+  issuing a new challenge, with real cooldowns, so a stale Resend tap
+  cannot discard usable proof. The request path never issues unattested
+  challenges, so the grace self-expires with the ten-minute challenge TTL.
+  The request stores no password and
   only returns a challenge receipt after email delivery; its challenge is
   bounded to a 10-minute code, five failed guesses, and a 60-second resend
   cooldown. For current-contract challenges, confirmation repeats the

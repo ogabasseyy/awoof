@@ -247,11 +247,19 @@ test('returns the current notice for a supported preflight without claiming veri
     });
 });
 
-test('passes a pre-cutover confirmation to the service while legacy requests stay rejected', async () => {
+test('passes pre-cutover shapes to the service while mixed shapes stay rejected', async () => {
     const seen: unknown[] = [];
     await withServer(controller({
         studentSignupService: {
-            request: async () => { throw new Error('legacy request must not reach the service'); },
+            request: async (input: unknown) => {
+                seen.push(input);
+                return {
+                    email: 'ada@students.school.example',
+                    challengeId: 'f996cc5f-04e8-4a74-a11e-4de10f00af10',
+                    expiresAt: new Date('2026-09-05T12:10:00.000Z'),
+                    resendAvailableAt: new Date('2026-09-05T12:01:00.000Z'),
+                };
+            },
             confirm: async (input: unknown) => {
                 seen.push(input);
                 return {
@@ -298,8 +306,29 @@ test('passes a pre-cutover confirmation to the service while legacy requests sta
                 termsAccepted: true, termsVersion: '1.0',
             }),
         });
-        assert.equal(legacyRequest.status, 422);
-        assert.equal(((await legacyRequest.json()) as { error: { code: string } }).error.code, 'SIGNUP_CONTRACT_OUTDATED');
+        assert.equal(legacyRequest.status, 200);
+        assert.deepEqual(seen[1], {
+            email: 'ada@students.school.example',
+            name: 'Ada Student',
+            universityId,
+            matricNumber: null,
+            verificationConsent: true,
+            noticeVersion: VERIFICATION_NOTICE_VERSION,
+            ageAttested: false,
+            termsAccepted: true,
+            termsVersion: '1.0',
+        });
+
+        const mixedRequest = await fetch(`${baseUrl}/student/register-request`, {
+            method: 'POST', headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({
+                universityId, email: 'ada@students.school.example', name: 'Ada Student',
+                verificationConsent: true, noticeVersion: VERIFICATION_NOTICE_VERSION,
+                ageAttested: true, termsAccepted: true, termsVersion: '1.0',
+            }),
+        });
+        assert.equal(mixedRequest.status, 422);
+        assert.equal(((await mixedRequest.json()) as { error: { code: string } }).error.code, 'SIGNUP_CONTRACT_OUTDATED');
 
         const mixed = await fetch(`${baseUrl}/student/register-confirm`, {
             method: 'POST', headers: { 'content-type': 'application/json' },
@@ -312,6 +341,6 @@ test('passes a pre-cutover confirmation to the service while legacy requests sta
         });
         assert.equal(mixed.status, 422);
         assert.equal(((await mixed.json()) as { error: { code: string } }).error.code, 'SIGNUP_CONTRACT_OUTDATED');
-        assert.equal(seen.length, 1);
+        assert.equal(seen.length, 2);
     });
 });

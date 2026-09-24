@@ -10,7 +10,7 @@ import { BadRequestError, ConflictError, ServiceUnavailableError, UnauthorizedEr
 import { errorHandler } from '../../common/middleware/errorHandler.js';
 import { AuthController } from '../../controllers/auth.controller.js';
 import { createAuthRouter } from '../../routes/auth.routes.js';
-import { createStudentSignupService, StudentSignupRateLimitError } from '../../services/auth/student-signup.service.js';
+import { createStudentSignupService, StudentSignupContractOutdatedError, StudentSignupRateLimitError } from '../../services/auth/student-signup.service.js';
 import { challengeSubjectDigest, requestChallenge } from '../../services/verification/challenge.service.js';
 import { createStudentEmailPreflight } from '../../services/verification/student-email-verification.service.js';
 import { STUDENT_TERMS_VERSION, VERIFICATION_NOTICE_VERSION } from '../../services/verification/verification-notices.js';
@@ -477,6 +477,93 @@ test('completes a pre-cutover challenge under Terms 1.0 without mixing contracts
             ...currentInput, challengeId: currentRequest.challengeId, otp: currentOtp, password: 'StrongPass123!',
         });
         assert.equal(currentCompletion.user.email, currentFixture.email);
+    });
+});
+
+test('serves a pre-cutover resend from the live challenge without issuing a new one', async () => {
+    await withPool(async (pool) => {
+        const setup = await pool.connect();
+        const fixture = await createFixture(setup);
+        const policy = await setup.query<{ verification_policy_version: number }>(
+            `SELECT verification_policy_version FROM universities WHERE id = $1`,
+            [fixture.universityId],
+        );
+        const issued = await requestChallenge(setup, {
+            purpose: 'student_signup',
+            subjectKey: fixture.email,
+            bindings: {
+                email: fixture.email,
+                name: fixture.name,
+                universityId: fixture.universityId,
+                matricNumber: null,
+                policyVersion: policy.rows[0]!.verification_policy_version,
+                verificationConsent: true,
+                noticeVersion: VERIFICATION_NOTICE_VERSION,
+                termsAccepted: true,
+                termsVersion: '1.0',
+            },
+        });
+        setup.release();
+        assert.equal(issued.status, 'issued');
+        if (issued.status !== 'issued') throw new Error('legacy challenge was not issued');
+
+        let deliveries = 0;
+        const service = createStudentSignupService({
+            pool,
+            isEmailConfigured: () => true,
+            deliverOtp: async () => {
+                deliveries += 1;
+                return { success: true };
+            },
+        });
+        const legacy = {
+            email: fixture.email,
+            name: fixture.name,
+            universityId: fixture.universityId,
+            matricNumber: null,
+            verificationConsent: true as const,
+            noticeVersion: VERIFICATION_NOTICE_VERSION,
+            ageAttested: false as const,
+            termsAccepted: true as const,
+            termsVersion: '1.0',
+        };
+        // The seeded challenge is fresh, so the first legacy resend lands in
+        // its real cooldown and keeps the original receipt usable.
+        await assert.rejects(service.request(legacy), StudentSignupRateLimitError);
+        const subject = challengeSubjectDigest('student_signup', fixture.email);
+        await pool.query(
+            `UPDATE verification_challenge_budgets
+             SET resend_available_at = clock_timestamp() - INTERVAL '1 second'
+             WHERE purpose = 'student_signup' AND subject_digest = $1`,
+            [subject],
+        );
+        const receipt = await service.request(legacy);
+        assert.equal(receipt.challengeId, issued.challengeId);
+        assert.equal(receipt.expiresAt.getTime(), issued.expiresAt.getTime());
+        assert.equal(deliveries, 0);
+        const challenges = await pool.query<{ count: string }>(
+            `SELECT count(*) FROM verification_challenges
+             WHERE purpose = 'student_signup' AND subject_digest = $1`,
+            [subject],
+        );
+        assert.equal(challenges.rows[0]!.count, '1');
+        await assert.rejects(service.request(legacy), StudentSignupRateLimitError);
+        await assert.rejects(
+            service.request({ ...legacy, name: 'Changed Name' }),
+            StudentSignupContractOutdatedError,
+        );
+        const completion = await service.confirm({
+            ...legacy, challengeId: receipt.challengeId, otp: issued.code, password: 'StrongPass123!',
+        });
+        assert.equal(completion.user.email, fixture.email);
+
+        const fresh = await pool.connect();
+        const freshFixture = await createFixture(fresh);
+        fresh.release();
+        await assert.rejects(
+            service.request({ ...legacy, email: freshFixture.email, universityId: freshFixture.universityId }),
+            StudentSignupContractOutdatedError,
+        );
     });
 });
 
