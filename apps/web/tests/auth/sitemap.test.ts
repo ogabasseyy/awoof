@@ -3,7 +3,17 @@ import { test } from 'node:test';
 import sitemap from '../../src/app/sitemap';
 import { publicPageMetadata } from '../../src/content/public/page-metadata';
 
-const ALLOWLIST = ['/', '/marketplace', '/trust', '/help', '/contact', '/partner', '/developers', '/legal', '/privacy', '/terms', '/cookies', '/legal/merchant-terms', '/legal/data-protection'];
+const ALLOWLIST = ['/', '/marketplace', '/trust', '/help', '/contact', '/partner', '/developers', '/legal', '/privacy', '/privacy/v1-0', '/terms', '/terms/v1-0', '/cookies', '/legal/merchant-terms', '/legal/data-protection'];
+
+test('legal sitemap dates distinguish updated and unchanged reading copies', () => {
+  const dates = new Map(sitemap().map((entry) => [new URL(entry.url).pathname, entry.lastModified]));
+  for (const path of ['/legal', '/privacy', '/privacy/v1-0', '/terms', '/terms/v1-0']) {
+    assert.equal(dates.get(path), '2026-09-24', path);
+  }
+  for (const path of ['/cookies', '/legal/merchant-terms', '/legal/data-protection']) {
+    assert.equal(dates.get(path), '2026-09-23', path);
+  }
+});
 
 test('sitemap covers exactly the launched public routes', () => {
   const entries = sitemap();

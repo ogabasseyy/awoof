@@ -1,13 +1,28 @@
-import { legalAddress, legalOperator, type LegalDraftSection } from './legal-types';
+import type { LegalDraftSection } from './legal-types';
 
-export const termsDraft: readonly LegalDraftSection[] = [
+/**
+ * Frozen public reading copy of the version 1.0 student and website terms.
+ * Do not edit: existing acceptance records reference this exact text, and it
+ * must remain byte-identical to the v1.0 release (merge commit
+ * 889bb391b6a743ce397433e70e2a1eb6ccb2800c,
+ * apps/web/src/content/public/terms-draft.ts). Operator values are
+ * snapshotted literals, never the shared legal constants, so future
+ * operator updates cannot rewrite this archive. New terms go in
+ * terms-draft.ts.
+ */
+
+/** Frozen display label for the v1.0 archive route. Never derive this from
+ *  the shared version constants: those track the current documents and will
+ *  move on while this archive must keep reading Version 1.0. */
+export const termsV1_0VersionLabel = 'Version 1.0 · Effective 23 September 2026';
+export const termsV1_0Archive: readonly LegalDraftSection[] = [
   { id: 'operator', heading: 'Who provides Awoof and when these terms apply', paragraphs: [
-    `${legalOperator}, at ${legalAddress}, provides the Awoof website, student accounts, verification features and marketplace. “Awoof”, “we” and “us” refer to that operator. You can contact us at support@awoof.tech.`,
+    'Awoof Digital Services (registration number: 8449678), at 2 Olaide Tomori Street, Ikeja, Lagos, Nigeria, provides the Awoof website, student accounts, verification features and marketplace. “Awoof”, “we” and “us” refer to that operator. You can contact us at support@awoof.tech.',
     'These student and website terms apply to the services made available to you. A merchant’s business use is governed by a separately accepted merchant agreement. Offer-specific conditions apply to the relevant purchase but cannot remove rights that the law protects.',
     'These terms apply when you accept them as part of registration or another service-agreement process. Publishing them does not retrospectively change an earlier agreement. The Privacy Notice explains information use; a request for consent, where needed, is a separate choice.',
   ] },
   { id: 'eligibility', heading: 'Who can use the service', paragraphs: [
-    'You must be 18 or older to create a student account. During registration, you must declare that you meet this age requirement. This is a self-declaration; Awoof does not independently verify your age through this step. Do not misrepresent your age or identity. A school email address alone does not establish age or capacity.',
+    'You must have the legal capacity to enter the applicable agreement or, where Awoof makes such an arrangement available, use an approved process involving your parent or legal guardian as required by law. Do not misrepresent your age or identity. A school email address alone does not establish age or capacity.',
     'Access to a particular benefit may depend on current enrollment, the institution, location, age restrictions for that offer, and the merchant’s stated conditions. Registration does not promise access to every offer or verification method.',
   ] },
   { id: 'accounts', heading: 'Your account and school sign-in', paragraphs: [

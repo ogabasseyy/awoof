@@ -49,24 +49,38 @@
 - Student signup is now proof-bound and must use only the dedicated public
   endpoints: `POST /auth/student/register-request` followed by
   `POST /auth/student/register-confirm`. Both use strict schemas requiring
-  the literal `verificationConsent: true` + current `noticeVersion` pair and
-  the literal `termsAccepted: true` + current `termsVersion` pair; omitting
-  either pair fails validation. The request stores no password and
+  the literal `verificationConsent: true` + current `noticeVersion` pair,
+  the literal `ageAttested: true` 18+ self-declaration, and the literal
+  `termsAccepted: true` + current `termsVersion` pair; omitting or
+  backdating any of them fails with coded 422 `SIGNUP_CONTRACT_OUTDATED`,
+  which clients must treat as a reload-the-current-form signal rather than
+  a retryable field error. As a bounded cutover grace, confirmation also
+  accepts the exact pre-cutover shape (Terms 1.0, no age declaration) but
+  only against challenges issued before the rollout, completing those
+  accounts under Terms 1.0 unattested like other historical records;
+  resends in the old shape reissue the live pre-cutover challenge with a
+  real emailed code anchored to its original deadline, with real
+  cooldowns, so a stale Resend tap keeps usable proof. The request path
+  never issues unattested challenges beyond that deadline, so the grace
+  self-expires with the ten-minute challenge TTL. The request stores no
+  password and
   only returns a challenge receipt after email delivery; its challenge is
   bounded to a 10-minute code, five failed guesses, and a 60-second resend
-  cooldown. Confirmation repeats the immutable identity, the current
-  processing-notice action and the current terms acceptance, creates the new
-  student account/proof/processing grant/terms acceptance/evidence in one
-  transaction, and returns authoritative eligibility.
+  cooldown. For current-contract challenges, confirmation repeats the
+  immutable identity, the current processing-notice action, the 18+
+  self-declaration and the current terms acceptance; legacy challenges use
+  the pre-cutover Terms 1.0 shape described above. Confirmation creates the
+  new student account/proof/processing grant/terms acceptance/evidence in
+  one transaction, and returns authoritative eligibility.
   Never infer merchant disclosure consent or eligibility from the legacy
   `verification_status` field.
 - `POST /auth/verify-student-email` is a public domain-support preflight, not
   mailbox proof. Its successful response always includes the current
   `verificationNotice` version and text plus the current `studentTerms`
   version; clients must display the notice before asking
-  for the literal affirmative processing action, and must capture distinct
-  acceptance of the current Terms of Service version before requesting a
-  code. A supported domain is not an
+  for the literal affirmative processing action, and must capture both the
+  18+ self-declaration and distinct acceptance of the current Terms of
+  Service version before requesting a code. A supported domain is not an
   account lookup, enrollment result, or `verified` claim. Generic
   `POST /auth/register` with `role: student` returns 410 and vendors keep the
   established registration path.

@@ -36,7 +36,7 @@ const {
   refreshToken,
 } = studentSignupTestData;
 const universityId = fixtureUniversities[0]!.id;
-const terms = { version: '1.0' };
+const terms = { version: '1.1' };
 
 async function waitForSignupFormReadiness(page: Page): Promise<void> {
   const university = page.getByLabel(/^University/);
@@ -87,6 +87,7 @@ type SignupRequestBody = {
   matricNumber: string | null;
   verificationConsent: true;
   noticeVersion: string;
+  ageAttested: true;
   termsAccepted: true;
   termsVersion: string;
 };
@@ -123,6 +124,7 @@ function requestBody(overrides: Partial<SignupRequestBody> = {}): SignupRequestB
     matricNumber: null,
     verificationConsent: true,
     noticeVersion: notice.version,
+    ageAttested: true,
     termsAccepted: true,
     termsVersion: terms.version,
     ...overrides,
@@ -146,7 +148,7 @@ function confirmationResponse() {
 
 async function checkAgreements(page: Page): Promise<void> {
   await page.getByRole('checkbox', { name: 'I agree to student verification processing' }).check();
-  await page.getByRole('checkbox', { name: 'I accept the Awoof Terms of Service' }).check();
+  await page.getByRole('checkbox', { name: 'I am 18 or older and accept the Terms' }).check();
 }
 
 async function enterOtp(page: Page): Promise<void> {
@@ -244,7 +246,7 @@ test('agreements checked before valid passwords still bind once passwords are fi
   await page.getByLabel('Password', { exact: true }).fill('short');
   await page.getByLabel('Confirm Password', { exact: true }).fill('short');
   const consent = page.getByRole('checkbox', { name: 'I agree to student verification processing' });
-  const termsAcceptance = page.getByRole('checkbox', { name: 'I accept the Awoof Terms of Service' });
+  const termsAcceptance = page.getByRole('checkbox', { name: 'I am 18 or older and accept the Terms' });
   await expect(consent).toBeVisible();
   await checkAgreements(page);
   await expect(consent).toBeChecked();
@@ -259,7 +261,7 @@ test('agreements checked before valid passwords still bind once passwords are fi
   await assertCleanFixture(api, faults);
 });
 
-test('supported school email still requires distinct terms acceptance', async ({ page }) => {
+test('provider account-creation continuation still requires the 18+ and Terms declaration', async ({ page }) => {
   const api = await installSyntheticApi(page, {
     signup: {
       preflight: [{
@@ -271,15 +273,16 @@ test('supported school email still requires distinct terms acceptance', async ({
     },
   });
   const faults = collectBrowserFaults(page, api);
-  await gotoStudentSignup(page);
+  await gotoStudentSignup(page, '/auth/student/register?redirect=%2Fauth%2Fstudent%2Fsso%2Fonboarding');
   await fillDetails(page);
   const consent = page.getByRole('checkbox', { name: 'I agree to student verification processing' });
-  const termsAcceptance = page.getByRole('checkbox', { name: 'I accept the Awoof Terms of Service' });
+  const termsAcceptance = page.getByRole('checkbox', { name: 'I am 18 or older and accept the Terms' });
   await expect(termsAcceptance).not.toBeChecked();
-  await expect(page.getByText(`Creating an account accepts version ${terms.version} of the`)).toBeVisible();
+  await expect(page.getByText(/Creating an account records your self-declared age and acceptance of version/)).toBeVisible();
   await consent.check();
   await page.getByRole('button', { name: 'Continue', exact: true }).click();
-  await expect(page.locator('#terms-error')).toContainText(/Terms of Service/);
+  await expect(page.locator('#terms-error')).toContainText(/18 or older/);
+  await expect(page).toHaveURL(/\/auth\/student\/register\?redirect=%2Fauth%2Fstudent%2Fsso%2Fonboarding$/);
   await expect(termsAcceptance).toBeFocused();
   expect(api.signupRequests.filter((request) => request.endpoint === 'request')).toHaveLength(0);
   expect(api.refreshCalls).toBe(0);
@@ -477,6 +480,73 @@ test('a pasted six-digit rejected proof stays local without refresh', async ({ p
   expect(api.signupRequests.filter((request) => request.endpoint === 'confirm')).toHaveLength(1);
   expect(api.refreshCalls).toBe(0);
   expect(await hasActiveSession(page)).toBe(false);
+  expectSafePublicRequests(api);
+  await assertCleanFixture(api, faults);
+});
+
+test('an outdated signup contract reloads the form once, then asks for a manual reload', async ({ page }) => {
+  const outdated = {
+    response: {
+      status: 422,
+      body: { success: false, error: { code: 'SIGNUP_CONTRACT_OUTDATED', message: 'The signup terms were updated.' } },
+    },
+  } as const;
+  const api = await installSyntheticApi(page, {
+    signup: {
+      preflight: [preflightResponse(), preflightResponse()],
+      request: [
+        { ...outdated, expectedBody: requestBody() },
+        { ...outdated, expectedBody: requestBody() },
+      ],
+    },
+  });
+  const faults = collectBrowserFaults(page, api);
+  await gotoStudentSignup(page);
+  await fillDetails(page);
+  await checkAgreements(page);
+  await page.getByRole('button', { name: 'Continue', exact: true }).click();
+  await page.waitForFunction(() => window.sessionStorage.getItem('awoof:student-signup:contract-reload') === '1');
+  await page.waitForLoadState('load');
+  await waitForSignupFormReadiness(page);
+  await expect(page.getByLabel('Full Name', { exact: true })).toHaveValue('');
+  await fillDetails(page);
+  await checkAgreements(page);
+  await page.getByRole('button', { name: 'Continue', exact: true }).click();
+  await expect(page.locator('#signup-flow-error')).toContainText(/reload this page/i);
+  await expect(page.getByLabel('Full Name', { exact: true })).toHaveValue(name);
+  expect(api.signupRequests.filter((request) => request.endpoint === 'request')).toHaveLength(2);
+  expect(api.signupRequests.filter((request) => request.endpoint === 'confirm')).toHaveLength(0);
+  expect(api.signupRequests.every((request) => request.matchesExpectedBody)).toBe(true);
+  expect(await hasActiveSession(page)).toBe(false);
+  expect(api.refreshCalls).toBe(0);
+  expectSafePublicRequests(api);
+  await assertCleanFixture(api, faults);
+});
+
+test('an outdated signup contract during confirmation reloads the form', async ({ page }) => {
+  const api = await installSyntheticApi(page, {
+    signup: {
+      preflight: [preflightResponse()],
+      request: [{ response: { status: 200, body: signupReceipt() }, expectedBody: requestBody() }],
+      confirm: [{
+        response: { status: 422, body: { success: false, error: { code: 'SIGNUP_CONTRACT_OUTDATED' } } },
+        expectedBody: confirmationBody(),
+      }],
+    },
+  });
+  const faults = collectBrowserFaults(page, api);
+  await gotoStudentSignup(page);
+  await enterOtp(page);
+  await page.getByLabel('Verification Code', { exact: true }).fill(validOtp);
+  await page.getByRole('button', { name: 'Create Account', exact: true }).click();
+  await page.waitForFunction(() => window.sessionStorage.getItem('awoof:student-signup:contract-reload') === '1');
+  await page.waitForLoadState('load');
+  await waitForSignupFormReadiness(page);
+  await expect(page.getByLabel('Full Name', { exact: true })).toHaveValue('');
+  expect(api.signupRequests.filter((request) => request.endpoint === 'confirm')).toHaveLength(1);
+  expect(api.signupRequests.every((request) => request.matchesExpectedBody)).toBe(true);
+  expect(await hasActiveSession(page)).toBe(false);
+  expect(api.refreshCalls).toBe(0);
   expectSafePublicRequests(api);
   await assertCleanFixture(api, faults);
 });
@@ -834,7 +904,7 @@ for (const change of [
     await gotoStudentSignup(page);
     await fillDetails(page);
     const consent = page.getByRole('checkbox', { name: 'I agree to student verification processing' });
-    const termsAcceptance = page.getByRole('checkbox', { name: 'I accept the Awoof Terms of Service' });
+    const termsAcceptance = page.getByRole('checkbox', { name: 'I am 18 or older and accept the Terms' });
     await expect(consent).toBeVisible();
     await consent.check();
     await termsAcceptance.check();
@@ -909,7 +979,7 @@ test('Back cancels a held initial proof request and restores editable identity f
     const emailField = page.getByLabel('Student Email', { exact: true });
     await expect(emailField).toBeFocused();
     const consent = page.getByRole('checkbox', { name: 'I agree to student verification processing' });
-    const termsAcceptance = page.getByRole('checkbox', { name: 'I accept the Awoof Terms of Service' });
+    const termsAcceptance = page.getByRole('checkbox', { name: 'I am 18 or older and accept the Terms' });
     await expect(consent).toBeVisible();
     await expect(consent).not.toBeChecked();
     await expect(termsAcceptance).not.toBeChecked();
@@ -956,7 +1026,7 @@ test('Back edit and retry keeps an old request from replacing newer canonical pr
     await page.getByLabel('Student Email', { exact: true }).fill(changedEmail);
     await expect(page.getByText(replacementNotice.text, { exact: true })).toBeVisible();
     const consent = page.getByRole('checkbox', { name: 'I agree to student verification processing' });
-    const termsAcceptance = page.getByRole('checkbox', { name: 'I accept the Awoof Terms of Service' });
+    const termsAcceptance = page.getByRole('checkbox', { name: 'I am 18 or older and accept the Terms' });
     await expect(consent).not.toBeChecked();
     await consent.check();
     await termsAcceptance.check();
@@ -1036,7 +1106,7 @@ test('Back cancels a held confirmation and restores a fresh details phase', asyn
     const consent = page.getByRole('checkbox', { name: 'I agree to student verification processing' });
     await expect(consent).toBeVisible();
     await expect(consent).not.toBeChecked();
-    await expect(page.getByRole('checkbox', { name: 'I accept the Awoof Terms of Service' })).not.toBeChecked();
+    await expect(page.getByRole('checkbox', { name: 'I am 18 or older and accept the Terms' })).not.toBeChecked();
     expect(await hasActiveSession(page)).toBe(false);
   } finally {
     heldConfirmation.release();
@@ -1179,7 +1249,7 @@ for (const viewport of [
     await gotoStudentSignup(page);
     await fillDetails(page);
     const consent = page.getByRole('checkbox', { name: 'I agree to student verification processing' });
-    const termsAcceptance = page.getByRole('checkbox', { name: 'I accept the Awoof Terms of Service' });
+    const termsAcceptance = page.getByRole('checkbox', { name: 'I am 18 or older and accept the Terms' });
     await consent.focus();
     await consent.press('Space');
     await expect(consent).toBeChecked();

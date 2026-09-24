@@ -15,6 +15,10 @@ services:
       NODE_ENV: production
       # Public HTTPS API URL served by a reverse proxy. Port 5001 is loopback-only.
       NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:?Set NEXT_PUBLIC_API_URL to the public HTTPS API URL behind a reverse proxy}
+    # Do not expose a new signup contract until its migrated API is healthy.
+    depends_on:
+      backend:
+        condition: service_healthy
     restart: unless-stopped
 
   backend:

@@ -10,8 +10,8 @@ import { BadRequestError, ConflictError, ServiceUnavailableError, UnauthorizedEr
 import { errorHandler } from '../../common/middleware/errorHandler.js';
 import { AuthController } from '../../controllers/auth.controller.js';
 import { createAuthRouter } from '../../routes/auth.routes.js';
-import { createStudentSignupService, StudentSignupRateLimitError } from '../../services/auth/student-signup.service.js';
-import { challengeSubjectDigest } from '../../services/verification/challenge.service.js';
+import { createStudentSignupService, StudentSignupContractOutdatedError, StudentSignupRateLimitError } from '../../services/auth/student-signup.service.js';
+import { challengeSubjectDigest, requestChallenge } from '../../services/verification/challenge.service.js';
 import { createStudentEmailPreflight } from '../../services/verification/student-email-verification.service.js';
 import { STUDENT_TERMS_VERSION, VERIFICATION_NOTICE_VERSION } from '../../services/verification/verification-notices.js';
 import { assertFixtureDatabase, createTestPool } from './test-database.js';
@@ -51,6 +51,7 @@ function requestInput(fixture: Fixture) {
         matricNumber: null,
         verificationConsent: true as const,
         noticeVersion: VERIFICATION_NOTICE_VERSION,
+        ageAttested: true as const,
         termsAccepted: true as const,
         termsVersion: STUDENT_TERMS_VERSION,
     };
@@ -70,6 +71,27 @@ async function withPool(operation: (pool: pg.Pool) => Promise<void>): Promise<vo
         await pool.end();
     }
 }
+
+test('a Terms acceptance without an affirmative age declaration remains unattested and uses server time', async () => {
+    await withPool(async (pool) => {
+        const email = `legacy-terms-${randomUUID()}@example.invalid`;
+        const before = Date.now();
+        const user = await pool.query<{ id: string }>(
+            `INSERT INTO users (email, role) VALUES ($1, 'student') RETURNING id`,
+            [email],
+        );
+        const acceptance = await pool.query<{ age_attested: boolean; accepted_at: Date }>(
+            `INSERT INTO terms_acceptances (user_id, kind, terms_version)
+             VALUES ($1, 'student_terms', '1.0')
+             RETURNING age_attested, accepted_at`,
+            [user.rows[0]!.id],
+        );
+        const after = Date.now();
+        assert.equal(acceptance.rows[0]!.age_attested, false);
+        assert.ok(acceptance.rows[0]!.accepted_at.getTime() >= before - 1_000);
+        assert.ok(acceptance.rows[0]!.accepted_at.getTime() <= after + 1_000);
+    });
+});
 
 type SignupRows = {
     budgets: string;
@@ -317,7 +339,7 @@ test('confirmation binds every pending identity claim and policy generation befo
         const rows = await pool.query<{
             name: string; university_id: string; registration_number: string | null; proof_count: string;
             processing_grants: string; disclosure_grants: string; evidence_count: string; reservations: string;
-            terms_version: string; terms_accepted_at: Date;
+            terms_version: string; age_attested: boolean; terms_accepted_at: Date;
         }>(
             `SELECT students.name, students.university_id, students.registration_number,
                     (SELECT count(*) FROM user_email_proofs WHERE user_id = users.id) AS proof_count,
@@ -326,6 +348,7 @@ test('confirmation binds every pending identity claim and policy generation befo
                     (SELECT count(*) FROM eligibility_evidence WHERE student_id = students.id) AS evidence_count,
                     (SELECT count(*) FROM verified_registration_identities WHERE student_id = students.id) AS reservations,
                     (SELECT terms_version FROM terms_acceptances WHERE user_id = users.id AND kind = 'student_terms') AS terms_version,
+                    (SELECT age_attested FROM terms_acceptances WHERE user_id = users.id AND kind = 'student_terms') AS age_attested,
                     (SELECT accepted_at FROM terms_acceptances WHERE user_id = users.id AND kind = 'student_terms') AS terms_accepted_at
              FROM users JOIN students ON students.user_id = users.id
              WHERE users.id = $1`,
@@ -341,12 +364,207 @@ test('confirmation binds every pending identity claim and policy generation befo
             evidence_count: '1',
             reservations: '0',
             terms_version: STUDENT_TERMS_VERSION,
+            age_attested: true,
             terms_accepted_at: rows.rows[0]!.terms_accepted_at,
         });
         assert.ok(rows.rows[0]!.terms_accepted_at instanceof Date);
         await assert.rejects(
             service.confirm({ ...input, challengeId: request.challengeId, otp, password: 'StrongPass123!' }),
             ConflictError,
+        );
+    });
+});
+
+test('completes a pre-cutover challenge under Terms 1.0 without mixing contracts', async () => {
+    await withPool(async (pool) => {
+        const setup = await pool.connect();
+        const fixture = await createFixture(setup);
+        const policy = await setup.query<{ verification_policy_version: number }>(
+            `SELECT verification_policy_version FROM universities WHERE id = $1`,
+            [fixture.universityId],
+        );
+        // Seeds the exact challenge shape the previous backend issued: Terms
+        // 1.0 bindings with no age-attestation key.
+        const issued = await requestChallenge(setup, {
+            purpose: 'student_signup',
+            subjectKey: fixture.email,
+            bindings: {
+                email: fixture.email,
+                name: fixture.name,
+                universityId: fixture.universityId,
+                matricNumber: null,
+                policyVersion: policy.rows[0]!.verification_policy_version,
+                verificationConsent: true,
+                noticeVersion: VERIFICATION_NOTICE_VERSION,
+                termsAccepted: true,
+                termsVersion: '1.0',
+            },
+        });
+        setup.release();
+        assert.equal(issued.status, 'issued');
+        if (issued.status !== 'issued') throw new Error('legacy challenge was not issued');
+
+        const service = createStudentSignupService({
+            pool,
+            isEmailConfigured: () => true,
+            deliverOtp: async () => ({ success: true }),
+        });
+        const legacy = {
+            email: fixture.email,
+            name: fixture.name,
+            universityId: fixture.universityId,
+            matricNumber: null,
+            verificationConsent: true as const,
+            noticeVersion: VERIFICATION_NOTICE_VERSION,
+            ageAttested: false as const,
+            termsAccepted: true as const,
+            termsVersion: '1.0',
+        };
+        await assert.rejects(
+            service.confirm({ ...legacy, challengeId: issued.challengeId, otp: '000000', password: 'StrongPass123!' }),
+            UnauthorizedError,
+        );
+        await assert.rejects(
+            service.confirm({
+                ...legacy, ageAttested: true as const, termsVersion: STUDENT_TERMS_VERSION,
+                challengeId: issued.challengeId, otp: issued.code, password: 'StrongPass123!',
+            }),
+            BadRequestError,
+        );
+        const completion = await service.confirm({
+            ...legacy, challengeId: issued.challengeId, otp: issued.code, password: 'StrongPass123!',
+        });
+        assert.equal(completion.user.email, fixture.email);
+        const acceptance = await pool.query<{ terms_version: string; age_attested: boolean }>(
+            `SELECT terms_version, age_attested FROM terms_acceptances
+             WHERE user_id = $1 AND kind = 'student_terms'`,
+            [completion.user.id],
+        );
+        assert.deepEqual(acceptance.rows[0], { terms_version: '1.0', age_attested: false });
+
+        const current = await pool.connect();
+        const currentFixture = await createFixture(current);
+        current.release();
+        let currentOtp = '';
+        const currentService = createStudentSignupService({
+            pool,
+            isEmailConfigured: () => true,
+            deliverOtp: async (_email, code) => {
+                currentOtp = code;
+                return { success: true };
+            },
+        });
+        const currentInput = {
+            email: currentFixture.email,
+            name: currentFixture.name,
+            universityId: currentFixture.universityId,
+            matricNumber: null,
+            verificationConsent: true as const,
+            noticeVersion: VERIFICATION_NOTICE_VERSION,
+            ageAttested: true as const,
+            termsAccepted: true as const,
+            termsVersion: STUDENT_TERMS_VERSION,
+        };
+        const currentRequest = await currentService.request(currentInput);
+        await assert.rejects(
+            currentService.confirm({
+                ...currentInput, ageAttested: false as const, termsVersion: '1.0',
+                challengeId: currentRequest.challengeId, otp: currentOtp, password: 'StrongPass123!',
+            }),
+            BadRequestError,
+        );
+        const currentCompletion = await currentService.confirm({
+            ...currentInput, challengeId: currentRequest.challengeId, otp: currentOtp, password: 'StrongPass123!',
+        });
+        assert.equal(currentCompletion.user.email, currentFixture.email);
+    });
+});
+
+test('reissues a pre-cutover resend with a real code anchored to the original deadline', async () => {
+    await withPool(async (pool) => {
+        const setup = await pool.connect();
+        const fixture = await createFixture(setup);
+        const policy = await setup.query<{ verification_policy_version: number }>(
+            `SELECT verification_policy_version FROM universities WHERE id = $1`,
+            [fixture.universityId],
+        );
+        const issued = await requestChallenge(setup, {
+            purpose: 'student_signup',
+            subjectKey: fixture.email,
+            bindings: {
+                email: fixture.email,
+                name: fixture.name,
+                universityId: fixture.universityId,
+                matricNumber: null,
+                policyVersion: policy.rows[0]!.verification_policy_version,
+                verificationConsent: true,
+                noticeVersion: VERIFICATION_NOTICE_VERSION,
+                termsAccepted: true,
+                termsVersion: '1.0',
+            },
+        });
+        setup.release();
+        assert.equal(issued.status, 'issued');
+        if (issued.status !== 'issued') throw new Error('legacy challenge was not issued');
+
+        const delivered: string[] = [];
+        const service = createStudentSignupService({
+            pool,
+            isEmailConfigured: () => true,
+            deliverOtp: async (_email, code) => {
+                delivered.push(code);
+                return { success: true };
+            },
+        });
+        const legacy = {
+            email: fixture.email,
+            name: fixture.name,
+            universityId: fixture.universityId,
+            matricNumber: null,
+            verificationConsent: true as const,
+            noticeVersion: VERIFICATION_NOTICE_VERSION,
+            ageAttested: false as const,
+            termsAccepted: true as const,
+            termsVersion: '1.0',
+        };
+        // The seeded challenge is fresh, so the first legacy resend lands in
+        // its real cooldown and the original receipt stays usable.
+        await assert.rejects(service.request(legacy), StudentSignupRateLimitError);
+        const subject = challengeSubjectDigest('student_signup', fixture.email);
+        await pool.query(
+            `UPDATE verification_challenge_budgets
+             SET resend_available_at = clock_timestamp() - INTERVAL '1 second'
+             WHERE purpose = 'student_signup' AND subject_digest = $1`,
+            [subject],
+        );
+        const receipt = await service.request(legacy);
+        assert.notEqual(receipt.challengeId, issued.challengeId);
+        assert.equal(receipt.expiresAt.getTime(), issued.expiresAt.getTime());
+        assert.equal(delivered.length, 1);
+        const rows = await pool.query<{ id: string; superseded: boolean }>(
+            `SELECT id, superseded_at IS NOT NULL AS superseded
+             FROM verification_challenges
+             WHERE purpose = 'student_signup' AND subject_digest = $1`,
+            [subject],
+        );
+        assert.equal(rows.rows.length, 2);
+        assert.equal(rows.rows.find((row) => row.id === issued.challengeId)?.superseded, true);
+        await assert.rejects(service.request(legacy), StudentSignupRateLimitError);
+        await assert.rejects(
+            service.request({ ...legacy, name: 'Changed Name' }),
+            StudentSignupContractOutdatedError,
+        );
+        const completion = await service.confirm({
+            ...legacy, challengeId: receipt.challengeId, otp: delivered[0]!, password: 'StrongPass123!',
+        });
+        assert.equal(completion.user.email, fixture.email);
+
+        const fresh = await pool.connect();
+        const freshFixture = await createFixture(fresh);
+        fresh.release();
+        await assert.rejects(
+            service.request({ ...legacy, email: freshFixture.email, universityId: freshFixture.universityId }),
+            StudentSignupContractOutdatedError,
         );
     });
 });

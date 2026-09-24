@@ -68,6 +68,7 @@ export type SignupChallengeBindings = {
     policyVersion: number;
     verificationConsent: true;
     noticeVersion: string;
+    ageAttested: true;
     termsAccepted: true;
     termsVersion: string;
 };

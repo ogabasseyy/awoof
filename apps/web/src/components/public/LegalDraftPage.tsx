@@ -6,10 +6,14 @@ export default function LegalDraftPage({
   title,
   intro,
   sections,
+  contextNote,
+  versionLabel = legalDraftVersion,
 }: {
   title: string;
   intro: string;
   sections: readonly LegalDraftSection[];
+  contextNote?: string;
+  versionLabel?: string;
 }) {
   return (
     <PublicShell>
@@ -17,7 +21,7 @@ export default function LegalDraftPage({
         <div className="inline-flex rounded-full border border-[#afcc2a] bg-[#eaff8c] px-4 py-2 text-xs font-extrabold uppercase tracking-[0.12em] text-[#1b2d62]">
           Awoof legal information
         </div>
-        <p className="mt-3 text-sm text-slate-600">{legalDraftVersion}</p>
+        <p className="mt-3 text-sm text-slate-600">{versionLabel}</p>
         <nav aria-label="Legal documents" className="mt-5 flex flex-wrap gap-x-5 gap-y-3 text-sm font-semibold text-[#182d75] print:hidden">
           <Link className="underline underline-offset-4" href="/legal">Legal information</Link>
           {legalDocuments.map((document) => <Link key={document.href} className="underline underline-offset-4" href={document.href}>{document.label}</Link>)}
@@ -27,7 +31,7 @@ export default function LegalDraftPage({
             <h1 className="max-w-3xl text-4xl font-extrabold tracking-tight text-slate-950 sm:text-5xl">{title}</h1>
             <p className="mt-5 max-w-2xl text-lg leading-relaxed text-slate-600">{intro}</p>
             <div className="mt-8 rounded-2xl border-l-4 border-[#244ee7] bg-white p-5 text-sm leading-relaxed text-slate-700 shadow-sm">
-              Questions about these documents? Contact support@awoof.tech. Merchant terms apply only through a separately accepted order form. The partner data-protection schedule and its processing annexes apply only through the agreed contract and completed annexes, before personal data is exchanged.
+              Questions about these documents? Contact support@awoof.tech. {contextNote}
             </div>
             <div className="mt-12 space-y-12">
               {sections.map((section, index) => (

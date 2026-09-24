@@ -1,6 +1,8 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import {
+  consumeSignupContractReload,
+  isSignupContractOutdated,
   parseSignupAuthentication,
   parseSignupPreflight,
   parseSignupReceipt,
@@ -33,7 +35,7 @@ function hasValidCanonicalOutput(value: unknown): boolean {
 }
 
 test('preflight requires explicit support and a usable server notice', () => {
-  const terms = { version: '1.0' };
+  const terms = { version: '1.1' };
   assert.equal(parseSignupPreflight({ success: true, data: { supported: 'true', verificationNotice: notice, studentTerms: terms } }), null);
   assert.equal(parseSignupPreflight({ success: false, data: { supported: true, verificationNotice: notice, studentTerms: terms } }), null);
   assert.equal(parseSignupPreflight({ success: true, data: { supported: true, verificationNotice: { version: '', text: 'x' }, studentTerms: terms } }), null);
@@ -88,6 +90,24 @@ test('signup authentication requires exact 201 outer success and student mailbox
   for (const changed of [{ ...user, role: 'vendor' }, { ...user, email: 'other@alpha.approved.test' }]) {
     assert.equal(parseSignupAuthentication(201, { ...body, data: { ...body.data, user: changed } }, email), null);
   }
+});
+
+test('stale-contract detection matches only the coded outdated response', () => {
+  assert.equal(isSignupContractOutdated({ success: false, error: { code: 'SIGNUP_CONTRACT_OUTDATED' } }), true);
+  for (const body of [
+    { success: false, error: { code: 'VALIDATION_ERROR' } },
+    { success: false, error: { message: 'The signup terms were updated.' } },
+    { success: false },
+    null,
+    undefined,
+    'SIGNUP_CONTRACT_OUTDATED',
+  ]) {
+    assert.equal(isSignupContractOutdated(body), false);
+  }
+});
+
+test('stale-contract reload never fires outside a browser tab session', () => {
+  assert.equal(consumeSignupContractReload(), false);
 });
 
 test('retry deadline prefers operational details and never guesses one', () => {

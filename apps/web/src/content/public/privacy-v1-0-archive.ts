@@ -1,14 +1,29 @@
-import { legalAddress, legalOperator, type LegalDraftSection } from './legal-types';
+import type { LegalDraftSection } from './legal-types';
 
-export const privacyDraft: readonly LegalDraftSection[] = [
+/**
+ * Frozen public reading copy of the version 1.0 privacy notice.
+ * Do not edit: it must remain byte-identical to the v1.0 release (merge
+ * commit 889bb391b6a743ce397433e70e2a1eb6ccb2800c,
+ * apps/web/src/content/public/privacy-draft.ts). Operator values are
+ * snapshotted literals, never the shared legal constants, so future
+ * operator updates cannot rewrite this archive. New notices go in
+ * privacy-draft.ts.
+ */
+
+/** Frozen display label for the v1.0 archive route. Never derive this from
+ *  the shared version constants: those track the current documents and will
+ *  move on while this archive must keep reading Version 1.0. */
+export const privacyV1_0VersionLabel = 'Version 1.0 · Effective 23 September 2026';
+
+export const privacyV1_0Archive: readonly LegalDraftSection[] = [
   { id: 'operator', heading: 'Who we are and how to contact us', paragraphs: [
-    `${legalOperator} operates Awoof from ${legalAddress}. References to “we”, “us” and “our” mean that operator. Contact support@awoof.tech about your information, including if you do not have an account or cannot sign in.`,
+    'Awoof Digital Services (registration number: 8449678) operates Awoof from 2 Olaide Tomori Street, Ikeja, Lagos, Nigeria. References to “we”, “us” and “our” mean that operator. Contact support@awoof.tech about your information, including if you do not have an account or cannot sign in.',
     'This notice covers visitors, students, merchant representatives and people contacting support. Awoof determines how information is used to operate its own accounts, verification records and marketplace. Schools, identity providers, merchants and payment providers also have responsibilities for their own processing. A separately agreed partner arrangement may give Awoof a narrower processing role for a particular service; the notice shown for that service will identify the responsible organization.',
   ] },
   { id: 'information', heading: 'What personal information we collect', paragraphs: [
     'The information involved depends on the features you use. Please give accurate details and only provide another person’s information if you are authorized to do so. Do not put passwords, payment-card security codes or unnecessary identity documents in support messages.',
   ], points: [
-    'Account and profile: name, email, institution, student or registration number, contact details when supplied, account role, linked sign-in identities and account status. Password-based accounts use a stored password hash. Student registration records your self-declaration that you are 18 or older, the Terms of Service version accepted and the server-recorded time. We do not independently verify age through this declaration.',
+    'Account and profile: name, email, institution, student or registration number, contact details when supplied, account role, linked sign-in identities and account status. Password-based accounts use a stored password hash. Registration also records which Terms of Service version was accepted and when.',
     'Verification: school email, code challenges, identity information returned by an available school sign-in provider, enrollment evidence from an approved source where available, method, result, dates and expiry, and records needed to investigate an incorrect result.',
     'Consent and merchant checks: the choice made, purpose, merchant, time and policy version where recorded; withdrawal history; merchant-specific identifiers, eligibility results and receipts.',
     'Marketplace and payments: offer and order details, amounts, payment references, payment and refund status, and relevant seller or settlement records. Payment entry is handled through the payment flow; do not send card details to our support inbox.',
@@ -48,7 +63,7 @@ export const privacyDraft: readonly LegalDraftSection[] = [
   { id: 'retention', heading: 'How long information is kept', paragraphs: [
     'Retention depends on the record’s purpose, whether the account or transaction remains active, an outstanding complaint or investigation, and a specific legal record-keeping requirement. A request to close an account is considered separately from records needed to settle a payment or handle a legal claim.',
   ], points: [
-    'Account and linked identity records support access and account integrity while needed for those purposes; closure should trigger a review of continued retention rather than automatic indefinite storage. The registered Terms of Service acceptance (version and time, and an age declaration where recorded) is kept as the record of the agreement under which the account was provided, and may be retained after closure where needed to establish, exercise or defend a legal claim.',
+    'Account and linked identity records support access and account integrity while needed for those purposes; closure should trigger a review of continued retention rather than automatic indefinite storage. The registered Terms of Service acceptance (version and time) is kept as the record of the agreement under which the account was provided, and may be retained after closure where needed to establish, exercise or defend a legal claim.',
     'Short-lived verification secrets are intended for the relevant verification attempt. Evidence, results and audit references may outlast the secret to explain a decision or investigate misuse.',
     'Consent and merchant receipts document the authorization and disclosure that occurred. A withdrawal is recorded alongside that history rather than rewriting it.',
     'Payment, refund, settlement and dispute records may need to remain after account closure to reconcile money and meet applicable accounting or legal requirements.',

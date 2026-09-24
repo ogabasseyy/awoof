@@ -116,7 +116,10 @@ try {
             await metadataPool.end();
         }
     }
-    const result = spawnSync(mode.runner, mode.testArgs, { cwd: backendRoot, encoding: 'utf8', timeout: 120_000, env: childEnvironment });
+    // This budget covers the entire sequential suite, not an individual test.
+    // The expanded suite approaches two minutes locally and exceeds it on CI;
+    // retain a finite ceiling while allowing for shared-runner variability.
+    const result = spawnSync(mode.runner, mode.testArgs, { cwd: backendRoot, encoding: 'utf8', timeout: 300_000, env: childEnvironment });
     process.stdout.write(result.stdout || '');
     process.stderr.write(result.stderr || '');
     if (result.status !== 0 || result.error) throw new Error(`Integration tests failed: ${result.error?.message || 'non-zero exit'}`);

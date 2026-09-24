@@ -1,8 +1,8 @@
 # Awoof legal-page review ledger
 
-## Publication status — 23 September 2026 (release v1.0, current)
+## Publication status — 24 September 2026 (v1.0 published; v1.1 source update pending rollout)
 
-The owner reported lawyer approval of the five-document package and explicitly authorized publication; see [the publication authorization record](legal-publication-approval.md). Release v1.0 (effective 23 September 2026) publishes `/legal`, `/privacy`, `/terms`, `/cookies`, `/legal/merchant-terms` and `/legal/data-protection` as indexed (`index, follow`) routes linked from the footer, auth navigation and sitemap. The sections below are the retained pre-publication review ledger: operator facts, source evidence, research and gates stay valid background, but the draft-only status, noindex instructions and "do not publish" gates are superseded for this exact approved version. Future text changes need fresh review, versioning and sign-off before they become effective.
+The owner reported lawyer approval of the five-document package and explicitly authorized its publication; see [the publication authorization record](legal-publication-approval.md). Release v1.0 remains the published version until the v1.1 Terms/privacy source update merges and deploys. The proposed update reflects the owner-authorized 18+ self-declaration. On 24 September 2026 the business owner reviewed the quoted v1.1 changes, approved the historical-record retention clarification and explicitly instructed merge. This is an owner-directed exception to the prior counsel-review hold for this release only, not confirmation of independent legal review; see the authorization record. The sections below are retained pre-publication research and historical gates; the draft-only status, noindex instructions and superseded publication gates do not describe current route status. Future legal text changes need fresh review, versioning and sign-off before they become effective.
 
 ## Historical review status (superseded at publication)
 
@@ -41,15 +41,15 @@ These are code facts on this branch, **not deployment or operating-policy eviden
 
 The drafts do **not** copy competitor terms, retention periods, security certifications or geographic claims.
 
-## Publication gates and owner decisions
+## Historical publication gates (superseded)
 
 1. Confirm the contracting proprietor/entity and registration designation from the CAC certificate; the supplied image says business name and does not establish an incorporated limited company. Confirm the owner-supplied address and privacy/legal channel against records. `/contact` has already been updated locally with the confirmed inbox; verify the release before promoting it site-wide.
 2. Inventory all data categories and recipients in the live release, including Microsoft/Google, universities, email delivery, hosting, payments, analytics, support and merchants. Verify cross-border transfers and contracts before describing safeguards.
 3. Map each purpose to the specific lawful basis, including school/account sign-in, enrollment evidence, merchant checks, payments, fraud/security records and marketing if any. Confirm whether the current consent capture matches those bases and whether any decision requires an automated-decision notice. The candidate deliberately does not claim that every activity relies on consent.
 4. Approve a full retention and deletion schedule: account data, linked identities, consent/evidence, receipts, payments, support, backups, logs and legal holds. The existing challenge/diagnostic cleanup is only a small part of this schedule.
-5. Decide whether under-18 students may use Awoof and design an appropriate age/parental-consent process before claiming or enforcing a particular age rule. The current sign-up flow has no confirmed age gate. Do not start collecting NIN or BVN just for this decision without necessity, proportionality, provider/legal review and a secure data-flow design.
+5. Historical: the owner has authorized an 18+ student-account rule. New student signup requires an affirmative self-declaration, records it with the Terms version and server timestamp, and does not independently verify age. No NIN or BVN is collected. This is a signup assertion, not current-enrollment or school-account evidence; existing accounts are not silently backfilled or blocked from login.
 6. Review student and merchant Terms: acceptance point, eligibility criteria, suspension/review handling, offer/payment/refund allocation, changes, governing law and disputes. Confirm that the proposed support and material-change notice commitments can be met. Do not invent liability limits or rights waivers.
-7. Owner and legal sign off on effective dates and this exact versioned text. Only then remove draft banners/noindex, add footer and sitemap links, update signup notices and Azure Branding & properties Terms/Privacy URLs, and verify the live pages and consent screen.
+7. Historical: the owner authorized and published release v1.0; the owner separately authorized release v1.1 on 2026-09-24. Source changes still require merge/deploy and live-page verification before describing the updated wording as active in production.
 
 ## Tests and release boundary
 

@@ -32,6 +32,7 @@ import { revokeLogoutSession } from '@/lib/logout-revocation';
 import { parseStudentAssurance, type StudentAssurance } from '@/lib/student-assurance';
 import { parseSsoFinishResponse } from '@/lib/student-login-flow';
 import {
+    isSignupContractOutdated,
     parseSignupAuthentication,
     type ConfirmSignupResult,
     type SignupConfirmation,
@@ -412,6 +413,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
             matricNumber: input.matricNumber,
             verificationConsent: true,
             noticeVersion: input.noticeVersion,
+            ageAttested: true,
             termsAccepted: true,
             termsVersion: input.termsVersion,
             password: input.password,
@@ -517,6 +519,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
                 return { kind: 'account_created', reason: 'session_issuance', signInPath };
             }
             if (!response) return { kind: 'outcome_unknown', reason: 'transport', signInPath };
+            if (status === 422 && isSignupContractOutdated(body)) return { kind: 'rejected', reason: 'contract_outdated' };
             if (status === 400 || status === 422) return { kind: 'rejected', reason: 'validation' };
             if (status === 401) return { kind: 'rejected', reason: 'proof' };
             if (status === 409) return { kind: 'rejected', reason: 'conflict' };

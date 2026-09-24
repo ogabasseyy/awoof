@@ -65,6 +65,39 @@ function controller(overrides: Partial<ConstructorParameters<typeof AuthControll
 
 test('uses the production student handlers for preflight, request, confirm, and the retired generic route', async () => {
     await withServer(controller(), async (baseUrl) => {
+        const missingAge = await fetch(`${baseUrl}/student/register-request`, {
+            method: 'POST', headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({
+                universityId, email: 'ada@students.school.example', name: 'Ada Student',
+                verificationConsent: true, noticeVersion: VERIFICATION_NOTICE_VERSION,
+                termsAccepted: true, termsVersion: STUDENT_TERMS_VERSION,
+            }),
+        });
+        assert.equal(missingAge.status, 422);
+        assert.equal(((await missingAge.json()) as { error: { code: string } }).error.code, 'SIGNUP_CONTRACT_OUTDATED');
+
+        const underAge = await fetch(`${baseUrl}/student/register-request`, {
+            method: 'POST', headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({
+                universityId, email: 'ada@students.school.example', name: 'Ada Student',
+                verificationConsent: true, noticeVersion: VERIFICATION_NOTICE_VERSION,
+                ageAttested: false, termsAccepted: true, termsVersion: STUDENT_TERMS_VERSION,
+            }),
+        });
+        assert.equal(underAge.status, 422);
+        assert.equal(((await underAge.json()) as { error: { code: string } }).error.code, 'SIGNUP_CONTRACT_OUTDATED');
+
+        const invalidEmail = await fetch(`${baseUrl}/student/register-request`, {
+            method: 'POST', headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({
+                universityId, email: 'not-an-email', name: 'Ada Student',
+                verificationConsent: true, noticeVersion: VERIFICATION_NOTICE_VERSION,
+                ageAttested: true, termsAccepted: true, termsVersion: STUDENT_TERMS_VERSION,
+            }),
+        });
+        assert.equal(invalidEmail.status, 422);
+        assert.equal(((await invalidEmail.json()) as { error: { code: string } }).error.code, 'VALIDATION_ERROR');
+
         const preflight = await fetch(`${baseUrl}/verify-student-email`, {
             method: 'POST', headers: { 'content-type': 'application/json' },
             body: JSON.stringify({ universityId, email: 'ada@students.school.example' }),
@@ -82,7 +115,7 @@ test('uses the production student handlers for preflight, request, confirm, and 
             body: JSON.stringify({
                 universityId, email: 'ada@students.school.example', name: 'Ada Student',
                 verificationConsent: true, noticeVersion: VERIFICATION_NOTICE_VERSION,
-                termsAccepted: true, termsVersion: STUDENT_TERMS_VERSION,
+                ageAttested: true, termsAccepted: true, termsVersion: STUDENT_TERMS_VERSION,
             }),
         });
         assert.equal(request.status, 200);
@@ -99,7 +132,7 @@ test('uses the production student handlers for preflight, request, confirm, and 
                 universityId, email: 'ada@students.school.example', name: 'Ada Student', password: 'StrongPass123!',
                 challengeId: 'f996cc5f-04e8-4a74-a11e-4de10f00af10', otp: '123456',
                 verificationConsent: true, noticeVersion: VERIFICATION_NOTICE_VERSION,
-                termsAccepted: true, termsVersion: STUDENT_TERMS_VERSION,
+                ageAttested: true, termsAccepted: true, termsVersion: STUDENT_TERMS_VERSION,
             }),
         });
         assert.equal(confirmation.status, 201);
@@ -133,16 +166,41 @@ test('rejects stale notice data before confirmation and maps a service cooldown 
             confirm: async () => { throw new Error('not reached'); },
         },
     }), async (baseUrl) => {
+        const missingAge = await fetch(`${baseUrl}/student/register-confirm`, {
+            method: 'POST', headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({
+                universityId, email: 'ada@students.school.example', name: 'Ada Student', password: 'StrongPass123!',
+                challengeId: 'f996cc5f-04e8-4a74-a11e-4de10f00af10', otp: '123456',
+                verificationConsent: true, noticeVersion: VERIFICATION_NOTICE_VERSION,
+                termsAccepted: true, termsVersion: STUDENT_TERMS_VERSION,
+            }),
+        });
+        assert.equal(missingAge.status, 422);
+        assert.equal(((await missingAge.json()) as { error: { code: string } }).error.code, 'SIGNUP_CONTRACT_OUTDATED');
+
+        const underAge = await fetch(`${baseUrl}/student/register-confirm`, {
+            method: 'POST', headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({
+                universityId, email: 'ada@students.school.example', name: 'Ada Student', password: 'StrongPass123!',
+                challengeId: 'f996cc5f-04e8-4a74-a11e-4de10f00af10', otp: '123456',
+                verificationConsent: true, noticeVersion: VERIFICATION_NOTICE_VERSION,
+                ageAttested: false, termsAccepted: true, termsVersion: STUDENT_TERMS_VERSION,
+            }),
+        });
+        assert.equal(underAge.status, 422);
+        assert.equal(((await underAge.json()) as { error: { code: string } }).error.code, 'SIGNUP_CONTRACT_OUTDATED');
+
         const stale = await fetch(`${baseUrl}/student/register-confirm`, {
             method: 'POST', headers: { 'content-type': 'application/json' },
             body: JSON.stringify({
                 universityId, email: 'ada@students.school.example', name: 'Ada Student', password: 'StrongPass123!',
                 challengeId: 'f996cc5f-04e8-4a74-a11e-4de10f00af10', otp: '123456',
                 verificationConsent: true, noticeVersion: 'stale-notice',
-                termsAccepted: true, termsVersion: STUDENT_TERMS_VERSION,
+                ageAttested: true, termsAccepted: true, termsVersion: STUDENT_TERMS_VERSION,
             }),
         });
         assert.equal(stale.status, 422);
+        assert.equal(((await stale.json()) as { error: { code: string } }).error.code, 'SIGNUP_CONTRACT_OUTDATED');
 
         const staleTerms = await fetch(`${baseUrl}/student/register-confirm`, {
             method: 'POST', headers: { 'content-type': 'application/json' },
@@ -150,17 +208,18 @@ test('rejects stale notice data before confirmation and maps a service cooldown 
                 universityId, email: 'ada@students.school.example', name: 'Ada Student', password: 'StrongPass123!',
                 challengeId: 'f996cc5f-04e8-4a74-a11e-4de10f00af10', otp: '123456',
                 verificationConsent: true, noticeVersion: VERIFICATION_NOTICE_VERSION,
-                termsAccepted: true, termsVersion: 'stale-terms',
+                ageAttested: true, termsAccepted: true, termsVersion: 'stale-terms',
             }),
         });
         assert.equal(staleTerms.status, 422);
+        assert.equal(((await staleTerms.json()) as { error: { code: string } }).error.code, 'SIGNUP_CONTRACT_OUTDATED');
 
         const cooldown = await fetch(`${baseUrl}/student/register-request`, {
             method: 'POST', headers: { 'content-type': 'application/json' },
             body: JSON.stringify({
                 universityId, email: 'ada@students.school.example', name: 'Ada Student',
                 verificationConsent: true, noticeVersion: VERIFICATION_NOTICE_VERSION,
-                termsAccepted: true, termsVersion: STUDENT_TERMS_VERSION,
+                ageAttested: true, termsAccepted: true, termsVersion: STUDENT_TERMS_VERSION,
             }),
         });
         assert.equal(cooldown.status, 429);
@@ -185,5 +244,103 @@ test('returns the current notice for a supported preflight without claiming veri
         });
         assert.equal('verified' in body.data, false);
         assert.equal('studentData' in body.data, false);
+    });
+});
+
+test('passes pre-cutover shapes to the service while mixed shapes stay rejected', async () => {
+    const seen: unknown[] = [];
+    await withServer(controller({
+        studentSignupService: {
+            request: async (input: unknown) => {
+                seen.push(input);
+                return {
+                    email: 'ada@students.school.example',
+                    challengeId: 'f996cc5f-04e8-4a74-a11e-4de10f00af10',
+                    expiresAt: new Date('2026-09-05T12:10:00.000Z'),
+                    resendAvailableAt: new Date('2026-09-05T12:01:00.000Z'),
+                };
+            },
+            confirm: async (input: unknown) => {
+                seen.push(input);
+                return {
+                    user: { id: '250c68b1-9164-4a99-9780-3b646a750ea5', email: 'ada@students.school.example', role: 'student' as const },
+                    eligibility: {
+                        eligible: false as const,
+                        reason: 'unverified' as const,
+                    },
+                    expectedPasswordHash: '$2a$12$still-internal-only',
+                };
+            },
+        },
+    }), async (baseUrl) => {
+        const legacy = await fetch(`${baseUrl}/student/register-confirm`, {
+            method: 'POST', headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({
+                universityId, email: 'ada@students.school.example', name: 'Ada Student', password: 'StrongPass123!',
+                challengeId: 'f996cc5f-04e8-4a74-a11e-4de10f00af10', otp: '123456',
+                verificationConsent: true, noticeVersion: VERIFICATION_NOTICE_VERSION,
+                termsAccepted: true, termsVersion: '1.0',
+            }),
+        });
+        assert.equal(legacy.status, 201);
+        assert.deepEqual(seen, [{
+            email: 'ada@students.school.example',
+            name: 'Ada Student',
+            universityId,
+            matricNumber: null,
+            verificationConsent: true,
+            noticeVersion: VERIFICATION_NOTICE_VERSION,
+            ageAttested: false,
+            termsAccepted: true,
+            termsVersion: '1.0',
+            challengeId: 'f996cc5f-04e8-4a74-a11e-4de10f00af10',
+            otp: '123456',
+            password: 'StrongPass123!',
+        }]);
+
+        const legacyRequest = await fetch(`${baseUrl}/student/register-request`, {
+            method: 'POST', headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({
+                universityId, email: 'ada@students.school.example', name: 'Ada Student',
+                verificationConsent: true, noticeVersion: VERIFICATION_NOTICE_VERSION,
+                termsAccepted: true, termsVersion: '1.0',
+            }),
+        });
+        assert.equal(legacyRequest.status, 200);
+        assert.deepEqual(seen[1], {
+            email: 'ada@students.school.example',
+            name: 'Ada Student',
+            universityId,
+            matricNumber: null,
+            verificationConsent: true,
+            noticeVersion: VERIFICATION_NOTICE_VERSION,
+            ageAttested: false,
+            termsAccepted: true,
+            termsVersion: '1.0',
+        });
+
+        const mixedRequest = await fetch(`${baseUrl}/student/register-request`, {
+            method: 'POST', headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({
+                universityId, email: 'ada@students.school.example', name: 'Ada Student',
+                verificationConsent: true, noticeVersion: VERIFICATION_NOTICE_VERSION,
+                ageAttested: true, termsAccepted: true, termsVersion: '1.0',
+            }),
+        });
+        assert.equal(mixedRequest.status, 422);
+        assert.equal(((await mixedRequest.json()) as { error: { code: string } }).error.code, 'SIGNUP_CONTRACT_OUTDATED');
+
+        const mixed = await fetch(`${baseUrl}/student/register-confirm`, {
+            method: 'POST', headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({
+                universityId, email: 'ada@students.school.example', name: 'Ada Student', password: 'StrongPass123!',
+                challengeId: 'f996cc5f-04e8-4a74-a11e-4de10f00af10', otp: '123456',
+                verificationConsent: true, noticeVersion: VERIFICATION_NOTICE_VERSION,
+                ageAttested: true, termsAccepted: true, termsVersion: '1.0',
+            }),
+        });
+        assert.equal(mixed.status, 422);
+        assert.equal(((await mixed.json()) as { error: { code: string } }).error.code, 'SIGNUP_CONTRACT_OUTDATED');
+        assert.equal(seen.length, 2);
     });
 });

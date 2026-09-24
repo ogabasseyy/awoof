@@ -25,6 +25,8 @@ import { PasswordInput } from '@/components/ui/PasswordInput';
 import { useAuth } from '@/contexts/AuthContext';
 import { publicApiClient } from '@/lib/api-client';
 import {
+    consumeSignupContractReload,
+    isSignupContractOutdated,
     parseSignupPreflight,
     parseSignupReceipt,
     signupRetryAt,
@@ -99,6 +101,7 @@ function claimsFor(values: AgreementIdentity, preflight: SignupPreflight): Stude
         matricNumber: values.matricNumber,
         verificationConsent: true,
         noticeVersion: preflight.verificationNotice.version,
+        ageAttested: true,
         termsAccepted: true,
         termsVersion: preflight.studentTerms.version,
     };
@@ -112,6 +115,7 @@ function sameClaims(left: StudentSignupClaims | undefined, right: StudentSignupC
         && left.matricNumber === right.matricNumber
         && left.verificationConsent === right.verificationConsent
         && left.noticeVersion === right.noticeVersion
+        && left.ageAttested === right.ageAttested
         && left.termsAccepted === right.termsAccepted
         && left.termsVersion === right.termsVersion;
 }
@@ -234,6 +238,15 @@ function StudentRegisterInner() {
         setTermsError(null);
     }, []);
 
+    const recoverStaleContract = useCallback((): void => {
+        if (consumeSignupContractReload()) {
+            setFlowError('The signup terms were updated. Reloading the latest signup form…');
+            window.location.reload();
+            return;
+        }
+        setFlowError('The signup terms were updated. Please reload this page to get the latest signup form, then review the current Terms and try again.');
+    }, []);
+
     useEffect(() => {
         mountedRef.current = true;
         return () => {
@@ -341,7 +354,7 @@ function StudentRegisterInner() {
             setConsentChecked(false);
             setTermsChecked(false);
             if (toggled === 'consent') setConsentError('Your consent is required before we can send a verification code.');
-            else setTermsError('Please accept the Terms of Service before we can send a verification code.');
+            else setTermsError('Please confirm you are 18 or older and accept the Terms before we can send a verification code.');
             return;
         }
         consentBindingRef.current = { claims: claimsFor(parsed.data, support.preflight) };
@@ -377,7 +390,7 @@ function StudentRegisterInner() {
             return;
         }
         if (!termsChecked) {
-            setTermsError('Please accept the Terms of Service before we can send a verification code.');
+            setTermsError('Please confirm you are 18 or older and accept the Terms before we can send a verification code.');
             termsRef.current?.focus();
             return;
         }
@@ -418,6 +431,10 @@ function StudentRegisterInner() {
         } catch (error: unknown) {
             if (!isCurrent()) return;
             updatePending(null);
+            if (axios.isAxiosError(error) && isSignupContractOutdated(error.response?.data)) {
+                recoverStaleContract();
+                return;
+            }
             setFlowError(errorMessage(error, 'We could not start verification. Please try again.'));
         } finally {
             if (!isCurrentAttempt()) return;
@@ -429,6 +446,7 @@ function StudentRegisterInner() {
         changePhase,
         consentChecked,
         identity,
+        recoverStaleContract,
         requestCommittedFocus,
         support,
         termsChecked,
@@ -474,6 +492,10 @@ function StudentRegisterInner() {
         } catch (error: unknown) {
             if (!isCurrent()) return;
             const response = axios.isAxiosError(error) ? error.response : undefined;
+            if (response?.status === 422 && isSignupContractOutdated(response.data)) {
+                recoverStaleContract();
+                return;
+            }
             // A definite cooldown rejection does not supersede the previous challenge.
             if (response?.status === 429) updatePending(frozen);
             const deadline = response?.status === 429
@@ -490,7 +512,7 @@ function StudentRegisterInner() {
             submissionControllerRef.current = null;
             setIsResending(false);
         }
-    }, [cancelSubmission, isConfirming, isRequesting, isResending, retryAt, updatePending]);
+    }, [cancelSubmission, isConfirming, isRequesting, isResending, recoverStaleContract, retryAt, updatePending]);
 
     const finishRecovery = useCallback((result: Extract<ConfirmSignupResult, { kind: 'account_created' | 'outcome_unknown' }>): void => {
         updatePending(null);
@@ -558,6 +580,10 @@ function StudentRegisterInner() {
                 return;
             }
             if (result.kind === 'rejected') {
+                if (result.reason === 'contract_outdated') {
+                    recoverStaleContract();
+                    return;
+                }
                 if (result.reason === 'proof') {
                     setOtpError('The verification code is invalid or expired. Request a new code.');
                     return;
@@ -578,6 +604,7 @@ function StudentRegisterInner() {
         confirmStudentSignup,
         finishRecovery,
         otp,
+        recoverStaleContract,
         search,
         updatePending,
     ]);
@@ -766,7 +793,7 @@ function StudentRegisterInner() {
                         <fieldset className="space-y-2 rounded-xl border border-slate-200 bg-slate-50 p-4">
                             <legend className="sr-only">Student terms acceptance</legend>
                             <p className="text-left text-sm text-slate-700">
-                                Creating an account accepts version {supported.preflight.studentTerms.version} of the{' '}
+                                Creating an account records your self-declared age and acceptance of version {supported.preflight.studentTerms.version} of the{' '}
                                 <Link href="/terms" target="_blank" rel="noreferrer" className="font-semibold text-[#182d75] underline underline-offset-4">
                                     Terms of Service
                                 </Link>
@@ -785,7 +812,7 @@ function StudentRegisterInner() {
                                     className="mt-1 h-4 w-4"
                                 />
                                 <label htmlFor="student-terms" className="text-left text-sm text-slate-800">
-                                    I accept the Awoof Terms of Service
+                                    I am 18 or older and accept the Terms
                                 </label>
                             </div>
                             <p id="terms-error" role="alert" className="text-left text-sm text-red-600">
