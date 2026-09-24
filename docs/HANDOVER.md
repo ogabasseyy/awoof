@@ -62,11 +62,12 @@
   with the ten-minute challenge TTL. The request stores no password and
   only returns a challenge receipt after email delivery; its challenge is
   bounded to a 10-minute code, five failed guesses, and a 60-second resend
-  cooldown. Confirmation repeats the immutable identity, the current
-  processing-notice action, the 18+ self-declaration and the current terms
-  acceptance, creates the new
-  student account/proof/processing grant/terms acceptance/evidence in one
-  transaction, and returns authoritative eligibility.
+  cooldown. For current-contract challenges, confirmation repeats the
+  immutable identity, the current processing-notice action, the 18+
+  self-declaration and the current terms acceptance; legacy challenges use
+  the pre-cutover Terms 1.0 shape described above. Confirmation creates the
+  new student account/proof/processing grant/terms acceptance/evidence in
+  one transaction, and returns authoritative eligibility.
   Never infer merchant disclosure consent or eligibility from the legacy
   `verification_status` field.
 - `POST /auth/verify-student-email` is a public domain-support preflight, not
