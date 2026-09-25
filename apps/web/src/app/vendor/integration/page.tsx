@@ -407,7 +407,7 @@ export default function VendorIntegrationPage() {
                                                     {copiedText === 'widget-api-key' ? <Check className="h-4 w-4" /> : <Copy className="h-4 w-4" />}
                                                 </Button>
                                             </div>
-                                            <p className="mt-1 text-xs text-slate-500">Use this in Awoof.init(&#123; apiKey: &quot;...&quot; &#125;). Keep it secret.</p>
+                                            <p className="mt-1 text-xs text-slate-500">This is a public site key for an approved widget installation. Keep the separate merchant server key out of browser code.</p>
                                         </div>
                                         <div>
                                             <Label className="mb-2 block">Allowed domains</Label>

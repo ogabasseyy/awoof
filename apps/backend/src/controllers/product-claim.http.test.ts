@@ -393,3 +393,51 @@ test('assertion exchange accepts claim-session proof and validates its shape', a
         assert.equal((await fetch(`${baseUrl}/exchange`, { method: 'POST', headers, body: JSON.stringify(extra) })).status, 422);
     });
 });
+
+test('hosted pilot assertion requires synthetic student and merchant allowlists before normal issuance', async () => {
+    const vendorId = 'aa3e4f5a-6b7c-4c64-a48c-9ecbbbc3c4a3';
+    const old = {
+        enabled: process.env.AWOOF_WIDGET_PILOT_ENABLED,
+        students: process.env.AWOOF_WIDGET_PILOT_STUDENT_IDS,
+        vendors: process.env.AWOOF_WIDGET_PILOT_VENDOR_IDS,
+    };
+    const restore = () => {
+        for (const [key, value] of Object.entries({
+            AWOOF_WIDGET_PILOT_ENABLED: old.enabled,
+            AWOOF_WIDGET_PILOT_STUDENT_IDS: old.students,
+            AWOOF_WIDGET_PILOT_VENDOR_IDS: old.vendors,
+        })) {
+            if (value === undefined) delete process.env[key]; else process.env[key] = value;
+        }
+    };
+    let issued = 0;
+    const router = createMerchantVerificationRouter({ issue: async () => {
+        issued += 1;
+        return { code: 'a'.repeat(43), expiresAt: new Date(Date.now() + 60_000).toISOString() };
+    } });
+    try {
+        await withServer(router, '/merchant-verification', async (baseUrl) => {
+            const request = () => fetch(`${baseUrl}/pilot-assertions`, {
+                method: 'POST',
+                headers: { 'content-type': 'application/json', authorization: `Bearer ${studentToken()}` },
+                body: JSON.stringify({ vendorId, origin: 'https://shop.example', purpose: 'Student checkout', campaignId: 'fall', disclosureGrantId: grantId }),
+            });
+            delete process.env.AWOOF_WIDGET_PILOT_ENABLED;
+            assert.equal((await request()).status, 403);
+            process.env.AWOOF_WIDGET_PILOT_ENABLED = 'true';
+            process.env.AWOOF_WIDGET_PILOT_STUDENT_IDS = studentId;
+            assert.equal((await request()).status, 403);
+            process.env.AWOOF_WIDGET_PILOT_VENDOR_IDS = vendorId;
+            const response = await request();
+            assert.equal(response.status, 201);
+            assert.equal(response.headers.get('cache-control'), 'no-store');
+            const productBound = await fetch(`${baseUrl}/pilot-assertions`, {
+                method: 'POST',
+                headers: { 'content-type': 'application/json', authorization: `Bearer ${studentToken()}` },
+                body: JSON.stringify({ vendorId, origin: 'https://shop.example', purpose: 'Student checkout', campaignId: 'fall', disclosureGrantId: grantId, productId }),
+            });
+            assert.equal(productBound.status, 400);
+            assert.equal(issued, 1);
+        });
+    } finally { restore(); }
+});
