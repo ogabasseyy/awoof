@@ -5,6 +5,7 @@
 Every change affecting authentication, school-account verification, enrollment eligibility, consent, merchant data sharing, APIs/widget integration, personal-data handling, retention/deletion, security controls or support must assess its public-documentation impact in the same PR.
 
 - Update the affected public pages and integration documentation alongside the implementation. If no update is needed, explain why in the PR summary. Documentation impact is part of completion, not optional follow-up.
+- For every API contract change, review `/developers` (including `apps/web/src/content/public/partners.ts`), the route's OpenAPI annotations, affected vendor/widget guidance, and relevant integration briefs. Update each affected contract in the same PR or record a specific no-change rationale. Keep sandbox, deployed, and live availability labels accurate.
 - Maintain a public Security & Trust page at `/trust` when implemented. It complements, never replaces, privacy and terms pages. Link relevant pages from the public footer and student/partner journeys.
 - Inspect current routes before introducing pages; extend existing pages rather than creating competing copies. Track planned and existing destinations in `docs/public-trust-pages.md`.
 - Public copy must distinguish account login, school-account control and current enrollment eligibility. Never present an OTP, school email, Microsoft tenant or Google hosted account as authoritative current enrollment by itself. Verify actual enforcement before describing the enrollment-only design as shipped.

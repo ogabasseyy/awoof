@@ -31,7 +31,73 @@ export const universityBody = [
 ];
 
 export const developerIntro =
-  'Integration concepts for the verification API now in integration: real route names, synthetic examples, and the separations that keep student data safe.';
+  'Source-backed API contracts and synthetic examples for merchant integrations. The hosted widget remains a controlled synthetic-account pilot; this guide does not indicate live merchant or enrollment activation.';
+
+export const developerPilotSteps = [
+  {
+    title: 'Get a sandbox setup from Awoof',
+    body: 'The hosted widget is disabled by default. Awoof must provision a synthetic student account, allowlist your merchant and exact HTTPS origin, and provide the pilot bundle, public site key and separate private server key. There is no public self-service installation yet.',
+  },
+  {
+    title: 'Open the student check from your site',
+    body: 'Initialize the widget with the public site key. Call verify from a click handler with a campaign and a purpose the student can understand. The popup handles student sign-in, current eligibility and explicit merchant disclosure before returning a short-lived opaque code.',
+  },
+  {
+    title: 'Exchange the code on your server',
+    body: 'Send the code to your own authenticated checkout endpoint in a JSON body. Your server binds it to its checkout session and expected campaign, then exchanges it with the private key. Awoof returns an eligibility receipt; your server owns any pricing or payment decision.',
+  },
+];
+
+export const developerPilotBrowserExample = [
+  '// Illustrative sandbox code. Awoof supplies the bundle and origins.',
+  'await Awoof.init({',
+  '  apiKey: PUBLIC_SITE_KEY,',
+  '  apiBaseUrl: AWOOF_API_ORIGIN,',
+  '  webAppUrl: AWOOF_WEB_ORIGIN,',
+  '});',
+  "verifyButton.addEventListener('click', async () => {",
+  '  const { code } = await Awoof.verify({',
+  "    campaignId: 'sandbox-student-offer',",
+  "    purpose: 'Check eligibility for this test checkout',",
+  '  });',
+  "  const response = await fetch('/your-checkout/awoof-eligibility', {",
+  "    method: 'POST',",
+  "    credentials: 'same-origin',",
+  "    headers: { 'content-type': 'application/json', 'x-csrf-token': csrfToken },",
+  '    body: JSON.stringify({ code }),',
+  '  });',
+  "  if (!response.ok) throw new Error('Eligibility was not confirmed');",
+  '});',
+].join('\n');
+
+export const developerPilotExchangeExample = [
+  'POST /api/merchant-verification/exchange',
+  'Authorization: Bearer <private merchant server key>',
+  'Content-Type: application/json',
+  '',
+  '{',
+  '  "code": "<opaque code received by your checkout server>",',
+  '  "campaignId": "sandbox-student-offer",',
+  '  "idempotencyKey": "<stable key for this checkout and code>"',
+  '}',
+].join('\n');
+
+export const developerPilotReceiptFields = [
+  { name: 'receiptId', meaning: 'Unique receipt reference for this exchange.' },
+  { name: 'merchantSubject', meaning: 'Pseudonym scoped to this merchant; not an Awoof user ID.' },
+  { name: 'eligible', meaning: 'True for a successful exchange. This pilot result is test-only.' },
+  { name: 'assuranceMethod, institutionId', meaning: 'Which check passed and its institution identifier; not student contact details.' },
+  { name: 'verifiedAt, validUntil', meaning: 'Evidence time and expiry. Check validity before using a result.' },
+  { name: 'campaignId', meaning: 'The campaign bound to the code; match your server-held campaign.' },
+];
+
+export const developerPilotErrors = [
+  { status: '400', meaning: 'Invalid input, code or campaign mismatch. Correct the request; do not grant a benefit.' },
+  { status: '401', meaning: 'Private key invalid or merchant inactive. Check server configuration.' },
+  { status: '403', meaning: 'Current eligibility or disclosure is unavailable. Do not grant a benefit; resolve the issue before restarting the check.' },
+  { status: '409', meaning: 'Code expired, already consumed, or idempotency binding conflicted. Start a new check unless retrying the exact committed request.' },
+  { status: '429', meaning: 'Merchant key quota exhausted or unavailable. Wait and retry according to your server policy; do not grant a benefit.' },
+];
 
 export const developerExamples = [
   {
