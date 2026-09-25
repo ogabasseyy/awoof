@@ -34,7 +34,7 @@ export function canonicalWidgetOrigin(value: string): string {
     const permittedSpelling = value === parsed.origin || value === `${parsed.origin}/`;
     const localDevelopmentHttp = process.env.NODE_ENV === 'development'
         && parsed.protocol === 'http:'
-        && (parsed.hostname === 'localhost' || parsed.hostname === '127.0.0.1' || parsed.hostname === '::1');
+        && (parsed.hostname === 'localhost' || parsed.hostname === '127.0.0.1' || parsed.hostname === '[::1]');
     if ((parsed.protocol !== 'https:' && !localDevelopmentHttp) || parsed.username || parsed.password || parsed.pathname !== '/'
         || parsed.search || parsed.hash || !permittedSpelling) {
         throw new BadRequestError('Invalid merchant origin');

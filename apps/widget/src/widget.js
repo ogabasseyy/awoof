@@ -85,11 +85,12 @@ function verify(opts = {}) {
       const value = event.data;
       if (!value || value.type !== MESSAGE_TYPE || value.state !== nonce || value.campaignId !== campaignId) return;
       const expiry = typeof value.expiresAt === 'string' ? Date.parse(value.expiresAt) : NaN;
-      if (!CODE.test(value.code) || !Number.isFinite(expiry) || expiry <= Date.now()) return;
+      // Browser clocks can be fast or slow; the merchant's server exchange checks expiry.
+      if (!CODE.test(value.code) || !Number.isFinite(expiry)) return;
       settle('success', { code: value.code, campaignId, expiresAt: value.expiresAt });
     };
     window.addEventListener('message', receive);
-    const closed = setInterval(() => { if (popup.closed) settle('cancel', new Error('Verification window closed')); }, 500);
+    const closed = setInterval(() => { if (popup.closed) settle('cancel', new Error('Verification window closed or its opener was isolated. Cross-Origin-Opener-Policy: same-origin on the merchant page is incompatible with this popup.')); }, 500);
     const timeout = setTimeout(() => settle('error', new Error('Verification timed out')), 10 * 60 * 1000);
   });
 }

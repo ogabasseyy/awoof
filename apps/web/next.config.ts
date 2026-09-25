@@ -7,6 +7,7 @@ const nextConfig: NextConfig = {
       { key: 'Content-Security-Policy', value: "frame-ancestors 'none'" },
       { key: 'Referrer-Policy', value: 'no-referrer' },
       { key: 'Cache-Control', value: 'no-store' },
+      { key: 'Cross-Origin-Opener-Policy', value: 'unsafe-none' },
     ] }];
   },
   /* config options here */
