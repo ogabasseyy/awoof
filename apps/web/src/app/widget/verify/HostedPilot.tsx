@@ -72,7 +72,8 @@ function PilotSession(props: Props & Pick<Account, 'user' | 'isLoading'>) {
             if (!isCurrentSession(session)) throw new Error('Session changed');
             const { code, expiresAt } = assertion.data.data;
             const expiry = Date.parse(expiresAt);
-            if (!/^[A-Za-z0-9_-]{43}$/.test(code) || !Number.isFinite(expiry) || expiry <= Date.now()) throw new Error('Invalid assertion response');
+            // The device clock may differ from the issuing server. Exchange enforces expiry.
+            if (!/^[A-Za-z0-9_-]{43}$/.test(code) || !Number.isFinite(expiry)) throw new Error('Invalid assertion response');
             window.opener.postMessage({ type: 'AWOOF_ELIGIBILITY_CODE', state: props.state, campaignId: props.campaignId, code, expiresAt }, merchant.origin);
             setSent(true);
             window.close();

@@ -323,7 +323,7 @@ export default function VendorIntegrationPage() {
                                         <div className="flex-1">
                                             <h3 className="font-semibold text-slate-900">Add Widget to Your Website</h3>
                                             <p className="mt-1 text-sm text-slate-600">
-                                                Add the Awoof verification widget to your website. See the &quot;Widget Integration&quot; tab for detailed instructions.
+                                                The hosted widget is unavailable for general installation. See the Widget Integration tab for the controlled pilot status.
                                             </p>
                                         </div>
                                     </div>
@@ -362,8 +362,8 @@ export default function VendorIntegrationPage() {
                                     </div>
                                     <p className="mt-2 text-sm text-slate-600">
                                         {paymentSettings?.paymentMethod === 'vendor_website'
-                                            ? 'Ready to integrate widget'
-                                            : 'Select &quot;Vendor Website&quot; payment method first'}
+                                            ? 'Hosted widget pilot is not available for general installation'
+                                            : 'Select Vendor Website payment method to configure your own checkout'}
                                     </p>
                                 </div>
 
@@ -495,6 +495,9 @@ export default function VendorIntegrationPage() {
                                 <p className="text-sm text-slate-600">
                                     Widget integration is not yet available. Installation instructions will appear here
                                     when student verification and discount redemption are ready for merchant use.
+                                </p>
+                                <p className="mt-3 text-sm text-slate-600">
+                                    The controlled synthetic pilot uses a popup. Merchant pages must preserve its opener connection; <code>Cross-Origin-Opener-Policy: same-origin</code> breaks that handoff. See the <Link href="/developers" className="underline">developer guide</Link> for tested policy pairings.
                                 </p>
                             </div>
                         </div>

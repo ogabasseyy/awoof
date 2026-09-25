@@ -7,7 +7,8 @@
 'use client';
 
 import { useState, useEffect } from 'react';
-import { BarChart3, CreditCard, LayoutDashboard, LifeBuoy, Puzzle, Settings, ShoppingBag, Tag, TrendingUp, DollarSign, Wallet, Link2, Key, Copy, Check } from 'lucide-react';
+import { BarChart3, CreditCard, LayoutDashboard, LifeBuoy, Puzzle, Settings, ShoppingBag, Tag, TrendingUp, DollarSign, Wallet, Key, Copy, Check } from 'lucide-react';
+import Link from 'next/link';
 import ProtectedRoute from '@/components/ProtectedRoute';
 import { useAuth } from '@/contexts/AuthContext';
 import { Button } from '@/components/ui/button';
@@ -701,7 +702,7 @@ export default function VendorPaymentPage() {
                                 <div className="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm">
                                     <h2 className="mb-4 text-lg font-semibold text-slate-900">Transaction Reporting API</h2>
                                     <p className="mb-4 text-sm text-slate-600">
-                                        If you&apos;re not using Paystack, use this API to report transactions after successful payments.
+                                        This API settles a discounted transaction only when your server holds a benefit authorization from a separate product-bound exchange. The generic hosted widget pilot does not issue one.
                                     </p>
 
                                     <div className="space-y-4">
@@ -827,80 +828,16 @@ export default function VendorPaymentPage() {
                                 </div>
                             )}
 
-                            {/* Integration Instructions */}
+                            {/* External checkout integration availability */}
                             {settings?.paymentMethod === 'vendor_website' && (
                                 <div className="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm">
-                                    <h2 className="mb-4 text-lg font-semibold text-slate-900">Integration Instructions</h2>
-
-                                    <div className="space-y-4">
-                                        <div className="rounded-lg border border-slate-200 p-4">
-                                            <h3 className="font-semibold text-slate-900">Step 1: Add Awoof Widget</h3>
-                                            <p className="mt-1 text-sm text-slate-600">
-                                                Add the Awoof verification widget to your website:
-                                            </p>
-                                            <div className="mt-2 flex gap-2">
-                                                <Input
-                                                    value='<script src="https://widget.awoof.com/awoof.js"></script>'
-                                                    readOnly
-                                                    className="flex-1 font-mono text-xs"
-                                                />
-                                                <Button
-                                                    type="button"
-                                                    variant="outline"
-                                                    size="sm"
-                                                    onClick={() => copyToClipboard(
-                                                        '<script src="https://widget.awoof.com/awoof.js"></script>',
-                                                        'widget-script'
-                                                    )}
-                                                >
-                                                    {copiedText === 'widget-script' ? (
-                                                        <Check className="h-4 w-4" />
-                                                    ) : (
-                                                        <Copy className="h-4 w-4" />
-                                                    )}
-                                                </Button>
-                                            </div>
-                                        </div>
-
-                                        <div className="rounded-lg border border-slate-200 p-4">
-                                            <h3 className="font-semibold text-slate-900">Step 2: Verify Student</h3>
-                                            <p className="mt-1 text-sm text-slate-600">
-                                                Call the widget to verify student before applying discount:
-                                            </p>
-                                            <pre className="mt-2 overflow-x-auto rounded bg-slate-900 p-3 text-xs text-slate-100">
-                                                {`Awoof.verify({
-  onSuccess: (token) => {
-    // Apply student discount
-    // Process payment
-    // Report transaction to Awoof
-  }
-})`}
-                                            </pre>
-                                        </div>
-
-                                        <div className="rounded-lg border border-slate-200 p-4">
-                                            <h3 className="font-semibold text-slate-900">Step 3: Report Transaction</h3>
-                                            <p className="mt-1 text-sm text-slate-600">
-                                                After successful payment, report the transaction to Awoof using the API above.
-                                            </p>
-                                        </div>
-
-                                        <div className="rounded-lg bg-blue-50 p-4">
-                                            <div className="flex items-start gap-2">
-                                                <Link2 className="mt-0.5 h-5 w-5 text-blue-600" />
-                                                <div>
-                                                    <h3 className="font-semibold text-blue-900">Need Help?</h3>
-                                                    <p className="mt-1 text-sm text-blue-800">
-                                                        Check out our{' '}
-                                                        <a href="/docs/integration" className="underline hover:text-blue-900">
-                                                            integration documentation
-                                                        </a>{' '}
-                                                        or contact support for assistance.
-                                                    </p>
-                                                </div>
-                                            </div>
-                                        </div>
-                                    </div>
+                                    <h2 className="mb-3 text-lg font-semibold text-slate-900">External checkout integration</h2>
+                                    <p className="text-sm leading-relaxed text-slate-600">
+                                        The hosted widget is a disabled-by-default synthetic pilot, with no public installation bundle. Its code must be exchanged on your server and is not a discount or payment authorization. Do not apply a student discount from the browser callback.
+                                    </p>
+                                    <p className="mt-3 text-sm leading-relaxed text-slate-600">
+                                        Read the <Link href="/developers" className="font-semibold text-[#1D4ED8] underline">developer guide</Link> for the controlled pilot contract and the <Link href="/vendor/integration" className="font-semibold text-[#1D4ED8] underline">vendor integration page</Link> for currently available configuration.
+                                    </p>
                                 </div>
                             )}
                         </div>

@@ -53,6 +53,8 @@ test('developers page presents the controlled widget exchange with clear availab
   await expect(pilot.getByRole('rowheader', { name: 'merchantSubject' })).toBeVisible();
   await expect(pilot.getByRole('link', { name: 'Security and Trust' })).toHaveAttribute('href', '/trust');
   await expect(pilot.getByRole('link', { name: 'Privacy' })).toHaveAttribute('href', '/privacy');
+  await expect(pilot).toContainText('Cross-Origin-Opener-Policy');
+  await expect(pilot).toContainText('same-origin-allow-popups');
   await expect(pilot).toContainText('Live use still requires an approved current-enrollment source');
 });
 

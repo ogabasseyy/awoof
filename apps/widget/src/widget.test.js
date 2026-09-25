@@ -28,13 +28,15 @@ test('popup accepts only a fresh code from its Awoof window, matching state and 
     assert.equal(openedUrl.searchParams.get('origin'), 'https://shop.example');
     assert.equal(openedUrl.searchParams.get('campaignId'), 'student-2026');
     assert.equal(openedUrl.searchParams.has('apiKey'), false);
-    const payload = { type: 'AWOOF_ELIGIBILITY_CODE', state: openedUrl.searchParams.get('state'), campaignId: 'student-2026', code: 'a'.repeat(43), expiresAt: new Date(Date.now() + 60_000).toISOString() };
+    // Simulate a merchant browser clock ahead of the issuing server. Exchange owns expiry.
+    const payload = { type: 'AWOOF_ELIGIBILITY_CODE', state: openedUrl.searchParams.get('state'), campaignId: 'student-2026', code: 'a'.repeat(43), expiresAt: new Date(Date.now() - 60_000).toISOString() };
     for (const event of [
       { origin: 'https://evil.example', source: popup, data: payload },
       { origin: 'https://app.awoof.test', source: {}, data: payload },
       { origin: 'https://app.awoof.test', source: popup, data: { ...payload, state: '0'.repeat(32) } },
       { origin: 'https://app.awoof.test', source: popup, data: { ...payload, code: 'awoof_legacy' } },
       { origin: 'https://app.awoof.test', source: popup, data: { ...payload, campaignId: 'other' } },
+      { origin: 'https://app.awoof.test', source: popup, data: { ...payload, expiresAt: 'not-a-date' } },
     ]) for (const listener of listeners) listener(event);
     assert.equal(successes, 0);
     assert.equal(popup.closed, false);
@@ -43,5 +45,23 @@ test('popup accepts only a fresh code from its Awoof window, matching state and 
     assert.equal(successes, 1);
     assert.equal(popup.closed, true);
     assert.equal(listeners.size, 0);
+  } finally { globalThis.window = originalWindow; globalThis.fetch = originalFetch; }
+});
+
+test('isolated popup fails closed with a COOP configuration hint', async () => {
+  const originalWindow = globalThis.window;
+  const originalFetch = globalThis.fetch;
+  const popup = { closed: true, close() {} };
+  globalThis.window = {
+    location: { origin: 'https://shop.example', hostname: 'shop.example' },
+    crypto: webcrypto,
+    open() { return popup; },
+    addEventListener() {},
+    removeEventListener() {},
+  };
+  globalThis.fetch = async () => ({ ok: true, json: async () => ({ data: { allowed: true, vendorId: '4f088fa7-79d9-4c64-a48c-9ecbbbc3c4a3' } }) });
+  try {
+    await Awoof.init({ apiKey: 'public-key', apiBaseUrl: 'https://api.awoof.test', webAppUrl: 'https://app.awoof.test' });
+    await assert.rejects(Awoof.verify({ campaignId: 'student-2026', purpose: 'Check test checkout eligibility' }), /Cross-Origin-Opener-Policy: same-origin/);
   } finally { globalThis.window = originalWindow; globalThis.fetch = originalFetch; }
 });

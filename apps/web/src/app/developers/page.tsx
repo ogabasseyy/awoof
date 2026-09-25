@@ -41,6 +41,7 @@ export default function DevelopersPage() {
           <div>
             <h3 className="text-lg font-bold text-slate-900">Browser: request an opaque code</h3>
             <p className="mt-2 leading-relaxed text-slate-600">The public site key may be used in the browser. The checkout path below is an example route on your own server; it must require your checkout session and CSRF protection. Never send the private Awoof server key to the browser.</p>
+            <p className="mt-2 leading-relaxed text-slate-600">This popup handoff requires the merchant page and Awoof hosted page to retain a cross-origin opener connection. The merchant checkout can use the default <code>Cross-Origin-Opener-Policy: unsafe-none</code>, <code>same-origin-allow-popups</code>, or <code>noopener-allow-popups</code> with Awoof&apos;s hosted response set to <code>unsafe-none</code>. <code>same-origin</code> breaks this pilot. Confirm the effective response headers and popup return in the isolated sandbox before use.</p>
             <pre tabIndex={0} aria-label="Controlled widget browser example" className="mt-3 overflow-x-auto rounded-2xl bg-slate-900 p-5 text-sm leading-relaxed text-slate-100">{developerPilotBrowserExample}</pre>
           </div>
           <div>

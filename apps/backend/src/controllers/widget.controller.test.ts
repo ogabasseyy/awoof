@@ -4,6 +4,17 @@ import type { Request, Response } from 'express';
 import { db } from '../config/database.js';
 import { BadRequestError, ForbiddenError } from '../common/errors/AppError.js';
 import { domainCheck, merchantContext } from './widget.controller.js';
+import { canonicalWidgetOrigin } from '../services/verification/eligibility-merchant-context.service.js';
+
+test('development widget origins accept the bracketed IPv6 loopback hostname', () => {
+    const previous = process.env.NODE_ENV;
+    process.env.NODE_ENV = 'development';
+    try {
+        assert.equal(canonicalWidgetOrigin('http://[::1]:3107'), 'http://[::1]:3107');
+    } finally {
+        if (previous === undefined) delete process.env.NODE_ENV; else process.env.NODE_ENV = previous;
+    }
+});
 
 function responseRecorder() {
     const bodies: unknown[] = [];

@@ -91,10 +91,41 @@ import {
  *     description: Same student authorization and current evidence/disclosure checks as /assertions, with explicit environment allowlists for synthetic student and merchant IDs. Product binding is rejected. Disabled by default. This is not a live merchant-availability signal.
  *     tags: [Merchant Verification]
  *     security: [{ bearerAuth: [] }]
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             additionalProperties: false
+ *             required: [vendorId, origin, purpose, campaignId, disclosureGrantId]
+ *             properties:
+ *               vendorId: { type: string, format: uuid }
+ *               origin: { type: string, maxLength: 512, description: Exact registered merchant origin including port; HTTPS outside local development }
+ *               purpose: { type: string, minLength: 1, maxLength: 200 }
+ *               campaignId: { type: string, minLength: 1, maxLength: 100 }
+ *               disclosureGrantId: { type: string, format: uuid }
  *     responses:
- *       '201': { description: Opaque short-lived code; no-store, never a receipt. }
+ *       '201':
+ *         description: Opaque short-lived code; Cache-Control no-store. The code is not an eligibility receipt.
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               required: [success, data]
+ *               properties:
+ *                 success: { type: boolean, enum: [true] }
+ *                 data:
+ *                   type: object
+ *                   additionalProperties: false
+ *                   required: [code, expiresAt]
+ *                   properties:
+ *                     code: { type: string, minLength: 43, maxLength: 43 }
+ *                     expiresAt: { type: string, format: date-time }
  *       '400': { description: Product binding is unavailable in this pilot. }
+ *       '401': { description: Student authentication required }
  *       '403': { description: Pilot account or merchant unavailable, or current eligibility or disclosure unavailable. }
+ *       '422': { description: Invalid JSON body }
  * /api/merchant-verification/exchange:
  *   post:
  *     summary: Atomically exchange a code for a merchant-scoped eligibility receipt

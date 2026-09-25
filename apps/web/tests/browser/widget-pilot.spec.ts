@@ -13,6 +13,13 @@ test('gated hosted pilot asks for disclosure and returns a bound code to the mer
   const calls: string[] = [];
   const session = JSON.stringify({ v: 1, state: 'active', sessionId: 'synthetic-student', accessToken: 'student-access', refreshToken: 'student-refresh' });
   await context.addInitScript(({ origin, value }) => { if (location.origin === origin) localStorage.setItem('awoof.session.v1', value); }, { origin: appOrigin, value: session });
+  // A fast student device clock must not discard a fresh server-issued code.
+  await context.addInitScript((origin) => {
+    if (location.origin === origin) {
+      const serverIndependentNow = Date.now.bind(Date);
+      Date.now = () => serverIndependentNow() + 5 * 60_000;
+    }
+  }, appOrigin);
   await context.route(`${merchantOrigin}/**`, (route) => {
     return route.fulfill({ contentType: 'text/html', body: `<!doctype html><title>Test merchant</title><button id="start">Check eligibility</button><p id="result"></p><script>
       document.querySelector('#start').onclick = () => {
@@ -66,6 +73,26 @@ test('gated hosted pilot asks for disclosure and returns a bound code to the mer
   expect(calls).toContain('/api/verification/disclosures');
   expect(calls).toContain('/api/merchant-verification/pilot-assertions');
 });
+
+for (const policy of ['unsafe-none', 'same-origin', 'same-origin-allow-popups', 'noopener-allow-popups'] as const) {
+  test(`merchant COOP ${policy} ${policy === 'same-origin' ? 'severs' : 'preserves'} the hosted opener`, async ({ page, context }) => {
+    await context.route(`${merchantOrigin}/**`, (route) => route.fulfill({
+      contentType: 'text/html',
+      headers: { 'Cross-Origin-Opener-Policy': policy },
+      body: `<!doctype html><button id="start">Open check</button><script>
+        document.querySelector('#start').onclick = () => window.open('${appOrigin}/widget/verify', '_blank');
+      </script>`,
+    }));
+    await page.goto(merchantOrigin);
+    const popupPromise = page.waitForEvent('popup');
+    await page.getByRole('button', { name: 'Open check' }).click();
+    const popup = await popupPromise;
+    await popup.waitForLoadState('domcontentloaded');
+    const response = await context.request.get(`${appOrigin}/widget/verify`);
+    expect(response.headers()['cross-origin-opener-policy']).toBe('unsafe-none');
+    await expect.poll(() => popup.evaluate(() => Boolean(window.opener))).toBe(policy !== 'same-origin');
+  });
+}
 
 test('signed-out student gets a same-site sign-in return without requesting eligibility', async ({ page, context }) => {
   const calls: string[] = [];
