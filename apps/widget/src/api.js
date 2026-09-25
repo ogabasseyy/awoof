@@ -1,5 +1,5 @@
 /**
- * API client for widget – domain check and (later) token.
+ * Public widget-key client for exact merchant origin approval.
  * All requests go to the Awoof backend API.
  */
 
@@ -7,9 +7,10 @@
  * @param {string} apiBaseUrl - e.g. https://api.awoof.com
  * @param {string} domain - current hostname
  * @param {string} apiKey - vendor widget API key
+ * @param {string} origin - exact current merchant origin
  * @returns {Promise<{ allowed: boolean, vendorId?: string }>}
  */
-export async function checkDomain(apiBaseUrl, domain, apiKey) {
+export async function checkDomain(apiBaseUrl, domain, apiKey, origin) {
   const url = new URL('/api/widget/domain-check', apiBaseUrl);
 
   // POST with a JSON body: the API key must never travel in the URL, where
@@ -17,7 +18,7 @@ export async function checkDomain(apiBaseUrl, domain, apiKey) {
   const res = await fetch(url.toString(), {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ domain, apiKey }),
+    body: JSON.stringify({ domain, apiKey, origin }),
   });
   const body = await res.json().catch(() => ({}));
 

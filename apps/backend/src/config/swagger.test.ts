@@ -2,6 +2,36 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { swaggerSpec } from './swagger.js';
 
+test('publishes controlled widget context and assertion contracts', () => {
+    type JsonSchema = { $ref?: string; type?: string; additionalProperties?: boolean; required?: string[]; properties?: Record<string, JsonSchema> };
+    type Endpoint = { security?: Array<Record<string, unknown>>; requestBody?: { content: Record<string, { schema: JsonSchema }> }; responses: Record<string, { content?: Record<string, { schema: JsonSchema }> }> };
+    const paths = (swaggerSpec as { paths: Record<string, { post?: Endpoint }> }).paths;
+    const context = paths['/api/widget/merchant-context']?.post;
+    const pilot = paths['/api/merchant-verification/pilot-assertions']?.post;
+    assert.ok(paths['/api/widget/domain-check']?.post);
+    assert.ok(context);
+    assert.ok(pilot);
+
+    const contextRequest = context.requestBody?.content['application/json']?.schema;
+    assert.deepEqual(context.security, []);
+    assert.equal(contextRequest?.additionalProperties, false);
+    assert.deepEqual(contextRequest?.required, ['vendorId', 'origin']);
+    assert.deepEqual(Object.keys(contextRequest?.properties ?? {}), ['vendorId', 'origin']);
+    const contextData = context.responses['200']?.content?.['application/json']?.schema.properties?.data;
+    assert.deepEqual(contextData?.required, ['vendorId', 'origin', 'merchantName']);
+    for (const status of ['400', '403', '422']) {
+        assert.equal(context.responses[status]?.content?.['application/json']?.schema.$ref, '#/components/schemas/Error');
+    }
+
+    const pilotRequest = pilot.requestBody?.content['application/json']?.schema;
+    assert.equal(pilotRequest?.additionalProperties, false);
+    assert.deepEqual(pilotRequest?.required, ['vendorId', 'origin', 'purpose', 'campaignId', 'disclosureGrantId']);
+    assert.equal(pilotRequest?.properties?.productId, undefined);
+    const pilotData = pilot.responses['201']?.content?.['application/json']?.schema.properties?.data;
+    assert.deepEqual(pilotData?.required, ['code', 'expiresAt']);
+    for (const status of ['400', '401', '403', '422']) assert.ok(pilot.responses[status], `missing pilot-assertions ${status}`);
+});
+
 interface Schema {
     type?: string;
     nullable?: boolean;
