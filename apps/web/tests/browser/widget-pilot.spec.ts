@@ -54,11 +54,34 @@ test('gated hosted pilot asks for disclosure and returns a bound code to the mer
   await expect(popup.getByRole('heading', { name: 'Student eligibility check' })).toBeVisible();
   await expect(popup.getByRole('heading', { name: 'Request from Pilot Merchant' })).toBeVisible();
   await expect(popup.getByText('Purpose: Test checkout eligibility')).toBeVisible();
-  await popup.getByRole('checkbox', { name: /I approve sharing/ }).check();
+  await popup.setViewportSize({ width: 390, height: 780 });
+  expect(await popup.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth)).toBeLessThanOrEqual(1);
+  await expect(popup.getByRole('link', { name: 'Security and trust' })).toHaveAttribute('href', '/trust');
+  const consent = popup.getByRole('checkbox', { name: /I approve sharing/ });
+  await consent.focus();
+  await consent.press('Space');
+  await expect(consent).toBeChecked();
   await popup.getByRole('button', { name: 'Continue to merchant' }).click();
   await expect(page.getByText('Code received')).toBeVisible();
   expect(calls).toContain('/api/verification/disclosures');
   expect(calls).toContain('/api/merchant-verification/pilot-assertions');
+});
+
+test('signed-out student gets a same-site sign-in return without requesting eligibility', async ({ page, context }) => {
+  const calls: string[] = [];
+  await context.route(`${apiOrigin}/api/**`, async (route) => {
+    const path = new URL(route.request().url()).pathname;
+    calls.push(path);
+    if (path !== '/api/widget/merchant-context') throw new Error(`Unexpected API: ${path}`);
+    await route.fulfill({ headers: cors, json: { success: true, data: { vendorId, origin: merchantOrigin, merchantName: 'Pilot Merchant' } } });
+  });
+  const query = new URLSearchParams({ vendorId, origin: merchantOrigin, campaignId: 'sandbox-campaign', purpose: 'Test checkout eligibility', state: 'a'.repeat(32) });
+  await page.goto(`/widget/verify?${query}`);
+  const login = page.getByRole('link', { name: 'Student sign in' });
+  await expect(login).toBeVisible();
+  const href = await login.getAttribute('href');
+  expect(new URL(href!, appOrigin).searchParams.get('redirect')).toBe(`/widget/verify?${query}`);
+  expect(calls).not.toContain('/api/verification/status');
 });
 
 test('an ineligible student cannot approve disclosure or request a pilot code', async ({ page, context }) => {
