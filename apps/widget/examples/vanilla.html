@@ -6,7 +6,7 @@
 </head>
 <body>
   <h1>Student discount</h1>
-  <p>Click below to verify you are a student. The Awoof widget will open a modal.</p>
+  <p>Click below to verify you are a student. Awoof opens a controlled pilot window. This example requires sandbox configuration.</p>
   <button type="button" id="verify-btn">Verify Student Status</button>
 
   <!-- Load widget (in production: script from CDN) -->
@@ -21,14 +21,15 @@
       apiKey: API_KEY,
       apiBaseUrl: API_BASE,
       webAppUrl: WEB_APP_URL,
-      onSuccess: function (token, data) {
-        console.log('onSuccess', token, data);
+      onSuccess: function (_code, _data) {
+        // Submit the code to your authenticated merchant checkout endpoint.
+        // The private Awoof exchange key must stay on that server.
       },
       onError: function (err) {
         console.error('Awoof error', err);
       },
       onCancel: function () {
-        console.log('User closed modal');
+        console.log('User closed verification');
       },
     }).then(function () {
       console.log('Widget ready, domain allowed');
@@ -37,7 +38,8 @@
     });
 
     document.getElementById('verify-btn').onclick = function () {
-      Awoof.verify();
+      Awoof.verify({ campaignId: 'sandbox-student-offer', purpose: 'Check eligibility for this test checkout' })
+        .catch(function (err) { console.error('Verification did not complete', err); });
     };
   </script>
 </body>
