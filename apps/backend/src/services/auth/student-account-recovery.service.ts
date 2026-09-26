@@ -116,7 +116,7 @@ export class StudentAccountRecoveryService {
                 || !this.matchesDigest(attempt.secret_hash, this.secretDigest(secret))) throw unavailable();
             const code = await this.lockActiveCode(tx, userId);
             if (!account || !code || Number(account.credential_generation) !== Number(attempt.credential_generation)
-                || Number(code.generation) !== Number(attempt.recovery_code_generation) || !this.matches(code.code_digest, recoveryCode)) {
+                || Number(code.generation) !== Number(attempt.recovery_code_generation) || !this.matchesRecoveryCode(code.code_digest, recoveryCode)) {
                 await tx.query("UPDATE student_auth_recovery_attempts SET status = 'failed' WHERE id = $1 AND status = 'pending'", [attempt.id]);
                 throw unavailable();
             }
@@ -235,9 +235,12 @@ export class StudentAccountRecoveryService {
     }
 
     private secretDigest(secret: string): string { return createHmac('sha256', this.deps.recoveryCodeKey).update(`attempt\u0000${secret}`).digest('base64url'); }
-    private matches(expected: string | null, supplied: string): boolean {
+    private recoveryCodeDigest(code: string): string {
+        return createHmac('sha256', this.deps.recoveryCodeKey).update(code, 'utf8').digest('base64url');
+    }
+    private matchesRecoveryCode(expected: string | null, supplied: string): boolean {
         if (!expected) return false;
-        const actual = Buffer.from(supplied); const wanted = Buffer.from(expected);
+        const actual = Buffer.from(this.recoveryCodeDigest(supplied)); const wanted = Buffer.from(expected);
         return actual.length === wanted.length && timingSafeEqual(actual, wanted);
     }
     private matchesDigest(expected: string, candidate: string): boolean {

@@ -11,6 +11,7 @@
 - Targeted unit/router/controller tests: 31 passing.
 - `npm run type-check`: passing.
 - `git diff --check`: pending final controller-run snapshot.
+- Controller PostgreSQL run exposed a shared verifier defect: recovery verification compared plaintext recovery codes directly to the stored HMAC digest. The service now derives the same deployment-keyed digest before constant-time comparison; this retains the existing recovery-code storage contract.
 - Real-PostgreSQL tests now cover lost-access recovery; compromise identity/assertion revocation while preserving an independent enrollment record under a disabled/expired provider policy; suspended and pending-code denial; immutable purpose substitution; terminal replay; rollback; recovery versus code-replacement; and provider finish versus compromise recovery. Per coordination, the full PostgreSQL suite has not been run by this worker.
 
 ## Behaviour delivered
