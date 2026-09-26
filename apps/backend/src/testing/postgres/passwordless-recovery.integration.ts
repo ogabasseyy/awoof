@@ -70,6 +70,115 @@ test('independent lost-access recovery consumes the active code, requires normal
     }
 });
 
+test('compromise recovery revokes only linked-derived assertions while preserving independent enrollment when the provider policy is disabled', async () => {
+    const pool = createTestPool();
+    const client = await pool.connect();
+    try {
+        const account = await seedRecoverableStudent(client);
+        const identityId = await seedProviderProof(client, account.userId);
+        const university = await client.query<{ university_id: string }>('SELECT university_id FROM student_auth_identities WHERE id = $1', [identityId]);
+        const universityId = university.rows[0]!.university_id;
+        const student = await client.query<{ id: string }>('SELECT id FROM students WHERE user_id = $1', [account.userId]);
+        const policy = await client.query<{ id: string }>(
+            `INSERT INTO institution_login_policies
+                 (university_id, provider, issuer, provider_realm, enabled, approved_until, school_assertion_days)
+             VALUES ($1, 'microsoft', $2, $3, false, clock_timestamp() - interval '1 day', 30) RETURNING id`,
+            [universityId, `https://issuer.example.invalid/compromise-${randomUUID()}`, `realm-${randomUUID()}`],
+        );
+        await client.query(
+            `INSERT INTO student_school_assertions
+                 (user_id, university_id, source, auth_identity_id, login_policy_id, policy_version, identity_version, expires_at)
+             VALUES ($1, $2, 'microsoft_school', $3, $4, 1, 1, clock_timestamp() + interval '30 days')`,
+            [account.userId, universityId, identityId, policy.rows[0]!.id],
+        );
+        const challengeId = randomUUID();
+        await client.query(
+            `INSERT INTO verification_challenges (id, purpose, subject_digest, secret_digest, bindings, created_at, expires_at)
+             VALUES ($1, 'student_signup', $2, $3, '{}'::jsonb, clock_timestamp(), clock_timestamp() + interval '10 minutes')`,
+            [challengeId, 'a'.repeat(64), 'b'.repeat(64)],
+        );
+        const proof = await client.query<{ id: string }>(
+            `INSERT INTO user_email_proofs (user_id, email, challenge_id) VALUES ($1, $2, $3) RETURNING id`,
+            [account.userId, account.email, challengeId],
+        );
+        const consent = await client.query<{ id: string }>(
+            `INSERT INTO verification_consents (user_id, kind, university_id, notice_version)
+             VALUES ($1, 'processing', $2, 'test-v1') RETURNING id`, [account.userId, universityId],
+        );
+        const enrollment = await client.query<{ id: string }>(
+            `INSERT INTO eligibility_evidence
+                 (student_id, university_id, email_proof_id, processing_grant_id, method, outcome, identity_version, policy_version, source)
+             VALUES ($1, $2, $3, $4, 'enrollment', 'verified', 1, 1, 'independent-test') RETURNING id`,
+            [student.rows[0]!.id, universityId, proof.rows[0]!.id, consent.rows[0]!.id],
+        );
+        let otp = '';
+        const service = new StudentAccountRecoveryService({
+            pool, recoveryCodeKey: 'test-recovery-code-key', deliverOtp: async (_email, delivered) => { otp = delivered; return { success: true }; },
+            validatePassword: () => ({ valid: true, errors: [] }), hashPassword: async () => 'compromise-password-hash',
+        });
+        const started = await service.start({ email: account.email, purpose: 'compromise' });
+        await service.verify({ attemptId: started.attemptId, secret: started.secret, code: account.code, otp });
+        await service.complete({ attemptId: started.attemptId, secret: started.secret, password: 'ValidNew1!' });
+        const identity = await client.query<{ revoked_at: Date | null }>('SELECT revoked_at FROM student_auth_identities WHERE id = $1', [identityId]);
+        const assertion = await client.query<{ revoked_at: Date | null }>('SELECT revoked_at FROM student_school_assertions WHERE auth_identity_id = $1', [identityId]);
+        const retainedEnrollment = await client.query('SELECT id FROM eligibility_evidence WHERE id = $1 AND revoked_at IS NULL', [enrollment.rows[0]!.id]);
+        assert.notEqual(identity.rows[0]!.revoked_at, null);
+        assert.notEqual(assertion.rows[0]!.revoked_at, null);
+        assert.equal(retainedEnrollment.rowCount, 1, 'independent enrollment must survive compromise recovery');
+    } finally {
+        client.release();
+        await pool.end();
+    }
+});
+
+test('suspended accounts, pending codes, replay, and purpose substitution fail closed', async () => {
+    const pool = createTestPool();
+    const client = await pool.connect();
+    try {
+        const account = await seedRecoverableStudent(client);
+        let deliveries = 0;
+        const service = new StudentAccountRecoveryService({
+            pool, recoveryCodeKey: 'test-recovery-code-key', deliverOtp: async () => { deliveries += 1; return { success: true }; },
+            validatePassword: () => ({ valid: true, errors: [] }), hashPassword: async () => 'recovered-password-hash',
+        });
+        await client.query("UPDATE students SET status = 'suspended' WHERE user_id = $1", [account.userId]);
+        const suspended = await service.start({ email: account.email, purpose: 'lost_access' });
+        assert.equal(deliveries, 0);
+        await assert.rejects(() => service.verify({ attemptId: suspended.attemptId, secret: suspended.secret, code: account.code, otp: '123456' }));
+        await client.query("UPDATE students SET status = 'active' WHERE user_id = $1", [account.userId]);
+        await client.query("UPDATE student_auth_recovery_codes SET status = 'revoked', code_digest = NULL, revoked_at = clock_timestamp() WHERE user_id = $1 AND status = 'active'", [account.userId]);
+        await client.query(
+            `INSERT INTO student_auth_recovery_codes
+                 (user_id, generation, code_digest, status, expires_at, pending_sid, pending_credential_generation)
+             VALUES ($1, 2, 'pending-digest', 'pending', clock_timestamp() + interval '5 minutes', $2::uuid, 0)`,
+            [account.userId, SID],
+        );
+        const pending = await service.start({ email: account.email, purpose: 'compromise' });
+        assert.equal(deliveries, 0, 'pending recovery codes cannot start recovery');
+        await assert.rejects(() => service.verify({ attemptId: pending.attemptId, secret: pending.secret, code: account.code, otp: '123456' }));
+
+        await client.query("UPDATE student_auth_recovery_codes SET status = 'active', expires_at = NULL, activated_at = clock_timestamp() WHERE user_id = $1 AND status = 'pending'", [account.userId]);
+        // This active code deliberately has a known digest only in this test fixture.
+        await client.query("UPDATE student_auth_recovery_codes SET code_digest = $2 WHERE user_id = $1 AND status = 'active'", [account.userId, createHmac('sha256', 'test-recovery-code-key').update(account.code, 'utf8').digest('base64url')]);
+        let otp = '';
+        const replayService = new StudentAccountRecoveryService({
+            pool, recoveryCodeKey: 'test-recovery-code-key', deliverOtp: async (_email, delivered) => { otp = delivered; return { success: true }; },
+            validatePassword: () => ({ valid: true, errors: [] }), hashPassword: async () => 'recovered-password-hash',
+        });
+        const started = await replayService.start({ email: account.email, purpose: 'lost_access' });
+        await assert.rejects(
+            () => client.query("UPDATE student_auth_recovery_attempts SET purpose = 'compromise' WHERE id = $1", [started.attemptId]),
+            /immutable/i,
+        );
+        await replayService.verify({ attemptId: started.attemptId, secret: started.secret, code: account.code, otp });
+        await replayService.complete({ attemptId: started.attemptId, secret: started.secret, password: 'ValidNew1!' });
+        await assert.rejects(() => replayService.complete({ attemptId: started.attemptId, secret: started.secret, password: 'ValidNew1!' }));
+    } finally {
+        client.release();
+        await pool.end();
+    }
+});
+
 async function seedProviderProof(client: PoolClient, userId: string): Promise<string> {
     const suffix = randomUUID().slice(0, 8);
     const university = await client.query<{ id: string }>(
