@@ -171,3 +171,29 @@ new user-visible commitment. Deployment and provider activation remain
 separate and unclaimed. The Task 2 implementation has no pending legal or
 operational approval requirement beyond those already tracked for the wider
 passwordless port.
+
+## Review fix round 1: fresh-reauth lifecycle coverage
+
+Added direct `StudentReauthService` lifecycle coverage rather than limiting
+tests to the freshness helper. The tests invoke the real callback and finish
+methods with a transaction-shaped pool fixture and real encrypted verifier
+handling. They prove: an exact issuer/subject and browser cookie reaches the
+ready completion state without writing a login session; a wrong Microsoft
+subject and a different browser cookie fail closed; and a consumed attempt
+cannot issue an action grant again.
+
+The route contract test exercises the registered Microsoft callback dispatcher
+and both `/reauth/microsoft/start` and `/reauth/finish` endpoints. It verifies
+the dedicated HttpOnly browser cookie is set, retained through callback,
+passed to finish, cleared on finish, and that the ordinary login callback is
+not invoked for a reauth state.
+
+Verification:
+
+- `JWT_SECRET=... JWT_REFRESH_SECRET=... npx tsx --test src/routes/student-sso.routes.test.ts src/services/auth/student-reauth.service.test.ts` — **30 pass, 0 fail**.
+- `npm run type-check` — pass.
+- `git diff --check` — clean.
+
+Documentation impact remains no-change: these tests substantiate already
+implemented backend controls and do not change public behavior or activation
+claims.

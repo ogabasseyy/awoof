@@ -119,6 +119,49 @@ test('start sets the exact per-attempt handoff cookie and no-store headers', asy
     });
 });
 
+test('Microsoft fresh-reauth routes preserve the browser binding and never use the ordinary login flow', async () => {
+    const reauthAttemptId = '66666666-6666-4666-8666-666666666666';
+    const seen: string[] = [];
+    const reauth = {
+        isReauthState: async (state: string | null) => state === 'reauth-state',
+        callback: async () => {
+            seen.push('callback');
+            return { attemptId: reauthAttemptId, completionUrl: new URL(`${COMPLETION_ORIGIN}/auth/student/sso/complete?reauth=${reauthAttemptId}`) };
+        },
+        start: async () => {
+            seen.push('start');
+            return { attemptId: reauthAttemptId, authorizationUrl: 'https://provider.example.invalid/fresh', callbackCookie: 'reauth-browser' };
+        },
+        finish: async (input: { callbackCookie?: string }) => {
+            seen.push(`finish:${input.callbackCookie}`);
+            return { grantId: 'grant-id', grantSecret: 'grant-secret', expiresAt: new Date(Date.now() + 60_000).toISOString() };
+        },
+    };
+    const flow = stubFlow({ callback: async () => { throw new Error('ordinary login callback must not run'); } });
+    await withServer(routerWith(flow, { reauthService: () => reauth as never }), async (baseUrl) => {
+        const start = await fetch(`${baseUrl}/reauth/microsoft/start`, {
+            method: 'POST', headers: authHeaders(studentToken(true)), body: JSON.stringify({ purpose: 'link' }),
+        });
+        assert.equal(start.status, 201);
+        assert.deepEqual(await start.json(), { success: true, data: { attemptId: reauthAttemptId, authorizationUrl: 'https://provider.example.invalid/fresh' } });
+        assert.match(parseSetCookies(start)[0]!, new RegExp(`awoof_reauth_${reauthAttemptId}=reauth-browser`));
+        const callback = await fetch(`${baseUrl}/microsoft/callback?state=reauth-state&code=code`, {
+            redirect: 'manual', headers: { Cookie: `awoof_reauth_${reauthAttemptId}=reauth-browser` },
+        });
+        assert.equal(callback.status, 303);
+        assert.equal(callback.headers.get('location'), `${COMPLETION_ORIGIN}/auth/student/sso/complete?reauth=${reauthAttemptId}`);
+        const finish = await fetch(`${baseUrl}/reauth/finish`, {
+            method: 'POST',
+            headers: { ...authHeaders(studentToken(true)), Cookie: `awoof_reauth_${reauthAttemptId}=reauth-browser` },
+            body: JSON.stringify({ attemptId: reauthAttemptId }),
+        });
+        assert.equal(finish.status, 201);
+        assert.equal((await finish.json()).data.grantId, 'grant-id');
+        assert.match(parseSetCookies(finish)[0]!, new RegExp(`awoof_reauth_${reauthAttemptId}=;`));
+    });
+    assert.deepEqual(seen, ['start', 'callback', 'finish:reauth-browser']);
+});
+
 test('start rejects unknown providers, malformed bodies, non-JSON, and inexact origins', async () => {
     await withServer(routerWith(stubFlow()), async (baseUrl) => {
         const badProvider = await fetch(`${baseUrl}/github/start`, {

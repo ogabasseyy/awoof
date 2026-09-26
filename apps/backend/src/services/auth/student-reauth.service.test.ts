@@ -1,10 +1,52 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import { randomUUID } from 'node:crypto';
 
-import { assertFreshAuthTime } from './student-reauth.service.js';
+import { encryptMicrosoftAttemptVerifier, hashMicrosoftAttemptSecret } from '../verification/microsoft-attempt-crypto.js';
+import { assertFreshAuthTime, StudentReauthService } from './student-reauth.service.js';
 
 const startedAt = new Date('2026-09-26T12:00:00.000Z');
 const now = new Date('2026-09-26T12:01:00.000Z');
+const userId = '11111111-1111-4111-8111-111111111111';
+const sid = '22222222-2222-4222-8222-222222222222';
+const identityId = '33333333-3333-4333-8333-333333333333';
+const policyId = '44444444-4444-4444-8444-444444444444';
+const attemptKey = Buffer.alloc(32, 7).toString('base64url');
+const issuer = 'https://login.microsoftonline.com/55555555-5555-4555-8555-555555555555/v2.0';
+
+function pendingAttempt(overrides: Record<string, unknown> = {}) {
+    const id = randomUUID();
+    return {
+        id, user_id: userId, sid, credential_generation: 0, purpose: 'link', policy_id: policyId, policy_version: 1,
+        provider: 'microsoft', state_hash: hashMicrosoftAttemptSecret('state'), callback_cookie_hash: hashMicrosoftAttemptSecret('browser'),
+        encrypted_verifier: encryptMicrosoftAttemptVerifier('verifier', attemptKey, id), nonce: 'nonce', proof_identity_id: identityId,
+        target_identity_id: null, pending_code_id: null, status: 'pending', expires_at: new Date(Date.now() + 60_000), created_at: new Date(Date.now() - 1_000),
+        identity_provider: 'microsoft', identity_issuer: issuer, identity_subject: 'subject', policy_issuer: issuer,
+        policy_realm: '55555555-5555-4555-8555-555555555555', university_id: randomUUID(), policy_enabled: true,
+        approved_until: new Date(Date.now() + 60_000),
+        ...overrides,
+    };
+}
+
+function callbackService(observation: { issuer: string; subject: string; authTime: number }, attempt = pendingAttempt()) {
+    const calls: string[] = [];
+    const query = async (text: string) => {
+        calls.push(text);
+        if (text.includes('WHERE attempt.state_hash')) return { rows: [attempt], rowCount: 1 };
+        if (text === 'BEGIN' || text === 'COMMIT' || text === 'ROLLBACK') return { rows: [], rowCount: 0 };
+        if (text.includes('WHERE attempt.id = $1 FOR UPDATE')) return { rows: [attempt], rowCount: 1 };
+        if (text.includes('clock_timestamp')) return { rows: [{ now: new Date() }], rowCount: 1 };
+        if (text.includes('SELECT active_session_id')) return { rows: [{ active_session_id: sid, credential_generation: 0, deleted_at: null }], rowCount: 1 };
+        return { rows: [], rowCount: 1 };
+    };
+    const service = new StudentReauthService({
+        pool: { query, connect: async () => ({ query, release: () => undefined }) } as never,
+        attemptKey, completionUrl: new URL('https://app.example.invalid/auth/student/sso/complete'),
+        isProviderEnabled: () => true,
+        oidcForPolicy: () => ({ authorize: async () => new URL('https://provider.example.invalid'), redeem: async () => { throw new Error('ordinary login must not be used'); }, redeemFresh: async () => ({ provider: 'microsoft', issuer: observation.issuer, subject: observation.subject, email: 'student@example.invalid', mailboxVerified: true, realm: '55555555-5555-4555-8555-555555555555', schoolMembershipAttested: false, objectId: 'object', authTime: observation.authTime }) }),
+    });
+    return { service, calls, attempt };
+}
 
 test('accepts the exact sixty-second freshness-skew boundaries', () => {
     assert.doesNotThrow(() => assertFreshAuthTime(Math.floor(startedAt.getTime() / 1000) - 60, startedAt, now));
@@ -20,3 +62,37 @@ for (const [name, value] of [
         assert.throws(() => assertFreshAuthTime(value, startedAt, now), /Fresh Microsoft authentication/);
     });
 }
+
+test('fresh callback binds browser, issuer and subject and never issues a login session', async () => {
+    const { service, calls, attempt } = callbackService({ issuer, subject: 'subject', authTime: Math.floor(Date.now() / 1000) });
+    const result = await service.callback({ callbackUrl: new URL('https://api.example.invalid/callback?state=state&code=code'), callbackCookie: 'browser' });
+    assert.equal(result.attemptId, attempt.id);
+    assert.equal(result.completionUrl.searchParams.get('reauth'), attempt.id);
+    assert.ok(calls.some((text) => text.includes("SET status = 'ready'")));
+    assert.ok(!calls.some((text) => text.includes('SET active_session_id')));
+    assert.ok(!calls.some((text) => text.includes('refresh_token_hash')));
+});
+
+test('fresh callback rejects a different Microsoft identity and a different browser', async () => {
+    const mismatch = callbackService({ issuer, subject: 'other-subject', authTime: Math.floor(Date.now() / 1000) });
+    await assert.rejects(
+        mismatch.service.callback({ callbackUrl: new URL('https://api.example.invalid/callback?state=state&code=code'), callbackCookie: 'browser' }),
+        /reauthentication is no longer valid/,
+    );
+    const wrongBrowser = callbackService({ issuer, subject: 'subject', authTime: Math.floor(Date.now() / 1000) });
+    await assert.rejects(
+        wrongBrowser.service.callback({ callbackUrl: new URL('https://api.example.invalid/callback?state=state&code=code'), callbackCookie: 'other-browser' }),
+        /reauthentication is no longer valid/,
+    );
+    assert.ok(!wrongBrowser.calls.some((text) => text === 'BEGIN'));
+});
+
+test('fresh finish rejects a consumed attempt before any action grant is issued', async () => {
+    const consumed = pendingAttempt({ status: 'consumed' });
+    const { service, calls } = callbackService({ issuer, subject: 'subject', authTime: Math.floor(Date.now() / 1000) }, consumed);
+    await assert.rejects(
+        service.finish({ userId, sid, attemptId: consumed.id, callbackCookie: 'browser' }),
+        /reauthentication is no longer valid/,
+    );
+    assert.ok(!calls.some((text) => text.includes('INSERT INTO student_auth_action_grants')));
+});
