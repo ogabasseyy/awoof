@@ -44,3 +44,15 @@ test('an unlinked Microsoft handoff creates a passwordless pending-enrollment ac
     expect(await page.evaluate(() => `${location.href}|${localStorage.getItem('awoof.session.v1') ?? ''}`)).not.toContain('handoff-secret');
     api.assertNoUnexpectedRequests();
 });
+
+test('passwordless-session reload keeps security setup separate from enrollment benefits', async ({ page }) => {
+    const api = await installSyntheticApi(page);
+    await page.route(`${apiOrigin}/api/auth/student/sso/recovery-code`, route => route.fulfill({ headers: { 'access-control-allow-origin': appOrigin, 'access-control-allow-credentials': 'true' }, json: { success: true, data: { status: 'unconfigured', generation: null, pendingCodeId: null } } }));
+    await page.goto('/auth/student/login');
+    await page.evaluate(() => localStorage.setItem('awoof.session.v1', JSON.stringify({ v: 1, state: 'active', sessionId: 'signup-session', accessToken: 'signup-access', refreshToken: 'signup-refresh' })));
+    await page.goto('/student/security'); await page.reload();
+    await expect(page.getByRole('heading', { name: 'Account security' })).toBeVisible();
+    await expect(page.getByText(/does not promise permanent access/i)).toBeVisible();
+    expect(await page.getByText(/enrollment is pending/i).count()).toBe(0);
+    api.assertNoUnexpectedRequests();
+});
