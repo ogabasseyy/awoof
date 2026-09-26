@@ -4,6 +4,8 @@ import test from 'node:test';
 import type { Pool, PoolClient } from 'pg';
 import { GOOGLE_ISSUER } from '../../services/auth/student-google-oidc.js';
 import { StudentSsoSignupService } from '../../services/auth/student-sso-signup.service.js';
+import { StudentSsoFlowService, studentSsoCookieName, type ApprovedLoginPolicy } from '../../services/auth/student-sso-flow.service.js';
+import type { StudentOidcAdapter } from '../../services/auth/student-sso.types.js';
 import { encryptMicrosoftAttemptVerifier, hashMicrosoftAttemptSecret } from '../../services/verification/microsoft-attempt-crypto.js';
 import { assertFixtureDatabase, createTestPool } from './test-database.js';
 import { STUDENT_TERMS_VERSION, VERIFICATION_NOTICE_VERSION } from '../../services/verification/verification-notices.js';
@@ -43,6 +45,14 @@ test('passwordless signup creates one passwordless account, mailbox proof, ident
         // the durable provider identity on a fresh provider attempt.
         await assert.rejects(service.complete({ handoffId: state.handoffId, handoffSecret: state.handoffSecret, browserBinding: state.browser, fullName: 'Ada Student', ageAttested: true, termsVersion: STUDENT_TERMS_VERSION, verificationConsent: true, noticeVersion: VERIFICATION_NOTICE_VERSION }), /not available/i);
         const linked = await pool.query(`SELECT 1 FROM student_auth_identities WHERE provider='google' AND subject=$1`, [state.subject]); assert.equal(linked.rowCount, 1);
+        let oauthState = '';
+        const flow = new StudentSsoFlowService({ pool, attemptKey: randomBytes(32).toString('base64url'), callbackUrls: { google: new URL('https://api.example.invalid/api/auth/student/sso/google/callback'), microsoft: new URL('https://api.example.invalid/api/auth/student/sso/microsoft/callback') }, completionUrl: new URL('https://app.example.invalid/auth/student/sso/complete'), isEnabled: () => true, isProviderEnabled: () => true,
+            oidc: { forPolicy: (_policy: ApprovedLoginPolicy): StudentOidcAdapter => ({ authorize: async ({ state: value }) => { oauthState = value; return new URL(`https://provider.invalid/?state=${value}`); }, redeem: async () => ({ provider: 'google', issuer: GOOGLE_ISSUER, subject: state.subject, email: state.email, mailboxVerified: true, realm: state.email.split('@')[1]!, schoolMembershipAttested: false, objectId: null }) }) },
+        });
+        const login = await flow.start({ provider: 'google', email: state.email }); const callback = new URL('https://api.example.invalid/api/auth/student/sso/google/callback'); callback.searchParams.set('state', oauthState); callback.searchParams.set('code', 'opaque');
+        await flow.callback({ provider: 'google', callbackUrl: callback, browserCookies: [{ name: studentSsoCookieName(login.publicResult.attemptId), value: login.callbackCookie.value }] });
+        const relogin = await flow.finish({ attemptId: login.publicResult.attemptId, finishSecret: login.publicResult.finishSecret, browserCookie: login.callbackCookie.value });
+        assert.equal(relogin.outcome, 'authenticated');
     });
 });
 

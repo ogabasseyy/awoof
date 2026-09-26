@@ -60,11 +60,10 @@ completion. The replay check retains the durable linked provider identity for a
 fresh ordinary SSO login to find, while refusing a second session from
 the consumed handoff.
 
-The current response-loss check is deliberately narrower than a full ordinary
-provider-login test: it proves the consumed handoff cannot mint another session
-and that the linked identity remains queryable by provider/subject. It does not
-invoke `StudentSsoFlowService.finish` on a fresh attempt, so it is not evidence
-of a complete ordinary relogin round trip.
+The response-loss path now creates a fresh canonical Google SSO attempt after
+completion and reaches `StudentSsoFlowService.finish` as `authenticated` for
+the same linked identity. The consumed original handoff still cannot mint a
+second session.
 
 ## Remaining concerns / follow-up
 
