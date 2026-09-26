@@ -3,9 +3,15 @@ import { randomBytes, randomUUID } from 'node:crypto';
 import test from 'node:test';
 import type { Pool, PoolClient } from 'pg';
 import { GOOGLE_ISSUER } from '../../services/auth/student-google-oidc.js';
+import { StudentSsoLinkService } from '../../services/auth/student-sso-link.service.js';
 import { StudentSsoSignupService } from '../../services/auth/student-sso-signup.service.js';
+import { passwordService } from '../../services/auth/password.service.js';
 import { StudentSsoFlowService, studentSsoCookieName, type ApprovedLoginPolicy } from '../../services/auth/student-sso-flow.service.js';
 import type { StudentOidcAdapter } from '../../services/auth/student-sso.types.js';
+import { lockStudentContext } from '../../services/verification/eligibility-context.service.js';
+import { grantVerificationProcessing } from '../../services/verification/eligibility-consent.service.js';
+import { consumeChallenge, requestChallenge } from '../../services/verification/challenge.service.js';
+import { recordEmailAssurance } from '../../services/verification/eligibility-evidence.service.js';
 import { encryptMicrosoftAttemptVerifier, hashMicrosoftAttemptSecret } from '../../services/verification/microsoft-attempt-crypto.js';
 import { assertFixtureDatabase, createTestPool } from './test-database.js';
 import { STUDENT_TERMS_VERSION, VERIFICATION_NOTICE_VERSION } from '../../services/verification/verification-notices.js';
@@ -25,7 +31,38 @@ async function seed(client: PoolClient, key: string, options: { expired?: boolea
     const attempt = (await client.query<{ id: string }>(`INSERT INTO student_auth_attempts (policy_id, policy_version, provider, requested_email, state_hash, callback_cookie_hash, finish_secret_hash, encrypted_verifier, nonce, encrypted_observation, status, expires_at, remember_me) VALUES ($1,$2,'google',$3,$4,$5,$6,$7,$8,NULL,'pending',$9,false) RETURNING id`, [policy.id, policy.version, email, secret(), secret(), secret(), secret(), secret(), options.expired ? new Date(Date.now() - 1_000) : new Date(Date.now() + 9 * 60_000)])).rows[0]!.id;
     const handoffId = randomUUID(), handoffSecret = secret(), browser = secret(); const obs = { provider: 'google' as const, issuer: GOOGLE_ISSUER, subject: `subject-${suffix}`, email, mailboxVerified: true, realm: domain, schoolMembershipAttested: false, objectId: null };
     await client.query(`INSERT INTO student_auth_link_handoffs (id, attempt_id, secret_hash, encrypted_observation, policy_id, policy_version, browser_binding_hash, expires_at) VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`, [handoffId, attempt, hashMicrosoftAttemptSecret(handoffSecret), encryptMicrosoftAttemptVerifier(JSON.stringify(obs), key, handoffId), policy.id, policy.version, hashMicrosoftAttemptSecret(browser), options.expired ? new Date(Date.now() - 1_000) : new Date(Date.now() + 9 * 60_000)]);
-    return { email, university, handoffId, handoffSecret, browser, subject: obs.subject };
+    return { email, university, attemptId: attempt, handoffId, handoffSecret, browser, subject: obs.subject };
+}
+
+async function seedVerifiedLinkOwner(client: PoolClient, input: { email: string; universityId: string }) {
+    const userId = (await client.query<{ id: string }>(
+        `INSERT INTO users (email, password_hash, role) VALUES ($1, $2, 'student') RETURNING id`,
+        [input.email, await passwordService.hashPassword('Correct!horse-9-battery')],
+    )).rows[0]!.id;
+    await client.query(
+        `INSERT INTO students (user_id, name, university_id) VALUES ($1, 'Existing Student', $2)`,
+        [userId, input.universityId],
+    );
+    const grantId = await grantVerificationProcessing(client, userId, input.universityId, {
+        accepted: true,
+        noticeVersion: VERIFICATION_NOTICE_VERSION,
+    });
+    const context = await lockStudentContext(client, userId);
+    const issued = await requestChallenge(client, {
+        purpose: 'student_email',
+        subjectKey: userId,
+        bindings: { ...context, processingGrantId: grantId, noticeVersion: VERIFICATION_NOTICE_VERSION },
+    });
+    assert.equal(issued.status, 'issued');
+    if (issued.status !== 'issued') throw new Error('Expected an owner email challenge');
+    const consumed = await consumeChallenge(client, {
+        purpose: 'student_email', subjectKey: userId, challengeId: issued.challengeId, code: issued.code,
+    });
+    assert.equal(consumed.status, 'verified');
+    await recordEmailAssurance(client, userId, { challengeId: issued.challengeId, processingGrantId: grantId });
+    const sid = randomUUID();
+    await client.query(`UPDATE users SET active_session_id = $2 WHERE id = $1`, [userId, sid]);
+    return { userId, sid };
 }
 
 test('passwordless signup creates one passwordless account, mailbox proof, identity and session but no enrollment evidence', async () => {
@@ -53,6 +90,39 @@ test('passwordless signup creates one passwordless account, mailbox proof, ident
         await flow.callback({ provider: 'google', callbackUrl: callback, browserCookies: [{ name: studentSsoCookieName(login.publicResult.attemptId), value: login.callbackCookie.value }] });
         const relogin = await flow.finish({ attemptId: login.publicResult.attemptId, finishSecret: login.publicResult.finishSecret, browserCookie: login.callbackCookie.value });
         assert.equal(relogin.outcome, 'authenticated');
+    });
+});
+
+test('link and signup completion racing for one verified handoff leave only the existing owner', async () => {
+    await withPool(async pool => {
+        const key = randomBytes(32).toString('base64url'); let code = '';
+        const signup = new StudentSsoSignupService({ pool, attemptKey: key, isEnabled: () => true, isProviderEnabled: () => true, deliverOtp: async (_email, sent) => { code = sent; return { success: true }; } });
+        const link = new StudentSsoLinkService({ pool, attemptKey: key, isEnabled: () => true, isProviderEnabled: () => true });
+        const client = await pool.connect(); let state; let owner;
+        try {
+            state = await seed(client, key);
+            owner = await seedVerifiedLinkOwner(client, { email: state.email, universityId: state.university });
+        } finally { client.release(); }
+        const sent = await signup.sendCode({ handoffId: state.handoffId, handoffSecret: state.handoffSecret, browserBinding: state.browser });
+        await signup.verifyCode({ handoffId: state.handoffId, handoffSecret: state.handoffSecret, browserBinding: state.browser, challengeId: sent.challengeId, code });
+        const grant = await link.reauth({ userId: owner.userId, sid: owner.sid, password: 'Correct!horse-9-battery', purpose: 'link' });
+        const results = await Promise.allSettled([
+            signup.complete({ handoffId: state.handoffId, handoffSecret: state.handoffSecret, browserBinding: state.browser, fullName: 'Racing Student', ageAttested: true, termsVersion: STUDENT_TERMS_VERSION, verificationConsent: true, noticeVersion: VERIFICATION_NOTICE_VERSION }),
+            link.link({ userId: owner.userId, sid: owner.sid, handoffId: state.handoffId, handoffSecret: state.handoffSecret, browserCookies: [{ name: studentSsoCookieName(state.attemptId), value: state.browser }], grantId: grant.grantId, grantSecret: grant.grantSecret }),
+        ]);
+        assert.equal(results.filter((result) => result.status === 'fulfilled').length, 1);
+        if (results[1].status !== 'fulfilled') throw new Error('Expected the existing owner link to win the handoff race');
+        assert.equal(results[1].value.outcome, 'linked');
+        assert.equal(results[0].status, 'rejected');
+        const persisted = await pool.query<{ users: string; identities: string; owner_id: string; sessions: string }>(
+            `SELECT
+                (SELECT count(*)::text FROM users WHERE email = $1) AS users,
+                (SELECT count(*)::text FROM student_auth_identities WHERE provider = 'google' AND subject = $2) AS identities,
+                (SELECT user_id FROM student_auth_identities WHERE provider = 'google' AND subject = $2) AS owner_id,
+                (SELECT count(*)::text FROM users WHERE email = $1 AND active_session_id IS NOT NULL) AS sessions`,
+            [state.email, state.subject],
+        );
+        assert.deepEqual(persisted.rows[0], { users: '1', identities: '1', owner_id: owner.userId, sessions: '1' });
     });
 });
 
