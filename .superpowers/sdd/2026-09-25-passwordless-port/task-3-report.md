@@ -53,6 +53,13 @@ creates exactly one user, identity, active session and mailbox proof while
 creating zero `eligibility_evidence` rows; it also proves wrong-browser and
 expired-handoff requests fail closed before signup.
 
+It additionally covers the three-send budget (including persisted quota after
+each request and fourth-send refusal), existing-email collision with no second
+account, policy disablement after handoff creation, and replay after a committed
+completion. The replay check retains the durable linked provider identity for a
+fresh ordinary SSO login to find, while refusing a second session from
+the consumed handoff.
+
 ## Remaining concerns / follow-up
 
 - Extend the PostgreSQL harness before enablement with atomic rollback,
