@@ -179,6 +179,36 @@ test('suspended accounts, pending codes, replay, and purpose substitution fail c
     }
 });
 
+test('a failed recovery transaction rolls back code consumption and identity revocation', async () => {
+    const pool = createTestPool();
+    const client = await pool.connect();
+    try {
+        const account = await seedRecoverableStudent(client);
+        const identityId = await seedProviderProof(client, account.userId);
+        let otp = '';
+        const service = new StudentAccountRecoveryService({
+            pool, recoveryCodeKey: 'test-recovery-code-key', deliverOtp: async (_email, delivered) => { otp = delivered; return { success: true }; },
+            validatePassword: () => ({ valid: true, errors: [] }), hashPassword: async () => 'rollback-password-hash',
+        });
+        const started = await service.start({ email: account.email, purpose: 'compromise' });
+        await service.verify({ attemptId: started.attemptId, secret: started.secret, code: account.code, otp });
+        await client.query(`CREATE FUNCTION test_recovery_rollback() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'forced recovery rollback'; END $$`);
+        await client.query(`CREATE TRIGGER test_recovery_rollback BEFORE UPDATE ON users FOR EACH ROW EXECUTE FUNCTION test_recovery_rollback()`);
+        await assert.rejects(() => service.complete({ attemptId: started.attemptId, secret: started.secret, password: 'ValidNew1!' }), /forced recovery rollback/);
+        await client.query('DROP TRIGGER test_recovery_rollback ON users');
+        await client.query('DROP FUNCTION test_recovery_rollback()');
+        const code = await client.query<{ status: string }>('SELECT status FROM student_auth_recovery_codes WHERE user_id = $1', [account.userId]);
+        const attempt = await client.query<{ status: string }>('SELECT status FROM student_auth_recovery_attempts WHERE id = $1', [started.attemptId]);
+        const identity = await client.query<{ revoked_at: Date | null }>('SELECT revoked_at FROM student_auth_identities WHERE id = $1', [identityId]);
+        assert.equal(code.rows[0]!.status, 'active');
+        assert.equal(attempt.rows[0]!.status, 'verified');
+        assert.equal(identity.rows[0]!.revoked_at, null);
+    } finally {
+        client.release();
+        await pool.end();
+    }
+});
+
 async function seedProviderProof(client: PoolClient, userId: string): Promise<string> {
     const suffix = randomUUID().slice(0, 8);
     const university = await client.query<{ id: string }>(
