@@ -28,7 +28,7 @@ test('status exposes recovery state and generation without a recovery digest', a
     });
 
     assert.deepEqual(await service.status({ userId: '22222222-2222-4222-8222-222222222222' }), {
-        status: 'active', generation: 3,
+        status: 'active', generation: 3, pendingCodeId: null,
     });
     assert.equal(queries.length, 1);
 });

@@ -794,6 +794,9 @@ export type StudentSsoCleanupResult = {
     attemptsDeleted: number;
     handoffsDeleted: number;
     grantsDeleted: number;
+    actionGrantsScrubbed: number;
+    recoveryCodesScrubbed: number;
+    overdueExpired: number;
 };
 
 /**
@@ -822,6 +825,38 @@ export async function cleanupStudentSsoTransients(client: PoolClient): Promise<S
     const grants = await client.query(
         `DELETE FROM student_auth_reauth_grants WHERE expires_at <= clock_timestamp() - interval '7 days'`,
     );
+    // Credential records deliberately retain active recovery-code digests.
+    // Only expired pending rows are terminalized; consumed/revoked tombstones
+    // are removed after seven days, so deleting a row cannot revive its use.
+    const actionGrants = await client.query(
+        `UPDATE student_auth_action_grants
+         SET revoked_at = clock_timestamp(), secret_hash = 'scrubbed'
+         WHERE expires_at <= clock_timestamp() - interval '1 hour'
+           AND consumed_at IS NULL AND revoked_at IS NULL`,
+    );
+    const recoveryCodes = await client.query(
+        `UPDATE student_auth_recovery_codes
+         SET status = 'revoked', code_digest = NULL, expires_at = NULL,
+             revoked_at = clock_timestamp(), terminal_at = clock_timestamp()
+         WHERE status = 'pending' AND expires_at <= clock_timestamp() - interval '1 hour'`,
+    );
+    await client.query(
+        `DELETE FROM student_auth_action_grants
+         WHERE COALESCE(consumed_at, revoked_at, expires_at) <= clock_timestamp() - interval '7 days'`,
+    );
+    await client.query(
+        `DELETE FROM student_auth_recovery_codes
+         WHERE status IN ('consumed', 'revoked')
+           AND COALESCE(terminal_at, consumed_at, revoked_at, created_at) <= clock_timestamp() - interval '7 days'`,
+    );
+    const overdue = await client.query<{ count: string }>(
+        `SELECT (
+            (SELECT count(*) FROM student_auth_action_grants
+             WHERE expires_at <= clock_timestamp() - interval '1 hour' AND consumed_at IS NULL AND revoked_at IS NULL)
+            + (SELECT count(*) FROM student_auth_recovery_codes
+               WHERE status = 'pending' AND expires_at <= clock_timestamp() - interval '1 hour')
+        )::text AS count`,
+    );
     const attempts = await client.query(
         `DELETE FROM student_auth_attempts
          WHERE status IN ('consumed', 'failed')
@@ -834,5 +869,8 @@ export async function cleanupStudentSsoTransients(client: PoolClient): Promise<S
         attemptsDeleted: attempts.rowCount ?? 0,
         handoffsDeleted: handoffs.rowCount ?? 0,
         grantsDeleted: grants.rowCount ?? 0,
+        actionGrantsScrubbed: actionGrants.rowCount ?? 0,
+        recoveryCodesScrubbed: recoveryCodes.rowCount ?? 0,
+        overdueExpired: Number(overdue.rows[0]?.count ?? 0),
     };
 }

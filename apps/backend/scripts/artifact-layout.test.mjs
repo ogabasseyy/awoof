@@ -27,6 +27,7 @@ function fixture() {
     writeFileSync(join(root, ARTIFACT_ROOT_NAME, DISABLED_FALLBACK_SMOKE), 'export {};\n');
     writeFileSync(join(root, ARTIFACT_ROOT_NAME, 'config/openapi.json'), '{"paths":{"/api/auth/login":{}}}\n');
     writeFileSync(join(root, ARTIFACT_ROOT_NAME, 'scripts/cleanup-microsoft-attempts.js'), 'export {};\n');
+    writeFileSync(join(root, ARTIFACT_ROOT_NAME, 'scripts/cleanup-student-sso.js'), 'export {};\n');
     return root;
 }
 

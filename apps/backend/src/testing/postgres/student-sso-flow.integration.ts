@@ -1344,6 +1344,12 @@ test('cleanup scrubs expired ciphertext and deletes only aged transients', async
                 [userId, randomUUID(), hashMicrosoftAttemptSecret(`grant-${uniqueLabel()}`)],
             );
             await setup.query(
+                `INSERT INTO student_auth_action_grants
+                     (user_id, sid, credential_generation, purpose, secret_hash, expires_at, created_at)
+                 VALUES ($1, $2, 0, 'recovery_code_generate', $3, clock_timestamp() - interval '61 minutes', clock_timestamp() - interval '66 minutes')`,
+                [userId, randomUUID(), hashMicrosoftAttemptSecret(`action-grant-${uniqueLabel()}`)],
+            );
+            await setup.query(
                 `INSERT INTO student_auth_reauth_grants (user_id, sid, purpose, secret_hash, expires_at, created_at)
                  VALUES ($1, $2, 'link', $3, clock_timestamp() + interval '4 minutes', clock_timestamp())`,
                 [userId, randomUUID(), hashMicrosoftAttemptSecret(`grant-${uniqueLabel()}`)],
@@ -1366,6 +1372,8 @@ test('cleanup scrubs expired ciphertext and deletes only aged transients', async
         assert.equal(result.attemptsDeleted, 2);
         assert.equal(result.handoffsDeleted, 1);
         assert.equal(result.grantsDeleted, 1);
+        assert.equal((result as unknown as { actionGrantsScrubbed?: number }).actionGrantsScrubbed, 1,
+            'expired action grants must lose their digest within one hour');
 
         const check = await pool.connect();
         try {
@@ -1383,6 +1391,11 @@ test('cleanup scrubs expired ciphertext and deletes only aged transients', async
             assert.equal(scrubbed.rows[0]!.encrypted_observation, 'scrubbed');
             const freshGrants = await check.query('SELECT id FROM student_auth_reauth_grants WHERE expires_at > clock_timestamp()');
             assert.ok(freshGrants.rows.length >= 1);
+            const scrubbedActionGrant = await check.query<{ secret_hash: string; revoked_at: Date | null }>(
+                "SELECT secret_hash, revoked_at FROM student_auth_action_grants WHERE purpose = 'recovery_code_generate' ORDER BY created_at DESC LIMIT 1",
+            );
+            assert.deepEqual(scrubbedActionGrant.rows[0], { secret_hash: 'scrubbed', revoked_at: scrubbedActionGrant.rows[0]!.revoked_at });
+            assert.ok(scrubbedActionGrant.rows[0]!.revoked_at);
             // Owner linkage and school assertions are retained audit records.
             const identities = await check.query('SELECT id FROM student_auth_identities WHERE id = $1', [identityId]);
             assert.equal(identities.rows.length, 1);

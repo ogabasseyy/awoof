@@ -21,6 +21,7 @@ function fixture() {
     writeFileSync(join(root, 'dist/testing/postgres/fallback.integration.js'), 'export {};\n');
     writeFileSync(join(root, 'dist/config/openapi.json'), '{"paths":{"/api/auth/login":{}}}\n');
     writeFileSync(join(root, 'dist/scripts/cleanup-microsoft-attempts.js'), 'export {};\n');
+    writeFileSync(join(root, 'dist/scripts/cleanup-student-sso.js'), 'export {};\n');
     return root;
 }
 

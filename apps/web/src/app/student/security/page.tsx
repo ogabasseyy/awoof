@@ -33,7 +33,7 @@ export default function StudentSecurityPage() {
         try { const r = await studentSsoApiClient.post('/auth/student/sso/reauth/microsoft/start', { purpose: 'recovery_code_generate' }, { headers: { Authorization: `Bearer ${session.accessToken}` } }); const url = (r.data as { data?: { authorizationUrl?: unknown } }).data?.authorizationUrl; if (typeof url !== 'string' || !url.startsWith('https:')) throw new Error('invalid'); window.location.assign(url); } catch { setBusy(false); setStatus('unavailable'); }
     };
     const beginRemove = async () => {
-        if (busy) return; const session = getSessionSnapshot(); if (!session.accessToken || !saveIntent({ purpose: 'recovery_code_generate' })) { setStatus('unavailable'); return; }
+        if (busy) return; const session = getSessionSnapshot(); if (!session.accessToken) { setStatus('unavailable'); return; }
         setBusy(true); try { const r = await studentSsoApiClient.post('/auth/student/sso/reauth/microsoft/start', { purpose: 'recovery_code_remove' }, { headers: { Authorization: `Bearer ${session.accessToken}` } }); const url = (r.data as { data?: { authorizationUrl?: unknown } }).data?.authorizationUrl; if (typeof url !== 'string' || !url.startsWith('https:')) throw new Error(); window.location.assign(url); } catch { setBusy(false); setStatus('unavailable'); }
     };
     const beginActivation = async () => {

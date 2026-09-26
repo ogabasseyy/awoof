@@ -43,8 +43,13 @@ async function main(): Promise<void> {
             const result = await cleanupStudentSsoTransients(client);
             process.stdout.write(
                 `student SSO cleanup complete: attemptsFailed=${result.attemptsFailed} handoffsScrubbed=${result.handoffsScrubbed} `
-                + `attemptsDeleted=${result.attemptsDeleted} handoffsDeleted=${result.handoffsDeleted} grantsDeleted=${result.grantsDeleted}\n`,
+                + `attemptsDeleted=${result.attemptsDeleted} handoffsDeleted=${result.handoffsDeleted} grantsDeleted=${result.grantsDeleted} `
+                + `actionGrantsScrubbed=${result.actionGrantsScrubbed} recoveryCodesScrubbed=${result.recoveryCodesScrubbed} overdueExpired=${result.overdueExpired}\n`,
             );
+            if (result.overdueExpired > 0) {
+                process.stderr.write(`student SSO cleanup overdue expired state: ${result.overdueExpired}\n`);
+                process.exitCode = 1;
+            }
         } finally {
             client.release();
         }

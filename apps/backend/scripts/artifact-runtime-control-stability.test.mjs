@@ -18,6 +18,7 @@ function fixture() {
     writeFileSync(join(dist, 'testing/postgres/example.integration.js'), 'export {};\n');
     writeFileSync(join(dist, 'config/openapi.json'), '{"paths":{"/api/auth/login":{}}}\n');
     writeFileSync(join(dist, 'scripts/cleanup-microsoft-attempts.js'), 'export {};\n');
+    writeFileSync(join(dist, 'scripts/cleanup-student-sso.js'), 'export {};\n');
     writeArtifactManifest(root);
     return root;
 }
