@@ -488,9 +488,11 @@ export function createStudentSsoRouter(factory: FlowFactory = defaultFlow, optio
     }));
 
     router.post('/signup/context', signupLimiter, exactOrigin, exactJson, asyncHandler(async (req, res) => {
+        if (Object.keys(req.body as object).length !== 2) throw new BadRequestError('Passwordless signup request is invalid');
         const body = signupHandoffBody(req); const result = await signupFactory().context(await signupBinding(req, body)); responseHeaders(res); res.json({ success: true, data: result });
     }));
     router.post('/signup/send-code', signupLimiter, exactOrigin, exactJson, asyncHandler(async (req, res) => {
+        if (Object.keys(req.body as object).length !== 2) throw new BadRequestError('Passwordless signup request is invalid');
         const body = signupHandoffBody(req); const result = await signupFactory().sendCode(await signupBinding(req, body)); responseHeaders(res); res.status(201).json({ success: true, data: result });
     }));
     router.post('/signup/verify-code', signupLimiter, exactOrigin, exactJson, asyncHandler(async (req, res) => {
