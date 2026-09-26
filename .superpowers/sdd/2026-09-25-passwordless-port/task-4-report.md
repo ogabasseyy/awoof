@@ -54,3 +54,15 @@ deployment evidence exists.
   and browser UX are separate tasks/gates.
 - No provider activation, production deployment, school approval, or public
   recoverability claim follows from this source change.
+
+## Verification handoff
+
+- Controller PostgreSQL run against the pre-amend commit `46511d8` reported
+  378 pass, 2 test failures, and 1 skipped test. The failures were a
+  message-text matcher and an older 069-style pending fixture missing the new
+  072 binding fields; neither was a lifecycle assertion failure. Commit
+  `45192b2` fixes both and adds proof-revocation and post-recovery policy
+  cases.
+- Because `010331d` additionally makes null active-generation binding
+  explicit, the controller must run PostgreSQL against `45192b2` (not reuse
+  the pre-amend result) for the authoritative final result.
