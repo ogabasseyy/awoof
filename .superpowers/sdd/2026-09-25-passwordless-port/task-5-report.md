@@ -11,7 +11,7 @@
 - Targeted unit/router/controller tests: 31 passing.
 - `npm run type-check`: passing.
 - `git diff --check`: pending final controller-run snapshot.
-- Real-PostgreSQL tests now cover lost-access recovery; compromise identity/assertion revocation while preserving an independent enrollment record under a disabled/expired provider policy; suspended and pending-code denial; immutable purpose substitution; and terminal replay. Per coordination, the full PostgreSQL suite has not been run by this worker.
+- Real-PostgreSQL tests now cover lost-access recovery; compromise identity/assertion revocation while preserving an independent enrollment record under a disabled/expired provider policy; suspended and pending-code denial; immutable purpose substitution; terminal replay; rollback; recovery versus code-replacement; and provider finish versus compromise recovery. Per coordination, the full PostgreSQL suite has not been run by this worker.
 
 ## Behaviour delivered
 
@@ -27,4 +27,4 @@ No public trust/developer copy was changed. The feature is not deployed or enabl
 
 ## Not ready for full completion
 
-The full real-PostgreSQL suite must still validate the added integration tests. Remaining brief-required rollback, replacement-race, and callback-race cases are being added next. This worker did not run the full suite by coordination instruction and does not mark Task 5 ready.
+The full real-PostgreSQL suite must still validate the added integration tests. This worker did not run the full suite by coordination instruction and does not mark Task 5 ready.
