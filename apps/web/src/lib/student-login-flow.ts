@@ -266,15 +266,16 @@ export function parseSsoReauthResponse(value: unknown): SsoReauthGrant | null {
     return { grantId: data.grantId, grantSecret: data.grantSecret, expiresAt: data.expiresAt };
 }
 
-export type SsoReauthFinish = SsoReauthGrant & { purpose: 'recovery_code_generate' | 'recovery_code_activate' | 'recovery_code_remove'; pendingCodeId: string | null; targetIdentityId: string | null };
+export type SsoReauthFinish = SsoReauthGrant & { purpose: 'recovery_code_generate' | 'recovery_code_activate' | 'recovery_code_remove'; pendingCodeId: string | null; targetIdentityId: string | null; activeCodeGeneration: number | null };
 /** Callback continuations use purpose and targets returned from the locked server attempt, never tab metadata. */
 export function parseSsoReauthFinish(value: unknown): SsoReauthFinish | null {
     const grant = parseSsoReauthResponse(value); const data = successData(value); if (!grant || !data) return null;
     const purpose = data.purpose;
     if ((purpose !== 'recovery_code_generate' && purpose !== 'recovery_code_activate' && purpose !== 'recovery_code_remove')
         || (data.pendingCodeId !== null && !isUuid(data.pendingCodeId))
-        || (data.targetIdentityId !== null && !isUuid(data.targetIdentityId))) return null;
-    return { ...grant, purpose, pendingCodeId: data.pendingCodeId as string | null, targetIdentityId: data.targetIdentityId as string | null };
+        || (data.targetIdentityId !== null && !isUuid(data.targetIdentityId))
+        || (data.activeCodeGeneration !== null && (!Number.isInteger(data.activeCodeGeneration) || (data.activeCodeGeneration as number) < 1))) return null;
+    return { ...grant, purpose, pendingCodeId: data.pendingCodeId as string | null, targetIdentityId: data.targetIdentityId as string | null, activeCodeGeneration: data.activeCodeGeneration as number | null };
 }
 
 export type SsoLinkOutcome =

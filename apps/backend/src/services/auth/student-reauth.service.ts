@@ -133,7 +133,7 @@ export class StudentReauthService {
         });
     }
 
-    async finish(input: { userId: string; sid: string; attemptId: string; callbackCookie: string | undefined }): Promise<ActionGrantResult & { purpose: ActionPurpose; pendingCodeId: string | null; targetIdentityId: string | null }> {
+    async finish(input: { userId: string; sid: string; attemptId: string; callbackCookie: string | undefined }): Promise<ActionGrantResult & { purpose: ActionPurpose; pendingCodeId: string | null; targetIdentityId: string | null; activeCodeGeneration: number | null }> {
         if (!UUID.test(input.userId) || !UUID.test(input.sid) || !UUID.test(input.attemptId) || !input.callbackCookie) throw invalidReauth();
         const callbackCookie = input.callbackCookie;
         return this.transaction(async (tx) => {
@@ -165,7 +165,7 @@ export class StudentReauthService {
             // These values come from the locked server-side attempt. They let
             // the browser select the already-authorized continuation without
             // treating a client return parameter as authority.
-            return { ...grant, purpose: attempt.purpose as ActionPurpose, pendingCodeId: attempt.pending_code_id, targetIdentityId: attempt.target_identity_id };
+            return { ...grant, purpose: attempt.purpose as ActionPurpose, pendingCodeId: attempt.pending_code_id, targetIdentityId: attempt.target_identity_id, activeCodeGeneration: active.rows[0] === undefined ? null : Number(active.rows[0].generation) };
         });
     }
 

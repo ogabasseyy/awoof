@@ -47,7 +47,7 @@ function readRecoveryIntent(): RecoveryIntent | null {
 function clearRecoveryIntent(): void { try { sessionStorage.removeItem(RECOVERY_INTENT_KEY); } catch { /* no browser persistence available */ } }
 
 function RecoveryReauthComplete({ attemptId }: { attemptId: string }) {
-    const [status, setStatus] = useState<'checking' | 'display' | 'activate' | 'failed' | 'active'>('checking');
+    const [status, setStatus] = useState<'checking' | 'generate' | 'display' | 'activate' | 'remove' | 'failed' | 'active'>('checking');
     const [code, setCode] = useState(''); const [pendingCodeId, setPendingCodeId] = useState<string | null>(null); const [grant, setGrant] = useState<{ grantId: string; grantSecret: string } | null>(null); const [error, setError] = useState<string | null>(null);
     const started = useRef(false);
     useEffect(() => {
@@ -57,12 +57,14 @@ function RecoveryReauthComplete({ attemptId }: { attemptId: string }) {
         void studentSsoApiClient.post('/auth/student/sso/reauth/finish', { attemptId }, { headers: { Authorization: `Bearer ${session.accessToken}` } }).then(async response => {
             const grant = parseSsoReauthFinish(response.data); if (!grant) throw new Error('invalid grant');
             if (grant.purpose === 'recovery_code_generate') {
+                clearRecoveryIntent(); setGrant({ grantId: grant.grantId, grantSecret: grant.grantSecret });
+                if (grant.activeCodeGeneration !== null) { setStatus('generate'); return; }
                 const generated = await studentSsoApiClient.post('/auth/student/sso/recovery-code/generate', { reauthGrant: { grantId: grant.grantId, grantSecret: grant.grantSecret } }, { headers: { Authorization: `Bearer ${session.accessToken}` } });
                 const data = (generated.data as { data?: { pendingCodeId?: unknown; code?: unknown } }).data;
                 if (!data || typeof data.pendingCodeId !== 'string' || typeof data.code !== 'string') throw new Error('invalid code');
-                // Plaintext is held only in React memory for this rendered response.
-                setPendingCodeId(data.pendingCodeId); setCode(data.code); clearRecoveryIntent(); setStatus('display'); return;
+                setGrant(null); setPendingCodeId(data.pendingCodeId); setCode(data.code); setStatus('display'); return;
             }
+            if (grant.purpose === 'recovery_code_remove') { clearRecoveryIntent(); setGrant({ grantId: grant.grantId, grantSecret: grant.grantSecret }); setStatus('remove'); return; }
             if (grant.purpose !== 'recovery_code_activate' || !grant.pendingCodeId) throw new Error('missing pending');
             clearRecoveryIntent();
             // The user re-enters the value here after the second fresh proof; it was never persisted through the redirect.
@@ -75,8 +77,15 @@ function RecoveryReauthComplete({ attemptId }: { attemptId: string }) {
         try { await studentSsoApiClient.post('/auth/student/sso/recovery-code/activate', { reauthGrant: grant, pendingCodeId, code }, { headers: { Authorization: `Bearer ${session.accessToken}` } }); setGrant(null); setCode(''); setStatus('active'); }
         catch { setError('This confirmation could not be completed. If the pending code expired, restart setup.'); }
     };
+    const generateReplacement = async () => {
+        const session = getSessionSnapshot(); if (!grant || !session.accessToken || !code) return;
+        try { const r = await studentSsoApiClient.post('/auth/student/sso/recovery-code/generate', { reauthGrant: grant, oldCode: code }, { headers: { Authorization: `Bearer ${session.accessToken}` } }); const data = (r.data as { data?: { pendingCodeId?: unknown; code?: unknown } }).data; if (!data || typeof data.pendingCodeId !== 'string' || typeof data.code !== 'string') throw new Error(); setGrant(null); setPendingCodeId(data.pendingCodeId); setCode(data.code); setStatus('display'); } catch { setError('The current recovery code could not be confirmed.'); }
+    };
+    const remove = async () => { const session = getSessionSnapshot(); if (!grant || !session.accessToken || !code) return; try { await studentSsoApiClient.post('/auth/student/sso/recovery-code/remove', { reauthGrant: grant, oldCode: code }, { headers: { Authorization: `Bearer ${session.accessToken}` } }); setGrant(null); setCode(''); setStatus('active'); } catch { setError('The current recovery code could not be confirmed.'); } };
+    if (status === 'generate') return <AuthShell role="student" title="Replace recovery code" subtitle="Confirm your current code." footer={null}><label htmlFor="old-recovery-code">Current recovery code<input id="old-recovery-code" value={code} onChange={e => setCode(e.target.value)} className="mt-1 w-full rounded-2xl border px-4 h-11" /></label>{error ? <p role="alert">{error}</p> : null}<Button className="mt-5 w-full rounded-full" onClick={generateReplacement}>Generate replacement code</Button></AuthShell>;
     if (status === 'display') return <AuthShell role="student" title="Save your recovery code" subtitle="It will not be shown again." footer={null}><p role="alert" className="rounded-xl bg-amber-50 p-3 break-all font-mono text-left">{code}</p><p className="mt-3 text-left text-sm">Save this code somewhere secure. It is not stored in this browser, sent by email, or added to a URL. Then return to Account security and confirm your identity again to activate it.</p><Button className="mt-5 w-full rounded-full" onClick={() => { if (pendingCodeId) try { sessionStorage.setItem(RECOVERY_INTENT_KEY, JSON.stringify({ purpose: 'recovery_code_activate', pendingCodeId })); } catch { /* security page reports unavailable */ } setCode(''); window.location.href = '/student/security'; }}>I saved my code</Button></AuthShell>;
     if (status === 'activate') return <AuthShell role="student" title="Confirm your recovery code" subtitle="Fresh identity confirmation completed." footer={null}><label className="block text-left text-sm" htmlFor="recovery-code-confirm">Re-enter saved recovery code<input id="recovery-code-confirm" value={code} onChange={e => setCode(e.target.value)} className="mt-1 w-full rounded-2xl border px-4 h-11" /></label>{error ? <p role="alert" className="mt-3 text-sm text-red-600">{error}</p> : null}<Button className="mt-5 w-full rounded-full" onClick={activate}>Activate recovery code</Button></AuthShell>;
+    if (status === 'remove') return <AuthShell role="student" title="Remove recovery code" subtitle="Confirm your current code." footer={null}><label htmlFor="remove-recovery-code">Current recovery code<input id="remove-recovery-code" value={code} onChange={e => setCode(e.target.value)} className="mt-1 w-full rounded-2xl border px-4 h-11" /></label>{error ? <p role="alert">{error}</p> : null}<Button className="mt-5 w-full rounded-full" onClick={remove}>Remove recovery code</Button></AuthShell>;
     if (status === 'active') return <AuthShell role="student" title="Recovery code active" subtitle="Your optional recovery setup is complete." footer={null}><p role="status">Keep your saved code secure. It is required with your school mailbox for independent password recovery.</p><Button className="mt-5 w-full rounded-full" asChild><Link href="/marketplace">Continue</Link></Button></AuthShell>;
     return <AuthShell role="student" title="Security confirmation unavailable" subtitle="The fresh confirmation expired or was interrupted." footer={null}><p role="status">No recovery code was activated. Start the optional setup again.</p><Button className="mt-5 w-full rounded-full" asChild><Link href="/student/security">Back to account security</Link></Button></AuthShell>;
 }
