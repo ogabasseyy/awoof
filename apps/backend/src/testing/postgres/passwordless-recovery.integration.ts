@@ -1,9 +1,10 @@
 import assert from 'node:assert/strict';
-import { randomUUID } from 'node:crypto';
+import { createHmac, randomUUID } from 'node:crypto';
 import test from 'node:test';
 import type { PoolClient } from 'pg';
 import { issueActionGrant } from '../../services/auth/student-action-grant.service.js';
 import { StudentRecoveryCodeService } from '../../services/auth/student-recovery-code.service.js';
+import { StudentAccountRecoveryService } from '../../services/auth/student-account-recovery.service.js';
 import { createTestPool } from './test-database.js';
 
 const SID = '22222222-2222-4222-8222-222222222222';
@@ -17,6 +18,57 @@ async function seedStudent(client: PoolClient, sid = SID): Promise<string> {
     );
     return user.rows[0]!.id;
 }
+
+async function seedRecoverableStudent(client: PoolClient): Promise<{ userId: string; email: string; code: string }> {
+    const suffix = randomUUID().slice(0, 8);
+    const email = `independent-recovery-${suffix}@example.invalid`;
+    const user = await client.query<{ id: string }>(
+        `INSERT INTO users (email, role, password_setup_requires_recovery_code)
+         VALUES ($1, 'student', true) RETURNING id`, [email],
+    );
+    await client.query(`INSERT INTO students (user_id, name, status) VALUES ($1, 'Recovery student', 'active')`, [user.rows[0]!.id]);
+    const code = `recover-${suffix}`;
+    const digest = createHmac('sha256', 'test-recovery-code-key').update(code, 'utf8').digest('base64url');
+    await client.query(
+        `INSERT INTO student_auth_recovery_codes (user_id, generation, code_digest, status, activated_at)
+         VALUES ($1, 1, $2, 'active', clock_timestamp())`, [user.rows[0]!.id, digest],
+    );
+    return { userId: user.rows[0]!.id, email, code };
+}
+
+test('independent lost-access recovery consumes the active code, requires normal login, and preserves external identity', async () => {
+    const pool = createTestPool();
+    const client = await pool.connect();
+    try {
+        const account = await seedRecoverableStudent(client);
+        const identityId = await seedProviderProof(client, account.userId);
+        let otp = '';
+        const service = new StudentAccountRecoveryService({
+            pool, recoveryCodeKey: 'test-recovery-code-key',
+            deliverOtp: async (_email, delivered) => { otp = delivered; return { success: true }; },
+            validatePassword: () => ({ valid: true, errors: [] }), hashPassword: async () => 'recovered-password-hash',
+        });
+        const started = await service.start({ email: account.email, purpose: 'lost_access' });
+        assert.match(otp, /^\d{6}$/);
+        await service.verify({ attemptId: started.attemptId, secret: started.secret, code: account.code, otp });
+        await service.complete({ attemptId: started.attemptId, secret: started.secret, password: 'ValidNew1!' });
+
+        const after = await client.query<{ password_hash: string; recovery_reenrollment_requires_password: boolean; credential_generation: string; active_session_id: string | null }>(
+            'SELECT password_hash, recovery_reenrollment_requires_password, credential_generation, active_session_id FROM users WHERE id = $1', [account.userId],
+        );
+        assert.equal(after.rows[0]!.password_hash, 'recovered-password-hash');
+        assert.equal(after.rows[0]!.recovery_reenrollment_requires_password, true);
+        assert.equal(after.rows[0]!.credential_generation, '1');
+        assert.equal(after.rows[0]!.active_session_id, null, 'recovery must not issue a session');
+        const code = await client.query<{ status: string; code_digest: string | null }>('SELECT status, code_digest FROM student_auth_recovery_codes WHERE user_id = $1', [account.userId]);
+        assert.deepEqual(code.rows[0], { status: 'consumed', code_digest: null });
+        const identity = await client.query<{ revoked_at: Date | null }>('SELECT revoked_at FROM student_auth_identities WHERE id = $1', [identityId]);
+        assert.equal(identity.rows[0]!.revoked_at, null);
+    } finally {
+        client.release();
+        await pool.end();
+    }
+});
 
 async function seedProviderProof(client: PoolClient, userId: string): Promise<string> {
     const suffix = randomUUID().slice(0, 8);

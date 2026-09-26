@@ -417,7 +417,8 @@ export class AuthController {
 
         // Find user
         const userResult = await db.query(
-            `SELECT id, email, role FROM users WHERE lower(btrim(email)) = $1 AND deleted_at IS NULL`,
+            `SELECT id, email, role, password_setup_requires_recovery_code
+             FROM users WHERE lower(btrim(email)) = $1 AND deleted_at IS NULL`,
             [normalizedEmail]
         );
 
@@ -431,6 +432,17 @@ export class AuthController {
         }
 
         const user = userResult.rows[0];
+
+        // Passwordless marker accounts retain this restriction even after an
+        // independent recovery establishes a password. School-mailbox control
+        // alone must never reopen legacy reset/setup ownership transfer.
+        if (user.password_setup_requires_recovery_code) {
+            success(res, {
+                message: 'If the email exists, an OTP has been sent',
+                data: {},
+            });
+            return;
+        }
 
         // If role is specified in request, verify user has that role
         if (role && user.role !== role) {
@@ -487,7 +499,8 @@ export class AuthController {
              FROM users 
              WHERE lower(btrim(email)) = $1
                AND password_reset_otp = $2 
-               AND deleted_at IS NULL`,
+               AND deleted_at IS NULL
+               AND password_setup_requires_recovery_code = false`,
             [normalizedEmail, validated.otp]
         );
 
@@ -553,7 +566,8 @@ export class AuthController {
              FROM users 
              WHERE lower(btrim(email)) = $1
                AND password_reset_otp = $2 
-               AND deleted_at IS NULL`,
+               AND deleted_at IS NULL
+               AND password_setup_requires_recovery_code = false`,
             [normalizedEmail, validated.otp]
         );
 

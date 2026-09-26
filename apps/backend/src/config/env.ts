@@ -90,6 +90,9 @@ const envSchema = z.object({
     MICROSOFT_LOGIN_CALLBACK_URL: z.string().optional(),
     STUDENT_SSO_COMPLETION_URL: z.string().optional(),
     STUDENT_SSO_ATTEMPT_KEY: z.string().optional(),
+    // Kept separate from provider/OIDC keys so independent recovery remains
+    // operable while a school provider is disabled.
+    STUDENT_ACCOUNT_RECOVERY_CODE_KEY: z.string().min(32).optional(),
     // Separate rollback gate: linked SSO login remains available when signup is off.
     PASSWORDLESS_STUDENT_SIGNUP_ENABLED: z.enum(['true', 'false']).default('false'),
 });
@@ -230,6 +233,9 @@ export const config = {
     microsoftOidc,
     studentSso,
     passwordlessStudentSignupEnabled: env.PASSWORDLESS_STUDENT_SIGNUP_ENABLED === 'true',
+    studentAccountRecovery: {
+        codeKey: env.STUDENT_ACCOUNT_RECOVERY_CODE_KEY ?? null,
+    },
     // This trusted frontend setting is intentionally independent from OIDC
     // credentials so owner/history routes can remain available while issuance
     // is disabled.

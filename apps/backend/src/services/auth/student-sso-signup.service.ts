@@ -72,7 +72,10 @@ export class StudentSsoSignupService {
         if (typeof input.fullName !== 'string' || input.fullName.trim().length < 2 || input.fullName.trim().length > 255 || input.ageAttested !== true || input.termsVersion !== STUDENT_TERMS_VERSION || input.verificationConsent !== true || input.noticeVersion !== VERIFICATION_NOTICE_VERSION) throw new BadRequestError('Current age, Terms, and verification processing assent are required');
         const fullName = input.fullName.trim();
         try { return await this.transaction(async tx => { const state = await this.load(tx, input); if (state.signup.status !== 'mailbox_verified') throw invalid(); const university = (await tx.query<{ name: string }>('SELECT name FROM universities WHERE id = $1 FOR UPDATE', [state.universityId])).rows[0]; if (!university) throw invalid();
-            const user = (await tx.query<{ id: string; email: string; role: 'student' }>(`INSERT INTO users (email, password_hash, role) VALUES ($1, NULL, 'student') RETURNING id, lower(btrim(email)) AS email, role`, [state.email])).rows[0]; if (!user) throw invalid();
+            // This durable marker survives optional password establishment;
+            // legacy mailbox-only reset/setup must never become an ownership
+            // transfer path for a recycled institution address.
+            const user = (await tx.query<{ id: string; email: string; role: 'student' }>(`INSERT INTO users (email, password_hash, role, password_setup_requires_recovery_code) VALUES ($1, NULL, 'student', true) RETURNING id, lower(btrim(email)) AS email, role`, [state.email])).rows[0]; if (!user) throw invalid();
             await tx.query(`INSERT INTO students (user_id, name, university, university_id, registration_number, status) VALUES ($1, $2, $3, $4, NULL, 'active')`, [user.id, fullName, university.name, state.universityId]);
             await tx.query(`INSERT INTO terms_acceptances (user_id, kind, terms_version, age_attested) VALUES ($1, 'student_terms', $2, true)`, [user.id, STUDENT_TERMS_VERSION]);
             await tx.query(`INSERT INTO verification_consents (user_id, kind, university_id, notice_version, accepted) VALUES ($1, 'processing', $2, $3, true)`, [user.id, state.universityId, VERIFICATION_NOTICE_VERSION]);

@@ -219,6 +219,43 @@ test('recovery-code endpoints expose only status metadata and require strict aut
     assert.deepEqual(calls, ['generate:old-code', 'activate:old-code']);
 });
 
+test('independent account recovery exposes the same start shape without an account lookup and keeps purpose server-bound', async () => {
+    const calls: string[] = [];
+    const recovery = {
+        start: async (input: { email: string; purpose: string }) => {
+            calls.push(`start:${input.email}:${input.purpose}`);
+            return { attemptId: ATTEMPT_ID, secret: 'recovery-secret', expiresAt: '2026-09-26T12:00:00.000Z' };
+        },
+        verify: async () => { calls.push('verify'); },
+        complete: async () => { calls.push('complete'); },
+    };
+    await withServer(routerWith(stubFlow(), { accountRecoveryService: () => recovery as never }), async (baseUrl) => {
+        const started = await fetch(`${baseUrl}/account-recovery/start`, {
+            method: 'POST', headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ email: 'student@example.invalid', purpose: 'compromise' }),
+        });
+        assert.equal(started.status, 202);
+        assert.equal(started.headers.get('cache-control'), 'no-store');
+        assert.deepEqual((await started.json()).data, { attemptId: ATTEMPT_ID, secret: 'recovery-secret', expiresAt: '2026-09-26T12:00:00.000Z' });
+        const extra = await fetch(`${baseUrl}/account-recovery/start`, {
+            method: 'POST', headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ email: 'student@example.invalid', purpose: 'compromise', injected: true }),
+        });
+        assert.equal(extra.status, 400);
+        const verified = await fetch(`${baseUrl}/account-recovery/verify`, {
+            method: 'POST', headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ attemptId: ATTEMPT_ID, secret: 'recovery-secret', code: 'saved-code', otp: '123456' }),
+        });
+        assert.equal(verified.status, 204);
+        const completed = await fetch(`${baseUrl}/account-recovery/complete`, {
+            method: 'POST', headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ attemptId: ATTEMPT_ID, secret: 'recovery-secret', password: 'ValidNew1!' }),
+        });
+        assert.equal(completed.status, 204);
+    });
+    assert.deepEqual(calls, ['start:student@example.invalid:compromise', 'verify', 'complete']);
+});
+
 test('start rejects unknown providers, malformed bodies, non-JSON, and inexact origins', async () => {
     await withServer(routerWith(stubFlow()), async (baseUrl) => {
         const badProvider = await fetch(`${baseUrl}/github/start`, {

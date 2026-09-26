@@ -20,9 +20,10 @@ import { StudentMicrosoftOidc } from '../services/auth/student-microsoft-oidc.js
 import type { ApprovedLoginPolicy, StudentSsoOidcResolver } from '../services/auth/student-sso-flow.service.js';
 import { StudentSsoLinkService } from '../services/auth/student-sso-link.service.js';
 import { StudentSsoSignupService } from '../services/auth/student-sso-signup.service.js';
-import { sendEmailVerificationOTP } from '../services/email/email.service.js';
+import { sendEmail, sendEmailVerificationOTP } from '../services/email/email.service.js';
 import { StudentReauthService } from '../services/auth/student-reauth.service.js';
 import { StudentRecoveryCodeService } from '../services/auth/student-recovery-code.service.js';
+import { StudentAccountRecoveryService } from '../services/auth/student-account-recovery.service.js';
 import type { LoginProvider } from '../services/auth/student-sso.types.js';
 import { hashMicrosoftAttemptSecret } from '../services/verification/microsoft-attempt-crypto.js';
 
@@ -33,6 +34,7 @@ type LinkFactory = () => StudentSsoLink;
 type ReauthFactory = () => StudentReauthService;
 type SignupFactory = () => StudentSsoSignupService;
 type RecoveryCodeFactory = () => StudentRecoveryCodeService;
+type AccountRecoveryFactory = () => StudentAccountRecoveryService;
 export type StudentSsoRouterOptions = {
     isIssuanceEnabled?: () => boolean;
     enabledProviders?: () => LoginProvider[];
@@ -45,6 +47,7 @@ export type StudentSsoRouterOptions = {
     linkLimiterMax?: number;
     signupService?: SignupFactory;
     recoveryCodeService?: RecoveryCodeFactory;
+    accountRecoveryService?: AccountRecoveryFactory;
 };
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
@@ -338,9 +341,17 @@ function defaultSignup(): StudentSsoSignupService {
     });
 }
 function defaultRecoveryCode(): StudentRecoveryCodeService {
-    const key = config.studentSso.attemptKey;
-    if (!key) throw new ServiceUnavailableError('Student SSO is unavailable');
+    const key = config.studentAccountRecovery.codeKey;
+    if (!key) throw new ServiceUnavailableError('Account recovery is unavailable');
     return new StudentRecoveryCodeService({ pool: getPool(), codeKey: key });
+}
+function defaultAccountRecovery(): StudentAccountRecoveryService {
+    const key = config.studentAccountRecovery.codeKey;
+    if (!key) throw new ServiceUnavailableError('Account recovery is unavailable');
+    return new StudentAccountRecoveryService({
+        pool: getPool(), recoveryCodeKey: key,
+        deliverOtp: async (email, code) => sendEmail(email, 'Awoof account recovery code', `<p>Your Awoof account recovery code is <strong>${code}</strong>.</p><p>It expires shortly. If you did not start account recovery, ignore this email.</p>`),
+    });
 }
 
 export function createStudentSsoRouter(factory: FlowFactory = defaultFlow, options: StudentSsoRouterOptions = {}): Router {
@@ -361,6 +372,7 @@ export function createStudentSsoRouter(factory: FlowFactory = defaultFlow, optio
     const signupFactory = options.signupService ?? defaultSignup;
     const reauthFactory = options.reauthService ?? defaultReauth;
     const recoveryCodeFactory = options.recoveryCodeService ?? defaultRecoveryCode;
+    const accountRecoveryFactory = options.accountRecoveryService ?? defaultAccountRecovery;
     const linkLimiterMax = options.linkLimiterMax ?? 10;
     const reauthLimiter = studentSsoLinkLimiter(linkLimiterMax);
     const linkLimiter = studentSsoLinkLimiter(linkLimiterMax);
@@ -410,6 +422,24 @@ export function createStudentSsoRouter(factory: FlowFactory = defaultFlow, optio
         }
         next();
     };
+
+    // Register before the provider-parametrized /:provider/start route.
+    router.post('/account-recovery/start', exactJson, asyncHandler(async (req, res) => {
+        const body = req.body as { email?: unknown; purpose?: unknown };
+        if (!body || typeof body !== 'object' || Array.isArray(body) || Object.keys(body).length !== 2 || typeof body.email !== 'string' || body.email.length > 255 || (body.purpose !== 'lost_access' && body.purpose !== 'compromise')) throw new BadRequestError('Account recovery request is invalid');
+        const result = await accountRecoveryFactory().start({ email: body.email, purpose: body.purpose });
+        responseHeaders(res); res.status(202).json({ success: true, data: result });
+    }));
+    router.post('/account-recovery/verify', exactJson, asyncHandler(async (req, res) => {
+        const body = req.body as { attemptId?: unknown; secret?: unknown; code?: unknown; otp?: unknown };
+        if (!body || typeof body !== 'object' || Array.isArray(body) || Object.keys(body).length !== 4) throw new BadRequestError('Account recovery request is invalid');
+        await accountRecoveryFactory().verify({ attemptId: body.attemptId, secret: body.secret, code: body.code, otp: body.otp }); responseHeaders(res); res.status(204).end();
+    }));
+    router.post('/account-recovery/complete', exactJson, asyncHandler(async (req, res) => {
+        const body = req.body as { attemptId?: unknown; secret?: unknown; password?: unknown };
+        if (!body || typeof body !== 'object' || Array.isArray(body) || Object.keys(body).length !== 3) throw new BadRequestError('Account recovery request is invalid');
+        await accountRecoveryFactory().complete({ attemptId: body.attemptId, secret: body.secret, password: body.password }); responseHeaders(res); res.status(204).end();
+    }));
 
     router.post('/:provider/start', requireIssuance, exactOrigin, exactJson, asyncHandler(async (req, res) => {
         const provider = parseStudentSsoProvider(req.params.provider);

@@ -71,6 +71,19 @@ test('password reset atomically clears the durable refresh session', async (t) =
     assert.equal((responses[0] as { message: string }).message, 'Password reset successfully');
 });
 
+test('legacy password-reset lookup excludes recovery-code marker accounts after a password exists', async (t) => {
+    const calls: string[] = [];
+    t.mock.method(db, 'query', async (text: string) => {
+        calls.push(text);
+        return { rows: [], rowCount: 0 } as never;
+    });
+    const responseRecorder = { status: () => responseRecorder, json: () => undefined };
+    await assert.rejects(new AuthController().resetPassword({
+        body: { email: 'student@example.invalid', otp: '123456', newPassword: 'ValidNew1!' },
+    } as Request, responseRecorder as unknown as Response));
+    assert.match(calls[0]!, /password_setup_requires_recovery_code = false/);
+});
+
 test('authenticated password change atomically clears the durable refresh session', async (t) => {
     const calls: Array<{ text: string; params: unknown[] | undefined }> = [];
     const userId = '11111111-1111-4111-8111-111111111111';
