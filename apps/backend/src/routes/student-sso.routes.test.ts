@@ -10,17 +10,6 @@ import { jwtService } from '../services/auth/jwt.service.js';
 import { swaggerSpec } from '../config/swagger.js';
 import { db } from '../config/database.js';
 
-// Route fixtures exercise authorization shape, not a live database. The
-// session-aware middleware still receives a current ordinary-student row.
-db.getPool = () => ({
-    query: async () => ({ rows: [{
-        password_setup_requires_recovery_code: false,
-        recovery_reenrollment_requires_password: false,
-        active_session_id: null,
-        deleted_at: null,
-    }], rowCount: 1 }),
-} as never);
-
 type Flow = Pick<StudentSsoFlowService, 'start' | 'callback' | 'finish' | 'callbackCookieNameForState'>;
 
 const COMPLETION_ORIGIN = 'https://app.example.invalid';
@@ -61,6 +50,17 @@ async function withServer(
     router: ReturnType<typeof createStudentSsoRouter>,
     operation: (baseUrl: string) => Promise<void>,
 ): Promise<void> {
+    const originalGetPool = db.getPool;
+    // Route fixtures exercise authorization shape, not a live database. The
+    // session-aware middleware still receives a current ordinary-student row.
+    db.getPool = () => ({
+        query: async () => ({ rows: [{
+            password_setup_requires_recovery_code: false,
+            recovery_reenrollment_requires_password: false,
+            active_session_id: null,
+            deleted_at: null,
+        }], rowCount: 1 }),
+    } as never);
     const app = express();
     // Permit primitive JSON here so route schema tests exercise the router's
     // own strict validators rather than body-parser's default strict gate.
@@ -76,6 +76,7 @@ async function withServer(
     } finally {
         server.close();
         await once(server, 'close');
+        db.getPool = originalGetPool;
     }
 }
 

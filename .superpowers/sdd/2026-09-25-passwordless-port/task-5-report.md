@@ -30,6 +30,8 @@ No public trust/developer copy was changed. The feature is not deployed or enabl
 
 The effective recovery-code key is `STUDENT_ACCOUNT_RECOVERY_CODE_KEY` when explicitly configured, otherwise the established `STUDENT_SSO_ATTEMPT_KEY` used by migrations 069–072. Do not rotate either existing effective key without a reviewed rekey migration: active code digests are not portable. Provider disablement is independent from retaining that key.
 
+Student access-token authentication now has a durable users-table availability dependency: it reads the recovery-policy marker for every student so older JWTs without a marker claim cannot bypass recovery invalidation. A database lookup outage is deliberately surfaced as retryable 503 for both required and optional student authentication; optional authentication does not attach an identity during that outage. Vendor/admin JWT verification remains cryptographic-only. Release validation must include database-outage behavior and monitoring for this lookup.
+
 ## Not ready for full completion
 
 The full real-PostgreSQL suite must still validate the added integration tests. This worker did not run the full suite by coordination instruction and does not mark Task 5 ready.
