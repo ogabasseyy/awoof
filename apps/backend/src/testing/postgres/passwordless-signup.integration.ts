@@ -15,6 +15,7 @@ import { recordEmailAssurance } from '../../services/verification/eligibility-ev
 import { encryptMicrosoftAttemptVerifier, hashMicrosoftAttemptSecret } from '../../services/verification/microsoft-attempt-crypto.js';
 import { assertFixtureDatabase, createTestPool } from './test-database.js';
 import { STUDENT_TERMS_VERSION, VERIFICATION_NOTICE_VERSION } from '../../services/verification/verification-notices.js';
+import { challengeSubjectDigest } from '../../services/verification/challenge.service.js';
 
 const label = () => randomUUID().replaceAll('-', '').slice(0, 12);
 const secret = () => randomBytes(32).toString('hex');
@@ -138,6 +139,7 @@ test('passwordless signup fails closed for a wrong browser and expired handoff',
         // This test deliberately seeds an expired row; terminalize it so the
         // later shared cleanup regression owns only its own fixture.
         await pool.query(`UPDATE student_auth_link_handoffs SET consumed_at=clock_timestamp(), encrypted_observation='scrubbed' WHERE id=$1`, [expired.handoffId]);
+        await pool.query(`UPDATE student_auth_attempts SET status='failed', encrypted_verifier=NULL, nonce=NULL WHERE id=$1`, [expired.attemptId]);
     });
 });
 
@@ -152,7 +154,7 @@ test('signup send budgets survive rejected transactions and refuse a fourth send
         }
         await assert.rejects(service.sendCode({ handoffId: state.handoffId, handoffSecret: state.handoffSecret, browserBinding: state.browser }), /wait before/i);
         assert.equal(sends, 3);
-        const budget = await pool.query<{ send_count: number }>(`SELECT send_count FROM verification_challenge_budgets WHERE purpose='student_sso_signup'`);
+        const budget = await pool.query<{ send_count: number }>(`SELECT send_count FROM verification_challenge_budgets WHERE purpose='student_sso_signup' AND subject_digest=$1`, [challengeSubjectDigest('student_sso_signup', state.email)]);
         assert.equal(budget.rows[0]!.send_count, 3);
     });
 });
@@ -167,7 +169,7 @@ test('five rejected OTP checks are committed and lock the correct code too', asy
             await assert.rejects(service.verifyCode({ handoffId: state.handoffId, handoffSecret: state.handoffSecret, browserBinding: state.browser, challengeId: sent.challengeId, code: '000000' }), /invalid or expired/i);
         }
         await assert.rejects(service.verifyCode({ handoffId: state.handoffId, handoffSecret: state.handoffSecret, browserBinding: state.browser, challengeId: sent.challengeId, code }), /invalid or expired/i);
-        const budget = await pool.query<{ failed_attempts: number }>(`SELECT failed_attempts FROM verification_challenge_budgets WHERE purpose='student_sso_signup'`);
+        const budget = await pool.query<{ failed_attempts: number }>(`SELECT failed_attempts FROM verification_challenge_budgets WHERE purpose='student_sso_signup' AND subject_digest=$1`, [challengeSubjectDigest('student_sso_signup', state.email)]);
         assert.equal(budget.rows[0]!.failed_attempts, 5);
     });
 });
