@@ -35,6 +35,9 @@ async function seed(client: PoolClient, key: string, options: { expired?: boolea
 }
 
 async function seedVerifiedLinkOwner(client: PoolClient, input: { email: string; universityId: string }) {
+    const domain = input.email.slice(input.email.lastIndexOf('@') + 1);
+    const adminId = (await client.query<{ id: string }>(`INSERT INTO users (email, role) VALUES ($1, 'admin') RETURNING id`, [`approval-${label()}@example.invalid`])).rows[0]!.id;
+    await client.query(`INSERT INTO approved_student_email_domains (university_id, domain, approved_by) VALUES ($1, $2, $3)`, [input.universityId, domain, adminId]);
     const userId = (await client.query<{ id: string }>(
         `INSERT INTO users (email, password_hash, role) VALUES ($1, $2, 'student') RETURNING id`,
         [input.email, await passwordService.hashPassword('Correct!horse-9-battery')],
@@ -132,6 +135,9 @@ test('passwordless signup fails closed for a wrong browser and expired handoff',
         const c = await pool.connect(); let live, expired; try { live = await seed(c, key); expired = await seed(c, key, { expired: true }); } finally { c.release(); }
         await assert.rejects(service.context({ handoffId: live.handoffId, handoffSecret: live.handoffSecret, browserBinding: secret() }), /not available/i);
         await assert.rejects(service.context({ handoffId: expired.handoffId, handoffSecret: expired.handoffSecret, browserBinding: expired.browser }), /not available/i);
+        // This test deliberately seeds an expired row; terminalize it so the
+        // later shared cleanup regression owns only its own fixture.
+        await pool.query(`UPDATE student_auth_link_handoffs SET consumed_at=clock_timestamp(), encrypted_observation='scrubbed' WHERE id=$1`, [expired.handoffId]);
     });
 });
 
@@ -146,7 +152,7 @@ test('signup send budgets survive rejected transactions and refuse a fourth send
         }
         await assert.rejects(service.sendCode({ handoffId: state.handoffId, handoffSecret: state.handoffSecret, browserBinding: state.browser }), /wait before/i);
         assert.equal(sends, 3);
-        const budget = await pool.query<{ send_count: number }>(`SELECT send_count FROM verification_challenge_budgets`);
+        const budget = await pool.query<{ send_count: number }>(`SELECT send_count FROM verification_challenge_budgets WHERE purpose='student_sso_signup'`);
         assert.equal(budget.rows[0]!.send_count, 3);
     });
 });
@@ -161,7 +167,7 @@ test('five rejected OTP checks are committed and lock the correct code too', asy
             await assert.rejects(service.verifyCode({ handoffId: state.handoffId, handoffSecret: state.handoffSecret, browserBinding: state.browser, challengeId: sent.challengeId, code: '000000' }), /invalid or expired/i);
         }
         await assert.rejects(service.verifyCode({ handoffId: state.handoffId, handoffSecret: state.handoffSecret, browserBinding: state.browser, challengeId: sent.challengeId, code }), /invalid or expired/i);
-        const budget = await pool.query<{ failed_attempts: number }>(`SELECT failed_attempts FROM verification_challenge_budgets`);
+        const budget = await pool.query<{ failed_attempts: number }>(`SELECT failed_attempts FROM verification_challenge_budgets WHERE purpose='student_sso_signup'`);
         assert.equal(budget.rows[0]!.failed_attempts, 5);
     });
 });
