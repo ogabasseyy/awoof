@@ -793,6 +793,12 @@ export type StudentSsoCleanupResult = {
     handoffsScrubbed: number;
     attemptsDeleted: number;
     handoffsDeleted: number;
+    signupChallengesTerminalized: number;
+    signupChallengesDeleted: number;
+    reauthAttemptsTerminalized: number;
+    reauthAttemptsDeleted: number;
+    recoveryAttemptsTerminalized: number;
+    recoveryAttemptsDeleted: number;
     grantsDeleted: number;
     actionGrantsScrubbed: number;
     recoveryCodesScrubbed: number;
@@ -808,17 +814,56 @@ export type StudentSsoCleanupResult = {
  * never deleted here.
  */
 export async function cleanupStudentSsoTransients(client: PoolClient): Promise<StudentSsoCleanupResult> {
+    await client.query('BEGIN');
+    try {
     const failed = await client.query(
         `UPDATE student_auth_attempts
          SET status = 'failed', encrypted_verifier = NULL, nonce = NULL, encrypted_observation = NULL
          WHERE expires_at <= clock_timestamp() AND status IN ('pending', 'processing', 'ready')`,
     );
-    // Handoff ciphertext is NOT NULL by contract, so expiry overwrites it
-    // with an inert marker instead of deleting the row before retention age.
+    // Terminalize each passwordless attempt before deleting its tombstone.
+    // These tables retain immutable binding/outcome columns so deletion cannot
+    // turn an expired or consumed artifact back into a usable credential.
+    const signupTerminalized = await client.query(
+        `UPDATE student_auth_signup_challenges
+         SET status = 'expired', terminal_at = clock_timestamp(), secret_hash = NULL, browser_binding_hash = NULL
+         WHERE expires_at <= clock_timestamp() AND status IN ('pending', 'mailbox_verified')`,
+    );
+    const reauthTerminalized = await client.query(
+        `UPDATE student_auth_reauth_attempts
+         SET status = 'failed', consumed_at = clock_timestamp(), state_hash = NULL, callback_cookie_hash = NULL,
+             encrypted_verifier = NULL, nonce = NULL
+         WHERE expires_at <= clock_timestamp() AND status IN ('pending', 'ready')`,
+    );
+    const recoveryTerminalized = await client.query(
+        `UPDATE student_auth_recovery_attempts
+         SET status = 'expired', secret_hash = NULL
+         WHERE expires_at <= clock_timestamp() AND status IN ('pending', 'verified')`,
+    );
+    // Handoff ciphertext and one-use/browser secrets all become inert at
+    // expiry; migration 074 permits this only after expiry or consumption.
     const scrubbed = await client.query(
         `UPDATE student_auth_link_handoffs
-         SET encrypted_observation = 'scrubbed'
-         WHERE expires_at <= clock_timestamp() AND consumed_at IS NULL AND encrypted_observation <> 'scrubbed'`,
+         SET secret_hash = NULL, browser_binding_hash = NULL, encrypted_observation = NULL
+         WHERE expires_at <= clock_timestamp() AND consumed_at IS NULL
+           AND (secret_hash IS NOT NULL OR browser_binding_hash IS NOT NULL OR encrypted_observation IS NOT NULL)`,
+    );
+    // The signup FK intentionally does not cascade: retain completed
+    // tombstones for seven days, then delete them before their handoffs.
+    const signupChallenges = await client.query(
+        `DELETE FROM student_auth_signup_challenges
+         WHERE status IN ('consumed', 'cancelled', 'expired')
+           AND COALESCE(terminal_at, consumed_at, expires_at) <= clock_timestamp() - interval '7 days'`,
+    );
+    const reauthAttempts = await client.query(
+        `DELETE FROM student_auth_reauth_attempts
+         WHERE status IN ('consumed', 'failed')
+           AND COALESCE(consumed_at, expires_at) <= clock_timestamp() - interval '7 days'`,
+    );
+    const recoveryAttempts = await client.query(
+        `DELETE FROM student_auth_recovery_attempts
+         WHERE status IN ('consumed', 'failed', 'expired')
+           AND COALESCE(consumed_at, expires_at) <= clock_timestamp() - interval '7 days'`,
     );
     const handoffs = await client.query(
         `DELETE FROM student_auth_link_handoffs WHERE expires_at <= clock_timestamp() - interval '7 days'`,
@@ -864,14 +909,26 @@ export async function cleanupStudentSsoTransients(client: PoolClient): Promise<S
            AND expires_at <= clock_timestamp() - interval '7 days'
            AND NOT EXISTS (SELECT 1 FROM student_auth_link_handoffs WHERE attempt_id = student_auth_attempts.id)`,
     );
-    return {
+    const result = {
         attemptsFailed: failed.rowCount ?? 0,
         handoffsScrubbed: scrubbed.rowCount ?? 0,
         attemptsDeleted: attempts.rowCount ?? 0,
         handoffsDeleted: handoffs.rowCount ?? 0,
+        signupChallengesTerminalized: signupTerminalized.rowCount ?? 0,
+        signupChallengesDeleted: signupChallenges.rowCount ?? 0,
+        reauthAttemptsTerminalized: reauthTerminalized.rowCount ?? 0,
+        reauthAttemptsDeleted: reauthAttempts.rowCount ?? 0,
+        recoveryAttemptsTerminalized: recoveryTerminalized.rowCount ?? 0,
+        recoveryAttemptsDeleted: recoveryAttempts.rowCount ?? 0,
         grantsDeleted: grants.rowCount ?? 0,
         actionGrantsScrubbed: actionGrants.rowCount ?? 0,
         recoveryCodesScrubbed: recoveryCodes.rowCount ?? 0,
         overdueExpired: Number(overdue.rows[0]?.count ?? 0),
     };
+    await client.query('COMMIT');
+    return result;
+    } catch (error) {
+        await client.query('ROLLBACK').catch(() => undefined);
+        throw error;
+    }
 }

@@ -236,8 +236,14 @@ export async function consumeChallenge(tx: PoolClient, input: {
         await recordFailure(tx, input.purpose, subject);
         return { status: 'invalid' };
     }
+    // New passwordless flows retain only the consumed challenge binding, not
+    // an OTP digest that can no longer authorize anything. Legacy purposes
+    // keep their established retention contract unchanged.
     const consumed = await tx.query(
-        `UPDATE verification_challenges SET consumed_at = $2
+        `UPDATE verification_challenges
+         SET consumed_at = $2,
+             secret_digest = CASE WHEN purpose IN ('student_sso_signup', 'student_account_recovery')
+                                  THEN repeat('0', 64) ELSE secret_digest END
          WHERE id = $1 AND consumed_at IS NULL AND superseded_at IS NULL`,
         [challenge.id, now],
     );

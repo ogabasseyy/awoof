@@ -161,7 +161,10 @@ export class StudentReauthService {
                 targetIdentityId: attempt.target_identity_id, pendingCodeId: attempt.pending_code_id,
                 ...(active.rows[0] === undefined ? {} : { activeCodeGeneration: Number(active.rows[0].generation) }),
             });
-            await tx.query("UPDATE student_auth_reauth_attempts SET status = 'consumed', consumed_at = clock_timestamp() WHERE id = $1 AND status = 'ready'", [attempt.id]);
+            await tx.query(`UPDATE student_auth_reauth_attempts
+                SET status = 'consumed', consumed_at = clock_timestamp(), state_hash = NULL, callback_cookie_hash = NULL,
+                    encrypted_verifier = NULL, nonce = NULL
+                WHERE id = $1 AND status = 'ready'`, [attempt.id]);
             // These values come from the locked server-side attempt. They let
             // the browser select the already-authorized continuation without
             // treating a client return parameter as authority.

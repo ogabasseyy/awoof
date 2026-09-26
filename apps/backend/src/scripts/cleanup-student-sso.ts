@@ -44,6 +44,9 @@ async function main(): Promise<void> {
             process.stdout.write(
                 `student SSO cleanup complete: attemptsFailed=${result.attemptsFailed} handoffsScrubbed=${result.handoffsScrubbed} `
                 + `attemptsDeleted=${result.attemptsDeleted} handoffsDeleted=${result.handoffsDeleted} grantsDeleted=${result.grantsDeleted} `
+                + `signupChallengesTerminalized=${result.signupChallengesTerminalized} signupChallengesDeleted=${result.signupChallengesDeleted} `
+                + `reauthAttemptsTerminalized=${result.reauthAttemptsTerminalized} reauthAttemptsDeleted=${result.reauthAttemptsDeleted} `
+                + `recoveryAttemptsTerminalized=${result.recoveryAttemptsTerminalized} recoveryAttemptsDeleted=${result.recoveryAttemptsDeleted} `
                 + `actionGrantsScrubbed=${result.actionGrantsScrubbed} recoveryCodesScrubbed=${result.recoveryCodesScrubbed} overdueExpired=${result.overdueExpired}\n`,
             );
             if (result.overdueExpired > 0) {

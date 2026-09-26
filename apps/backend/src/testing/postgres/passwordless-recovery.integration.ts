@@ -53,6 +53,16 @@ test('independent lost-access recovery consumes the active code, requires normal
         await service.verify({ attemptId: started.attemptId, secret: started.secret, code: account.code, otp });
         await service.complete({ attemptId: started.attemptId, secret: started.secret, password: 'ValidNew1!' });
 
+        const transientSecrets = await client.query<{ attempt_secret: string | null; otp_digest: string }>(
+            `SELECT attempt.secret_hash AS attempt_secret, otp.secret_digest AS otp_digest
+             FROM student_auth_recovery_attempts attempt
+             JOIN verification_challenges otp ON otp.id = attempt.mailbox_challenge_id
+             WHERE attempt.id = $1`,
+            [started.attemptId],
+        );
+        assert.deepEqual(transientSecrets.rows[0], { attempt_secret: null, otp_digest: '0'.repeat(64) },
+            'successful recovery immediately scrubs its attempt and mailbox-OTP digests');
+
         const after = await client.query<{ password_hash: string; recovery_reenrollment_requires_password: boolean; credential_generation: string; active_session_id: string | null }>(
             'SELECT password_hash, recovery_reenrollment_requires_password, credential_generation, active_session_id FROM users WHERE id = $1', [account.userId],
         );

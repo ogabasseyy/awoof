@@ -86,6 +86,23 @@ test('passwordless signup creates one passwordless account, mailbox proof, ident
         await service.verifyCode({ handoffId: state.handoffId, handoffSecret: state.handoffSecret, browserBinding: state.browser, challengeId: sent.challengeId, code });
         const completed = await service.complete({ handoffId: state.handoffId, handoffSecret: state.handoffSecret, browserBinding: state.browser, fullName: 'Ada Student', ageAttested: true, termsVersion: STUDENT_TERMS_VERSION, verificationConsent: true, noticeVersion: VERIFICATION_NOTICE_VERSION });
         assert.equal(completed.user.email, state.email);
+        const transientSecrets = await pool.query<{
+            handoff_secret: string | null; handoff_binding: string | null; handoff_observation: string | null;
+            signup_secret: string | null; signup_binding: string | null; otp_digest: string;
+        }>(
+            `SELECT handoff.secret_hash AS handoff_secret, handoff.browser_binding_hash AS handoff_binding,
+                    handoff.encrypted_observation AS handoff_observation, signup.secret_hash AS signup_secret,
+                    signup.browser_binding_hash AS signup_binding, otp.secret_digest AS otp_digest
+             FROM student_auth_link_handoffs handoff
+             JOIN student_auth_signup_challenges signup ON signup.handoff_id = handoff.id
+             JOIN verification_challenges otp ON otp.id = signup.mailbox_challenge_id
+             WHERE handoff.id = $1`,
+            [state.handoffId],
+        );
+        assert.deepEqual(transientSecrets.rows[0], {
+            handoff_secret: null, handoff_binding: null, handoff_observation: null,
+            signup_secret: null, signup_binding: null, otp_digest: '0'.repeat(64),
+        }, 'successful passwordless signup immediately scrubs its handoff, signup, and OTP digests');
         const rows = await pool.query<{ users: string; identities: string; sessions: string; enrollment: string; proofs: string }>(`SELECT (SELECT count(*)::text FROM users WHERE id=$1) users, (SELECT count(*)::text FROM student_auth_identities WHERE user_id=$1) identities, (SELECT count(*)::text FROM users WHERE id=$1 AND active_session_id IS NOT NULL) sessions, (SELECT count(*)::text FROM eligibility_evidence e JOIN students s ON s.id=e.student_id WHERE s.user_id=$1) enrollment, (SELECT count(*)::text FROM user_email_proofs WHERE user_id=$1) proofs`, [completed.user.id]);
         assert.deepEqual(rows.rows[0], { users: '1', identities: '1', sessions: '1', enrollment: '0', proofs: '1' });
         // Models a commit-success/response-loss retry: the consumed handoff

@@ -1284,6 +1284,9 @@ test('cleanup scrubs expired ciphertext and deletes only aged transients', async
         let policyId: string;
         let identityId: string;
         let freshAttempt: string;
+        let handoffAttempt: string;
+        let expiredReauthAttempt: string;
+        let expiredRecoveryAttempt: string;
         let expiredActionGrant: string;
         let activeRecoveryCode: string;
         let expiredRecoveryCode: string;
@@ -1329,7 +1332,7 @@ test('cleanup scrubs expired ciphertext and deletes only aged transients', async
             const recentlyExpired = await insertAttempt('1 hour', 'pending', true);
             await insertAttempt('8 days', 'consumed', false);
             freshAttempt = await insertAttempt('1 minute', 'pending', true);
-            const handoffAttempt = await insertAttempt('8 days', 'consumed', false);
+            handoffAttempt = await insertAttempt('8 days', 'consumed', false);
             await setup.query(
                 `INSERT INTO student_auth_link_handoffs
                      (attempt_id, secret_hash, encrypted_observation, policy_id, policy_version, browser_binding_hash, expires_at, created_at)
@@ -1341,6 +1344,17 @@ test('cleanup scrubs expired ciphertext and deletes only aged transients', async
                      (attempt_id, secret_hash, encrypted_observation, policy_id, policy_version, browser_binding_hash, expires_at, created_at)
                  VALUES ($1, $2, $3, $4, 1, $5, clock_timestamp() - interval '8 days', clock_timestamp() - interval '8 days')`,
                 [handoffAttempt, hashMicrosoftAttemptSecret(`handoff-${uniqueLabel()}`), 'enc:observation', policyId, hashMicrosoftAttemptSecret('binding')],
+            );
+            // A completed signup owns a non-cascading FK to this aged handoff.
+            // Cleanup must remove the child tombstone before the parent, while
+            // still continuing on to later grant and credential cleanup.
+            await setup.query(
+                `INSERT INTO student_auth_signup_challenges
+                     (handoff_id, secret_hash, browser_binding_hash, status, expires_at, mailbox_verified_at, consumed_at, terminal_at, created_at)
+                 VALUES ((SELECT id FROM student_auth_link_handoffs WHERE attempt_id = $1), $2, $3, 'consumed',
+                         clock_timestamp() - interval '8 days', clock_timestamp() - interval '8 days',
+                         clock_timestamp() - interval '8 days', clock_timestamp() - interval '8 days', clock_timestamp() - interval '8 days')`,
+                [handoffAttempt, hashMicrosoftAttemptSecret(`signup-${uniqueLabel()}`), hashMicrosoftAttemptSecret(`signup-binding-${uniqueLabel()}`)],
             );
             await setup.query(
                 `INSERT INTO student_auth_reauth_grants (user_id, sid, purpose, secret_hash, expires_at, created_at)
@@ -1360,6 +1374,24 @@ test('cleanup scrubs expired ciphertext and deletes only aged transients', async
                  VALUES ($1, 71, $2, 'active', clock_timestamp() - interval '2 minutes', clock_timestamp() - interval '2 minutes')
                  RETURNING id`,
                 [userId, hashMicrosoftAttemptSecret(`active-recovery-${uniqueLabel()}`)],
+            )).rows[0]!.id;
+            expiredReauthAttempt = (await setup.query<{ id: string }>(
+                `INSERT INTO student_auth_reauth_attempts
+                     (user_id, sid, credential_generation, purpose, state_hash, callback_cookie_hash, encrypted_verifier, nonce,
+                      status, expires_at, consumed_at, created_at)
+                 VALUES ($1, $2, 0, 'link', $3, $4, $5, $6, 'consumed',
+                         clock_timestamp() - interval '8 days', clock_timestamp() - interval '8 days', clock_timestamp() - interval '8 days')
+                 RETURNING id`,
+                [userId, randomUUID(), hashMicrosoftAttemptSecret(`reauth-state-${uniqueLabel()}`), hashMicrosoftAttemptSecret(`reauth-cookie-${uniqueLabel()}`), 'encrypted-verifier', 'reauth-nonce'],
+            )).rows[0]!.id;
+            expiredRecoveryAttempt = (await setup.query<{ id: string }>(
+                `INSERT INTO student_auth_recovery_attempts
+                     (user_id, credential_generation, purpose, secret_hash, recovery_code_generation, status, expires_at, verified_at, consumed_at, created_at)
+                 VALUES ($1, 0, 'lost_access', $2, 71, 'consumed',
+                         clock_timestamp() - interval '8 days', clock_timestamp() - interval '8 days',
+                         clock_timestamp() - interval '8 days', clock_timestamp() - interval '8 days')
+                 RETURNING id`,
+                [userId, hashMicrosoftAttemptSecret(`recovery-attempt-${uniqueLabel()}`)],
             )).rows[0]!.id;
             expiredRecoveryCode = (await setup.query<{ id: string }>(
                 `INSERT INTO student_auth_recovery_codes
@@ -1411,12 +1443,12 @@ test('cleanup scrubs expired ciphertext and deletes only aged transients', async
             );
             assert.equal(fresh.rows[0]!.status, 'pending');
             assert.ok(fresh.rows[0]!.encrypted_verifier);
-            const scrubbed = await check.query<{ encrypted_observation: string }>(
+            const scrubbed = await check.query<{ encrypted_observation: string | null }>(
                 'SELECT encrypted_observation FROM student_auth_link_handoffs WHERE policy_id = $1',
                 [policyId],
             );
             assert.equal(scrubbed.rows.length, 1);
-            assert.equal(scrubbed.rows[0]!.encrypted_observation, 'scrubbed');
+            assert.equal(scrubbed.rows[0]!.encrypted_observation, null);
             const freshGrants = await check.query('SELECT id FROM student_auth_reauth_grants WHERE expires_at > clock_timestamp()');
             assert.ok(freshGrants.rows.length >= 1);
             const scrubbedActionGrant = await check.query<{ secret_hash: string; revoked_at: Date | null }>(
@@ -1438,6 +1470,30 @@ test('cleanup scrubs expired ciphertext and deletes only aged transients', async
             });
             const deleted = await check.query('SELECT id FROM student_auth_action_grants WHERE id = $1', [deletedActionGrant]);
             assert.equal(deleted.rowCount, 0, 'seven-day terminal grant tombstones are deleted');
+            const completedSignup = await check.query(
+                `SELECT signup.id
+                 FROM student_auth_signup_challenges signup
+                 JOIN student_auth_link_handoffs handoff ON handoff.id = signup.handoff_id
+                 WHERE handoff.attempt_id = $1`,
+                [handoffAttempt],
+            );
+            assert.equal(completedSignup.rowCount, 0,
+                'aged completed signup tombstones are deleted before their non-cascading handoff parent');
+            const deletedHandoff = await check.query('SELECT id FROM student_auth_link_handoffs WHERE attempt_id = $1', [handoffAttempt]);
+            assert.equal(deletedHandoff.rowCount, 0, 'the completed signup handoff is deleted without aborting later cleanup');
+            const deletedAttempts = await check.query(
+                'SELECT id FROM student_auth_reauth_attempts WHERE id = $1 UNION ALL SELECT id FROM student_auth_recovery_attempts WHERE id = $2',
+                [expiredReauthAttempt, expiredRecoveryAttempt],
+            );
+            assert.equal(deletedAttempts.rowCount, 0,
+                'seven-day reauthentication and recovery tombstones are deleted after their secrets are terminalized');
+            const replaySignup = await check.query(
+                `UPDATE student_auth_signup_challenges
+                 SET status = 'consumed', consumed_at = clock_timestamp(), terminal_at = clock_timestamp()
+                 WHERE handoff_id = (SELECT id FROM student_auth_link_handoffs WHERE attempt_id = $1)`,
+                [handoffAttempt],
+            );
+            assert.equal(replaySignup.rowCount, 0, 'deleting a terminal signup tombstone cannot revive its consumed handoff');
             const replay = await check.query(
                 "UPDATE student_auth_action_grants SET consumed_at = clock_timestamp(), secret_hash = 'scrubbed' WHERE id = $1 AND consumed_at IS NULL AND revoked_at IS NULL",
                 [deletedActionGrant],

@@ -194,7 +194,7 @@ export class StudentAccountRecoveryService {
             );
             await tx.query("UPDATE student_auth_recovery_attempts SET status = 'failed' WHERE user_id = $1 AND id <> $2 AND status IN ('pending', 'verified')", [userId, attempt.id]);
             const consumed = await tx.query(
-                `UPDATE student_auth_recovery_attempts SET status = 'consumed', consumed_at = clock_timestamp()
+                `UPDATE student_auth_recovery_attempts SET status = 'consumed', consumed_at = clock_timestamp(), secret_hash = NULL
                  WHERE id = $1 AND status = 'verified'`, [attempt.id],
             );
             if (consumed.rowCount !== 1) throw unavailable();
