@@ -56,6 +56,18 @@ test('consumes only a current grant bound to its exact unlink target', async () 
     assert.ok(calls.some((call) => call.text.startsWith('UPDATE student_auth_action_grants')));
 });
 
+test('consumes an action grant whose PostgreSQL bigint binding is returned as a string', async () => {
+    const { tx } = txFor(grant({
+        purpose: 'recovery_code_generate',
+        target_identity_id: null,
+        active_code_generation: '1',
+    }));
+    await consumeActionGrant(tx, {
+        userId: USER_ID, sid: SID, grantId: GRANT_ID, secret: 'grant-secret',
+        purpose: 'recovery_code_generate', activeCodeGeneration: 1,
+    }, { hashSecret: () => 'digest' });
+});
+
 for (const [name, row, input] of [
     ['a consumed grant', grant({ consumed_at: new Date() }), {}],
     ['a grant for another target', grant({ target_identity_id: USER_ID }), {}],

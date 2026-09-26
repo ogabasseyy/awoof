@@ -43,7 +43,9 @@ function secret(): string {
 }
 
 function sameNullable(expected: string | number | null | undefined, actual: string | number | null): boolean {
-    return (expected ?? null) === actual;
+    if (expected === null || expected === undefined || actual === null) return (expected ?? null) === actual;
+    if (typeof expected === 'number') return Number.isSafeInteger(expected) && Number(actual) === expected;
+    return expected === actual;
 }
 
 /**
