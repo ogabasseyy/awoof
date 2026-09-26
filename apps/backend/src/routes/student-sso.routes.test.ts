@@ -50,7 +50,9 @@ async function withServer(
     operation: (baseUrl: string) => Promise<void>,
 ): Promise<void> {
     const app = express();
-    app.use(express.json());
+    // Permit primitive JSON here so route schema tests exercise the router's
+    // own strict validators rather than body-parser's default strict gate.
+    app.use(express.json({ strict: false }));
     app.use('/sso', router);
     app.use(errorHandler);
     const server = app.listen(0, '127.0.0.1');
@@ -124,8 +126,10 @@ test('passwordless signup context and send-code reject extra JSON fields before 
     const signup = { context: async () => { invoked++; return {}; }, sendCode: async () => { invoked++; return {}; }, verifyCode: async () => ({}), complete: async () => ({}) };
     await withServer(routerWith(stubFlow(), { signupService: () => signup as never }), async (baseUrl) => {
         for (const path of ['signup/context', 'signup/send-code']) {
-            const response = await fetch(`${baseUrl}/${path}`, { method: 'POST', headers: { 'content-type': 'application/json', origin: COMPLETION_ORIGIN }, body: JSON.stringify({ handoffId: ATTEMPT_ID, handoffSecret: 'secret', extra: true }) });
-            assert.equal(response.status, 400);
+            for (const body of [{ handoffId: ATTEMPT_ID, handoffSecret: 'secret', extra: true }, null, 'text', []]) {
+                const response = await fetch(`${baseUrl}/${path}`, { method: 'POST', headers: { 'content-type': 'application/json', origin: COMPLETION_ORIGIN }, body: JSON.stringify(body) });
+                assert.equal(response.status, 400);
+            }
         }
     });
     assert.equal(invoked, 0);
