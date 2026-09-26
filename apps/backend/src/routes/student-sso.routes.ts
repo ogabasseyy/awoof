@@ -19,6 +19,7 @@ import { StudentGoogleOidc } from '../services/auth/student-google-oidc.js';
 import { StudentMicrosoftOidc } from '../services/auth/student-microsoft-oidc.js';
 import type { ApprovedLoginPolicy, StudentSsoOidcResolver } from '../services/auth/student-sso-flow.service.js';
 import { StudentSsoLinkService } from '../services/auth/student-sso-link.service.js';
+import { StudentReauthService } from '../services/auth/student-reauth.service.js';
 import type { LoginProvider } from '../services/auth/student-sso.types.js';
 import { hashMicrosoftAttemptSecret } from '../services/verification/microsoft-attempt-crypto.js';
 
@@ -26,6 +27,7 @@ export type StudentSsoFlow = Pick<StudentSsoFlowService, 'start' | 'callback' | 
 export type StudentSsoLink = Pick<StudentSsoLinkService, 'reauth' | 'link' | 'listIdentities' | 'unlink'>;
 type FlowFactory = () => StudentSsoFlow;
 type LinkFactory = () => StudentSsoLink;
+type ReauthFactory = () => StudentReauthService;
 export type StudentSsoRouterOptions = {
     isIssuanceEnabled?: () => boolean;
     enabledProviders?: () => LoginProvider[];
@@ -34,6 +36,7 @@ export type StudentSsoRouterOptions = {
     pool?: Pick<Pool, 'query'>;
     callbackLimiterMax?: number;
     linkService?: LinkFactory;
+    reauthService?: ReauthFactory;
     linkLimiterMax?: number;
 };
 
@@ -59,6 +62,7 @@ function responseHeaders(res: Response): void {
 function clearSsoCookie(res: Response, name: string): void {
     res.clearCookie(name, { path: STUDENT_SSO_COOKIE_PATH, httpOnly: true, secure: true, sameSite: 'lax' });
 }
+function reauthCookieName(attemptId: string): string { return `awoof_reauth_${attemptId}`; }
 
 function parseBrowserCookies(req: Request): { name: string; value: string }[] {
     return String(req.headers.cookie ?? '').split(';').flatMap((entry) => {
@@ -275,6 +279,16 @@ function defaultLink(): StudentSsoLink {
     });
 }
 
+function defaultReauth(): StudentReauthService {
+    const sso = config.studentSso;
+    if (!sso.attemptKey || !sso.completionUrl) throw new ServiceUnavailableError('Student SSO is unavailable');
+    return new StudentReauthService({
+        pool: getPool(), attemptKey: sso.attemptKey, completionUrl: sso.completionUrl,
+        oidcForPolicy: (policy) => defaultOidc().forPolicy(policy),
+        isProviderEnabled: (provider) => enabledStudentSsoProviders(sso).includes(provider),
+    });
+}
+
 export function createStudentSsoRouter(factory: FlowFactory = defaultFlow, options: StudentSsoRouterOptions = {}): Router {
     const router = Router();
     const issuanceEnabled = options.isIssuanceEnabled
@@ -290,10 +304,12 @@ export function createStudentSsoRouter(factory: FlowFactory = defaultFlow, optio
     });
     const callbackLimiter = studentSsoCallbackLimiter(options.callbackLimiterMax ?? 60);
     const linkFactory = options.linkService ?? defaultLink;
+    const reauthFactory = options.reauthService ?? defaultReauth;
     const linkLimiterMax = options.linkLimiterMax ?? 10;
     const reauthLimiter = studentSsoLinkLimiter(linkLimiterMax);
     const linkLimiter = studentSsoLinkLimiter(linkLimiterMax);
     const unlinkLimiter = studentSsoLinkLimiter(linkLimiterMax);
+    const reauthMicrosoftLimiter = studentSsoLinkLimiter(linkLimiterMax);
 
     const assertIssuanceEnabled = (): void => {
         if (!issuanceEnabled() || !completionOrigin) throw new ServiceUnavailableError('Student SSO is unavailable');
@@ -366,6 +382,22 @@ export function createStudentSsoRouter(factory: FlowFactory = defaultFlow, optio
         const provider = parseStudentSsoProvider(req.params.provider);
         const browserCookies = parseBrowserCookies(req);
         const callbackUrl = new URL(`${req.protocol}://${req.get('host')}${req.originalUrl}`);
+        // Reauthentication shares the registered Microsoft callback and
+        // dispatches only after its opaque state resolves to a reauth row.
+        // It never reaches the ordinary login flow or issues a session.
+        if (provider === 'microsoft') {
+            const reauth = reauthFactory();
+            if (await reauth.isReauthState(callbackUrl.searchParams.get('state'))) {
+                const result = await reauth.callback({
+                    callbackUrl,
+                    callbackCookie: browserCookies.find((cookie) => cookie.name.startsWith('awoof_reauth_'))?.value,
+                });
+                // Retain the browser binding through the completion-page
+                // finish POST; finish consumes it and clears the cookie.
+                res.redirect(303, result.completionUrl.href);
+                return;
+            }
+        }
         let flow: StudentSsoFlow;
         try {
             flow = factory();
@@ -435,6 +467,31 @@ export function createStudentSsoRouter(factory: FlowFactory = defaultFlow, optio
             ...(body.targetIdentityId === undefined ? {} : { targetIdentityId: body.targetIdentityId }),
         });
         responseHeaders(res);
+        res.status(201).json({ success: true, data: result });
+    }));
+
+    router.post('/reauth/microsoft/start', authenticate, requireRole('student'), reauthMicrosoftLimiter, exactOrigin, exactJson, asyncHandler(async (req, res) => {
+        const body = req.body as { purpose?: unknown; targetIdentityId?: unknown; pendingCodeId?: unknown };
+        if (!body || typeof body !== 'object' || Array.isArray(body)
+            || Object.keys(body).some((key) => key !== 'purpose' && key !== 'targetIdentityId' && key !== 'pendingCodeId')
+            || (body.purpose !== 'link' && body.purpose !== 'unlink' && body.purpose !== 'recovery_code_generate' && body.purpose !== 'recovery_code_activate' && body.purpose !== 'recovery_code_remove')
+            || (body.targetIdentityId !== undefined && (typeof body.targetIdentityId !== 'string' || !UUID.test(body.targetIdentityId)))
+            || (body.pendingCodeId !== undefined && (typeof body.pendingCodeId !== 'string' || !UUID.test(body.pendingCodeId)))) throw new BadRequestError('Student SSO reauthentication request is invalid');
+        const actor = ssoActor(req);
+        const result = await reauthFactory().start({ userId: actor.userId, sid: actor.sid, purpose: body.purpose, ...(typeof body.targetIdentityId === 'string' ? { targetIdentityId: body.targetIdentityId } : {}), ...(typeof body.pendingCodeId === 'string' ? { pendingCodeId: body.pendingCodeId } : {}) });
+        responseHeaders(res);
+        res.cookie(reauthCookieName(result.attemptId), result.callbackCookie, { maxAge: 5 * 60_000, path: STUDENT_SSO_COOKIE_PATH, httpOnly: true, secure: true, sameSite: 'lax' });
+        res.status(201).json({ success: true, data: { attemptId: result.attemptId, authorizationUrl: result.authorizationUrl } });
+    }));
+
+    router.post('/reauth/finish', authenticate, requireRole('student'), reauthMicrosoftLimiter, exactOrigin, exactJson, asyncHandler(async (req, res) => {
+        const body = req.body as { attemptId?: unknown };
+        if (!body || typeof body !== 'object' || Array.isArray(body) || Object.keys(body).length !== 1 || typeof body.attemptId !== 'string' || !UUID.test(body.attemptId)) throw new BadRequestError('Student SSO reauthentication request is invalid');
+        const attemptId = body.attemptId;
+        const actor = ssoActor(req);
+        const result = await reauthFactory().finish({ userId: actor.userId, sid: actor.sid, attemptId, callbackCookie: parseBrowserCookies(req).find((cookie) => cookie.name === reauthCookieName(attemptId))?.value });
+        responseHeaders(res);
+        clearSsoCookie(res, reauthCookieName(attemptId));
         res.status(201).json({ success: true, data: result });
     }));
 

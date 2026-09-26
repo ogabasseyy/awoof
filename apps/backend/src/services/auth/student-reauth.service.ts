@@ -5,6 +5,8 @@ import { encryptMicrosoftAttemptVerifier, hashMicrosoftAttemptSecret } from '../
 import type { ApprovedLoginPolicy, FreshProviderObservation, LoginProvider, StudentOidcAdapter } from './student-sso.types.js';
 import type { ActionPurpose, ActionGrantResult } from './student-action-grant.service.js';
 import { issueActionGrant } from './student-action-grant.service.js';
+import { decryptMicrosoftAttemptVerifier } from '../verification/microsoft-attempt-crypto.js';
+import { lockStudentContext } from '../verification/eligibility-context.service.js';
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 export const STUDENT_REAUTH_LIFETIME_SECONDS = 5 * 60;
@@ -27,12 +29,13 @@ export type StudentReauthDependencies = {
     attemptKey: string;
     oidcForPolicy: (policy: ApprovedLoginPolicy) => StudentOidcAdapter;
     isProviderEnabled: (provider: LoginProvider) => boolean;
+    completionUrl: URL;
 };
 
 export class StudentReauthService {
     constructor(private readonly deps: StudentReauthDependencies) {}
 
-    async start(input: { userId: string; sid: string; purpose: ActionPurpose; targetIdentityId?: string; pendingCodeId?: string }): Promise<{ attemptId: string; authorizationUrl: string }> {
+    async start(input: { userId: string; sid: string; purpose: ActionPurpose; targetIdentityId?: string; pendingCodeId?: string }): Promise<{ attemptId: string; authorizationUrl: string; callbackCookie: string }> {
         if (!UUID.test(input.userId) || !UUID.test(input.sid)) throw new UnauthorizedError('Student SSO session is not available');
         const row = await this.deps.pool.query<{
             identity_id: string; provider: LoginProvider; observed_email: string | null; policy_id: string; policy_version: number;
@@ -61,6 +64,7 @@ export class StudentReauthService {
         const state = secret();
         const nonce = secret();
         const verifier = secret(48);
+        const callbackCookie = secret();
         const authorizationUrl = await adapter.authorizeFresh({ state, nonce, verifier, loginHint: identity.observed_email });
         await this.deps.pool.query(
             `INSERT INTO student_auth_reauth_attempts
@@ -68,10 +72,95 @@ export class StudentReauthService {
                   state_hash, callback_cookie_hash, encrypted_verifier, nonce, proof_identity_id, target_identity_id, pending_code_id, expires_at)
              VALUES ($1, $2, $3::uuid, $4, $5, $6, $7, 'microsoft', $8, $9, $10, $11, $12, $13, $14, clock_timestamp() + interval '5 minutes')`,
             [attemptId, input.userId, input.sid, Number(identity.credential_generation), input.purpose, policy.id, policy.version,
-                hashMicrosoftAttemptSecret(state), hashMicrosoftAttemptSecret(secret()), encryptMicrosoftAttemptVerifier(verifier, this.deps.attemptKey, attemptId), nonce,
+                hashMicrosoftAttemptSecret(state), hashMicrosoftAttemptSecret(callbackCookie), encryptMicrosoftAttemptVerifier(verifier, this.deps.attemptKey, attemptId), nonce,
                 identity.identity_id, input.targetIdentityId ?? null, input.pendingCodeId ?? null],
         );
-        return { attemptId, authorizationUrl: authorizationUrl.href };
+        return { attemptId, authorizationUrl: authorizationUrl.href, callbackCookie };
+    }
+
+    async isReauthState(state: string | null): Promise<boolean> {
+        if (!state || state.length > 1024) return false;
+        const result = await this.deps.pool.query('SELECT 1 FROM student_auth_reauth_attempts WHERE state_hash = $1', [hashMicrosoftAttemptSecret(state)]);
+        return (result.rowCount ?? 0) === 1;
+    }
+
+    async callback(input: { callbackUrl: URL; callbackCookie: string | undefined }): Promise<{ attemptId: string; completionUrl: URL }> {
+        const state = input.callbackUrl.searchParams.get('state');
+        if (!state || !input.callbackCookie) throw invalidReauth();
+        const found = await this.deps.pool.query<ReauthAttempt>(
+            `SELECT attempt.*, identity.provider AS identity_provider, identity.issuer AS identity_issuer, identity.subject AS identity_subject,
+                    policy.issuer AS policy_issuer, policy.provider_realm AS policy_realm, policy.university_id
+             FROM student_auth_reauth_attempts attempt
+             JOIN student_auth_identities identity ON identity.id = attempt.proof_identity_id
+             JOIN institution_login_policies policy ON policy.id = attempt.policy_id
+             WHERE attempt.state_hash = $1`, [hashMicrosoftAttemptSecret(state)],
+        );
+        const attempt = found.rows[0];
+        if (!attempt || attempt.status !== 'pending' || attempt.expires_at <= new Date()
+            || hashMicrosoftAttemptSecret(input.callbackCookie) !== attempt.callback_cookie_hash
+            || attempt.provider !== 'microsoft' || attempt.identity_provider !== 'microsoft'
+            || !this.deps.isProviderEnabled('microsoft')) throw invalidReauth();
+        const adapter = this.deps.oidcForPolicy({ id: attempt.policy_id, version: attempt.policy_version, provider: 'microsoft', issuer: attempt.policy_issuer, realm: attempt.policy_realm, universityId: attempt.university_id });
+        if (!adapter.redeemFresh) throw new ServiceUnavailableError('Fresh Microsoft authentication is unavailable');
+        const observation = await adapter.redeemFresh({ callback: input.callbackUrl, state, nonce: attempt.nonce, verifier: decryptMicrosoftAttemptVerifier(attempt.encrypted_verifier, this.deps.attemptKey, attempt.id) });
+        return this.transaction(async (tx) => {
+            const locked = await tx.query<ReauthAttempt>(
+                `SELECT attempt.*, identity.provider AS identity_provider, identity.issuer AS identity_issuer, identity.subject AS identity_subject,
+                        policy.issuer AS policy_issuer, policy.provider_realm AS policy_realm, policy.university_id,
+                        policy.enabled AS policy_enabled, policy.approved_until
+                 FROM student_auth_reauth_attempts attempt
+                 JOIN student_auth_identities identity ON identity.id = attempt.proof_identity_id
+                 JOIN institution_login_policies policy ON policy.id = attempt.policy_id
+                 WHERE attempt.id = $1 FOR UPDATE`, [attempt.id],
+            );
+            const current = locked.rows[0];
+            const clock = await tx.query<{ now: Date }>('SELECT clock_timestamp() AS now');
+            const approvedUntil = current?.approved_until;
+            if (!current || current.status !== 'pending' || current.expires_at <= clock.rows[0]!.now
+                || !current.policy_enabled || !approvedUntil || approvedUntil <= clock.rows[0]!.now
+                || !this.deps.isProviderEnabled('microsoft')
+                || observation.issuer !== current.identity_issuer || observation.subject !== current.identity_subject) throw invalidReauth();
+            assertFreshAuthTime(observation.authTime, current.created_at, clock.rows[0]!.now);
+            const account = await tx.query<{ active_session_id: string | null; credential_generation: string | number; deleted_at: Date | null }>(
+                'SELECT active_session_id, credential_generation, deleted_at FROM users WHERE id = $1 FOR UPDATE', [current.user_id],
+            );
+            if (!account.rows[0] || account.rows[0]!.deleted_at !== null || account.rows[0]!.active_session_id !== current.sid
+                || Number(account.rows[0]!.credential_generation) !== Number(current.credential_generation)) throw invalidReauth();
+            await tx.query("UPDATE student_auth_reauth_attempts SET status = 'ready' WHERE id = $1 AND status = 'pending'", [current.id]);
+            const completionUrl = new URL(this.deps.completionUrl.href);
+            completionUrl.searchParams.set('reauth', current.id);
+            return { attemptId: current.id, completionUrl };
+        });
+    }
+
+    async finish(input: { userId: string; sid: string; attemptId: string; callbackCookie: string | undefined }): Promise<ActionGrantResult> {
+        if (!UUID.test(input.userId) || !UUID.test(input.sid) || !UUID.test(input.attemptId) || !input.callbackCookie) throw invalidReauth();
+        const callbackCookie = input.callbackCookie;
+        return this.transaction(async (tx) => {
+            const attemptResult = await tx.query<ReauthAttempt>('SELECT * FROM student_auth_reauth_attempts WHERE id = $1 FOR UPDATE', [input.attemptId]);
+            const attempt = attemptResult.rows[0];
+            const clock = await tx.query<{ now: Date }>('SELECT clock_timestamp() AS now');
+            if (!attempt || attempt.status !== 'ready' || attempt.user_id !== input.userId || attempt.sid !== input.sid
+                || attempt.expires_at <= clock.rows[0]!.now || hashMicrosoftAttemptSecret(callbackCookie) !== attempt.callback_cookie_hash) throw invalidReauth();
+            const context = await lockStudentContext(tx, input.userId);
+            if (!context.active) throw invalidReauth();
+            const account = await tx.query<{ active_session_id: string | null; credential_generation: string | number }>('SELECT active_session_id, credential_generation FROM users WHERE id = $1 FOR UPDATE', [input.userId]);
+            const policy = await tx.query<{ enabled: boolean; approved_until: Date }>('SELECT enabled, approved_until FROM institution_login_policies WHERE id = $1 AND version = $2 FOR UPDATE', [attempt.policy_id, attempt.policy_version]);
+            const identity = await tx.query<{ user_id: string; revoked_at: Date | null }>('SELECT user_id, revoked_at FROM student_auth_identities WHERE id = $1 FOR UPDATE', [attempt.proof_identity_id]);
+            if (!account.rows[0] || account.rows[0]!.active_session_id !== input.sid || Number(account.rows[0]!.credential_generation) !== Number(attempt.credential_generation)
+                || !policy.rows[0]?.enabled || policy.rows[0]!.approved_until <= clock.rows[0]!.now
+                || !identity.rows[0] || identity.rows[0]!.user_id !== input.userId || identity.rows[0]!.revoked_at !== null
+                || !this.deps.isProviderEnabled(attempt.provider as LoginProvider)) throw invalidReauth();
+            const grant = await issueActionGrant(tx, { userId: input.userId, sid: input.sid, purpose: attempt.purpose as ActionPurpose, credentialGeneration: Number(attempt.credential_generation), proofIdentityId: attempt.proof_identity_id, targetIdentityId: attempt.target_identity_id, pendingCodeId: attempt.pending_code_id });
+            await tx.query("UPDATE student_auth_reauth_attempts SET status = 'consumed', consumed_at = clock_timestamp() WHERE id = $1 AND status = 'ready'", [attempt.id]);
+            return grant;
+        });
+    }
+
+    private async transaction<T>(operation: (tx: PoolClient) => Promise<T>): Promise<T> {
+        const tx = await this.deps.pool.connect();
+        try { await tx.query('BEGIN'); const result = await operation(tx); await tx.query('COMMIT'); return result; }
+        catch (error) { await tx.query('ROLLBACK').catch(() => undefined); throw error; } finally { tx.release(); }
     }
 
     /**
@@ -92,3 +181,11 @@ export class StudentReauthService {
         });
     }
 }
+
+type ReauthAttempt = {
+    id: string; user_id: string; sid: string; credential_generation: string | number; purpose: string; policy_id: string; policy_version: number;
+    provider: string; state_hash: string; callback_cookie_hash: string; encrypted_verifier: string; nonce: string; proof_identity_id: string;
+    target_identity_id: string | null; pending_code_id: string | null; status: 'pending' | 'ready' | 'consumed' | 'failed'; expires_at: Date; created_at: Date;
+    identity_provider: string; identity_issuer: string; identity_subject: string; policy_issuer: string; policy_realm: string; university_id: string;
+    policy_enabled?: boolean; approved_until?: Date;
+};
