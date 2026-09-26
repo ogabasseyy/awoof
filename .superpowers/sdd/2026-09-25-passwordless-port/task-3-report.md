@@ -7,3 +7,8 @@ The test creates a real existing student owner with processing consent and a con
 Validation: `npm run type-check` in `apps/backend` exited 0. The PostgreSQL integration suite was intentionally not run here, per task scope.
 
 Documentation impact: none. This is test-only coverage with no user-visible behavior or public trust claim change.
+
+Follow-up production correction: migration 071 adds the dedicated
+`student_sso_signup` OTP purpose, leaving legacy `student_signup` at its
+existing ten-send/ten-minute contract. Its three-send/five-failure/five-minute
+limits are still capped by the original handoff expiry.

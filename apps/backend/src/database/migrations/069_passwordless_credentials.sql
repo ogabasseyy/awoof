@@ -48,7 +48,6 @@ BEGIN
     IF NEW.id IS DISTINCT FROM OLD.id OR NEW.handoff_id IS DISTINCT FROM OLD.handoff_id
         OR NEW.secret_hash IS DISTINCT FROM OLD.secret_hash
         OR NEW.browser_binding_hash IS DISTINCT FROM OLD.browser_binding_hash
-        OR NEW.mailbox_challenge_id IS DISTINCT FROM OLD.mailbox_challenge_id
         OR NEW.expires_at IS DISTINCT FROM OLD.expires_at
         OR NEW.created_at IS DISTINCT FROM OLD.created_at THEN
         RAISE EXCEPTION 'Passwordless signup challenge binding is immutable';

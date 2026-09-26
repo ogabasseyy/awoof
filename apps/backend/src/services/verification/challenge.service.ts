@@ -2,7 +2,7 @@ import { createHmac, randomInt, randomUUID, timingSafeEqual } from 'node:crypto'
 import type { PoolClient } from 'pg';
 import { config } from '../../config/env.js';
 
-export type ChallengePurpose = 'student_signup' | 'student_email' | 'account_email' | 'whatsapp' | 'password_reset';
+export type ChallengePurpose = 'student_signup' | 'student_sso_signup' | 'student_email' | 'account_email' | 'whatsapp' | 'password_reset';
 export type ChallengeBindings = Record<string, unknown>;
 
 type Budget = {
@@ -22,7 +22,7 @@ type Challenge = {
     superseded_at: Date | null;
 };
 
-const PURPOSES = new Set<ChallengePurpose>(['student_signup', 'student_email', 'account_email', 'whatsapp', 'password_reset']);
+const PURPOSES = new Set<ChallengePurpose>(['student_signup', 'student_sso_signup', 'student_email', 'account_email', 'whatsapp', 'password_reset']);
 const WINDOW_MS = 10 * 60 * 1000;
 const OTP_MS = 10 * 60 * 1000;
 const COOLDOWN_MS = 60 * 1000;
@@ -32,7 +32,7 @@ const MAX_SENDS = 10;
 function limitsFor(purpose: ChallengePurpose): { failures: number; sends: number; ttlMs: number } {
     // The passwordless handoff is an intentionally narrower mailbox-binding
     // proof: it cannot extend the original ten-minute provider attempt.
-    return purpose === 'student_signup'
+    return purpose === 'student_sso_signup'
         ? { failures: 5, sends: 3, ttlMs: 5 * 60 * 1000 }
         : { failures: MAX_FAILURES, sends: MAX_SENDS, ttlMs: OTP_MS };
 }

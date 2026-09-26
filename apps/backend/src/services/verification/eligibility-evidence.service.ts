@@ -291,7 +291,7 @@ export async function recordMailboxProof(tx: PoolClient, userId: string, challen
 export async function recordPasswordlessSignupMailboxProof(tx: PoolClient, userId: string, challengeId: string): Promise<string> {
     const user = await lockMailboxUser(tx, userId);
     const challenge = await lockChallenge(tx, challengeId);
-    if (challenge.purpose !== 'student_signup' || !isRecord(challenge.bindings)
+    if (challenge.purpose !== 'student_sso_signup' || !isRecord(challenge.bindings)
         || challenge.bindings.email !== user.email) {
         throw new BadRequestError('Signup mailbox challenge bindings do not match');
     }
