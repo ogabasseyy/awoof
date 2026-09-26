@@ -24,12 +24,14 @@ ALTER TABLE student_auth_recovery_codes
 CREATE OR REPLACE FUNCTION student_passwordless_signup_challenge_transition() RETURNS trigger LANGUAGE plpgsql AS $$
 BEGIN
     IF NEW.id IS DISTINCT FROM OLD.id OR NEW.handoff_id IS DISTINCT FROM OLD.handoff_id
-        OR NEW.mailbox_challenge_id IS DISTINCT FROM OLD.mailbox_challenge_id
         OR NEW.expires_at IS DISTINCT FROM OLD.expires_at OR NEW.created_at IS DISTINCT FROM OLD.created_at THEN
         RAISE EXCEPTION 'Passwordless signup challenge binding is immutable';
     END IF;
     IF OLD.status IN ('consumed', 'cancelled', 'expired') AND NEW.status IS DISTINCT FROM OLD.status THEN
         RAISE EXCEPTION 'Terminal passwordless signup challenges cannot be replayed';
+    END IF;
+    IF OLD.status <> 'pending' AND NEW.mailbox_challenge_id IS DISTINCT FROM OLD.mailbox_challenge_id THEN
+        RAISE EXCEPTION 'Passwordless signup challenge binding is immutable';
     END IF;
     IF OLD.status = 'pending' AND NEW.status NOT IN ('pending', 'mailbox_verified', 'cancelled', 'expired') THEN
         RAISE EXCEPTION 'Invalid passwordless signup challenge transition';
@@ -40,6 +42,31 @@ BEGIN
     IF (NEW.secret_hash IS DISTINCT FROM OLD.secret_hash OR NEW.browser_binding_hash IS DISTINCT FROM OLD.browser_binding_hash)
         AND NOT (NEW.secret_hash IS NULL AND NEW.browser_binding_hash IS NULL AND NEW.status IN ('consumed', 'cancelled', 'expired')) THEN
         RAISE EXCEPTION 'Passwordless signup challenge secrets may only be scrubbed at terminalization';
+    END IF;
+    RETURN NEW;
+END $$;
+
+CREATE OR REPLACE FUNCTION student_passwordless_action_grant_transition() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+    IF NEW.id IS DISTINCT FROM OLD.id OR NEW.user_id IS DISTINCT FROM OLD.user_id
+        OR NEW.sid IS DISTINCT FROM OLD.sid OR NEW.credential_generation IS DISTINCT FROM OLD.credential_generation
+        OR NEW.purpose IS DISTINCT FROM OLD.purpose OR NEW.proof_identity_id IS DISTINCT FROM OLD.proof_identity_id
+        OR NEW.target_identity_id IS DISTINCT FROM OLD.target_identity_id
+        OR NEW.pending_code_id IS DISTINCT FROM OLD.pending_code_id
+        OR NEW.active_code_generation IS DISTINCT FROM OLD.active_code_generation
+        OR NEW.expires_at IS DISTINCT FROM OLD.expires_at OR NEW.created_at IS DISTINCT FROM OLD.created_at THEN
+        RAISE EXCEPTION 'Passwordless action-grant binding is immutable';
+    END IF;
+    IF OLD.consumed_at IS NULL AND OLD.revoked_at IS NULL
+       AND NEW.secret_hash = 'scrubbed'
+       AND ((NEW.consumed_at IS NOT NULL AND NEW.revoked_at IS NULL)
+            OR (NEW.revoked_at IS NOT NULL AND NEW.consumed_at IS NULL)) THEN
+        RETURN NEW;
+    END IF;
+    IF NEW.consumed_at IS DISTINCT FROM OLD.consumed_at
+        OR NEW.revoked_at IS DISTINCT FROM OLD.revoked_at
+        OR NEW.secret_hash IS DISTINCT FROM OLD.secret_hash THEN
+        RAISE EXCEPTION 'Terminal passwordless action grants cannot be replayed';
     END IF;
     RETURN NEW;
 END $$;
@@ -105,18 +132,35 @@ CREATE OR REPLACE FUNCTION student_sso_handoff_consume_once() RETURNS trigger LA
 BEGIN
     IF NEW.id IS DISTINCT FROM OLD.id OR NEW.attempt_id IS DISTINCT FROM OLD.attempt_id
         OR NEW.policy_id IS DISTINCT FROM OLD.policy_id OR NEW.policy_version IS DISTINCT FROM OLD.policy_version
-        OR NEW.target_user_id IS DISTINCT FROM OLD.target_user_id OR NEW.target_sid IS DISTINCT FROM OLD.target_sid
-        OR NEW.expires_at IS DISTINCT FROM OLD.expires_at OR NEW.created_at IS DISTINCT FROM OLD.created_at THEN
+        OR NEW.created_at IS DISTINCT FROM OLD.created_at THEN
+        RAISE EXCEPTION 'SSO handoff binding is immutable';
+    END IF;
+    IF NEW.expires_at IS DISTINCT FROM OLD.expires_at
+       AND NOT (OLD.consumed_at IS NULL AND NEW.expires_at <= clock_timestamp()) THEN
+        RAISE EXCEPTION 'SSO handoff expiry is immutable';
+    END IF;
+    -- The one legitimate binding transition is the canonical link consume:
+    -- an unbound, unconsumed handoff records its owner/session exactly once.
+    IF (NEW.target_user_id IS DISTINCT FROM OLD.target_user_id OR NEW.target_sid IS DISTINCT FROM OLD.target_sid)
+       AND NOT (OLD.consumed_at IS NULL AND NEW.consumed_at IS NOT NULL
+                AND OLD.target_user_id IS NULL AND OLD.target_sid IS NULL
+                AND NEW.target_user_id IS NOT NULL AND NEW.target_sid IS NOT NULL) THEN
         RAISE EXCEPTION 'SSO handoff binding is immutable';
     END IF;
     IF OLD.consumed_at IS NOT NULL AND NEW.consumed_at IS DISTINCT FROM OLD.consumed_at THEN
         RAISE EXCEPTION 'Consumed SSO handoffs cannot be replayed';
     END IF;
-    IF (NEW.secret_hash IS DISTINCT FROM OLD.secret_hash OR NEW.encrypted_observation IS DISTINCT FROM OLD.encrypted_observation
-        OR NEW.browser_binding_hash IS DISTINCT FROM OLD.browser_binding_hash)
-        AND NOT (NEW.secret_hash IS NULL AND NEW.encrypted_observation IS NULL AND NEW.browser_binding_hash IS NULL
+    IF (NEW.secret_hash IS DISTINCT FROM OLD.secret_hash OR NEW.browser_binding_hash IS DISTINCT FROM OLD.browser_binding_hash)
+        AND NOT (NEW.secret_hash IS NULL AND NEW.browser_binding_hash IS NULL
+                 AND NEW.encrypted_observation IS NULL
                  AND (NEW.consumed_at IS NOT NULL OR NEW.expires_at <= clock_timestamp())) THEN
         RAISE EXCEPTION 'SSO handoff secrets may only be scrubbed after terminalization';
+    END IF;
+    IF NEW.encrypted_observation IS DISTINCT FROM OLD.encrypted_observation
+       AND NOT (NEW.encrypted_observation = 'scrubbed' AND (NEW.consumed_at IS NOT NULL OR NEW.expires_at <= clock_timestamp()))
+       AND NOT (NEW.encrypted_observation IS NULL AND NEW.secret_hash IS NULL AND NEW.browser_binding_hash IS NULL
+                AND (NEW.consumed_at IS NOT NULL OR NEW.expires_at <= clock_timestamp())) THEN
+        RAISE EXCEPTION 'SSO handoff observation may only be scrubbed after terminalization';
     END IF;
     RETURN NEW;
 END $$;

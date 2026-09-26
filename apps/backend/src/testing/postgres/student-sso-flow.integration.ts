@@ -1284,6 +1284,7 @@ test('cleanup scrubs expired ciphertext and deletes only aged transients', async
         let policyId: string;
         let identityId: string;
         let freshAttempt: string;
+        let expiredActionGrant: string;
         try {
             const universityId = await createUniversity(setup);
             const domain = `cleanup${uniqueLabel()}.school.example`;
@@ -1343,12 +1344,13 @@ test('cleanup scrubs expired ciphertext and deletes only aged transients', async
                  VALUES ($1, $2, 'link', $3, clock_timestamp() - interval '8 days', clock_timestamp() - interval '8 days')`,
                 [userId, randomUUID(), hashMicrosoftAttemptSecret(`grant-${uniqueLabel()}`)],
             );
-            await setup.query(
+            expiredActionGrant = (await setup.query<{ id: string }>(
                 `INSERT INTO student_auth_action_grants
-                     (user_id, sid, credential_generation, purpose, secret_hash, expires_at, created_at)
-                 VALUES ($1, $2, 0, 'recovery_code_generate', $3, clock_timestamp() - interval '61 minutes', clock_timestamp() - interval '66 minutes')`,
+                 (user_id, sid, credential_generation, purpose, secret_hash, expires_at, created_at)
+                 VALUES ($1, $2, 0, 'recovery_code_generate', $3, clock_timestamp() - interval '61 minutes', clock_timestamp() - interval '66 minutes')
+                 RETURNING id`,
                 [userId, randomUUID(), hashMicrosoftAttemptSecret(`action-grant-${uniqueLabel()}`)],
-            );
+            )).rows[0]!.id;
             await setup.query(
                 `INSERT INTO student_auth_reauth_grants (user_id, sid, purpose, secret_hash, expires_at, created_at)
                  VALUES ($1, $2, 'link', $3, clock_timestamp() + interval '4 minutes', clock_timestamp())`,
@@ -1392,7 +1394,7 @@ test('cleanup scrubs expired ciphertext and deletes only aged transients', async
             const freshGrants = await check.query('SELECT id FROM student_auth_reauth_grants WHERE expires_at > clock_timestamp()');
             assert.ok(freshGrants.rows.length >= 1);
             const scrubbedActionGrant = await check.query<{ secret_hash: string; revoked_at: Date | null }>(
-                "SELECT secret_hash, revoked_at FROM student_auth_action_grants WHERE purpose = 'recovery_code_generate' ORDER BY created_at DESC LIMIT 1",
+                'SELECT secret_hash, revoked_at FROM student_auth_action_grants WHERE id = $1', [expiredActionGrant],
             );
             assert.deepEqual(scrubbedActionGrant.rows[0], { secret_hash: 'scrubbed', revoked_at: scrubbedActionGrant.rows[0]!.revoked_at });
             assert.ok(scrubbedActionGrant.rows[0]!.revoked_at);

@@ -130,13 +130,14 @@ function SignupOnboarding() {
 
 function StudentSsoOnboardingInner() {
     const search = useSearchParams();
-    if (search.get('mode') === 'signup') return <SignupOnboarding />;
+    const signupMode = search.get('mode') === 'signup';
     const [view, setView] = useState<OnboardingView>({ kind: 'checking' });
     const [password, setPassword] = useState('');
     const startedRef = useRef(false);
     const reauthFailures = useRef(0);
 
     useEffect(() => {
+        if (signupMode) return;
         if (startedRef.current) return;
         startedRef.current = true;
         const handoff = readSsoHandoff(tabStorage());
@@ -146,7 +147,9 @@ function StudentSsoOnboardingInner() {
             return;
         }
         setView({ kind: 'ready', handoff, error: null, busy: false });
-    }, []);
+    }, [signupMode]);
+
+    if (signupMode) return <SignupOnboarding />;
 
     const submit = async (event: React.FormEvent): Promise<void> => {
         event.preventDefault();

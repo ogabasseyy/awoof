@@ -8,6 +8,7 @@
 - Made the compiled artifact require and source-absent probe `cleanup-student-sso.js`, including credential redaction behavior.
 - Added a PostgreSQL cleanup regression expectation for an expired action-grant digest and preserved active credentials.
 - Removed the incorrect generate-purpose redirect intent from the recovery-code removal initiation flow.
+- Corrected migration 074 in place before sharing or deployment: it now permits only the pre-existing canonical pending signup challenge reference update and single handoff owner/session consumption transition, while continuing to reject later binding changes and replay. Fresh disposable PostgreSQL application is required evidence for this unshared migration edit.
 
 ## Public documentation impact
 

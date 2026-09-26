@@ -116,9 +116,9 @@ function StudentSsoCompleteInner() {
     const started = useRef(false);
 
     const reauthAttempt = search.get('reauth');
-    if (reauthAttempt) return <RecoveryReauthComplete attemptId={reauthAttempt} />;
 
     useEffect(() => {
+        if (reauthAttempt) return;
         if (started.current) return;
         started.current = true;
         const attemptId = search.get('attempt');
@@ -232,7 +232,9 @@ function StudentSsoCompleteInner() {
             });
         };
         void finish();
-    }, [search, completeSsoLogin]);
+    }, [search, completeSsoLogin, reauthAttempt]);
+
+    if (reauthAttempt) return <RecoveryReauthComplete attemptId={reauthAttempt} />;
 
     if (view.kind === 'link_required') {
         return (
