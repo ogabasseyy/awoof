@@ -161,6 +161,28 @@ test('signup send budgets survive rejected transactions and refuse a fourth send
     });
 });
 
+test('signup refuses an immediate resend and expiry after verified OTP creates no account', async () => {
+    await withPool(async pool => {
+        const key = randomBytes(32).toString('base64url'); let code = '';
+        const service = new StudentSsoSignupService({ pool, attemptKey: key, isEnabled: () => true, isProviderEnabled: () => true, deliverOtp: async (_email, value) => { code = value; return { success: true }; } });
+        const c = await pool.connect(); let state; try { state = await seed(c, key); } finally { c.release(); }
+        const sent = await service.sendCode({ handoffId: state.handoffId, handoffSecret: state.handoffSecret, browserBinding: state.browser });
+        await assert.rejects(service.sendCode({ handoffId: state.handoffId, handoffSecret: state.handoffSecret, browserBinding: state.browser }), /wait before/i);
+        await service.verifyCode({ handoffId: state.handoffId, handoffSecret: state.handoffSecret, browserBinding: state.browser, challengeId: sent.challengeId, code });
+        await pool.query(`UPDATE student_auth_link_handoffs SET expires_at=clock_timestamp()-interval '1 second' WHERE id=$1`, [state.handoffId]);
+        await assert.rejects(service.complete({ handoffId: state.handoffId, handoffSecret: state.handoffSecret, browserBinding: state.browser, fullName: 'Ada Student', ageAttested: true, termsVersion: STUDENT_TERMS_VERSION, verificationConsent: true, noticeVersion: VERIFICATION_NOTICE_VERSION }), /not available/i);
+        assert.equal((await pool.query<{ count: string }>(`SELECT count(*)::text AS count FROM users WHERE email=$1`, [state.email])).rows[0]!.count, '0');
+    });
+});
+
+test('active and revoked provider identities cannot be claimed by passwordless signup', async () => {
+    await withPool(async pool => {
+        const key = randomBytes(32).toString('base64url'); const service = new StudentSsoSignupService({ pool, attemptKey: key, isEnabled: () => true, isProviderEnabled: () => true, deliverOtp: async () => ({ success: true }) });
+        const c = await pool.connect(); let state; try { state = await seed(c, key); const owner = (await c.query<{ id: string }>(`INSERT INTO users (email, role) VALUES ($1,'student') RETURNING id`, [`owner-${label()}@example.invalid`])).rows[0]!.id; await c.query(`INSERT INTO student_auth_identities (user_id, university_id, provider, issuer, subject, observed_email, revoked_at) VALUES ($1,$2,'google',$3,$4,$5,clock_timestamp())`, [owner, state.university, GOOGLE_ISSUER, state.subject, state.email]); } finally { c.release(); }
+        await assert.rejects(service.context({ handoffId: state.handoffId, handoffSecret: state.handoffSecret, browserBinding: state.browser }), /existing-account sign-in or recovery/i);
+    });
+});
+
 test('five rejected OTP checks are committed and lock the correct code too', async () => {
     await withPool(async pool => {
         const key = randomBytes(32).toString('base64url'); let code = '';
