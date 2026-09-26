@@ -66,3 +66,10 @@ deployment evidence exists.
 - Because `010331d` additionally makes null active-generation binding
   explicit, the controller must run PostgreSQL against `45192b2` (not reuse
   the pre-amend result) for the authoritative final result.
+- Controller PostgreSQL run against `45192b2` then reported 380 pass, one
+  failure, and one skipped test. The remaining failure exposed a real
+  producer/consumer defect: PostgreSQL returns `active_code_generation` as a
+  string while the action-grant consumer compared it strictly to the numeric
+  expected generation. Commit `8dcef0d` normalizes that numeric comparison and
+  adds a RED/GREEN unit regression. PostgreSQL must now be captured against
+  `8dcef0d` or later.
