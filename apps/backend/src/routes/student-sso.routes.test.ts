@@ -8,6 +8,18 @@ import { createStudentSsoRouter, isStudentSsoCallbackPath, isStudentSsoRoute, ty
 import type { StudentSsoFlowService } from '../services/auth/student-sso-flow.service.js';
 import { jwtService } from '../services/auth/jwt.service.js';
 import { swaggerSpec } from '../config/swagger.js';
+import { db } from '../config/database.js';
+
+// Route fixtures exercise authorization shape, not a live database. The
+// session-aware middleware still receives a current ordinary-student row.
+db.getPool = () => ({
+    query: async () => ({ rows: [{
+        password_setup_requires_recovery_code: false,
+        recovery_reenrollment_requires_password: false,
+        active_session_id: null,
+        deleted_at: null,
+    }], rowCount: 1 }),
+} as never);
 
 type Flow = Pick<StudentSsoFlowService, 'start' | 'callback' | 'finish' | 'callbackCookieNameForState'>;
 

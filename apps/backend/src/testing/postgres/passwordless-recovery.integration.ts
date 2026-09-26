@@ -275,6 +275,35 @@ test('recovery-code replacement and account recovery race through the same accou
     }
 });
 
+test('five wrong recovery OTPs persist their shared failure budget despite generic verification errors', async () => {
+    const pool = createTestPool();
+    const client = await pool.connect();
+    try {
+        const account = await seedRecoverableStudent(client);
+        const service = new StudentAccountRecoveryService({
+            pool, recoveryCodeKey: 'test-recovery-code-key', deliverOtp: async () => ({ success: true }),
+            validatePassword: () => ({ valid: true, errors: [] }), hashPassword: async () => 'unused',
+        });
+        const started = await service.start({ email: account.email, purpose: 'lost_access' });
+        for (let attempt = 0; attempt < 5; attempt += 1) {
+            await assert.rejects(() => service.verify({
+                attemptId: started.attemptId, secret: started.secret, code: account.code, otp: '000000',
+            }));
+        }
+        const budget = await client.query<{ failed_attempts: number }>(
+            `SELECT failed_attempts FROM verification_challenge_budgets
+             WHERE purpose = 'student_account_recovery'`,
+        );
+        assert.equal(budget.rows[0]!.failed_attempts, 5);
+        await assert.rejects(() => service.verify({
+            attemptId: started.attemptId, secret: started.secret, code: account.code, otp: '000000',
+        }));
+    } finally {
+        client.release();
+        await pool.end();
+    }
+});
+
 async function seedProviderProof(client: PoolClient, userId: string): Promise<string> {
     const suffix = randomUUID().slice(0, 8);
     const university = await client.query<{ id: string }>(

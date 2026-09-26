@@ -440,6 +440,40 @@ test('a provider finish racing compromise recovery cannot leave a surviving SSO 
     });
 });
 
+test('a provider finish racing lost-access recovery cannot issue a post-recovery session', async () => {
+    await withSsoPool(async (pool) => {
+        const fixture = await approvedGoogleFixture(pool);
+        const email = `lost-race-${uniqueLabel()}@${fixture.domain}`;
+        const setup = await pool.connect();
+        const recoveryCode = `saved-${uniqueLabel()}`;
+        let userId: string;
+        const subject = `lost-race-sub-${uniqueLabel()}`;
+        try {
+            userId = await createStudent(setup, fixture.universityId, email);
+            await createIdentity(setup, userId, fixture.universityId, { subject });
+            await setup.query('UPDATE users SET password_setup_requires_recovery_code = true WHERE id = $1', [userId]);
+            await setup.query(`INSERT INTO student_auth_recovery_codes (user_id, generation, code_digest, status, activated_at) VALUES ($1, 1, $2, 'active', clock_timestamp())`, [userId, createHmac('sha256', 'test-recovery-code-key').update(recoveryCode, 'utf8').digest('base64url')]);
+        } finally { setup.release(); }
+        const oidc = makeOidc(); oidc.redeemWith(observationFor(fixture.realm, subject));
+        const { service } = makeService(pool, oidc.oidc);
+        const { started, callbackUrl, cookies } = await startGoogle(service, oidc, email);
+        await service.callback({ provider: 'google', callbackUrl, browserCookies: cookies });
+        let otp = '';
+        const recovery = new StudentAccountRecoveryService({ pool, recoveryCodeKey: 'test-recovery-code-key', deliverOtp: async (_email, delivered) => { otp = delivered; return { success: true }; }, validatePassword: () => ({ valid: true, errors: [] }), hashPassword: async () => 'lost-race-password-hash' });
+        const startedRecovery = await recovery.start({ email, purpose: 'lost_access' });
+        await recovery.verify({ attemptId: startedRecovery.attemptId, secret: startedRecovery.secret, code: recoveryCode, otp });
+        await Promise.allSettled([
+            service.finish({ attemptId: started.publicResult.attemptId, finishSecret: started.publicResult.finishSecret, browserCookie: started.callbackCookie.value }),
+            recovery.complete({ attemptId: startedRecovery.attemptId, secret: startedRecovery.secret, password: 'ValidNew1!' }),
+        ]);
+        const check = await pool.connect();
+        try {
+            const user = await check.query<{ active_session_id: string | null }>('SELECT active_session_id FROM users WHERE id = $1', [userId]);
+            assert.equal(user.rows[0]!.active_session_id, null);
+        } finally { check.release(); }
+    });
+});
+
 test('finish still replaces a session that predates the attempt', async () => {
     await withSsoPool(async (pool) => {
         const fixture = await approvedGoogleFixture(pool);

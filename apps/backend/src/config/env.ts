@@ -234,7 +234,11 @@ export const config = {
     studentSso,
     passwordlessStudentSignupEnabled: env.PASSWORDLESS_STUDENT_SIGNUP_ENABLED === 'true',
     studentAccountRecovery: {
-        codeKey: env.STUDENT_ACCOUNT_RECOVERY_CODE_KEY ?? null,
+        // 069–072 recovery-code rows digest with the established SSO attempt
+        // key. A dedicated key may be configured for new deployments, but a
+        // silent rotation would strand active codes; migrate/rekey explicitly.
+        // Disabling a provider must not remove the retained key.
+        codeKey: env.STUDENT_ACCOUNT_RECOVERY_CODE_KEY ?? studentSso.attemptKey,
     },
     // This trusted frontend setting is intentionally independent from OIDC
     // credentials so owner/history routes can remain available while issuance

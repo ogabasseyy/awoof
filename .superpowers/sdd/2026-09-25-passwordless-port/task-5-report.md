@@ -12,6 +12,7 @@
 - `npm run type-check`: passing.
 - `git diff --check`: pending final controller-run snapshot.
 - Controller PostgreSQL run exposed a shared verifier defect: recovery verification compared plaintext recovery codes directly to the stored HMAC digest. The service now derives the same deployment-keyed digest before constant-time comparison; this retains the existing recovery-code storage contract.
+- The controller PostgreSQL run had one intentional skip: the dedicated compiled-fallback smoke requires its source-absent selector and is outside this broad/source suite. It is not represented as a pristine all-green run.
 - Real-PostgreSQL tests now cover lost-access recovery; compromise identity/assertion revocation while preserving an independent enrollment record under a disabled/expired provider policy; suspended and pending-code denial; immutable purpose substitution; terminal replay; rollback; recovery versus code-replacement; and provider finish versus compromise recovery. Per coordination, the full PostgreSQL suite has not been run by this worker.
 
 ## Behaviour delivered
@@ -25,6 +26,8 @@
 ## Documentation impact
 
 No public trust/developer copy was changed. The feature is not deployed or enabled: `STUDENT_ACCOUNT_RECOVERY_CODE_KEY` remains intentionally absent, and provider/key rotation plus production validation are Task 7 release work. Before publication, update the recovery/login/help disclosure to state the school-mailbox limitation and no guaranteed recovery, with evidence and owner acceptance; do not claim provider-independent mailbox access or enrollment verification.
+
+The effective recovery-code key is `STUDENT_ACCOUNT_RECOVERY_CODE_KEY` when explicitly configured, otherwise the established `STUDENT_SSO_ATTEMPT_KEY` used by migrations 069–072. Do not rotate either existing effective key without a reviewed rekey migration: active code digests are not portable. Provider disablement is independent from retaining that key.
 
 ## Not ready for full completion
 

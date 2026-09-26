@@ -106,19 +106,19 @@ export class StudentAccountRecoveryService {
         if (!validOpaque(input.attemptId) || !validOpaque(input.secret) || !validOpaque(input.code)
             || typeof input.otp !== 'string' || !/^\d{6}$/.test(input.otp)) throw unavailable();
         const { attemptId, secret, code: recoveryCode, otp: mailboxOtp } = input;
-        await this.transaction(async (tx) => {
+        const verified = await this.transaction(async (tx) => {
             const owner = await tx.query<{ user_id: string }>('SELECT user_id FROM student_auth_recovery_attempts WHERE id = $1', [attemptId]);
             const userId = owner.rows[0]?.user_id;
-            if (!userId) throw unavailable();
+            if (!userId) return false;
             const account = await this.lockAccount(tx, userId);
             const attempt = await this.lockAttempt(tx, attemptId);
             if (!attempt || attempt.status !== 'pending' || attempt.expires_at <= await this.now(tx)
-                || !this.matchesDigest(attempt.secret_hash, this.secretDigest(secret))) throw unavailable();
+                || !this.matchesDigest(attempt.secret_hash, this.secretDigest(secret))) return false;
             const code = await this.lockActiveCode(tx, userId);
             if (!account || !code || Number(account.credential_generation) !== Number(attempt.credential_generation)
                 || Number(code.generation) !== Number(attempt.recovery_code_generation) || !this.matchesRecoveryCode(code.code_digest, recoveryCode)) {
                 await tx.query("UPDATE student_auth_recovery_attempts SET status = 'failed' WHERE id = $1 AND status = 'pending'", [attempt.id]);
-                throw unavailable();
+                return false;
             }
             const otp = await consumeChallenge(tx, {
                 purpose: 'student_account_recovery', subjectKey: account.email,
@@ -126,14 +126,15 @@ export class StudentAccountRecoveryService {
             });
             if (otp.status !== 'verified'
                 || otp.bindings.recoveryAttemptId !== attempt.id
-                || otp.bindings.recoveryPurpose !== attempt.purpose) throw unavailable();
+                || otp.bindings.recoveryPurpose !== attempt.purpose) return false;
             const updated = await tx.query(
                 `UPDATE student_auth_recovery_attempts
                  SET status = 'verified', verified_at = clock_timestamp()
                  WHERE id = $1 AND status = 'pending'`, [attempt.id],
             );
-            if (updated.rowCount !== 1) throw unavailable();
+            return updated.rowCount === 1;
         });
+        if (!verified) throw unavailable();
     }
 
     async complete(input: { attemptId: unknown; secret: unknown; password: unknown }): Promise<void> {
@@ -182,6 +183,15 @@ export class StudentAccountRecoveryService {
             await tx.query("UPDATE student_auth_action_grants SET revoked_at = clock_timestamp(), secret_hash = 'scrubbed' WHERE user_id = $1 AND consumed_at IS NULL AND revoked_at IS NULL", [userId]);
             await tx.query("UPDATE student_auth_reauth_grants SET consumed_at = clock_timestamp(), secret_hash = 'scrubbed' WHERE user_id = $1 AND consumed_at IS NULL", [userId]);
             await tx.query("UPDATE student_auth_reauth_attempts SET status = 'failed', consumed_at = clock_timestamp() WHERE user_id = $1 AND status IN ('pending', 'ready')", [userId]);
+            // A ready provider callback is not yet a session. Invalidate every
+            // same-mailbox attempt before releasing the account lock so a
+            // pre-recovery callback cannot mint a post-recovery session.
+            await tx.query(
+                `UPDATE student_auth_attempts
+                 SET status = 'failed', encrypted_verifier = NULL, nonce = NULL, encrypted_observation = NULL
+                 WHERE requested_email = $1 AND status IN ('pending', 'processing', 'ready')`,
+                [account.email],
+            );
             await tx.query("UPDATE student_auth_recovery_attempts SET status = 'failed' WHERE user_id = $1 AND id <> $2 AND status IN ('pending', 'verified')", [userId, attempt.id]);
             const consumed = await tx.query(
                 `UPDATE student_auth_recovery_attempts SET status = 'consumed', consumed_at = clock_timestamp()

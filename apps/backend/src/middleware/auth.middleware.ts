@@ -30,16 +30,19 @@ export const authenticate = (
     next: NextFunction
 ): void => {
     const token = getBearerToken(req);
-    try {
+    void (async () => {
+        try {
         const decoded = jwtService.verifyAccessToken(token);
+        await requireCurrentStudentSession(decoded);
         req.user = {
             ...decoded,
             id: decoded.userId,
         };
-        next();
-    } catch {
-        next(new UnauthorizedError('Authentication failed'));
-    }
+            next();
+        } catch {
+            next(new UnauthorizedError('Authentication failed'));
+        }
+    })();
 };
 
 /**
@@ -52,17 +55,42 @@ export const optionalAuth = (
     next: NextFunction
 ): void => {
     const token = getBearerToken(req);
-    try {
+    void (async () => {
+        try {
         const decoded = jwtService.verifyAccessToken(token);
+        await requireCurrentStudentSession(decoded);
         req.user = {
             ...decoded,
             id: decoded.userId,
         };
-    } catch {
+        } catch {
         // Invalid or expired – optional auth, ignore
-    }
-    next();
+        }
+        next();
+    })();
 };
+
+/**
+ * Passwordless and post-recovery student credentials are session-bound.
+ * Existing vendor/admin and ordinary password-student token semantics stay
+ * unchanged; this narrowly prevents an access JWT from surviving recovery.
+ */
+async function requireCurrentStudentSession(decoded: { userId: string; role: string; sid?: string }): Promise<void> {
+    if (decoded.role !== 'student') return;
+    const result = await getPool().query<{
+        password_setup_requires_recovery_code: boolean;
+        recovery_reenrollment_requires_password: boolean;
+        active_session_id: string | null;
+        deleted_at: Date | null;
+    }>(
+        `SELECT password_setup_requires_recovery_code, recovery_reenrollment_requires_password, active_session_id, deleted_at
+         FROM users WHERE id = $1`, [decoded.userId],
+    );
+    const account = result.rows[0];
+    if (!account || account.deleted_at !== null) throw new UnauthorizedError('Authentication failed');
+    if ((account.password_setup_requires_recovery_code || account.recovery_reenrollment_requires_password)
+        && (!decoded.sid || account.active_session_id !== decoded.sid)) throw new UnauthorizedError('Authentication failed');
+}
 
 /**
  * Role-based authorization middleware factory
@@ -108,4 +136,3 @@ export const authenticateVendorJwtOrApiKey = async (
         next(error);
     }
 };
-
