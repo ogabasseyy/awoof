@@ -209,6 +209,33 @@ test('a failed recovery transaction rolls back code consumption and identity rev
     }
 });
 
+test('simultaneous recovery completion has one winner and cannot consume a code twice', async () => {
+    const pool = createTestPool();
+    const client = await pool.connect();
+    try {
+        const account = await seedRecoverableStudent(client);
+        let otp = '';
+        const service = new StudentAccountRecoveryService({
+            pool, recoveryCodeKey: 'test-recovery-code-key', deliverOtp: async (_email, delivered) => { otp = delivered; return { success: true }; },
+            validatePassword: () => ({ valid: true, errors: [] }), hashPassword: async () => 'race-password-hash',
+        });
+        const started = await service.start({ email: account.email, purpose: 'lost_access' });
+        await service.verify({ attemptId: started.attemptId, secret: started.secret, code: account.code, otp });
+        const results = await Promise.allSettled([
+            service.complete({ attemptId: started.attemptId, secret: started.secret, password: 'ValidNew1!' }),
+            service.complete({ attemptId: started.attemptId, secret: started.secret, password: 'ValidNew1!' }),
+        ]);
+        assert.equal(results.filter((result) => result.status === 'fulfilled').length, 1);
+        const settled = await client.query<{ credential_generation: string }>('SELECT credential_generation FROM users WHERE id = $1', [account.userId]);
+        const code = await client.query<{ status: string }>('SELECT status FROM student_auth_recovery_codes WHERE user_id = $1', [account.userId]);
+        assert.equal(settled.rows[0]!.credential_generation, '1');
+        assert.equal(code.rows[0]!.status, 'consumed');
+    } finally {
+        client.release();
+        await pool.end();
+    }
+});
+
 async function seedProviderProof(client: PoolClient, userId: string): Promise<string> {
     const suffix = randomUUID().slice(0, 8);
     const university = await client.query<{ id: string }>(
