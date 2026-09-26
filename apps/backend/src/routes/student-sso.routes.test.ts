@@ -178,6 +178,47 @@ test('Microsoft fresh-reauth routes preserve the browser binding and never use t
     assert.deepEqual(seen, ['start', 'callback', 'finish:reauth-browser']);
 });
 
+test('recovery-code endpoints expose only status metadata and require strict authenticated grants', async () => {
+    const calls: string[] = [];
+    const recovery = {
+        status: async () => ({ status: 'active' as const, generation: 4 }),
+        generate: async (input: { oldCode?: string }) => {
+            calls.push(`generate:${input.oldCode ?? ''}`);
+            return { pendingCodeId: ATTEMPT_ID, code: 'only-generation-returns-plaintext', expiresAt: new Date(Date.now() + 60_000).toISOString() };
+        },
+        activate: async (input: { oldCode?: string }) => {
+            calls.push(`activate:${input.oldCode ?? ''}`);
+            return { active: true as const };
+        },
+        remove: async (input: { oldCode: string }) => { calls.push(`remove:${input.oldCode}`); },
+    };
+    const grant = { grantId: '33333333-3333-4333-8333-333333333333', grantSecret: 'grant-secret' };
+    await withServer(routerWith(stubFlow(), { recoveryCodeService: () => recovery as never }), async (baseUrl) => {
+        const status = await fetch(`${baseUrl}/recovery-code`, { headers: authHeaders(studentToken(true)) });
+        assert.equal(status.status, 200);
+        assert.deepEqual((await status.json()).data, { status: 'active', generation: 4 });
+
+        const malformed = await fetch(`${baseUrl}/recovery-code/generate`, {
+            method: 'POST', headers: authHeaders(studentToken(true)), body: JSON.stringify({ reauthGrant: grant, injected: true }),
+        });
+        assert.equal(malformed.status, 400);
+
+        const generated = await fetch(`${baseUrl}/recovery-code/generate`, {
+            method: 'POST', headers: authHeaders(studentToken(true)), body: JSON.stringify({ reauthGrant: grant, oldCode: 'old-code' }),
+        });
+        assert.equal(generated.status, 201);
+        assert.equal((await generated.json()).data.code, 'only-generation-returns-plaintext');
+
+        const activated = await fetch(`${baseUrl}/recovery-code/activate`, {
+            method: 'POST', headers: authHeaders(studentToken(true)),
+            body: JSON.stringify({ reauthGrant: grant, pendingCodeId: ATTEMPT_ID, code: 'confirmed-code', oldCode: 'old-code' }),
+        });
+        assert.equal(activated.status, 200);
+        assert.deepEqual((await activated.json()).data, { active: true });
+    });
+    assert.deepEqual(calls, ['generate:old-code', 'activate:old-code']);
+});
+
 test('start rejects unknown providers, malformed bodies, non-JSON, and inexact origins', async () => {
     await withServer(routerWith(stubFlow()), async (baseUrl) => {
         const badProvider = await fetch(`${baseUrl}/github/start`, {

@@ -22,6 +22,7 @@ import { StudentSsoLinkService } from '../services/auth/student-sso-link.service
 import { StudentSsoSignupService } from '../services/auth/student-sso-signup.service.js';
 import { sendEmailVerificationOTP } from '../services/email/email.service.js';
 import { StudentReauthService } from '../services/auth/student-reauth.service.js';
+import { StudentRecoveryCodeService } from '../services/auth/student-recovery-code.service.js';
 import type { LoginProvider } from '../services/auth/student-sso.types.js';
 import { hashMicrosoftAttemptSecret } from '../services/verification/microsoft-attempt-crypto.js';
 
@@ -31,6 +32,7 @@ type FlowFactory = () => StudentSsoFlow;
 type LinkFactory = () => StudentSsoLink;
 type ReauthFactory = () => StudentReauthService;
 type SignupFactory = () => StudentSsoSignupService;
+type RecoveryCodeFactory = () => StudentRecoveryCodeService;
 export type StudentSsoRouterOptions = {
     isIssuanceEnabled?: () => boolean;
     enabledProviders?: () => LoginProvider[];
@@ -42,6 +44,7 @@ export type StudentSsoRouterOptions = {
     reauthService?: ReauthFactory;
     linkLimiterMax?: number;
     signupService?: SignupFactory;
+    recoveryCodeService?: RecoveryCodeFactory;
 };
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
@@ -106,24 +109,27 @@ function finishBody(req: Request): { attemptId: string; finishSecret: string } {
     return { attemptId: value.attemptId, finishSecret: value.finishSecret };
 }
 
-function reauthBody(req: Request): { password: string; purpose: 'link' | 'unlink' | 'recovery_code_generate' | 'recovery_code_activate' | 'recovery_code_remove'; targetIdentityId?: string } {
+function reauthBody(req: Request): { password: string; purpose: 'link' | 'unlink' | 'recovery_code_generate' | 'recovery_code_activate' | 'recovery_code_remove'; targetIdentityId?: string; pendingCodeId?: string } {
     const body = req.body;
     if (!body || typeof body !== 'object' || Array.isArray(body)) throw new BadRequestError('Student SSO reauthentication request is invalid');
     const keys = Object.keys(body);
-    if (!keys.includes('password') || !keys.includes('purpose') || keys.some((key) => key !== 'password' && key !== 'purpose' && key !== 'targetIdentityId')) {
+    if (!keys.includes('password') || !keys.includes('purpose') || keys.some((key) => key !== 'password' && key !== 'purpose' && key !== 'targetIdentityId' && key !== 'pendingCodeId')) {
         throw new BadRequestError('Student SSO reauthentication request is invalid');
     }
-    const value = body as { password: unknown; purpose: unknown; targetIdentityId?: unknown };
+    const value = body as { password: unknown; purpose: unknown; targetIdentityId?: unknown; pendingCodeId?: unknown };
     if (typeof value.password !== 'string' || value.password.length === 0 || value.password.length > 1024
         || (value.purpose !== 'link' && value.purpose !== 'unlink' && value.purpose !== 'recovery_code_generate'
             && value.purpose !== 'recovery_code_activate' && value.purpose !== 'recovery_code_remove')
-        || (value.targetIdentityId !== undefined && (typeof value.targetIdentityId !== 'string' || !UUID.test(value.targetIdentityId)))) {
+        || (value.targetIdentityId !== undefined && (typeof value.targetIdentityId !== 'string' || !UUID.test(value.targetIdentityId)))
+        || (value.pendingCodeId !== undefined && (typeof value.pendingCodeId !== 'string' || !UUID.test(value.pendingCodeId)))) {
         throw new BadRequestError('Student SSO reauthentication request is invalid');
     }
     // Unlink grants are target-bound. Keeping the target optional in the
     // schema retains the established link request contract; an unbound
     // unlink grant simply cannot consume an identity-removal action.
-    return { password: value.password, purpose: value.purpose, ...(value.targetIdentityId === undefined ? {} : { targetIdentityId: value.targetIdentityId }) };
+    return { password: value.password, purpose: value.purpose,
+        ...(value.targetIdentityId === undefined ? {} : { targetIdentityId: value.targetIdentityId }),
+        ...(value.pendingCodeId === undefined ? {} : { pendingCodeId: value.pendingCodeId }) };
 }
 
 function grantBody(value: unknown): { grantId: string; grantSecret: string } {
@@ -163,6 +169,36 @@ function unlinkBody(req: Request): { reauthGrant: { grantId: string; grantSecret
         throw new BadRequestError('Student SSO unlink request is invalid');
     }
     return { reauthGrant: grantBody((body as { reauthGrant: unknown }).reauthGrant) };
+}
+
+function recoveryCodeBody(req: Request, action: 'generate' | 'activate' | 'remove'): {
+    reauthGrant: { grantId: string; grantSecret: string };
+    pendingCodeId?: string;
+    code?: string;
+    oldCode?: string;
+} {
+    const body = req.body;
+    if (!body || typeof body !== 'object' || Array.isArray(body)) throw new BadRequestError('Recovery-code request is invalid');
+    const allowed = action === 'generate'
+        ? new Set(['reauthGrant', 'oldCode'])
+        : action === 'activate'
+            ? new Set(['reauthGrant', 'pendingCodeId', 'code', 'oldCode'])
+            : new Set(['reauthGrant', 'oldCode']);
+    const value = body as Record<string, unknown>;
+    if (!('reauthGrant' in value) || Object.keys(value).some((key) => !allowed.has(key))
+        || (action === 'activate' && (!('pendingCodeId' in value) || !('code' in value)))
+        || (action === 'remove' && !('oldCode' in value))
+        || (value.oldCode !== undefined && (typeof value.oldCode !== 'string' || value.oldCode.length === 0 || value.oldCode.length > 1024))
+        || (value.code !== undefined && (typeof value.code !== 'string' || value.code.length === 0 || value.code.length > 1024))
+        || (value.pendingCodeId !== undefined && (typeof value.pendingCodeId !== 'string' || !UUID.test(value.pendingCodeId)))) {
+        throw new BadRequestError('Recovery-code request is invalid');
+    }
+    return {
+        reauthGrant: grantBody(value.reauthGrant),
+        ...(typeof value.pendingCodeId === 'string' ? { pendingCodeId: value.pendingCodeId } : {}),
+        ...(typeof value.code === 'string' ? { code: value.code } : {}),
+        ...(typeof value.oldCode === 'string' ? { oldCode: value.oldCode } : {}),
+    };
 }
 
 /** The owner plus their current session. Legacy tokens without a session id fail closed. */
@@ -301,6 +337,11 @@ function defaultSignup(): StudentSsoSignupService {
         deliverOtp: async (email, code, name) => sendEmailVerificationOTP(email, code, name || 'Student', 'student'),
     });
 }
+function defaultRecoveryCode(): StudentRecoveryCodeService {
+    const key = config.studentSso.attemptKey;
+    if (!key) throw new ServiceUnavailableError('Student SSO is unavailable');
+    return new StudentRecoveryCodeService({ pool: getPool(), codeKey: key });
+}
 
 export function createStudentSsoRouter(factory: FlowFactory = defaultFlow, options: StudentSsoRouterOptions = {}): Router {
     const router = Router();
@@ -319,6 +360,7 @@ export function createStudentSsoRouter(factory: FlowFactory = defaultFlow, optio
     const linkFactory = options.linkService ?? defaultLink;
     const signupFactory = options.signupService ?? defaultSignup;
     const reauthFactory = options.reauthService ?? defaultReauth;
+    const recoveryCodeFactory = options.recoveryCodeService ?? defaultRecoveryCode;
     const linkLimiterMax = options.linkLimiterMax ?? 10;
     const reauthLimiter = studentSsoLinkLimiter(linkLimiterMax);
     const linkLimiter = studentSsoLinkLimiter(linkLimiterMax);
@@ -513,6 +555,7 @@ export function createStudentSsoRouter(factory: FlowFactory = defaultFlow, optio
         const result = await linkFactory().reauth({
             userId: actor.userId, sid: actor.sid, password: body.password, purpose: body.purpose,
             ...(body.targetIdentityId === undefined ? {} : { targetIdentityId: body.targetIdentityId }),
+            ...(body.pendingCodeId === undefined ? {} : { pendingCodeId: body.pendingCodeId }),
         });
         responseHeaders(res);
         res.status(201).json({ success: true, data: result });
@@ -541,6 +584,48 @@ export function createStudentSsoRouter(factory: FlowFactory = defaultFlow, optio
         responseHeaders(res);
         clearSsoCookie(res, reauthCookieName(attemptId));
         res.status(201).json({ success: true, data: result });
+    }));
+
+    router.get('/recovery-code', authenticate, requireRole('student'), asyncHandler(async (req, res) => {
+        const owner = ssoOwner(req);
+        const result = await recoveryCodeFactory().status(owner);
+        responseHeaders(res);
+        res.json({ success: true, data: result });
+    }));
+
+    router.post('/recovery-code/generate', authenticate, requireRole('student'), reauthLimiter, exactOrigin, exactJson, asyncHandler(async (req, res) => {
+        const body = recoveryCodeBody(req, 'generate');
+        const actor = ssoActor(req);
+        const result = await recoveryCodeFactory().generate({
+            userId: actor.userId, sid: actor.sid, grantId: body.reauthGrant.grantId, secret: body.reauthGrant.grantSecret,
+            ...(body.oldCode === undefined ? {} : { oldCode: body.oldCode }),
+        });
+        responseHeaders(res);
+        res.status(201).json({ success: true, data: result });
+    }));
+
+    router.post('/recovery-code/activate', authenticate, requireRole('student'), reauthLimiter, exactOrigin, exactJson, asyncHandler(async (req, res) => {
+        const body = recoveryCodeBody(req, 'activate');
+        if (!body.pendingCodeId || !body.code) throw new BadRequestError('Recovery-code request is invalid');
+        const actor = ssoActor(req);
+        const result = await recoveryCodeFactory().activate({
+            userId: actor.userId, sid: actor.sid, grantId: body.reauthGrant.grantId, secret: body.reauthGrant.grantSecret,
+            pendingCodeId: body.pendingCodeId, code: body.code,
+            ...(body.oldCode === undefined ? {} : { oldCode: body.oldCode }),
+        });
+        responseHeaders(res);
+        res.json({ success: true, data: result });
+    }));
+
+    router.post('/recovery-code/remove', authenticate, requireRole('student'), reauthLimiter, exactOrigin, exactJson, asyncHandler(async (req, res) => {
+        const body = recoveryCodeBody(req, 'remove');
+        if (!body.oldCode) throw new BadRequestError('Recovery-code request is invalid');
+        const actor = ssoActor(req);
+        await recoveryCodeFactory().remove({
+            userId: actor.userId, sid: actor.sid, grantId: body.reauthGrant.grantId, secret: body.reauthGrant.grantSecret, oldCode: body.oldCode,
+        });
+        responseHeaders(res);
+        res.status(204).end();
     }));
 
     router.post('/link', authenticate, requireRole('student'), linkLimiter, exactOrigin, exactJson, asyncHandler(async (req, res) => {

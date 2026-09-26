@@ -165,7 +165,7 @@ export class StudentSsoLinkService {
      * role, and pins the verified hash into the grant row, so a password
      * reset or session replacement invalidates the grant.
      */
-    async reauth(input: { userId: unknown; sid: unknown; password: unknown; purpose: unknown; targetIdentityId?: unknown }): Promise<StudentSsoReauthResult> {
+    async reauth(input: { userId: unknown; sid: unknown; password: unknown; purpose: unknown; targetIdentityId?: unknown; pendingCodeId?: unknown }): Promise<StudentSsoReauthResult> {
         if (input.purpose !== 'link' && input.purpose !== 'unlink'
             && input.purpose !== 'recovery_code_generate' && input.purpose !== 'recovery_code_activate' && input.purpose !== 'recovery_code_remove') {
             throw new BadRequestError('Student SSO reauthentication purpose is invalid');
@@ -180,11 +180,15 @@ export class StudentSsoLinkService {
         if (input.targetIdentityId !== undefined && !validUuid(input.targetIdentityId)) {
             throw new BadRequestError('Student SSO reauthentication request is invalid');
         }
+        if (input.pendingCodeId !== undefined && !validUuid(input.pendingCodeId)) {
+            throw new BadRequestError('Student SSO reauthentication request is invalid');
+        }
         const userId = input.userId;
         const sid = input.sid;
         const password = input.password;
         const purpose: StudentSsoReauthPurpose = input.purpose;
         const targetIdentityId = typeof input.targetIdentityId === 'string' ? input.targetIdentityId : undefined;
+        const pendingCodeId = typeof input.pendingCodeId === 'string' ? input.pendingCodeId : undefined;
 
         const pre = await this.deps.pool.query<{ password_hash: string | null; role: string; deleted_at: Date | null }>(
             'SELECT password_hash, role, deleted_at FROM users WHERE id = $1',
@@ -221,9 +225,14 @@ export class StudentSsoLinkService {
             if (locked.rows[0]?.password_hash !== verifiedHash || locked.rows[0]?.active_session_id !== sid) {
                 throw new UnauthorizedError('Student SSO reauthentication failed');
             }
+            const active = await tx.query<{ generation: string | number }>(
+                "SELECT generation FROM student_auth_recovery_codes WHERE user_id = $1 AND status = 'active' FOR UPDATE", [userId],
+            );
             return issueActionGrant(tx, {
                 userId, sid, purpose, credentialGeneration: Number(locked.rows[0]!.credential_generation),
                 ...(targetIdentityId === undefined ? {} : { targetIdentityId }),
+                ...(pendingCodeId === undefined ? {} : { pendingCodeId }),
+                ...(active.rows[0] === undefined ? {} : { activeCodeGeneration: Number(active.rows[0].generation) }),
             });
         });
     }

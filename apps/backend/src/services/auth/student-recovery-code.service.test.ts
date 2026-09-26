@@ -1,0 +1,41 @@
+import assert from 'node:assert/strict';
+import test from 'node:test';
+import type { PoolClient } from 'pg';
+import { StudentRecoveryCodeService } from './student-recovery-code.service.js';
+
+test('status exposes recovery state and generation without a recovery digest', async () => {
+    const queries: string[] = [];
+    const client = {
+        query: async (text: string) => {
+            queries.push(text);
+            if (text.includes("status IN ('active', 'pending')")) {
+                return {
+                    rows: [{
+                        id: '11111111-1111-4111-8111-111111111111', generation: 3, code_digest: 'must-not-leak',
+                        status: 'active', expires_at: null, pending_sid: null,
+                        pending_credential_generation: null, pending_proof_identity_id: null,
+                    }],
+                    rowCount: 1,
+                };
+            }
+            throw new Error(`unexpected query: ${text}`);
+        },
+        release: () => undefined,
+    } as unknown as PoolClient;
+    const service = new StudentRecoveryCodeService({
+        pool: { connect: async () => client } as never,
+        codeKey: 'test-recovery-code-key',
+    });
+
+    assert.deepEqual(await service.status({ userId: '22222222-2222-4222-8222-222222222222' }), {
+        status: 'active', generation: 3,
+    });
+    assert.equal(queries.length, 1);
+});
+
+test('recovery-code digest key must have sufficient deployment-held entropy', () => {
+    assert.throws(
+        () => new StudentRecoveryCodeService({ pool: {} as never, codeKey: 'short' }),
+        /digest key is invalid/,
+    );
+});

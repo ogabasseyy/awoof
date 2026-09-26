@@ -151,7 +151,16 @@ export class StudentReauthService {
                 || !policy.rows[0]?.enabled || policy.rows[0]!.approved_until <= clock.rows[0]!.now
                 || !identity.rows[0] || identity.rows[0]!.user_id !== input.userId || identity.rows[0]!.revoked_at !== null
                 || !this.deps.isProviderEnabled(attempt.provider as LoginProvider)) throw invalidReauth();
-            const grant = await issueActionGrant(tx, { userId: input.userId, sid: input.sid, purpose: attempt.purpose as ActionPurpose, credentialGeneration: Number(attempt.credential_generation), proofIdentityId: attempt.proof_identity_id, targetIdentityId: attempt.target_identity_id, pendingCodeId: attempt.pending_code_id });
+            const active = await tx.query<{ generation: string | number }>(
+                "SELECT generation FROM student_auth_recovery_codes WHERE user_id = $1 AND status = 'active' FOR UPDATE",
+                [input.userId],
+            );
+            const grant = await issueActionGrant(tx, {
+                userId: input.userId, sid: input.sid, purpose: attempt.purpose as ActionPurpose,
+                credentialGeneration: Number(attempt.credential_generation), proofIdentityId: attempt.proof_identity_id,
+                targetIdentityId: attempt.target_identity_id, pendingCodeId: attempt.pending_code_id,
+                ...(active.rows[0] === undefined ? {} : { activeCodeGeneration: Number(active.rows[0].generation) }),
+            });
             await tx.query("UPDATE student_auth_reauth_attempts SET status = 'consumed', consumed_at = clock_timestamp() WHERE id = $1 AND status = 'ready'", [attempt.id]);
             return grant;
         });
