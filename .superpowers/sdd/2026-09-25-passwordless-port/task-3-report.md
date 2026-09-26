@@ -45,12 +45,19 @@ is false.
 - `npx tsc --noEmit`: exit 0.
 - `git diff --check`: exit 0.
 
+## Acceptance coverage added after the first implementation commit
+
+`passwordless-signup.integration.ts` now creates a real canonical policy,
+browser-bound handoff and OTP delivery fixture. It proves the complete path
+creates exactly one user, identity, active session and mailbox proof while
+creating zero `eligibility_evidence` rows; it also proves wrong-browser and
+expired-handoff requests fail closed before signup.
+
 ## Remaining concerns / follow-up
 
-- A real PostgreSQL integration harness must exercise atomic rollback, simultaneous
-  link/signup, post-commit response loss then ordinary Microsoft login, and the
-  no-enrollment invariant. This task adds the service seam but the dedicated
-  `passwordless-signup.integration.ts` harness remains required before enabling.
+- Extend the PostgreSQL harness before enablement with atomic rollback,
+  simultaneous link/signup, post-commit response loss then ordinary Microsoft
+  login, and budget/restart interleavings.
 - OpenAPI/public documentation has not been expanded because runtime signup remains
   disabled. Task 7 must state this pending status and add truthful help/trust copy
   only after evidence review.
