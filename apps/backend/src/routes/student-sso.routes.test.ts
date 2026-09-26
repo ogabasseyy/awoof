@@ -119,6 +119,18 @@ test('start sets the exact per-attempt handoff cookie and no-store headers', asy
     });
 });
 
+test('passwordless signup context and send-code reject extra JSON fields before service invocation', async () => {
+    let invoked = 0;
+    const signup = { context: async () => { invoked++; return {}; }, sendCode: async () => { invoked++; return {}; }, verifyCode: async () => ({}), complete: async () => ({}) };
+    await withServer(routerWith(stubFlow(), { signupService: () => signup as never }), async (baseUrl) => {
+        for (const path of ['signup/context', 'signup/send-code']) {
+            const response = await fetch(`${baseUrl}/${path}`, { method: 'POST', headers: { 'content-type': 'application/json', origin: COMPLETION_ORIGIN }, body: JSON.stringify({ handoffId: ATTEMPT_ID, handoffSecret: 'secret', extra: true }) });
+            assert.equal(response.status, 400);
+        }
+    });
+    assert.equal(invoked, 0);
+});
+
 test('Microsoft fresh-reauth routes preserve the browser binding and never use the ordinary login flow', async () => {
     const reauthAttemptId = '66666666-6666-4666-8666-666666666666';
     const seen: string[] = [];
