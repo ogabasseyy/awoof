@@ -87,8 +87,13 @@ async function requireCurrentStudentSession(decoded: { userId: string; role: str
          FROM users WHERE id = $1`, [decoded.userId],
     );
     const account = result.rows[0];
-    if (!account || account.deleted_at !== null) throw new UnauthorizedError('Authentication failed');
-    if ((account.password_setup_requires_recovery_code || account.recovery_reenrollment_requires_password)
+    // Preserve downstream live-identity semantics for absent and ordinary
+    // deleted accounts. Only credential-policy accounts require this early
+    // session gate, because recovery must invalidate their access JWTs.
+    if (!account) return;
+    const sessionBound = account.password_setup_requires_recovery_code || account.recovery_reenrollment_requires_password;
+    if (account.deleted_at !== null && !sessionBound) return;
+    if (sessionBound
         && (!decoded.sid || account.active_session_id !== decoded.sid)) throw new UnauthorizedError('Authentication failed');
 }
 

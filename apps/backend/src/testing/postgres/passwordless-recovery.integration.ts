@@ -291,8 +291,13 @@ test('five wrong recovery OTPs persist their shared failure budget despite gener
             }));
         }
         const budget = await client.query<{ failed_attempts: number }>(
-            `SELECT failed_attempts FROM verification_challenge_budgets
-             WHERE purpose = 'student_account_recovery'`,
+            `SELECT budget.failed_attempts
+             FROM verification_challenge_budgets AS budget
+             JOIN verification_challenges AS challenge ON challenge.subject_digest = budget.subject_digest
+                 AND challenge.purpose = budget.purpose
+             JOIN student_auth_recovery_attempts AS recovery ON recovery.mailbox_challenge_id = challenge.id
+             WHERE recovery.id = $1`,
+            [started.attemptId],
         );
         assert.equal(budget.rows[0]!.failed_attempts, 5);
         await assert.rejects(() => service.verify({

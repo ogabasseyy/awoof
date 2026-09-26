@@ -13,6 +13,7 @@
 - `git diff --check`: pending final controller-run snapshot.
 - Controller PostgreSQL run exposed a shared verifier defect: recovery verification compared plaintext recovery codes directly to the stored HMAC digest. The service now derives the same deployment-keyed digest before constant-time comparison; this retains the existing recovery-code storage contract.
 - The controller PostgreSQL run had one intentional skip: the dedicated compiled-fallback smoke requires its source-absent selector and is outside this broad/source suite. It is not represented as a pristine all-green run.
+- The controller's next run showed the recovery OTP budget assertion was reading an unrelated recovery budget in the shared fixture database; the test now joins its exact recovery attempt to its challenge and budget. The session gate was also narrowed so absent and ordinary deleted students retain existing downstream live-identity handling; only marker/recovery-policy students are rejected early when their bound session is stale.
 - Real-PostgreSQL tests now cover lost-access recovery; compromise identity/assertion revocation while preserving an independent enrollment record under a disabled/expired provider policy; suspended and pending-code denial; immutable purpose substitution; terminal replay; rollback; recovery versus code-replacement; and provider finish versus compromise recovery. Per coordination, the full PostgreSQL suite has not been run by this worker.
 
 ## Behaviour delivered
