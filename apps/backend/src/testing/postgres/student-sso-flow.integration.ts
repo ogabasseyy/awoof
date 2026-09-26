@@ -1285,6 +1285,9 @@ test('cleanup scrubs expired ciphertext and deletes only aged transients', async
         let identityId: string;
         let freshAttempt: string;
         let expiredActionGrant: string;
+        let activeRecoveryCode: string;
+        let expiredRecoveryCode: string;
+        let deletedActionGrant: string;
         try {
             const universityId = await createUniversity(setup);
             const domain = `cleanup${uniqueLabel()}.school.example`;
@@ -1351,6 +1354,27 @@ test('cleanup scrubs expired ciphertext and deletes only aged transients', async
                  RETURNING id`,
                 [userId, randomUUID(), hashMicrosoftAttemptSecret(`action-grant-${uniqueLabel()}`)],
             )).rows[0]!.id;
+            activeRecoveryCode = (await setup.query<{ id: string }>(
+                `INSERT INTO student_auth_recovery_codes
+                 (user_id, generation, code_digest, status, activated_at, created_at)
+                 VALUES ($1, 71, $2, 'active', clock_timestamp() - interval '2 minutes', clock_timestamp() - interval '2 minutes')
+                 RETURNING id`,
+                [userId, hashMicrosoftAttemptSecret(`active-recovery-${uniqueLabel()}`)],
+            )).rows[0]!.id;
+            expiredRecoveryCode = (await setup.query<{ id: string }>(
+                `INSERT INTO student_auth_recovery_codes
+                 (user_id, generation, code_digest, status, expires_at, created_at, pending_sid, pending_credential_generation)
+                 VALUES ($1, 72, $2, 'pending', clock_timestamp() - interval '1 second', clock_timestamp() - interval '5 minutes', $3, 0)
+                 RETURNING id`,
+                [userId, hashMicrosoftAttemptSecret(`expired-recovery-${uniqueLabel()}`), randomUUID()],
+            )).rows[0]!.id;
+            deletedActionGrant = (await setup.query<{ id: string }>(
+                `INSERT INTO student_auth_action_grants
+                 (user_id, sid, credential_generation, purpose, secret_hash, expires_at, revoked_at, created_at)
+                 VALUES ($1, $2, 0, 'recovery_code_generate', 'scrubbed', clock_timestamp() - interval '8 days', clock_timestamp() - interval '8 days', clock_timestamp() - interval '8 days')
+                 RETURNING id`,
+                [userId, randomUUID()],
+            )).rows[0]!.id;
             await setup.query(
                 `INSERT INTO student_auth_reauth_grants (user_id, sid, purpose, secret_hash, expires_at, created_at)
                  VALUES ($1, $2, 'link', $3, clock_timestamp() + interval '4 minutes', clock_timestamp())`,
@@ -1375,7 +1399,9 @@ test('cleanup scrubs expired ciphertext and deletes only aged transients', async
         assert.equal(result.handoffsDeleted, 1);
         assert.equal(result.grantsDeleted, 1);
         assert.equal((result as unknown as { actionGrantsScrubbed?: number }).actionGrantsScrubbed, 1,
-            'expired action grants must lose their digest within one hour');
+            'expired action grants must lose their digest on the next cleanup pass');
+        assert.equal((result as unknown as { recoveryCodesScrubbed?: number }).recoveryCodesScrubbed, 1,
+            'expired pending recovery-code digests must be terminalized on the next cleanup pass');
 
         const check = await pool.connect();
         try {
@@ -1398,6 +1424,25 @@ test('cleanup scrubs expired ciphertext and deletes only aged transients', async
             );
             assert.deepEqual(scrubbedActionGrant.rows[0], { secret_hash: 'scrubbed', revoked_at: scrubbedActionGrant.rows[0]!.revoked_at });
             assert.ok(scrubbedActionGrant.rows[0]!.revoked_at);
+            const recoveryCodes = await check.query<{ id: string; status: string; code_digest: string | null; expires_at: Date | null }>(
+                'SELECT id, status, code_digest, expires_at FROM student_auth_recovery_codes WHERE id = ANY($1::uuid[]) ORDER BY id',
+                [[activeRecoveryCode, expiredRecoveryCode]],
+            );
+            const active = recoveryCodes.rows.find(row => row.id === activeRecoveryCode);
+            const expired = recoveryCodes.rows.find(row => row.id === expiredRecoveryCode);
+            assert.equal(active?.status, 'active', 'active recovery credentials are never transient cleanup data');
+            assert.ok(active?.code_digest, 'active recovery-code digest survives transient cleanup');
+            assert.equal(active?.expires_at, null);
+            assert.deepEqual(expired && { status: expired.status, digest: expired.code_digest, expiresAt: expired.expires_at }, {
+                status: 'revoked', digest: null, expiresAt: null,
+            });
+            const deleted = await check.query('SELECT id FROM student_auth_action_grants WHERE id = $1', [deletedActionGrant]);
+            assert.equal(deleted.rowCount, 0, 'seven-day terminal grant tombstones are deleted');
+            const replay = await check.query(
+                "UPDATE student_auth_action_grants SET consumed_at = clock_timestamp(), secret_hash = 'scrubbed' WHERE id = $1 AND consumed_at IS NULL AND revoked_at IS NULL",
+                [deletedActionGrant],
+            );
+            assert.equal(replay.rowCount, 0, 'a deleted terminal tombstone cannot be replayed into a usable grant');
             // Owner linkage and school assertions are retained audit records.
             const identities = await check.query('SELECT id FROM student_auth_identities WHERE id = $1', [identityId]);
             assert.equal(identities.rows.length, 1);

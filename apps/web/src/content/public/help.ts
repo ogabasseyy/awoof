@@ -39,8 +39,8 @@ export const helpSections: HelpSection[] = [
   {
     heading: 'Account recovery',
     paragraphs: [
-      'Password-reset codes go to the email address already on your account. If that school mailbox is gone, reset cannot reach you: verify a mailbox you control by registering again with your current school address.',
-      'Receipts on the old account stay there as history. Account-specific help still needs a signed-in session so support can see your real state.',
+      'Account recovery needs the proofs requested by the account-recovery flow. Control of a school mailbox by itself does not transfer an existing account or prove current enrollment.',
+      'If you cannot complete a recovery step, use the support route shown by the product. Receipts on an existing account remain its history; account-specific help may need a signed-in session to inspect the account state.',
     ],
   },
 ];

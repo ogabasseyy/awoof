@@ -635,7 +635,8 @@ test('OpenAPI documents the browser-bound SSO contract', () => {
 });
 
 test('OpenAPI documents disabled passwordless signup and recovery contracts without benefit claims', () => {
-    const paths = (swaggerSpec as { paths: Record<string, { post?: { description?: string }; get?: { description?: string } }> }).paths;
+    const spec = swaggerSpec as { paths: Record<string, { post?: { description?: string; requestBody?: unknown; responses?: Record<string, unknown> }; get?: { description?: string; responses?: Record<string, unknown> } }>; components: { schemas: Record<string, unknown> } };
+    const paths = spec.paths;
     for (const path of [
         '/api/auth/student/sso/signup/context', '/api/auth/student/sso/signup/send-code',
         '/api/auth/student/sso/signup/verify-code', '/api/auth/student/sso/signup/complete',
@@ -646,6 +647,21 @@ test('OpenAPI documents disabled passwordless signup and recovery contracts with
     ]) assert.ok(paths[path], `missing ${path}`);
     assert.match(paths['/api/auth/student/sso/signup/context']?.post?.description ?? '', /Disabled/);
     assert.match(paths['/api/auth/student/sso/account-recovery/start']?.post?.description ?? '', /never transfers account ownership/);
+    for (const path of [
+        '/api/auth/student/sso/signup/context', '/api/auth/student/sso/signup/send-code',
+        '/api/auth/student/sso/signup/verify-code', '/api/auth/student/sso/signup/complete',
+        '/api/auth/student/sso/recovery-code/generate', '/api/auth/student/sso/recovery-code/activate',
+        '/api/auth/student/sso/recovery-code/remove', '/api/auth/student/sso/account-recovery/start',
+        '/api/auth/student/sso/account-recovery/verify', '/api/auth/student/sso/account-recovery/complete',
+    ]) {
+        assert.ok(paths[path]?.post?.requestBody, `${path} needs a strict request contract`);
+        assert.ok(paths[path]?.post?.responses?.['400']);
+        assert.ok(paths[path]?.post?.responses?.['409']);
+    }
+    assert.ok(paths['/api/auth/student/sso/recovery-code']?.get?.responses?.['401']);
+    for (const schema of ['PasswordlessSignupHandoffRequest', 'PasswordlessSignupCompleteRequest', 'RecoveryCodeGenerateRequest', 'RecoveryCodeStatusResponse', 'AccountRecoveryVerifyRequest']) {
+        assert.ok(spec.components.schemas[schema], `missing typed OpenAPI schema ${schema}`);
+    }
 });
 
 const LINK_ACTOR_ID = 'aaaaaaaa-aaaa-4aaa-aaaa-aaaaaaaaaaaa';

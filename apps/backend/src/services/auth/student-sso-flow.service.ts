@@ -801,7 +801,8 @@ export type StudentSsoCleanupResult = {
 
 /**
  * Scheduled retention for SSO transients (B1 contract): expired attempt and
- * handoff ciphertext is scrubbed within one scheduled hour; non-audit
+ * handoff ciphertext is scrubbed at expiry (the 15-minute schedule keeps the
+ * maximum retention below the one-hour bound); non-audit
  * transient records are deleted after seven days. Owner linkage, revocation,
  * and assertion rows are retained under account retention rules and are
  * never deleted here.
@@ -831,14 +832,14 @@ export async function cleanupStudentSsoTransients(client: PoolClient): Promise<S
     const actionGrants = await client.query(
         `UPDATE student_auth_action_grants
          SET revoked_at = clock_timestamp(), secret_hash = 'scrubbed'
-         WHERE expires_at <= clock_timestamp() - interval '1 hour'
+         WHERE expires_at <= clock_timestamp()
            AND consumed_at IS NULL AND revoked_at IS NULL`,
     );
     const recoveryCodes = await client.query(
         `UPDATE student_auth_recovery_codes
          SET status = 'revoked', code_digest = NULL, expires_at = NULL,
              revoked_at = clock_timestamp(), terminal_at = clock_timestamp()
-         WHERE status = 'pending' AND expires_at <= clock_timestamp() - interval '1 hour'`,
+         WHERE status = 'pending' AND expires_at <= clock_timestamp()`,
     );
     await client.query(
         `DELETE FROM student_auth_action_grants
@@ -852,9 +853,9 @@ export async function cleanupStudentSsoTransients(client: PoolClient): Promise<S
     const overdue = await client.query<{ count: string }>(
         `SELECT (
             (SELECT count(*) FROM student_auth_action_grants
-             WHERE expires_at <= clock_timestamp() - interval '1 hour' AND consumed_at IS NULL AND revoked_at IS NULL)
+             WHERE expires_at <= clock_timestamp() AND consumed_at IS NULL AND revoked_at IS NULL)
             + (SELECT count(*) FROM student_auth_recovery_codes
-               WHERE status = 'pending' AND expires_at <= clock_timestamp() - interval '1 hour')
+               WHERE status = 'pending' AND expires_at <= clock_timestamp())
         )::text AS count`,
     );
     const attempts = await client.query(

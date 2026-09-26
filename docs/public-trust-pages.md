@@ -69,6 +69,17 @@ Use existing Awoof visual tokens, public header/footer and an accessible editori
 - Security reporting: include a `/trust` section once a monitored reporting channel is confirmed. A separate disclosure policy or security.txt requires approved contact/expiry and policy details; no invented bug bounty or safe-harbor commitments.
 - Accessibility information: add a short help/contact section for reporting access barriers; a formal conformance statement requires an audit.
 
+### Passwordless Task 7 documentation-impact review (source changes, not deployment evidence)
+
+| Surface | Decision and source evidence | Deployment/approval boundary |
+| --- | --- | --- |
+| `/help` | Updated recovery wording in `apps/web/src/content/public/help.ts`: mailbox control alone does not transfer an account or prove enrollment; it directs people only to the product recovery/support flow. It makes no recovery-success promise. | The new recovery implementation and provider journey remain disabled/unvalidated; no public route or provider availability is claimed. |
+| `/trust` | No copy change: `apps/web/src/content/public/trust.ts` already separates mailbox/account control from enrollment and explicitly excludes unsupported security, SLA, and rollout claims. The transient-cleanup schedule is not a public security claim. | Real cleanup scheduling/alert delivery still require operational evidence. |
+| `/privacy` | No copy change: this is owner-approved legal text in `privacy-draft.ts`; Task 7 adds no new sharing purpose, retention commitment, or legal basis. Existing wording is deliberately not changed without legal review. | Any later retention-policy change needs legal/owner approval and a deployed-policy review. |
+| `/developers` | Updated `partners.ts` to make the boundary explicit: disabled/unvalidated student sign-in and recovery routes are not a public merchant integration API. OpenAPI remains source API reference, with concrete contracts tested in backend. | It does not represent a live partner/provider integration or expose credentials. |
+
+Checklist: (1) affected behavior reviewed across help, trust, privacy and developers; (2) help/developers narrowed and trust/privacy have source-backed no-change rationales; (3) claims are limited to source/tests and deployment is pending; (4) existing public-page structure keeps heading hierarchy, keyboard-focusable examples and responsive layout, with focused browser checks recorded in the Task 7 report; (5) legal wording, Azure/provider validation, cleanup alert delivery and activation remain outstanding owner/operational gates.
+
 ### Defer until backed by operations
 
 - Live status page: only with monitoring/incident data; no static “all systems operational”.

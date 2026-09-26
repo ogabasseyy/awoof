@@ -152,6 +152,7 @@ export const developerExamples = [
 
 export const developerSeparations = [
   'Sign-in is not eligibility. A logged-in student with no passing check is not eligible.',
+  'Student sign-in and recovery routes are not a merchant integration surface. They are not documented here as a public partner API while provider rollout remains disabled and unvalidated.',
   'Server keys are not browser keys. Keys live on your backend; nothing secret goes in pages, apps, or URLs.',
   'Receipt history is not new authorization. Replays return the committed receipt; only a fresh approved check creates a new one.',
   'Claim links are not redemptions. A shared handoff URL redeems nothing without your nonce-bound checkout session and a server-side exchange.',

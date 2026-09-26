@@ -115,9 +115,10 @@ test('replacement generation ignores a second click while the first request is i
 });
 
 test('a dropped generation response resumes only as server pending state without plaintext', async ({ page }) => {
-    const api = await installSyntheticApi(page); let serverPending = false;
+    const api = await installSyntheticApi(page); let serverPending = false; let markServerPending!: () => void;
+    const serverWrite = new Promise<void>(resolve => { markServerPending = resolve; });
     await page.route(`${apiOrigin}/api/auth/student/sso/reauth/finish`, route => route.fulfill({ status: 201, headers, json: { success: true, data: { grantId: '84000000-0000-4000-8000-000000000001', grantSecret: 'grant', expiresAt: new Date(Date.now() + 60_000).toISOString(), purpose: 'recovery_code_generate', pendingCodeId: null, targetIdentityId: null, activeCodeGeneration: null } } }));
-    await page.route(`${apiOrigin}/api/auth/student/sso/recovery-code/generate`, route => { serverPending = true; return route.abort('failed'); });
+    await page.route(`${apiOrigin}/api/auth/student/sso/recovery-code/generate`, route => { serverPending = true; markServerPending(); return route.abort('failed'); });
     await page.route(`${apiOrigin}/api/auth/student/sso/recovery-code`, route => route.fulfill({ headers, json: { success: true, data: { status: serverPending ? 'pending' : 'unconfigured', generation: 1, pendingCodeId: serverPending ? '85000000-0000-4000-8000-000000000001' : null } } }));
-    await page.goto('/auth/student/login'); await seedSession(page, 'student'); await page.goto('/auth/student/sso/complete?reauth=86000000-0000-4000-8000-000000000001'); await expect(page.getByRole('heading', { name: 'Security confirmation unavailable' })).toBeVisible(); await page.goto('/student/security'); await expect(page.getByText('A pending code exists')).toBeVisible(); await expect(page.getByRole('button', { name: 'Cancel pending code' })).toBeVisible(); expect(await page.content()).not.toContain('new-code'); api.assertNoUnexpectedRequests();
+    await page.goto('/auth/student/login'); await seedSession(page, 'student'); await page.goto('/auth/student/sso/complete?reauth=86000000-0000-4000-8000-000000000001'); await expect(page.getByRole('heading', { name: 'Security confirmation unavailable' })).toBeVisible(); await serverWrite; await page.goto('/student/security'); await expect(page.getByText('A pending code exists')).toBeVisible(); await expect(page.getByRole('button', { name: 'Cancel pending code' })).toBeVisible(); expect(await page.content()).not.toContain('new-code'); api.assertNoUnexpectedRequests();
 });

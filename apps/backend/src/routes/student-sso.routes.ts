@@ -1001,35 +1001,55 @@ export default createStudentSsoRouter();
  *     description: Disabled unless the server enables passwordless signup. Requires the opaque handoff ID and tab-held secret; it never proves current enrollment or returns provider tokens.
  *     tags: [Authentication]
  *     security: []
+ *     requestBody:
+ *       required: true
+ *       content: { application/json: { schema: { $ref: '#/components/schemas/PasswordlessSignupHandoffRequest' } } }
  *     responses:
- *       200: { description: Pending signup context, no-store }
- *       409: { description: Disabled, expired, consumed, or invalid handoff }
+ *       200: { description: Pending signup context, no-store, content: { application/json: { schema: { $ref: '#/components/schemas/PasswordlessSignupContextResponse' } } } }
+ *       400: { description: JSON, exact-origin, or opaque handoff binding failure }
+ *       409: { description: Disabled, expired, consumed, replayed, or invalid handoff, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+ *       429: { description: Signup quota exhausted }
  * /api/auth/student/sso/signup/send-code:
  *   post:
  *     summary: Send a mailbox confirmation code for a pending passwordless signup
  *     description: Disabled unless server signup issuance is enabled. The code confirms mailbox control only, not current enrollment.
  *     tags: [Authentication]
  *     security: []
+ *     requestBody:
+ *       required: true
+ *       content: { application/json: { schema: { $ref: '#/components/schemas/PasswordlessSignupHandoffRequest' } } }
  *     responses:
- *       201: { description: Confirmation challenge created, no-store }
- *       409: { description: Disabled, invalid handoff, or resend limit }
+ *       201: { description: Confirmation challenge created, no-store, content: { application/json: { schema: { $ref: '#/components/schemas/PasswordlessSignupCodeResponse' } } } }
+ *       400: { description: JSON, exact-origin, or opaque handoff binding failure }
+ *       409: { description: Disabled, invalid handoff, replay, or resend limit, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+ *       429: { description: Signup quota exhausted }
  * /api/auth/student/sso/signup/verify-code:
  *   post:
  *     summary: Verify the pending signup mailbox confirmation code
  *     tags: [Authentication]
  *     security: []
+ *     requestBody:
+ *       required: true
+ *       content: { application/json: { schema: { $ref: '#/components/schemas/PasswordlessSignupVerifyRequest' } } }
  *     responses:
- *       200: { description: Mailbox confirmation accepted, no-store }
- *       409: { description: Disabled, expired, or invalid signup state }
+ *       200: { description: Mailbox confirmation accepted, no-store, content: { application/json: { schema: { $ref: '#/components/schemas/PasswordlessSignupVerifiedResponse' } } } }
+ *       400: { description: JSON, exact-origin, malformed, or stale proof }
+ *       409: { description: Disabled, expired, consumed, replayed, or invalid signup state, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+ *       429: { description: Signup quota exhausted }
  * /api/auth/student/sso/signup/complete:
  *   post:
  *     summary: Complete a confirmed passwordless student account
  *     description: Disabled unless server signup issuance is enabled. Requires the current Terms and processing-notice assent. Login and mailbox control do not authorize benefits.
  *     tags: [Authentication]
  *     security: []
+ *     requestBody:
+ *       required: true
+ *       content: { application/json: { schema: { $ref: '#/components/schemas/PasswordlessSignupCompleteRequest' } } }
  *     responses:
- *       201: { description: Account and session created, no-store }
- *       409: { description: Disabled, consumed, expired, or invalid signup state }
+ *       201: { description: Account and session created, no-store, content: { application/json: { schema: { $ref: '#/components/schemas/PasswordlessSignupCompleteResponse' } } } }
+ *       400: { description: JSON, exact-origin, required assent, or malformed request }
+ *       409: { description: Disabled, consumed, expired, replayed, or invalid signup state, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+ *       429: { description: Signup quota exhausted }
  * /api/auth/student/sso/recovery-code:
  *   get:
  *     summary: Read owner recovery-code status
@@ -1037,50 +1057,89 @@ export default createStudentSsoRouter();
  *     tags: [Authentication]
  *     security: [{ bearerAuth: [] }]
  *     responses:
- *       200: { description: Owner recovery-code status, no-store }
+ *       200: { description: Owner recovery-code status, no-store, content: { application/json: { schema: { $ref: '#/components/schemas/RecoveryCodeStatusResponse' } } } }
+ *       401: { description: Missing, invalid, or non-student bearer session }
  * /api/auth/student/sso/recovery-code/generate:
  *   post:
  *     summary: Generate a pending recovery code after fresh reauthentication
  *     tags: [Authentication]
  *     security: [{ bearerAuth: [] }]
+ *     requestBody:
+ *       required: true
+ *       content: { application/json: { schema: { $ref: '#/components/schemas/RecoveryCodeGenerateRequest' } } }
  *     responses:
- *       201: { description: One-time display response, no-store }
- *       409: { description: Invalid, expired, or replayed fresh grant }
+ *       201: { description: One-time display response, no-store, content: { application/json: { schema: { $ref: '#/components/schemas/RecoveryCodeGeneratedResponse' } } } }
+ *       400: { description: JSON, exact-origin, or malformed request }
+ *       401: { description: Missing, invalid, or non-student bearer session }
+ *       409: { description: Invalid, expired, consumed, revoked, or replayed fresh grant, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+ *       429: { description: Fresh-proof quota exhausted }
  * /api/auth/student/sso/recovery-code/activate:
  *   post:
  *     summary: Activate a pending recovery code after a second fresh proof
  *     tags: [Authentication]
  *     security: [{ bearerAuth: [] }]
+ *     requestBody:
+ *       required: true
+ *       content: { application/json: { schema: { $ref: '#/components/schemas/RecoveryCodeActivateRequest' } } }
  *     responses:
- *       200: { description: Recovery code activated, no-store }
+ *       200: { description: Recovery code activated, no-store, content: { application/json: { schema: { $ref: '#/components/schemas/RecoveryCodeActivatedResponse' } } } }
+ *       400: { description: JSON, exact-origin, or malformed request }
+ *       401: { description: Missing, invalid, or non-student bearer session }
+ *       409: { description: Invalid, expired, consumed, revoked, or replayed code/grant, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+ *       429: { description: Fresh-proof quota exhausted }
  * /api/auth/student/sso/recovery-code/remove:
  *   post:
  *     summary: Remove an active recovery code after fresh reauthentication
  *     tags: [Authentication]
  *     security: [{ bearerAuth: [] }]
+ *     requestBody:
+ *       required: true
+ *       content: { application/json: { schema: { $ref: '#/components/schemas/RecoveryCodeRemoveRequest' } } }
  *     responses:
  *       204: { description: Recovery code removed }
+ *       400: { description: JSON, exact-origin, or malformed request }
+ *       401: { description: Missing, invalid, or non-student bearer session }
+ *       409: { description: Invalid, expired, consumed, revoked, or replayed fresh grant }
+ *       429: { description: Fresh-proof quota exhausted }
  * /api/auth/student/sso/account-recovery/start:
  *   post:
  *     summary: Start independent password recovery
  *     description: Requires an explicit lost-access or compromise purpose. Mailbox access alone never transfers account ownership.
  *     tags: [Authentication]
  *     security: []
+ *     requestBody:
+ *       required: true
+ *       content: { application/json: { schema: { $ref: '#/components/schemas/AccountRecoveryStartRequest' } } }
  *     responses:
- *       202: { description: Recovery handle issued, no-store }
+ *       202: { description: Recovery handle issued, no-store, content: { application/json: { schema: { $ref: '#/components/schemas/AccountRecoveryStartResponse' } } } }
+ *       400: { description: JSON or malformed explicit-purpose request }
+ *       409: { description: Expired, unavailable, or conflict recovery state }
+ *       429: { description: Recovery quota exhausted }
  * /api/auth/student/sso/account-recovery/verify:
  *   post:
  *     summary: Verify both recovery-code and mailbox proofs
  *     tags: [Authentication]
  *     security: []
+ *     requestBody:
+ *       required: true
+ *       content: { application/json: { schema: { $ref: '#/components/schemas/AccountRecoveryVerifyRequest' } } }
  *     responses:
  *       204: { description: Recovery proofs accepted }
+ *       400: { description: JSON or malformed proof request }
+ *       409: { description: Expired, invalid, consumed, or replayed recovery proof }
+ *       429: { description: Recovery quota exhausted }
  * /api/auth/student/sso/account-recovery/complete:
  *   post:
  *     summary: Set a password after verified independent recovery
  *     description: Never issues a session or eligibility benefit; normal sign-in follows completion.
  *     tags: [Authentication]
  *     security: []
+ *     requestBody:
+ *       required: true
+ *       content: { application/json: { schema: { $ref: '#/components/schemas/AccountRecoveryCompleteRequest' } } }
  *     responses:
  *       204: { description: Password set without issuing a session }
+ *       400: { description: JSON or malformed completion request }
+ *       409: { description: Expired, invalid, consumed, or replayed recovery proof }
+ *       429: { description: Recovery quota exhausted }
  */
