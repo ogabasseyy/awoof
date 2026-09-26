@@ -193,6 +193,26 @@ export const sendWelcomeEmail = async (
     return await sendEmail(email, subject, html);
 };
 
+/** Security notice only: never include a recovery code or password. */
+export const sendRecoveryCodeSecurityNotice = async (
+    email: string,
+    event: 'activated' | 'replaced' | 'removed',
+): Promise<{ success: boolean; messageId?: string; error?: string }> => {
+    const detail = event === 'activated'
+        ? 'A recovery code was activated for your Awoof account.'
+        : event === 'replaced'
+            ? 'Your Awoof recovery code was replaced.'
+            : 'Your Awoof recovery code was removed.';
+    return sendEmail(email, 'Awoof account recovery-code security notice', `
+        <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
+            <h1>Awoof account security</h1>
+            <p>${detail}</p>
+            <p>No recovery code or password is included in this notice.</p>
+            <p>If you did not make this change, secure your account and contact support through the verified Awoof support channel.</p>
+        </div>
+    `);
+};
+
 
 function supportShell(title: string, bodyHtml: string): string {
     return `

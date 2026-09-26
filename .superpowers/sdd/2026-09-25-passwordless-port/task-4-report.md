@@ -7,6 +7,10 @@
 - Added `StudentRecoveryCodeService` with a two-step pending/active lifecycle,
   HMAC-SHA-256 code digests, 256-bit generated values, atomic swaps, and no
   plaintext readback after generation.
+- Activation, replacement, and removal now issue credential-free notices to
+  the recorded address after commit. A failed or unavailable email transport
+  is logged without claiming delivery and cannot roll back the credential
+  change.
 - Added migration `072_recovery_code_pending_binding.sql`. Pending records are
   bound immutably to their generating session, credential generation, and (if
   provider-backed) proof identity. Pre-existing unbound pending rows are
@@ -34,6 +38,10 @@
 - This task owns code enrollment lifecycle, not the separate mailbox-OTP
   account-recovery/password-setup endpoint. Pending rows therefore have no
   recovery consumer and cannot authorize recovery.
+- Task 5 must consume the active recovery code and revoke pending replacement
+  rows in the same account-locked password-setup transaction. The Task 4
+  PostgreSQL suite simulates that transaction racing replacement generation;
+  Task 5 must replace the simulation with its actual recovery service test.
 - Identity-proof revocation is checked at activation for both the generating
   proof and activation proof. Migration 072 prevents later session renewal
   from reviving a pending candidate created before invalidation.

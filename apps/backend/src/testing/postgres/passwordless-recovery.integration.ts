@@ -226,3 +226,96 @@ test('revoked generating proof and provider-only post-recovery re-enrollment bot
         await pool.end();
     }
 });
+
+test('credential-free activation, replacement, and removal notices run after commit', async () => {
+    const pool = createTestPool();
+    const client = await pool.connect();
+    try {
+        const userId = await seedStudent(client);
+        const events: string[] = [];
+        const service = new StudentRecoveryCodeService({
+            pool,
+            codeKey: 'test-recovery-code-key',
+            notify: async (_email, event) => {
+                events.push(event);
+                if (event === 'removed') throw new Error('simulated email transport failure');
+                return { success: event !== 'replaced' };
+            },
+        });
+        const firstGrant = await grant(client, { userId, purpose: 'recovery_code_generate' });
+        const first = await service.generate({ userId, sid: SID, grantId: firstGrant.grantId, secret: firstGrant.grantSecret });
+        const firstActivation = await grant(client, { userId, purpose: 'recovery_code_activate', pendingCodeId: first.pendingCodeId });
+        await service.activate({ userId, sid: SID, grantId: firstActivation.grantId, secret: firstActivation.grantSecret, pendingCodeId: first.pendingCodeId, code: first.code });
+
+        const replacementGrant = await grant(client, { userId, purpose: 'recovery_code_generate', activeCodeGeneration: 1 });
+        const replacement = await service.generate({ userId, sid: SID, grantId: replacementGrant.grantId, secret: replacementGrant.grantSecret, oldCode: first.code });
+        const replacementActivation = await grant(client, { userId, purpose: 'recovery_code_activate', pendingCodeId: replacement.pendingCodeId, activeCodeGeneration: 1 });
+        await service.activate({ userId, sid: SID, grantId: replacementActivation.grantId, secret: replacementActivation.grantSecret, pendingCodeId: replacement.pendingCodeId, code: replacement.code, oldCode: first.code });
+        assert.deepEqual(await service.status({ userId }), { status: 'active', generation: 2 }, 'failed delivery must not roll back replacement');
+
+        const removal = await grant(client, { userId, purpose: 'recovery_code_remove', activeCodeGeneration: 2 });
+        await service.remove({ userId, sid: SID, grantId: removal.grantId, secret: removal.grantSecret, oldCode: replacement.code });
+        assert.deepEqual(await service.status({ userId }), { status: 'unconfigured', generation: 2 });
+        assert.deepEqual(events, ['activated', 'replaced', 'removed']);
+    } finally {
+        client.release();
+        await pool.end();
+    }
+});
+
+test('a simulated recovery transaction serializes against replacement generation and clears pending state', async () => {
+    const pool = createTestPool();
+    const setup = await pool.connect();
+    try {
+        const userId = await seedStudent(setup);
+        const service = new StudentRecoveryCodeService({ pool, codeKey: 'test-recovery-code-key', notify: async () => ({ success: true }) });
+        const firstGrant = await grant(setup, { userId, purpose: 'recovery_code_generate' });
+        const first = await service.generate({ userId, sid: SID, grantId: firstGrant.grantId, secret: firstGrant.grantSecret });
+        const firstActivation = await grant(setup, { userId, purpose: 'recovery_code_activate', pendingCodeId: first.pendingCodeId });
+        await service.activate({ userId, sid: SID, grantId: firstActivation.grantId, secret: firstActivation.grantSecret, pendingCodeId: first.pendingCodeId, code: first.code });
+        const replacementGrant = await grant(setup, { userId, purpose: 'recovery_code_generate', activeCodeGeneration: 1 });
+
+        const simulatedRecovery = async (): Promise<void> => {
+            const tx = await pool.connect();
+            try {
+                await tx.query('BEGIN');
+                await tx.query('SELECT id FROM users WHERE id = $1 FOR UPDATE', [userId]);
+                await tx.query(
+                    `UPDATE student_auth_recovery_codes
+                     SET status = 'consumed', code_digest = NULL, consumed_at = clock_timestamp()
+                     WHERE user_id = $1 AND status = 'active'`,
+                    [userId],
+                );
+                // Task 5 must perform this in its recovery/password-setup
+                // transaction; without it, a pre-recovery replacement could
+                // become a valid new recovery credential after recovery.
+                await tx.query(
+                    `UPDATE student_auth_recovery_codes
+                     SET status = 'revoked', code_digest = NULL, expires_at = NULL, revoked_at = clock_timestamp()
+                     WHERE user_id = $1 AND status = 'pending'`,
+                    [userId],
+                );
+                await tx.query('COMMIT');
+            } catch (error) {
+                await tx.query('ROLLBACK').catch(() => undefined);
+                throw error;
+            } finally {
+                tx.release();
+            }
+        };
+
+        const results = await Promise.allSettled([
+            service.generate({ userId, sid: SID, grantId: replacementGrant.grantId, secret: replacementGrant.grantSecret, oldCode: first.code }),
+            simulatedRecovery(),
+        ]);
+        assert.ok(results.some((result) => result.status === 'fulfilled'));
+        const live = await setup.query<{ count: number }>(
+            "SELECT count(*)::int AS count FROM student_auth_recovery_codes WHERE user_id = $1 AND status IN ('active', 'pending')",
+            [userId],
+        );
+        assert.equal(live.rows[0]!.count, 0);
+    } finally {
+        setup.release();
+        await pool.end();
+    }
+});

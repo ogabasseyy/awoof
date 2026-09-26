@@ -1,6 +1,8 @@
 import { createHmac, randomBytes, randomUUID, timingSafeEqual } from 'node:crypto';
 import type { Pool, PoolClient } from 'pg';
 import { ConflictError } from '../../common/errors/AppError.js';
+import { appLogger } from '../../common/logger.js';
+import { sendRecoveryCodeSecurityNotice } from '../email/email.service.js';
 import { consumeActionGrant } from './student-action-grant.service.js';
 
 type RecoveryCodeStatus = 'unconfigured' | 'pending' | 'active';
@@ -17,6 +19,7 @@ type RecoveryCodeRow = {
 };
 
 type AccountRow = {
+    email: string;
     active_session_id: string | null;
     credential_generation: string | number;
     deleted_at: Date | null;
@@ -30,6 +33,7 @@ export type StudentRecoveryCodeDependencies = {
     /** Dedicated deployment-held HMAC key; never a client secret or JWT key. */
     codeKey: string;
     randomCode?: () => string;
+    notify?: (email: string, event: 'activated' | 'replaced' | 'removed') => Promise<{ success: boolean }>;
 };
 
 function unavailable(): ConflictError {
@@ -91,7 +95,7 @@ export class StudentRecoveryCodeService {
     }
 
     async activate(input: { userId: string; sid: string; grantId: string; secret: string; pendingCodeId: string; code: string; oldCode?: string }): Promise<{ active: true }> {
-        return this.inTransaction(async (tx) => {
+        const committed = await this.inTransaction(async (tx) => {
             const account = await this.lockAccount(tx, input.userId, input.sid);
             const pending = await this.lockCode(tx, input.userId, input.pendingCodeId);
             const active = await this.lockCurrentCode(tx, input.userId, 'active');
@@ -109,6 +113,7 @@ export class StudentRecoveryCodeService {
                 purpose: 'recovery_code_activate', pendingCodeId: pending.id,
                 activeCodeGeneration: active ? Number(active.generation) : null,
             });
+            const event: 'activated' | 'replaced' = active ? 'replaced' : 'activated';
             if (active) {
                 await tx.query(
                     `UPDATE student_auth_recovery_codes
@@ -128,13 +133,15 @@ export class StudentRecoveryCodeService {
                 'UPDATE users SET recovery_reenrollment_requires_password = false WHERE id = $1',
                 [input.userId],
             );
-            return { active: true };
+            return { result: { active: true as const }, email: account.email, event };
         });
+        await this.sendSecurityNotice(committed.email, committed.event);
+        return committed.result;
     }
 
     async remove(input: { userId: string; sid: string; grantId: string; secret: string; oldCode: string }): Promise<void> {
-        await this.inTransaction(async (tx) => {
-            await this.lockAccount(tx, input.userId, input.sid);
+        const committed = await this.inTransaction(async (tx) => {
+            const account = await this.lockAccount(tx, input.userId, input.sid);
             const active = await this.lockCurrentCode(tx, input.userId, 'active');
             if (!active) throw unavailable();
             this.requireOldCode(active, input.oldCode);
@@ -156,7 +163,9 @@ export class StudentRecoveryCodeService {
                  WHERE user_id = $1 AND status = 'pending'`,
                 [input.userId],
             );
+            return { email: account.email };
         });
+        await this.sendSecurityNotice(committed.email, 'removed');
     }
 
     async status(input: { userId: string }): Promise<{ status: RecoveryCodeStatus; generation: number | null }> {
@@ -215,7 +224,7 @@ export class StudentRecoveryCodeService {
 
     private async lockAccount(tx: PoolClient, userId: string, sid: string): Promise<AccountRow> {
         const result = await tx.query<AccountRow>(
-            `SELECT active_session_id, credential_generation, deleted_at, recovery_reenrollment_requires_password
+            `SELECT email, active_session_id, credential_generation, deleted_at, recovery_reenrollment_requires_password
              FROM users WHERE id = $1 FOR UPDATE`, [userId],
         );
         const account = result.rows[0];
@@ -258,5 +267,16 @@ export class StudentRecoveryCodeService {
             'SELECT revoked_at FROM student_auth_identities WHERE id = $1 AND user_id = $2 FOR UPDATE', [identityId, userId],
         );
         if (!result.rows[0] || result.rows[0].revoked_at !== null) throw unavailable();
+    }
+
+    private async sendSecurityNotice(email: string, event: 'activated' | 'replaced' | 'removed'): Promise<void> {
+        try {
+            const delivery = await (this.dependencies.notify ?? sendRecoveryCodeSecurityNotice)(email, event);
+            if (!delivery.success) appLogger.error('Recovery-code security notice delivery failed');
+        } catch {
+            // Credential state has already committed. A transport failure must
+            // not reopen or roll back a consumed, replaced, or removed code.
+            appLogger.error('Recovery-code security notice transport failed');
+        }
     }
 }
