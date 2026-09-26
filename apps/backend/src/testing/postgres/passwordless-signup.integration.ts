@@ -79,6 +79,8 @@ test('passwordless signup creates one passwordless account, mailbox proof, ident
         assert.equal((await pool.query<{ count: string }>(`SELECT count(*)::text AS count FROM users WHERE email=$1`, [state.email])).rows[0]!.count, '0');
         await assert.rejects(service.complete({ handoffId: state.handoffId, handoffSecret: state.handoffSecret, browserBinding: state.browser, fullName: 'Ada Student', ageAttested: true, termsVersion: 'stale-terms', verificationConsent: true, noticeVersion: VERIFICATION_NOTICE_VERSION }), /current age, terms, and verification processing assent/i);
         assert.equal((await pool.query<{ count: string }>(`SELECT count(*)::text AS count FROM users WHERE email=$1`, [state.email])).rows[0]!.count, '0');
+        await assert.rejects(service.complete({ handoffId: state.handoffId, handoffSecret: state.handoffSecret, browserBinding: state.browser, fullName: 'Ada Student', ageAttested: true, termsVersion: STUDENT_TERMS_VERSION, verificationConsent: false, noticeVersion: VERIFICATION_NOTICE_VERSION }), /current age, terms, and verification processing assent/i);
+        assert.equal((await pool.query<{ count: string }>(`SELECT count(*)::text AS count FROM users WHERE email=$1`, [state.email])).rows[0]!.count, '0');
         const sent = await service.sendCode({ handoffId: state.handoffId, handoffSecret: state.handoffSecret, browserBinding: state.browser });
         await service.verifyCode({ handoffId: state.handoffId, handoffSecret: state.handoffSecret, browserBinding: state.browser, challengeId: sent.challengeId, code });
         const completed = await service.complete({ handoffId: state.handoffId, handoffSecret: state.handoffSecret, browserBinding: state.browser, fullName: 'Ada Student', ageAttested: true, termsVersion: STUDENT_TERMS_VERSION, verificationConsent: true, noticeVersion: VERIFICATION_NOTICE_VERSION });
@@ -174,6 +176,8 @@ test('signup refuses an immediate resend and expiry after verified OTP creates n
         await pool.query(`UPDATE student_auth_link_handoffs SET expires_at=clock_timestamp()-interval '1 second' WHERE id=$1`, [state.handoffId]);
         await assert.rejects(service.complete({ handoffId: state.handoffId, handoffSecret: state.handoffSecret, browserBinding: state.browser, fullName: 'Ada Student', ageAttested: true, termsVersion: STUDENT_TERMS_VERSION, verificationConsent: true, noticeVersion: VERIFICATION_NOTICE_VERSION }), /not available/i);
         assert.equal((await pool.query<{ count: string }>(`SELECT count(*)::text AS count FROM users WHERE email=$1`, [state.email])).rows[0]!.count, '0');
+        await pool.query(`UPDATE student_auth_link_handoffs SET consumed_at=clock_timestamp(), encrypted_observation='scrubbed' WHERE id=$1`, [state.handoffId]);
+        await pool.query(`UPDATE student_auth_attempts SET status='failed', encrypted_verifier=NULL, nonce=NULL WHERE id=$1`, [state.attemptId]);
     });
 });
 
