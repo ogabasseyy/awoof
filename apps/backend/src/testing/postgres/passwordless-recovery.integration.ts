@@ -361,7 +361,7 @@ test('pending codes cannot recover and activation leaves only a digest at rest',
             userId, sid: SID, grantId: activation.grantId, secret: activation.grantSecret,
             pendingCodeId: pending.pendingCodeId, code: pending.code,
         });
-        assert.deepEqual(await service.status({ userId }), { status: 'active', generation: 1 });
+        assert.deepEqual(await service.status({ userId }), { status: 'active', generation: 1, pendingCodeId: null });
         await assert.rejects(
             () => service.activate({ userId, sid: SID, grantId: activation.grantId, secret: activation.grantSecret, pendingCodeId: pending.pendingCodeId, code: pending.code }),
             /not valid|not available/i,
@@ -396,7 +396,7 @@ test('replacement and removal require the current active code and exact separate
             (error: unknown) => (error as { code?: string }).code === 'CONFLICT',
         );
         await service.activate({ userId, sid: SID, grantId: replacementActivation.grantId, secret: replacementActivation.grantSecret, pendingCodeId: replacement.pendingCodeId, code: replacement.code, oldCode: initial.code });
-        assert.deepEqual(await service.status({ userId }), { status: 'active', generation: 2 });
+        assert.deepEqual(await service.status({ userId }), { status: 'active', generation: 2, pendingCodeId: null });
 
         const remove = await grant(client, { userId, purpose: 'recovery_code_remove', activeCodeGeneration: 2 });
         await assert.rejects(
@@ -404,7 +404,7 @@ test('replacement and removal require the current active code and exact separate
             (error: unknown) => (error as { code?: string }).code === 'CONFLICT',
         );
         await service.remove({ userId, sid: SID, grantId: remove.grantId, secret: remove.grantSecret, oldCode: replacement.code });
-        assert.deepEqual(await service.status({ userId }), { status: 'unconfigured', generation: 2 });
+        assert.deepEqual(await service.status({ userId }), { status: 'unconfigured', generation: 2, pendingCodeId: null });
     } finally {
         client.release();
         await pool.end();
@@ -542,16 +542,38 @@ test('credential-free activation, replacement, and removal notices run after com
         const replacement = await service.generate({ userId, sid: SID, grantId: replacementGrant.grantId, secret: replacementGrant.grantSecret, oldCode: first.code });
         const replacementActivation = await grant(client, { userId, purpose: 'recovery_code_activate', pendingCodeId: replacement.pendingCodeId, activeCodeGeneration: 1 });
         await service.activate({ userId, sid: SID, grantId: replacementActivation.grantId, secret: replacementActivation.grantSecret, pendingCodeId: replacement.pendingCodeId, code: replacement.code, oldCode: first.code });
-        assert.deepEqual(await service.status({ userId }), { status: 'active', generation: 2 }, 'failed delivery must not roll back replacement');
+        assert.deepEqual(await service.status({ userId }), { status: 'active', generation: 2, pendingCodeId: null }, 'failed delivery must not roll back replacement');
 
         const removal = await grant(client, { userId, purpose: 'recovery_code_remove', activeCodeGeneration: 2 });
         await service.remove({ userId, sid: SID, grantId: removal.grantId, secret: removal.grantSecret, oldCode: replacement.code });
-        assert.deepEqual(await service.status({ userId }), { status: 'unconfigured', generation: 2 });
+        assert.deepEqual(await service.status({ userId }), { status: 'unconfigured', generation: 2, pendingCodeId: null });
         assert.deepEqual(events, ['activated', 'replaced', 'removed']);
     } finally {
         client.release();
         await pool.end();
     }
+});
+
+test('only the owner current session can cancel its pending code and active code survives', async () => {
+    const pool = createTestPool(); const client = await pool.connect();
+    try {
+        const userId = await seedStudent(client); const otherUser = await seedStudent(client, '33333333-3333-4333-8333-333333333333');
+        const service = new StudentRecoveryCodeService({ pool, codeKey: 'test-recovery-code-key' });
+        const firstGrant = await grant(client, { userId, purpose: 'recovery_code_generate' });
+        const first = await service.generate({ userId, sid: SID, grantId: firstGrant.grantId, secret: firstGrant.grantSecret });
+        const firstActivation = await grant(client, { userId, purpose: 'recovery_code_activate', pendingCodeId: first.pendingCodeId });
+        await service.activate({ userId, sid: SID, grantId: firstActivation.grantId, secret: firstActivation.grantSecret, pendingCodeId: first.pendingCodeId, code: first.code });
+        const replacementGrant = await grant(client, { userId, purpose: 'recovery_code_generate', activeCodeGeneration: 1 });
+        const pending = await service.generate({ userId, sid: SID, grantId: replacementGrant.grantId, secret: replacementGrant.grantSecret, oldCode: first.code });
+        await assert.rejects(service.cancel({ userId: otherUser, sid: '33333333-3333-4333-8333-333333333333', pendingCodeId: pending.pendingCodeId }));
+        await assert.rejects(service.cancel({ userId, sid: '33333333-3333-4333-8333-333333333333', pendingCodeId: pending.pendingCodeId }));
+        const activeId = (await client.query<{ id: string }>("SELECT id FROM student_auth_recovery_codes WHERE user_id=$1 AND status='active'", [userId])).rows[0]!.id;
+        await assert.rejects(service.cancel({ userId, sid: SID, pendingCodeId: activeId }));
+        await service.cancel({ userId, sid: SID, pendingCodeId: pending.pendingCodeId });
+        const rows = await client.query<{ status: string; code_digest: string | null }>("SELECT status, code_digest FROM student_auth_recovery_codes WHERE user_id=$1 ORDER BY generation", [userId]);
+        assert.deepEqual(rows.rows.map(row => row.status), ['active', 'revoked']);
+        assert.notEqual(rows.rows[0]!.code_digest, null); assert.equal(rows.rows[1]!.code_digest, null);
+    } finally { client.release(); await pool.end(); }
 });
 
 test('a simulated recovery transaction serializes against replacement generation and clears pending state', async () => {
