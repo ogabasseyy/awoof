@@ -18,9 +18,24 @@ async function seedStudent(client: PoolClient, sid = SID): Promise<string> {
     return user.rows[0]!.id;
 }
 
+async function seedProviderProof(client: PoolClient, userId: string): Promise<string> {
+    const suffix = randomUUID().slice(0, 8);
+    const university = await client.query<{ id: string }>(
+        'INSERT INTO universities (name, is_active) VALUES ($1, true) RETURNING id',
+        [`Recovery proof ${suffix}`],
+    );
+    const identity = await client.query<{ id: string }>(
+        `INSERT INTO student_auth_identities
+             (user_id, university_id, provider, issuer, subject, observed_email)
+         VALUES ($1, $2, 'microsoft', $3, $4, $5) RETURNING id`,
+        [userId, university.rows[0]!.id, `https://issuer.example.invalid/${suffix}`, `subject-${suffix}`, `recovery-${suffix}@example.invalid`],
+    );
+    return identity.rows[0]!.id;
+}
+
 async function grant(
     client: PoolClient,
-    input: { userId: string; sid?: string; purpose: 'recovery_code_generate' | 'recovery_code_activate' | 'recovery_code_remove'; pendingCodeId?: string; activeCodeGeneration?: number },
+    input: { userId: string; sid?: string; purpose: 'recovery_code_generate' | 'recovery_code_activate' | 'recovery_code_remove'; pendingCodeId?: string; activeCodeGeneration?: number; proofIdentityId?: string },
 ) {
     return issueActionGrant(client, {
         userId: input.userId,
@@ -29,6 +44,7 @@ async function grant(
         credentialGeneration: 0,
         ...(input.pendingCodeId === undefined ? {} : { pendingCodeId: input.pendingCodeId }),
         ...(input.activeCodeGeneration === undefined ? {} : { activeCodeGeneration: input.activeCodeGeneration }),
+        ...(input.proofIdentityId === undefined ? {} : { proofIdentityId: input.proofIdentityId }),
     });
 }
 
@@ -80,13 +96,13 @@ test('replacement and removal require the current active code and exact separate
         const replacementGrant = await grant(client, { userId, purpose: 'recovery_code_generate', activeCodeGeneration: 1 });
         await assert.rejects(
             () => service.generate({ userId, sid: SID, grantId: replacementGrant.grantId, secret: replacementGrant.grantSecret }),
-            /old recovery code/i,
+            (error: unknown) => (error as { code?: string }).code === 'CONFLICT',
         );
         const replacement = await service.generate({ userId, sid: SID, grantId: replacementGrant.grantId, secret: replacementGrant.grantSecret, oldCode: initial.code });
         const replacementActivation = await grant(client, { userId, purpose: 'recovery_code_activate', pendingCodeId: replacement.pendingCodeId, activeCodeGeneration: 1 });
         await assert.rejects(
             () => service.activate({ userId, sid: SID, grantId: replacementActivation.grantId, secret: replacementActivation.grantSecret, pendingCodeId: replacement.pendingCodeId, code: replacement.code }),
-            /old recovery code/i,
+            (error: unknown) => (error as { code?: string }).code === 'CONFLICT',
         );
         await service.activate({ userId, sid: SID, grantId: replacementActivation.grantId, secret: replacementActivation.grantSecret, pendingCodeId: replacement.pendingCodeId, code: replacement.code, oldCode: initial.code });
         assert.deepEqual(await service.status({ userId }), { status: 'active', generation: 2 });
@@ -94,7 +110,7 @@ test('replacement and removal require the current active code and exact separate
         const remove = await grant(client, { userId, purpose: 'recovery_code_remove', activeCodeGeneration: 2 });
         await assert.rejects(
             () => service.remove({ userId, sid: SID, grantId: remove.grantId, secret: remove.grantSecret, oldCode: initial.code }),
-            /old recovery code/i,
+            (error: unknown) => (error as { code?: string }).code === 'CONFLICT',
         );
         await service.remove({ userId, sid: SID, grantId: remove.grantId, secret: remove.grantSecret, oldCode: replacement.code });
         assert.deepEqual(await service.status({ userId }), { status: 'unconfigured', generation: 2 });
@@ -104,7 +120,7 @@ test('replacement and removal require the current active code and exact separate
     }
 });
 
-test('obsolete session and credential generation cannot activate a pending code', async () => {
+test('obsolete sessions and credential generations cannot activate pending codes', async () => {
     const pool = createTestPool();
     const client = await pool.connect();
     try {
@@ -112,10 +128,20 @@ test('obsolete session and credential generation cannot activate a pending code'
         const service = new StudentRecoveryCodeService({ pool, codeKey: 'test-recovery-code-key' });
         const generated = await grant(client, { userId, purpose: 'recovery_code_generate' });
         const pending = await service.generate({ userId, sid: SID, grantId: generated.grantId, secret: generated.grantSecret });
-        const activation = await grant(client, { userId, purpose: 'recovery_code_activate', pendingCodeId: pending.pendingCodeId });
-        await client.query('UPDATE users SET credential_generation = credential_generation + 1 WHERE id = $1', [userId]);
+        const sessionActivation = await grant(client, { userId, purpose: 'recovery_code_activate', pendingCodeId: pending.pendingCodeId });
+        await client.query('UPDATE users SET active_session_id = $2::uuid WHERE id = $1', [userId, '33333333-3333-4333-8333-333333333333']);
         await assert.rejects(
-            () => service.activate({ userId, sid: SID, grantId: activation.grantId, secret: activation.grantSecret, pendingCodeId: pending.pendingCodeId, code: pending.code }),
+            () => service.activate({ userId, sid: SID, grantId: sessionActivation.grantId, secret: sessionActivation.grantSecret, pendingCodeId: pending.pendingCodeId, code: pending.code }),
+            /not valid|not available/i,
+        );
+
+        const credentialUserId = await seedStudent(client, '44444444-4444-4444-8444-444444444444');
+        const credentialGenerated = await grant(client, { userId: credentialUserId, sid: '44444444-4444-4444-8444-444444444444', purpose: 'recovery_code_generate' });
+        const credentialPending = await service.generate({ userId: credentialUserId, sid: '44444444-4444-4444-8444-444444444444', grantId: credentialGenerated.grantId, secret: credentialGenerated.grantSecret });
+        const credentialActivation = await grant(client, { userId: credentialUserId, sid: '44444444-4444-4444-8444-444444444444', purpose: 'recovery_code_activate', pendingCodeId: credentialPending.pendingCodeId });
+        await client.query('UPDATE users SET credential_generation = credential_generation + 1 WHERE id = $1', [credentialUserId]);
+        await assert.rejects(
+            () => service.activate({ userId: credentialUserId, sid: '44444444-4444-4444-8444-444444444444', grantId: credentialActivation.grantId, secret: credentialActivation.grantSecret, pendingCodeId: credentialPending.pendingCodeId, code: credentialPending.code }),
             /not valid|not available/i,
         );
     } finally {
@@ -159,6 +185,42 @@ test('expired, obsolete-session, and competing activation attempts leave no seco
             () => service.generate({ userId, sid: SID, grantId: replacement.grantId, secret: replacement.grantSecret, oldCode: second.code }),
             /not available/i,
         );
+    } finally {
+        client.release();
+        await pool.end();
+    }
+});
+
+test('revoked generating proof and provider-only post-recovery re-enrollment both fail closed', async () => {
+    const pool = createTestPool();
+    const client = await pool.connect();
+    try {
+        const userId = await seedStudent(client);
+        const proofIdentityId = await seedProviderProof(client, userId);
+        const service = new StudentRecoveryCodeService({ pool, codeKey: 'test-recovery-code-key' });
+        const generated = await grant(client, { userId, purpose: 'recovery_code_generate', proofIdentityId });
+        const pending = await service.generate({ userId, sid: SID, grantId: generated.grantId, secret: generated.grantSecret });
+        const activation = await grant(client, { userId, purpose: 'recovery_code_activate', pendingCodeId: pending.pendingCodeId, proofIdentityId });
+        await client.query('UPDATE student_auth_identities SET revoked_at = clock_timestamp() WHERE id = $1', [proofIdentityId]);
+        await assert.rejects(
+            () => service.activate({ userId, sid: SID, grantId: activation.grantId, secret: activation.grantSecret, pendingCodeId: pending.pendingCodeId, code: pending.code }),
+            (error: unknown) => (error as { code?: string }).code === 'CONFLICT',
+        );
+
+        await client.query('UPDATE users SET recovery_reenrollment_requires_password = true WHERE id = $1', [userId]);
+        const providerOnly = await grant(client, { userId, purpose: 'recovery_code_generate', proofIdentityId });
+        await assert.rejects(
+            () => service.generate({ userId, sid: SID, grantId: providerOnly.grantId, secret: providerOnly.grantSecret }),
+            (error: unknown) => (error as { code?: string }).code === 'CONFLICT',
+        );
+        const passwordGrant = await grant(client, { userId, purpose: 'recovery_code_generate' });
+        const restarted = await service.generate({ userId, sid: SID, grantId: passwordGrant.grantId, secret: passwordGrant.grantSecret });
+        const passwordActivation = await grant(client, { userId, purpose: 'recovery_code_activate', pendingCodeId: restarted.pendingCodeId });
+        await service.activate({ userId, sid: SID, grantId: passwordActivation.grantId, secret: passwordActivation.grantSecret, pendingCodeId: restarted.pendingCodeId, code: restarted.code });
+        const marker = await client.query<{ recovery_reenrollment_requires_password: boolean }>(
+            'SELECT recovery_reenrollment_requires_password FROM users WHERE id = $1', [userId],
+        );
+        assert.equal(marker.rows[0]!.recovery_reenrollment_requires_password, false);
     } finally {
         client.release();
         await pool.end();

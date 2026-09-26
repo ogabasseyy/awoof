@@ -268,12 +268,15 @@ test('recovery code lifecycle permits one active code and rejects terminal repla
     await withTestClient(async (client) => {
         const first = await seedExistingLogin(client);
         const second = await seedExistingLogin(client);
+        const pendingSid = randomUUID();
+        await client.query('UPDATE users SET active_session_id = $2::uuid WHERE id = $1', [first.userId, pendingSid]);
         const codeId = (await client.query<{ id: string }>(
             `INSERT INTO student_auth_recovery_codes
-                 (user_id, generation, code_digest, status, expires_at)
-             VALUES ($1, 1, $2, 'pending', clock_timestamp() + interval '10 minutes')
+                 (user_id, generation, code_digest, status, expires_at,
+                  pending_sid, pending_credential_generation, pending_proof_identity_id)
+             VALUES ($1, 1, $2, 'pending', clock_timestamp() + interval '10 minutes', $3::uuid, 0, $4)
              RETURNING id`,
-            [first.userId, `digest-${label()}`],
+            [first.userId, `digest-${label()}`, pendingSid, first.identityId],
         )).rows[0]!.id;
         await client.query(
             `UPDATE student_auth_recovery_codes
