@@ -21,7 +21,7 @@
 ## Global Constraints
 
 - Keep `institution_login_policies`, `student_auth_identities`, `student_auth_link_handoffs`, and current identity ownership history. Never introduce the competing `sso_login_identities` model or copy old migrations 056/057.
-- New migration numbers start at 067 on this baseline; recheck before committing if main advances. Existing migrations are immutable.
+- New migration numbers start at 069 on this baseline; recheck before committing if main advances. Existing migrations are immutable.
 - Signup: original ten-minute handoff cap; six-digit OTP, five-minute expiry capped by handoff, five failed checks total, three sends total, sixty-second spacing, cross-attempt throttles.
 - Fresh reauthentication: `max_age=0`; `auth_time >= attempt.started_at - 60 seconds` and `auth_time <= server_now + 60 seconds`; five-minute attempts and grants, single-use.
 - Recovery: one code with at least 128 bits entropy, digests only; pending lifetime ten minutes, separate generation/activation grants; saved code plus mailbox OTP for recovery.
@@ -40,11 +40,11 @@
 
 ## Task 1: Additive credential storage and upgrade fixture
 
-**Files:** Create `apps/backend/src/database/migrations/067_passwordless_credentials.sql`, `apps/backend/src/testing/postgres/passwordless-upgrade.integration.ts`; modify migration registration only if required by the existing runner.
+**Files:** Create `apps/backend/src/database/migrations/069_passwordless_credentials.sql`, `apps/backend/src/testing/postgres/passwordless-upgrade.integration.ts`; modify migration registration only if required by the existing runner.
 
 **Interfaces:** Add `users.password_setup_requires_recovery_code`, `users.recovery_reenrollment_requires_password` (false defaults) and `users.credential_generation` (nonnegative bigint). Add `student_auth_signup_challenges` with unique existing handoff FK; `student_auth_recovery_codes` with pending/active/consumed/revoked lifecycle; `student_auth_action_grants`, `student_auth_reauth_attempts`, `student_auth_recovery_attempts`. Use existing user/identity foreign keys. Grants bind user, sid, credential generation, operation, proof identity, pending generation and active-code generation. Define constraints for one active code, immutable ownership, terminal states and expiry.
 
-- [ ] Write `upgradePreservesExistingLogin`: seed a current policy and identity through migrations 001–066, apply 067, assert their IDs/columns unchanged, both credential flags false, existing login still works. Write unique-handoff/code and terminal-replay constraint tests.
+- [ ] Write `upgradePreservesExistingLogin`: seed a current policy and identity through migrations 001–068, apply 069, assert their IDs/columns unchanged, both credential flags false, existing login still works. Write unique-handoff/code and terminal-replay constraint tests.
 - [ ] Run `npm run test:postgres --prefix apps/backend`; confirm new tests fail for absent schema (ensure the harness discovers the new suite).
 - [ ] Implement only additive storage. Reuse no old table-definition SQL. Document the concrete lock order alongside the migration; use the existing identity/handoff ordering, not an independently invented order.
 - [ ] Repeat PostgreSQL suite; verify fresh install and upgrade path pass. Commit Task 1 files.
