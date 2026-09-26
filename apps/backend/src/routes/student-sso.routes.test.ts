@@ -85,6 +85,7 @@ function routerWith(flow: Flow, overrides: Parameters<typeof createStudentSsoRou
         isIssuanceEnabled: () => true,
         enabledProviders: () => ['google', 'microsoft'],
         completionOrigin: COMPLETION_ORIGIN,
+        isSignupEnabled: () => true,
         checkStartQuota: async () => undefined,
         pool: { query: async () => ({ rows: [], rowCount: 0 }) } as never,
         ...overrides,
@@ -327,6 +328,22 @@ test('start fails closed when issuance or the provider is disabled', async () =>
             body: JSON.stringify({ email: 'ada@students.school.example' }),
         });
         assert.equal(response.status, 404);
+    });
+});
+
+test('old SSO clients can still sign in while new passwordless signup is disabled', async () => {
+    const router = routerWith(stubFlow(), { isSignupEnabled: () => false });
+    await withServer(router, async (baseUrl) => {
+        const oldLogin = await fetch(`${baseUrl}/google/start`, {
+            method: 'POST', headers: { 'content-type': 'application/json', origin: COMPLETION_ORIGIN },
+            body: JSON.stringify({ email: 'ada@students.school.example' }),
+        });
+        assert.equal(oldLogin.status, 201);
+        const signup = await fetch(`${baseUrl}/signup/context`, {
+            method: 'POST', headers: { 'content-type': 'application/json', origin: COMPLETION_ORIGIN },
+            body: JSON.stringify({ handoffId: ATTEMPT_ID, handoffSecret: 'old-client-handoff' }),
+        });
+        assert.equal(signup.status, 409);
     });
 });
 
@@ -615,6 +632,20 @@ test('OpenAPI documents the browser-bound SSO contract', () => {
     assert.ok(paths['/api/auth/student/sso/{provider}/start']);
     assert.ok(paths['/api/auth/student/sso/{provider}/callback']);
     assert.ok(paths['/api/auth/student/sso/finish']);
+});
+
+test('OpenAPI documents disabled passwordless signup and recovery contracts without benefit claims', () => {
+    const paths = (swaggerSpec as { paths: Record<string, { post?: { description?: string }; get?: { description?: string } }> }).paths;
+    for (const path of [
+        '/api/auth/student/sso/signup/context', '/api/auth/student/sso/signup/send-code',
+        '/api/auth/student/sso/signup/verify-code', '/api/auth/student/sso/signup/complete',
+        '/api/auth/student/sso/recovery-code', '/api/auth/student/sso/recovery-code/generate',
+        '/api/auth/student/sso/recovery-code/activate', '/api/auth/student/sso/recovery-code/remove',
+        '/api/auth/student/sso/account-recovery/start', '/api/auth/student/sso/account-recovery/verify',
+        '/api/auth/student/sso/account-recovery/complete',
+    ]) assert.ok(paths[path], `missing ${path}`);
+    assert.match(paths['/api/auth/student/sso/signup/context']?.post?.description ?? '', /Disabled/);
+    assert.match(paths['/api/auth/student/sso/account-recovery/start']?.post?.description ?? '', /never transfers account ownership/);
 });
 
 const LINK_ACTOR_ID = 'aaaaaaaa-aaaa-4aaa-aaaa-aaaaaaaaaaaa';

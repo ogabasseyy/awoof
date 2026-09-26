@@ -1,7 +1,7 @@
 import { Router, type NextFunction, type Request, type Response } from 'express';
 import rateLimit from 'express-rate-limit';
 import type { Pool } from 'pg';
-import { AppError, BadRequestError, NotFoundError, ServiceUnavailableError, UnauthorizedError } from '../common/errors/AppError.js';
+import { AppError, BadRequestError, ConflictError, NotFoundError, ServiceUnavailableError, UnauthorizedError } from '../common/errors/AppError.js';
 import { asyncHandler } from '../common/middleware/errorHandler.js';
 import { authenticate, requireRole } from '../middleware/auth.middleware.js';
 import { config } from '../config/env.js';
@@ -48,6 +48,8 @@ export type StudentSsoRouterOptions = {
     signupService?: SignupFactory;
     recoveryCodeService?: RecoveryCodeFactory;
     accountRecoveryService?: AccountRecoveryFactory;
+    /** Passwordless new-account issuance is independently fail-closed. */
+    isSignupEnabled?: () => boolean;
 };
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
@@ -370,6 +372,7 @@ export function createStudentSsoRouter(factory: FlowFactory = defaultFlow, optio
     const callbackLimiter = studentSsoCallbackLimiter(options.callbackLimiterMax ?? 60);
     const linkFactory = options.linkService ?? defaultLink;
     const signupFactory = options.signupService ?? defaultSignup;
+    const signupEnabled = options.isSignupEnabled ?? (() => false);
     const reauthFactory = options.reauthService ?? defaultReauth;
     const recoveryCodeFactory = options.recoveryCodeService ?? defaultRecoveryCode;
     const accountRecoveryFactory = options.accountRecoveryService ?? defaultAccountRecovery;
@@ -560,19 +563,23 @@ export function createStudentSsoRouter(factory: FlowFactory = defaultFlow, optio
     }));
 
     router.post('/signup/context', signupLimiter, exactOrigin, exactJson, asyncHandler(async (req, res) => {
+        if (!signupEnabled()) throw new ConflictError('Passwordless signup is unavailable');
         if (!req.body || typeof req.body !== 'object' || Array.isArray(req.body) || Object.keys(req.body).length !== 2) throw new BadRequestError('Passwordless signup request is invalid');
         const body = signupHandoffBody(req); const result = await signupFactory().context(await signupBinding(req, body)); responseHeaders(res); res.json({ success: true, data: result });
     }));
     router.post('/signup/send-code', signupLimiter, exactOrigin, exactJson, asyncHandler(async (req, res) => {
+        if (!signupEnabled()) throw new ConflictError('Passwordless signup is unavailable');
         if (!req.body || typeof req.body !== 'object' || Array.isArray(req.body) || Object.keys(req.body).length !== 2) throw new BadRequestError('Passwordless signup request is invalid');
         const body = signupHandoffBody(req); const result = await signupFactory().sendCode(await signupBinding(req, body)); responseHeaders(res); res.status(201).json({ success: true, data: result });
     }));
     router.post('/signup/verify-code', signupLimiter, exactOrigin, exactJson, asyncHandler(async (req, res) => {
+        if (!signupEnabled()) throw new ConflictError('Passwordless signup is unavailable');
         const body = req.body as Record<string, unknown>; const handoff = signupHandoffBody(req);
         if (Object.keys(body).length !== 4 || typeof body.challengeId !== 'string' || typeof body.code !== 'string') throw new BadRequestError('Passwordless signup request is invalid');
         const result = await signupFactory().verifyCode({ ...await signupBinding(req, handoff), challengeId: body.challengeId, code: body.code }); responseHeaders(res); res.json({ success: true, data: result });
     }));
     router.post('/signup/complete', signupLimiter, exactOrigin, exactJson, asyncHandler(async (req, res) => {
+        if (!signupEnabled()) throw new ConflictError('Passwordless signup is unavailable');
         const body = req.body as Record<string, unknown>; const handoff = signupHandoffBody(req);
         const allowed = new Set(['handoffId', 'handoffSecret', 'fullName', 'ageAttested', 'termsVersion', 'verificationConsent', 'noticeVersion']);
         if (Object.keys(body).some(key => !allowed.has(key)) || Object.keys(body).length !== 7) throw new BadRequestError('Passwordless signup request is invalid');
@@ -988,4 +995,92 @@ export default createStudentSsoRouter();
  *       404: { description: Login identity not found }
  *       409: { description: Unlink invalid or last login method (SSO_LAST_LOGIN_METHOD) }
  *       429: { description: Too many unlink requests }
+ * /api/auth/student/sso/signup/context:
+ *   post:
+ *     summary: Read a pending passwordless signup handoff
+ *     description: Disabled unless the server enables passwordless signup. Requires the opaque handoff ID and tab-held secret; it never proves current enrollment or returns provider tokens.
+ *     tags: [Authentication]
+ *     security: []
+ *     responses:
+ *       200: { description: Pending signup context, no-store }
+ *       409: { description: Disabled, expired, consumed, or invalid handoff }
+ * /api/auth/student/sso/signup/send-code:
+ *   post:
+ *     summary: Send a mailbox confirmation code for a pending passwordless signup
+ *     description: Disabled unless server signup issuance is enabled. The code confirms mailbox control only, not current enrollment.
+ *     tags: [Authentication]
+ *     security: []
+ *     responses:
+ *       201: { description: Confirmation challenge created, no-store }
+ *       409: { description: Disabled, invalid handoff, or resend limit }
+ * /api/auth/student/sso/signup/verify-code:
+ *   post:
+ *     summary: Verify the pending signup mailbox confirmation code
+ *     tags: [Authentication]
+ *     security: []
+ *     responses:
+ *       200: { description: Mailbox confirmation accepted, no-store }
+ *       409: { description: Disabled, expired, or invalid signup state }
+ * /api/auth/student/sso/signup/complete:
+ *   post:
+ *     summary: Complete a confirmed passwordless student account
+ *     description: Disabled unless server signup issuance is enabled. Requires the current Terms and processing-notice assent. Login and mailbox control do not authorize benefits.
+ *     tags: [Authentication]
+ *     security: []
+ *     responses:
+ *       201: { description: Account and session created, no-store }
+ *       409: { description: Disabled, consumed, expired, or invalid signup state }
+ * /api/auth/student/sso/recovery-code:
+ *   get:
+ *     summary: Read owner recovery-code status
+ *     description: Returns status and generation metadata only; never returns a recovery-code digest or plaintext.
+ *     tags: [Authentication]
+ *     security: [{ bearerAuth: [] }]
+ *     responses:
+ *       200: { description: Owner recovery-code status, no-store }
+ * /api/auth/student/sso/recovery-code/generate:
+ *   post:
+ *     summary: Generate a pending recovery code after fresh reauthentication
+ *     tags: [Authentication]
+ *     security: [{ bearerAuth: [] }]
+ *     responses:
+ *       201: { description: One-time display response, no-store }
+ *       409: { description: Invalid, expired, or replayed fresh grant }
+ * /api/auth/student/sso/recovery-code/activate:
+ *   post:
+ *     summary: Activate a pending recovery code after a second fresh proof
+ *     tags: [Authentication]
+ *     security: [{ bearerAuth: [] }]
+ *     responses:
+ *       200: { description: Recovery code activated, no-store }
+ * /api/auth/student/sso/recovery-code/remove:
+ *   post:
+ *     summary: Remove an active recovery code after fresh reauthentication
+ *     tags: [Authentication]
+ *     security: [{ bearerAuth: [] }]
+ *     responses:
+ *       204: { description: Recovery code removed }
+ * /api/auth/student/sso/account-recovery/start:
+ *   post:
+ *     summary: Start independent password recovery
+ *     description: Requires an explicit lost-access or compromise purpose. Mailbox access alone never transfers account ownership.
+ *     tags: [Authentication]
+ *     security: []
+ *     responses:
+ *       202: { description: Recovery handle issued, no-store }
+ * /api/auth/student/sso/account-recovery/verify:
+ *   post:
+ *     summary: Verify both recovery-code and mailbox proofs
+ *     tags: [Authentication]
+ *     security: []
+ *     responses:
+ *       204: { description: Recovery proofs accepted }
+ * /api/auth/student/sso/account-recovery/complete:
+ *   post:
+ *     summary: Set a password after verified independent recovery
+ *     description: Never issues a session or eligibility benefit; normal sign-in follows completion.
+ *     tags: [Authentication]
+ *     security: []
+ *     responses:
+ *       204: { description: Password set without issuing a session }
  */

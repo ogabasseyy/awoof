@@ -20,10 +20,12 @@ Evidence links source cleanup to migration 074 and the compiled artifact. Deploy
 
 - `npm run type-check --prefix apps/backend` — passed.
 - `npm run test:artifact --prefix apps/backend` — passed: compiled artifact contained 29 integration tests, 75 staged migrations, and 724 hashed files; OpenAPI artifact parity and source-absent runtime probes passed.
-- `npm test --prefix apps/backend` — passed: 375 tests, 0 failures, 0 skipped. Four HTTP fixtures now use scoped, restored pool stubs matching the passwordless student-session lookup; the recovery-status expectation includes the deliberate `pendingCodeId: null` contract field.
+- `npm test --prefix apps/backend` — passed: 377 tests, 0 failures, 0 skipped. Four HTTP fixtures now use scoped, restored pool stubs matching the passwordless student-session lookup; the recovery-status expectation includes the deliberate `pendingCodeId: null` contract field.
+- `npm run test:postgres --prefix apps/backend` on the pre-OpenAPI source state — passed: 393 tests, 0 failures, 1 skipped. The same final migration source was applied fresh in the disposable cluster.
+- `npm run lint --prefix apps/web` — passed with 0 errors and 52 existing warnings. The web package has no `type-check` script.
 
 ## Not run / release blockers
 
-- The full PostgreSQL suite, backend lint, web typecheck/lint/build, and browser suite were intentionally left to the release controller; this report does not claim their results.
+- The browser suite is release-controller owned and needs a focused final-head rerun after its diagnostic source-change run. No browser pass is claimed here.
 - Production activation is blocked pending owner acceptance of mailbox limitations; secure Azure configuration inspection; user-operated Microsoft/MFA/consent exercise with `auth_time`; signup/session persistence/subsequent login/denied-benefit evidence; and demonstrated external cleanup-alert delivery.
 - Backend-first deployment with signup disabled, an old-client/new-backend contract test, and a rollback that retains credential protections are required by `docs/passwordless-release-checklist.md`.
