@@ -24,7 +24,7 @@ import {
     isSsoAttemptLive,
     parseSsoFinishResponse,
     parseSsoRestart,
-    parseSsoReauthResponse,
+    parseSsoReauthFinish,
     readSsoAttempt,
     saveSsoHandoff,
     ssoAttemptMatches,
@@ -52,21 +52,21 @@ function RecoveryReauthComplete({ attemptId }: { attemptId: string }) {
     const started = useRef(false);
     useEffect(() => {
         if (started.current) return; started.current = true;
-        const intent = readRecoveryIntent(); const session = getSessionSnapshot();
-        if (!intent || !session.accessToken) { setStatus('failed'); return; }
+        const session = getSessionSnapshot();
+        if (!session.accessToken) { setStatus('failed'); return; }
         void studentSsoApiClient.post('/auth/student/sso/reauth/finish', { attemptId }, { headers: { Authorization: `Bearer ${session.accessToken}` } }).then(async response => {
-            const grant = parseSsoReauthResponse(response.data); if (!grant) throw new Error('invalid grant');
-            if (intent.purpose === 'recovery_code_generate') {
+            const grant = parseSsoReauthFinish(response.data); if (!grant) throw new Error('invalid grant');
+            if (grant.purpose === 'recovery_code_generate') {
                 const generated = await studentSsoApiClient.post('/auth/student/sso/recovery-code/generate', { reauthGrant: { grantId: grant.grantId, grantSecret: grant.grantSecret } }, { headers: { Authorization: `Bearer ${session.accessToken}` } });
                 const data = (generated.data as { data?: { pendingCodeId?: unknown; code?: unknown } }).data;
                 if (!data || typeof data.pendingCodeId !== 'string' || typeof data.code !== 'string') throw new Error('invalid code');
                 // Plaintext is held only in React memory for this rendered response.
                 setPendingCodeId(data.pendingCodeId); setCode(data.code); clearRecoveryIntent(); setStatus('display'); return;
             }
-            if (!intent.pendingCodeId) throw new Error('missing pending');
-            clearRecoveryIntent(); setPendingCodeId(intent.pendingCodeId);
+            if (grant.purpose !== 'recovery_code_activate' || !grant.pendingCodeId) throw new Error('missing pending');
+            clearRecoveryIntent();
             // The user re-enters the value here after the second fresh proof; it was never persisted through the redirect.
-            setGrant({ grantId: grant.grantId, grantSecret: grant.grantSecret });
+            setPendingCodeId(grant.pendingCodeId); setGrant({ grantId: grant.grantId, grantSecret: grant.grantSecret });
             setStatus('activate');
         }).catch(() => { clearRecoveryIntent(); setStatus('failed'); });
     }, [attemptId]);

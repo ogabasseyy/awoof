@@ -658,6 +658,14 @@ export function createStudentSsoRouter(factory: FlowFactory = defaultFlow, optio
         res.status(204).end();
     }));
 
+    router.post('/recovery-code/cancel', authenticate, requireRole('student'), exactOrigin, exactJson, asyncHandler(async (req, res) => {
+        const body = req.body as { pendingCodeId?: unknown };
+        if (!body || typeof body !== 'object' || Array.isArray(body) || Object.keys(body).length !== 1 || typeof body.pendingCodeId !== 'string' || !UUID.test(body.pendingCodeId)) throw new BadRequestError('Recovery-code request is invalid');
+        const actor = ssoActor(req);
+        await recoveryCodeFactory().cancel({ userId: actor.userId, sid: actor.sid, pendingCodeId: body.pendingCodeId });
+        responseHeaders(res); res.status(204).end();
+    }));
+
     router.post('/link', authenticate, requireRole('student'), linkLimiter, exactOrigin, exactJson, asyncHandler(async (req, res) => {
         const body = linkBody(req);
         const actor = ssoActor(req);

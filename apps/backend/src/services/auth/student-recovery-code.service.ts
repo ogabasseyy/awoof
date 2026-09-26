@@ -168,7 +168,7 @@ export class StudentRecoveryCodeService {
         await this.sendSecurityNotice(committed.email, 'removed');
     }
 
-    async status(input: { userId: string }): Promise<{ status: RecoveryCodeStatus; generation: number | null }> {
+    async status(input: { userId: string }): Promise<{ status: RecoveryCodeStatus; generation: number | null; pendingCodeId: string | null }> {
         const result = await this.dependencies.pool.connect();
         try {
             const current = await result.query<RecoveryCodeRow>(
@@ -181,15 +181,27 @@ export class StudentRecoveryCodeService {
             );
             const code = current.rows[0];
             if (code && (code.status === 'active' || code.status === 'pending')) {
-                return { status: code.status, generation: Number(code.generation) };
+                return { status: code.status, generation: Number(code.generation), pendingCodeId: code.status === 'pending' ? code.id : null };
             }
             const generation = await result.query<{ generation: string | number }>(
                 'SELECT max(generation) AS generation FROM student_auth_recovery_codes WHERE user_id = $1', [input.userId],
             );
-            return { status: 'unconfigured', generation: generation.rows[0]?.generation == null ? null : Number(generation.rows[0].generation) };
+            return { status: 'unconfigured', generation: generation.rows[0]?.generation == null ? null : Number(generation.rows[0].generation), pendingCodeId: null };
         } finally {
             result.release();
         }
+    }
+
+    /** Cancelling a candidate never touches an active recovery code. */
+    async cancel(input: { userId: string; sid: string; pendingCodeId: string }): Promise<void> {
+        await this.inTransaction(async (tx) => {
+            await this.lockAccount(tx, input.userId, input.sid);
+            const pending = await this.lockCode(tx, input.userId, input.pendingCodeId);
+            if (!pending || pending.status !== 'pending') throw unavailable();
+            await tx.query(`UPDATE student_auth_recovery_codes
+                SET status = 'revoked', code_digest = NULL, expires_at = NULL, revoked_at = clock_timestamp()
+                WHERE id = $1 AND status = 'pending'`, [pending.id]);
+        });
     }
 
     private digest(code: string): string {
