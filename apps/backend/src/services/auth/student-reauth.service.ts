@@ -133,7 +133,7 @@ export class StudentReauthService {
         });
     }
 
-    async finish(input: { userId: string; sid: string; attemptId: string; callbackCookie: string | undefined }): Promise<ActionGrantResult> {
+    async finish(input: { userId: string; sid: string; attemptId: string; callbackCookie: string | undefined }): Promise<ActionGrantResult & { purpose: ActionPurpose; pendingCodeId: string | null; targetIdentityId: string | null }> {
         if (!UUID.test(input.userId) || !UUID.test(input.sid) || !UUID.test(input.attemptId) || !input.callbackCookie) throw invalidReauth();
         const callbackCookie = input.callbackCookie;
         return this.transaction(async (tx) => {
@@ -162,7 +162,10 @@ export class StudentReauthService {
                 ...(active.rows[0] === undefined ? {} : { activeCodeGeneration: Number(active.rows[0].generation) }),
             });
             await tx.query("UPDATE student_auth_reauth_attempts SET status = 'consumed', consumed_at = clock_timestamp() WHERE id = $1 AND status = 'ready'", [attempt.id]);
-            return grant;
+            // These values come from the locked server-side attempt. They let
+            // the browser select the already-authorized continuation without
+            // treating a client return parameter as authority.
+            return { ...grant, purpose: attempt.purpose as ActionPurpose, pendingCodeId: attempt.pending_code_id, targetIdentityId: attempt.target_identity_id };
         });
     }
 

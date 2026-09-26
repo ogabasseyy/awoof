@@ -11,12 +11,13 @@
 'use client';
 
 import { Suspense, useEffect, useRef, useState } from 'react';
+import { useSearchParams } from 'next/navigation';
 import Link from 'next/link';
 import axios from 'axios';
 import { AuthShell } from '@/components/auth/AuthShell';
 import { Button } from '@/components/ui/button';
 import { studentSsoApiClient } from '@/lib/api-client';
-import { getSessionSnapshot } from '@/lib/auth';
+import { getSessionSnapshot, storeTokens } from '@/lib/auth';
 import { resolveStudentReturn } from '@/lib/student-return';
 import {
     clearSsoAttempt,
@@ -69,7 +70,67 @@ function bodyOf(cause: unknown): unknown {
     return axios.isAxiosError(cause) ? cause.response?.data : undefined;
 }
 
+type SignupContext = { email: string; universityId: string; termsVersion: string; noticeVersion: string; expiresAt: string };
+
+function signupContext(value: unknown): SignupContext | null {
+    const data = (value as { success?: unknown; data?: unknown })?.success === true ? (value as { data?: unknown }).data : null;
+    if (!data || typeof data !== 'object' || Array.isArray(data)) return null;
+    const v = data as Record<string, unknown>;
+    return typeof v.email === 'string' && typeof v.universityId === 'string' && typeof v.termsVersion === 'string'
+        && typeof v.noticeVersion === 'string' && typeof v.expiresAt === 'string'
+        ? { email: v.email, universityId: v.universityId, termsVersion: v.termsVersion, noticeVersion: v.noticeVersion, expiresAt: v.expiresAt }
+        : null;
+}
+
+function SignupOnboarding() {
+    const [context, setContext] = useState<SignupContext | null>(null);
+    const [challengeId, setChallengeId] = useState<string | null>(null);
+    const [code, setCode] = useState(''); const [name, setName] = useState('');
+    const [age, setAge] = useState(false); const [terms, setTerms] = useState(false); const [consent, setConsent] = useState(false);
+    const [busy, setBusy] = useState(false); const [error, setError] = useState<string | null>(null);
+    const started = useRef(false); const initialSession = useRef<number | null>(null);
+    const handoff = useRef<SsoHandoffRecord | null>(null);
+    useEffect(() => {
+        if (started.current) return; started.current = true;
+        const record = readSsoHandoff(tabStorage());
+        if (!record || !isSsoAttemptLive(record, Date.now()) || getSessionSnapshot().accessToken) { forgetHandoff(); setError('This setup link expired or this tab changed accounts. Start Microsoft sign-in again.'); return; }
+        handoff.current = record; initialSession.current = getSessionSnapshot().generation;
+        void studentSsoApiClient.post('/auth/student/sso/signup/context', { handoffId: record.handoffId, handoffSecret: record.handoffSecret })
+            .then(response => { const parsed = signupContext(response.data); if (!parsed) throw new Error('invalid'); setContext(parsed); })
+            .catch(() => setError('This setup link is unavailable or expired. Start Microsoft sign-in again.'));
+    }, []);
+    const requestCode = async () => {
+        if (!handoff.current || busy) return; setBusy(true); setError(null);
+        try { const r = await studentSsoApiClient.post('/auth/student/sso/signup/send-code', { handoffId: handoff.current.handoffId, handoffSecret: handoff.current.handoffSecret }); const data = (r.data as { data?: { challengeId?: unknown } }).data; if (typeof data?.challengeId !== 'string') throw new Error('invalid'); setChallengeId(data.challengeId); }
+        catch { setError('We could not send a confirmation code. Restart Microsoft sign-in if this persists.'); } finally { setBusy(false); }
+    };
+    const verifyCode = async () => {
+        if (!handoff.current || !challengeId || !/^\d{6}$/.test(code) || busy) return; setBusy(true); setError(null);
+        try { await studentSsoApiClient.post('/auth/student/sso/signup/verify-code', { handoffId: handoff.current.handoffId, handoffSecret: handoff.current.handoffSecret, challengeId, code }); setChallengeId('verified'); setCode(''); }
+        catch { setError('That confirmation code is invalid or expired. Request a new code.'); } finally { setBusy(false); }
+    };
+    const complete = async () => {
+        if (!handoff.current || challengeId !== 'verified' || !age || !terms || !consent || name.trim().length < 2 || busy) return;
+        if (initialSession.current !== getSessionSnapshot().generation || getSessionSnapshot().accessToken) { setError('This tab changed accounts. Restart Microsoft sign-in.'); return; }
+        setBusy(true); setError(null);
+        try {
+            const r = await studentSsoApiClient.post('/auth/student/sso/signup/complete', { handoffId: handoff.current.handoffId, handoffSecret: handoff.current.handoffSecret, fullName: name.trim(), ageAttested: true, termsVersion: context!.termsVersion, verificationConsent: true, noticeVersion: context!.noticeVersion });
+            const data = (r.data as { data?: { tokens?: { accessToken?: unknown; refreshToken?: unknown } } }).data;
+            if (!data || typeof data.tokens?.accessToken !== 'string' || typeof data.tokens.refreshToken !== 'string' || initialSession.current !== getSessionSnapshot().generation) throw new Error('stale');
+            storeTokens({ accessToken: data.tokens.accessToken, refreshToken: data.tokens.refreshToken }); forgetHandoff(); window.location.href = '/student/security';
+        } catch { setError('We could not finish setup. Your confirmed details were not silently accepted; retry or restart Microsoft sign-in.'); setBusy(false); }
+    };
+    if (!context) return <AuthShell role="student" title="Finish setting up Awoof" subtitle="Checking your school sign-in." footer={null}><p role="status">{error ?? 'Checking the pending sign-in…'}</p></AuthShell>;
+    return <AuthShell role="student" title="Finish setting up Awoof" subtitle="Create an account without a password." footer={null}>
+        <p className="text-left text-sm text-slate-600">Microsoft sign-in succeeded. Confirm <strong>{context.email}</strong> for your Awoof account and recovery. Enrollment is pending; confirming this email does not verify current enrollment or independently verify age.</p>
+        {!challengeId ? <Button type="button" onClick={requestCode} disabled={busy} className="mt-5 w-full rounded-full">{busy ? 'Sending…' : 'Send confirmation code'}</Button> : challengeId !== 'verified' ? <div className="mt-5 space-y-3"><label className="block text-left text-sm font-medium" htmlFor="signup-code">Email confirmation code<input id="signup-code" aria-label="Email confirmation code" inputMode="numeric" value={code} onChange={e => setCode(e.target.value)} className="mt-1 w-full rounded-2xl border px-4 h-11" /></label><Button type="button" onClick={verifyCode} disabled={busy || !/^\d{6}$/.test(code)} className="w-full rounded-full">Confirm email</Button></div> : <div className="mt-5 space-y-3"><label className="block text-left text-sm font-medium" htmlFor="signup-name">Full name<input id="signup-name" aria-label="Full name" value={name} onChange={e => setName(e.target.value)} className="mt-1 w-full rounded-2xl border px-4 h-11" /></label><label className="flex gap-2 text-left text-sm"><input aria-label="I am at least 18 years old" type="checkbox" checked={age} onChange={e => setAge(e.target.checked)} />I am at least 18 years old</label><label className="flex gap-2 text-left text-sm"><input aria-label="I accept the current Terms" type="checkbox" checked={terms} onChange={e => setTerms(e.target.checked)} />I accept the current Terms</label><label className="flex gap-2 text-left text-sm"><input aria-label="I consent to the processing notice" type="checkbox" checked={consent} onChange={e => setConsent(e.target.checked)} />I consent to the processing notice</label><Button type="button" onClick={complete} disabled={busy || !age || !terms || !consent || name.trim().length < 2} className="w-full rounded-full">Create passwordless account</Button></div>}
+        {error ? <p role="alert" className="mt-3 text-left text-sm text-red-600">{error}</p> : null}
+    </AuthShell>;
+}
+
 function StudentSsoOnboardingInner() {
+    const search = useSearchParams();
+    if (search.get('mode') === 'signup') return <SignupOnboarding />;
     const [view, setView] = useState<OnboardingView>({ kind: 'checking' });
     const [password, setPassword] = useState('');
     const startedRef = useRef(false);
