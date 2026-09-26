@@ -66,6 +66,7 @@ test('active code replacement and removal require the old code after fresh callb
     await expect(page.getByText('replacement-code')).toBeVisible();
     await page.goto('/auth/student/sso/complete?reauth=77000000-0000-4000-8000-000000000002');
     await page.getByLabel('Current recovery code').fill('old-code'); await page.getByRole('button', { name: 'Remove recovery code' }).click();
+    await expect(page.getByRole('heading', { name: 'Recovery code active' })).toBeVisible();
     expect(bodies).toEqual([{ reauthGrant: { grantId: '78000000-0000-4000-8000-000000000001', grantSecret: 'replace-grant' }, oldCode: 'old-code' }, { reauthGrant: { grantId: '78000000-0000-4000-8000-000000000002', grantSecret: 'remove-grant' }, oldCode: 'old-code' }]);
     api.assertNoUnexpectedRequests();
 });
