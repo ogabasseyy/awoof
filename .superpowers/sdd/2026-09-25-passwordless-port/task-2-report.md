@@ -78,3 +78,22 @@ reauth tests passed; `npm test` passed 358/358. `npm run test:postgres` was
 started twice; this harness emitted only its launch line during the 30-second
 bounded command windows, so its final result was not independently observed
 in this continuation.
+
+## PostgreSQL evidence and regression repair
+
+The captured first full harness run wrote stdout to
+`/tmp/awoof-task2-postgres.stdout` and stderr to
+`/tmp/awoof-task2-postgres.stderr`, then failed. The runtime evidence exposed
+a common source regression: every existing link integration failed at
+`consumeActionGrant` before link completion. The consumer had treated omitted
+optional bindings as an assertion that the stored nullable column must be
+present as JavaScript `null`; password/link grants deliberately carry no
+identity/target/pending binding. The shared repair only skips a comparison
+when that binding is absent from the consuming operation. Any supplied binding
+is still compared exactly; unlink continues to pass the exact target ID.
+
+The same failed run executed the added policy-invalidation test and showed it
+as a genuine failure, so it was not counted as passing. A second, non-
+overlapping full harness run is active with stdout/stderr/exit capture at
+`/tmp/awoof-task2-postgres-2.{stdout,stderr,exit}`. Do not report this task
+as complete until that process terminates and its exit file is present.

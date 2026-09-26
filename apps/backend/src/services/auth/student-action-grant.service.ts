@@ -102,10 +102,10 @@ export async function consumeActionGrant(
         || account.active_session_id !== input.sid
         || Number(grant.credential_generation) !== Number(account.credential_generation)
         || grant.purpose !== input.purpose
-        || !sameNullable(input.proofIdentityId, grant.proof_identity_id)
-        || !sameNullable(input.targetIdentityId, grant.target_identity_id)
-        || !sameNullable(input.pendingCodeId, grant.pending_code_id)
-        || !sameNullable(input.activeCodeGeneration, grant.active_code_generation)
+        || (input.proofIdentityId !== undefined && !sameNullable(input.proofIdentityId, grant.proof_identity_id))
+        || (input.targetIdentityId !== undefined && !sameNullable(input.targetIdentityId, grant.target_identity_id))
+        || (input.pendingCodeId !== undefined && !sameNullable(input.pendingCodeId, grant.pending_code_id))
+        || (input.activeCodeGeneration !== undefined && !sameNullable(input.activeCodeGeneration, grant.active_code_generation))
         || grant.consumed_at !== null
         || grant.revoked_at !== null
         || grant.expires_at <= clock.rows[0]!.now
