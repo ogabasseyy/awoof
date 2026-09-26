@@ -19,6 +19,8 @@ import { StudentGoogleOidc } from '../services/auth/student-google-oidc.js';
 import { StudentMicrosoftOidc } from '../services/auth/student-microsoft-oidc.js';
 import type { ApprovedLoginPolicy, StudentSsoOidcResolver } from '../services/auth/student-sso-flow.service.js';
 import { StudentSsoLinkService } from '../services/auth/student-sso-link.service.js';
+import { StudentSsoSignupService } from '../services/auth/student-sso-signup.service.js';
+import { sendEmailVerificationOTP } from '../services/email/email.service.js';
 import { StudentReauthService } from '../services/auth/student-reauth.service.js';
 import type { LoginProvider } from '../services/auth/student-sso.types.js';
 import { hashMicrosoftAttemptSecret } from '../services/verification/microsoft-attempt-crypto.js';
@@ -28,6 +30,7 @@ export type StudentSsoLink = Pick<StudentSsoLinkService, 'reauth' | 'link' | 'li
 type FlowFactory = () => StudentSsoFlow;
 type LinkFactory = () => StudentSsoLink;
 type ReauthFactory = () => StudentReauthService;
+type SignupFactory = () => StudentSsoSignupService;
 export type StudentSsoRouterOptions = {
     isIssuanceEnabled?: () => boolean;
     enabledProviders?: () => LoginProvider[];
@@ -38,6 +41,7 @@ export type StudentSsoRouterOptions = {
     linkService?: LinkFactory;
     reauthService?: ReauthFactory;
     linkLimiterMax?: number;
+    signupService?: SignupFactory;
 };
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
@@ -288,6 +292,15 @@ function defaultReauth(): StudentReauthService {
         isProviderEnabled: (provider) => enabledStudentSsoProviders(sso).includes(provider),
     });
 }
+function defaultSignup(): StudentSsoSignupService {
+    const sso = config.studentSso;
+    return new StudentSsoSignupService({
+        pool: getPool(), attemptKey: sso.attemptKey,
+        isEnabled: () => config.passwordlessStudentSignupEnabled,
+        isProviderEnabled: (provider) => enabledStudentSsoProviders(sso).includes(provider),
+        deliverOtp: async (email, code, name) => sendEmailVerificationOTP(email, code, name || 'Student', 'student'),
+    });
+}
 
 export function createStudentSsoRouter(factory: FlowFactory = defaultFlow, options: StudentSsoRouterOptions = {}): Router {
     const router = Router();
@@ -304,12 +317,27 @@ export function createStudentSsoRouter(factory: FlowFactory = defaultFlow, optio
     });
     const callbackLimiter = studentSsoCallbackLimiter(options.callbackLimiterMax ?? 60);
     const linkFactory = options.linkService ?? defaultLink;
+    const signupFactory = options.signupService ?? defaultSignup;
     const reauthFactory = options.reauthService ?? defaultReauth;
     const linkLimiterMax = options.linkLimiterMax ?? 10;
     const reauthLimiter = studentSsoLinkLimiter(linkLimiterMax);
     const linkLimiter = studentSsoLinkLimiter(linkLimiterMax);
     const unlinkLimiter = studentSsoLinkLimiter(linkLimiterMax);
     const reauthMicrosoftLimiter = studentSsoLinkLimiter(linkLimiterMax);
+    const signupLimiter = studentSsoLinkLimiter(linkLimiterMax);
+
+    const signupHandoffBody = (req: Request): { handoffId: string; handoffSecret: string } => {
+        const value = req.body as Record<string, unknown>;
+        if (!value || Array.isArray(value) || typeof value.handoffId !== 'string' || !UUID.test(value.handoffId) || typeof value.handoffSecret !== 'string' || value.handoffSecret.length < 1 || value.handoffSecret.length > 1024) throw new BadRequestError('Passwordless signup request is invalid');
+        return { handoffId: value.handoffId, handoffSecret: value.handoffSecret };
+    };
+    const signupBinding = async (req: Request, body: { handoffId: string; handoffSecret: string }) => {
+        // Handoff IDs are distinct from callback-attempt IDs. Resolve only the
+        // opaque attempt id, then pass its HttpOnly cookie value to the service
+        // for the authoritative hash comparison under its transaction lock.
+        const row = await poolForRequest().query<{ attempt_id: string }>('SELECT attempt_id FROM student_auth_link_handoffs WHERE id = $1', [body.handoffId]);
+        return { ...body, browserBinding: parseBrowserCookies(req).find(cookie => cookie.name === studentSsoCookieName(row.rows[0]?.attempt_id ?? 'missing'))?.value ?? '' };
+    };
 
     const assertIssuanceEnabled = (): void => {
         if (!issuanceEnabled() || !completionOrigin) throw new ServiceUnavailableError('Student SSO is unavailable');
@@ -457,6 +485,24 @@ export function createStudentSsoRouter(factory: FlowFactory = defaultFlow, optio
             return;
         }
         res.json({ success: true, data: result });
+    }));
+
+    router.post('/signup/context', signupLimiter, exactOrigin, exactJson, asyncHandler(async (req, res) => {
+        const body = signupHandoffBody(req); const result = await signupFactory().context(await signupBinding(req, body)); responseHeaders(res); res.json({ success: true, data: result });
+    }));
+    router.post('/signup/send-code', signupLimiter, exactOrigin, exactJson, asyncHandler(async (req, res) => {
+        const body = signupHandoffBody(req); const result = await signupFactory().sendCode(await signupBinding(req, body)); responseHeaders(res); res.status(201).json({ success: true, data: result });
+    }));
+    router.post('/signup/verify-code', signupLimiter, exactOrigin, exactJson, asyncHandler(async (req, res) => {
+        const body = req.body as Record<string, unknown>; const handoff = signupHandoffBody(req);
+        if (Object.keys(body).length !== 4 || typeof body.challengeId !== 'string' || typeof body.code !== 'string') throw new BadRequestError('Passwordless signup request is invalid');
+        const result = await signupFactory().verifyCode({ ...await signupBinding(req, handoff), challengeId: body.challengeId, code: body.code }); responseHeaders(res); res.json({ success: true, data: result });
+    }));
+    router.post('/signup/complete', signupLimiter, exactOrigin, exactJson, asyncHandler(async (req, res) => {
+        const body = req.body as Record<string, unknown>; const handoff = signupHandoffBody(req);
+        const allowed = new Set(['handoffId', 'handoffSecret', 'fullName', 'ageAttested', 'termsVersion', 'verificationConsent', 'noticeVersion']);
+        if (Object.keys(body).some(key => !allowed.has(key)) || Object.keys(body).length !== 7) throw new BadRequestError('Passwordless signup request is invalid');
+        const bound = await signupBinding(req, handoff); const result = await signupFactory().complete({ ...bound, fullName: body.fullName, ageAttested: body.ageAttested, termsVersion: body.termsVersion, verificationConsent: body.verificationConsent, noticeVersion: body.noticeVersion }); responseHeaders(res); const linked = await poolForRequest().query<{ attempt_id: string }>('SELECT attempt_id FROM student_auth_link_handoffs WHERE id = $1', [handoff.handoffId]); clearSsoCookie(res, studentSsoCookieName(linked.rows[0]?.attempt_id ?? handoff.handoffId)); res.status(201).json({ success: true, data: result });
     }));
 
     router.post('/reauth', authenticate, requireRole('student'), reauthLimiter, exactOrigin, exactJson, asyncHandler(async (req, res) => {

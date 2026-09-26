@@ -282,6 +282,22 @@ export async function recordMailboxProof(tx: PoolClient, userId: string, challen
     return recordLockedMailboxProof(tx, user, challenge);
 }
 
+/**
+ * Passwordless signup binds a mailbox to a newly-created account but must not
+ * create eligibility evidence.  Its server-held SSO handoff already binds the
+ * university and provider subject; this helper only records the consumed OTP
+ * proof using the same immutable proof table as other mailbox flows.
+ */
+export async function recordPasswordlessSignupMailboxProof(tx: PoolClient, userId: string, challengeId: string): Promise<string> {
+    const user = await lockMailboxUser(tx, userId);
+    const challenge = await lockChallenge(tx, challengeId);
+    if (challenge.purpose !== 'student_signup' || !isRecord(challenge.bindings)
+        || challenge.bindings.email !== user.email) {
+        throw new BadRequestError('Signup mailbox challenge bindings do not match');
+    }
+    return recordLockedMailboxProof(tx, user, challenge);
+}
+
 function validFutureDate(value: unknown, now: Date): value is Date {
     return value instanceof Date && Number.isFinite(value.getTime()) && value > now;
 }

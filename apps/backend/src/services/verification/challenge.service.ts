@@ -29,6 +29,14 @@ const COOLDOWN_MS = 60 * 1000;
 const MAX_FAILURES = 5;
 const MAX_SENDS = 10;
 
+function limitsFor(purpose: ChallengePurpose): { failures: number; sends: number; ttlMs: number } {
+    // The passwordless handoff is an intentionally narrower mailbox-binding
+    // proof: it cannot extend the original ten-minute provider attempt.
+    return purpose === 'student_signup'
+        ? { failures: 5, sends: 3, ttlMs: 5 * 60 * 1000 }
+        : { failures: MAX_FAILURES, sends: MAX_SENDS, ttlMs: OTP_MS };
+}
+
 function digest(label: string, value: string): string {
     return createHmac('sha256', config.jwt.secret).update(`${label}\u0000${value}`).digest('hex');
 }
@@ -140,6 +148,7 @@ export async function requestChallenge(tx: PoolClient, input: {
     purpose: ChallengePurpose;
     subjectKey: string;
     bindings: ChallengeBindings;
+    expiresAt?: Date;
 }): Promise<{ status: 'issued'; challengeId: string; code: string; expiresAt: Date } | { status: 'cooldown' | 'locked'; retryAt: Date }> {
     validInput(input.purpose, input.subjectKey);
     const bindings = copiedBindings(input.bindings);
@@ -149,7 +158,8 @@ export async function requestChallenge(tx: PoolClient, input: {
     budget = await resetWindowIfNeeded(tx, input.purpose, subject, budget, now);
     const windowEnd = fixedWindowEnd(budget.window_started_at);
 
-    if (budget.failed_attempts >= MAX_FAILURES || budget.send_count >= MAX_SENDS) {
+    const limits = limitsFor(input.purpose);
+    if (budget.failed_attempts >= limits.failures || budget.send_count >= limits.sends) {
         return { status: 'locked', retryAt: windowEnd };
     }
     if (now < budget.resend_available_at) return { status: 'cooldown', retryAt: budget.resend_available_at };
@@ -164,7 +174,8 @@ export async function requestChallenge(tx: PoolClient, input: {
 
     const challengeId = randomUUID();
     const code = String(randomInt(0, 1_000_000)).padStart(6, '0');
-    const expiresAt = new Date(now.getTime() + OTP_MS);
+    const defaultExpiry = new Date(now.getTime() + limits.ttlMs);
+    const expiresAt = input.expiresAt && input.expiresAt < defaultExpiry ? input.expiresAt : defaultExpiry;
     const bindingsJson = await assertCanonicalBindingsSize(tx, bindings);
     await tx.query(
         `INSERT INTO verification_challenges
@@ -204,7 +215,7 @@ export async function consumeChallenge(tx: PoolClient, input: {
     if (!budget) return { status: 'invalid' };
     const now = await databaseNow(tx);
     budget = await resetWindowIfNeeded(tx, input.purpose, subject, budget, now);
-    if (budget.failed_attempts >= MAX_FAILURES) return { status: 'locked' };
+    if (budget.failed_attempts >= limitsFor(input.purpose).failures) return { status: 'locked' };
 
     let challenge: Challenge | undefined;
     if (budget.current_challenge_id === input.challengeId) {

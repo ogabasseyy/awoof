@@ -34,6 +34,25 @@ export type LoginOptions = {
     recovery: true;
 };
 
+/** Browser-facing contract for the separate, disabled-by-default passwordless signup handoff. */
+export type StudentSsoSignupContext = {
+    email: string;
+    universityId: string;
+    termsVersion: string;
+    noticeVersion: string;
+    expiresAt: string;
+};
+
+export type StudentSsoSignupCompleteRequest = {
+    handoffId: string;
+    handoffSecret: string;
+    fullName: string;
+    ageAttested: true;
+    termsVersion: string;
+    verificationConsent: true;
+    noticeVersion: string;
+};
+
 /** An approved institution login policy with its pinned trust data (moved from the B3 flow module so link code shares it). */
 export type ApprovedLoginPolicy = {
     id: string;
