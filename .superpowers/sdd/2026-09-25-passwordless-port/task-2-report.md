@@ -197,3 +197,18 @@ Verification:
 Documentation impact remains no-change: these tests substantiate already
 implemented backend controls and do not change public behavior or activation
 claims.
+
+## Review fix round 2: consumed-finish fixture fidelity
+
+The initial consumed-finish fixture matched the callback's
+`WHERE attempt.id = $1 FOR UPDATE` query but not finish's actual
+`FROM student_auth_reauth_attempts WHERE id = $1 FOR UPDATE` query. The test
+now returns the consumed row for the actual finish lookup and explicitly
+asserts that lookup occurred before confirming no action-grant insert. This
+proves terminal single-use behavior rather than an absent-attempt rejection.
+
+Verification:
+
+- `JWT_SECRET=... JWT_REFRESH_SECRET=... npx tsx --test src/services/auth/student-reauth.service.test.ts` — **7 pass, 0 fail**.
+- `npm run type-check` — pass.
+- `git diff --check` — clean.

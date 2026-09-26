@@ -35,6 +35,7 @@ function callbackService(observation: { issuer: string; subject: string; authTim
         if (text.includes('WHERE attempt.state_hash')) return { rows: [attempt], rowCount: 1 };
         if (text === 'BEGIN' || text === 'COMMIT' || text === 'ROLLBACK') return { rows: [], rowCount: 0 };
         if (text.includes('WHERE attempt.id = $1 FOR UPDATE')) return { rows: [attempt], rowCount: 1 };
+        if (text.includes('FROM student_auth_reauth_attempts WHERE id = $1 FOR UPDATE')) return { rows: [attempt], rowCount: 1 };
         if (text.includes('clock_timestamp')) return { rows: [{ now: new Date() }], rowCount: 1 };
         if (text.includes('SELECT active_session_id')) return { rows: [{ active_session_id: sid, credential_generation: 0, deleted_at: null }], rowCount: 1 };
         return { rows: [], rowCount: 1 };
@@ -94,5 +95,6 @@ test('fresh finish rejects a consumed attempt before any action grant is issued'
         service.finish({ userId, sid, attemptId: consumed.id, callbackCookie: 'browser' }),
         /reauthentication is no longer valid/,
     );
+    assert.ok(calls.some((text) => text.includes('FROM student_auth_reauth_attempts WHERE id = $1 FOR UPDATE')));
     assert.ok(!calls.some((text) => text.includes('INSERT INTO student_auth_action_grants')));
 });
