@@ -1,4 +1,3 @@
-import { randomBytes, randomUUID } from 'node:crypto';
 import type { Pool, PoolClient } from 'pg';
 import {
     BadRequestError,
@@ -14,6 +13,7 @@ import {
 } from '../verification/microsoft-attempt-crypto.js';
 import { lockStudentContext } from '../verification/eligibility-context.service.js';
 import { passwordService } from './password.service.js';
+import { consumeActionGrant, issueActionGrant, type ActionPurpose } from './student-action-grant.service.js';
 import { studentSsoCookieName } from './student-sso-flow.service.js';
 import {
     StudentSsoAuthorityInvalidatedError,
@@ -48,7 +48,7 @@ export const STUDENT_SSO_REAUTH_LIFETIME_SECONDS = 5 * 60;
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
-export type StudentSsoReauthPurpose = 'link' | 'unlink';
+export type StudentSsoReauthPurpose = ActionPurpose;
 
 export type StudentSsoReauthResult = {
     grantId: string;
@@ -112,21 +112,6 @@ type HandoffRow = {
     consumed_at: Date | null;
 };
 
-type GrantRow = {
-    id: string;
-    user_id: string;
-    sid: string;
-    purpose: string;
-    secret_hash: string;
-    password_hash: string | null;
-    expires_at: Date;
-    consumed_at: Date | null;
-};
-
-function secret(bytes = 32): string {
-    return randomBytes(bytes).toString('base64url');
-}
-
 function validOpaque(value: unknown): value is string {
     return typeof value === 'string' && value.length > 0 && value.length <= 1024;
 }
@@ -180,8 +165,9 @@ export class StudentSsoLinkService {
      * role, and pins the verified hash into the grant row, so a password
      * reset or session replacement invalidates the grant.
      */
-    async reauth(input: { userId: unknown; sid: unknown; password: unknown; purpose: unknown }): Promise<StudentSsoReauthResult> {
-        if (input.purpose !== 'link' && input.purpose !== 'unlink') {
+    async reauth(input: { userId: unknown; sid: unknown; password: unknown; purpose: unknown; targetIdentityId?: unknown }): Promise<StudentSsoReauthResult> {
+        if (input.purpose !== 'link' && input.purpose !== 'unlink'
+            && input.purpose !== 'recovery_code_generate' && input.purpose !== 'recovery_code_activate' && input.purpose !== 'recovery_code_remove') {
             throw new BadRequestError('Student SSO reauthentication purpose is invalid');
         }
         if (typeof input.password !== 'string' || input.password.length === 0 || input.password.length > 1024) {
@@ -191,10 +177,14 @@ export class StudentSsoLinkService {
         // Legacy tokens without a session id cannot bind a grant: fail closed.
         if (!validUuid(input.sid)) throw new UnauthorizedError('Student SSO reauthentication is not available for this session');
         if (input.purpose === 'link') this.assertLinkingEnabled();
+        if (input.targetIdentityId !== undefined && !validUuid(input.targetIdentityId)) {
+            throw new BadRequestError('Student SSO reauthentication request is invalid');
+        }
         const userId = input.userId;
         const sid = input.sid;
         const password = input.password;
         const purpose: StudentSsoReauthPurpose = input.purpose;
+        const targetIdentityId = typeof input.targetIdentityId === 'string' ? input.targetIdentityId : undefined;
 
         const pre = await this.deps.pool.query<{ password_hash: string | null; role: string; deleted_at: Date | null }>(
             'SELECT password_hash, role, deleted_at FROM users WHERE id = $1',
@@ -224,22 +214,17 @@ export class StudentSsoLinkService {
                 throw error;
             }
             if (!context.active) throw unavailableAccount();
-            const locked = await tx.query<{ password_hash: string | null; active_session_id: string | null }>(
-                'SELECT password_hash, active_session_id FROM users WHERE id = $1',
+            const locked = await tx.query<{ password_hash: string | null; active_session_id: string | null; credential_generation: string | number }>(
+                'SELECT password_hash, active_session_id, credential_generation FROM users WHERE id = $1',
                 [userId],
             );
             if (locked.rows[0]?.password_hash !== verifiedHash || locked.rows[0]?.active_session_id !== sid) {
                 throw new UnauthorizedError('Student SSO reauthentication failed');
             }
-            const grantId = randomUUID();
-            const grantSecret = secret();
-            const inserted = await tx.query<{ expires_at: Date }>(
-                `INSERT INTO student_auth_reauth_grants (id, user_id, sid, purpose, secret_hash, password_hash, expires_at)
-                 VALUES ($1, $2, $3::uuid, $4, $5, $6, clock_timestamp() + interval '5 minutes')
-                 RETURNING expires_at`,
-                [grantId, userId, sid, purpose, hashSsoSecret(grantSecret), verifiedHash],
-            );
-            return { grantId, grantSecret, expiresAt: inserted.rows[0]!.expires_at.toISOString() };
+            return issueActionGrant(tx, {
+                userId, sid, purpose, credentialGeneration: Number(locked.rows[0]!.credential_generation),
+                ...(targetIdentityId === undefined ? {} : { targetIdentityId }),
+            });
         });
     }
 
@@ -359,13 +344,7 @@ export class StudentSsoLinkService {
                     // conflict, no revelation of the match.
                     throw new ConflictError('Student SSO identity is already linked');
                 }
-                const grant = await tx.query<GrantRow>(
-                    'SELECT * FROM student_auth_reauth_grants WHERE id = $1 FOR UPDATE',
-                    [grantId],
-                );
-                if (!this.grantSatisfies(grant.rows[0], userId, sid, 'link', account.rows[0]?.password_hash ?? null, clock.rows[0]!.now, grantSecret)) {
-                    throw invalidLink();
-                }
+                await consumeActionGrant(tx, { userId, sid, grantId, secret: grantSecret, purpose: 'link' }).catch(() => { throw invalidLink(); });
                 // Mailbox binding: the owner must hold an independently proven
                 // school mailbox whose domain this policy approves, at the
                 // policy's university. Email claim equality alone never links.
@@ -399,7 +378,6 @@ export class StudentSsoLinkService {
                         // A different returned Google account is an explicit
                         // mismatch: the handoff is spent and linking restarts.
                         await this.consumeHandoff(tx, handoff.id, userId, sid);
-                        await this.consumeGrant(tx, grantId);
                         return { outcome: 'mismatch', attemptId: handoff.attempt_id };
                     }
                 }
@@ -454,7 +432,6 @@ export class StudentSsoLinkService {
                     microsoftMembershipAttested,
                 });
                 await this.consumeHandoff(tx, handoff.id, userId, sid);
-                await this.consumeGrant(tx, grantId);
                 const university = await tx.query<{ name: string }>(
                     'SELECT name FROM universities WHERE id = $1',
                     [context.universityId],
@@ -523,14 +500,8 @@ export class StudentSsoLinkService {
             if (!row || row.user_id !== userId || row.revoked_at !== null) {
                 throw new NotFoundError('Student SSO login identity not found');
             }
-            const grant = await tx.query<GrantRow>(
-                'SELECT * FROM student_auth_reauth_grants WHERE id = $1 FOR UPDATE',
-                [grantId],
-            );
-            const clock = await tx.query<{ now: Date }>('SELECT clock_timestamp() AS now');
-            if (!this.grantSatisfies(grant.rows[0], userId, sid, 'unlink', account.rows[0]?.password_hash ?? null, clock.rows[0]!.now, grantSecret)) {
-                throw invalidUnlink();
-            }
+            await consumeActionGrant(tx, { userId, sid, grantId, secret: grantSecret, purpose: 'unlink', targetIdentityId: identityId })
+                .catch(() => { throw invalidUnlink(); });
             const sibling = await tx.query(
                 `SELECT 1 FROM student_auth_identities
                  WHERE user_id = $1 AND id <> $2 AND revoked_at IS NULL
@@ -542,7 +513,6 @@ export class StudentSsoLinkService {
             if (account.rows[0]?.password_hash == null && (sibling.rowCount ?? 0) === 0) {
                 return { outcome: 'last_method' };
             }
-            await this.consumeGrant(tx, grantId);
             await tx.query('UPDATE student_auth_identities SET revoked_at = clock_timestamp() WHERE id = $1', [identityId]);
             await revokeSsoSchoolAssertions(tx, identityId);
             await tx.query(
@@ -584,30 +554,6 @@ export class StudentSsoLinkService {
             }));
     }
 
-    private grantSatisfies(
-        grant: GrantRow | undefined,
-        userId: string,
-        sid: string,
-        purpose: StudentSsoReauthPurpose,
-        passwordHash: string | null,
-        now: Date,
-        grantSecret: string,
-    ): grant is GrantRow {
-        // The binding pins the exact password hash verified at reauth: a
-        // reset or removal since then fails the grant. Both sides null only
-        // occurs for forged rows, never for minted grants, which reauth
-        // refuses for passwordless accounts.
-        const bindingIntact = grant?.password_hash === passwordHash
-            || (grant?.password_hash == null && passwordHash == null);
-        return !!grant
-            && grant.user_id === userId
-            && grant.sid === sid
-            && grant.purpose === purpose
-            && grant.consumed_at === null
-            && grant.expires_at > now
-            && bindingIntact
-            && hashSsoSecret(grantSecret) === grant.secret_hash;
-    }
 
     private async consumeHandoff(tx: PoolClient, handoffId: string, userId: string, sid: string): Promise<void> {
         // The observation is decoded before use on the link and mismatch
@@ -625,10 +571,4 @@ export class StudentSsoLinkService {
         );
     }
 
-    private async consumeGrant(tx: PoolClient, grantId: string): Promise<void> {
-        await tx.query(
-            'UPDATE student_auth_reauth_grants SET consumed_at = clock_timestamp() WHERE id = $1 AND consumed_at IS NULL',
-            [grantId],
-        );
-    }
 }

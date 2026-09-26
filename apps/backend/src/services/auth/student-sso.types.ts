@@ -24,6 +24,9 @@ export type ProviderObservation = {
     objectId: string | null;
 };
 
+/** A provider observation usable only for a separately requested sensitive action. */
+export type FreshProviderObservation = ProviderObservation & { authTime: number };
+
 export type LoginOptions = {
     password: true;
     providers: LoginProvider[];
@@ -45,4 +48,6 @@ export type ApprovedLoginPolicy = {
 export interface StudentOidcAdapter {
     authorize(input: { state: string; nonce: string; verifier: string; loginHint: string }): Promise<URL>;
     redeem(input: { callback: URL; state: string; nonce: string; verifier: string }): Promise<ProviderObservation>;
+    authorizeFresh?(input: { state: string; nonce: string; verifier: string; loginHint: string }): Promise<URL>;
+    redeemFresh?(input: { callback: URL; state: string; nonce: string; verifier: string }): Promise<FreshProviderObservation>;
 }

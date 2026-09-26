@@ -98,19 +98,24 @@ function finishBody(req: Request): { attemptId: string; finishSecret: string } {
     return { attemptId: value.attemptId, finishSecret: value.finishSecret };
 }
 
-function reauthBody(req: Request): { password: string; purpose: 'link' | 'unlink' } {
+function reauthBody(req: Request): { password: string; purpose: 'link' | 'unlink' | 'recovery_code_generate' | 'recovery_code_activate' | 'recovery_code_remove'; targetIdentityId?: string } {
     const body = req.body;
     if (!body || typeof body !== 'object' || Array.isArray(body)) throw new BadRequestError('Student SSO reauthentication request is invalid');
     const keys = Object.keys(body);
-    if (keys.length !== 2 || !keys.includes('password') || !keys.includes('purpose')) {
+    if (!keys.includes('password') || !keys.includes('purpose') || keys.some((key) => key !== 'password' && key !== 'purpose' && key !== 'targetIdentityId')) {
         throw new BadRequestError('Student SSO reauthentication request is invalid');
     }
-    const value = body as { password: unknown; purpose: unknown };
+    const value = body as { password: unknown; purpose: unknown; targetIdentityId?: unknown };
     if (typeof value.password !== 'string' || value.password.length === 0 || value.password.length > 1024
-        || (value.purpose !== 'link' && value.purpose !== 'unlink')) {
+        || (value.purpose !== 'link' && value.purpose !== 'unlink' && value.purpose !== 'recovery_code_generate'
+            && value.purpose !== 'recovery_code_activate' && value.purpose !== 'recovery_code_remove')
+        || (value.targetIdentityId !== undefined && (typeof value.targetIdentityId !== 'string' || !UUID.test(value.targetIdentityId)))) {
         throw new BadRequestError('Student SSO reauthentication request is invalid');
     }
-    return { password: value.password, purpose: value.purpose };
+    // Unlink grants are target-bound. Keeping the target optional in the
+    // schema retains the established link request contract; an unbound
+    // unlink grant simply cannot consume an identity-removal action.
+    return { password: value.password, purpose: value.purpose, ...(value.targetIdentityId === undefined ? {} : { targetIdentityId: value.targetIdentityId }) };
 }
 
 function grantBody(value: unknown): { grantId: string; grantSecret: string } {
@@ -425,7 +430,10 @@ export function createStudentSsoRouter(factory: FlowFactory = defaultFlow, optio
     router.post('/reauth', authenticate, requireRole('student'), reauthLimiter, exactOrigin, exactJson, asyncHandler(async (req, res) => {
         const body = reauthBody(req);
         const actor = ssoActor(req);
-        const result = await linkFactory().reauth({ userId: actor.userId, sid: actor.sid, password: body.password, purpose: body.purpose });
+        const result = await linkFactory().reauth({
+            userId: actor.userId, sid: actor.sid, password: body.password, purpose: body.purpose,
+            ...(body.targetIdentityId === undefined ? {} : { targetIdentityId: body.targetIdentityId }),
+        });
         responseHeaders(res);
         res.status(201).json({ success: true, data: result });
     }));
