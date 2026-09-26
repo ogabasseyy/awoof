@@ -105,3 +105,19 @@ test('lost generation or activation responses recover only through server status
     await expect(page.getByText('A recovery code is active.')).toBeVisible();
     api.assertNoUnexpectedRequests();
 });
+
+test('replacement generation ignores a second click while the first request is in flight', async ({ page }) => {
+    const api = await installSyntheticApi(page); let release!: () => void; let calls = 0; const gate = new Promise<void>(resolve => { release = resolve; });
+    await page.route(`${apiOrigin}/api/auth/student/sso/reauth/finish`, route => route.fulfill({ status: 201, headers, json: { success: true, data: { grantId: '81000000-0000-4000-8000-000000000001', grantSecret: 'grant', expiresAt: new Date(Date.now() + 60_000).toISOString(), purpose: 'recovery_code_generate', pendingCodeId: null, targetIdentityId: null, activeCodeGeneration: 1 } } }));
+    await page.route(`${apiOrigin}/api/auth/student/sso/recovery-code/generate`, async route => { calls += 1; await gate; await route.fulfill({ status: 201, headers, json: { success: true, data: { pendingCodeId: '82000000-0000-4000-8000-000000000001', code: 'new-code' } } }); });
+    await page.goto('/auth/student/login'); await seedSession(page, 'student'); await page.goto('/auth/student/sso/complete?reauth=83000000-0000-4000-8000-000000000001');
+    await page.getByLabel('Current recovery code').fill('old-code'); const submit = page.getByRole('button', { name: 'Generate replacement code' }); await submit.click(); await expect(submit).toBeDisabled(); await submit.click({ force: true }); expect(calls).toBe(1); release(); await expect(page.getByText('new-code')).toBeVisible(); api.assertNoUnexpectedRequests();
+});
+
+test('a dropped generation response resumes only as server pending state without plaintext', async ({ page }) => {
+    const api = await installSyntheticApi(page); let serverPending = false;
+    await page.route(`${apiOrigin}/api/auth/student/sso/reauth/finish`, route => route.fulfill({ status: 201, headers, json: { success: true, data: { grantId: '84000000-0000-4000-8000-000000000001', grantSecret: 'grant', expiresAt: new Date(Date.now() + 60_000).toISOString(), purpose: 'recovery_code_generate', pendingCodeId: null, targetIdentityId: null, activeCodeGeneration: null } } }));
+    await page.route(`${apiOrigin}/api/auth/student/sso/recovery-code/generate`, route => { serverPending = true; return route.abort('failed'); });
+    await page.route(`${apiOrigin}/api/auth/student/sso/recovery-code`, route => route.fulfill({ headers, json: { success: true, data: { status: serverPending ? 'pending' : 'unconfigured', generation: 1, pendingCodeId: serverPending ? '85000000-0000-4000-8000-000000000001' : null } } }));
+    await page.goto('/auth/student/login'); await seedSession(page, 'student'); await page.goto('/auth/student/sso/complete?reauth=86000000-0000-4000-8000-000000000001'); await expect(page.getByRole('heading', { name: 'Security confirmation unavailable' })).toBeVisible(); await page.goto('/student/security'); await expect(page.getByText('A pending code exists')).toBeVisible(); await expect(page.getByRole('button', { name: 'Cancel pending code' })).toBeVisible(); expect(await page.content()).not.toContain('new-code'); api.assertNoUnexpectedRequests();
+});
