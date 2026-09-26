@@ -50,3 +50,22 @@ test('fresh grants drive generation then a second re-entry activation without pe
     expect(activationBodies).toEqual([{ reauthGrant: { grantId: '76000000-0000-4000-8000-000000000002', grantSecret: 'activate-grant' }, pendingCodeId: pendingId, code: 'one-time-recovery-code' }]);
     api.assertNoUnexpectedRequests();
 });
+
+test('active code replacement and removal require the old code after fresh callback', async ({ page }) => {
+    const api = await installSyntheticApi(page); const bodies: unknown[] = [];
+    await page.route(`${apiOrigin}/api/auth/student/sso/reauth/finish`, route => {
+        const id = (JSON.parse(route.request().postData() ?? '{}') as { attemptId?: string }).attemptId;
+        const remove = id === '77000000-0000-4000-8000-000000000002';
+        return route.fulfill({ status: 201, headers, json: { success: true, data: { grantId: remove ? '78000000-0000-4000-8000-000000000002' : '78000000-0000-4000-8000-000000000001', grantSecret: remove ? 'remove-grant' : 'replace-grant', expiresAt: new Date(Date.now() + 60_000).toISOString(), purpose: remove ? 'recovery_code_remove' : 'recovery_code_generate', pendingCodeId: null, targetIdentityId: null, activeCodeGeneration: 1 } } });
+    });
+    await page.route(`${apiOrigin}/api/auth/student/sso/recovery-code/generate`, route => { bodies.push(JSON.parse(route.request().postData() ?? '{}')); return route.fulfill({ status: 201, headers, json: { success: true, data: { pendingCodeId: '79000000-0000-4000-8000-000000000001', code: 'replacement-code' } } }); });
+    await page.route(`${apiOrigin}/api/auth/student/sso/recovery-code/remove`, route => { bodies.push(JSON.parse(route.request().postData() ?? '{}')); return route.fulfill({ status: 204, headers }); });
+    await page.goto('/auth/student/login'); await seedSession(page, 'student');
+    await page.goto('/auth/student/sso/complete?reauth=77000000-0000-4000-8000-000000000001');
+    await page.getByLabel('Current recovery code').fill('old-code'); await page.getByRole('button', { name: 'Generate replacement code' }).click();
+    await expect(page.getByText('replacement-code')).toBeVisible();
+    await page.goto('/auth/student/sso/complete?reauth=77000000-0000-4000-8000-000000000002');
+    await page.getByLabel('Current recovery code').fill('old-code'); await page.getByRole('button', { name: 'Remove recovery code' }).click();
+    expect(bodies).toEqual([{ reauthGrant: { grantId: '78000000-0000-4000-8000-000000000001', grantSecret: 'replace-grant' }, oldCode: 'old-code' }, { reauthGrant: { grantId: '78000000-0000-4000-8000-000000000002', grantSecret: 'remove-grant' }, oldCode: 'old-code' }]);
+    api.assertNoUnexpectedRequests();
+});
