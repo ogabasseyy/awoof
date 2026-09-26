@@ -132,12 +132,8 @@ CREATE OR REPLACE FUNCTION student_sso_handoff_consume_once() RETURNS trigger LA
 BEGIN
     IF NEW.id IS DISTINCT FROM OLD.id OR NEW.attempt_id IS DISTINCT FROM OLD.attempt_id
         OR NEW.policy_id IS DISTINCT FROM OLD.policy_id OR NEW.policy_version IS DISTINCT FROM OLD.policy_version
-        OR NEW.created_at IS DISTINCT FROM OLD.created_at THEN
+        OR NEW.expires_at IS DISTINCT FROM OLD.expires_at OR NEW.created_at IS DISTINCT FROM OLD.created_at THEN
         RAISE EXCEPTION 'SSO handoff binding is immutable';
-    END IF;
-    IF NEW.expires_at IS DISTINCT FROM OLD.expires_at
-       AND NOT (OLD.consumed_at IS NULL AND NEW.expires_at <= clock_timestamp()) THEN
-        RAISE EXCEPTION 'SSO handoff expiry is immutable';
     END IF;
     -- The one legitimate binding transition is the canonical link consume:
     -- an unbound, unconsumed handoff records its owner/session exactly once.
