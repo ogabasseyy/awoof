@@ -69,3 +69,13 @@ test('active code replacement and removal require the old code after fresh callb
     expect(bodies).toEqual([{ reauthGrant: { grantId: '78000000-0000-4000-8000-000000000001', grantSecret: 'replace-grant' }, oldCode: 'old-code' }, { reauthGrant: { grantId: '78000000-0000-4000-8000-000000000002', grantSecret: 'remove-grant' }, oldCode: 'old-code' }]);
     api.assertNoUnexpectedRequests();
 });
+
+test('expired fresh callback and lost generation response leave no code active in the browser', async ({ page }) => {
+    const api = await installSyntheticApi(page);
+    await page.route(`${apiOrigin}/api/auth/student/sso/reauth/finish`, route => route.fulfill({ status: 409, headers, json: { success: false, error: { code: 'SSO_RESTART_REQUIRED' } } }));
+    await page.goto('/auth/student/login'); await seedSession(page, 'student');
+    await page.goto('/auth/student/sso/complete?reauth=7a000000-0000-4000-8000-000000000001');
+    await expect(page.getByRole('heading', { name: 'Security confirmation unavailable' })).toBeVisible();
+    expect(await page.evaluate(() => `${location.href}|${localStorage.getItem('awoof.session.v1')}|${sessionStorage.getItem('awoof.recovery.intent.v1.tab') ?? ''}`)).not.toContain('recovery-code');
+    api.assertNoUnexpectedRequests();
+});
