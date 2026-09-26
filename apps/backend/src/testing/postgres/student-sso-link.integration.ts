@@ -490,7 +490,7 @@ test('link fails closed on a password change after reauth', async () => {
         const grant = await mintGrant(service, owner.userId, owner.sid, PASSWORD);
         const check = await pool.connect();
         try {
-            await check.query('UPDATE users SET password_hash = $2 WHERE id = $1', [
+            await check.query('UPDATE users SET password_hash = $2, credential_generation = credential_generation + 1 WHERE id = $1', [
                 owner.userId,
                 await passwordService.hashPassword('Brand!new-password-4'),
             ]);
@@ -564,7 +564,7 @@ test('link refuses a provider disabled after the handoff was issued', async () =
     });
 });
 
-test('policy invalidation after a grant is issued denies the action', async () => {
+test('policy invalidation after a grant is issued restarts without linking an identity', async () => {
     await withLinkPool(async (pool) => {
         const attemptKey = randomBytes(32).toString('base64url');
         const service = makeService(pool, attemptKey);
@@ -581,7 +581,53 @@ test('policy invalidation after a grant is issued denies the action', async () =
         const invalidator = await pool.connect();
         try { await invalidator.query('UPDATE institution_login_policies SET enabled = false, version = version + 1 WHERE id = $1', [policy.id]); }
         finally { invalidator.release(); }
-        await assert.rejects(() => service.link({ userId: owner.userId, sid: owner.sid, handoffId: handoff.handoffId, handoffSecret: handoff.handoffSecret, browserCookies: cookiesFor(handoff.attemptId, handoff.cookieSecret), grantId: grant.grantId, grantSecret: grant.grantSecret }), /no longer valid/);
+        const result = await service.link({ userId: owner.userId, sid: owner.sid, handoffId: handoff.handoffId, handoffSecret: handoff.handoffSecret, browserCookies: cookiesFor(handoff.attemptId, handoff.cookieSecret), grantId: grant.grantId, grantSecret: grant.grantSecret });
+        assert.deepEqual(result, { outcome: 'restart', attemptId: handoff.attemptId });
+        const check = await pool.connect();
+        try {
+            const identities = await check.query('SELECT 1 FROM student_auth_identities WHERE user_id = $1 AND revoked_at IS NULL', [owner.userId]);
+            assert.equal(identities.rowCount, 0);
+        } finally { check.release(); }
+    });
+});
+
+test('action grant transition permits only consume-and-scrub and keeps terminal grants immutable', async () => {
+    await withLinkPool(async (pool) => {
+        const client = await pool.connect();
+        try {
+            const owner = await seedOwner(client, {});
+            const secret = hashMicrosoftAttemptSecret(secretHex());
+            const grantId = (await client.query<{ id: string }>(
+                `INSERT INTO student_auth_action_grants
+                     (user_id, sid, credential_generation, purpose, secret_hash, expires_at)
+                 VALUES ($1, $2, 0, 'link', $3, clock_timestamp() + interval '5 minutes')
+                 RETURNING id`,
+                [owner.userId, owner.sid, secret],
+            )).rows[0]!.id;
+            await client.query(
+                "UPDATE student_auth_action_grants SET consumed_at = clock_timestamp(), secret_hash = 'scrubbed' WHERE id = $1",
+                [grantId],
+            );
+            await assert.rejects(
+                client.query("UPDATE student_auth_action_grants SET purpose = 'unlink' WHERE id = $1", [grantId]),
+                /immutable/,
+            );
+            await assert.rejects(
+                client.query("UPDATE student_auth_action_grants SET secret_hash = 'different' WHERE id = $1", [grantId]),
+                /Terminal passwordless action grants cannot be replayed/,
+            );
+            const unconsumedId = (await client.query<{ id: string }>(
+                `INSERT INTO student_auth_action_grants
+                     (user_id, sid, credential_generation, purpose, secret_hash, expires_at)
+                 VALUES ($1, $2, 0, 'link', $3, clock_timestamp() + interval '5 minutes')
+                 RETURNING id`,
+                [owner.userId, owner.sid, hashMicrosoftAttemptSecret(secretHex())],
+            )).rows[0]!.id;
+            await assert.rejects(
+                client.query('UPDATE student_auth_action_grants SET consumed_at = clock_timestamp() WHERE id = $1', [unconsumedId]),
+                /Terminal passwordless action grants cannot be replayed/,
+            );
+        } finally { client.release(); }
     });
 });
 
@@ -1244,6 +1290,7 @@ test('unlink of another owner identity reports not found', async () => {
         let ownerA;
         let ownerB;
         let identityId = '';
+        let ownerIdentityId = '';
         try {
             ownerA = await seedOwner(client, {});
             ownerB = await seedOwner(client, { domain: ownerA.email.split('@')[1]! });
@@ -1252,10 +1299,15 @@ test('unlink of another owner identity reports not found', async () => {
                  VALUES ($1, $2, 'google', $3, $4) RETURNING id`,
                 [ownerB.userId, ownerB.universityId, GOOGLE_ISSUER, `other-owner-sub-${uniqueLabel()}`],
             )).rows[0]!.id;
+            ownerIdentityId = (await client.query<{ id: string }>(
+                `INSERT INTO student_auth_identities (user_id, university_id, provider, issuer, subject)
+                 VALUES ($1, $2, 'google', $3, $4) RETURNING id`,
+                [ownerA.userId, ownerA.universityId, GOOGLE_ISSUER, `owner-sub-${uniqueLabel()}`],
+            )).rows[0]!.id;
         } finally {
             client.release();
         }
-        const grant = await mintGrant(service, ownerA.userId, ownerA.sid, PASSWORD, 'unlink', identityId);
+        const grant = await mintGrant(service, ownerA.userId, ownerA.sid, PASSWORD, 'unlink', ownerIdentityId);
         await assert.rejects(
             service.unlink({
                 userId: ownerA.userId,

@@ -97,3 +97,77 @@ as a genuine failure, so it was not counted as passing. A second, non-
 overlapping full harness run is active with stdout/stderr/exit capture at
 `/tmp/awoof-task2-postgres-2.{stdout,stderr,exit}`. Do not report this task
 as complete until that process terminates and its exit file is present.
+
+## Second harness result: schema transition conflict
+
+The second captured full harness exited nonzero. The critical shared failure
+is not a weak assertion: migration 069's
+`student_passwordless_action_grant_transition` forbids every `secret_hash`
+mutation, while `consumeActionGrant` atomically sets `consumed_at` and scrubs
+that hash as required by the binding spec. PostgreSQL rejects the transition;
+the existing link boundary then correctly returns its invalid-grant response.
+Retaining the digest merely to satisfy the trigger would conflict with the
+specified immediate scrubbing rule. An additive migration that permits only
+the terminal consumed-at-plus-scrub transition is required before the action
+consumer and PostgreSQL suite can be green.
+
+## Completion: terminal scrub, password-generation compatibility, and full evidence
+
+Migration `070_passwordless_action_grant_scrub.sql` is the narrowly approved
+repair to migration 069. It drops the globally unique digest constraint because
+the exact terminal sentinel is intentionally shared, then permits only a live
+grant's simultaneous `consumed_at` transition with `secret_hash = 'scrubbed'`.
+It retains the immutable binding checks and rejects unscrubbed consumption,
+terminal secret rewrites, and every binding rewrite. The PostgreSQL regression
+performs the positive consume-and-scrub transition and negative rebinding,
+terminal-rewrite, and unscrubbed-consume attempts.
+
+The policy-invalidation regression now asserts the documented public behavior:
+`{ outcome: 'restart' }` and no active linked identity, rather than requiring
+an exception. The existing concurrent final-two-method unlink test passes and
+leaves exactly one usable identity.
+
+During review, the current password reset and authenticated password-change
+writers were found to clear refresh/session state without advancing the new
+`credential_generation`. That would have weakened the prior password-grant
+invalidation contract. Both writers now atomically increment it with their
+password update; the controller regression asserts the SQL contains that
+increment. Task 5 must preserve this invariant for any additional credential
+writer. The admin-only script was deliberately not changed because students'
+action grants are not reachable through it.
+
+### RED → GREEN evidence
+
+1. `JWT_SECRET=... JWT_REFRESH_SECRET=... npx tsx --test src/controllers/auth-session.controller.test.ts`
+   initially failed 2/3 as expected: neither password writer contained
+   `credential_generation = credential_generation + 1`. After the narrow
+   writer changes: 3/3 pass.
+2. Full PostgreSQL run after the original 070 trigger repair first failed:
+   the fixed `scrubbed` sentinel collided with migration 069's unique
+   `secret_hash` constraint. After the approved constraint removal and
+   terminal-only transition guard, a second run exposed two fixture
+   assumptions (password generation and cross-owner composite FK); both were
+   corrected to model the durable contract. A later run caught misplaced test
+   setup as compile-time `ReferenceError`s; this was repaired before the final
+   run.
+3. Final `npm run test:postgres` completed with exit 0: **367 pass, 0 fail,
+   1 skipped** in 107325ms. The new transition, policy-invalidation, foreign
+   unlink, password-generation, and concurrent-last-method paths all passed.
+
+### Final checks
+
+- `npm test` (before the final narrow writer-only change) — **358 pass,
+  0 fail**. The changed writer contracts then passed their focused 3/3 test;
+  no unrelated full unit rerun was needed.
+- `npm run type-check` — pass (final run recorded below).
+- `git diff --check` — clean (final run recorded below).
+
+### Documentation impact
+
+No public `/trust`, help, privacy, partner, or developer copy changed. This
+is backend-only authentication hardening; it does not activate a provider,
+change supported institutions, change enrollment eligibility, or create a
+new user-visible commitment. Deployment and provider activation remain
+separate and unclaimed. The Task 2 implementation has no pending legal or
+operational approval requirement beyond those already tracked for the wider
+passwordless port.

@@ -67,6 +67,7 @@ test('password reset atomically clears the durable refresh session', async (t) =
     assert.match(calls[1].text, /refresh_token_hash = NULL/);
     assert.match(calls[1].text, /refresh_token_expires_at = NULL/);
     assert.match(calls[1].text, /active_session_id = NULL/);
+    assert.match(calls[1].text, /credential_generation = credential_generation \+ 1/);
     assert.equal((responses[0] as { message: string }).message, 'Password reset successfully');
 });
 
@@ -98,5 +99,6 @@ test('authenticated password change atomically clears the durable refresh sessio
     assert.match(calls[1].text, /refresh_token_hash = NULL/);
     assert.match(calls[1].text, /refresh_token_expires_at = NULL/);
     assert.match(calls[1].text, /active_session_id = NULL/);
+    assert.match(calls[1].text, /credential_generation = credential_generation \+ 1/);
     assert.equal((responses[0] as { message: string }).message, 'Password updated successfully');
 });

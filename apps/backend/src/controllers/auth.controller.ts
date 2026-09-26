@@ -581,6 +581,7 @@ export class AuthController {
                  refresh_token_expires_at = NULL,
                  active_session_id = NULL,
                  active_session_issued_at = NULL,
+                 credential_generation = credential_generation + 1,
                  updated_at = CURRENT_TIMESTAMP
              WHERE id = $2`,
             [passwordHash, user.id]
@@ -653,6 +654,7 @@ export class AuthController {
                  refresh_token_expires_at = NULL,
                  active_session_id = NULL,
                  active_session_issued_at = NULL,
+                 credential_generation = credential_generation + 1,
                  updated_at = CURRENT_TIMESTAMP
              WHERE id = $2`,
             [passwordHash, user.id]
