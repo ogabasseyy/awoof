@@ -60,6 +60,12 @@ completion. The replay check retains the durable linked provider identity for a
 fresh ordinary SSO login to find, while refusing a second session from
 the consumed handoff.
 
+The current response-loss check is deliberately narrower than a full ordinary
+provider-login test: it proves the consumed handoff cannot mint another session
+and that the linked identity remains queryable by provider/subject. It does not
+invoke `StudentSsoFlowService.finish` on a fresh attempt, so it is not evidence
+of a complete ordinary relogin round trip.
+
 ## Remaining concerns / follow-up
 
 - Extend the PostgreSQL harness before enablement with atomic rollback,

@@ -71,6 +71,21 @@ test('signup send budgets survive rejected transactions and refuse a fourth send
     });
 });
 
+test('five rejected OTP checks are committed and lock the correct code too', async () => {
+    await withPool(async pool => {
+        const key = randomBytes(32).toString('base64url'); let code = '';
+        const service = new StudentSsoSignupService({ pool, attemptKey: key, isEnabled: () => true, isProviderEnabled: () => true, deliverOtp: async (_email, value) => { code = value; return { success: true }; } });
+        const c = await pool.connect(); let state; try { state = await seed(c, key); } finally { c.release(); }
+        const sent = await service.sendCode({ handoffId: state.handoffId, handoffSecret: state.handoffSecret, browserBinding: state.browser });
+        for (let attempt = 0; attempt < 5; attempt++) {
+            await assert.rejects(service.verifyCode({ handoffId: state.handoffId, handoffSecret: state.handoffSecret, browserBinding: state.browser, challengeId: sent.challengeId, code: '000000' }), /invalid or expired/i);
+        }
+        await assert.rejects(service.verifyCode({ handoffId: state.handoffId, handoffSecret: state.handoffSecret, browserBinding: state.browser, challengeId: sent.challengeId, code }), /invalid or expired/i);
+        const budget = await pool.query<{ failed_attempts: number }>(`SELECT failed_attempts FROM verification_challenge_budgets`);
+        assert.equal(budget.rows[0]!.failed_attempts, 5);
+    });
+});
+
 test('signup rejects an existing email or provider identity without creating a second account', async () => {
     await withPool(async pool => {
         const key = randomBytes(32).toString('base64url'); let code = ''; const service = new StudentSsoSignupService({ pool, attemptKey: key, isEnabled: () => true, isProviderEnabled: () => true, deliverOtp: async (_email, value) => { code = value; return { success: true }; } });
