@@ -21,3 +21,7 @@ No public trust/help/privacy/developer copy was added: these routes are implemen
 ## Remaining controller checks
 
 The controller should run the full `npm run test:auth --prefix apps/web` and `npm run test:browser --prefix apps/web` suite. Focused tests use synthetic API routes only; they do not claim a live Microsoft redirect, mailbox delivery, provider policy approval, or production activation.
+
+### Storage limitation observed during browser testing
+
+The recovery callback itself does not require tab storage: `apps/web/src/app/auth/student/sso/complete/page.tsx` lines 40-47 (`readRecoveryIntent`) catches unavailable `sessionStorage`, while callback routing uses parsed server `purpose` and `pendingCodeId`. A Playwright global override of the `window.sessionStorage` getter prevented the wider app from reaching the authenticated callback fixture, so that broad simulation was not retained as a recovery assertion. The focused callback test covers the intended scope: no tab intent is required and plaintext never persists.
