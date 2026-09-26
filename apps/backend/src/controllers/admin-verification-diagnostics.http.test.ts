@@ -54,7 +54,7 @@ test('admin diagnostic read is redacted, audited, no-store, and fenced by a tran
         release() {},
     };
     t.mock.method(db, 'query', async () => ({ rows: [{ role: 'admin', deleted_at: null }], rowCount: 1 }));
-    t.mock.method(db, 'getPool', () => ({ connect: async () => client }) as ReturnType<typeof db.getPool>);
+    t.mock.method(db, 'getPool', () => ({ connect: async () => client, query: async () => ({ rows: [], rowCount: 0 }) }) as ReturnType<typeof db.getPool>);
     const app = express(); app.use('/admin', adminRouter); app.use(errorHandler);
     const server = app.listen(0, '127.0.0.1'); await once(server, 'listening');
     const address = server.address();
@@ -125,7 +125,7 @@ test('missing diagnostic IDs are generic and never append an administrative read
         release() {},
     };
     t.mock.method(db, 'query', async () => ({ rows: [{ role: 'admin', deleted_at: null }], rowCount: 1 }));
-    t.mock.method(db, 'getPool', () => ({ connect: async () => client }) as ReturnType<typeof db.getPool>);
+    t.mock.method(db, 'getPool', () => ({ connect: async () => client, query: async () => ({ rows: [], rowCount: 0 }) }) as ReturnType<typeof db.getPool>);
     const app = express(); app.use('/admin', adminRouter); app.use(errorHandler);
     const server = app.listen(0, '127.0.0.1'); await once(server, 'listening');
     const address = server.address();

@@ -8,6 +8,7 @@ import { AppError, ForbiddenError, NotFoundError, UnauthorizedError } from '../c
 import { jwtService } from '../services/auth/jwt.service.js';
 import { createProductsRouter } from '../routes/products.routes.js';
 import { createMerchantVerificationRouter } from '../routes/merchant-verification.routes.js';
+import { db } from '../config/database.js';
 
 const studentId = '4f088fa7-79d9-4c64-a48c-9ecbbbc3c4a3';
 const vendorUserId = '6b1c2d3e-4f5a-4c64-a48c-9ecbbbc3c4a3';
@@ -25,6 +26,8 @@ function vendorToken(): string {
 }
 
 async function withServer(router: Router, mount: string, operation: (baseUrl: string) => Promise<void>): Promise<void> {
+    const originalGetPool = db.getPool.bind(db);
+    db.getPool = (() => ({ query: async () => ({ rows: [], rowCount: 0 }) })) as typeof db.getPool;
     const app = express();
     app.use(express.json());
     app.use(mount, router);
@@ -38,6 +41,7 @@ async function withServer(router: Router, mount: string, operation: (baseUrl: st
     } finally {
         server.close();
         await once(server, 'close');
+        db.getPool = originalGetPool;
     }
 }
 

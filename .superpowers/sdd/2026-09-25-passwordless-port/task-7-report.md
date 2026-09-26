@@ -19,7 +19,7 @@ Evidence links source cleanup to migration 074 and the compiled artifact. Deploy
 
 - `npm run type-check --prefix apps/backend` — passed.
 - `npm run test:artifact --prefix apps/backend` — passed: compiled artifact contained 29 integration tests, 75 staged migrations, and 724 hashed files; OpenAPI artifact parity and source-absent runtime probes passed.
-- `npm test --prefix apps/backend` — **not green in the current checkout**: 352 pass / 5 fail. Current failures are the four HTTP fixtures now reaching the student-session database guard (`admin-student.http.test.ts`, `admin-verification-diagnostics.http.test.ts`, `product-claim.http.test.ts`, `verification.routes.http.test.ts`) plus the recovery-status shape expectation, which is updated in this task. The four fixture changes need scoped pool stubs; no production bypass is appropriate.
+- `npm test --prefix apps/backend` — passed: 375 tests, 0 failures, 0 skipped. Four HTTP fixtures now use scoped, restored pool stubs matching the passwordless student-session lookup; the recovery-status expectation includes the deliberate `pendingCodeId: null` contract field.
 
 ## Not run / release blockers
 
