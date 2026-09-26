@@ -90,3 +90,17 @@ test('server callback context does not require a tab intent and never persists g
     expect(await page.evaluate(() => `${location.href}|${localStorage.getItem('awoof.session.v1')}`)).not.toContain('display-once-code');
     api.assertNoUnexpectedRequests();
 });
+
+test('lost generation or activation responses recover only through server status and never reveal plaintext', async ({ page }) => {
+    const api = await installSyntheticApi(page);
+    await page.route(`${apiOrigin}/api/auth/student/sso/recovery-code`, route => route.fulfill({ headers, json: { success: true, data: { status: 'pending', generation: 1, pendingCodeId: '7e000000-0000-4000-8000-000000000001' } } }));
+    await page.goto('/auth/student/login'); await seedSession(page, 'student');
+    await page.goto('/student/security');
+    await expect(page.getByText('A pending code exists')).toBeVisible();
+    await expect(page.getByText('one-time-recovery-code')).toHaveCount(0);
+    await page.unroute(`${apiOrigin}/api/auth/student/sso/recovery-code`);
+    await page.route(`${apiOrigin}/api/auth/student/sso/recovery-code`, route => route.fulfill({ headers, json: { success: true, data: { status: 'active', generation: 1, pendingCodeId: null } } }));
+    await page.reload();
+    await expect(page.getByText('A recovery code is active.')).toBeVisible();
+    api.assertNoUnexpectedRequests();
+});
