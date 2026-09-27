@@ -16,7 +16,7 @@ import { AuthShell } from '@/components/auth/AuthShell';
 import { Button } from '@/components/ui/button';
 import { useAuth } from '@/contexts/AuthContext';
 import { publicApiClient, studentSsoApiClient } from '@/lib/api-client';
-import { getSessionSnapshot } from '@/lib/auth';
+import { clearTokens, getSessionSnapshot } from '@/lib/auth';
 import { resolveStudentReturn } from '@/lib/student-return';
 import {
     clearSsoAttempt,
@@ -57,7 +57,7 @@ function readRecoveryIntent(): RecoveryIntent | null {
 function clearRecoveryIntent(): void { try { sessionStorage.removeItem(RECOVERY_INTENT_KEY); } catch { /* no browser persistence available */ } }
 
 function RecoveryReauthComplete({ attemptId }: { attemptId: string }) {
-    const [status, setStatus] = useState<'checking' | 'generate' | 'display' | 'activate' | 'remove' | 'failed' | 'active' | 'removed' | 'link_unavailable' | 'unlinked' | 'last_method'>('checking');
+    const [status, setStatus] = useState<'checking' | 'generate' | 'display' | 'activate' | 'remove' | 'failed' | 'active' | 'removed' | 'link_unavailable' | 'unlinked' | 'unlinked_signed_out' | 'last_method'>('checking');
     const [code, setCode] = useState(''); const [oldCode, setOldCode] = useState(''); const [needsOldCode, setNeedsOldCode] = useState(false); const [pendingCodeId, setPendingCodeId] = useState<string | null>(null); const [grant, setGrant] = useState<{ grantId: string; grantSecret: string } | null>(null); const [error, setError] = useState<string | null>(null);
     const [busy, setBusy] = useState(false); const started = useRef(false); const actionBusy = useRef(false);
     useEffect(() => {
@@ -103,8 +103,13 @@ function RecoveryReauthComplete({ attemptId }: { attemptId: string }) {
         }
         if (!grant.targetIdentityId) { setStatus('failed'); return; }
         try {
-            await studentSsoApiClient.post(`/auth/student/sso/identities/${grant.targetIdentityId}/unlink`, { reauthGrant: auth }, { headers: { Authorization: `Bearer ${accessToken}` } });
-            setStatus('unlinked');
+            const response = await studentSsoApiClient.post(`/auth/student/sso/identities/${grant.targetIdentityId}/unlink`, { reauthGrant: auth }, { headers: { Authorization: `Bearer ${accessToken}` } });
+            const data = (response.data as { success?: unknown; data?: unknown })?.success === true ? (response.data as { data?: unknown }).data as { unlinked?: unknown; sessionRevoked?: unknown } : null;
+            if (!data || data.unlinked !== true || typeof data.sessionRevoked !== 'boolean') throw new Error('invalid unlink');
+            // The server clears the session only when the removed identity
+            // issued it; drop local tokens exactly then, before rendering.
+            if (data.sessionRevoked) clearTokens();
+            setStatus(data.sessionRevoked ? 'unlinked_signed_out' : 'unlinked');
         } catch (cause: unknown) {
             const body = bodyOf(cause) as { error?: { code?: unknown } } | undefined;
             if (statusOf(cause) === 409 && body?.error?.code === 'SSO_LAST_LOGIN_METHOD') { setStatus('last_method'); return; }
@@ -129,13 +134,14 @@ function RecoveryReauthComplete({ attemptId }: { attemptId: string }) {
     if (status === 'removed') return <AuthShell role="student" title="Recovery code removed" subtitle="Recovery is now unconfigured." footer={null}><p role="status">The saved code was revoked and can no longer recover this account. Set up a new code from Account security if you still want recovery.</p><Button className="mt-5 w-full rounded-full" asChild><Link href="/student/security">Back to account security</Link></Button></AuthShell>;
     if (status === 'link_unavailable') return <AuthShell role="student" title="School sign-in link unavailable" subtitle="This sign-in can no longer be linked." footer={null}><p role="status">The pending school sign-in expired or was already used. Restart school sign-in and try again.</p><Button className="mt-5 w-full rounded-full" asChild><Link href="/auth/student/login">Back to sign-in</Link></Button></AuthShell>;
     if (status === 'unlinked') return <AuthShell role="student" title="Sign-in method removed" subtitle="The school sign-in was disconnected." footer={null}><p role="status">That school sign-in can no longer access this account.</p><Button className="mt-5 w-full rounded-full" asChild><Link href="/student/security">Back to account security</Link></Button></AuthShell>;
+    if (status === 'unlinked_signed_out') return <AuthShell role="student" title="Sign-in method removed" subtitle="You have been signed out." footer={null}><p role="status">The removed sign-in had issued this session, so the local sign-in was cleared. That school sign-in can no longer access this account.</p><Button className="mt-5 w-full rounded-full" asChild><Link href="/auth/student/login">Back to sign-in</Link></Button></AuthShell>;
     if (status === 'last_method') return <AuthShell role="student" title="Cannot remove the last sign-in method" subtitle="Keep another way to sign in first." footer={null}><p role="status">Removing this sign-in would lock the account. Link another school sign-in or set a password first.</p><Button className="mt-5 w-full rounded-full" asChild><Link href="/student/security">Back to account security</Link></Button></AuthShell>;
     return <AuthShell role="student" title="Security confirmation unavailable" subtitle="The fresh confirmation expired or was interrupted." footer={null}><p role="status">No recovery code was activated. Start the optional setup again.</p><Button className="mt-5 w-full rounded-full" asChild><Link href="/student/security">Back to account security</Link></Button></AuthShell>;
 }
 
 type CompleteView =
     | { kind: 'checking' }
-    | { kind: 'link_required' }
+    | { kind: 'link_required'; provider: 'google' | 'microsoft' }
     | { kind: 'already_signed_in'; continuePath: string }
     | { kind: 'discarded' };
 
@@ -258,7 +264,7 @@ function StudentSsoCompleteInner() {
                     return;
                 }
                 // Unlinked identities stay signed out: no session is stored.
-                setView({ kind: 'link_required' });
+                setView({ kind: 'link_required', provider: finished.provider });
                 return;
             }
             const committed = await completeSsoLogin(startedGeneration, response.data);
@@ -278,14 +284,17 @@ function StudentSsoCompleteInner() {
         void finish();
     }, [search, completeSsoLogin, reauthAttempt]);
 
+    const linkProvider = view.kind === 'link_required' ? view.provider : null;
     useEffect(() => {
-        if (view.kind !== 'link_required' || signupOffer !== 'checking') return;
+        if (linkProvider === null || signupOffer !== 'checking') return;
         let cancelled = false;
-        void publicApiClient.get('/auth/student/sso/signup/availability')
+        // Provider-scoped: the server reports availability only when the
+        // provider that produced this unknown identity is still enabled.
+        void publicApiClient.get(`/auth/student/sso/signup/availability?provider=${linkProvider}`)
             .then(r => { const data = (r.data as { success?: unknown; data?: unknown })?.success === true ? (r.data as { data?: unknown }).data : null; if (!cancelled) setSignupOffer(data !== null && typeof data === 'object' && (data as { available?: unknown }).available === true ? 'available' : 'hidden'); })
             .catch(() => { if (!cancelled) setSignupOffer('hidden'); });
         return () => { cancelled = true; };
-    }, [view.kind, signupOffer]);
+    }, [linkProvider, signupOffer]);
 
     if (reauthAttempt) return <RecoveryReauthComplete attemptId={reauthAttempt} />;
 

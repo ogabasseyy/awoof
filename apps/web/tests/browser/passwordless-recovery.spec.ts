@@ -121,10 +121,23 @@ test('fresh unlink proof continues to identity removal with a last-method escape
     const api = await installSyntheticApi(page);
     const targetId = '84000000-0000-4000-8000-000000000001';
     await page.route(`${apiOrigin}/api/auth/student/sso/reauth/finish`, route => route.fulfill({ status: 201, headers, json: { success: true, data: { grantId: '85000000-0000-4000-8000-000000000001', grantSecret: 'unlink-grant', expiresAt: new Date(Date.now() + 60_000).toISOString(), purpose: 'unlink', pendingCodeId: null, targetIdentityId: targetId, activeCodeGeneration: null } } }));
-    await page.route(`${apiOrigin}/api/auth/student/sso/identities/${targetId}/unlink`, route => route.fulfill({ headers, json: { success: true, data: { outcome: 'unlinked' } } }));
+    await page.route(`${apiOrigin}/api/auth/student/sso/identities/${targetId}/unlink`, route => route.fulfill({ headers, json: { success: true, data: { unlinked: true, sessionRevoked: false } } }));
     await page.goto('/auth/student/login'); await seedSession(page, 'student');
     await page.goto('/auth/student/sso/complete?reauth=86000000-0000-4000-8000-000000000001');
     await expect(page.getByRole('heading', { name: 'Sign-in method removed' })).toBeVisible();
+    api.assertNoUnexpectedRequests();
+});
+
+test('unlink that revokes the active session clears local tokens and signs out', async ({ page }) => {
+    const api = await installSyntheticApi(page);
+    const targetId = '8a000000-0000-4000-8000-000000000001';
+    await page.route(`${apiOrigin}/api/auth/student/sso/reauth/finish`, route => route.fulfill({ status: 201, headers, json: { success: true, data: { grantId: '8b000000-0000-4000-8000-000000000001', grantSecret: 'unlink-grant', expiresAt: new Date(Date.now() + 60_000).toISOString(), purpose: 'unlink', pendingCodeId: null, targetIdentityId: targetId, activeCodeGeneration: null } } }));
+    await page.route(`${apiOrigin}/api/auth/student/sso/identities/${targetId}/unlink`, route => route.fulfill({ headers, json: { success: true, data: { unlinked: true, sessionRevoked: true } } }));
+    await page.goto('/auth/student/login'); await seedSession(page, 'student');
+    await page.goto('/auth/student/sso/complete?reauth=8c000000-0000-4000-8000-000000000001');
+    await expect(page.getByText('You have been signed out.')).toBeVisible();
+    await expect(page.getByRole('link', { name: 'Back to sign-in' })).toBeVisible();
+    expect(await page.evaluate(() => localStorage.getItem('awoof.session.v1'))).toContain('"signed_out"');
     api.assertNoUnexpectedRequests();
 });
 

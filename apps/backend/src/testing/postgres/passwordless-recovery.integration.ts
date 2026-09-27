@@ -80,6 +80,38 @@ test('independent lost-access recovery consumes the active code, requires normal
     }
 });
 
+test('unknown-mailbox recovery handles expire exactly like committed ones', async () => {
+    const pool = createTestPool();
+    const client = await pool.connect();
+    try {
+        const account = await seedRecoverableStudent(client);
+        const deliveries: string[] = [];
+        const service = new StudentAccountRecoveryService({
+            pool, recoveryCodeKey: 'test-recovery-code-key',
+            deliverOtp: async (email, _otp) => { deliveries.push(email); return { success: true }; },
+        });
+        const decoy = await service.start({ email: `unknown-${randomUUID().slice(0, 8)}@example.invalid`, purpose: 'lost_access' });
+        const committed = await service.start({ email: account.email, purpose: 'compromise' });
+        const decoyMs = Date.parse(decoy.expiresAt);
+        const committedMs = Date.parse(committed.expiresAt);
+        assert.ok(Number.isFinite(decoyMs) && Number.isFinite(committedMs));
+        // Both derive from the same server clock plus the shared mailbox
+        // TTL: neither clock skew nor the shorter OTP window may mark a
+        // real attempt.
+        assert.ok(Math.abs(decoyMs - committedMs) < 30_000, `decoy and committed expiries must be indistinguishable (delta ${Math.abs(decoyMs - committedMs)}ms)`);
+        for (const ms of [decoyMs, committedMs]) {
+            const ttlMs = ms - Date.now();
+            assert.ok(ttlMs > 4 * 60 * 1000 && ttlMs <= 6 * 60 * 1000, `expiry must sit on the shared mailbox TTL (saw ${Math.round(ttlMs / 1000)}s)`);
+        }
+        assert.deepEqual(deliveries, [account.email]);
+        const decoyRows = await client.query('SELECT id FROM student_auth_recovery_attempts WHERE id = $1', [decoy.attemptId]);
+        assert.equal(decoyRows.rowCount, 0, 'decoy handles persist nothing');
+    } finally {
+        client.release();
+        await pool.end();
+    }
+});
+
 test('recovery completion sends a post-commit notice without credentials', async () => {
     const pool = createTestPool();
     const client = await pool.connect();

@@ -95,6 +95,15 @@ export class StudentReauthService {
         return result.rows[0] ? studentReauthCookieName(result.rows[0].id) : null;
     }
 
+    /** Hashed state lookup for failure redirects; the id lands the browser on the bounded completion page. */
+    async attemptIdForState(state: string | null): Promise<string | null> {
+        if (!state || state.length > 1024) return null;
+        const result = await this.deps.pool.query<{ id: string }>(
+            'SELECT id FROM student_auth_reauth_attempts WHERE state_hash = $1', [hashMicrosoftAttemptSecret(state)],
+        );
+        return result.rows[0]?.id ?? null;
+    }
+
     async callback(input: { callbackUrl: URL; callbackCookie: string | undefined }): Promise<{ attemptId: string; completionUrl: URL }> {
         const state = input.callbackUrl.searchParams.get('state');
         if (!state || !input.callbackCookie) throw invalidReauth();

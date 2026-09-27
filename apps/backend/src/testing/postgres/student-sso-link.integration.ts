@@ -1116,7 +1116,7 @@ test('unlink revokes the identity and clears only its own session', async () => 
             grantId: grant.grantId,
             grantSecret: grant.grantSecret,
         });
-        assert.deepEqual(result, { unlinked: true });
+        assert.deepEqual(result, { unlinked: true, sessionRevoked: true });
         const check = await pool.connect();
         try {
             const identity = await check.query<{ revoked_at: Date | null }>(
@@ -1203,7 +1203,7 @@ test('unlink preserves a session issued by another method', async () => {
             grantId: grant.grantId,
             grantSecret: grant.grantSecret,
         });
-        assert.deepEqual(result, { unlinked: true });
+        assert.deepEqual(result, { unlinked: true, sessionRevoked: false });
         const verify = await pool.connect();
         try {
             const account = await verify.query<{
@@ -1361,7 +1361,7 @@ test('concurrent unlink attempts serialize to a single revocation', async () => 
             }),
         ]);
         const succeeded = outcomes.filter(
-            (outcome): outcome is PromiseFulfilledResult<{ unlinked: true }> =>
+            (outcome): outcome is PromiseFulfilledResult<{ unlinked: true; sessionRevoked: boolean }> =>
                 outcome.status === 'fulfilled' && 'unlinked' in outcome.value && outcome.value.unlinked === true,
         );
         assert.equal(succeeded.length, 1);

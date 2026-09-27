@@ -355,11 +355,12 @@ test('an unlinked provider identity stays signed out with an explicit link-requi
                 handoffId: HANDOFF_ID,
                 handoffSecret: 'synthetic-handoff-secret',
                 expiresAt: liveExpiry(),
+                provider: 'microsoft',
             },
         },
         headers: ssoHeaders,
     }));
-    await page.route(`${apiOrigin}/api/auth/student/sso/signup/availability`, (route) => route.fulfill({
+    await page.route(`${apiOrigin}/api/auth/student/sso/signup/availability*`, (route) => route.fulfill({
         json: { success: true, data: { available: true } },
         headers: ssoHeaders,
     }));
@@ -400,11 +401,12 @@ test('link-required hides passwordless signup while issuance is disabled', async
                 handoffId: HANDOFF_ID,
                 handoffSecret: 'synthetic-handoff-secret',
                 expiresAt: liveExpiry(),
+                provider: 'microsoft',
             },
         },
         headers: ssoHeaders,
     }));
-    await page.route(`${apiOrigin}/api/auth/student/sso/signup/availability`, (route) => route.fulfill({
+    await page.route(`${apiOrigin}/api/auth/student/sso/signup/availability*`, (route) => route.fulfill({
         json: { success: true, data: { available: false } },
         headers: ssoHeaders,
     }));

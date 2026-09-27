@@ -139,7 +139,7 @@ Access tokens expire in 15 minutes. Use the refresh token endpoint to get a new 
                 RecoveryCodeStatusResponse: { type: 'object', required: ['success', 'data'], properties: { success: { type: 'boolean', enum: [true] }, data: { type: 'object', required: ['status', 'generation', 'pendingCodeId'], properties: { status: { type: 'string', enum: ['unconfigured', 'pending', 'active'] }, generation: { type: ['integer', 'null'] }, pendingCodeId: { type: ['string', 'null'], format: 'uuid' } } } } },
                 RecoveryCodeGeneratedResponse: { type: 'object', required: ['success', 'data'], properties: { success: { type: 'boolean', enum: [true] }, data: { type: 'object', required: ['pendingCodeId', 'code'], properties: { pendingCodeId: { type: 'string', format: 'uuid' }, code: { type: 'string', readOnly: true } } } } },
                 RecoveryCodeActivatedResponse: { type: 'object', required: ['success', 'data'], properties: { success: { type: 'boolean', enum: [true] }, data: { type: 'object', required: ['active'], properties: { active: { type: 'boolean', enum: [true] } } } } },
-                AccountRecoveryStartRequest: { type: 'object', additionalProperties: false, required: ['email', 'purpose'], properties: { email: { type: 'string', format: 'email', maxLength: 255 }, purpose: { type: 'string', enum: ['lost_access', 'compromise'] } } },
+                AccountRecoveryStartRequest: { type: 'object', additionalProperties: false, required: ['email', 'purpose'], properties: { email: { type: 'string', format: 'email', minLength: 1, maxLength: 255 }, purpose: { type: 'string', enum: ['lost_access', 'compromise'] } } },
                 AccountRecoveryStartResponse: { type: 'object', required: ['success', 'data'], properties: { success: { type: 'boolean', enum: [true] }, data: { type: 'object', required: ['attemptId', 'secret'], properties: { attemptId: { type: 'string', format: 'uuid' }, secret: { type: 'string', readOnly: true } } } } },
                 AccountRecoveryVerifyRequest: { type: 'object', additionalProperties: false, required: ['attemptId', 'secret', 'code', 'otp'], properties: { attemptId: { type: 'string', format: 'uuid' }, secret: { type: 'string', minLength: 1 }, code: { type: 'string', minLength: 1, maxLength: 1024 }, otp: { type: 'string', minLength: 1, maxLength: 1024 } } },
                 AccountRecoveryCompleteRequest: { type: 'object', additionalProperties: false, required: ['attemptId', 'secret', 'password'], properties: { attemptId: { type: 'string', format: 'uuid' }, secret: { type: 'string', minLength: 1 }, password: { type: 'string', minLength: 8, maxLength: 1024, writeOnly: true } } },
@@ -303,12 +303,13 @@ Access tokens expire in 15 minutes. Use the refresh token endpoint to get a new 
                                 },
                                 {
                                     type: 'object',
-                                    required: ['outcome', 'handoffId', 'handoffSecret', 'expiresAt'],
+                                    required: ['outcome', 'handoffId', 'handoffSecret', 'expiresAt', 'provider'],
                                     properties: {
                                         outcome: { type: 'string', enum: ['link_required'] },
                                         handoffId: { type: 'string', format: 'uuid' },
                                         handoffSecret: { type: 'string', description: 'Tab-held handoff secret for explicit linking; never placed in a URL.' },
                                         expiresAt: { type: 'string', format: 'date-time' },
+                                        provider: { type: 'string', enum: ['google', 'microsoft'], description: 'Provider that produced the unknown identity; gates the provider-specific signup offer.' },
                                     },
                                 },
                             ],
@@ -357,6 +358,21 @@ Access tokens expire in 15 minutes. Use the refresh token endpoint to get a new 
                                     description: 'Whether membership evidence supported a school assertion. Linking never authorizes enrollment benefits.',
                                 },
                                 reactivated: { type: 'boolean', description: 'True when the original owner reactivated a revoked identity.' },
+                            },
+                        },
+                    },
+                },
+                StudentSsoUnlinkResponse: {
+                    type: 'object',
+                    required: ['success', 'data'],
+                    properties: {
+                        success: { type: 'boolean', example: true },
+                        data: {
+                            type: 'object',
+                            required: ['unlinked', 'sessionRevoked'],
+                            properties: {
+                                unlinked: { type: 'boolean', enum: [true] },
+                                sessionRevoked: { type: 'boolean', description: 'True when the removed identity had issued the active session; the client must drop its local tokens.' },
                             },
                         },
                     },

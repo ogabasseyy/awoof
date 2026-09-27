@@ -709,6 +709,7 @@ test('unlinked identity receives a handoff and retains the browser binding', asy
         });
         assert.equal(finished.outcome, 'link_required');
         if (finished.outcome !== 'link_required') throw new Error('unreachable');
+        assert.equal(finished.provider, 'google');
         assert.equal(finished.handoffId.length, 36);
         assert.ok(finished.handoffSecret.length > 0);
 

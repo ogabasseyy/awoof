@@ -90,7 +90,7 @@ export type StudentSsoAuthenticatedResult = {
 
 export type StudentSsoFinishResult =
     | StudentSsoAuthenticatedResult
-    | { outcome: 'link_required'; handoffId: string; handoffSecret: string; expiresAt: string }
+    | { outcome: 'link_required'; handoffId: string; handoffSecret: string; expiresAt: string; provider: 'google' | 'microsoft' }
     | { outcome: 'restart_required' };
 
 export type StudentSsoOidcResolver = {
@@ -784,6 +784,7 @@ export class StudentSsoFlowService {
             handoffId,
             handoffSecret,
             expiresAt: inserted.rows[0]!.expires_at.toISOString(),
+            provider: observation.provider,
         };
     }
 }

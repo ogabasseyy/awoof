@@ -75,7 +75,7 @@ export type StudentSsoLinkResult =
     | { outcome: 'restart'; attemptId: string | null };
 
 export type StudentSsoUnlinkResult =
-    | { unlinked: true }
+    | { unlinked: true; sessionRevoked: boolean }
     | { outcome: 'last_method' };
 
 export type StudentSsoLinkDependencies = {
@@ -529,7 +529,9 @@ export class StudentSsoLinkService {
             }
             await tx.query('UPDATE student_auth_identities SET revoked_at = clock_timestamp() WHERE id = $1', [identityId]);
             await revokeSsoSchoolAssertions(tx, identityId);
-            await tx.query(
+            // The row count is the session signal: the client must drop its
+            // local tokens exactly when this update cleared the session.
+            const cleared = await tx.query(
                 `UPDATE users
                  SET active_session_id = NULL,
                      refresh_token_hash = NULL,
@@ -543,7 +545,7 @@ export class StudentSsoLinkService {
                  VALUES ($1, $2, 'student_sso_identity_unlinked', jsonb_build_object('provider', $3::text))`,
                 [userId, row.university_id, row.provider],
             );
-            return { unlinked: true };
+            return { unlinked: true, sessionRevoked: (cleared.rowCount ?? 0) > 0 };
         });
     }
 

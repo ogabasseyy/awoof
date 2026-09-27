@@ -4,7 +4,7 @@ import { ConflictError } from '../../common/errors/AppError.js';
 import { appLogger } from '../../common/logger.js';
 import { passwordService } from './password.service.js';
 import { sendAccountRecoveryCompletionNotice } from '../email/email.service.js';
-import { consumeChallenge, requestChallenge } from '../verification/challenge.service.js';
+import { challengeTtlMs, consumeChallenge, databaseNow, requestChallenge } from '../verification/challenge.service.js';
 import { revokeSsoSchoolAssertions } from './student-sso-onboarding.service.js';
 
 type RecoveryPurpose = 'lost_access' | 'compromise';
@@ -77,18 +77,26 @@ export class StudentAccountRecoveryService {
         const email = input.email.trim().toLowerCase();
         const attemptId = randomUUID();
         const secret = randomBytes(32).toString('base64url');
-        const genericExpiry = new Date(Date.now() + 10 * 60 * 1000).toISOString();
-        const committed = await this.transaction(async (tx) => {
+        // The decoy and committed handles share one server-clock expiry. The
+        // mailbox challenge TTL is the binding constraint (the attempt row
+        // takes LEAST(server clock + 10m, challenge expiry), and the
+        // challenge takes the earlier of its input and server clock + TTL —
+        // so both paths derive from the same clock read plus the shared TTL.
+        // A generic client-clock +10m expiry would mark real attempts by
+        // clock skew and by the shorter mailbox TTL.
+        const ttlMs = challengeTtlMs('student_account_recovery');
+        const started = await this.transaction(async (tx) => {
+            const serverExpiry = new Date((await databaseNow(tx)).getTime() + ttlMs);
             const account = await this.findRecoverableAccount(tx, email);
-            if (!account) return null;
+            if (!account) return { expiresAt: serverExpiry.toISOString() };
             const active = await this.lockActiveCode(tx, account.id);
-            if (!active) return null;
+            if (!active) return { expiresAt: serverExpiry.toISOString() };
             const challenge = await requestChallenge(tx, {
                 purpose: 'student_account_recovery', subjectKey: account.email,
                 bindings: { recoveryAttemptId: attemptId, recoveryPurpose: input.purpose },
-                expiresAt: new Date(Date.now() + 10 * 60 * 1000),
+                expiresAt: serverExpiry,
             });
-            if (challenge.status !== 'issued') return null;
+            if (challenge.status !== 'issued') return { expiresAt: serverExpiry.toISOString() };
             await tx.query(
                 `UPDATE student_auth_recovery_attempts
                  SET status = 'failed', secret_hash = NULL
@@ -107,8 +115,8 @@ export class StudentAccountRecoveryService {
         });
         // Always provide an indistinguishable browser handle. A non-existent,
         // suspended, or code-less account receives a handle that cannot verify.
-        if (committed && this.deps.deliverOtp) await this.deps.deliverOtp(committed.email, committed.otp).catch(() => undefined);
-        return { attemptId, secret, expiresAt: committed?.expiresAt ?? genericExpiry };
+        if ('email' in started && 'otp' in started && this.deps.deliverOtp) await this.deps.deliverOtp(started.email, started.otp).catch(() => undefined);
+        return { attemptId, secret, expiresAt: started.expiresAt };
     }
 
     async verify(input: { attemptId: unknown; secret: unknown; code: unknown; otp: unknown }): Promise<void> {

@@ -37,6 +37,14 @@ function limitsFor(purpose: ChallengePurpose): { failures: number; sends: number
         : { failures: MAX_FAILURES, sends: MAX_SENDS, ttlMs: OTP_MS };
 }
 
+/**
+ * Single source of truth for a purpose TTL, so decoy handles (which cannot
+ * issue a challenge) expire exactly like committed ones.
+ */
+export function challengeTtlMs(purpose: ChallengePurpose): number {
+    return limitsFor(purpose).ttlMs;
+}
+
 function digest(label: string, value: string): string {
     return createHmac('sha256', config.jwt.secret).update(`${label}\u0000${value}`).digest('hex');
 }
@@ -100,7 +108,7 @@ async function lockedBudget(tx: PoolClient, purpose: ChallengePurpose, subject: 
     return budget;
 }
 
-async function databaseNow(tx: PoolClient): Promise<Date> {
+export async function databaseNow(tx: PoolClient): Promise<Date> {
     const result = await tx.query<{ now: Date }>('SELECT clock_timestamp() AS now');
     const now = result.rows[0]?.now;
     if (!now) throw new Error('Database clock was not returned');

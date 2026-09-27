@@ -192,6 +192,7 @@ export type SsoFinishLinkRequired = {
     handoffId: string;
     handoffSecret: string;
     expiresAt: string;
+    provider: 'google' | 'microsoft';
 };
 
 function isStudentUser(value: unknown): value is SsoFinishAuthenticated['user'] {
@@ -236,11 +237,13 @@ export function parseSsoFinishResponse(value: unknown): SsoFinishAuthenticated |
     }
     if (data.outcome === 'link_required') {
         if (!isUuid(data.handoffId) || !isOpaqueSecret(data.handoffSecret) || !isInstant(data.expiresAt)) return null;
+        if (data.provider !== 'google' && data.provider !== 'microsoft') return null;
         return {
             kind: 'link_required',
             handoffId: data.handoffId,
             handoffSecret: data.handoffSecret,
             expiresAt: data.expiresAt,
+            provider: data.provider,
         };
     }
     return null;

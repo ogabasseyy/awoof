@@ -193,6 +193,24 @@ test('Microsoft fresh-reauth routes preserve the browser binding and never use t
     assert.deepEqual(seen, ['start', 'callback', 'finish:reauth-browser']);
 });
 
+test('failed Microsoft fresh-reauth callbacks redirect to the bounded completion page', async () => {
+    const reauthAttemptId = '67666666-6666-4666-8666-666666666666';
+    const reauth = {
+        callbackCookieNameForState: async (state: string | null) => state === 'failed-reauth-state' ? `awoof_reauth_${reauthAttemptId}` : null,
+        attemptIdForState: async (state: string | null) => state === 'failed-reauth-state' ? reauthAttemptId : null,
+        callback: async () => { throw new ConflictError('Student SSO reauthentication is no longer valid'); },
+    };
+    const flow = stubFlow({ callback: async () => { throw new Error('ordinary login callback must not run'); } });
+    await withServer(routerWith(flow, { reauthService: () => reauth as never }), async (baseUrl) => {
+        const callback = await fetch(`${baseUrl}/microsoft/callback?state=failed-reauth-state&code=code`, {
+            redirect: 'manual', headers: { Cookie: `awoof_reauth_${reauthAttemptId}=reauth-browser` },
+        });
+        assert.equal(callback.status, 303);
+        assert.equal(callback.headers.get('location'), `${COMPLETION_ORIGIN}/auth/student/sso/complete?reauth=${reauthAttemptId}`);
+        assert.match(parseSetCookies(callback)[0]!, new RegExp(`awoof_reauth_${reauthAttemptId}=;`));
+    });
+});
+
 test('recovery-code endpoints expose only status metadata and require strict authenticated grants', async () => {
     const calls: string[] = [];
     const recovery = {
@@ -268,6 +286,25 @@ test('signup availability reports the deployment flag without authentication', a
     });
 });
 
+test('signup availability scopes to the handoff provider when requested', async () => {
+    const options = { isSignupEnabled: () => true, enabledProviders: () => ['google' as const] };
+    await withServer(routerWith(stubFlow(), options), async (baseUrl) => {
+        const enabled = await fetch(`${baseUrl}/signup/availability?provider=google`);
+        assert.equal(enabled.status, 200);
+        assert.deepEqual(await enabled.json(), { success: true, data: { available: true } });
+        const disabled = await fetch(`${baseUrl}/signup/availability?provider=microsoft`);
+        assert.equal(disabled.status, 200);
+        assert.deepEqual(await disabled.json(), { success: true, data: { available: false } });
+        const unknown = await fetch(`${baseUrl}/signup/availability?provider=github`);
+        assert.equal(unknown.status, 400);
+    });
+    await withServer(routerWith(stubFlow(), { ...options, isSignupEnabled: () => false }), async (baseUrl) => {
+        const response = await fetch(`${baseUrl}/signup/availability?provider=google`);
+        assert.equal(response.status, 200);
+        assert.deepEqual(await response.json(), { success: true, data: { available: false } });
+    });
+});
+
 test('signup routes default to the deployment flag when the option is omitted', async () => {
     const router = createStudentSsoRouter(() => stubFlow(), {
         isIssuanceEnabled: () => true,
@@ -309,6 +346,11 @@ test('independent account recovery exposes the same start shape without an accou
             body: JSON.stringify({ email: 'student@example.invalid', purpose: 'compromise', injected: true }),
         });
         assert.equal(extra.status, 400);
+        const blank = await fetch(`${baseUrl}/account-recovery/start`, {
+            method: 'POST', headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ email: '', purpose: 'compromise' }),
+        });
+        assert.equal(blank.status, 400);
         const verified = await fetch(`${baseUrl}/account-recovery/verify`, {
             method: 'POST', headers: { 'content-type': 'application/json' },
             body: JSON.stringify({ attemptId: ATTEMPT_ID, secret: 'recovery-secret', code: 'saved-code', otp: '123456' }),
@@ -576,7 +618,7 @@ test('finish clears the cookie on authentication and restart but retains it for 
     });
 
     const linking = stubFlow({
-        finish: async () => ({ outcome: 'link_required', handoffId: 'handoff', handoffSecret: 'secret', expiresAt: new Date().toISOString() }),
+        finish: async () => ({ outcome: 'link_required', handoffId: 'handoff', handoffSecret: 'secret', expiresAt: new Date().toISOString(), provider: 'microsoft' }),
     });
     await withServer(routerWith(linking), async (baseUrl) => {
         const response = await fetch(`${baseUrl}/finish`, {
@@ -743,7 +785,7 @@ function stubLink(overrides: Partial<StudentSsoLink> = {}): StudentSsoLink {
             attemptId: ATTEMPT_ID,
         }),
         listIdentities: async () => [],
-        unlink: async () => ({ unlinked: true as const }),
+        unlink: async () => ({ unlinked: true as const, sessionRevoked: false }),
         ...overrides,
     };
 }
@@ -961,7 +1003,7 @@ test('unlink reports the last login method honestly and revokes otherwise', asyn
             body: JSON.stringify({ reauthGrant: { grantId: LINK_GRANT_ID, grantSecret: 'grant-secret' } }),
         });
         assert.equal(response.status, 200);
-        assert.deepEqual(await response.json(), { success: true, data: { unlinked: true } });
+        assert.deepEqual(await response.json(), { success: true, data: { unlinked: true, sessionRevoked: false } });
     });
 });
 
