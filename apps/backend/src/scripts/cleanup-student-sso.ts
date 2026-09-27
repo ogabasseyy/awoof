@@ -47,10 +47,14 @@ async function main(): Promise<void> {
                 + `signupChallengesTerminalized=${result.signupChallengesTerminalized} signupChallengesDeleted=${result.signupChallengesDeleted} `
                 + `reauthAttemptsTerminalized=${result.reauthAttemptsTerminalized} reauthAttemptsDeleted=${result.reauthAttemptsDeleted} `
                 + `recoveryAttemptsTerminalized=${result.recoveryAttemptsTerminalized} recoveryAttemptsDeleted=${result.recoveryAttemptsDeleted} `
-                + `actionGrantsScrubbed=${result.actionGrantsScrubbed} recoveryCodesScrubbed=${result.recoveryCodesScrubbed} overdueExpired=${result.overdueExpired}\n`,
+                + `actionGrantsScrubbed=${result.actionGrantsScrubbed} recoveryCodesScrubbed=${result.recoveryCodesScrubbed} `
+                + `terminalSecretsScrubbed=${result.terminalSecretsScrubbed} overdueExpired=${result.overdueExpired} `
+                + `overdueTerminalSecrets=${result.overdueTerminalSecrets}\n`,
             );
-            if (result.overdueExpired > 0) {
-                process.stderr.write(`student SSO cleanup overdue expired state: ${result.overdueExpired}\n`);
+            if (result.overdueExpired > 0 || result.overdueTerminalSecrets > 0) {
+                process.stderr.write(
+                    `student SSO cleanup overdue state: expired=${result.overdueExpired} terminalSecrets=${result.overdueTerminalSecrets}\n`,
+                );
                 process.exitCode = 1;
             }
         } finally {

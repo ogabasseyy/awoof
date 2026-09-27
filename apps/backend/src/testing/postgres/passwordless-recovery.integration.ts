@@ -80,6 +80,93 @@ test('independent lost-access recovery consumes the active code, requires normal
     }
 });
 
+test('recovery terminal failure writers scrub superseded and rejected-at-verification secrets immediately', async () => {
+    const pool = createTestPool();
+    const client = await pool.connect();
+    try {
+        const account = await seedRecoverableStudent(client);
+        let otp = '';
+        const service = new StudentAccountRecoveryService({
+            pool, recoveryCodeKey: 'test-recovery-code-key',
+            deliverOtp: async (_email, delivered) => { otp = delivered; return { success: true }; },
+            validatePassword: () => ({ valid: true, errors: [] }), hashPassword: async () => 'unused',
+        });
+        const first = await service.start({ email: account.email, purpose: 'lost_access' });
+        await client.query(
+            `UPDATE verification_challenge_budgets AS budget
+             SET resend_available_at = clock_timestamp() - interval '1 second'
+             FROM verification_challenges AS challenge
+             JOIN student_auth_recovery_attempts AS attempt ON attempt.mailbox_challenge_id = challenge.id
+             WHERE budget.purpose = challenge.purpose AND budget.subject_digest = challenge.subject_digest
+               AND attempt.id = $1`,
+            [first.attemptId],
+        );
+        const second = await service.start({ email: account.email, purpose: 'lost_access' });
+        const superseded = await client.query<{ status: string; secret_hash: string | null }>(
+            'SELECT status, secret_hash FROM student_auth_recovery_attempts WHERE id = $1', [first.attemptId],
+        );
+        assert.deepEqual(superseded.rows[0], { status: 'failed', secret_hash: null },
+            'starting a replacement recovery immediately scrubs the superseded secret');
+
+        await assert.rejects(() => service.verify({
+            attemptId: second.attemptId, secret: second.secret, code: `${account.code}-wrong`, otp,
+        }));
+        const rejected = await client.query<{ status: string; secret_hash: string | null }>(
+            'SELECT status, secret_hash FROM student_auth_recovery_attempts WHERE id = $1', [second.attemptId],
+        );
+        assert.deepEqual(rejected.rows[0], { status: 'failed', secret_hash: null },
+            'a rejected recovery verification immediately scrubs its terminal secret');
+    } finally {
+        client.release();
+        await pool.end();
+    }
+});
+
+test('recovery completion immediately scrubs invalidated sibling recovery and reauthentication attempts', async () => {
+    const pool = createTestPool();
+    const client = await pool.connect();
+    try {
+        const account = await seedRecoverableStudent(client);
+        const proofIdentityId = await seedProviderProof(client, account.userId);
+        let otp = '';
+        const service = new StudentAccountRecoveryService({
+            pool, recoveryCodeKey: 'test-recovery-code-key',
+            deliverOtp: async (_email, delivered) => { otp = delivered; return { success: true }; },
+            validatePassword: () => ({ valid: true, errors: [] }), hashPassword: async () => 'recovered-password-hash',
+        });
+        const started = await service.start({ email: account.email, purpose: 'lost_access' });
+        await service.verify({ attemptId: started.attemptId, secret: started.secret, code: account.code, otp });
+        const reauth = await client.query<{ id: string }>(
+            `INSERT INTO student_auth_reauth_attempts
+                 (user_id, sid, credential_generation, purpose, state_hash, callback_cookie_hash, encrypted_verifier, nonce,
+                  proof_identity_id, status, expires_at)
+             VALUES ($1, $2, 0, 'link', 'reauth-state-secret', 'reauth-cookie-secret', 'reauth-encrypted-verifier', 'reauth-nonce-secret',
+                     $3, 'ready', clock_timestamp() + interval '5 minutes') RETURNING id`,
+            [account.userId, randomUUID(), proofIdentityId],
+        );
+        const siblingRecovery = await client.query<{ id: string }>(
+            `INSERT INTO student_auth_recovery_attempts
+                 (user_id, credential_generation, purpose, secret_hash, recovery_code_generation, status, expires_at)
+             VALUES ($1, 0, 'lost_access', 'sibling-recovery-secret', 1, 'pending', clock_timestamp() + interval '5 minutes')
+             RETURNING id`, [account.userId],
+        );
+        await service.complete({ attemptId: started.attemptId, secret: started.secret, password: 'ValidNew1!' });
+        const invalidatedReauth = await client.query<{
+            status: string; state_hash: string | null; callback_cookie_hash: string | null; encrypted_verifier: string | null; nonce: string | null;
+        }>('SELECT status, state_hash, callback_cookie_hash, encrypted_verifier, nonce FROM student_auth_reauth_attempts WHERE id = $1', [reauth.rows[0]!.id]);
+        assert.deepEqual(invalidatedReauth.rows[0], {
+            status: 'failed', state_hash: null, callback_cookie_hash: null, encrypted_verifier: null, nonce: null,
+        });
+        const invalidatedRecovery = await client.query<{ status: string; secret_hash: string | null }>(
+            'SELECT status, secret_hash FROM student_auth_recovery_attempts WHERE id = $1', [siblingRecovery.rows[0]!.id],
+        );
+        assert.deepEqual(invalidatedRecovery.rows[0], { status: 'failed', secret_hash: null });
+    } finally {
+        client.release();
+        await pool.end();
+    }
+});
+
 test('compromise recovery revokes only linked-derived assertions while preserving independent enrollment when the provider policy is disabled', async () => {
     const pool = createTestPool();
     const client = await pool.connect();

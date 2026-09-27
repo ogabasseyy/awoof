@@ -1287,6 +1287,9 @@ test('cleanup scrubs expired ciphertext and deletes only aged transients', async
         let handoffAttempt: string;
         let expiredReauthAttempt: string;
         let expiredRecoveryAttempt: string;
+        let terminalReauthAttempt: string;
+        let terminalRecoveryAttempt: string;
+        let blockedTerminalReauthAttempt: string;
         let expiredActionGrant: string;
         let activeRecoveryCode: string;
         let expiredRecoveryCode: string;
@@ -1393,6 +1396,44 @@ test('cleanup scrubs expired ciphertext and deletes only aged transients', async
                  RETURNING id`,
                 [userId, hashMicrosoftAttemptSecret(`recovery-attempt-${uniqueLabel()}`)],
             )).rows[0]!.id;
+            terminalReauthAttempt = (await setup.query<{ id: string }>(
+                `INSERT INTO student_auth_reauth_attempts
+                     (user_id, sid, credential_generation, purpose, state_hash, callback_cookie_hash, encrypted_verifier, nonce,
+                      status, expires_at, consumed_at, created_at)
+                 VALUES ($1, $2, 0, 'link', $3, $4, $5, $6, 'failed',
+                         clock_timestamp() + interval '4 minutes', clock_timestamp(), clock_timestamp())
+                 RETURNING id`,
+                [userId, randomUUID(), hashMicrosoftAttemptSecret(`terminal-reauth-state-${uniqueLabel()}`), hashMicrosoftAttemptSecret(`terminal-reauth-cookie-${uniqueLabel()}`), 'terminal-encrypted-verifier', 'terminal-reauth-nonce'],
+            )).rows[0]!.id;
+            terminalRecoveryAttempt = (await setup.query<{ id: string }>(
+                `INSERT INTO student_auth_recovery_attempts
+                     (user_id, credential_generation, purpose, secret_hash, recovery_code_generation, status, expires_at, created_at)
+                 VALUES ($1, 0, 'lost_access', $2, 71, 'failed', clock_timestamp() + interval '4 minutes', clock_timestamp())
+                 RETURNING id`,
+                [userId, hashMicrosoftAttemptSecret(`terminal-recovery-${uniqueLabel()}`)],
+            )).rows[0]!.id;
+            blockedTerminalReauthAttempt = (await setup.query<{ id: string }>(
+                `INSERT INTO student_auth_reauth_attempts
+                     (user_id, sid, credential_generation, purpose, state_hash, callback_cookie_hash, encrypted_verifier, nonce,
+                      status, expires_at, consumed_at, created_at)
+                 VALUES ($1, $2, 0, 'link', $3, $4, $5, $6, 'failed',
+                         clock_timestamp() + interval '4 minutes', clock_timestamp(), clock_timestamp())
+                 RETURNING id`,
+                [userId, randomUUID(), hashMicrosoftAttemptSecret(`blocked-reauth-state-${uniqueLabel()}`), hashMicrosoftAttemptSecret(`blocked-reauth-cookie-${uniqueLabel()}`), 'blocked-encrypted-verifier', 'blocked-reauth-nonce'],
+            )).rows[0]!.id;
+            await setup.query(`CREATE FUNCTION test_block_terminal_reauth_scrub() RETURNS trigger LANGUAGE plpgsql AS $$
+                BEGIN
+                    IF OLD.id = TG_ARGV[0]::uuid THEN RETURN NULL; END IF;
+                    RETURN NEW;
+                END $$`);
+            const triggerStatement = await setup.query<{ statement: string }>(
+                `SELECT format(
+                    'CREATE TRIGGER test_block_terminal_reauth_scrub BEFORE UPDATE ON student_auth_reauth_attempts FOR EACH ROW EXECUTE FUNCTION test_block_terminal_reauth_scrub(%L)',
+                    $1::text
+                ) AS statement`,
+                [blockedTerminalReauthAttempt],
+            );
+            await setup.query(triggerStatement.rows[0]!.statement);
             expiredRecoveryCode = (await setup.query<{ id: string }>(
                 `INSERT INTO student_auth_recovery_codes
                  (user_id, generation, code_digest, status, expires_at, created_at, pending_sid, pending_credential_generation)
@@ -1434,6 +1475,22 @@ test('cleanup scrubs expired ciphertext and deletes only aged transients', async
             'expired action grants must lose their digest on the next cleanup pass');
         assert.equal((result as unknown as { recoveryCodesScrubbed?: number }).recoveryCodesScrubbed, 1,
             'expired pending recovery-code digests must be terminalized on the next cleanup pass');
+        assert.equal((result as unknown as { terminalSecretsScrubbed?: number }).terminalSecretsScrubbed, 4,
+            'catch-up scrubs already-terminal reauthentication and recovery rows before their expiry');
+        assert.equal((result as unknown as { overdueTerminalSecrets?: number }).overdueTerminalSecrets, 1,
+            'monitoring detects a terminal row whose secret scrub was skipped');
+
+        const unblock = await pool.connect();
+        try {
+            await unblock.query('DROP TRIGGER test_block_terminal_reauth_scrub ON student_auth_reauth_attempts');
+            await unblock.query('DROP FUNCTION test_block_terminal_reauth_scrub()');
+            const recovered = await cleanupStudentSsoTransients(unblock);
+            assert.equal((recovered as unknown as { terminalSecretsScrubbed?: number }).terminalSecretsScrubbed, 1,
+                'a later cleanup pass repairs the previously blocked terminal reauthentication row');
+            assert.equal((recovered as unknown as { overdueTerminalSecrets?: number }).overdueTerminalSecrets, 0);
+        } finally {
+            unblock.release();
+        }
 
         const check = await pool.connect();
         try {
@@ -1487,6 +1544,26 @@ test('cleanup scrubs expired ciphertext and deletes only aged transients', async
             );
             assert.equal(deletedAttempts.rowCount, 0,
                 'seven-day reauthentication and recovery tombstones are deleted after their secrets are terminalized');
+            const terminalSecrets = await check.query<{
+                id: string; status: string; consumed_at: Date | null; state_hash: string | null; callback_cookie_hash: string | null;
+                encrypted_verifier: string | null; nonce: string | null; secret_hash: string | null;
+            }>(
+                `SELECT id, status, consumed_at, state_hash, callback_cookie_hash, encrypted_verifier, nonce, NULL::text AS secret_hash
+                 FROM student_auth_reauth_attempts WHERE id = ANY($1::uuid[])
+                 UNION ALL
+                 SELECT id, status, consumed_at, NULL::text, NULL::text, NULL::text, NULL::text, secret_hash
+                 FROM student_auth_recovery_attempts WHERE id = $2`,
+                [[terminalReauthAttempt, blockedTerminalReauthAttempt], terminalRecoveryAttempt],
+            );
+            assert.equal(terminalSecrets.rows.length, 3);
+            for (const row of terminalSecrets.rows) {
+                assert.equal(row.status, 'failed');
+                assert.equal(row.state_hash, null);
+                assert.equal(row.callback_cookie_hash, null);
+                assert.equal(row.encrypted_verifier, null);
+                assert.equal(row.nonce, null);
+                assert.equal(row.secret_hash, null);
+            }
             const replaySignup = await check.query(
                 `UPDATE student_auth_signup_challenges
                  SET status = 'consumed', consumed_at = clock_timestamp(), terminal_at = clock_timestamp()

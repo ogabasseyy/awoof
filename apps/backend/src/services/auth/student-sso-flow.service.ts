@@ -802,7 +802,9 @@ export type StudentSsoCleanupResult = {
     grantsDeleted: number;
     actionGrantsScrubbed: number;
     recoveryCodesScrubbed: number;
+    terminalSecretsScrubbed: number;
     overdueExpired: number;
+    overdueTerminalSecrets: number;
 };
 
 /**
@@ -839,6 +841,21 @@ export async function cleanupStudentSsoTransients(client: PoolClient): Promise<S
         `UPDATE student_auth_recovery_attempts
          SET status = 'expired', secret_hash = NULL
          WHERE expires_at <= clock_timestamp() AND status IN ('pending', 'verified')`,
+    );
+    // Catch up terminal tombstones written by older failure paths. This is
+    // deliberately status- and timestamp-preserving: immutable bindings and
+    // the seven-day replay tombstone remain available to the retention policy.
+    const terminalReauthSecrets = await client.query(
+        `UPDATE student_auth_reauth_attempts
+         SET state_hash = NULL, callback_cookie_hash = NULL, encrypted_verifier = NULL, nonce = NULL
+         WHERE status IN ('consumed', 'failed')
+           AND (state_hash IS NOT NULL OR callback_cookie_hash IS NOT NULL
+                OR encrypted_verifier IS NOT NULL OR nonce IS NOT NULL)`,
+    );
+    const terminalRecoverySecrets = await client.query(
+        `UPDATE student_auth_recovery_attempts
+         SET secret_hash = NULL
+         WHERE status IN ('consumed', 'failed', 'expired') AND secret_hash IS NOT NULL`,
     );
     // Handoff ciphertext and one-use/browser secrets all become inert at
     // expiry; migration 074 permits this only after expiry or consumption.
@@ -903,6 +920,16 @@ export async function cleanupStudentSsoTransients(client: PoolClient): Promise<S
                WHERE status = 'pending' AND expires_at <= clock_timestamp())
         )::text AS count`,
     );
+    const overdueTerminalSecrets = await client.query<{ count: string }>(
+        `SELECT (
+            (SELECT count(*) FROM student_auth_reauth_attempts
+             WHERE status IN ('consumed', 'failed')
+               AND (state_hash IS NOT NULL OR callback_cookie_hash IS NOT NULL
+                    OR encrypted_verifier IS NOT NULL OR nonce IS NOT NULL))
+            + (SELECT count(*) FROM student_auth_recovery_attempts
+               WHERE status IN ('consumed', 'failed', 'expired') AND secret_hash IS NOT NULL)
+        )::text AS count`,
+    );
     const attempts = await client.query(
         `DELETE FROM student_auth_attempts
          WHERE status IN ('consumed', 'failed')
@@ -923,7 +950,9 @@ export async function cleanupStudentSsoTransients(client: PoolClient): Promise<S
         grantsDeleted: grants.rowCount ?? 0,
         actionGrantsScrubbed: actionGrants.rowCount ?? 0,
         recoveryCodesScrubbed: recoveryCodes.rowCount ?? 0,
+        terminalSecretsScrubbed: (terminalReauthSecrets.rowCount ?? 0) + (terminalRecoverySecrets.rowCount ?? 0),
         overdueExpired: Number(overdue.rows[0]?.count ?? 0),
+        overdueTerminalSecrets: Number(overdueTerminalSecrets.rows[0]?.count ?? 0),
     };
     await client.query('COMMIT');
     return result;

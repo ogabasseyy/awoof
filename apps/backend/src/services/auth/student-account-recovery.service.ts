@@ -82,7 +82,7 @@ export class StudentAccountRecoveryService {
             if (challenge.status !== 'issued') return null;
             await tx.query(
                 `UPDATE student_auth_recovery_attempts
-                 SET status = 'failed'
+                 SET status = 'failed', secret_hash = NULL
                  WHERE user_id = $1 AND status IN ('pending', 'verified')`,
                 [account.id],
             );
@@ -117,7 +117,7 @@ export class StudentAccountRecoveryService {
             const code = await this.lockActiveCode(tx, userId);
             if (!account || !code || Number(account.credential_generation) !== Number(attempt.credential_generation)
                 || Number(code.generation) !== Number(attempt.recovery_code_generation) || !this.matchesRecoveryCode(code.code_digest, recoveryCode)) {
-                await tx.query("UPDATE student_auth_recovery_attempts SET status = 'failed' WHERE id = $1 AND status = 'pending'", [attempt.id]);
+                await tx.query("UPDATE student_auth_recovery_attempts SET status = 'failed', secret_hash = NULL WHERE id = $1 AND status = 'pending'", [attempt.id]);
                 return false;
             }
             const otp = await consumeChallenge(tx, {
@@ -182,7 +182,13 @@ export class StudentAccountRecoveryService {
             );
             await tx.query("UPDATE student_auth_action_grants SET revoked_at = clock_timestamp(), secret_hash = 'scrubbed' WHERE user_id = $1 AND consumed_at IS NULL AND revoked_at IS NULL", [userId]);
             await tx.query("UPDATE student_auth_reauth_grants SET consumed_at = clock_timestamp(), secret_hash = 'scrubbed' WHERE user_id = $1 AND consumed_at IS NULL", [userId]);
-            await tx.query("UPDATE student_auth_reauth_attempts SET status = 'failed', consumed_at = clock_timestamp() WHERE user_id = $1 AND status IN ('pending', 'ready')", [userId]);
+            await tx.query(
+                `UPDATE student_auth_reauth_attempts
+                 SET status = 'failed', consumed_at = clock_timestamp(), state_hash = NULL, callback_cookie_hash = NULL,
+                     encrypted_verifier = NULL, nonce = NULL
+                 WHERE user_id = $1 AND status IN ('pending', 'ready')`,
+                [userId],
+            );
             // A ready provider callback is not yet a session. Invalidate every
             // same-mailbox attempt before releasing the account lock so a
             // pre-recovery callback cannot mint a post-recovery session.
@@ -192,7 +198,12 @@ export class StudentAccountRecoveryService {
                  WHERE requested_email = $1 AND status IN ('pending', 'processing', 'ready')`,
                 [account.email],
             );
-            await tx.query("UPDATE student_auth_recovery_attempts SET status = 'failed' WHERE user_id = $1 AND id <> $2 AND status IN ('pending', 'verified')", [userId, attempt.id]);
+            await tx.query(
+                `UPDATE student_auth_recovery_attempts
+                 SET status = 'failed', secret_hash = NULL
+                 WHERE user_id = $1 AND id <> $2 AND status IN ('pending', 'verified')`,
+                [userId, attempt.id],
+            );
             const consumed = await tx.query(
                 `UPDATE student_auth_recovery_attempts SET status = 'consumed', consumed_at = clock_timestamp(), secret_hash = NULL
                  WHERE id = $1 AND status = 'verified'`, [attempt.id],
