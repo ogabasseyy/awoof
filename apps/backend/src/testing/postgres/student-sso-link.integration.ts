@@ -1404,6 +1404,52 @@ test('unlink refuses the last login method without revoking anything', async () 
             check.release();
         }
     });
+
+});
+
+test('a refused last-method removal preserves the grant for retry', async () => {
+    await withLinkPool(async (pool) => {
+        const attemptKey = randomBytes(32).toString('base64url');
+        const service = makeService(pool, attemptKey);
+        const client = await pool.connect();
+        let owner;
+        let identityId = '';
+        try {
+            owner = await seedOwner(client, {});
+            const policy = await seedPolicy(client, owner.universityId, owner.email.split('@')[1]!);
+            identityId = (await client.query<{ id: string }>(
+                `INSERT INTO student_auth_identities (user_id, university_id, provider, issuer, subject)
+                 VALUES ($1, $2, 'google', $3, $4) RETURNING id`,
+                [owner.userId, owner.universityId, policy.issuer, `retry-sub-${uniqueLabel()}`],
+            )).rows[0]!.id;
+        } finally {
+            client.release();
+        }
+        const grant = await mintGrant(service, owner.userId, owner.sid, PASSWORD, 'unlink', identityId);
+        const editor = await pool.connect();
+        try {
+            await editor.query('UPDATE users SET password_hash = NULL WHERE id = $1', [owner.userId]);
+        } finally {
+            editor.release();
+        }
+        assert.deepEqual(await service.unlink({
+            userId: owner.userId, sid: owner.sid, identityId, grantId: grant.grantId, grantSecret: grant.grantSecret,
+        }), { outcome: 'last_method' });
+        const liveness = await pool.connect();
+        try {
+            const row = await liveness.query<{ consumed_at: Date | null }>(
+                'SELECT consumed_at FROM student_auth_action_grants WHERE id = $1', [grant.grantId],
+            );
+            assert.equal(row.rows[0]!.consumed_at, null, 'the guard must not spend the target-bound grant');
+            // The user adds another method, then retries with the same grant.
+            await liveness.query('UPDATE users SET password_hash = $2 WHERE id = $1', [owner.userId, 'restored-hash']);
+        } finally {
+            liveness.release();
+        }
+        assert.deepEqual(await service.unlink({
+            userId: owner.userId, sid: owner.sid, identityId, grantId: grant.grantId, grantSecret: grant.grantSecret,
+        }), { unlinked: true, sessionRevoked: false });
+    });
 });
 
 test('unlink ignores a sibling from a replaced tenant when guarding the last login method', async () => {

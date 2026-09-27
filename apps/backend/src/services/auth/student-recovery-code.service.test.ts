@@ -40,4 +40,8 @@ test('recovery-code digest key must have sufficient deployment-held entropy', ()
         () => new StudentRecoveryCodeService({ pool: {} as never, codeKey: 'short' }),
         /digest key is invalid/,
     );
+    assert.throws(
+        () => new StudentRecoveryCodeService({ pool: {} as never, codeKey: 'test-recovery-code-key', previousCodeKey: 'short' }),
+        /previous digest key is invalid/,
+    );
 });

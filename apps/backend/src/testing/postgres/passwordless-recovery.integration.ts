@@ -631,6 +631,66 @@ test('suspension after grant issuance blocks recovery-code enrollment and activa
     }
 });
 
+test('adding a dedicated digest key keeps codes enrolled under the previous key usable', async () => {
+    const pool = createTestPool();
+    const client = await pool.connect();
+    try {
+        const userId = await seedStudent(client);
+        const legacy = new StudentRecoveryCodeService({ pool, codeKey: 'test-recovery-code-key' });
+        const generated = await grant(client, { userId, purpose: 'recovery_code_generate' });
+        const pending = await legacy.generate({ userId, sid: SID, grantId: generated.grantId, secret: generated.grantSecret });
+        // Simulate a pre-versioning row: the stored digest loses its prefix.
+        await client.query(`UPDATE student_auth_recovery_codes SET code_digest = substr(code_digest, 4) WHERE id = $1`, [pending.pendingCodeId]);
+        // The deployment adds the dedicated key; the established key stays
+        // as the verification fallback so nothing is stranded.
+        const rotated = new StudentRecoveryCodeService({ pool, codeKey: 'test-recovery-code-key-v2-dedicated', previousCodeKey: 'test-recovery-code-key' });
+        const activation = await grant(client, { userId, purpose: 'recovery_code_activate', pendingCodeId: pending.pendingCodeId });
+        await rotated.activate({ userId, sid: SID, grantId: activation.grantId, secret: activation.grantSecret, pendingCodeId: pending.pendingCodeId, code: pending.code });
+        assert.deepEqual(await rotated.status({ userId }), { status: 'active', generation: 1, pendingCodeId: null, pendingExpiresAt: null });
+        // Replacement proves the old code against the previous key, while
+        // the replacement itself digests under the new dedicated key.
+        const replacement = await grant(client, { userId, purpose: 'recovery_code_generate', activeCodeGeneration: 1 });
+        const second = await rotated.generate({ userId, sid: SID, grantId: replacement.grantId, secret: replacement.grantSecret, oldCode: pending.code });
+        const stored = await client.query<{ code_digest: string }>('SELECT code_digest FROM student_auth_recovery_codes WHERE id = $1', [second.pendingCodeId]);
+        assert.ok(stored.rows[0]!.code_digest.startsWith('v1:'), 'new digests are versioned under the current key');
+        const activation2 = await grant(client, { userId, purpose: 'recovery_code_activate', pendingCodeId: second.pendingCodeId, activeCodeGeneration: 1 });
+        await rotated.activate({ userId, sid: SID, grantId: activation2.grantId, secret: activation2.grantSecret, pendingCodeId: second.pendingCodeId, code: second.code, oldCode: pending.code });
+        assert.deepEqual(await rotated.status({ userId }), { status: 'active', generation: 2, pendingCodeId: null, pendingExpiresAt: null });
+        // The replacement digest verifies under the dedicated key alone:
+        // removal without the fallback proves the new code against it.
+        const standalone = new StudentRecoveryCodeService({ pool, codeKey: 'test-recovery-code-key-v2-dedicated' });
+        const removal = await grant(client, { userId, purpose: 'recovery_code_remove', activeCodeGeneration: 2 });
+        await standalone.remove({ userId, sid: SID, grantId: removal.grantId, secret: removal.grantSecret, oldCode: second.code });
+        assert.deepEqual(await standalone.status({ userId }), { status: 'unconfigured', generation: 2, pendingCodeId: null, pendingExpiresAt: null });
+    } finally {
+        client.release();
+        await pool.end();
+    }
+});
+
+test('account recovery verifies legacy codes after the digest key changes', async () => {
+    const pool = createTestPool();
+    const client = await pool.connect();
+    try {
+        // The seed stores an unprefixed legacy digest under the test key.
+        const account = await seedRecoverableStudent(client);
+        let otp = '';
+        const service = new StudentAccountRecoveryService({
+            pool, recoveryCodeKey: 'test-recovery-code-key-v2-dedicated', previousRecoveryCodeKey: 'test-recovery-code-key',
+            deliverOtp: async (_email, delivered) => { otp = delivered; return { success: true }; },
+            validatePassword: () => ({ valid: true, errors: [] }), hashPassword: async () => 'recovered-password-hash',
+        });
+        const started = await service.start({ email: account.email, purpose: 'lost_access' });
+        await service.verify({ attemptId: started.attemptId, secret: started.secret, code: account.code, otp });
+        await service.complete({ attemptId: started.attemptId, secret: started.secret, password: 'ValidNew1!' });
+        const after = await client.query<{ password_hash: string | null }>('SELECT password_hash FROM users WHERE id = $1', [account.userId]);
+        assert.equal(after.rows[0]!.password_hash, 'recovered-password-hash');
+    } finally {
+        client.release();
+        await pool.end();
+    }
+});
+
 test('suspension after code issuance blocks pending activation', async () => {
     const pool = createTestPool();
     const client = await pool.connect();

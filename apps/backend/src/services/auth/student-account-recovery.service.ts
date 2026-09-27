@@ -6,6 +6,7 @@ import { passwordService } from './password.service.js';
 import { sendAccountRecoveryCompletionNotice } from '../email/email.service.js';
 import { challengeTtlMs, consumeChallenge, databaseNow, requestChallenge } from '../verification/challenge.service.js';
 import { revokeSsoSchoolAssertions } from './student-sso-onboarding.service.js';
+import { verifyRecoveryCodeDigest } from './student-recovery-code.service.js';
 
 type RecoveryPurpose = 'lost_access' | 'compromise';
 
@@ -35,6 +36,8 @@ export type StudentAccountRecoveryDependencies = {
     pool: Pick<Pool, 'connect'>;
     /** Deployment-held HMAC key shared with recovery-code enrollment. */
     recoveryCodeKey: string;
+    /** Retained previous effective key, verification fallback only. */
+    previousRecoveryCodeKey?: string;
     deliverOtp?: (email: string, otp: string) => Promise<{ success: boolean }>;
     hashPassword?: (password: string) => Promise<string>;
     validatePassword?: (password: string) => { valid: boolean; errors: string[] };
@@ -67,6 +70,9 @@ function validAttemptId(value: unknown): value is string {
 export class StudentAccountRecoveryService {
     constructor(private readonly deps: StudentAccountRecoveryDependencies) {
         if (deps.recoveryCodeKey.length < 16) throw new TypeError('Recovery-code digest key is invalid');
+        if (deps.previousRecoveryCodeKey !== undefined && deps.previousRecoveryCodeKey.length < 16) {
+            throw new TypeError('Recovery-code previous digest key is invalid');
+        }
     }
 
     async start(input: { email: unknown; purpose: unknown }): Promise<{ attemptId: string; secret: string; expiresAt: string }> {
@@ -323,13 +329,8 @@ export class StudentAccountRecoveryService {
     }
 
     private secretDigest(secret: string): string { return createHmac('sha256', this.deps.recoveryCodeKey).update(`attempt\u0000${secret}`).digest('base64url'); }
-    private recoveryCodeDigest(code: string): string {
-        return createHmac('sha256', this.deps.recoveryCodeKey).update(code, 'utf8').digest('base64url');
-    }
     private matchesRecoveryCode(expected: string | null, supplied: string): boolean {
-        if (!expected) return false;
-        const actual = Buffer.from(this.recoveryCodeDigest(supplied)); const wanted = Buffer.from(expected);
-        return actual.length === wanted.length && timingSafeEqual(actual, wanted);
+        return verifyRecoveryCodeDigest(expected, supplied, this.deps.recoveryCodeKey, this.deps.previousRecoveryCodeKey);
     }
     private matchesDigest(expected: string, candidate: string): boolean {
         const actual = Buffer.from(candidate); const wanted = Buffer.from(expected);

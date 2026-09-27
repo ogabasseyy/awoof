@@ -33,6 +33,12 @@ export type StudentRecoveryCodeDependencies = {
     pool: Pick<Pool, 'connect'>;
     /** Dedicated deployment-held HMAC key; never a client secret or JWT key. */
     codeKey: string;
+    /**
+     * Retained previous effective key, used only as a verification fallback
+     * so adding (or rotating) the dedicated key never strands active codes
+     * digested under it. New digests always use the current key.
+     */
+    previousCodeKey?: string;
     randomCode?: () => string;
     notify?: (email: string, event: 'activated' | 'replaced' | 'removed') => Promise<{ success: boolean }>;
     /**
@@ -41,6 +47,29 @@ export type StudentRecoveryCodeDependencies = {
      */
     isProviderEnabled?: (provider: LoginProvider) => boolean;
 };
+
+const RECOVERY_CODE_DIGEST_VERSION = 'v1';
+
+/** Versioned HMAC digest for stored recovery codes. */
+export function digestRecoveryCode(code: string, key: string): string {
+    return `${RECOVERY_CODE_DIGEST_VERSION}:${createHmac('sha256', key).update(code, 'utf8').digest('base64url')}`;
+}
+
+/**
+ * Verify a supplied code against a stored digest. Legacy unprefixed digests
+ * compare the same body. The previous key is tried only when set and
+ * different, so a key change verifies both old and new codes.
+ */
+export function verifyRecoveryCodeDigest(digest: string | null, code: string, key: string, previousKey?: string | null): boolean {
+    if (!digest) return false;
+    const body = digest.startsWith(`${RECOVERY_CODE_DIGEST_VERSION}:`) ? digest.slice(RECOVERY_CODE_DIGEST_VERSION.length + 1) : digest;
+    const expected = Buffer.from(body);
+    const primary = Buffer.from(createHmac('sha256', key).update(code, 'utf8').digest('base64url'));
+    if (expected.byteLength === primary.byteLength && timingSafeEqual(expected, primary)) return true;
+    if (!previousKey || previousKey === key) return false;
+    const fallback = Buffer.from(createHmac('sha256', previousKey).update(code, 'utf8').digest('base64url'));
+    return expected.byteLength === fallback.byteLength && timingSafeEqual(expected, fallback);
+}
 
 function unavailable(): ConflictError {
     return new ConflictError('Recovery code operation is not available');
@@ -59,6 +88,9 @@ function codeForDisplay(): string {
 export class StudentRecoveryCodeService {
     constructor(private readonly dependencies: StudentRecoveryCodeDependencies) {
         if (dependencies.codeKey.length < 16) throw new TypeError('Recovery-code digest key is invalid');
+        if (dependencies.previousCodeKey !== undefined && dependencies.previousCodeKey.length < 16) {
+            throw new TypeError('Recovery-code previous digest key is invalid');
+        }
     }
 
     async generate(input: { userId: string; sid: string; grantId: string; secret: string; oldCode?: string }): Promise<{ pendingCodeId: string; code: string; expiresAt: string }> {
@@ -222,14 +254,11 @@ export class StudentRecoveryCodeService {
     }
 
     private digest(code: string): string {
-        return createHmac('sha256', this.dependencies.codeKey).update(code, 'utf8').digest('base64url');
+        return digestRecoveryCode(code, this.dependencies.codeKey);
     }
 
     private matches(digest: string | null, code: string): boolean {
-        if (!digest) return false;
-        const expected = Buffer.from(digest);
-        const actual = Buffer.from(this.digest(code));
-        return expected.byteLength === actual.byteLength && timingSafeEqual(expected, actual);
+        return verifyRecoveryCodeDigest(digest, code, this.dependencies.codeKey, this.dependencies.previousCodeKey);
     }
 
     private requireOldCode(active: RecoveryCodeRow, oldCode: string | undefined): void {

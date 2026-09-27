@@ -526,7 +526,6 @@ export class StudentSsoLinkService {
             if (!row || row.user_id !== userId || row.revoked_at !== null) {
                 throw new NotFoundError('Student SSO login identity not found');
             }
-            await this.consumeProofGrant(tx, { userId, sid, grantId, secret: grantSecret, purpose: 'unlink', targetIdentityId: identityId }, invalidUnlink);
             const sibling = await tx.query<{ provider: LoginProvider }>(
                 `SELECT identity.provider FROM student_auth_identities identity
                  JOIN institution_login_policies policy ON policy.university_id = identity.university_id
@@ -546,6 +545,10 @@ export class StudentSsoLinkService {
             if (account.rows[0]?.password_hash == null && !siblingUsable) {
                 return { outcome: 'last_method' };
             }
+            // Consumption follows the guard: a refused last-method removal
+            // leaves the still-valid, target-bound grant retryable after the
+            // user adds another method, without fresh reauthentication.
+            await this.consumeProofGrant(tx, { userId, sid, grantId, secret: grantSecret, purpose: 'unlink', targetIdentityId: identityId }, invalidUnlink);
             await tx.query('UPDATE student_auth_identities SET revoked_at = clock_timestamp() WHERE id = $1', [identityId]);
             await revokeSsoSchoolAssertions(tx, identityId);
             // The row count is the session signal: the client must drop its

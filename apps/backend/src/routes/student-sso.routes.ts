@@ -346,16 +346,18 @@ function defaultSignup(): StudentSsoSignupService {
 function defaultRecoveryCode(): StudentRecoveryCodeService {
     const key = config.studentAccountRecovery.codeKey;
     if (!key) throw new ServiceUnavailableError('Account recovery is unavailable');
+    const previous = config.studentAccountRecovery.previousCodeKey;
     return new StudentRecoveryCodeService({
-        pool: getPool(), codeKey: key,
+        pool: getPool(), codeKey: key, ...(previous === null ? {} : { previousCodeKey: previous }),
         isProviderEnabled: (provider) => enabledStudentSsoProviders(config.studentSso).includes(provider),
     });
 }
 function defaultAccountRecovery(): StudentAccountRecoveryService {
     const key = config.studentAccountRecovery.codeKey;
     if (!key) throw new ServiceUnavailableError('Account recovery is unavailable');
+    const previous = config.studentAccountRecovery.previousCodeKey;
     return new StudentAccountRecoveryService({
-        pool: getPool(), recoveryCodeKey: key,
+        pool: getPool(), recoveryCodeKey: key, ...(previous === null ? {} : { previousRecoveryCodeKey: previous }),
         deliverOtp: async (email, code) => sendEmail(email, 'Awoof email confirmation code', `<p>Your Awoof email confirmation code is <strong>${code}</strong>.</p><p>It expires shortly. If you did not start account recovery, ignore this email.</p>`),
     });
 }

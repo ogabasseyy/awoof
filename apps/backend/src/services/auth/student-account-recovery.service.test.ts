@@ -30,6 +30,17 @@ test('recovery verify and complete reject malformed attempt ids before touching 
     );
 });
 
+test('account-recovery digest keys must have sufficient deployment-held entropy', () => {
+    assert.throws(
+        () => new StudentAccountRecoveryService({ pool: {} as never, recoveryCodeKey: 'short' }),
+        /digest key is invalid/,
+    );
+    assert.throws(
+        () => new StudentAccountRecoveryService({ pool: {} as never, recoveryCodeKey: 'test-recovery-code-key', previousRecoveryCodeKey: 'short' }),
+        /previous digest key is invalid/,
+    );
+});
+
 test('recovery account lookups lock the student row with the user row', async () => {
     const queries: string[] = [];
     const client = {

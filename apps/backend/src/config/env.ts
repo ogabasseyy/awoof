@@ -146,6 +146,9 @@ const studentSso = readStudentSsoConfiguration({
     attemptKey: env.STUDENT_SSO_ATTEMPT_KEY,
 });
 
+const dedicatedRecoveryCodeKey = env.STUDENT_ACCOUNT_RECOVERY_CODE_KEY ?? null;
+const retainedRecoveryCodeKey = retainedSsoAttemptKey(env.STUDENT_SSO_ATTEMPT_KEY);
+
 /**
  * Configuration object
  * Provides typed access to environment variables
@@ -234,13 +237,20 @@ export const config = {
     studentSso,
     passwordlessStudentSignupEnabled: env.PASSWORDLESS_STUDENT_SIGNUP_ENABLED === 'true',
     studentAccountRecovery: {
-        // 069–072 recovery-code rows digest with the established SSO attempt
-        // key. A dedicated key may be configured for new deployments, but a
-        // silent rotation would strand active codes; migrate/rekey explicitly.
-        // Disabling a provider must not remove the retained key, so the
-        // fallback resolves from the raw environment value independently of
-        // provider enablement instead of the nulled SSO configuration.
-        codeKey: env.STUDENT_ACCOUNT_RECOVERY_CODE_KEY ?? retainedSsoAttemptKey(env.STUDENT_SSO_ATTEMPT_KEY),
+        // Recovery-code digests are versioned HMACs. New deployments should
+        // set the dedicated key; deployments that enrolled codes under the
+        // established SSO attempt key keep verifying them through the
+        // retained fallback after adding (or rotating) the dedicated key, so
+        // key changes never strand active codes. Never rotate the SSO
+        // attempt key itself while fallback-verified codes may exist:
+        // re-enroll codes first. Disabling a provider must not remove the
+        // retained key, so the fallback resolves from the raw environment
+        // value independently of provider enablement instead of the nulled
+        // SSO configuration.
+        codeKey: dedicatedRecoveryCodeKey ?? retainedRecoveryCodeKey,
+        previousCodeKey: dedicatedRecoveryCodeKey && retainedRecoveryCodeKey && dedicatedRecoveryCodeKey !== retainedRecoveryCodeKey
+            ? retainedRecoveryCodeKey
+            : null,
     },
     // This trusted frontend setting is intentionally independent from OIDC
     // credentials so owner/history routes can remain available while issuance

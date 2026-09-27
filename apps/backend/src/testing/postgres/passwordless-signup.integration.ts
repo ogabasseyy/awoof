@@ -284,6 +284,22 @@ test('signup rejects an existing email or provider identity without creating a s
     });
 });
 
+test('signup completion refuses an institution deactivated after verification', async () => {
+    await withPool(async pool => {
+        const key = randomBytes(32).toString('base64url'); let code = '';
+        const service = new StudentSsoSignupService({ pool, attemptKey: key, isEnabled: () => true, isProviderEnabled: () => true, deliverOtp: async (_email, sent) => { code = sent; return { success: true }; } });
+        const c = await pool.connect(); let state; try { state = await seed(c, key); } finally { c.release(); }
+        const sent = await service.sendCode({ handoffId: state.handoffId, handoffSecret: state.handoffSecret, browserBinding: state.browser });
+        await service.verifyCode({ handoffId: state.handoffId, handoffSecret: state.handoffSecret, browserBinding: state.browser, challengeId: sent.challengeId, code });
+        // Deactivate after the mailbox proof: completion rechecks activity
+        // while holding the university lock instead of inserting an active
+        // student and issuing a session for a dead institution.
+        await pool.query('UPDATE universities SET is_active = false WHERE id = $1', [state.university]);
+        await assert.rejects(service.complete({ handoffId: state.handoffId, handoffSecret: state.handoffSecret, browserBinding: state.browser, fullName: 'Ada Student', ageAttested: true, termsAccepted: true, termsVersion: STUDENT_TERMS_VERSION, verificationConsent: true, noticeVersion: VERIFICATION_NOTICE_VERSION }), /not available/i);
+        assert.equal((await pool.query<{ count: string }>(`SELECT count(*)::text AS count FROM users WHERE email=$1`, [state.email])).rows[0]!.count, '0');
+    });
+});
+
 test('signup rechecks a policy disabled after its handoff was created', async () => {
     await withPool(async pool => {
         const key = randomBytes(32).toString('base64url'); const service = new StudentSsoSignupService({ pool, attemptKey: key, isEnabled: () => true, isProviderEnabled: () => true, deliverOtp: async () => ({ success: true }) });
