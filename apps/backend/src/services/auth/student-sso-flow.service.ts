@@ -883,7 +883,9 @@ export async function cleanupStudentSsoTransients(client: PoolClient): Promise<S
            AND COALESCE(consumed_at, expires_at) <= clock_timestamp() - interval '7 days'`,
     );
     const handoffs = await client.query(
-        `DELETE FROM student_auth_link_handoffs WHERE expires_at <= clock_timestamp() - interval '7 days'`,
+        `DELETE FROM student_auth_link_handoffs handoff
+         WHERE handoff.expires_at <= clock_timestamp() - interval '7 days'
+           AND NOT EXISTS (SELECT 1 FROM student_auth_signup_challenges signup WHERE signup.handoff_id = handoff.id)`,
     );
     const grants = await client.query(
         `DELETE FROM student_auth_reauth_grants WHERE expires_at <= clock_timestamp() - interval '7 days'`,

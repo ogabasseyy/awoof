@@ -26,8 +26,11 @@ class PasswordService {
      */
     public async comparePassword(
         password: string,
-        hash: string
+        hash: string | null
     ): Promise<boolean> {
+        // Passwordless accounts store a null hash; bcrypt rejects non-string
+        // input, so fail closed here and let callers report invalid credentials.
+        if (typeof hash !== 'string' || hash === '') return false;
         return bcrypt.compare(password, hash);
     }
 

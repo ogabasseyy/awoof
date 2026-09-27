@@ -3,7 +3,7 @@ import test from 'node:test';
 import { randomUUID } from 'node:crypto';
 
 import { encryptMicrosoftAttemptVerifier, hashMicrosoftAttemptSecret } from '../verification/microsoft-attempt-crypto.js';
-import { assertFreshAuthTime, StudentReauthService } from './student-reauth.service.js';
+import { assertFreshAuthTime, StudentReauthService, studentReauthCookieName } from './student-reauth.service.js';
 
 const startedAt = new Date('2026-09-26T12:00:00.000Z');
 const now = new Date('2026-09-26T12:01:00.000Z');
@@ -127,6 +127,27 @@ test('fresh callback and finish lock the owner before the attempt', async () => 
     const finishUser = finished.calls.findIndex((text) => text.includes('FROM users WHERE id = $1 FOR UPDATE'));
     const finishAttempt = finished.calls.findIndex((text) => text.includes('FROM student_auth_reauth_attempts WHERE id = $1 FOR UPDATE'));
     assert.ok(finishUser !== -1 && finishAttempt !== -1 && finishUser < finishAttempt);
+});
+
+test('callback cookie resolution selects the state-selected attempt only', async () => {
+    const attemptId = '66666666-6666-4666-8666-666666666666';
+    const query = async (text: string, params: unknown[]) => {
+        if (text.includes('FROM student_auth_reauth_attempts WHERE state_hash')) {
+            const match = params[0] === hashMicrosoftAttemptSecret('matching-state');
+            return match ? { rows: [{ id: attemptId }], rowCount: 1 } : { rows: [], rowCount: 0 };
+        }
+        throw new Error(`unexpected query: ${text}`);
+    };
+    const service = new StudentReauthService({
+        pool: { query } as never, attemptKey,
+        completionUrl: new URL('https://app.example.invalid/auth/student/sso/complete'),
+        isProviderEnabled: () => true, oidcForPolicy: () => { throw new Error('must not redeem'); },
+    });
+    assert.equal(await service.callbackCookieNameForState('matching-state'), studentReauthCookieName(attemptId));
+    assert.equal(await service.callbackCookieNameForState('other-state'), null);
+    assert.equal(await service.callbackCookieNameForState(null), null);
+    assert.equal(await service.isReauthState('matching-state'), true);
+    assert.equal(await service.isReauthState('other-state'), false);
 });
 
 test('fresh finish rejects a consumed attempt before any action grant is issued', async () => {

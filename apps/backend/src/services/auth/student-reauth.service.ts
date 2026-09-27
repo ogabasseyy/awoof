@@ -15,6 +15,9 @@ export const STUDENT_REAUTH_CLOCK_SKEW_SECONDS = 60;
 function secret(bytes = 32): string { return randomBytes(bytes).toString('base64url'); }
 function invalidReauth(): ConflictError { return new ConflictError('Student SSO reauthentication is no longer valid'); }
 
+/** Browser binding cookie for one reauthentication attempt; shared with the route layer. */
+export function studentReauthCookieName(attemptId: string): string { return `awoof_reauth_${attemptId}`; }
+
 /** Validates the provider assertion relative to the server-held attempt, not token issuance time. */
 export function assertFreshAuthTime(authTime: unknown, startedAt: Date, now: Date): asserts authTime is number {
     if (typeof authTime !== 'number' || !Number.isSafeInteger(authTime)
@@ -80,9 +83,16 @@ export class StudentReauthService {
     }
 
     async isReauthState(state: string | null): Promise<boolean> {
-        if (!state || state.length > 1024) return false;
-        const result = await this.deps.pool.query('SELECT 1 FROM student_auth_reauth_attempts WHERE state_hash = $1', [hashMicrosoftAttemptSecret(state)]);
-        return (result.rowCount ?? 0) === 1;
+        return (await this.callbackCookieNameForState(state)) !== null;
+    }
+
+    /** State is hashed before lookup; callers receive a cookie name only. */
+    async callbackCookieNameForState(state: string | null): Promise<string | null> {
+        if (!state || state.length > 1024) return null;
+        const result = await this.deps.pool.query<{ id: string }>(
+            'SELECT id FROM student_auth_reauth_attempts WHERE state_hash = $1', [hashMicrosoftAttemptSecret(state)],
+        );
+        return result.rows[0] ? studentReauthCookieName(result.rows[0].id) : null;
     }
 
     async callback(input: { callbackUrl: URL; callbackCookie: string | undefined }): Promise<{ attemptId: string; completionUrl: URL }> {

@@ -85,6 +85,7 @@ function routerWith(flow: Flow, overrides: Parameters<typeof createStudentSsoRou
         isIssuanceEnabled: () => true,
         enabledProviders: () => ['google', 'microsoft'],
         completionOrigin: COMPLETION_ORIGIN,
+        recoveryOrigin: COMPLETION_ORIGIN,
         isSignupEnabled: () => true,
         checkStartQuota: async () => undefined,
         pool: { query: async () => ({ rows: [], rowCount: 0 }) } as never,
@@ -153,7 +154,7 @@ test('Microsoft fresh-reauth routes preserve the browser binding and never use t
     const reauthAttemptId = '66666666-6666-4666-8666-666666666666';
     const seen: string[] = [];
     const reauth = {
-        isReauthState: async (state: string | null) => state === 'reauth-state',
+        callbackCookieNameForState: async (state: string | null) => state === 'reauth-state' ? `awoof_reauth_${reauthAttemptId}` : null,
         callback: async () => {
             seen.push('callback');
             return { attemptId: reauthAttemptId, completionUrl: new URL(`${COMPLETION_ORIGIN}/auth/student/sso/complete?reauth=${reauthAttemptId}`) };
@@ -231,6 +232,45 @@ test('recovery-code endpoints expose only status metadata and require strict aut
         assert.deepEqual((await activated.json()).data, { active: true });
     });
     assert.deepEqual(calls, ['generate:old-code', 'activate:old-code']);
+});
+
+test('recovery routes default to the trusted frontend origin without the option', async () => {
+    const { config } = await import('../config/env.js');
+    const frontendOrigin = new URL(config.frontend.url).origin;
+    const recovery = { cancel: async () => undefined };
+    const router = createStudentSsoRouter(() => stubFlow(), {
+        isIssuanceEnabled: () => true,
+        enabledProviders: () => ['google', 'microsoft'],
+        checkStartQuota: async () => undefined,
+        pool: { query: async () => ({ rows: [], rowCount: 0 }) } as never,
+        recoveryCodeService: () => recovery as never,
+    });
+    await withServer(router, async (baseUrl) => {
+        const headers = (origin: string) => ({ 'content-type': 'application/json', origin, authorization: `Bearer ${studentToken(true)}` });
+        const body = JSON.stringify({ pendingCodeId: ATTEMPT_ID });
+        const allowed = await fetch(`${baseUrl}/recovery-code/cancel`, { method: 'POST', headers: headers(frontendOrigin), body });
+        assert.equal(allowed.status, 204);
+        const denied = await fetch(`${baseUrl}/recovery-code/cancel`, { method: 'POST', headers: headers('https://evil.example.invalid'), body });
+        assert.equal(denied.status, 400);
+    });
+});
+
+test('signup routes default to the deployment flag when the option is omitted', async () => {
+    const router = createStudentSsoRouter(() => stubFlow(), {
+        isIssuanceEnabled: () => true,
+        enabledProviders: () => ['google', 'microsoft'],
+        completionOrigin: COMPLETION_ORIGIN,
+        checkStartQuota: async () => undefined,
+        pool: { query: async () => ({ rows: [], rowCount: 0 }) } as never,
+    });
+    await withServer(router, async (baseUrl) => {
+        // The deployment flag defaults to false in test env: fail closed.
+        const response = await fetch(`${baseUrl}/signup/context`, {
+            method: 'POST', headers: { 'content-type': 'application/json', origin: COMPLETION_ORIGIN },
+            body: JSON.stringify({ handoffId: ATTEMPT_ID, handoffSecret: 'secret' }),
+        });
+        assert.equal(response.status, 409);
+    });
 });
 
 test('independent account recovery exposes the same start shape without an account lookup and keeps purpose server-bound', async () => {

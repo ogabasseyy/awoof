@@ -1285,6 +1285,7 @@ test('cleanup scrubs expired ciphertext and deletes only aged transients', async
         let identityId: string;
         let freshAttempt: string;
         let handoffAttempt: string;
+        let laggedHandoffAttempt: string;
         let expiredReauthAttempt: string;
         let expiredRecoveryAttempt: string;
         let terminalReauthAttempt: string;
@@ -1360,6 +1361,23 @@ test('cleanup scrubs expired ciphertext and deletes only aged transients', async
                          clock_timestamp() - interval '8 days', clock_timestamp() - interval '8 days',
                          clock_timestamp() - interval '8 days', clock_timestamp() - interval '8 days', clock_timestamp() - interval '8 days')`,
                 [handoffAttempt, hashMicrosoftAttemptSecret(`signup-${uniqueLabel()}`), hashMicrosoftAttemptSecret(`signup-binding-${uniqueLabel()}`)],
+            );
+            // A scheduler-lagged signup tombstone: the handoff expired eight
+            // days ago but the child terminalized six days ago, so both rows
+            // must survive this pass instead of aborting cleanup on the FK.
+            laggedHandoffAttempt = await insertAttempt('8 days', 'consumed', false);
+            await setup.query(
+                `INSERT INTO student_auth_link_handoffs
+                     (attempt_id, secret_hash, encrypted_observation, policy_id, policy_version, browser_binding_hash, expires_at, created_at)
+                 VALUES ($1, $2, $3, $4, 1, $5, clock_timestamp() - interval '8 days', clock_timestamp() - interval '8 days')`,
+                [laggedHandoffAttempt, hashMicrosoftAttemptSecret(`handoff-${uniqueLabel()}`), 'enc:observation', policyId, hashMicrosoftAttemptSecret('binding')],
+            );
+            await setup.query(
+                `INSERT INTO student_auth_signup_challenges
+                     (handoff_id, secret_hash, browser_binding_hash, status, expires_at, terminal_at, created_at)
+                 VALUES ((SELECT id FROM student_auth_link_handoffs WHERE attempt_id = $1), $2, $3, 'expired',
+                         clock_timestamp() - interval '8 days', clock_timestamp() - interval '6 days', clock_timestamp() - interval '8 days')`,
+                [laggedHandoffAttempt, hashMicrosoftAttemptSecret(`signup-${uniqueLabel()}`), hashMicrosoftAttemptSecret(`signup-binding-${uniqueLabel()}`)],
             );
             await setup.query(
                 `INSERT INTO student_auth_reauth_grants (user_id, sid, purpose, secret_hash, expires_at, created_at)
@@ -1487,9 +1505,10 @@ test('cleanup scrubs expired ciphertext and deletes only aged transients', async
             worker.release();
         }
         // The aged handoff is scrubbed before it is deleted, so it counts in
-        // both steps; no other suite backdates SSO transients.
+        // both steps; the lagged handoff is scrubbed in place and retained
+        // for its referencing signup child. No other suite backdates SSO transients.
         assert.equal(result.attemptsFailed, 1);
-        assert.equal(result.handoffsScrubbed, 2);
+        assert.equal(result.handoffsScrubbed, 3);
         assert.equal(result.attemptsDeleted, 2);
         assert.equal(result.handoffsDeleted, 1);
         assert.equal(result.grantsDeleted, 1);
@@ -1526,8 +1545,8 @@ test('cleanup scrubs expired ciphertext and deletes only aged transients', async
                 'SELECT encrypted_observation FROM student_auth_link_handoffs WHERE policy_id = $1',
                 [policyId],
             );
-            assert.equal(scrubbed.rows.length, 1);
-            assert.equal(scrubbed.rows[0]!.encrypted_observation, null);
+            assert.equal(scrubbed.rows.length, 2);
+            for (const row of scrubbed.rows) assert.equal(row.encrypted_observation, null);
             const freshGrants = await check.query('SELECT id FROM student_auth_reauth_grants WHERE expires_at > clock_timestamp()');
             assert.ok(freshGrants.rows.length >= 1);
             const scrubbedActionGrant = await check.query<{ secret_hash: string; revoked_at: Date | null }>(
@@ -1566,6 +1585,14 @@ test('cleanup scrubs expired ciphertext and deletes only aged transients', async
                 'aged completed signup tombstones are deleted before their non-cascading handoff parent');
             const deletedHandoff = await check.query('SELECT id FROM student_auth_link_handoffs WHERE attempt_id = $1', [handoffAttempt]);
             assert.equal(deletedHandoff.rowCount, 0, 'the completed signup handoff is deleted without aborting later cleanup');
+            const lagged = await check.query(
+                `SELECT signup.id AS signup_id
+                 FROM student_auth_signup_challenges signup
+                 JOIN student_auth_link_handoffs handoff ON handoff.id = signup.handoff_id
+                 WHERE handoff.attempt_id = $1`,
+                [laggedHandoffAttempt],
+            );
+            assert.equal(lagged.rowCount, 1, 'aged handoffs survive cleanup while a retained signup child references them');
             const deletedAttempts = await check.query(
                 'SELECT id FROM student_auth_reauth_attempts WHERE id = $1 UNION ALL SELECT id FROM student_auth_recovery_attempts WHERE id = $2',
                 [expiredReauthAttempt, expiredRecoveryAttempt],

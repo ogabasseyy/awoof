@@ -22,18 +22,21 @@ const secret = () => randomBytes(32).toString('hex');
 
 async function withPool<T>(work: (pool: Pool) => Promise<T>): Promise<T> { const pool = createTestPool(); const c = await pool.connect(); try { await assertFixtureDatabase(c); } finally { c.release(); } try { return await work(pool); } finally { await pool.end(); } }
 
-async function seed(client: PoolClient, key: string, options: { expired?: boolean; handoffLifetimeMs?: number } = {}) {
+async function seed(client: PoolClient, key: string, options: { expired?: boolean; handoffLifetimeMs?: number; provider?: 'google' | 'microsoft' } = {}) {
     const suffix = label(), domain = `signup-${suffix}.school.example`, email = `ada-${suffix}@${domain}`;
+    const provider = options.provider ?? 'microsoft';
     const admin = (await client.query<{ id: string }>(`INSERT INTO users (email, role) VALUES ($1, 'admin') RETURNING id`, [`admin-${suffix}@example.invalid`])).rows[0]!.id;
     const university = (await client.query<{ id: string }>(`INSERT INTO universities (name, is_active) VALUES ($1, true) RETURNING id`, [`Signup School ${suffix}`])).rows[0]!.id;
-    const policy = (await client.query<{ id: string; version: number }>(`INSERT INTO institution_login_policies (university_id, provider, issuer, provider_realm, version, enabled, approved_until, approved_by, school_assertion_days) VALUES ($1, 'google', $2, $3, 1, true, clock_timestamp() + interval '1 day', $4, 90) RETURNING id, version`, [university, GOOGLE_ISSUER, domain, admin])).rows[0]!;
+    const tenant = randomUUID(), issuer = provider === 'microsoft' ? `https://login.microsoftonline.com/${tenant}/v2.0` : GOOGLE_ISSUER;
+    const realm = provider === 'microsoft' ? tenant : domain;
+    const policy = (await client.query<{ id: string; version: number }>(`INSERT INTO institution_login_policies (university_id, provider, issuer, provider_realm, version, enabled, approved_until, approved_by, school_assertion_days) VALUES ($1, $2, $3, $4, 1, true, clock_timestamp() + interval '1 day', $5, 90) RETURNING id, version`, [university, provider, issuer, realm, admin])).rows[0]!;
     await client.query(`INSERT INTO institution_login_domains (domain, university_id, is_active) VALUES ($1, $2, true)`, [domain, university]);
-    await client.query(`INSERT INTO institution_login_domain_providers (domain, university_id, provider, policy_id) VALUES ($1, $2, 'google', $3)`, [domain, university, policy.id]);
+    await client.query(`INSERT INTO institution_login_domain_providers (domain, university_id, provider, policy_id) VALUES ($1, $2, $3, $4)`, [domain, university, provider, policy.id]);
     const expiry = options.expired ? new Date(Date.now() - 1_000) : new Date(Date.now() + (options.handoffLifetimeMs ?? 9 * 60_000));
-    const attempt = (await client.query<{ id: string }>(`INSERT INTO student_auth_attempts (policy_id, policy_version, provider, requested_email, state_hash, callback_cookie_hash, finish_secret_hash, encrypted_verifier, nonce, encrypted_observation, status, expires_at, remember_me) VALUES ($1,$2,'google',$3,$4,$5,$6,$7,$8,NULL,'pending',$9,false) RETURNING id`, [policy.id, policy.version, email, secret(), secret(), secret(), secret(), secret(), expiry])).rows[0]!.id;
-    const handoffId = randomUUID(), handoffSecret = secret(), browser = secret(); const obs = { provider: 'google' as const, issuer: GOOGLE_ISSUER, subject: `subject-${suffix}`, email, mailboxVerified: true, realm: domain, schoolMembershipAttested: false, objectId: null };
+    const attempt = (await client.query<{ id: string }>(`INSERT INTO student_auth_attempts (policy_id, policy_version, provider, requested_email, state_hash, callback_cookie_hash, finish_secret_hash, encrypted_verifier, nonce, encrypted_observation, status, expires_at, remember_me) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,NULL,'pending',$10,false) RETURNING id`, [policy.id, policy.version, provider, email, secret(), secret(), secret(), secret(), secret(), expiry])).rows[0]!.id;
+    const handoffId = randomUUID(), handoffSecret = secret(), browser = secret(); const obs = { provider, issuer, subject: `subject-${suffix}`, email, mailboxVerified: true, realm, schoolMembershipAttested: false, objectId: null };
     await client.query(`INSERT INTO student_auth_link_handoffs (id, attempt_id, secret_hash, encrypted_observation, policy_id, policy_version, browser_binding_hash, expires_at) VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`, [handoffId, attempt, hashMicrosoftAttemptSecret(handoffSecret), encryptMicrosoftAttemptVerifier(JSON.stringify(obs), key, handoffId), policy.id, policy.version, hashMicrosoftAttemptSecret(browser), expiry]);
-    return { email, university, attemptId: attempt, handoffId, handoffSecret, browser, subject: obs.subject, expiresAt: expiry };
+    return { email, university, attemptId: attempt, handoffId, handoffSecret, browser, subject: obs.subject, expiresAt: expiry, issuer, tenant };
 }
 
 async function seedVerifiedLinkOwner(client: PoolClient, input: { email: string; universityId: string }) {
@@ -112,13 +115,13 @@ test('passwordless signup creates one passwordless account, mailbox proof, ident
         // cannot issue a second account/session; ordinary SSO can now locate
         // the durable provider identity on a fresh provider attempt.
         await assert.rejects(service.complete({ handoffId: state.handoffId, handoffSecret: state.handoffSecret, browserBinding: state.browser, fullName: 'Ada Student', ageAttested: true, termsAccepted: true, termsVersion: STUDENT_TERMS_VERSION, verificationConsent: true, noticeVersion: VERIFICATION_NOTICE_VERSION }), /not available/i);
-        const linked = await pool.query(`SELECT 1 FROM student_auth_identities WHERE provider='google' AND subject=$1`, [state.subject]); assert.equal(linked.rowCount, 1);
+        const linked = await pool.query(`SELECT 1 FROM student_auth_identities WHERE provider='microsoft' AND subject=$1`, [state.subject]); assert.equal(linked.rowCount, 1);
         let oauthState = '';
         const flow = new StudentSsoFlowService({ pool, attemptKey: randomBytes(32).toString('base64url'), callbackUrls: { google: new URL('https://api.example.invalid/api/auth/student/sso/google/callback'), microsoft: new URL('https://api.example.invalid/api/auth/student/sso/microsoft/callback') }, completionUrl: new URL('https://app.example.invalid/auth/student/sso/complete'), isEnabled: () => true, isProviderEnabled: () => true,
-            oidc: { forPolicy: (_policy: ApprovedLoginPolicy): StudentOidcAdapter => ({ authorize: async ({ state: value }) => { oauthState = value; return new URL(`https://provider.invalid/?state=${value}`); }, redeem: async () => ({ provider: 'google', issuer: GOOGLE_ISSUER, subject: state.subject, email: state.email, mailboxVerified: true, realm: state.email.split('@')[1]!, schoolMembershipAttested: false, objectId: null }) }) },
+            oidc: { forPolicy: (_policy: ApprovedLoginPolicy): StudentOidcAdapter => ({ authorize: async ({ state: value }) => { oauthState = value; return new URL(`https://provider.invalid/?state=${value}`); }, redeem: async () => ({ provider: 'microsoft', issuer: state.issuer, subject: state.subject, email: state.email, mailboxVerified: true, realm: state.tenant, schoolMembershipAttested: false, objectId: null }) }) },
         });
-        const login = await flow.start({ provider: 'google', email: state.email }); const callback = new URL('https://api.example.invalid/api/auth/student/sso/google/callback'); callback.searchParams.set('state', oauthState); callback.searchParams.set('code', 'opaque');
-        await flow.callback({ provider: 'google', callbackUrl: callback, browserCookies: [{ name: studentSsoCookieName(login.publicResult.attemptId), value: login.callbackCookie.value }] });
+        const login = await flow.start({ provider: 'microsoft', email: state.email }); const callback = new URL('https://api.example.invalid/api/auth/student/sso/microsoft/callback'); callback.searchParams.set('state', oauthState); callback.searchParams.set('code', 'opaque');
+        await flow.callback({ provider: 'microsoft', callbackUrl: callback, browserCookies: [{ name: studentSsoCookieName(login.publicResult.attemptId), value: login.callbackCookie.value }] });
         const relogin = await flow.finish({ attemptId: login.publicResult.attemptId, finishSecret: login.publicResult.finishSecret, browserCookie: login.callbackCookie.value });
         assert.equal(relogin.outcome, 'authenticated');
     });
@@ -163,8 +166,8 @@ test('link and signup completion racing for one verified handoff leave only the 
         const persisted = await pool.query<{ users: string; identities: string; owner_id: string; sessions: string }>(
             `SELECT
                 (SELECT count(*)::text FROM users WHERE email = $1) AS users,
-                (SELECT count(*)::text FROM student_auth_identities WHERE provider = 'google' AND subject = $2) AS identities,
-                (SELECT user_id FROM student_auth_identities WHERE provider = 'google' AND subject = $2) AS owner_id,
+                (SELECT count(*)::text FROM student_auth_identities WHERE provider = 'microsoft' AND subject = $2) AS identities,
+                (SELECT user_id FROM student_auth_identities WHERE provider = 'microsoft' AND subject = $2) AS owner_id,
                 (SELECT count(*)::text FROM users WHERE email = $1 AND active_session_id IS NOT NULL) AS sessions`,
             [state.email, state.subject],
         );
@@ -220,7 +223,7 @@ test('signup refuses an immediate resend and expiry after verified OTP creates n
 test('active and revoked provider identities cannot be claimed by passwordless signup', async () => {
     await withPool(async pool => {
         const key = randomBytes(32).toString('base64url'); const service = new StudentSsoSignupService({ pool, attemptKey: key, isEnabled: () => true, isProviderEnabled: () => true, deliverOtp: async () => ({ success: true }) });
-        const c = await pool.connect(); let state; try { state = await seed(c, key); const owner = (await c.query<{ id: string }>(`INSERT INTO users (email, role) VALUES ($1,'student') RETURNING id`, [`owner-${label()}@example.invalid`])).rows[0]!.id; await c.query(`INSERT INTO student_auth_identities (user_id, university_id, provider, issuer, subject, observed_email, revoked_at) VALUES ($1,$2,'google',$3,$4,$5,clock_timestamp())`, [owner, state.university, GOOGLE_ISSUER, state.subject, state.email]); } finally { c.release(); }
+        const c = await pool.connect(); let state; try { state = await seed(c, key); const owner = (await c.query<{ id: string }>(`INSERT INTO users (email, role) VALUES ($1,'student') RETURNING id`, [`owner-${label()}@example.invalid`])).rows[0]!.id; await c.query(`INSERT INTO student_auth_identities (user_id, university_id, provider, issuer, subject, observed_email, revoked_at) VALUES ($1,$2,'microsoft',$3,$4,$5,clock_timestamp())`, [owner, state.university, state.issuer, state.subject, state.email]); } finally { c.release(); }
         await assert.rejects(service.context({ handoffId: state.handoffId, handoffSecret: state.handoffSecret, browserBinding: state.browser }), /existing-account sign-in or recovery/i);
     });
 });
@@ -256,5 +259,15 @@ test('signup rechecks a policy disabled after its handoff was created', async ()
         const key = randomBytes(32).toString('base64url'); const service = new StudentSsoSignupService({ pool, attemptKey: key, isEnabled: () => true, isProviderEnabled: () => true, deliverOtp: async () => ({ success: true }) });
         const c = await pool.connect(); let state; try { state = await seed(c, key); await c.query(`UPDATE institution_login_policies SET enabled=false WHERE university_id=$1`, [state.university]); } finally { c.release(); }
         await assert.rejects(service.context({ handoffId: state.handoffId, handoffSecret: state.handoffSecret, browserBinding: state.browser }), /not available/i);
+    });
+});
+
+test('passwordless signup rejects non-Microsoft handoffs before creating signup state', async () => {
+    await withPool(async pool => {
+        const key = randomBytes(32).toString('base64url'); const service = new StudentSsoSignupService({ pool, attemptKey: key, isEnabled: () => true, isProviderEnabled: () => true, deliverOtp: async () => ({ success: true }) });
+        const c = await pool.connect(); let state; try { state = await seed(c, key, { provider: 'google' }); } finally { c.release(); }
+        await assert.rejects(service.context({ handoffId: state.handoffId, handoffSecret: state.handoffSecret, browserBinding: state.browser }), /not available/i);
+        const signup = await pool.query<{ count: string }>(`SELECT count(*)::text AS count FROM student_auth_signup_challenges WHERE handoff_id = $1`, [state.handoffId]);
+        assert.equal(signup.rows[0]!.count, '0');
     });
 });

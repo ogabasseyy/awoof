@@ -21,7 +21,7 @@ import type { ApprovedLoginPolicy, StudentSsoOidcResolver } from '../services/au
 import { StudentSsoLinkService } from '../services/auth/student-sso-link.service.js';
 import { StudentSsoSignupService } from '../services/auth/student-sso-signup.service.js';
 import { sendEmail, sendEmailVerificationOTP } from '../services/email/email.service.js';
-import { StudentReauthService } from '../services/auth/student-reauth.service.js';
+import { StudentReauthService, studentReauthCookieName } from '../services/auth/student-reauth.service.js';
 import { StudentRecoveryCodeService } from '../services/auth/student-recovery-code.service.js';
 import { StudentAccountRecoveryService } from '../services/auth/student-account-recovery.service.js';
 import type { LoginProvider } from '../services/auth/student-sso.types.js';
@@ -50,6 +50,8 @@ export type StudentSsoRouterOptions = {
     accountRecoveryService?: AccountRecoveryFactory;
     /** Passwordless new-account issuance is independently fail-closed. */
     isSignupEnabled?: () => boolean;
+    /** Origin allowlist for provider-independent recovery actions. Defaults to the trusted frontend origin. */
+    recoveryOrigin?: string;
 };
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
@@ -74,7 +76,6 @@ function responseHeaders(res: Response): void {
 function clearSsoCookie(res: Response, name: string): void {
     res.clearCookie(name, { path: STUDENT_SSO_COOKIE_PATH, httpOnly: true, secure: true, sameSite: 'lax' });
 }
-function reauthCookieName(attemptId: string): string { return `awoof_reauth_${attemptId}`; }
 
 function parseBrowserCookies(req: Request): { name: string; value: string }[] {
     return String(req.headers.cookie ?? '').split(';').flatMap((entry) => {
@@ -362,6 +363,7 @@ export function createStudentSsoRouter(factory: FlowFactory = defaultFlow, optio
         ?? (() => config.studentSso.google.enabled || config.studentSso.microsoft.enabled);
     const providersEnabled = options.enabledProviders ?? (() => enabledStudentSsoProviders(config.studentSso));
     const completionOrigin = options.completionOrigin ?? config.studentSso.completionUrl?.origin;
+    const recoveryAllowedOrigin = options.recoveryOrigin ?? new URL(config.frontend.url).origin;
     // Pools open per request only; mounting the router never connects.
     const poolForRequest = (): Pick<Pool, 'query'> => options.pool ?? getPool();
     const checkStartQuota = options.checkStartQuota ?? (async (clientIp: string, mailbox: string) => {
@@ -372,7 +374,7 @@ export function createStudentSsoRouter(factory: FlowFactory = defaultFlow, optio
     const callbackLimiter = studentSsoCallbackLimiter(options.callbackLimiterMax ?? 60);
     const linkFactory = options.linkService ?? defaultLink;
     const signupFactory = options.signupService ?? defaultSignup;
-    const signupEnabled = options.isSignupEnabled ?? (() => false);
+    const signupEnabled = options.isSignupEnabled ?? (() => config.passwordlessStudentSignupEnabled);
     const reauthFactory = options.reauthService ?? defaultReauth;
     const recoveryCodeFactory = options.recoveryCodeService ?? defaultRecoveryCode;
     const accountRecoveryFactory = options.accountRecoveryService ?? defaultAccountRecovery;
@@ -421,6 +423,17 @@ export function createStudentSsoRouter(factory: FlowFactory = defaultFlow, optio
     // wildcard credentialed CORS policy.
     const exactOrigin = (req: Request, _res: Response, next: NextFunction): void => {
         if (req.header('origin') !== completionOrigin) {
+            return next(new BadRequestError('Student SSO origin is invalid'));
+        }
+        next();
+    };
+
+    // Provider-independent recovery actions (password reauth, recovery-code
+    // mutations) stay available when SSO issuance is disabled and no SSO
+    // completion URL is configured, so they validate against the trusted
+    // frontend origin instead of the optional SSO completion origin.
+    const exactRecoveryOrigin = (req: Request, _res: Response, next: NextFunction): void => {
+        if (req.header('origin') !== recoveryAllowedOrigin) {
             return next(new BadRequestError('Student SSO origin is invalid'));
         }
         next();
@@ -490,10 +503,11 @@ export function createStudentSsoRouter(factory: FlowFactory = defaultFlow, optio
         // It never reaches the ordinary login flow or issues a session.
         if (provider === 'microsoft') {
             const reauth = reauthFactory();
-            if (await reauth.isReauthState(callbackUrl.searchParams.get('state'))) {
+            const reauthCookie = await reauth.callbackCookieNameForState(callbackUrl.searchParams.get('state'));
+            if (reauthCookie) {
                 const result = await reauth.callback({
                     callbackUrl,
-                    callbackCookie: browserCookies.find((cookie) => cookie.name.startsWith('awoof_reauth_'))?.value,
+                    callbackCookie: browserCookies.find((cookie) => cookie.name === reauthCookie)?.value,
                 });
                 // Retain the browser binding through the completion-page
                 // finish POST; finish consumes it and clears the cookie.
@@ -586,7 +600,7 @@ export function createStudentSsoRouter(factory: FlowFactory = defaultFlow, optio
         const bound = await signupBinding(req, handoff); const result = await signupFactory().complete({ ...bound, fullName: body.fullName, ageAttested: body.ageAttested, termsAccepted: body.termsAccepted, termsVersion: body.termsVersion, verificationConsent: body.verificationConsent, noticeVersion: body.noticeVersion }); responseHeaders(res); const linked = await poolForRequest().query<{ attempt_id: string }>('SELECT attempt_id FROM student_auth_link_handoffs WHERE id = $1', [handoff.handoffId]); clearSsoCookie(res, studentSsoCookieName(linked.rows[0]?.attempt_id ?? handoff.handoffId)); res.status(201).json({ success: true, data: result });
     }));
 
-    router.post('/reauth', authenticate, requireRole('student'), reauthLimiter, exactOrigin, exactJson, asyncHandler(async (req, res) => {
+    router.post('/reauth', authenticate, requireRole('student'), reauthLimiter, exactRecoveryOrigin, exactJson, asyncHandler(async (req, res) => {
         const body = reauthBody(req);
         const actor = ssoActor(req);
         const result = await linkFactory().reauth({
@@ -608,7 +622,7 @@ export function createStudentSsoRouter(factory: FlowFactory = defaultFlow, optio
         const actor = ssoActor(req);
         const result = await reauthFactory().start({ userId: actor.userId, sid: actor.sid, purpose: body.purpose, ...(typeof body.targetIdentityId === 'string' ? { targetIdentityId: body.targetIdentityId } : {}), ...(typeof body.pendingCodeId === 'string' ? { pendingCodeId: body.pendingCodeId } : {}) });
         responseHeaders(res);
-        res.cookie(reauthCookieName(result.attemptId), result.callbackCookie, { maxAge: 5 * 60_000, path: STUDENT_SSO_COOKIE_PATH, httpOnly: true, secure: true, sameSite: 'lax' });
+        res.cookie(studentReauthCookieName(result.attemptId), result.callbackCookie, { maxAge: 5 * 60_000, path: STUDENT_SSO_COOKIE_PATH, httpOnly: true, secure: true, sameSite: 'lax' });
         res.status(201).json({ success: true, data: { attemptId: result.attemptId, authorizationUrl: result.authorizationUrl } });
     }));
 
@@ -617,9 +631,9 @@ export function createStudentSsoRouter(factory: FlowFactory = defaultFlow, optio
         if (!body || typeof body !== 'object' || Array.isArray(body) || Object.keys(body).length !== 1 || typeof body.attemptId !== 'string' || !UUID.test(body.attemptId)) throw new BadRequestError('Student SSO reauthentication request is invalid');
         const attemptId = body.attemptId;
         const actor = ssoActor(req);
-        const result = await reauthFactory().finish({ userId: actor.userId, sid: actor.sid, attemptId, callbackCookie: parseBrowserCookies(req).find((cookie) => cookie.name === reauthCookieName(attemptId))?.value });
+        const result = await reauthFactory().finish({ userId: actor.userId, sid: actor.sid, attemptId, callbackCookie: parseBrowserCookies(req).find((cookie) => cookie.name === studentReauthCookieName(attemptId))?.value });
         responseHeaders(res);
-        clearSsoCookie(res, reauthCookieName(attemptId));
+        clearSsoCookie(res, studentReauthCookieName(attemptId));
         res.status(201).json({ success: true, data: result });
     }));
 
@@ -630,7 +644,7 @@ export function createStudentSsoRouter(factory: FlowFactory = defaultFlow, optio
         res.json({ success: true, data: result });
     }));
 
-    router.post('/recovery-code/generate', authenticate, requireRole('student'), reauthLimiter, exactOrigin, exactJson, asyncHandler(async (req, res) => {
+    router.post('/recovery-code/generate', authenticate, requireRole('student'), reauthLimiter, exactRecoveryOrigin, exactJson, asyncHandler(async (req, res) => {
         const body = recoveryCodeBody(req, 'generate');
         const actor = ssoActor(req);
         const result = await recoveryCodeFactory().generate({
@@ -641,7 +655,7 @@ export function createStudentSsoRouter(factory: FlowFactory = defaultFlow, optio
         res.status(201).json({ success: true, data: result });
     }));
 
-    router.post('/recovery-code/activate', authenticate, requireRole('student'), reauthLimiter, exactOrigin, exactJson, asyncHandler(async (req, res) => {
+    router.post('/recovery-code/activate', authenticate, requireRole('student'), reauthLimiter, exactRecoveryOrigin, exactJson, asyncHandler(async (req, res) => {
         const body = recoveryCodeBody(req, 'activate');
         if (!body.pendingCodeId || !body.code) throw new BadRequestError('Recovery-code request is invalid');
         const actor = ssoActor(req);
@@ -654,7 +668,7 @@ export function createStudentSsoRouter(factory: FlowFactory = defaultFlow, optio
         res.json({ success: true, data: result });
     }));
 
-    router.post('/recovery-code/remove', authenticate, requireRole('student'), reauthLimiter, exactOrigin, exactJson, asyncHandler(async (req, res) => {
+    router.post('/recovery-code/remove', authenticate, requireRole('student'), reauthLimiter, exactRecoveryOrigin, exactJson, asyncHandler(async (req, res) => {
         const body = recoveryCodeBody(req, 'remove');
         if (!body.oldCode) throw new BadRequestError('Recovery-code request is invalid');
         const actor = ssoActor(req);
@@ -665,7 +679,7 @@ export function createStudentSsoRouter(factory: FlowFactory = defaultFlow, optio
         res.status(204).end();
     }));
 
-    router.post('/recovery-code/cancel', authenticate, requireRole('student'), exactOrigin, exactJson, asyncHandler(async (req, res) => {
+    router.post('/recovery-code/cancel', authenticate, requireRole('student'), exactRecoveryOrigin, exactJson, asyncHandler(async (req, res) => {
         const body = req.body as { pendingCodeId?: unknown };
         if (!body || typeof body !== 'object' || Array.isArray(body) || Object.keys(body).length !== 1 || typeof body.pendingCodeId !== 'string' || !UUID.test(body.pendingCodeId)) throw new BadRequestError('Recovery-code request is invalid');
         const actor = ssoActor(req);

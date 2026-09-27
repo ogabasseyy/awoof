@@ -39,7 +39,7 @@ export class StudentSsoSignupService {
         const handoff = (await tx.query<Handoff>('SELECT * FROM student_auth_link_handoffs WHERE id = $1 FOR UPDATE', [input.handoffId])).rows[0];
         if (!handoff || handoff.consumed_at || handoff.expires_at <= new Date() || handoff.secret_hash !== hashMicrosoftAttemptSecret(input.handoffSecret) || handoff.browser_binding_hash !== hashMicrosoftAttemptSecret(input.browserBinding)) throw invalid();
         let observation; try { observation = decodeProviderObservation(decryptMicrosoftAttemptVerifier(handoff.encrypted_observation, this.deps.attemptKey!, handoff.id)); } catch { throw invalid(); }
-        if (this.deps.isProviderEnabled?.(observation.provider) === false || !observation.email) throw invalid();
+        if (observation.provider !== 'microsoft' || this.deps.isProviderEnabled?.('microsoft') === false || !observation.email) throw invalid();
         const attempt = (await tx.query<{ requested_email: string }>('SELECT requested_email FROM student_auth_attempts WHERE id = $1 FOR UPDATE', [handoff.attempt_id])).rows[0];
         if (!attempt) throw invalid();
         let policy; try { policy = await assertCurrentLoginPolicy(tx, handoff.policy_id, handoff.policy_version, attempt.requested_email); } catch (error) { if (error instanceof StudentSsoAuthorityInvalidatedError) throw invalid(); throw error; }
