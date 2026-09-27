@@ -68,6 +68,28 @@ test('recovery completion surfaces password-policy rejections without sign-in ad
     api.assertNoUnexpectedRequests();
 });
 
+test('recovery shows the attempt deadline while proofs are pending', async ({ page }) => {
+    const api = await installSyntheticApi(page);
+    await page.route(`${apiOrigin}/api/auth/student/sso/account-recovery/start`, route => route.fulfill({ status: 202, headers, json: { success: true, data: { attemptId: '98000000-0000-4000-8000-000000000001', secret: 'recovery-secret', expiresAt: new Date(Date.now() + 300_000).toISOString() } } }));
+    await page.goto('/auth/student/recovery');
+    await page.getByLabel('School email').fill('student@school.example');
+    await page.getByRole('button', { name: 'Start recovery' }).click();
+    await expect(page.getByRole('timer')).toContainText(/Complete this recovery within \d+:\d\d/);
+    api.assertNoUnexpectedRequests();
+});
+
+test('expired recovery attempts show an explicit restart state', async ({ page }) => {
+    const api = await installSyntheticApi(page);
+    await page.route(`${apiOrigin}/api/auth/student/sso/account-recovery/start`, route => route.fulfill({ status: 202, headers, json: { success: true, data: { attemptId: '99000000-0000-4000-8000-000000000001', secret: 'recovery-secret', expiresAt: new Date(Date.now() - 1_000).toISOString() } } }));
+    await page.goto('/auth/student/recovery');
+    await page.getByLabel('School email').fill('student@school.example');
+    await page.getByRole('button', { name: 'Start recovery' }).click();
+    await expect(page.getByText('This recovery attempt expired before completion.')).toBeVisible();
+    await page.getByRole('button', { name: 'Start again' }).click();
+    await expect(page.getByRole('button', { name: 'Start recovery' })).toBeVisible();
+    api.assertNoUnexpectedRequests();
+});
+
 test('fresh grants drive generation then a second re-entry activation without persisting plaintext', async ({ page }) => {
     const api = await installSyntheticApi(page);
     const pendingId = '74000000-0000-4000-8000-000000000001';
