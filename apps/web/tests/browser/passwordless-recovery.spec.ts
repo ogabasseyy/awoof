@@ -26,6 +26,25 @@ test('independent password recovery requires an explicit purpose and does not pr
     api.assertNoUnexpectedRequests();
 });
 
+test('ambiguous recovery completion keeps the password and points at sign-in before another recovery', async ({ page }) => {
+    const api = await installSyntheticApi(page);
+    await page.route(`${apiOrigin}/api/auth/student/sso/account-recovery/start`, route => route.fulfill({ status: 202, headers, json: { success: true, data: { attemptId: '90000000-0000-4000-8000-000000000001', secret: 'recovery-secret', expiresAt: new Date(Date.now() + 300_000).toISOString() } } }));
+    await page.route(`${apiOrigin}/api/auth/student/sso/account-recovery/verify`, route => route.fulfill({ headers, json: { success: true, data: { verified: true } } }));
+    await page.route(`${apiOrigin}/api/auth/student/sso/account-recovery/complete`, route => route.fulfill({ status: 500, headers, json: { success: false, error: { message: 'boom', code: 'INTERNAL', statusCode: 500 } } }));
+    await page.goto('/auth/student/recovery');
+    await page.getByLabel('School email').fill('student@school.example');
+    await page.getByRole('button', { name: 'Start recovery' }).click();
+    await page.getByLabel('Saved recovery code').fill('saved-code');
+    await page.getByLabel('Email confirmation code').fill('123456');
+    await page.getByRole('button', { name: 'Confirm recovery proofs' }).click();
+    await page.getByLabel('New password').fill('Brand-New-Password-1');
+    await page.getByRole('button', { name: 'Set password' }).click();
+    await expect(page.getByText('did not confirm')).toBeVisible();
+    await expect(page.getByRole('link', { name: 'Try signing in with this password' })).toBeVisible();
+    await expect(page.getByLabel('New password')).toHaveValue('Brand-New-Password-1');
+    api.assertNoUnexpectedRequests();
+});
+
 test('fresh grants drive generation then a second re-entry activation without persisting plaintext', async ({ page }) => {
     const api = await installSyntheticApi(page);
     const pendingId = '74000000-0000-4000-8000-000000000001';

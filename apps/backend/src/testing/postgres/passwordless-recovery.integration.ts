@@ -178,12 +178,12 @@ test('recovery terminal failure writers scrub superseded and rejected-at-verific
     }
 });
 
-test('recovery completion immediately scrubs invalidated sibling recovery and reauthentication attempts', async () => {
+test('recovery completion immediately scrubs invalidated sibling SSO, recovery, and reauthentication attempts', async () => {
     const pool = createTestPool();
     const client = await pool.connect();
     try {
         const account = await seedRecoverableStudent(client);
-        const proofIdentityId = await seedProviderProof(client, account.userId);
+        const proofIdentityId = await seedProviderProof(client, account.userId, { policy: true });
         let otp = '';
         const service = new StudentAccountRecoveryService({
             pool, recoveryCodeKey: 'test-recovery-code-key',
@@ -192,6 +192,21 @@ test('recovery completion immediately scrubs invalidated sibling recovery and re
         });
         const started = await service.start({ email: account.email, purpose: 'lost_access' });
         await service.verify({ attemptId: started.attemptId, secret: started.secret, code: account.code, otp });
+        const policyId = (await client.query<{ id: string }>(
+            `SELECT policy.id FROM institution_login_policies policy
+             JOIN student_auth_identities identity ON identity.university_id = policy.university_id
+             WHERE identity.id = $1`, [proofIdentityId],
+        )).rows[0]!.id;
+        const ssoAttempt = await client.query<{ id: string }>(
+            `INSERT INTO student_auth_attempts
+                 (policy_id, policy_version, provider, requested_email, state_hash, callback_cookie_hash,
+                  finish_secret_hash, encrypted_verifier, nonce, encrypted_observation, status, expires_at, remember_me)
+             VALUES ($1, 1, 'microsoft', $2, 'sso-state-secret', 'sso-cookie-secret',
+                     'sso-finish-secret', 'sso-encrypted-verifier', 'sso-nonce', 'sso-observation',
+                     'ready', clock_timestamp() + interval '5 minutes', false)
+             RETURNING id`,
+            [policyId, account.email],
+        );
         const reauth = await client.query<{ id: string }>(
             `INSERT INTO student_auth_reauth_attempts
                  (user_id, sid, credential_generation, purpose, state_hash, callback_cookie_hash, encrypted_verifier, nonce,
@@ -217,6 +232,14 @@ test('recovery completion immediately scrubs invalidated sibling recovery and re
             'SELECT status, secret_hash FROM student_auth_recovery_attempts WHERE id = $1', [siblingRecovery.rows[0]!.id],
         );
         assert.deepEqual(invalidatedRecovery.rows[0], { status: 'failed', secret_hash: null });
+        const invalidatedSso = await client.query<{
+            status: string; state_hash: string | null; callback_cookie_hash: string | null; finish_secret_hash: string | null;
+            encrypted_verifier: string | null; nonce: string | null; encrypted_observation: string | null;
+        }>('SELECT status, state_hash, callback_cookie_hash, finish_secret_hash, encrypted_verifier, nonce, encrypted_observation FROM student_auth_attempts WHERE id = $1', [ssoAttempt.rows[0]!.id]);
+        assert.deepEqual(invalidatedSso.rows[0], {
+            status: 'failed', state_hash: null, callback_cookie_hash: null, finish_secret_hash: null,
+            encrypted_verifier: null, nonce: null, encrypted_observation: null,
+        });
     } finally {
         client.release();
         await pool.end();
@@ -310,7 +333,7 @@ test('suspended accounts, pending codes, replay, and purpose substitution fail c
         assert.equal(deliveries, 0, 'pending recovery codes cannot start recovery');
         await assert.rejects(() => service.verify({ attemptId: pending.attemptId, secret: pending.secret, code: account.code, otp: '123456' }));
 
-        await client.query("UPDATE student_auth_recovery_codes SET status = 'active', expires_at = NULL, activated_at = clock_timestamp() WHERE user_id = $1 AND status = 'pending'", [account.userId]);
+        await client.query("UPDATE student_auth_recovery_codes SET status = 'active', expires_at = NULL, activated_at = clock_timestamp(), pending_sid = NULL, pending_credential_generation = NULL, pending_proof_identity_id = NULL WHERE user_id = $1 AND status = 'pending'", [account.userId]);
         // This active code deliberately has a known digest only in this test fixture.
         await client.query("UPDATE student_auth_recovery_codes SET code_digest = $2 WHERE user_id = $1 AND status = 'active'", [account.userId, createHmac('sha256', 'test-recovery-code-key').update(account.code, 'utf8').digest('base64url')]);
         let otp = '';
@@ -530,6 +553,12 @@ test('pending codes cannot recover and activation leaves only a digest at rest',
             pendingCodeId: pending.pendingCodeId, code: pending.code,
         });
         assert.deepEqual(await service.status({ userId }), { status: 'active', generation: 1, pendingCodeId: null });
+        const activated = await client.query<{ pending_sid: string | null; pending_credential_generation: string | null; pending_proof_identity_id: string | null }>(
+            'SELECT pending_sid, pending_credential_generation, pending_proof_identity_id FROM student_auth_recovery_codes WHERE id = $1',
+            [pending.pendingCodeId],
+        );
+        assert.deepEqual(activated.rows[0], { pending_sid: null, pending_credential_generation: null, pending_proof_identity_id: null },
+            'activation scrubs the pending-only authorization bindings instead of retaining them for the code lifetime');
         await assert.rejects(
             () => service.activate({ userId, sid: SID, grantId: activation.grantId, secret: activation.grantSecret, pendingCodeId: pending.pendingCodeId, code: pending.code }),
             /not valid|not available/i,
@@ -751,6 +780,19 @@ test('proof-backed recovery operations revalidate provider authority at action t
         );
         const survivor = await client.query<{ status: string }>('SELECT status FROM student_auth_recovery_codes WHERE id = $1', [pending.pendingCodeId]);
         assert.equal(survivor.rows[0]!.status, 'pending');
+        // A tenant replaced mid-grant leaves a live policy the stale
+        // identity can no longer log in with: the issuer pin rejects it.
+        await client.query(
+            `UPDATE institution_login_policies
+             SET enabled = true, approved_until = clock_timestamp() + interval '30 days',
+                 issuer = 'https://login.microsoftonline.com/replacement-tenant/v2.0'
+             WHERE university_id = $1`, [await policyOf()],
+        );
+        const rotatedGenerate = await grant(client, { userId, purpose: 'recovery_code_generate', proofIdentityId });
+        await assert.rejects(
+            () => live.generate({ userId, sid: SID, grantId: rotatedGenerate.grantId, secret: rotatedGenerate.grantSecret }),
+            conflict,
+        );
     } finally {
         client.release();
         await pool.end();

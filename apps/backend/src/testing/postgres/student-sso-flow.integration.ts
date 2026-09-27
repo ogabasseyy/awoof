@@ -1473,7 +1473,7 @@ test('cleanup scrubs expired ciphertext and deletes only aged transients', async
                      (user_id, sid, credential_generation, purpose, state_hash, callback_cookie_hash, encrypted_verifier, nonce,
                       status, expires_at, consumed_at, created_at)
                  VALUES ($1, $2, 0, 'link', $3, $4, $5, $6, 'failed',
-                         clock_timestamp() + interval '4 minutes', clock_timestamp(), clock_timestamp())
+                         clock_timestamp() - interval '56 minutes', clock_timestamp() - interval '61 minutes', clock_timestamp() - interval '61 minutes')
                  RETURNING id`,
                 [userId, randomUUID(), hashMicrosoftAttemptSecret(`blocked-reauth-state-${uniqueLabel()}`), hashMicrosoftAttemptSecret(`blocked-reauth-cookie-${uniqueLabel()}`), 'blocked-encrypted-verifier', 'blocked-reauth-nonce'],
             )).rows[0]!.id;
@@ -1554,8 +1554,10 @@ test('cleanup scrubs expired ciphertext and deletes only aged transients', async
             'expired pending recovery-code digests must be terminalized on the next cleanup pass');
         assert.equal((result as unknown as { terminalSecretsScrubbed?: number }).terminalSecretsScrubbed, 7,
             'catch-up scrubs already-terminal login, reauthentication, and recovery rows before their expiry');
-        assert.equal((result as unknown as { overdueTerminalSecrets?: number }).overdueTerminalSecrets, 1,
-            'monitoring detects a terminal row whose secret scrub was skipped');
+        assert.equal((result as unknown as { overdueExpired?: number }).overdueExpired, 1,
+            'monitoring reports the action grant that sat expired past the one-hour retention bound');
+        assert.equal((result as unknown as { overdueTerminalSecrets?: number }).overdueTerminalSecrets, 6,
+            'monitoring reports terminal rows that kept secrets past the one-hour retention bound, including ones this pass repairs');
 
         const unblock = await pool.connect();
         try {
@@ -1564,7 +1566,13 @@ test('cleanup scrubs expired ciphertext and deletes only aged transients', async
             const recovered = await cleanupStudentSsoTransients(unblock);
             assert.equal((recovered as unknown as { terminalSecretsScrubbed?: number }).terminalSecretsScrubbed, 1,
                 'a later cleanup pass repairs the previously blocked terminal reauthentication row');
-            assert.equal((recovered as unknown as { overdueTerminalSecrets?: number }).overdueTerminalSecrets, 0);
+            assert.equal((recovered as unknown as { overdueTerminalSecrets?: number }).overdueTerminalSecrets, 1,
+                'the delayed repair still reports the overdue row it found as scheduler-lag evidence');
+            assert.equal((recovered as unknown as { overdueExpired?: number }).overdueExpired, 0);
+            const converged = await cleanupStudentSsoTransients(unblock);
+            assert.equal((converged as unknown as { terminalSecretsScrubbed?: number }).terminalSecretsScrubbed, 0);
+            assert.equal((converged as unknown as { overdueTerminalSecrets?: number }).overdueTerminalSecrets, 0);
+            assert.equal((converged as unknown as { overdueExpired?: number }).overdueExpired, 0);
         } finally {
             unblock.release();
         }

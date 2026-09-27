@@ -824,6 +824,37 @@ export type StudentSsoCleanupResult = {
 export async function cleanupStudentSsoTransients(client: PoolClient): Promise<StudentSsoCleanupResult> {
     await client.query('BEGIN');
     try {
+    // Overdue evidence is captured before any mutation. The 15-minute
+    // schedule keeps maximum retention below the one-hour bound, so rows
+    // still unprocessed more than one hour past expiry (or terminal age)
+    // prove scheduler lag even when this pass repairs them; the CLI exits
+    // nonzero on any overdue row.
+    const overdue = await client.query<{ count: string }>(
+        `SELECT (
+            (SELECT count(*) FROM student_auth_action_grants
+             WHERE expires_at <= clock_timestamp() - interval '1 hour' AND consumed_at IS NULL AND revoked_at IS NULL)
+            + (SELECT count(*) FROM student_auth_recovery_codes
+               WHERE status = 'pending' AND expires_at <= clock_timestamp() - interval '1 hour')
+        )::text AS count`,
+    );
+
+    const overdueTerminalSecrets = await client.query<{ count: string }>(
+        `SELECT (
+            (SELECT count(*) FROM student_auth_attempts
+             WHERE status IN ('consumed', 'failed')
+               AND expires_at <= clock_timestamp() - interval '1 hour'
+               AND (state_hash IS NOT NULL OR callback_cookie_hash IS NOT NULL OR finish_secret_hash IS NOT NULL
+                    OR encrypted_verifier IS NOT NULL OR nonce IS NOT NULL OR encrypted_observation IS NOT NULL))
+            + (SELECT count(*) FROM student_auth_reauth_attempts
+             WHERE status IN ('consumed', 'failed')
+               AND COALESCE(consumed_at, expires_at) <= clock_timestamp() - interval '1 hour'
+               AND (state_hash IS NOT NULL OR callback_cookie_hash IS NOT NULL
+                    OR encrypted_verifier IS NOT NULL OR nonce IS NOT NULL))
+            + (SELECT count(*) FROM student_auth_recovery_attempts
+               WHERE status IN ('consumed', 'failed', 'expired') AND secret_hash IS NOT NULL
+               AND COALESCE(consumed_at, expires_at) <= clock_timestamp() - interval '1 hour')
+        )::text AS count`,
+    );
     const failed = await client.query(
         `UPDATE student_auth_attempts
          SET status = 'failed', state_hash = NULL, callback_cookie_hash = NULL, finish_secret_hash = NULL,
@@ -948,28 +979,6 @@ export async function cleanupStudentSsoTransients(client: PoolClient): Promise<S
                  AND (reauth.active_code_generation = student_auth_recovery_codes.generation
                       OR reauth.pending_code_id = student_auth_recovery_codes.id)
            )`,
-    );
-    const overdue = await client.query<{ count: string }>(
-        `SELECT (
-            (SELECT count(*) FROM student_auth_action_grants
-             WHERE expires_at <= clock_timestamp() AND consumed_at IS NULL AND revoked_at IS NULL)
-            + (SELECT count(*) FROM student_auth_recovery_codes
-               WHERE status = 'pending' AND expires_at <= clock_timestamp())
-        )::text AS count`,
-    );
-    const overdueTerminalSecrets = await client.query<{ count: string }>(
-        `SELECT (
-            (SELECT count(*) FROM student_auth_attempts
-             WHERE status IN ('consumed', 'failed')
-               AND (state_hash IS NOT NULL OR callback_cookie_hash IS NOT NULL OR finish_secret_hash IS NOT NULL
-                    OR encrypted_verifier IS NOT NULL OR nonce IS NOT NULL OR encrypted_observation IS NOT NULL))
-            + (SELECT count(*) FROM student_auth_reauth_attempts
-             WHERE status IN ('consumed', 'failed')
-               AND (state_hash IS NOT NULL OR callback_cookie_hash IS NOT NULL
-                    OR encrypted_verifier IS NOT NULL OR nonce IS NOT NULL))
-            + (SELECT count(*) FROM student_auth_recovery_attempts
-               WHERE status IN ('consumed', 'failed', 'expired') AND secret_hash IS NOT NULL)
-        )::text AS count`,
     );
     const attempts = await client.query(
         `DELETE FROM student_auth_attempts

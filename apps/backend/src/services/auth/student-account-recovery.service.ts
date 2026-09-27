@@ -217,9 +217,12 @@ export class StudentAccountRecoveryService {
             // A ready provider callback is not yet a session. Invalidate every
             // same-mailbox attempt before releasing the account lock so a
             // pre-recovery callback cannot mint a post-recovery session.
+            // Terminal binding digests are scrubbed immediately, matching
+            // the reauthentication and recovery terminalization above.
             await tx.query(
                 `UPDATE student_auth_attempts
-                 SET status = 'failed', encrypted_verifier = NULL, nonce = NULL, encrypted_observation = NULL
+                 SET status = 'failed', state_hash = NULL, callback_cookie_hash = NULL, finish_secret_hash = NULL,
+                     encrypted_verifier = NULL, nonce = NULL, encrypted_observation = NULL
                  WHERE requested_email = $1 AND status IN ('pending', 'processing', 'ready')`,
                 [account.email],
             );

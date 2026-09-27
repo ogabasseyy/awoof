@@ -128,9 +128,14 @@ export class StudentRecoveryCodeService {
                     [active.id],
                 );
             }
+            // The pending-only authorization bindings authorize this
+            // transition and nothing after it: scrub them as the durable
+            // code activates rather than retaining session and
+            // proof-identity metadata for the code's lifetime.
             const activated = await tx.query(
                 `UPDATE student_auth_recovery_codes
-                 SET status = 'active', expires_at = NULL, activated_at = clock_timestamp()
+                 SET status = 'active', expires_at = NULL, activated_at = clock_timestamp(),
+                     pending_sid = NULL, pending_credential_generation = NULL, pending_proof_identity_id = NULL
                  WHERE id = $1 AND status = 'pending'`,
                 [pending.id],
             );
@@ -281,20 +286,22 @@ export class StudentRecoveryCodeService {
 
     private async requireLiveProofIdentity(tx: PoolClient, identityId: string | null, userId: string): Promise<void> {
         if (!identityId) return;
-        const result = await tx.query<{ revoked_at: Date | null; provider: string; university_id: string }>(
-            'SELECT revoked_at, provider, university_id FROM student_auth_identities WHERE id = $1 AND user_id = $2 FOR UPDATE', [identityId, userId],
+        const result = await tx.query<{ revoked_at: Date | null; provider: string; university_id: string; issuer: string }>(
+            'SELECT revoked_at, provider, university_id, issuer FROM student_auth_identities WHERE id = $1 AND user_id = $2 FOR UPDATE', [identityId, userId],
         );
         const row = result.rows[0];
         if (!row || row.revoked_at !== null || (row.provider !== 'google' && row.provider !== 'microsoft')) throw unavailable();
         // A five-minute grant outlives authority edits: revalidate the
         // deployment kill switch and the identity's currently enabled,
-        // unexpired institution policy at action time.
+        // unexpired institution policy at action time. The issuer must
+        // match exactly: a tenant replaced mid-grant leaves the stale
+        // identity unable to log in, so it cannot authorize code actions.
         if (this.dependencies.isProviderEnabled?.(row.provider) !== true) throw unavailable();
         const policy = await tx.query<{ id: string }>(
             `SELECT id FROM institution_login_policies
-             WHERE university_id = $1 AND provider = $2 AND enabled AND approved_until > clock_timestamp()
+             WHERE university_id = $1 AND provider = $2 AND issuer = $3 AND enabled AND approved_until > clock_timestamp()
              LIMIT 1`,
-            [row.university_id, row.provider],
+            [row.university_id, row.provider, row.issuer],
         );
         if (!policy.rows[0]) throw unavailable();
     }

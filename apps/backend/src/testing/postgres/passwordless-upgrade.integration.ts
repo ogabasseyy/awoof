@@ -280,7 +280,8 @@ test('recovery code lifecycle permits one active code and rejects terminal repla
         )).rows[0]!.id;
         await client.query(
             `UPDATE student_auth_recovery_codes
-             SET status = 'active', expires_at = NULL, activated_at = clock_timestamp()
+             SET status = 'active', expires_at = NULL, activated_at = clock_timestamp(),
+                 pending_sid = NULL, pending_credential_generation = NULL, pending_proof_identity_id = NULL
              WHERE id = $1`,
             [codeId],
         );
