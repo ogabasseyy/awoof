@@ -175,7 +175,7 @@ export class StudentRecoveryCodeService {
                 `SELECT id, generation, code_digest, status, expires_at, pending_sid,
                         pending_credential_generation, pending_proof_identity_id
                  FROM student_auth_recovery_codes
-                 WHERE user_id = $1 AND status IN ('active', 'pending')
+                 WHERE user_id = $1 AND (status = 'active' OR (status = 'pending' AND expires_at > clock_timestamp()))
                  ORDER BY generation DESC LIMIT 1`,
                 [input.userId],
             );

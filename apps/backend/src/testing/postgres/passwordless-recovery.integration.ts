@@ -470,6 +470,30 @@ test('pending codes cannot recover and activation leaves only a digest at rest',
     }
 });
 
+test('status falls back to the active code when a replacement candidate expired', async () => {
+    const pool = createTestPool();
+    const client = await pool.connect();
+    try {
+        const userId = await seedStudent(client);
+        const service = new StudentRecoveryCodeService({ pool, codeKey: 'test-recovery-code-key' });
+        const initialGrant = await grant(client, { userId, purpose: 'recovery_code_generate' });
+        const initial = await service.generate({ userId, sid: SID, grantId: initialGrant.grantId, secret: initialGrant.grantSecret });
+        const initialActivation = await grant(client, { userId, purpose: 'recovery_code_activate', pendingCodeId: initial.pendingCodeId });
+        await service.activate({ userId, sid: SID, grantId: initialActivation.grantId, secret: initialActivation.grantSecret, pendingCodeId: initial.pendingCodeId, code: initial.code });
+        const replacementGrant = await grant(client, { userId, purpose: 'recovery_code_generate', activeCodeGeneration: 1 });
+        const replacement = await service.generate({ userId, sid: SID, grantId: replacementGrant.grantId, secret: replacementGrant.grantSecret, oldCode: initial.code });
+        assert.equal((await service.status({ userId })).status, 'pending');
+        await client.query(`UPDATE student_auth_recovery_codes SET expires_at = clock_timestamp() WHERE id = $1`, [replacement.pendingCodeId]);
+        assert.deepEqual(await service.status({ userId }), { status: 'active', generation: 1, pendingCodeId: null });
+        // The shared suite asserts exact cleanup counts: an expired pending
+        // left behind would inflate the next file's terminalization count.
+        await client.query(`DELETE FROM student_auth_recovery_codes WHERE id = $1`, [replacement.pendingCodeId]);
+    } finally {
+        client.release();
+        await pool.end();
+    }
+});
+
 test('replacement and removal require the current active code and exact separate grants', async () => {
     const pool = createTestPool();
     const client = await pool.connect();

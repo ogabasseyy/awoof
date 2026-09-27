@@ -13,7 +13,7 @@ test('an unlinked Microsoft handoff creates a passwordless pending-enrollment ac
         const path = new URL(route.request().url()).pathname;
         const body = JSON.parse(route.request().postData() ?? '{}');
         requests.push({ path, body });
-        if (path.endsWith('/context')) return route.fulfill({ json: { success: true, data: { email: 'student@school.example', universityId: '72000000-0000-4000-8000-000000000001', termsVersion: '2026-01', noticeVersion: '2026-01', expiresAt: expiresAt() } }, headers });
+        if (path.endsWith('/context')) return route.fulfill({ json: { success: true, data: { email: 'student@school.example', universityId: '72000000-0000-4000-8000-000000000001', termsVersion: '2026-01', noticeVersion: '2026-01', noticeText: 'Synthetic verification processing notice.', expiresAt: expiresAt() } }, headers });
         if (path.endsWith('/send-code')) return route.fulfill({ status: 201, json: { success: true, data: { challengeId: '73000000-0000-4000-8000-000000000001', expiresAt: expiresAt() } }, headers });
         if (path.endsWith('/verify-code')) return route.fulfill({ json: { success: true, data: { verified: true, expiresAt: expiresAt() } }, headers });
         return route.fulfill({ status: 201, json: { success: true, data: { user: { id: 'student-1', email: 'student@school.example', role: 'student' }, tokens: { accessToken: 'signup-access', refreshToken: 'signup-refresh' } } }, headers });
@@ -27,6 +27,7 @@ test('an unlinked Microsoft handoff creates a passwordless pending-enrollment ac
     await page.getByLabel('Email confirmation code').fill('123456');
     await page.getByRole('button', { name: 'Confirm email' }).click();
     await page.getByLabel('Full name').fill('Synthetic Student');
+    await expect(page.getByText('Synthetic verification processing notice.')).toBeVisible();
     await expect(page.getByRole('button', { name: 'Create passwordless account' })).toBeDisabled();
     await page.getByLabel('I am at least 18 years old').check();
     await page.getByLabel('I accept the current Terms').check();
@@ -62,7 +63,7 @@ test('a session switch while passwordless completion is in flight cannot replace
     const api = await installSyntheticApi(page);
     await page.route(`${apiOrigin}/api/auth/student/sso/signup/**`, async route => {
         const path = new URL(route.request().url()).pathname;
-        if (path.endsWith('/context')) return route.fulfill({ headers: { 'access-control-allow-origin': appOrigin, 'access-control-allow-credentials': 'true' }, json: { success: true, data: { email: 'student@school.example', universityId: '72000000-0000-4000-8000-000000000001', termsVersion: '2026-01', noticeVersion: '2026-01', expiresAt: expiresAt() } } });
+        if (path.endsWith('/context')) return route.fulfill({ headers: { 'access-control-allow-origin': appOrigin, 'access-control-allow-credentials': 'true' }, json: { success: true, data: { email: 'student@school.example', universityId: '72000000-0000-4000-8000-000000000001', termsVersion: '2026-01', noticeVersion: '2026-01', noticeText: 'Synthetic verification processing notice.', expiresAt: expiresAt() } } });
         if (path.endsWith('/send-code')) return route.fulfill({ status: 201, headers: { 'access-control-allow-origin': appOrigin, 'access-control-allow-credentials': 'true' }, json: { success: true, data: { challengeId: '73000000-0000-4000-8000-000000000001', expiresAt: expiresAt() } } });
         if (path.endsWith('/verify-code')) return route.fulfill({ headers: { 'access-control-allow-origin': appOrigin, 'access-control-allow-credentials': 'true' }, json: { success: true, data: { verified: true, expiresAt: expiresAt() } } });
         started(); await held; return route.fulfill({ status: 201, headers: { 'access-control-allow-origin': appOrigin, 'access-control-allow-credentials': 'true' }, json: { success: true, data: { user: { id: 'old', email: 'student@school.example', role: 'student' }, tokens: { accessToken: 'old-access', refreshToken: 'old-refresh' } } } });

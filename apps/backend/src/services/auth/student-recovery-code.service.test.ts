@@ -8,7 +8,7 @@ test('status exposes recovery state and generation without a recovery digest', a
     const client = {
         query: async (text: string) => {
             queries.push(text);
-            if (text.includes("status IN ('active', 'pending')")) {
+            if (text.includes('FROM student_auth_recovery_codes') && text.includes('ORDER BY generation DESC LIMIT 1')) {
                 return {
                     rows: [{
                         id: '11111111-1111-4111-8111-111111111111', generation: 3, code_digest: 'must-not-leak',
@@ -31,6 +31,8 @@ test('status exposes recovery state and generation without a recovery digest', a
         status: 'active', generation: 3, pendingCodeId: null,
     });
     assert.equal(queries.length, 1);
+    assert.ok(queries[0]!.includes("status = 'pending' AND expires_at > clock_timestamp()"),
+        'expired pending candidates must not shadow the active recovery code');
 });
 
 test('recovery-code digest key must have sufficient deployment-held entropy', () => {

@@ -1293,6 +1293,8 @@ test('cleanup scrubs expired ciphertext and deletes only aged transients', async
         let expiredActionGrant: string;
         let activeRecoveryCode: string;
         let expiredRecoveryCode: string;
+        let referencedCodeTombstone: string;
+        let unreferencedCodeTombstone: string;
         let deletedActionGrant: string;
         try {
             const universityId = await createUniversity(setup);
@@ -1441,6 +1443,26 @@ test('cleanup scrubs expired ciphertext and deletes only aged transients', async
                  RETURNING id`,
                 [userId, hashMicrosoftAttemptSecret(`expired-recovery-${uniqueLabel()}`), randomUUID()],
             )).rows[0]!.id;
+            referencedCodeTombstone = (await setup.query<{ id: string }>(
+                `INSERT INTO student_auth_recovery_codes
+                 (user_id, generation, code_digest, status, revoked_at, created_at)
+                 VALUES ($1, 73, NULL, 'revoked', clock_timestamp() - interval '8 days', clock_timestamp() - interval '8 days')
+                 RETURNING id`,
+                [userId],
+            )).rows[0]!.id;
+            unreferencedCodeTombstone = (await setup.query<{ id: string }>(
+                `INSERT INTO student_auth_recovery_codes
+                 (user_id, generation, code_digest, status, revoked_at, created_at)
+                 VALUES ($1, 74, NULL, 'revoked', clock_timestamp() - interval '8 days', clock_timestamp() - interval '8 days')
+                 RETURNING id`,
+                [userId],
+            )).rows[0]!.id;
+            await setup.query(
+                `INSERT INTO student_auth_recovery_attempts
+                     (user_id, credential_generation, purpose, secret_hash, recovery_code_generation, status, expires_at, created_at)
+                 VALUES ($1, 0, 'lost_access', $2, 73, 'pending', clock_timestamp() + interval '4 minutes', clock_timestamp())`,
+                [userId, hashMicrosoftAttemptSecret(`referencing-recovery-${uniqueLabel()}`)],
+            );
             deletedActionGrant = (await setup.query<{ id: string }>(
                 `INSERT INTO student_auth_action_grants
                  (user_id, sid, credential_generation, purpose, secret_hash, expires_at, revoked_at, created_at)
@@ -1525,6 +1547,12 @@ test('cleanup scrubs expired ciphertext and deletes only aged transients', async
             assert.deepEqual(expired && { status: expired.status, digest: expired.code_digest, expiresAt: expired.expires_at }, {
                 status: 'revoked', digest: null, expiresAt: null,
             });
+            const tombstones = await check.query<{ id: string }>(
+                'SELECT id FROM student_auth_recovery_codes WHERE id = ANY($1::uuid[])',
+                [[referencedCodeTombstone, unreferencedCodeTombstone]],
+            );
+            assert.deepEqual(tombstones.rows.map(row => row.id).sort(), [referencedCodeTombstone].sort(),
+                'aged code tombstones survive cleanup while retained attempts reference them, without aborting the pass');
             const deleted = await check.query('SELECT id FROM student_auth_action_grants WHERE id = $1', [deletedActionGrant]);
             assert.equal(deleted.rowCount, 0, 'seven-day terminal grant tombstones are deleted');
             const completedSignup = await check.query(

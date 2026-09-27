@@ -14,7 +14,7 @@ import { consumeChallenge, requestChallenge } from '../../services/verification/
 import { recordEmailAssurance } from '../../services/verification/eligibility-evidence.service.js';
 import { encryptMicrosoftAttemptVerifier, hashMicrosoftAttemptSecret } from '../../services/verification/microsoft-attempt-crypto.js';
 import { assertFixtureDatabase, createTestPool } from './test-database.js';
-import { STUDENT_TERMS_VERSION, VERIFICATION_NOTICE_VERSION } from '../../services/verification/verification-notices.js';
+import { STUDENT_TERMS_VERSION, VERIFICATION_NOTICE_TEXT, VERIFICATION_NOTICE_VERSION } from '../../services/verification/verification-notices.js';
 import { challengeSubjectDigest } from '../../services/verification/challenge.service.js';
 
 const label = () => randomUUID().replaceAll('-', '').slice(0, 12);
@@ -75,7 +75,8 @@ test('passwordless signup creates one passwordless account, mailbox proof, ident
         const key = randomBytes(32).toString('base64url'); let code = '';
         const service = new StudentSsoSignupService({ pool, attemptKey: key, isEnabled: () => true, isProviderEnabled: () => true, deliverOtp: async (_email, sent) => { code = sent; return { success: true }; } });
         const c = await pool.connect(); let state; try { state = await seed(c, key); } finally { c.release(); }
-        await service.context({ handoffId: state.handoffId, handoffSecret: state.handoffSecret, browserBinding: state.browser });
+        const ctx = await service.context({ handoffId: state.handoffId, handoffSecret: state.handoffSecret, browserBinding: state.browser });
+        assert.equal(ctx.noticeText, VERIFICATION_NOTICE_TEXT, 'signup must present the processing notice text before recording consent');
         await assert.rejects(service.complete({ handoffId: state.handoffId, handoffSecret: state.handoffSecret, browserBinding: state.browser, fullName: 'Ada Student', ageAttested: true, termsAccepted: true, termsVersion: STUDENT_TERMS_VERSION, verificationConsent: true, noticeVersion: VERIFICATION_NOTICE_VERSION }), /not available/i);
         assert.equal((await pool.query<{ count: string }>(`SELECT count(*)::text AS count FROM users WHERE email=$1`, [state.email])).rows[0]!.count, '0');
         await assert.rejects(service.complete({ handoffId: state.handoffId, handoffSecret: state.handoffSecret, browserBinding: state.browser, fullName: 'Ada Student', ageAttested: true, termsAccepted: true, termsVersion: 'stale-terms', verificationConsent: true, noticeVersion: VERIFICATION_NOTICE_VERSION }), /current age, terms, and verification processing assent/i);

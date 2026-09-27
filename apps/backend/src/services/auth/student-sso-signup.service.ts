@@ -4,7 +4,7 @@ import { BadRequestError, ConflictError, ServiceUnavailableError, UnauthorizedEr
 import { consumeChallenge, requestChallenge } from '../verification/challenge.service.js';
 import { normalizeMailbox } from '../verification/eligibility-policy.service.js';
 import { recordPasswordlessSignupMailboxProof } from '../verification/eligibility-evidence.service.js';
-import { STUDENT_TERMS_VERSION, VERIFICATION_NOTICE_VERSION } from '../verification/verification-notices.js';
+import { STUDENT_TERMS_VERSION, VERIFICATION_NOTICE_TEXT, VERIFICATION_NOTICE_VERSION } from '../verification/verification-notices.js';
 import { decryptMicrosoftAttemptVerifier, hashMicrosoftAttemptSecret } from '../verification/microsoft-attempt-crypto.js';
 import { decodeProviderObservation, assertCurrentLoginPolicy, StudentSsoAuthorityInvalidatedError } from './student-sso-onboarding.service.js';
 import { issueSessionInTransaction } from './session.service.js';
@@ -53,9 +53,9 @@ export class StudentSsoSignupService {
         if (!signup || signup.secret_hash !== secret || signup.browser_binding_hash !== hashMicrosoftAttemptSecret(input.browserBinding) || signup.status === 'consumed' || signup.expires_at <= new Date()) throw invalid();
         return { input, handoff, signup, observation, email: normalizeMailbox(observation.email), universityId: policy.universityId };
     }
-    async context(input: { handoffId: unknown; handoffSecret: unknown; browserBinding: unknown }): Promise<{ email: string; universityId: string; termsVersion: string; noticeVersion: string; expiresAt: string }> {
+    async context(input: { handoffId: unknown; handoffSecret: unknown; browserBinding: unknown }): Promise<{ email: string; universityId: string; termsVersion: string; noticeVersion: string; noticeText: string; expiresAt: string }> {
         this.enabled();
-        return this.transaction(async tx => { const state = await this.load(tx, input); return { email: state.email, universityId: state.universityId, termsVersion: STUDENT_TERMS_VERSION, noticeVersion: VERIFICATION_NOTICE_VERSION, expiresAt: state.handoff.expires_at.toISOString() }; });
+        return this.transaction(async tx => { const state = await this.load(tx, input); return { email: state.email, universityId: state.universityId, termsVersion: STUDENT_TERMS_VERSION, noticeVersion: VERIFICATION_NOTICE_VERSION, noticeText: VERIFICATION_NOTICE_TEXT, expiresAt: state.handoff.expires_at.toISOString() }; });
     }
     async sendCode(input: { handoffId: unknown; handoffSecret: unknown; browserBinding: unknown }): Promise<{ challengeId: string; expiresAt: string }> {
         const sent = await this.transaction(async tx => { const state = await this.load(tx, input); const issued = await requestChallenge(tx, { purpose: 'student_sso_signup', subjectKey: state.email, bindings: { email: state.email, name: '', universityId: state.universityId, matricNumber: null, policyVersion: state.handoff.policy_version, verificationConsent: true, noticeVersion: VERIFICATION_NOTICE_VERSION, ageAttested: true, termsAccepted: true, termsVersion: STUDENT_TERMS_VERSION }, expiresAt: state.handoff.expires_at }); if (issued.status !== 'issued') throw new ConflictError('Please wait before requesting another signup code.'); await tx.query('UPDATE student_auth_signup_challenges SET mailbox_challenge_id = $2 WHERE id = $1', [state.signup.id, issued.challengeId]); return { email: state.email, code: issued.code, challengeId: issued.challengeId, expiresAt: issued.expiresAt }; });

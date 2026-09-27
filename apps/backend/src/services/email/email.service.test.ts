@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 // @ts-ignore - upstream package has no TypeScript definitions
 import SibApiV3Sdk from 'sib-api-v3-sdk';
-import { sendEmailVerificationOTP, sendWelcomeEmail } from './email.service.js';
+import { sendEmailVerificationOTP, sendRecoveryCodeSecurityNotice, sendWelcomeEmail } from './email.service.js';
 
 test('registration and welcome mail render supplied names as text, never markup', async (t) => {
     const previous = process.env.BREVO_API_KEY;
@@ -46,4 +46,22 @@ test('verification OTP copy states the caller-supplied expiry, defaulting to ten
     assert.equal(messages.length, 2);
     assert.ok(messages[0]!.includes('This code will expire in 5 minutes.'));
     assert.ok(messages[1]!.includes('This code will expire in 10 minutes.'));
+});
+
+test('recovery-code security notices link the verified support destination', async (t) => {
+    const previous = process.env.BREVO_API_KEY;
+    process.env.BREVO_API_KEY = 'synthetic-test-key';
+    t.after(() => {
+        if (previous === undefined) delete process.env.BREVO_API_KEY;
+        else process.env.BREVO_API_KEY = previous;
+    });
+    const messages: string[] = [];
+    t.mock.method(SibApiV3Sdk.ApiClient.instance, 'callApi', async (...args: unknown[]) => {
+        messages.push((args[7] as { htmlContent: string }).htmlContent);
+        return { data: { messageId: 'synthetic-message' } };
+    });
+    assert.equal((await sendRecoveryCodeSecurityNotice('student@approved.test', 'replaced')).success, true);
+    assert.equal(messages.length, 1);
+    assert.ok(messages[0]!.includes('/contact'));
+    assert.ok(!messages[0]!.includes('recovery code is <strong>'));
 });

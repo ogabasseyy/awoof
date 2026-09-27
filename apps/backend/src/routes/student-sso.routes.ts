@@ -352,7 +352,7 @@ function defaultAccountRecovery(): StudentAccountRecoveryService {
     if (!key) throw new ServiceUnavailableError('Account recovery is unavailable');
     return new StudentAccountRecoveryService({
         pool: getPool(), recoveryCodeKey: key,
-        deliverOtp: async (email, code) => sendEmail(email, 'Awoof account recovery code', `<p>Your Awoof account recovery code is <strong>${code}</strong>.</p><p>It expires shortly. If you did not start account recovery, ignore this email.</p>`),
+        deliverOtp: async (email, code) => sendEmail(email, 'Awoof email confirmation code', `<p>Your Awoof email confirmation code is <strong>${code}</strong>.</p><p>It expires shortly. If you did not start account recovery, ignore this email.</p>`),
     });
 }
 

@@ -907,10 +907,30 @@ export async function cleanupStudentSsoTransients(client: PoolClient): Promise<S
         `DELETE FROM student_auth_action_grants
          WHERE COALESCE(consumed_at, revoked_at, expires_at) <= clock_timestamp() - interval '7 days'`,
     );
+    // Referencing attempts and grants retire on their own later clocks; a
+    // tombstone delete must wait for them or the foreign keys roll back the
+    // whole cleanup transaction and leave unrelated secrets unswept.
     await client.query(
         `DELETE FROM student_auth_recovery_codes
          WHERE status IN ('consumed', 'revoked')
-           AND COALESCE(terminal_at, consumed_at, revoked_at, created_at) <= clock_timestamp() - interval '7 days'`,
+           AND COALESCE(terminal_at, consumed_at, revoked_at, created_at) <= clock_timestamp() - interval '7 days'
+           AND NOT EXISTS (
+               SELECT 1 FROM student_auth_recovery_attempts attempt
+               WHERE attempt.user_id = student_auth_recovery_codes.user_id
+                 AND attempt.recovery_code_generation = student_auth_recovery_codes.generation
+           )
+           AND NOT EXISTS (
+               SELECT 1 FROM student_auth_action_grants action_grant
+               WHERE action_grant.user_id = student_auth_recovery_codes.user_id
+                 AND (action_grant.active_code_generation = student_auth_recovery_codes.generation
+                      OR action_grant.pending_code_id = student_auth_recovery_codes.id)
+           )
+           AND NOT EXISTS (
+               SELECT 1 FROM student_auth_reauth_attempts reauth
+               WHERE reauth.user_id = student_auth_recovery_codes.user_id
+                 AND (reauth.active_code_generation = student_auth_recovery_codes.generation
+                      OR reauth.pending_code_id = student_auth_recovery_codes.id)
+           )`,
     );
     const overdue = await client.query<{ count: string }>(
         `SELECT (
