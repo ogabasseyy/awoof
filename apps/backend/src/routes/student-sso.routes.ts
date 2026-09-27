@@ -387,6 +387,9 @@ export function createStudentSsoRouter(factory: FlowFactory = defaultFlow, optio
     const unlinkLimiter = studentSsoLinkLimiter(linkLimiterMax);
     const reauthMicrosoftLimiter = studentSsoLinkLimiter(linkLimiterMax);
     const signupLimiter = studentSsoLinkLimiter(linkLimiterMax);
+    const recoveryCodeGenerateLimiter = studentSsoLinkLimiter(linkLimiterMax);
+    const recoveryCodeActivateLimiter = studentSsoLinkLimiter(linkLimiterMax);
+    const recoveryCodeRemoveLimiter = studentSsoLinkLimiter(linkLimiterMax);
 
     const signupHandoffBody = (req: Request): { handoffId: string; handoffSecret: string } => {
         const value = req.body as Record<string, unknown>;
@@ -675,7 +678,7 @@ export function createStudentSsoRouter(factory: FlowFactory = defaultFlow, optio
         res.json({ success: true, data: result });
     }));
 
-    router.post('/recovery-code/generate', authenticate, requireRole('student'), reauthLimiter, exactRecoveryOrigin, exactJson, asyncHandler(async (req, res) => {
+    router.post('/recovery-code/generate', authenticate, requireRole('student'), recoveryCodeGenerateLimiter, exactRecoveryOrigin, exactJson, asyncHandler(async (req, res) => {
         const body = recoveryCodeBody(req, 'generate');
         const actor = ssoActor(req);
         const result = await recoveryCodeFactory().generate({
@@ -686,7 +689,7 @@ export function createStudentSsoRouter(factory: FlowFactory = defaultFlow, optio
         res.status(201).json({ success: true, data: result });
     }));
 
-    router.post('/recovery-code/activate', authenticate, requireRole('student'), reauthLimiter, exactRecoveryOrigin, exactJson, asyncHandler(async (req, res) => {
+    router.post('/recovery-code/activate', authenticate, requireRole('student'), recoveryCodeActivateLimiter, exactRecoveryOrigin, exactJson, asyncHandler(async (req, res) => {
         const body = recoveryCodeBody(req, 'activate');
         if (!body.pendingCodeId || !body.code) throw new BadRequestError('Recovery-code request is invalid');
         const actor = ssoActor(req);
@@ -699,7 +702,7 @@ export function createStudentSsoRouter(factory: FlowFactory = defaultFlow, optio
         res.json({ success: true, data: result });
     }));
 
-    router.post('/recovery-code/remove', authenticate, requireRole('student'), reauthLimiter, exactRecoveryOrigin, exactJson, asyncHandler(async (req, res) => {
+    router.post('/recovery-code/remove', authenticate, requireRole('student'), recoveryCodeRemoveLimiter, exactRecoveryOrigin, exactJson, asyncHandler(async (req, res) => {
         const body = recoveryCodeBody(req, 'remove');
         if (!body.oldCode) throw new BadRequestError('Recovery-code request is invalid');
         const actor = ssoActor(req);

@@ -308,14 +308,17 @@ test('link binds a new google subject and records the school assertion', async (
                 [result.identity.id, owner.userId],
             );
             assert.equal(assertion.rowCount, 1);
-            const spent = await check.query<{ consumed_at: Date | null; encrypted_observation: string }>(
-                'SELECT consumed_at, encrypted_observation FROM student_auth_link_handoffs WHERE id = $1',
+            const spent = await check.query<{ consumed_at: Date | null; encrypted_observation: string | null; secret_hash: string | null; browser_binding_hash: string | null }>(
+                'SELECT consumed_at, encrypted_observation, secret_hash, browser_binding_hash FROM student_auth_link_handoffs WHERE id = $1',
                 [handoff.handoffId],
             );
             assert.notEqual(spent.rows[0]!.consumed_at, null);
-            // Consuming the handoff scrubs its ciphertext in the same write:
-            // no identity material waits out the tombstone window.
-            assert.equal(spent.rows[0]!.encrypted_observation, 'scrubbed');
+            // Consuming the handoff NULLs its ciphertext and one-use
+            // binding digests in the same write: retention cleanup excludes
+            // consumed handoffs, so nothing waits out the tombstone window.
+            assert.equal(spent.rows[0]!.encrypted_observation, null);
+            assert.equal(spent.rows[0]!.secret_hash, null);
+            assert.equal(spent.rows[0]!.browser_binding_hash, null);
             const audit = await check.query(
                 `SELECT 1 FROM verification_audit_events
                  WHERE user_id = $1 AND event_type = 'student_sso_identity_linked'`,
@@ -325,6 +328,21 @@ test('link binds a new google subject and records the school assertion', async (
         } finally {
             check.release();
         }
+        // A replay cannot prove the scrubbed binding and fails closed
+        // instead of resolving a restart, matching consumed attempts.
+        const replayGrant = await mintGrant(service, owner.userId, owner.sid, PASSWORD);
+        await assert.rejects(
+            service.link({
+                userId: owner.userId,
+                sid: owner.sid,
+                handoffId: handoff.handoffId,
+                handoffSecret: handoff.handoffSecret,
+                browserCookies: cookiesFor(handoff.attemptId, handoff.cookieSecret),
+                grantId: replayGrant.grantId,
+                grantSecret: replayGrant.grantSecret,
+            }),
+            /no longer valid/,
+        );
     });
 });
 

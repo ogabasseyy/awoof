@@ -595,13 +595,17 @@ export class StudentSsoLinkService {
         // The observation is decoded before use on the link and mismatch
         // paths, and expired rows are terminal; in all cases nothing
         // downstream needs the ciphertext, so it is scrubbed in the same
-        // write. A consumed handoff must never retain identity material for
-        // its 7-day tombstone window. The consume-once trigger permits this
-        // because the row is still unconsumed in OLD.
+        // write. The one-use binding digests go with it: retention cleanup
+        // excludes consumed handoffs and the tombstone lives seven days, so
+        // a consumed handoff must never retain secrets or identity material.
+        // The consume-once trigger permits NULLing all three only together
+        // with consumption, matching the signup-complete consume. Replays
+        // then fail closed at the secret check instead of resolving a
+        // restart, matching consumed attempts.
         await tx.query(
             `UPDATE student_auth_link_handoffs
              SET consumed_at = clock_timestamp(), target_user_id = $2, target_sid = $3::uuid,
-                 encrypted_observation = 'scrubbed'
+                 secret_hash = NULL, browser_binding_hash = NULL, encrypted_observation = NULL
              WHERE id = $1 AND consumed_at IS NULL`,
             [handoffId, userId, sid],
         );

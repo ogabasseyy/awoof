@@ -131,8 +131,8 @@ test('passwordless signup creates one passwordless account, mailbox proof, ident
 
 test('signup OTP verification is idempotent for a lost success response', async () => {
     await withPool(async pool => {
-        const key = randomBytes(32).toString('base64url'); let code = '';
-        const service = new StudentSsoSignupService({ pool, attemptKey: key, isEnabled: () => true, isProviderEnabled: () => true, deliverOtp: async (_email, sent) => { code = sent; return { success: true }; } });
+        const key = randomBytes(32).toString('base64url'); let code = ''; let deliveries = 0;
+        const service = new StudentSsoSignupService({ pool, attemptKey: key, isEnabled: () => true, isProviderEnabled: () => true, deliverOtp: async (_email, sent) => { code = sent; deliveries += 1; return { success: true }; } });
         const c = await pool.connect(); let state; try { state = await seed(c, key); } finally { c.release(); }
         const sent = await service.sendCode({ handoffId: state.handoffId, handoffSecret: state.handoffSecret, browserBinding: state.browser });
         const first = await service.verifyCode({ handoffId: state.handoffId, handoffSecret: state.handoffSecret, browserBinding: state.browser, challengeId: sent.challengeId, code });
@@ -146,6 +146,14 @@ test('signup OTP verification is idempotent for a lost success response', async 
             service.verifyCode({ handoffId: state.handoffId, handoffSecret: state.handoffSecret, browserBinding: state.browser, challengeId: randomUUID(), code }),
             /not available/i,
         );
+        // A reload after verification lost the browser challenge: sending
+        // again resumes with the bound challenge instead of tripping the
+        // trigger-immutable binding, and delivers nothing new.
+        const resumed = await service.sendCode({ handoffId: state.handoffId, handoffSecret: state.handoffSecret, browserBinding: state.browser });
+        assert.equal(resumed.challengeId, sent.challengeId);
+        assert.equal(deliveries, 1);
+        const resumedVerify = await service.verifyCode({ handoffId: state.handoffId, handoffSecret: state.handoffSecret, browserBinding: state.browser, challengeId: resumed.challengeId, code });
+        assert.deepEqual(resumedVerify, first);
     });
 });
 

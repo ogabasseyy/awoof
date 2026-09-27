@@ -109,6 +109,8 @@ test('fresh start constrains the identity lookup to Microsoft before selecting t
     const result = await service.start({ userId, sid, purpose: 'recovery_code_generate' });
     assert.ok(result.authorizationUrl.startsWith('https://'));
     assert.ok(calls.some((text) => text.includes("identity.provider = 'microsoft'")));
+    assert.ok(calls.some((text) => text.includes('policy.issuer = identity.issuer')),
+        'a replaced tenant must not select a stale-issuer identity for the fresh proof');
 });
 
 test('fresh start rejects foreign or missing action targets before issuing an attempt', async () => {

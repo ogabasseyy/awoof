@@ -23,6 +23,7 @@ test('an unlinked Microsoft handoff creates a passwordless pending-enrollment ac
     await page.goto('/auth/student/sso/onboarding?mode=signup');
     await expect(page.getByRole('heading', { name: 'Finish setting up Awoof' })).toBeVisible();
     await expect(page.getByText('Enrollment is pending')).toBeVisible();
+    await expect(page.getByRole('timer')).toContainText(/expires in \d+:\d\d/);
     await page.getByRole('button', { name: 'Send confirmation code' }).click();
     await page.getByLabel('Email confirmation code').fill('123456');
     await page.getByRole('button', { name: 'Confirm email' }).click();
@@ -44,6 +45,30 @@ test('an unlinked Microsoft handoff creates a passwordless pending-enrollment ac
     expect(JSON.stringify(requests)).not.toContain('password');
     expect(await page.evaluate((key) => sessionStorage.getItem(key), HANDOFF_KEY)).toBeNull();
     expect(await page.evaluate(() => `${location.href}|${localStorage.getItem('awoof.session.v1') ?? ''}`)).not.toContain('handoff-secret');
+    api.assertNoUnexpectedRequests();
+});
+
+test('an expired setup link shows an explicit restart state instead of usable controls', async ({ page }) => {
+    const requests: string[] = [];
+    const api = await installSyntheticApi(page);
+    await page.route(`${apiOrigin}/api/auth/student/sso/signup/**`, async (route) => {
+        const path = new URL(route.request().url()).pathname;
+        requests.push(path);
+        if (path.endsWith('/context')) return route.fulfill({ json: { success: true, data: { email: 'student@school.example', universityId: '72000000-0000-4000-8000-000000000001', termsVersion: '2026-01', noticeVersion: '2026-01', noticeText: 'Synthetic verification processing notice.', expiresAt: new Date(Date.now() + 3_000).toISOString() } }, headers });
+        return route.fulfill({ status: 409, json: { success: false, error: { message: 'expired' } }, headers });
+    });
+    await page.goto('/auth/student/login');
+    await page.evaluate(({ key, handoffId }) => sessionStorage.setItem(key, JSON.stringify({ handoffId, handoffSecret: 'handoff-secret', expiresAt: new Date(Date.now() + 600_000).toISOString(), returnPath: '/marketplace' })), { key: HANDOFF_KEY, handoffId: HANDOFF_ID });
+    await page.goto('/auth/student/sso/onboarding?mode=signup');
+    await expect(page.getByRole('heading', { name: 'Finish setting up Awoof' })).toBeVisible();
+    // The countdown names the deadline while the link is live, then the
+    // page swaps to a restart state and forgets the spent handoff.
+    await expect(page.getByRole('timer')).toContainText(/expires in \d+:\d\d/);
+    await expect(page.getByText('This setup link expired before setup finished.')).toBeVisible();
+    await expect(page.getByRole('link', { name: 'Restart Microsoft sign-in' })).toHaveAttribute('href', '/auth/student/login');
+    expect(await page.getByRole('button', { name: 'Send confirmation code' }).count()).toBe(0);
+    expect(await page.evaluate((key) => sessionStorage.getItem(key), HANDOFF_KEY)).toBeNull();
+    expect(requests).toEqual(['/api/auth/student/sso/signup/context']);
     api.assertNoUnexpectedRequests();
 });
 

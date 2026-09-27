@@ -58,7 +58,24 @@ export class StudentSsoSignupService {
         return this.transaction(async tx => { const state = await this.load(tx, input); return { email: state.email, universityId: state.universityId, termsVersion: STUDENT_TERMS_VERSION, noticeVersion: VERIFICATION_NOTICE_VERSION, noticeText: VERIFICATION_NOTICE_TEXT, expiresAt: state.handoff.expires_at.toISOString() }; });
     }
     async sendCode(input: { handoffId: unknown; handoffSecret: unknown; browserBinding: unknown }): Promise<{ challengeId: string; expiresAt: string }> {
-        const sent = await this.transaction(async tx => { const state = await this.load(tx, input); const issued = await requestChallenge(tx, { purpose: 'student_sso_signup', subjectKey: state.email, bindings: { email: state.email, name: '', universityId: state.universityId, matricNumber: null, policyVersion: state.handoff.policy_version, noticeVersion: VERIFICATION_NOTICE_VERSION }, expiresAt: state.handoff.expires_at }); if (issued.status !== 'issued') throw new ConflictError('Please wait before requesting another signup code.'); await tx.query('UPDATE student_auth_signup_challenges SET mailbox_challenge_id = $2 WHERE id = $1', [state.signup.id, issued.challengeId]); return { email: state.email, code: issued.code, challengeId: issued.challengeId, expiresAt: issued.expiresAt }; });
+        const sent = await this.transaction(async tx => {
+            const state = await this.load(tx, input);
+            // Resumable transition: after a reload the browser lost its
+            // challenge but the signup may already be mailbox_verified.
+            // Issuing again would try to replace the trigger-immutable
+            // binding, so return the bound challenge instead. The client
+            // re-enters the emailed code and verification replays
+            // idempotently. No new code exists, so nothing is delivered.
+            // Cancelled and expired signups cannot receive codes either:
+            // fail bounded instead of tripping the binding trigger.
+            if (state.signup.status !== 'pending' && state.signup.status !== 'mailbox_verified') throw invalid();
+            if (state.signup.status === 'mailbox_verified') {
+                if (!state.signup.mailbox_challenge_id) throw invalid();
+                return { email: null as string | null, code: null as string | null, challengeId: state.signup.mailbox_challenge_id, expiresAt: state.signup.expires_at };
+            }
+            const issued = await requestChallenge(tx, { purpose: 'student_sso_signup', subjectKey: state.email, bindings: { email: state.email, name: '', universityId: state.universityId, matricNumber: null, policyVersion: state.handoff.policy_version, noticeVersion: VERIFICATION_NOTICE_VERSION }, expiresAt: state.handoff.expires_at }); if (issued.status !== 'issued') throw new ConflictError('Please wait before requesting another signup code.'); await tx.query('UPDATE student_auth_signup_challenges SET mailbox_challenge_id = $2 WHERE id = $1', [state.signup.id, issued.challengeId]); return { email: state.email, code: issued.code, challengeId: issued.challengeId, expiresAt: issued.expiresAt };
+        });
+        if (sent.email === null || sent.code === null) return { challengeId: sent.challengeId, expiresAt: sent.expiresAt.toISOString() };
         try { const result = await this.deps.deliverOtp(sent.email, sent.code, '', sent.expiresAt); if (!result.success) throw new Error('rejected'); } catch { throw new ServiceUnavailableError('We could not deliver a signup code. Please wait before trying again.'); }
         return { challengeId: sent.challengeId, expiresAt: sent.expiresAt.toISOString() };
     }

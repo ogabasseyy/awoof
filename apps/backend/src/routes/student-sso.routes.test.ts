@@ -1036,7 +1036,13 @@ test('identities lists owner identities with no-store and no subject material', 
 
 test('link-confirmation endpoints are independently rate limited', async () => {
     const link = stubLink();
-    await withServer(linkRouter(link, { linkLimiterMax: 1 }), async (baseUrl) => {
+    const recovery = {
+        generate: async () => ({ pendingCodeId: ATTEMPT_ID, code: 'code', expiresAt: new Date(Date.now() + 60_000).toISOString() }),
+        activate: async () => ({ active: true as const }),
+        remove: async () => undefined,
+    };
+    const grant = { grantId: '33333333-3333-4333-8333-333333333333', grantSecret: 'grant-secret' };
+    await withServer(linkRouter(link, { linkLimiterMax: 1, recoveryCodeService: () => recovery as never }), async (baseUrl) => {
         const first = await fetch(`${baseUrl}/reauth`, {
             method: 'POST',
             headers: authHeaders(studentToken(true)),
@@ -1060,6 +1066,17 @@ test('link-confirmation endpoints are independently rate limited', async () => {
             }),
         });
         assert.equal(independent.status, 201);
+        // Each recovery-code mutation has its own bucket: exhausting one
+        // never blocks the others or password reauthentication.
+        const post = (path: string, body: unknown) => fetch(`${baseUrl}${path}`, {
+            method: 'POST', headers: authHeaders(studentToken(true)), body: JSON.stringify(body),
+        });
+        assert.equal((await post('/recovery-code/generate', { reauthGrant: grant })).status, 201);
+        assert.equal((await post('/recovery-code/generate', { reauthGrant: grant })).status, 429);
+        assert.equal((await post('/recovery-code/activate', { reauthGrant: grant, pendingCodeId: ATTEMPT_ID, code: '123456' })).status, 200);
+        assert.equal((await post('/recovery-code/activate', { reauthGrant: grant, pendingCodeId: ATTEMPT_ID, code: '123456' })).status, 429);
+        assert.equal((await post('/recovery-code/remove', { reauthGrant: grant, oldCode: 'old-code' })).status, 204);
+        assert.equal((await post('/recovery-code/remove', { reauthGrant: grant, oldCode: 'old-code' })).status, 429);
     });
 });
 

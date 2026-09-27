@@ -1554,8 +1554,8 @@ test('cleanup scrubs expired ciphertext and deletes only aged transients', async
             'expired pending recovery-code digests must be terminalized on the next cleanup pass');
         assert.equal((result as unknown as { terminalSecretsScrubbed?: number }).terminalSecretsScrubbed, 7,
             'catch-up scrubs already-terminal login, reauthentication, and recovery rows before their expiry');
-        assert.equal((result as unknown as { overdueExpired?: number }).overdueExpired, 1,
-            'monitoring reports the action grant that sat expired past the one-hour retention bound');
+        assert.equal((result as unknown as { overdueExpired?: number }).overdueExpired, 3,
+            'monitoring reports every class that sat expired past the one-hour retention bound: the action grant plus the two aged handoffs');
         assert.equal((result as unknown as { overdueTerminalSecrets?: number }).overdueTerminalSecrets, 6,
             'monitoring reports terminal rows that kept secrets past the one-hour retention bound, including ones this pass repairs');
 

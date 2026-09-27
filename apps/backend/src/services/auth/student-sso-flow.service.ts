@@ -828,13 +828,25 @@ export async function cleanupStudentSsoTransients(client: PoolClient): Promise<S
     // schedule keeps maximum retention below the one-hour bound, so rows
     // still unprocessed more than one hour past expiry (or terminal age)
     // prove scheduler lag even when this pass repairs them; the CLI exits
-    // nonzero on any overdue row.
+    // nonzero on any overdue row. Every transient class terminalized later
+    // in this transaction is counted, mirroring each mutation predicate.
     const overdue = await client.query<{ count: string }>(
         `SELECT (
             (SELECT count(*) FROM student_auth_action_grants
              WHERE expires_at <= clock_timestamp() - interval '1 hour' AND consumed_at IS NULL AND revoked_at IS NULL)
             + (SELECT count(*) FROM student_auth_recovery_codes
                WHERE status = 'pending' AND expires_at <= clock_timestamp() - interval '1 hour')
+            + (SELECT count(*) FROM student_auth_attempts
+               WHERE expires_at <= clock_timestamp() - interval '1 hour' AND status IN ('pending', 'processing', 'ready'))
+            + (SELECT count(*) FROM student_auth_link_handoffs
+               WHERE expires_at <= clock_timestamp() - interval '1 hour' AND consumed_at IS NULL
+                 AND (secret_hash IS NOT NULL OR browser_binding_hash IS NOT NULL OR encrypted_observation IS NOT NULL))
+            + (SELECT count(*) FROM student_auth_signup_challenges
+               WHERE expires_at <= clock_timestamp() - interval '1 hour' AND status IN ('pending', 'mailbox_verified'))
+            + (SELECT count(*) FROM student_auth_reauth_attempts
+               WHERE expires_at <= clock_timestamp() - interval '1 hour' AND status IN ('pending', 'ready'))
+            + (SELECT count(*) FROM student_auth_recovery_attempts
+               WHERE expires_at <= clock_timestamp() - interval '1 hour' AND status IN ('pending', 'verified'))
         )::text AS count`,
     );
 
