@@ -400,8 +400,11 @@ export function createStudentSsoRouter(factory: FlowFactory = defaultFlow, optio
         // Handoff IDs are distinct from callback-attempt IDs. Resolve only the
         // opaque attempt id, then pass its HttpOnly cookie value to the service
         // for the authoritative hash comparison under its transaction lock.
+        // The attempt id is also retained for post-commit cookie cleanup, so
+        // no fallible lookup runs after the account already exists.
         const row = await poolForRequest().query<{ attempt_id: string }>('SELECT attempt_id FROM student_auth_link_handoffs WHERE id = $1', [body.handoffId]);
-        return { ...body, browserBinding: parseBrowserCookies(req).find(cookie => cookie.name === studentSsoCookieName(row.rows[0]?.attempt_id ?? 'missing'))?.value ?? '' };
+        const attemptId = row.rows[0]?.attempt_id ?? null;
+        return { ...body, browserBinding: parseBrowserCookies(req).find(cookie => cookie.name === studentSsoCookieName(attemptId ?? 'missing'))?.value ?? '', attemptId };
     };
 
     const assertIssuanceEnabled = (): void => {
@@ -508,9 +511,18 @@ export function createStudentSsoRouter(factory: FlowFactory = defaultFlow, optio
         // dispatches only after its opaque state resolves to a reauth row.
         // It never reaches the ordinary login flow or issues a session.
         if (provider === 'microsoft') {
-            const reauth = reauthFactory();
-            const reauthCookie = await reauth.callbackCookieNameForState(callbackUrl.searchParams.get('state'));
-            if (reauthCookie) {
+            // A full rollback nulls the attempt key, so reauth factory
+            // creation itself is unavailable; fall through to the ordinary
+            // flow so in-flight login callbacks still reach the bounded
+            // outage redirect instead of a bare 503.
+            let reauth: StudentReauthService | null = null;
+            try {
+                reauth = reauthFactory();
+            } catch (error) {
+                if (!(error instanceof ServiceUnavailableError)) throw error;
+            }
+            const reauthCookie = reauth ? await reauth.callbackCookieNameForState(callbackUrl.searchParams.get('state')) : null;
+            if (reauth && reauthCookie) {
                 try {
                     const result = await reauth.callback({
                         callbackUrl,
@@ -527,10 +539,15 @@ export function createStudentSsoRouter(factory: FlowFactory = defaultFlow, optio
                     // terminal failures. Outages (5xx) still surface as JSON.
                     if (!(error instanceof AppError) || error.statusCode < 400 || error.statusCode >= 500) throw error;
                     const attemptId = await reauth.attemptIdForState(callbackUrl.searchParams.get('state'));
-                    const failureCompletion = config.studentSso.completionUrl
+                    const failureBase = config.studentSso.completionUrl
                         ?? (completionOrigin ? new URL(STUDENT_SSO_COMPLETION_PATH, completionOrigin) : undefined);
-                    if (!attemptId || !failureCompletion) throw error;
+                    if (!attemptId || !failureBase) throw error;
                     clearSsoCookie(res, reauthCookie);
+                    // The configured completion URL is process-wide shared
+                    // state: clone before appending, or the stale reauth
+                    // parameter would hijack every later ordinary completion
+                    // in this process.
+                    const failureCompletion = new URL(failureBase.href);
                     failureCompletion.searchParams.set('reauth', attemptId);
                     res.redirect(303, failureCompletion.href);
                 }
@@ -619,7 +636,7 @@ export function createStudentSsoRouter(factory: FlowFactory = defaultFlow, optio
         const body = req.body as Record<string, unknown>; const handoff = signupHandoffBody(req);
         const allowed = new Set(['handoffId', 'handoffSecret', 'fullName', 'ageAttested', 'termsAccepted', 'termsVersion', 'verificationConsent', 'noticeVersion']);
         if (Object.keys(body).some(key => !allowed.has(key)) || Object.keys(body).length !== 8) throw new BadRequestError('Passwordless signup request is invalid');
-        const bound = await signupBinding(req, handoff); const result = await signupFactory().complete({ ...bound, fullName: body.fullName, ageAttested: body.ageAttested, termsAccepted: body.termsAccepted, termsVersion: body.termsVersion, verificationConsent: body.verificationConsent, noticeVersion: body.noticeVersion }); responseHeaders(res); const linked = await poolForRequest().query<{ attempt_id: string }>('SELECT attempt_id FROM student_auth_link_handoffs WHERE id = $1', [handoff.handoffId]); clearSsoCookie(res, studentSsoCookieName(linked.rows[0]?.attempt_id ?? handoff.handoffId)); res.status(201).json({ success: true, data: result });
+        const bound = await signupBinding(req, handoff); const result = await signupFactory().complete({ ...bound, fullName: body.fullName, ageAttested: body.ageAttested, termsAccepted: body.termsAccepted, termsVersion: body.termsVersion, verificationConsent: body.verificationConsent, noticeVersion: body.noticeVersion }); responseHeaders(res); clearSsoCookie(res, studentSsoCookieName(bound.attemptId ?? handoff.handoffId)); res.status(201).json({ success: true, data: result });
     }));
 
     router.get('/signup/availability', asyncHandler(async (req, res) => {

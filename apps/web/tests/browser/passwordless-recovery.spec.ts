@@ -6,6 +6,7 @@ const headers = { 'access-control-allow-origin': appOrigin, 'access-control-allo
 test('security setup keeps the generated recovery code out of URL and web storage and requires a second fresh proof', async ({ page }) => {
     const api = await installSyntheticApi(page);
     await page.route(`${apiOrigin}/api/auth/student/sso/recovery-code`, route => route.fulfill({ json: { success: true, data: { status: 'unconfigured', generation: null } }, headers }));
+    await page.route(`${apiOrigin}/api/auth/student/sso/identities`, route => route.fulfill({ headers, json: { success: true, data: { identities: [] } } }));
     await page.goto('/auth/student/login');
     await seedSession(page, 'student');
     await page.goto('/student/security');
@@ -115,6 +116,7 @@ test('password confirmation drives generation then activation without a provider
     await page.route(`${apiOrigin}/api/auth/student/sso/reauth`, route => { bodies.push(JSON.parse(route.request().postData() ?? '{}')); return route.fulfill({ status: 201, headers, json: { success: true, data: { grantId: '83000000-0000-4000-8000-000000000001', grantSecret: 'pw-grant', expiresAt: new Date(Date.now() + 60_000).toISOString() } } }); });
     await page.route(`${apiOrigin}/api/auth/student/sso/recovery-code/generate`, route => { bodies.push(JSON.parse(route.request().postData() ?? '{}')); return route.fulfill({ status: 201, headers, json: { success: true, data: { pendingCodeId: pendingId, code: 'password-flow-code' } } }); });
     await page.route(`${apiOrigin}/api/auth/student/sso/recovery-code/activate`, route => { bodies.push(JSON.parse(route.request().postData() ?? '{}')); return route.fulfill({ headers, json: { success: true, data: { active: true } } }); });
+    await page.route(`${apiOrigin}/api/auth/student/sso/identities`, route => route.fulfill({ headers, json: { success: true, data: { identities: [] } } }));
     await page.goto('/auth/student/login'); await seedSession(page, 'student');
     await page.goto('/student/security');
     await page.getByRole('button', { name: 'Use your password instead' }).click();
@@ -195,6 +197,7 @@ test('server callback context does not require a tab intent and never persists g
 test('lost generation or activation responses recover only through server status and never reveal plaintext', async ({ page }) => {
     const api = await installSyntheticApi(page);
     await page.route(`${apiOrigin}/api/auth/student/sso/recovery-code`, route => route.fulfill({ headers, json: { success: true, data: { status: 'pending', generation: 1, pendingCodeId: '7e000000-0000-4000-8000-000000000001' } } }));
+    await page.route(`${apiOrigin}/api/auth/student/sso/identities`, route => route.fulfill({ headers, json: { success: true, data: { identities: [] } } }));
     await page.goto('/auth/student/login'); await seedSession(page, 'student');
     await page.goto('/student/security');
     await expect(page.getByText('A pending code exists')).toBeVisible();
@@ -220,5 +223,66 @@ test('a dropped generation response resumes only as server pending state without
     await page.route(`${apiOrigin}/api/auth/student/sso/reauth/finish`, route => route.fulfill({ status: 201, headers, json: { success: true, data: { grantId: '84000000-0000-4000-8000-000000000001', grantSecret: 'grant', expiresAt: new Date(Date.now() + 60_000).toISOString(), purpose: 'recovery_code_generate', pendingCodeId: null, targetIdentityId: null, activeCodeGeneration: null } } }));
     await page.route(`${apiOrigin}/api/auth/student/sso/recovery-code/generate`, route => { serverPending = true; markServerPending(); return route.abort('failed'); });
     await page.route(`${apiOrigin}/api/auth/student/sso/recovery-code`, route => route.fulfill({ headers, json: { success: true, data: { status: serverPending ? 'pending' : 'unconfigured', generation: 1, pendingCodeId: serverPending ? '85000000-0000-4000-8000-000000000001' : null } } }));
+    await page.route(`${apiOrigin}/api/auth/student/sso/identities`, route => route.fulfill({ headers, json: { success: true, data: { identities: [] } } }));
     await page.goto('/auth/student/login'); await seedSession(page, 'student'); await page.goto('/auth/student/sso/complete?reauth=86000000-0000-4000-8000-000000000001'); await expect(page.getByRole('heading', { name: 'Security confirmation unavailable' })).toBeVisible(); await serverWrite; await page.goto('/student/security'); await expect(page.getByText('A pending code exists')).toBeVisible(); await expect(page.getByRole('button', { name: 'Cancel pending code' })).toBeVisible(); expect(await page.content()).not.toContain('new-code'); api.assertNoUnexpectedRequests();
+});
+
+test('account security lists school sign-ins and removes one with password confirmation', async ({ page }) => {
+    const api = await installSyntheticApi(page);
+    const targetId = '8d000000-0000-4000-8000-000000000001';
+    const grantId = '8e000000-0000-4000-8000-000000000001';
+    const bodies: unknown[] = [];
+    let identitiesCalls = 0;
+    await page.route(`${apiOrigin}/api/auth/student/sso/recovery-code`, route => route.fulfill({ headers, json: { success: true, data: { status: 'unconfigured', generation: null, pendingCodeId: null } } }));
+    await page.route(`${apiOrigin}/api/auth/student/sso/identities`, route => { identitiesCalls++; return route.fulfill({ headers, json: { success: true, data: { identities: identitiesCalls === 1 ? [{ id: targetId, provider: 'microsoft', universityName: 'Fixture University', linkedAt: new Date().toISOString() }] : [] } } }); });
+    await page.route(`${apiOrigin}/api/auth/student/sso/reauth`, route => { bodies.push(JSON.parse(route.request().postData() ?? '{}')); return route.fulfill({ status: 201, headers, json: { success: true, data: { grantId, grantSecret: 'unlink-pw-grant', expiresAt: new Date(Date.now() + 60_000).toISOString() } } }); });
+    await page.route(`${apiOrigin}/api/auth/student/sso/identities/${targetId}/unlink`, route => { bodies.push(JSON.parse(route.request().postData() ?? '{}')); return route.fulfill({ headers, json: { success: true, data: { unlinked: true, sessionRevoked: false } } }); });
+    await page.goto('/auth/student/login'); await seedSession(page, 'student');
+    await page.goto('/student/security');
+    await expect(page.getByText('Microsoft · Fixture University')).toBeVisible();
+    await page.getByRole('button', { name: 'Remove', exact: true }).click();
+    // The school sign-in path starts a target-bound fresh proof; the
+    // password path completes inline below.
+    await expect(page.getByRole('button', { name: 'Remove with school sign-in' })).toBeVisible();
+    await page.getByLabel('Current password').fill('Correct!horse-9-battery');
+    await page.getByRole('button', { name: 'Remove with password' }).click();
+    await expect(page.getByText('No school sign-ins are linked.')).toBeVisible();
+    expect(bodies).toEqual([
+        { password: 'Correct!horse-9-battery', purpose: 'unlink', targetIdentityId: targetId },
+        { reauthGrant: { grantId, grantSecret: 'unlink-pw-grant' } },
+    ]);
+    api.assertNoUnexpectedRequests();
+});
+
+test('account security surfaces the last-method guard instead of removing', async ({ page }) => {
+    const api = await installSyntheticApi(page);
+    const targetId = '8f000000-0000-4000-8000-000000000001';
+    await page.route(`${apiOrigin}/api/auth/student/sso/recovery-code`, route => route.fulfill({ headers, json: { success: true, data: { status: 'unconfigured', generation: null, pendingCodeId: null } } }));
+    await page.route(`${apiOrigin}/api/auth/student/sso/identities`, route => route.fulfill({ headers, json: { success: true, data: { identities: [{ id: targetId, provider: 'google', universityName: 'Fixture University', linkedAt: new Date().toISOString() }] } } }));
+    await page.route(`${apiOrigin}/api/auth/student/sso/reauth`, route => route.fulfill({ status: 201, headers, json: { success: true, data: { grantId: '90000000-0000-4000-8000-000000000001', grantSecret: 'unlink-pw-grant', expiresAt: new Date(Date.now() + 60_000).toISOString() } } }));
+    await page.route(`${apiOrigin}/api/auth/student/sso/identities/${targetId}/unlink`, route => route.fulfill({ status: 409, headers, json: { success: false, error: { message: 'last', code: 'SSO_LAST_LOGIN_METHOD', statusCode: 409 } } }));
+    await page.goto('/auth/student/login'); await seedSession(page, 'student');
+    await page.goto('/student/security');
+    await expect(page.getByText('Google · Fixture University')).toBeVisible();
+    await page.getByRole('button', { name: 'Remove', exact: true }).click();
+    await page.getByLabel('Current password').fill('Correct!horse-9-battery');
+    await page.getByRole('button', { name: 'Remove with password' }).click();
+    await expect(page.getByText('This is the last sign-in method. Link another school sign-in first.')).toBeVisible();
+    await expect(page.getByText('Google · Fixture University')).toBeVisible();
+    api.assertNoUnexpectedRequests();
+});
+
+test('account security links a new school sign-in through sign-out and sign-in', async ({ page }) => {
+    const api = await installSyntheticApi(page);
+    await page.route(`${apiOrigin}/api/auth/student/sso/recovery-code`, route => route.fulfill({ headers, json: { success: true, data: { status: 'unconfigured', generation: null, pendingCodeId: null } } }));
+    await page.route(`${apiOrigin}/api/auth/student/sso/identities`, route => route.fulfill({ headers, json: { success: true, data: { identities: [] } } }));
+    await page.goto('/auth/student/login'); await seedSession(page, 'student');
+    await page.goto('/student/security');
+    await expect(page.getByText('No school sign-ins are linked.')).toBeVisible();
+    // Linking completes through provider sign-in while signed out, so the
+    // entry point revokes this session before returning to sign-in.
+    await page.getByRole('button', { name: 'Sign out and link a school sign-in' }).click();
+    await expect.poll(() => api.logoutCalls).toBe(1);
+    await expect(page).toHaveURL(/\/auth\/student\/login$/);
+    api.assertNoUnexpectedRequests();
 });

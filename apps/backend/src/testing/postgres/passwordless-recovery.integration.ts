@@ -16,6 +16,9 @@ async function seedStudent(client: PoolClient, sid = SID): Promise<string> {
          VALUES ($1, 'student', $2::uuid) RETURNING id`,
         [`recovery-${suffix}@example.invalid`, sid],
     );
+    // Real student accounts always carry a profile; recovery-code
+    // consumption rechecks its active status at the action commit.
+    await client.query(`INSERT INTO students (user_id, name, status) VALUES ($1, 'Recovery student', 'active')`, [user.rows[0]!.id]);
     return user.rows[0]!.id;
 }
 
@@ -564,6 +567,58 @@ test('pending codes cannot recover and activation leaves only a digest at rest',
             /not valid|not available/i,
             'a response-loss retry must not return plaintext or reactivate a consumed grant',
         );
+    } finally {
+        client.release();
+        await pool.end();
+    }
+});
+
+test('suspension after grant issuance blocks recovery-code enrollment and activation', async () => {
+    const pool = createTestPool();
+    const client = await pool.connect();
+    try {
+        const userId = await seedStudent(client);
+        const service = new StudentRecoveryCodeService({ pool, codeKey: 'test-recovery-code-key' });
+        const generated = await grant(client, { userId, purpose: 'recovery_code_generate' });
+        // Suspend after the five-minute proof grant is issued: both
+        // proof-issuance paths required an active student context, so
+        // consumption must recheck instead of enrolling a credential.
+        await client.query("UPDATE students SET status = 'suspended' WHERE user_id = $1", [userId]);
+        await assert.rejects(
+            () => service.generate({ userId, sid: SID, grantId: generated.grantId, secret: generated.grantSecret }),
+            /not available/i,
+            'a grant issued before suspension must not enroll a code after it',
+        );
+        assert.deepEqual(await service.status({ userId }), { status: 'unconfigured', generation: null, pendingCodeId: null });
+    } finally {
+        client.release();
+        await pool.end();
+    }
+});
+
+test('suspension after code issuance blocks pending activation', async () => {
+    const pool = createTestPool();
+    const client = await pool.connect();
+    try {
+        const userId = await seedStudent(client);
+        const service = new StudentRecoveryCodeService({ pool, codeKey: 'test-recovery-code-key' });
+        const generated = await grant(client, { userId, purpose: 'recovery_code_generate' });
+        const pending = await service.generate({ userId, sid: SID, grantId: generated.grantId, secret: generated.grantSecret });
+        const activation = await grant(client, { userId, purpose: 'recovery_code_activate', pendingCodeId: pending.pendingCodeId });
+        await client.query("UPDATE students SET status = 'suspended' WHERE user_id = $1", [userId]);
+        await assert.rejects(
+            () => service.activate({
+                userId, sid: SID, grantId: activation.grantId, secret: activation.grantSecret,
+                pendingCodeId: pending.pendingCodeId, code: pending.code,
+            }),
+            /not available/i,
+            'a grant issued before suspension must not activate a code after it',
+        );
+        assert.equal((await service.status({ userId })).status, 'pending');
+        // The shared suite asserts exact cleanup counts: remove the live
+        // pending row this test leaves behind, after its referencing grant.
+        await client.query('DELETE FROM student_auth_action_grants WHERE id = $1', [activation.grantId]);
+        await client.query('DELETE FROM student_auth_recovery_codes WHERE id = $1', [pending.pendingCodeId]);
     } finally {
         client.release();
         await pool.end();

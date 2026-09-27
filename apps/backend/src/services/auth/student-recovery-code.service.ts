@@ -252,6 +252,14 @@ export class StudentRecoveryCodeService {
         );
         const account = result.rows[0];
         if (!account || account.deleted_at !== null || account.active_session_id !== sid) throw unavailable();
+        // A five-minute grant outlives suspension: both proof-issuance paths
+        // required an active student context, so recheck the locked profile
+        // at consumption or a suspended student could still enroll, activate,
+        // or remove a credential. Lock order follows users → students.
+        const student = await tx.query<{ status: string }>(
+            'SELECT status FROM students WHERE user_id = $1 FOR UPDATE', [userId],
+        );
+        if (student.rows[0]?.status !== 'active') throw unavailable();
         return account;
     }
 

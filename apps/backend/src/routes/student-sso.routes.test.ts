@@ -150,6 +150,36 @@ test('passwordless signup context and send-code reject extra JSON fields before 
     assert.equal(invoked, 0);
 });
 
+test('signup completion resolves its cookie before committing the account', async () => {
+    const completeBody = { handoffId: ATTEMPT_ID, handoffSecret: 'secret', fullName: 'Stu Dent', ageAttested: true, termsAccepted: true, termsVersion: '2026-01', verificationConsent: true, noticeVersion: '2026-01' };
+    const post = (baseUrl: string) => fetch(`${baseUrl}/signup/complete`, {
+        method: 'POST', headers: { 'content-type': 'application/json', origin: COMPLETION_ORIGIN }, body: JSON.stringify(completeBody),
+    });
+    const completed = { user: { id: ATTEMPT_ID, email: 's@x.invalid', role: 'student' }, tokens: { accessToken: 'a', refreshToken: 'r' } };
+    // Success clears the attempt cookie resolved before the commit.
+    await withServer(routerWith(stubFlow(), {
+        signupService: () => ({ complete: async () => completed } as never),
+        pool: { query: async () => ({ rows: [{ attempt_id: ATTEMPT_ID }], rowCount: 1 }) } as never,
+    }), async (baseUrl) => {
+        const response = await post(baseUrl);
+        assert.equal(response.status, 201);
+        const [setCookie] = parseSetCookies(response);
+        assert.ok(setCookie);
+        assert.match(setCookie, new RegExp(`^${COOKIE_NAME}=;`));
+    });
+    // A lookup failure surfaces before the service commits, so it can
+    // never mask an already-created account as a 500 with a dead retry.
+    let commits = 0;
+    await withServer(routerWith(stubFlow(), {
+        signupService: () => ({ complete: async () => { commits++; return completed; } } as never),
+        pool: { query: async () => { throw new Error('database unavailable'); } } as never,
+    }), async (baseUrl) => {
+        const response = await post(baseUrl);
+        assert.equal(response.status, 500);
+        assert.equal(commits, 0);
+    });
+});
+
 test('Microsoft fresh-reauth routes preserve the browser binding and never use the ordinary login flow', async () => {
     const reauthAttemptId = '66666666-6666-4666-8666-666666666666';
     const seen: string[] = [];
@@ -208,6 +238,66 @@ test('failed Microsoft fresh-reauth callbacks redirect to the bounded completion
         assert.equal(callback.status, 303);
         assert.equal(callback.headers.get('location'), `${COMPLETION_ORIGIN}/auth/student/sso/complete?reauth=${reauthAttemptId}`);
         assert.match(parseSetCookies(callback)[0]!, new RegExp(`awoof_reauth_${reauthAttemptId}=;`));
+    });
+});
+
+test('failed reauth callbacks never pollute the shared completion URL', async () => {
+    const { config } = await import('../config/env.js');
+    const previous = config.studentSso.completionUrl;
+    const shared = new URL(`${COMPLETION_ORIGIN}/auth/student/sso/complete`);
+    config.studentSso.completionUrl = shared;
+    try {
+        const reauthAttemptId = '68666666-6666-4666-8666-666666666666';
+        const reauth = {
+            callbackCookieNameForState: async (state: string | null) => state === 'polluting-state' ? `awoof_reauth_${reauthAttemptId}` : null,
+            attemptIdForState: async (state: string | null) => state === 'polluting-state' ? reauthAttemptId : null,
+            callback: async () => { throw new ConflictError('Student SSO reauthentication is no longer valid'); },
+        };
+        await withServer(routerWith(stubFlow(), { reauthService: () => reauth as never }), async (baseUrl) => {
+            const callback = await fetch(`${baseUrl}/microsoft/callback?state=polluting-state&code=code`, {
+                redirect: 'manual', headers: { Cookie: `awoof_reauth_${reauthAttemptId}=reauth-browser` },
+            });
+            assert.equal(callback.status, 303);
+            assert.equal(callback.headers.get('location'), `${COMPLETION_ORIGIN}/auth/student/sso/complete?reauth=${reauthAttemptId}`);
+        });
+        // The process-wide configured URL must not retain the attempt:
+        // later ordinary completions clone it and would otherwise inherit
+        // a stale reauth parameter that hijacks login completion.
+        assert.equal(shared.searchParams.has('reauth'), false);
+    } finally {
+        config.studentSso.completionUrl = previous;
+    }
+});
+
+test('Microsoft login callbacks reach the outage redirect when reauth is unavailable', async () => {
+    // Full rollback nulls the attempt key, so reauth factory creation
+    // itself throws; in-flight login callbacks must still land on the
+    // bounded completion page instead of a bare 503.
+    const outage = createStudentSsoRouter(
+        () => { throw new ServiceUnavailableError('Student SSO is unavailable'); },
+        {
+            completionOrigin: COMPLETION_ORIGIN,
+            isIssuanceEnabled: () => true,
+            reauthService: () => { throw new ServiceUnavailableError('Student SSO is unavailable'); },
+            pool: { query: async () => ({ rows: [{ id: ATTEMPT_ID }], rowCount: 1 }) } as never,
+        },
+    );
+    await withServer(outage, async (baseUrl) => {
+        const response = await fetch(`${baseUrl}/microsoft/callback?state=opaque-state`, { redirect: 'manual' });
+        assert.equal(response.status, 303);
+        assert.equal(
+            response.headers.get('location'),
+            `${COMPLETION_ORIGIN}/auth/student/sso/complete?attempt=${ATTEMPT_ID}&outcome=connection_not_completed`,
+        );
+        const [setCookie] = parseSetCookies(response);
+        assert.ok(setCookie);
+        assert.match(setCookie, new RegExp(`^${COOKIE_NAME}=;`));
+    });
+    // Only unavailability falls through: operational reauth failures
+    // still surface instead of being mistaken for an outage.
+    await withServer(routerWith(stubFlow(), { reauthService: () => { throw new ConflictError('nope'); } }), async (baseUrl) => {
+        const response = await fetch(`${baseUrl}/microsoft/callback?state=opaque-state`, { redirect: 'manual' });
+        assert.equal(response.status, 409);
     });
 });
 

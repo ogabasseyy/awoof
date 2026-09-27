@@ -75,6 +75,7 @@ test('an expired setup link shows an explicit restart state instead of usable co
 test('passwordless-session reload keeps security setup separate from enrollment benefits', async ({ page }) => {
     const api = await installSyntheticApi(page);
     await page.route(`${apiOrigin}/api/auth/student/sso/recovery-code`, route => route.fulfill({ headers: { 'access-control-allow-origin': appOrigin, 'access-control-allow-credentials': 'true' }, json: { success: true, data: { status: 'unconfigured', generation: null, pendingCodeId: null } } }));
+    await page.route(`${apiOrigin}/api/auth/student/sso/identities`, route => route.fulfill({ headers: { 'access-control-allow-origin': appOrigin, 'access-control-allow-credentials': 'true' }, json: { success: true, data: { identities: [] } } }));
     await page.goto('/auth/student/login');
     await page.evaluate(() => localStorage.setItem('awoof.session.v1', JSON.stringify({ v: 1, state: 'active', sessionId: 'signup-session', accessToken: 'signup-access', refreshToken: 'signup-refresh' })));
     await page.goto('/student/security'); await page.reload();
