@@ -1620,8 +1620,8 @@ test('cleanup scrubs expired ciphertext and deletes only aged transients', async
             );
             assert.deepEqual(scrubbedActionGrant.rows[0], { secret_hash: 'scrubbed', revoked_at: scrubbedActionGrant.rows[0]!.revoked_at });
             assert.ok(scrubbedActionGrant.rows[0]!.revoked_at);
-            const recoveryCodes = await check.query<{ id: string; status: string; code_digest: string | null; expires_at: Date | null }>(
-                'SELECT id, status, code_digest, expires_at FROM student_auth_recovery_codes WHERE id = ANY($1::uuid[]) ORDER BY id',
+            const recoveryCodes = await check.query<{ id: string; status: string; code_digest: string | null; expires_at: Date | null; pending_sid: string | null; pending_credential_generation: string | null; pending_proof_identity_id: string | null }>(
+                'SELECT id, status, code_digest, expires_at, pending_sid, pending_credential_generation, pending_proof_identity_id FROM student_auth_recovery_codes WHERE id = ANY($1::uuid[]) ORDER BY id',
                 [[activeRecoveryCode, expiredRecoveryCode]],
             );
             const active = recoveryCodes.rows.find(row => row.id === activeRecoveryCode);
@@ -1632,6 +1632,9 @@ test('cleanup scrubs expired ciphertext and deletes only aged transients', async
             assert.deepEqual(expired && { status: expired.status, digest: expired.code_digest, expiresAt: expired.expires_at }, {
                 status: 'revoked', digest: null, expiresAt: null,
             });
+            assert.deepEqual(expired && { sid: expired.pending_sid, generation: expired.pending_credential_generation, proof: expired.pending_proof_identity_id }, {
+                sid: null, generation: null, proof: null,
+            }, 'expired pending codes lose their activation bindings on terminalization');
             const tombstones = await check.query<{ id: string }>(
                 'SELECT id FROM student_auth_recovery_codes WHERE id = ANY($1::uuid[])',
                 [[referencedCodeTombstone, unreferencedCodeTombstone]],

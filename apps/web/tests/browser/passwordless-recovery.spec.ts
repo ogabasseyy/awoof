@@ -201,6 +201,40 @@ test('fresh unlink proof surfaces the last-method guard instead of failing', asy
     api.assertNoUnexpectedRequests();
 });
 
+test('ambiguous fresh-proof link failure retains the handoff for retry', async ({ page }) => {
+    const api = await installSyntheticApi(page);
+    const handoffId = '61000000-0000-4000-8000-000000000001';
+    await page.route(`${apiOrigin}/api/auth/student/sso/reauth/finish`, route => route.fulfill({ status: 201, headers, json: { success: true, data: { grantId: '62000000-0000-4000-8000-000000000001', grantSecret: 'link-grant', expiresAt: new Date(Date.now() + 60_000).toISOString(), purpose: 'link', pendingCodeId: null, targetIdentityId: null, activeCodeGeneration: null } } }));
+    await page.route(`${apiOrigin}/api/auth/student/sso/link`, route => route.fulfill({ status: 500, headers, json: { success: false, error: { message: 'Link is temporarily unavailable', code: 'INTERNAL', statusCode: 500 } } }));
+    await page.goto('/auth/student/login'); await seedSession(page, 'student');
+    await page.evaluate(({ key, value }) => sessionStorage.setItem(key, JSON.stringify(value)), {
+        key: 'awoof.sso.handoff.v1.tab',
+        value: { handoffId, handoffSecret: 'synthetic-handoff-secret', expiresAt: new Date(Date.now() + 600_000).toISOString(), returnPath: '/marketplace' },
+    });
+    await page.goto('/auth/student/sso/complete?reauth=63000000-0000-4000-8000-000000000001');
+    // The transient failure leaves no terminal outcome, so the tab keeps
+    // its only copy of the live handoff for a retry with a fresh grant.
+    await expect(page.getByRole('heading', { name: 'Security confirmation unavailable' })).toBeVisible();
+    expect(await page.evaluate((key) => sessionStorage.getItem(key), 'awoof.sso.handoff.v1.tab')).toContain(handoffId);
+    api.assertNoUnexpectedRequests();
+});
+
+test('terminal fresh-proof link mismatch spends the handoff and restarts', async ({ page }) => {
+    const api = await installSyntheticApi(page);
+    const handoffId = '64000000-0000-4000-8000-000000000001';
+    await page.route(`${apiOrigin}/api/auth/student/sso/reauth/finish`, route => route.fulfill({ status: 201, headers, json: { success: true, data: { grantId: '65000000-0000-4000-8000-000000000001', grantSecret: 'link-grant', expiresAt: new Date(Date.now() + 60_000).toISOString(), purpose: 'link', pendingCodeId: null, targetIdentityId: null, activeCodeGeneration: null } } }));
+    await page.route(`${apiOrigin}/api/auth/student/sso/link`, route => route.fulfill({ status: 409, headers, json: { success: false, error: { message: 'Mismatch.', code: 'SSO_LINK_MISMATCH', statusCode: 409 } } }));
+    await page.goto('/auth/student/login'); await seedSession(page, 'student');
+    await page.evaluate(({ key, value }) => sessionStorage.setItem(key, JSON.stringify(value)), {
+        key: 'awoof.sso.handoff.v1.tab',
+        value: { handoffId, handoffSecret: 'synthetic-handoff-secret', expiresAt: new Date(Date.now() + 600_000).toISOString(), returnPath: '/marketplace' },
+    });
+    await page.goto('/auth/student/sso/complete?reauth=66000000-0000-4000-8000-000000000001');
+    await expect(page.getByRole('heading', { name: 'School sign-in link unavailable' })).toBeVisible();
+    expect(await page.evaluate((key) => sessionStorage.getItem(key), 'awoof.sso.handoff.v1.tab')).toBeNull();
+    api.assertNoUnexpectedRequests();
+});
+
 test('expired fresh callback and lost generation response leave no code active in the browser', async ({ page }) => {
     const api = await installSyntheticApi(page);
     await page.route(`${apiOrigin}/api/auth/student/sso/reauth/finish`, route => route.fulfill({ status: 409, headers, json: { success: false, error: { code: 'SSO_RESTART_REQUIRED' } } }));

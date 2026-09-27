@@ -949,6 +949,34 @@ test('proof-backed recovery operations revalidate provider authority at action t
     }
 });
 
+test('proof-backed recovery operations reject proofs after their university is deactivated', async () => {
+    const pool = createTestPool();
+    const client = await pool.connect();
+    try {
+        const userId = await seedStudent(client);
+        const proofIdentityId = await seedProviderProof(client, userId, { policy: true });
+        const live = new StudentRecoveryCodeService({ pool, codeKey: 'test-recovery-code-key', isProviderEnabled: () => true });
+        const universityId = (await client.query<{ university_id: string }>(
+            'SELECT university_id FROM student_auth_identities WHERE id = $1', [proofIdentityId],
+        )).rows[0]!.university_id;
+        // The grant is minted while authority is live; the university is
+        // deactivated before consumption, with the policy row untouched.
+        const proof = await grant(client, { userId, purpose: 'recovery_code_generate', proofIdentityId });
+        await client.query('UPDATE universities SET is_active = false WHERE id = $1', [universityId]);
+        await assert.rejects(
+            () => live.generate({ userId, sid: SID, grantId: proof.grantId, secret: proof.grantSecret }),
+            (error: unknown) => (error as { code?: string }).code === 'CONFLICT',
+        );
+        // Password-backed grants never consult the university gate.
+        const passwordGrant = await grant(client, { userId, purpose: 'recovery_code_generate' });
+        const pending = await live.generate({ userId, sid: SID, grantId: passwordGrant.grantId, secret: passwordGrant.grantSecret });
+        assert.ok(pending.pendingCodeId);
+    } finally {
+        client.release();
+        await pool.end();
+    }
+});
+
 test('credential-free activation, replacement, and removal notices run after commit', async () => {
     const pool = createTestPool();
     const client = await pool.connect();
@@ -1001,9 +1029,14 @@ test('only the owner current session can cancel its pending code and active code
         const activeId = (await client.query<{ id: string }>("SELECT id FROM student_auth_recovery_codes WHERE user_id=$1 AND status='active'", [userId])).rows[0]!.id;
         await assert.rejects(service.cancel({ userId, sid: SID, pendingCodeId: activeId }));
         await service.cancel({ userId, sid: SID, pendingCodeId: pending.pendingCodeId });
-        const rows = await client.query<{ status: string; code_digest: string | null }>("SELECT status, code_digest FROM student_auth_recovery_codes WHERE user_id=$1 ORDER BY generation", [userId]);
+        const rows = await client.query<{ status: string; code_digest: string | null; pending_sid: string | null; pending_credential_generation: string | null; pending_proof_identity_id: string | null }>("SELECT status, code_digest, pending_sid, pending_credential_generation, pending_proof_identity_id FROM student_auth_recovery_codes WHERE user_id=$1 ORDER BY generation", [userId]);
         assert.deepEqual(rows.rows.map(row => row.status), ['active', 'revoked']);
         assert.notEqual(rows.rows[0]!.code_digest, null); assert.equal(rows.rows[1]!.code_digest, null);
+        assert.deepEqual(
+            { sid: rows.rows[1]!.pending_sid, generation: rows.rows[1]!.pending_credential_generation, proof: rows.rows[1]!.pending_proof_identity_id },
+            { sid: null, generation: null, proof: null },
+            'cancelled pending codes lose their activation bindings with the digest',
+        );
     } finally { client.release(); await pool.end(); }
 });
 
@@ -1033,9 +1066,12 @@ test('a simulated recovery transaction serializes against replacement generation
                 // Task 5 must perform this in its recovery/password-setup
                 // transaction; without it, a pre-recovery replacement could
                 // become a valid new recovery credential after recovery.
+                // The simulation mirrors complete(): terminalization scrubs
+                // the pending-only activation bindings with the digest.
                 await tx.query(
                     `UPDATE student_auth_recovery_codes
-                     SET status = 'revoked', code_digest = NULL, expires_at = NULL, revoked_at = clock_timestamp()
+                     SET status = 'revoked', code_digest = NULL, expires_at = NULL, revoked_at = clock_timestamp(),
+                         pending_sid = NULL, pending_credential_generation = NULL, pending_proof_identity_id = NULL
                      WHERE user_id = $1 AND status = 'pending'`,
                     [userId],
                 );

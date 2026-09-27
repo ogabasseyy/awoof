@@ -93,6 +93,9 @@ const envSchema = z.object({
     // Kept separate from provider/OIDC keys so independent recovery remains
     // operable while a school provider is disabled.
     STUDENT_ACCOUNT_RECOVERY_CODE_KEY: z.string().min(32).optional(),
+    // Retained previous effective key for dedicated-key rotation. Must be
+    // the immediately preceding effective key; see resolveRecoveryCodeKeys.
+    STUDENT_ACCOUNT_RECOVERY_PREVIOUS_CODE_KEY: z.string().min(32).optional(),
     // Separate rollback gate: linked SSO login remains available when signup is off.
     PASSWORDLESS_STUDENT_SIGNUP_ENABLED: z.enum(['true', 'false']).default('false'),
 });
@@ -148,6 +151,33 @@ const studentSso = readStudentSsoConfiguration({
 
 const dedicatedRecoveryCodeKey = env.STUDENT_ACCOUNT_RECOVERY_CODE_KEY ?? null;
 const retainedRecoveryCodeKey = retainedSsoAttemptKey(env.STUDENT_SSO_ATTEMPT_KEY);
+const explicitPreviousRecoveryCodeKey = env.STUDENT_ACCOUNT_RECOVERY_PREVIOUS_CODE_KEY ?? null;
+
+/**
+ * Resolve the effective recovery-code digest keys. The dedicated key issues
+ * new digests; verification also accepts one previous key so key changes
+ * never strand active codes. Rotation procedure for K1 -> K2: set the
+ * dedicated key to K2 and the explicit previous key to K1, deploy, then
+ * remove the previous key only after every code enrolled under K1 has been
+ * re-enrolled (replacement/activation digests always use the current key).
+ * The explicit previous key must be the immediately preceding effective
+ * key: codes enrolled under any older key are not verifiable, so re-enroll
+ * pre-dedicated-key codes before rotating the dedicated key. Adding the
+ * first dedicated key needs no explicit previous key: the established SSO
+ * attempt key is retained automatically as the fallback.
+ */
+export function resolveRecoveryCodeKeys(input: { dedicated: string | null; retained: string | null; explicitPrevious: string | null }): { codeKey: string | null; previousCodeKey: string | null } {
+    const codeKey = input.dedicated ?? input.retained;
+    if (input.explicitPrevious && input.explicitPrevious !== codeKey) return { codeKey, previousCodeKey: input.explicitPrevious };
+    if (input.dedicated && input.retained && input.dedicated !== input.retained) return { codeKey, previousCodeKey: input.retained };
+    return { codeKey, previousCodeKey: null };
+}
+
+const recoveryCodeKeys = resolveRecoveryCodeKeys({
+    dedicated: dedicatedRecoveryCodeKey,
+    retained: retainedRecoveryCodeKey,
+    explicitPrevious: explicitPreviousRecoveryCodeKey,
+});
 
 /**
  * Configuration object
@@ -237,20 +267,14 @@ export const config = {
     studentSso,
     passwordlessStudentSignupEnabled: env.PASSWORDLESS_STUDENT_SIGNUP_ENABLED === 'true',
     studentAccountRecovery: {
-        // Recovery-code digests are versioned HMACs. New deployments should
-        // set the dedicated key; deployments that enrolled codes under the
-        // established SSO attempt key keep verifying them through the
-        // retained fallback after adding (or rotating) the dedicated key, so
-        // key changes never strand active codes. Never rotate the SSO
-        // attempt key itself while fallback-verified codes may exist:
-        // re-enroll codes first. Disabling a provider must not remove the
-        // retained key, so the fallback resolves from the raw environment
-        // value independently of provider enablement instead of the nulled
-        // SSO configuration.
-        codeKey: dedicatedRecoveryCodeKey ?? retainedRecoveryCodeKey,
-        previousCodeKey: dedicatedRecoveryCodeKey && retainedRecoveryCodeKey && dedicatedRecoveryCodeKey !== retainedRecoveryCodeKey
-            ? retainedRecoveryCodeKey
-            : null,
+        // Recovery-code digests are versioned HMACs; see
+        // resolveRecoveryCodeKeys for the rotation procedure. Never rotate
+        // the SSO attempt key itself while fallback-verified codes may
+        // exist: re-enroll codes first. Disabling a provider must not remove
+        // the retained key, so the fallback resolves from the raw
+        // environment value independently of provider enablement instead of
+        // the nulled SSO configuration.
+        ...recoveryCodeKeys,
     },
     // This trusted frontend setting is intentionally independent from OIDC
     // credentials so owner/history routes can remain available while issuance

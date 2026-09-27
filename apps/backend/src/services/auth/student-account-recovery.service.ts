@@ -200,7 +200,8 @@ export class StudentAccountRecoveryService {
                  SET status = CASE WHEN status = 'active' THEN 'consumed' ELSE 'revoked' END,
                      code_digest = NULL, expires_at = NULL,
                      consumed_at = CASE WHEN status = 'active' THEN clock_timestamp() ELSE NULL END,
-                     revoked_at = CASE WHEN status = 'pending' THEN clock_timestamp() ELSE NULL END
+                     revoked_at = CASE WHEN status = 'pending' THEN clock_timestamp() ELSE NULL END,
+                     pending_sid = NULL, pending_credential_generation = NULL, pending_proof_identity_id = NULL
                  WHERE user_id = $1 AND status IN ('active', 'pending')`, [userId],
             );
             await tx.query(

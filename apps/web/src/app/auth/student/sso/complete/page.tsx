@@ -120,8 +120,13 @@ function RecoveryReauthComplete({ attemptId }: { attemptId: string }) {
                 clearSsoHandoff(tabStorage()); window.location.assign(handoff.returnPath); return;
             } catch (cause: unknown) {
                 const result = parseSsoLinkResponse(statusOf(cause), bodyOf(cause));
+                // Only terminal mismatch/restart outcomes spend the handoff.
+                // Ambiguous failures (network loss, 5xx) keep the tab's copy
+                // so the live server-side handoff stays retryable with a
+                // fresh grant, mirroring the onboarding link flow.
+                if (!result || result.kind === 'linked') { setStatus('failed'); return; }
                 clearSsoHandoff(tabStorage());
-                setStatus(result && result.kind !== 'linked' ? 'link_unavailable' : 'failed'); return;
+                setStatus('link_unavailable'); return;
             }
         }
         if (!grant.targetIdentityId) { setStatus('failed'); return; }

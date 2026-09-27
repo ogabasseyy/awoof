@@ -111,9 +111,13 @@ export class StudentRecoveryCodeService {
             });
 
             // A new generation invalidates only an earlier pending candidate.
+            // Terminalization also scrubs the pending-only authorization
+            // bindings: they authorized activation and are unnecessary
+            // session/identity metadata afterward.
             await tx.query(
                 `UPDATE student_auth_recovery_codes
-                 SET status = 'revoked', code_digest = NULL, expires_at = NULL, revoked_at = clock_timestamp()
+                 SET status = 'revoked', code_digest = NULL, expires_at = NULL, revoked_at = clock_timestamp(),
+                     pending_sid = NULL, pending_credential_generation = NULL, pending_proof_identity_id = NULL
                  WHERE user_id = $1 AND status = 'pending'`,
                 [input.userId],
             );
@@ -155,7 +159,8 @@ export class StudentRecoveryCodeService {
             if (active) {
                 await tx.query(
                     `UPDATE student_auth_recovery_codes
-                     SET status = 'revoked', code_digest = NULL, revoked_at = clock_timestamp()
+                     SET status = 'revoked', code_digest = NULL, revoked_at = clock_timestamp(),
+                         pending_sid = NULL, pending_credential_generation = NULL, pending_proof_identity_id = NULL
                      WHERE id = $1`,
                     [active.id],
                 );
@@ -196,13 +201,15 @@ export class StudentRecoveryCodeService {
             });
             await tx.query(
                 `UPDATE student_auth_recovery_codes
-                 SET status = 'revoked', code_digest = NULL, revoked_at = clock_timestamp()
+                 SET status = 'revoked', code_digest = NULL, revoked_at = clock_timestamp(),
+                     pending_sid = NULL, pending_credential_generation = NULL, pending_proof_identity_id = NULL
                  WHERE id = $1`,
                 [active.id],
             );
             await tx.query(
                 `UPDATE student_auth_recovery_codes
-                 SET status = 'revoked', code_digest = NULL, expires_at = NULL, revoked_at = clock_timestamp()
+                 SET status = 'revoked', code_digest = NULL, expires_at = NULL, revoked_at = clock_timestamp(),
+                     pending_sid = NULL, pending_credential_generation = NULL, pending_proof_identity_id = NULL
                  WHERE user_id = $1 AND status = 'pending'`,
                 [input.userId],
             );
@@ -248,7 +255,8 @@ export class StudentRecoveryCodeService {
             const pending = await this.lockCode(tx, input.userId, input.pendingCodeId);
             if (!pending || pending.status !== 'pending') throw unavailable();
             await tx.query(`UPDATE student_auth_recovery_codes
-                SET status = 'revoked', code_digest = NULL, expires_at = NULL, revoked_at = clock_timestamp()
+                SET status = 'revoked', code_digest = NULL, expires_at = NULL, revoked_at = clock_timestamp(),
+                    pending_sid = NULL, pending_credential_generation = NULL, pending_proof_identity_id = NULL
                 WHERE id = $1 AND status = 'pending'`, [pending.id]);
         });
     }
@@ -335,10 +343,15 @@ export class StudentRecoveryCodeService {
         const row = result.rows[0];
         if (!row || row.revoked_at !== null || (row.provider !== 'google' && row.provider !== 'microsoft')) throw unavailable();
         // A five-minute grant outlives authority edits: revalidate the
-        // deployment kill switch and the identity's currently enabled,
-        // unexpired institution policy at action time. The issuer must
-        // match exactly: a tenant replaced mid-grant leaves the stale
-        // identity unable to log in, so it cannot authorize code actions.
+        // university activity gate under lock, the deployment kill switch,
+        // and the identity's currently enabled, unexpired institution
+        // policy at action time. The issuer must match exactly: a tenant
+        // replaced mid-grant leaves the stale identity unable to log in,
+        // so it cannot authorize code actions.
+        const university = await tx.query<{ is_active: boolean }>(
+            'SELECT is_active FROM universities WHERE id = $1 FOR UPDATE', [row.university_id],
+        );
+        if (!university.rows[0] || university.rows[0].is_active !== true) throw unavailable();
         if (this.dependencies.isProviderEnabled?.(row.provider) !== true) throw unavailable();
         const policy = await tx.query<{ id: string }>(
             `SELECT id FROM institution_login_policies

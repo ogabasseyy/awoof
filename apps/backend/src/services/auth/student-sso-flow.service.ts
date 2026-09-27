@@ -967,7 +967,8 @@ export async function cleanupStudentSsoTransients(client: PoolClient): Promise<S
     const recoveryCodes = await client.query(
         `UPDATE student_auth_recovery_codes
          SET status = 'revoked', code_digest = NULL, expires_at = NULL,
-             revoked_at = clock_timestamp(), terminal_at = clock_timestamp()
+             revoked_at = clock_timestamp(), terminal_at = clock_timestamp(),
+             pending_sid = NULL, pending_credential_generation = NULL, pending_proof_identity_id = NULL
          WHERE status = 'pending' AND expires_at <= clock_timestamp()`,
     );
     await client.query(

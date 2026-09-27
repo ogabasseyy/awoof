@@ -15,7 +15,7 @@ import {
     parseStudentSsoProvider,
     studentSsoCookieName,
 } from '../services/auth/student-sso-flow.service.js';
-import { StudentGoogleOidc } from '../services/auth/student-google-oidc.js';
+import { StudentGoogleOidc, StudentOidcOperationalError } from '../services/auth/student-google-oidc.js';
 import { StudentMicrosoftOidc } from '../services/auth/student-microsoft-oidc.js';
 import type { ApprovedLoginPolicy, StudentSsoOidcResolver } from '../services/auth/student-sso-flow.service.js';
 import { StudentSsoLinkService } from '../services/auth/student-sso-link.service.js';
@@ -229,8 +229,8 @@ function ssoOwner(req: Request): { userId: string } {
 // provider return always reaches its bounded redirect. This dedicated
 // limiter (one attempt lifetime window) keeps replayed states from
 // converting that reachability into unbounded claim transactions.
-// Authenticated completions (3xx) never consume the quota; outage redirects
-// are unauthenticated and stay counted.
+// Successful completions (3xx) never consume the quota; outage and
+// bounded-failure redirects are unauthenticated and stay counted.
 export function isQuotaExcusedCallback(_req: Request, res: Response): boolean {
     return res.statusCode < 400 && (res.locals as { outageRedirect?: boolean }).outageRedirect !== true;
 }
@@ -537,14 +537,23 @@ export function createStudentSsoRouter(factory: FlowFactory = defaultFlow, optio
                     // Terminal (4xx) fresh-auth failures land on the bounded
                     // completion page, where finish reports them as an
                     // unavailable confirmation — never a bare JSON error.
-                    // The dead binding is cleared, mirroring login-callback
+                    // Provider cancellations and invalid identities are
+                    // terminal too, so they take the same redirect instead
+                    // of a bare 500 that retains the callback binding. The
+                    // dead binding is cleared, mirroring login-callback
                     // terminal failures. Outages (5xx) still surface as JSON.
-                    if (!(error instanceof AppError) || error.statusCode < 400 || error.statusCode >= 500) throw error;
+                    const terminalOidc = error instanceof StudentOidcOperationalError && error.category !== 'upstream_unavailable';
+                    if (!terminalOidc && (!(error instanceof AppError) || error.statusCode < 400 || error.statusCode >= 500)) throw error;
                     const attemptId = await reauth.attemptIdForState(callbackUrl.searchParams.get('state'));
                     const failureBase = config.studentSso.completionUrl
                         ?? (completionOrigin ? new URL(STUDENT_SSO_COMPLETION_PATH, completionOrigin) : undefined);
                     if (!attemptId || !failureBase) throw error;
                     clearSsoCookie(res, reauthCookie);
+                    // Bounded failure redirects are unauthenticated like
+                    // outage redirects: they stay counted against the
+                    // callback quota so replayed states cannot perform
+                    // unbounded lookups behind a 303.
+                    res.locals.outageRedirect = true;
                     // The configured completion URL is process-wide shared
                     // state: clone before appending, or the stale reauth
                     // parameter would hijack every later ordinary completion

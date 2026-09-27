@@ -6,6 +6,7 @@ import { errorHandler } from '../common/middleware/errorHandler.js';
 import { ConflictError, RateLimitError, ServiceUnavailableError } from '../common/errors/AppError.js';
 import { createStudentSsoRouter, isStudentSsoCallbackPath, isStudentSsoRoute, type StudentSsoLink } from './student-sso.routes.js';
 import type { StudentSsoFlowService } from '../services/auth/student-sso-flow.service.js';
+import { StudentOidcOperationalError } from '../services/auth/student-google-oidc.js';
 import { jwtService } from '../services/auth/jwt.service.js';
 import { swaggerSpec } from '../config/swagger.js';
 import { db } from '../config/database.js';
@@ -52,12 +53,13 @@ async function withServer(
 ): Promise<void> {
     const originalGetPool = db.getPool;
     // Route fixtures exercise authorization shape, not a live database. The
-    // session-aware middleware still receives a current ordinary-student row.
+    // session-aware middleware still receives a current ordinary-student row
+    // whose live session matches the fixture token's session id.
     db.getPool = () => ({
         query: async () => ({ rows: [{
             password_setup_requires_recovery_code: false,
             recovery_reenrollment_requires_password: false,
-            active_session_id: null,
+            active_session_id: LINK_SID,
             deleted_at: null,
         }], rowCount: 1 }),
     } as never);
@@ -238,6 +240,42 @@ test('failed Microsoft fresh-reauth callbacks redirect to the bounded completion
         assert.equal(callback.status, 303);
         assert.equal(callback.headers.get('location'), `${COMPLETION_ORIGIN}/auth/student/sso/complete?reauth=${reauthAttemptId}`);
         assert.match(parseSetCookies(callback)[0]!, new RegExp(`awoof_reauth_${reauthAttemptId}=;`));
+    });
+});
+
+test('cancelled and invalid provider reauth callbacks redirect to the bounded completion page', async () => {
+    for (const category of ['cancelled_or_permission', 'invalid_identity'] as const) {
+        const reauthAttemptId = '69666666-6666-4666-8666-666666666666';
+        const reauth = {
+            callbackCookieNameForState: async (state: string | null) => state === 'cancelled-reauth-state' ? `awoof_reauth_${reauthAttemptId}` : null,
+            attemptIdForState: async (state: string | null) => state === 'cancelled-reauth-state' ? reauthAttemptId : null,
+            callback: async () => { throw new StudentOidcOperationalError(category); },
+        };
+        const flow = stubFlow({ callback: async () => { throw new Error('ordinary login callback must not run'); } });
+        await withServer(routerWith(flow, { reauthService: () => reauth as never }), async (baseUrl) => {
+            const callback = await fetch(`${baseUrl}/microsoft/callback?state=cancelled-reauth-state&code=code`, {
+                redirect: 'manual', headers: { Cookie: `awoof_reauth_${reauthAttemptId}=reauth-browser` },
+            });
+            assert.equal(callback.status, 303);
+            assert.equal(callback.headers.get('location'), `${COMPLETION_ORIGIN}/auth/student/sso/complete?reauth=${reauthAttemptId}`);
+            assert.match(parseSetCookies(callback)[0]!, new RegExp(`awoof_reauth_${reauthAttemptId}=;`));
+        });
+    }
+});
+
+test('unavailable provider reauth callbacks still surface as JSON errors', async () => {
+    const reauthAttemptId = '6a666666-6666-4666-8666-666666666666';
+    const reauth = {
+        callbackCookieNameForState: async (state: string | null) => state === 'outage-reauth-state' ? `awoof_reauth_${reauthAttemptId}` : null,
+        attemptIdForState: async (state: string | null) => state === 'outage-reauth-state' ? reauthAttemptId : null,
+        callback: async () => { throw new StudentOidcOperationalError('upstream_unavailable'); },
+    };
+    const flow = stubFlow({ callback: async () => { throw new Error('ordinary login callback must not run'); } });
+    await withServer(routerWith(flow, { reauthService: () => reauth as never }), async (baseUrl) => {
+        const callback = await fetch(`${baseUrl}/microsoft/callback?state=outage-reauth-state&code=code`, {
+            redirect: 'manual', headers: { Cookie: `awoof_reauth_${reauthAttemptId}=reauth-browser` },
+        });
+        assert.equal(callback.status, 500);
     });
 });
 
@@ -806,6 +844,28 @@ test('failed callbacks consume the dedicated limit while completions are excused
     } finally {
         Object.assign(config.studentSso.google, { enabled: googleEnabled });
     }
+});
+
+test('failed reauth redirects consume the dedicated callback limit', async () => {
+    const reauthAttemptId = '6b666666-6666-4666-8666-666666666666';
+    const reauth = {
+        callbackCookieNameForState: async (state: string | null) => state === 'counted-failure-state' ? `awoof_reauth_${reauthAttemptId}` : null,
+        attemptIdForState: async (state: string | null) => state === 'counted-failure-state' ? reauthAttemptId : null,
+        callback: async () => { throw new ConflictError('Student SSO reauthentication is no longer valid'); },
+    };
+    const flow = stubFlow({ callback: async () => { throw new Error('ordinary login callback must not run'); } });
+    await withServer(routerWith(flow, { reauthService: () => reauth as never, callbackLimiterMax: 1 }), async (baseUrl) => {
+        const first = await fetch(`${baseUrl}/microsoft/callback?state=counted-failure-state&code=code`, {
+            redirect: 'manual', headers: { Cookie: `awoof_reauth_${reauthAttemptId}=reauth-browser` },
+        });
+        assert.equal(first.status, 303);
+        // The bounded failure redirect is unauthenticated, so replaying
+        // the known state counts against the quota instead of excusing.
+        const replay = await fetch(`${baseUrl}/microsoft/callback?state=counted-failure-state&code=code`, {
+            redirect: 'manual', headers: { Cookie: `awoof_reauth_${reauthAttemptId}=reauth-browser` },
+        });
+        assert.equal(replay.status, 429);
+    });
 });
 
 test('SSO namespace predicates match only the student SSO paths', () => {

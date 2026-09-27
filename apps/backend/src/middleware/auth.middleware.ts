@@ -74,9 +74,12 @@ export const optionalAuth = (
 };
 
 /**
- * Passwordless and post-recovery student credentials are session-bound.
- * Existing vendor/admin and ordinary password-student token semantics stay
- * unchanged; this narrowly prevents an access JWT from surviving recovery.
+ * Student access tokens carrying a session id are bound to the server's
+ * live session: password and SSO sign-ins share one session family, so a
+ * token whose session rotated, logged out, or was revoked (recovery,
+ * unlink of the issuing identity) is rejected here instead of surviving
+ * until JWT expiry. Sid-less legacy tokens keep their existing semantics;
+ * vendor/admin tokens never reach this gate.
  */
 async function requireCurrentStudentSession(decoded: { userId: string; role: string; sid?: string }): Promise<void> {
     if (decoded.role !== 'student') return;
@@ -96,13 +99,15 @@ async function requireCurrentStudentSession(decoded: { userId: string; role: str
     }
     const account = result.rows[0];
     // Preserve downstream live-identity semantics for absent and ordinary
-    // deleted accounts. Only credential-policy accounts require this early
-    // session gate, because recovery must invalidate their access JWTs.
+    // deleted accounts. Credential-policy accounts stay bound even without
+    // a token session id, because recovery must invalidate their access
+    // JWTs; every other sid-carrying token must match the live session.
     if (!account) return;
     const sessionBound = account.password_setup_requires_recovery_code || account.recovery_reenrollment_requires_password;
     if (account.deleted_at !== null && !sessionBound) return;
-    if (sessionBound
-        && (!decoded.sid || account.active_session_id !== decoded.sid)) throw new UnauthorizedError('Authentication failed');
+    if ((!decoded.sid && sessionBound) || (decoded.sid && account.active_session_id !== decoded.sid)) {
+        throw new UnauthorizedError('Authentication failed');
+    }
 }
 
 /**
