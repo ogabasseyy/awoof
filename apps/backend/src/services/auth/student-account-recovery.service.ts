@@ -50,6 +50,12 @@ function validOpaque(value: unknown): value is string {
     return typeof value === 'string' && value.length > 0 && value.length <= 1024;
 }
 
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+
+function validAttemptId(value: unknown): value is string {
+    return typeof value === 'string' && UUID.test(value);
+}
+
 /**
  * The only password-establishment path for passwordless marker accounts.
  * It deliberately never issues a session: a successful caller must perform a
@@ -103,7 +109,7 @@ export class StudentAccountRecoveryService {
     }
 
     async verify(input: { attemptId: unknown; secret: unknown; code: unknown; otp: unknown }): Promise<void> {
-        if (!validOpaque(input.attemptId) || !validOpaque(input.secret) || !validOpaque(input.code)
+        if (!validAttemptId(input.attemptId) || !validOpaque(input.secret) || !validOpaque(input.code)
             || typeof input.otp !== 'string' || !/^\d{6}$/.test(input.otp)) throw unavailable();
         const { attemptId, secret, code: recoveryCode, otp: mailboxOtp } = input;
         const verified = await this.transaction(async (tx) => {
@@ -138,10 +144,15 @@ export class StudentAccountRecoveryService {
     }
 
     async complete(input: { attemptId: unknown; secret: unknown; password: unknown }): Promise<void> {
-        if (!validOpaque(input.attemptId) || !validOpaque(input.secret) || typeof input.password !== 'string') throw unavailable();
+        if (!validAttemptId(input.attemptId) || !validOpaque(input.secret) || typeof input.password !== 'string') throw unavailable();
         const { attemptId, secret, password } = input;
         const validation = (this.deps.validatePassword ?? ((candidate: string) => passwordService.validatePassword(candidate)))(password);
         if (!validation.valid) throw new ConflictError(validation.errors.join(', '));
+        // Cheap credential check before the expensive password hash; the
+        // transaction below rechecks everything under lock.
+        const candidate = await this.previewAttempt(attemptId);
+        if (!candidate || candidate.status !== 'verified' || candidate.expires_at <= new Date()
+            || !candidate.secret_hash || !this.matchesDigest(candidate.secret_hash, this.secretDigest(secret))) throw unavailable();
         const hash = await (this.deps.hashPassword ?? ((candidate: string) => passwordService.hashPassword(candidate)))(password);
         await this.transaction(async (tx) => {
             // Read only to establish the owner, then acquire the canonical user
@@ -248,6 +259,16 @@ export class StudentAccountRecoveryService {
     private async lockAttempt(tx: PoolClient, id: string): Promise<Attempt | null> {
         const result = await tx.query<Attempt>('SELECT * FROM student_auth_recovery_attempts WHERE id = $1 FOR UPDATE', [id]);
         return result.rows[0] ?? null;
+    }
+
+    private async previewAttempt(id: string): Promise<{ status: string; secret_hash: string | null; expires_at: Date } | null> {
+        const conn = await this.deps.pool.connect();
+        try {
+            const result = await conn.query<{ status: string; secret_hash: string | null; expires_at: Date }>(
+                'SELECT status, secret_hash, expires_at FROM student_auth_recovery_attempts WHERE id = $1', [id],
+            );
+            return result.rows[0] ?? null;
+        } finally { conn.release(); }
     }
 
     private async now(tx: PoolClient): Promise<Date> {

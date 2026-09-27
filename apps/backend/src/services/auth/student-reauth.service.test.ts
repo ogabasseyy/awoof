@@ -88,6 +88,29 @@ test('fresh callback rejects a different Microsoft identity and a different brow
     assert.ok(!wrongBrowser.calls.some((text) => text === 'BEGIN'));
 });
 
+test('fresh start constrains the identity lookup to Microsoft before selecting the newest row', async () => {
+    const calls: string[] = [];
+    const identity = {
+        identity_id: identityId, provider: 'microsoft', observed_email: 'student@example.invalid',
+        policy_id: policyId, policy_version: 1, issuer, realm: '55555555-5555-4555-8555-555555555555',
+        university_id: randomUUID(), credential_generation: 0,
+    };
+    const query = async (text: string) => {
+        calls.push(text);
+        if (text.includes('FROM users')) return { rows: [identity], rowCount: 1 };
+        return { rows: [], rowCount: 1 };
+    };
+    const service = new StudentReauthService({
+        pool: { query, connect: async () => ({ query, release: () => undefined }) } as never,
+        attemptKey, completionUrl: new URL('https://app.example.invalid/auth/student/sso/complete'),
+        isProviderEnabled: () => true,
+        oidcForPolicy: () => ({ authorizeFresh: async () => new URL('https://provider.example.invalid/authorize') }) as never,
+    });
+    const result = await service.start({ userId, sid, purpose: 'recovery_code_generate' });
+    assert.ok(result.authorizationUrl.startsWith('https://'));
+    assert.ok(calls.some((text) => text.includes("identity.provider = 'microsoft'")));
+});
+
 test('fresh finish rejects a consumed attempt before any action grant is issued', async () => {
     const consumed = pendingAttempt({ status: 'consumed' });
     const { service, calls } = callbackService({ issuer, subject: 'subject', authTime: Math.floor(Date.now() / 1000) }, consumed);

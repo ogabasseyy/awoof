@@ -339,7 +339,7 @@ function defaultSignup(): StudentSsoSignupService {
         pool: getPool(), attemptKey: sso.attemptKey,
         isEnabled: () => config.passwordlessStudentSignupEnabled,
         isProviderEnabled: (provider) => enabledStudentSsoProviders(sso).includes(provider),
-        deliverOtp: async (email, code, name) => sendEmailVerificationOTP(email, code, name || 'Student', 'student'),
+        deliverOtp: async (email, code, name, expiresAt) => sendEmailVerificationOTP(email, code, name || 'Student', 'student', Math.max(1, Math.ceil((expiresAt.getTime() - Date.now()) / 60000))),
     });
 }
 function defaultRecoveryCode(): StudentRecoveryCodeService {
@@ -581,9 +581,9 @@ export function createStudentSsoRouter(factory: FlowFactory = defaultFlow, optio
     router.post('/signup/complete', signupLimiter, exactOrigin, exactJson, asyncHandler(async (req, res) => {
         if (!signupEnabled()) throw new ConflictError('Passwordless signup is unavailable');
         const body = req.body as Record<string, unknown>; const handoff = signupHandoffBody(req);
-        const allowed = new Set(['handoffId', 'handoffSecret', 'fullName', 'ageAttested', 'termsVersion', 'verificationConsent', 'noticeVersion']);
-        if (Object.keys(body).some(key => !allowed.has(key)) || Object.keys(body).length !== 7) throw new BadRequestError('Passwordless signup request is invalid');
-        const bound = await signupBinding(req, handoff); const result = await signupFactory().complete({ ...bound, fullName: body.fullName, ageAttested: body.ageAttested, termsVersion: body.termsVersion, verificationConsent: body.verificationConsent, noticeVersion: body.noticeVersion }); responseHeaders(res); const linked = await poolForRequest().query<{ attempt_id: string }>('SELECT attempt_id FROM student_auth_link_handoffs WHERE id = $1', [handoff.handoffId]); clearSsoCookie(res, studentSsoCookieName(linked.rows[0]?.attempt_id ?? handoff.handoffId)); res.status(201).json({ success: true, data: result });
+        const allowed = new Set(['handoffId', 'handoffSecret', 'fullName', 'ageAttested', 'termsAccepted', 'termsVersion', 'verificationConsent', 'noticeVersion']);
+        if (Object.keys(body).some(key => !allowed.has(key)) || Object.keys(body).length !== 8) throw new BadRequestError('Passwordless signup request is invalid');
+        const bound = await signupBinding(req, handoff); const result = await signupFactory().complete({ ...bound, fullName: body.fullName, ageAttested: body.ageAttested, termsAccepted: body.termsAccepted, termsVersion: body.termsVersion, verificationConsent: body.verificationConsent, noticeVersion: body.noticeVersion }); responseHeaders(res); const linked = await poolForRequest().query<{ attempt_id: string }>('SELECT attempt_id FROM student_auth_link_handoffs WHERE id = $1', [handoff.handoffId]); clearSsoCookie(res, studentSsoCookieName(linked.rows[0]?.attempt_id ?? handoff.handoffId)); res.status(201).json({ success: true, data: result });
     }));
 
     router.post('/reauth', authenticate, requireRole('student'), reauthLimiter, exactOrigin, exactJson, asyncHandler(async (req, res) => {

@@ -21,7 +21,7 @@ export type StudentSsoSignupDependencies = {
     attemptKey: string | null;
     isEnabled: () => boolean;
     isProviderEnabled?: (provider: 'google' | 'microsoft') => boolean;
-    deliverOtp: (email: string, code: string, fullName: string) => Promise<{ success: boolean }>;
+    deliverOtp: (email: string, code: string, fullName: string, expiresAt: Date) => Promise<{ success: boolean }>;
 };
 
 function invalid(): ConflictError { return new ConflictError('Passwordless student signup is not available. Restart Microsoft sign-in.'); }
@@ -59,7 +59,7 @@ export class StudentSsoSignupService {
     }
     async sendCode(input: { handoffId: unknown; handoffSecret: unknown; browserBinding: unknown }): Promise<{ challengeId: string; expiresAt: string }> {
         const sent = await this.transaction(async tx => { const state = await this.load(tx, input); const issued = await requestChallenge(tx, { purpose: 'student_sso_signup', subjectKey: state.email, bindings: { email: state.email, name: '', universityId: state.universityId, matricNumber: null, policyVersion: state.handoff.policy_version, verificationConsent: true, noticeVersion: VERIFICATION_NOTICE_VERSION, ageAttested: true, termsAccepted: true, termsVersion: STUDENT_TERMS_VERSION }, expiresAt: state.handoff.expires_at }); if (issued.status !== 'issued') throw new ConflictError('Please wait before requesting another signup code.'); await tx.query('UPDATE student_auth_signup_challenges SET mailbox_challenge_id = $2 WHERE id = $1', [state.signup.id, issued.challengeId]); return { email: state.email, code: issued.code, challengeId: issued.challengeId, expiresAt: issued.expiresAt }; });
-        try { const result = await this.deps.deliverOtp(sent.email, sent.code, ''); if (!result.success) throw new Error('rejected'); } catch { throw new ServiceUnavailableError('We could not deliver a signup code. Please wait before trying again.'); }
+        try { const result = await this.deps.deliverOtp(sent.email, sent.code, '', sent.expiresAt); if (!result.success) throw new Error('rejected'); } catch { throw new ServiceUnavailableError('We could not deliver a signup code. Please wait before trying again.'); }
         return { challengeId: sent.challengeId, expiresAt: sent.expiresAt.toISOString() };
     }
     async verifyCode(input: { handoffId: unknown; handoffSecret: unknown; browserBinding: unknown; challengeId: unknown; code: unknown }): Promise<{ verified: true; expiresAt: string }> {
@@ -68,8 +68,8 @@ export class StudentSsoSignupService {
         if (result !== 'verified') throw new UnauthorizedError('Invalid or expired signup code.');
         return { verified: true, expiresAt: (await this.context(input)).expiresAt };
     }
-    async complete(input: { handoffId: unknown; handoffSecret: unknown; browserBinding: unknown; fullName: unknown; ageAttested: unknown; termsVersion: unknown; verificationConsent: unknown; noticeVersion: unknown }): Promise<{ user: { id: string; email: string; role: 'student' }; tokens: TokenPair }> {
-        if (typeof input.fullName !== 'string' || input.fullName.trim().length < 2 || input.fullName.trim().length > 255 || input.ageAttested !== true || input.termsVersion !== STUDENT_TERMS_VERSION || input.verificationConsent !== true || input.noticeVersion !== VERIFICATION_NOTICE_VERSION) throw new BadRequestError('Current age, Terms, and verification processing assent are required');
+    async complete(input: { handoffId: unknown; handoffSecret: unknown; browserBinding: unknown; fullName: unknown; ageAttested: unknown; termsAccepted: unknown; termsVersion: unknown; verificationConsent: unknown; noticeVersion: unknown }): Promise<{ user: { id: string; email: string; role: 'student' }; tokens: TokenPair }> {
+        if (typeof input.fullName !== 'string' || input.fullName.trim().length < 2 || input.fullName.trim().length > 255 || input.ageAttested !== true || input.termsAccepted !== true || input.termsVersion !== STUDENT_TERMS_VERSION || input.verificationConsent !== true || input.noticeVersion !== VERIFICATION_NOTICE_VERSION) throw new BadRequestError('Current age, Terms, and verification processing assent are required');
         const fullName = input.fullName.trim();
         try { return await this.transaction(async tx => { const state = await this.load(tx, input); if (state.signup.status !== 'mailbox_verified') throw invalid(); const university = (await tx.query<{ name: string }>('SELECT name FROM universities WHERE id = $1 FOR UPDATE', [state.universityId])).rows[0]; if (!university) throw invalid();
             // This durable marker survives optional password establishment;

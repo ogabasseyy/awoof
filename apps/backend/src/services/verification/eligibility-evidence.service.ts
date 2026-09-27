@@ -145,7 +145,7 @@ async function lockStudentProfile(tx: PoolClient, userId: string): Promise<Stude
     return profile;
 }
 
-async function lockChallenge(tx: PoolClient, challengeId: string): Promise<ChallengeRow> {
+async function lockChallenge(tx: PoolClient, challengeId: string, options: { allowExpiredConsumed?: boolean } = {}): Promise<ChallengeRow> {
     const result = await tx.query<ChallengeRow>(
         `SELECT id, purpose, subject_digest, bindings, consumed_at, expires_at, superseded_at
          FROM verification_challenges
@@ -156,8 +156,8 @@ async function lockChallenge(tx: PoolClient, challengeId: string): Promise<Chall
     const challenge = result.rows[0];
     if (!challenge) throw new BadRequestError('Challenge not found');
     const now = await databaseNow(tx);
-    if (challenge.consumed_at === null || challenge.superseded_at !== null || challenge.expires_at <= now) {
-        throw new BadRequestError('Unexpired consumed challenge required');
+    if (challenge.consumed_at === null || challenge.superseded_at !== null || (!options.allowExpiredConsumed && challenge.expires_at <= now)) {
+        throw new BadRequestError(options.allowExpiredConsumed ? 'Consumed challenge required' : 'Unexpired consumed challenge required');
     }
     return challenge;
 }
@@ -290,7 +290,10 @@ export async function recordMailboxProof(tx: PoolClient, userId: string, challen
  */
 export async function recordPasswordlessSignupMailboxProof(tx: PoolClient, userId: string, challengeId: string): Promise<string> {
     const user = await lockMailboxUser(tx, userId);
-    const challenge = await lockChallenge(tx, challengeId);
+    // OTP expiry governs the code-entry window only. Completion is already
+    // gated on the mailbox_verified signup state plus a live handoff, so a
+    // challenge consumed before its deadline stays valid proof afterward.
+    const challenge = await lockChallenge(tx, challengeId, { allowExpiredConsumed: true });
     if (challenge.purpose !== 'student_sso_signup' || !isRecord(challenge.bindings)
         || challenge.bindings.email !== user.email) {
         throw new BadRequestError('Signup mailbox challenge bindings do not match');

@@ -49,6 +49,7 @@ export class StudentReauthService {
              JOIN institution_login_policies policy ON policy.university_id = identity.university_id
                  AND policy.provider = identity.provider AND policy.enabled AND policy.approved_until > clock_timestamp()
              WHERE users.id = $1 AND users.role = 'student' AND users.deleted_at IS NULL AND users.active_session_id = $2::uuid
+                 AND identity.provider = 'microsoft'
              ORDER BY identity.linked_at DESC LIMIT 1`,
             [input.userId, input.sid],
         );

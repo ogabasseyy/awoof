@@ -126,13 +126,15 @@ export const sendEmailVerificationOTP = async (
     email: string,
     otp: string,
     name?: string,
-    role: 'vendor' | 'student' = 'vendor'
+    role: 'vendor' | 'student' = 'vendor',
+    expiresInMinutes = 10
 ): Promise<{ success: boolean; messageId?: string; error?: string }> => {
     const isStudent = role === 'student';
     const subject = isStudent
         ? 'Verify your email - Awoof Student Registration'
         : 'Verify your email - Awoof Vendor Registration';
 
+    const expiryMinutes = Number.isSafeInteger(expiresInMinutes) && expiresInMinutes > 0 ? expiresInMinutes : 10;
     const greeting = name ? `Hello ${escapeHtml(name)},` : 'Hello,';
     const registrationText = isStudent
         ? 'Thank you for registering as a student on Awoof.'
@@ -150,7 +152,7 @@ export const sendEmailVerificationOTP = async (
                 <div style="background-color: #1D4ED8; color: #FFFFFF; padding: 20px; text-align: center; font-size: 24px; font-weight: bold; letter-spacing: 5px; margin: 20px 0; border-radius: 5px;">
                     ${otp}
                 </div>
-                <p>This code will expire in 10 minutes.</p>
+                <p>This code will expire in ${expiryMinutes} minute${expiryMinutes === 1 ? '' : 's'}.</p>
                 <p>If you didn't create an account with Awoof, please ignore this email.</p>
             </div>
             <div style="background-color: #1D4ED8; padding: 20px; text-align: center; color: #FFFFFF;">

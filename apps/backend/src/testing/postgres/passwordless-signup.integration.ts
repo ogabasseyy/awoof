@@ -76,15 +76,17 @@ test('passwordless signup creates one passwordless account, mailbox proof, ident
         const service = new StudentSsoSignupService({ pool, attemptKey: key, isEnabled: () => true, isProviderEnabled: () => true, deliverOtp: async (_email, sent) => { code = sent; return { success: true }; } });
         const c = await pool.connect(); let state; try { state = await seed(c, key); } finally { c.release(); }
         await service.context({ handoffId: state.handoffId, handoffSecret: state.handoffSecret, browserBinding: state.browser });
-        await assert.rejects(service.complete({ handoffId: state.handoffId, handoffSecret: state.handoffSecret, browserBinding: state.browser, fullName: 'Ada Student', ageAttested: true, termsVersion: STUDENT_TERMS_VERSION, verificationConsent: true, noticeVersion: VERIFICATION_NOTICE_VERSION }), /not available/i);
+        await assert.rejects(service.complete({ handoffId: state.handoffId, handoffSecret: state.handoffSecret, browserBinding: state.browser, fullName: 'Ada Student', ageAttested: true, termsAccepted: true, termsVersion: STUDENT_TERMS_VERSION, verificationConsent: true, noticeVersion: VERIFICATION_NOTICE_VERSION }), /not available/i);
         assert.equal((await pool.query<{ count: string }>(`SELECT count(*)::text AS count FROM users WHERE email=$1`, [state.email])).rows[0]!.count, '0');
-        await assert.rejects(service.complete({ handoffId: state.handoffId, handoffSecret: state.handoffSecret, browserBinding: state.browser, fullName: 'Ada Student', ageAttested: true, termsVersion: 'stale-terms', verificationConsent: true, noticeVersion: VERIFICATION_NOTICE_VERSION }), /current age, terms, and verification processing assent/i);
+        await assert.rejects(service.complete({ handoffId: state.handoffId, handoffSecret: state.handoffSecret, browserBinding: state.browser, fullName: 'Ada Student', ageAttested: true, termsAccepted: true, termsVersion: 'stale-terms', verificationConsent: true, noticeVersion: VERIFICATION_NOTICE_VERSION }), /current age, terms, and verification processing assent/i);
         assert.equal((await pool.query<{ count: string }>(`SELECT count(*)::text AS count FROM users WHERE email=$1`, [state.email])).rows[0]!.count, '0');
-        await assert.rejects(service.complete({ handoffId: state.handoffId, handoffSecret: state.handoffSecret, browserBinding: state.browser, fullName: 'Ada Student', ageAttested: true, termsVersion: STUDENT_TERMS_VERSION, verificationConsent: false, noticeVersion: VERIFICATION_NOTICE_VERSION }), /current age, terms, and verification processing assent/i);
+        await assert.rejects(service.complete({ handoffId: state.handoffId, handoffSecret: state.handoffSecret, browserBinding: state.browser, fullName: 'Ada Student', ageAttested: true, termsAccepted: true, termsVersion: STUDENT_TERMS_VERSION, verificationConsent: false, noticeVersion: VERIFICATION_NOTICE_VERSION }), /current age, terms, and verification processing assent/i);
+        assert.equal((await pool.query<{ count: string }>(`SELECT count(*)::text AS count FROM users WHERE email=$1`, [state.email])).rows[0]!.count, '0');
+        await assert.rejects(service.complete({ handoffId: state.handoffId, handoffSecret: state.handoffSecret, browserBinding: state.browser, fullName: 'Ada Student', ageAttested: true, termsAccepted: false, termsVersion: STUDENT_TERMS_VERSION, verificationConsent: true, noticeVersion: VERIFICATION_NOTICE_VERSION }), /current age, terms, and verification processing assent/i);
         assert.equal((await pool.query<{ count: string }>(`SELECT count(*)::text AS count FROM users WHERE email=$1`, [state.email])).rows[0]!.count, '0');
         const sent = await service.sendCode({ handoffId: state.handoffId, handoffSecret: state.handoffSecret, browserBinding: state.browser });
         await service.verifyCode({ handoffId: state.handoffId, handoffSecret: state.handoffSecret, browserBinding: state.browser, challengeId: sent.challengeId, code });
-        const completed = await service.complete({ handoffId: state.handoffId, handoffSecret: state.handoffSecret, browserBinding: state.browser, fullName: 'Ada Student', ageAttested: true, termsVersion: STUDENT_TERMS_VERSION, verificationConsent: true, noticeVersion: VERIFICATION_NOTICE_VERSION });
+        const completed = await service.complete({ handoffId: state.handoffId, handoffSecret: state.handoffSecret, browserBinding: state.browser, fullName: 'Ada Student', ageAttested: true, termsAccepted: true, termsVersion: STUDENT_TERMS_VERSION, verificationConsent: true, noticeVersion: VERIFICATION_NOTICE_VERSION });
         assert.equal(completed.user.email, state.email);
         const transientSecrets = await pool.query<{
             handoff_secret: string | null; handoff_binding: string | null; handoff_observation: string | null;
@@ -108,7 +110,7 @@ test('passwordless signup creates one passwordless account, mailbox proof, ident
         // Models a commit-success/response-loss retry: the consumed handoff
         // cannot issue a second account/session; ordinary SSO can now locate
         // the durable provider identity on a fresh provider attempt.
-        await assert.rejects(service.complete({ handoffId: state.handoffId, handoffSecret: state.handoffSecret, browserBinding: state.browser, fullName: 'Ada Student', ageAttested: true, termsVersion: STUDENT_TERMS_VERSION, verificationConsent: true, noticeVersion: VERIFICATION_NOTICE_VERSION }), /not available/i);
+        await assert.rejects(service.complete({ handoffId: state.handoffId, handoffSecret: state.handoffSecret, browserBinding: state.browser, fullName: 'Ada Student', ageAttested: true, termsAccepted: true, termsVersion: STUDENT_TERMS_VERSION, verificationConsent: true, noticeVersion: VERIFICATION_NOTICE_VERSION }), /not available/i);
         const linked = await pool.query(`SELECT 1 FROM student_auth_identities WHERE provider='google' AND subject=$1`, [state.subject]); assert.equal(linked.rowCount, 1);
         let oauthState = '';
         const flow = new StudentSsoFlowService({ pool, attemptKey: randomBytes(32).toString('base64url'), callbackUrls: { google: new URL('https://api.example.invalid/api/auth/student/sso/google/callback'), microsoft: new URL('https://api.example.invalid/api/auth/student/sso/microsoft/callback') }, completionUrl: new URL('https://app.example.invalid/auth/student/sso/complete'), isEnabled: () => true, isProviderEnabled: () => true,
@@ -118,6 +120,21 @@ test('passwordless signup creates one passwordless account, mailbox proof, ident
         await flow.callback({ provider: 'google', callbackUrl: callback, browserCookies: [{ name: studentSsoCookieName(login.publicResult.attemptId), value: login.callbackCookie.value }] });
         const relogin = await flow.finish({ attemptId: login.publicResult.attemptId, finishSecret: login.publicResult.finishSecret, browserCookie: login.callbackCookie.value });
         assert.equal(relogin.outcome, 'authenticated');
+    });
+});
+
+test('signup completion succeeds when the consumed OTP expired after verification but the handoff is live', async () => {
+    await withPool(async pool => {
+        const key = randomBytes(32).toString('base64url'); let code = '';
+        const service = new StudentSsoSignupService({ pool, attemptKey: key, isEnabled: () => true, isProviderEnabled: () => true, deliverOtp: async (_email, sent) => { code = sent; return { success: true }; } });
+        const c = await pool.connect(); let state; try { state = await seed(c, key); } finally { c.release(); }
+        const sent = await service.sendCode({ handoffId: state.handoffId, handoffSecret: state.handoffSecret, browserBinding: state.browser });
+        await service.verifyCode({ handoffId: state.handoffId, handoffSecret: state.handoffSecret, browserBinding: state.browser, challengeId: sent.challengeId, code });
+        await pool.query(`UPDATE verification_challenges SET expires_at = clock_timestamp() WHERE id = $1`, [sent.challengeId]);
+        const completed = await service.complete({ handoffId: state.handoffId, handoffSecret: state.handoffSecret, browserBinding: state.browser, fullName: 'Ada Student', ageAttested: true, termsAccepted: true, termsVersion: STUDENT_TERMS_VERSION, verificationConsent: true, noticeVersion: VERIFICATION_NOTICE_VERSION });
+        assert.equal(completed.user.email, state.email);
+        const proofs = await pool.query<{ count: string }>(`SELECT count(*)::text AS count FROM user_email_proofs WHERE user_id = $1`, [completed.user.id]);
+        assert.equal(proofs.rows[0]!.count, '1');
     });
 });
 
@@ -135,7 +152,7 @@ test('link and signup completion racing for one verified handoff leave only the 
         await signup.verifyCode({ handoffId: state.handoffId, handoffSecret: state.handoffSecret, browserBinding: state.browser, challengeId: sent.challengeId, code });
         const grant = await link.reauth({ userId: owner.userId, sid: owner.sid, password: 'Correct!horse-9-battery', purpose: 'link' });
         const results = await Promise.allSettled([
-            signup.complete({ handoffId: state.handoffId, handoffSecret: state.handoffSecret, browserBinding: state.browser, fullName: 'Racing Student', ageAttested: true, termsVersion: STUDENT_TERMS_VERSION, verificationConsent: true, noticeVersion: VERIFICATION_NOTICE_VERSION }),
+            signup.complete({ handoffId: state.handoffId, handoffSecret: state.handoffSecret, browserBinding: state.browser, fullName: 'Racing Student', ageAttested: true, termsAccepted: true, termsVersion: STUDENT_TERMS_VERSION, verificationConsent: true, noticeVersion: VERIFICATION_NOTICE_VERSION }),
             link.link({ userId: owner.userId, sid: owner.sid, handoffId: state.handoffId, handoffSecret: state.handoffSecret, browserCookies: [{ name: studentSsoCookieName(state.attemptId), value: state.browser }], grantId: grant.grantId, grantSecret: grant.grantSecret }),
         ]);
         assert.equal(results.filter((result) => result.status === 'fulfilled').length, 1);
@@ -192,7 +209,7 @@ test('signup refuses an immediate resend and expiry after verified OTP creates n
         await assert.rejects(service.sendCode({ handoffId: state.handoffId, handoffSecret: state.handoffSecret, browserBinding: state.browser }), /wait before/i);
         await service.verifyCode({ handoffId: state.handoffId, handoffSecret: state.handoffSecret, browserBinding: state.browser, challengeId: sent.challengeId, code });
         await new Promise(resolve => setTimeout(resolve, Math.max(0, state.expiresAt.getTime() - Date.now()) + 50));
-        await assert.rejects(service.complete({ handoffId: state.handoffId, handoffSecret: state.handoffSecret, browserBinding: state.browser, fullName: 'Ada Student', ageAttested: true, termsVersion: STUDENT_TERMS_VERSION, verificationConsent: true, noticeVersion: VERIFICATION_NOTICE_VERSION }), /not available/i);
+        await assert.rejects(service.complete({ handoffId: state.handoffId, handoffSecret: state.handoffSecret, browserBinding: state.browser, fullName: 'Ada Student', ageAttested: true, termsAccepted: true, termsVersion: STUDENT_TERMS_VERSION, verificationConsent: true, noticeVersion: VERIFICATION_NOTICE_VERSION }), /not available/i);
         assert.equal((await pool.query<{ count: string }>(`SELECT count(*)::text AS count FROM users WHERE email=$1`, [state.email])).rows[0]!.count, '0');
         await pool.query(`UPDATE student_auth_link_handoffs SET consumed_at=clock_timestamp(), encrypted_observation='scrubbed' WHERE id=$1`, [state.handoffId]);
         await pool.query(`UPDATE student_auth_attempts SET status='failed', encrypted_verifier=NULL, nonce=NULL WHERE id=$1`, [state.attemptId]);
@@ -228,7 +245,7 @@ test('signup rejects an existing email or provider identity without creating a s
         const c = await pool.connect(); let state; try { state = await seed(c, key); await c.query(`INSERT INTO users (email, role) VALUES ($1, 'student')`, [state.email]); } finally { c.release(); }
         const sent = await service.sendCode({ handoffId: state.handoffId, handoffSecret: state.handoffSecret, browserBinding: state.browser });
         await service.verifyCode({ handoffId: state.handoffId, handoffSecret: state.handoffSecret, browserBinding: state.browser, challengeId: sent.challengeId, code });
-        await assert.rejects(service.complete({ handoffId: state.handoffId, handoffSecret: state.handoffSecret, browserBinding: state.browser, fullName: 'Ada Student', ageAttested: true, termsVersion: STUDENT_TERMS_VERSION, verificationConsent: true, noticeVersion: VERIFICATION_NOTICE_VERSION }), /existing-account sign-in or recovery/i);
+        await assert.rejects(service.complete({ handoffId: state.handoffId, handoffSecret: state.handoffSecret, browserBinding: state.browser, fullName: 'Ada Student', ageAttested: true, termsAccepted: true, termsVersion: STUDENT_TERMS_VERSION, verificationConsent: true, noticeVersion: VERIFICATION_NOTICE_VERSION }), /existing-account sign-in or recovery/i);
         const users = await pool.query<{ count: string }>(`SELECT count(*)::text AS count FROM users WHERE email=$1`, [state.email]); assert.equal(users.rows[0]!.count, '1');
     });
 });

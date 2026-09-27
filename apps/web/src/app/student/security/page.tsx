@@ -19,13 +19,14 @@ function pendingIntent(): string | null { try { const value = JSON.parse(session
 export default function StudentSecurityPage() {
     const [status, setStatus] = useState<RecoveryStatus>('loading'); const [pendingCodeId, setPendingCodeId] = useState<string | null>(null);
     const [busy, setBusy] = useState(false); const started = useRef(false);
+    const loadStatus = async (accessToken: string) => {
+        try { const r = await studentSsoApiClient.get('/auth/student/sso/recovery-code', { headers: { Authorization: `Bearer ${accessToken}` } }); const data = (r.data as { data?: { status?: unknown; pendingCodeId?: unknown } }).data; const value = data?.status; setPendingCodeId(typeof data?.pendingCodeId === 'string' ? data.pendingCodeId : null); setStatus(value === 'active' || value === 'pending' || value === 'unconfigured' ? value : 'unavailable'); } catch { setStatus('unavailable'); }
+    };
     useEffect(() => {
         if (started.current) return; started.current = true;
         const session = getSessionSnapshot();
         if (!session.accessToken) { setStatus('unavailable'); return; }
-        void studentSsoApiClient.get('/auth/student/sso/recovery-code', { headers: { Authorization: `Bearer ${session.accessToken}` } })
-            .then(r => { const data = (r.data as { data?: { status?: unknown; pendingCodeId?: unknown } }).data; const value = data?.status; setPendingCodeId(typeof data?.pendingCodeId === 'string' ? data.pendingCodeId : null); setStatus(value === 'active' || value === 'pending' || value === 'unconfigured' ? value : 'unavailable'); })
-            .catch(() => setStatus('unavailable'));
+        void loadStatus(session.accessToken);
     }, []);
     const begin = async () => {
         if (busy) return; const session = getSessionSnapshot(); if (!session.accessToken) { setStatus('unavailable'); return; }
@@ -42,7 +43,7 @@ export default function StudentSecurityPage() {
     };
     const cancelPending = async () => {
         const session = getSessionSnapshot(); if (!pendingCodeId || !session.accessToken || busy) return;
-        setBusy(true); try { await studentSsoApiClient.post('/auth/student/sso/recovery-code/cancel', { pendingCodeId }, { headers: { Authorization: `Bearer ${session.accessToken}` } }); setPendingCodeId(null); setStatus('unconfigured'); } catch { setStatus('unavailable'); } finally { setBusy(false); }
+        setBusy(true); try { await studentSsoApiClient.post('/auth/student/sso/recovery-code/cancel', { pendingCodeId }, { headers: { Authorization: `Bearer ${session.accessToken}` } }); setPendingCodeId(null); await loadStatus(session.accessToken); } catch { setStatus('unavailable'); } finally { setBusy(false); }
     };
     if (status === 'unavailable') return <AuthShell role="student" title="Account security" subtitle="Security setup is unavailable." footer={null}><p role="status">Sign in again and retry. If school sign-in is unavailable, use recovery only if you already saved a recovery code.</p><Link className="mt-5 inline-block text-primary underline" href="/auth/student/recovery">Account recovery</Link></AuthShell>;
     return <AuthShell role="student" title="Account security" subtitle="Optional recovery-code setup." footer={null}>
