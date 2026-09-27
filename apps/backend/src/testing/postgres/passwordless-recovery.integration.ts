@@ -462,7 +462,7 @@ test('five wrong recovery OTPs persist their shared failure budget despite gener
     }
 });
 
-async function seedProviderProof(client: PoolClient, userId: string): Promise<string> {
+async function seedProviderProof(client: PoolClient, userId: string, options: { policy?: boolean } = {}): Promise<string> {
     const suffix = randomUUID().slice(0, 8);
     const university = await client.query<{ id: string }>(
         'INSERT INTO universities (name, is_active) VALUES ($1, true) RETURNING id',
@@ -474,6 +474,21 @@ async function seedProviderProof(client: PoolClient, userId: string): Promise<st
          VALUES ($1, $2, 'microsoft', $3, $4, $5) RETURNING id`,
         [userId, university.rows[0]!.id, `https://issuer.example.invalid/${suffix}`, `subject-${suffix}`, `recovery-${suffix}@example.invalid`],
     );
+    // Proof consumption revalidates the identity's currently live policy,
+    // so proof-consumption tests opt into one; other callers seed their
+    // own policy or none at all.
+    if (options.policy === true) {
+        const admin = await client.query<{ id: string }>(
+            'INSERT INTO users (email, role) VALUES ($1, $2) RETURNING id',
+            [`recovery-proof-admin-${suffix}@example.invalid`, 'admin'],
+        );
+        await client.query(
+            `INSERT INTO institution_login_policies
+                 (university_id, provider, issuer, provider_realm, version, enabled, approved_until, approved_by, school_assertion_days)
+             VALUES ($1, 'microsoft', $2, $3, 1, true, clock_timestamp() + interval '30 days', $4, 90)`,
+            [university.rows[0]!.id, `https://issuer.example.invalid/${suffix}`, suffix, admin.rows[0]!.id],
+        );
+    }
     return identity.rows[0]!.id;
 }
 
@@ -664,8 +679,8 @@ test('revoked generating proof and provider-only post-recovery re-enrollment bot
     const client = await pool.connect();
     try {
         const userId = await seedStudent(client);
-        const proofIdentityId = await seedProviderProof(client, userId);
-        const service = new StudentRecoveryCodeService({ pool, codeKey: 'test-recovery-code-key' });
+        const proofIdentityId = await seedProviderProof(client, userId, { policy: true });
+        const service = new StudentRecoveryCodeService({ pool, codeKey: 'test-recovery-code-key', isProviderEnabled: () => true });
         const generated = await grant(client, { userId, purpose: 'recovery_code_generate', proofIdentityId });
         const pending = await service.generate({ userId, sid: SID, grantId: generated.grantId, secret: generated.grantSecret });
         const activation = await grant(client, { userId, purpose: 'recovery_code_activate', pendingCodeId: pending.pendingCodeId, proofIdentityId });
@@ -689,6 +704,53 @@ test('revoked generating proof and provider-only post-recovery re-enrollment bot
             'SELECT recovery_reenrollment_requires_password FROM users WHERE id = $1', [userId],
         );
         assert.equal(marker.rows[0]!.recovery_reenrollment_requires_password, false);
+    } finally {
+        client.release();
+        await pool.end();
+    }
+});
+
+test('proof-backed recovery operations revalidate provider authority at action time', async () => {
+    const pool = createTestPool();
+    const client = await pool.connect();
+    try {
+        const userId = await seedStudent(client);
+        const proofIdentityId = await seedProviderProof(client, userId, { policy: true });
+        const conflict = (error: unknown) => (error as { code?: string }).code === 'CONFLICT';
+        const gated = new StudentRecoveryCodeService({ pool, codeKey: 'test-recovery-code-key', isProviderEnabled: () => false });
+        const live = new StudentRecoveryCodeService({ pool, codeKey: 'test-recovery-code-key', isProviderEnabled: () => true });
+        const policyOf = async () => (await client.query<{ university_id: string }>(
+            'SELECT university_id FROM student_auth_identities WHERE id = $1', [proofIdentityId],
+        )).rows[0]!.university_id;
+        // A grant issued while authority was live cannot consume once the
+        // deployment gate flips, even though the identity row is intact.
+        const gatedGenerate = await grant(client, { userId, purpose: 'recovery_code_generate', proofIdentityId });
+        await assert.rejects(
+            () => gated.generate({ userId, sid: SID, grantId: gatedGenerate.grantId, secret: gatedGenerate.grantSecret }),
+            conflict,
+        );
+        // Password-backed grants never consult the gate.
+        const passwordGrant = await grant(client, { userId, purpose: 'recovery_code_generate' });
+        const pending = await gated.generate({ userId, sid: SID, grantId: passwordGrant.grantId, secret: passwordGrant.grantSecret });
+        // A policy disabled after issuance blocks proof consumption.
+        await client.query('UPDATE institution_login_policies SET enabled = false WHERE university_id = $1', [await policyOf()]);
+        const disabledGenerate = await grant(client, { userId, purpose: 'recovery_code_generate', proofIdentityId });
+        await assert.rejects(
+            () => live.generate({ userId, sid: SID, grantId: disabledGenerate.grantId, secret: disabledGenerate.grantSecret }),
+            conflict,
+        );
+        // An expired policy blocks activation while the pending code survives.
+        await client.query(
+            `UPDATE institution_login_policies SET enabled = true, approved_until = clock_timestamp() - interval '1 second'
+             WHERE university_id = $1`, [await policyOf()],
+        );
+        const expiredActivate = await grant(client, { userId, purpose: 'recovery_code_activate', pendingCodeId: pending.pendingCodeId, proofIdentityId });
+        await assert.rejects(
+            () => live.activate({ userId, sid: SID, grantId: expiredActivate.grantId, secret: expiredActivate.grantSecret, pendingCodeId: pending.pendingCodeId, code: pending.code }),
+            conflict,
+        );
+        const survivor = await client.query<{ status: string }>('SELECT status FROM student_auth_recovery_codes WHERE id = $1', [pending.pendingCodeId]);
+        assert.equal(survivor.rows[0]!.status, 'pending');
     } finally {
         client.release();
         await pool.end();

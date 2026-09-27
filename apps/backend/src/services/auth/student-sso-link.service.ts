@@ -228,6 +228,23 @@ export class StudentSsoLinkService {
             const active = await tx.query<{ generation: string | number }>(
                 "SELECT generation FROM student_auth_recovery_codes WHERE user_id = $1 AND status = 'active' FOR UPDATE", [userId],
             );
+            // Bound the composite grant foreign keys before issuance: a
+            // missing or foreign target must surface as an operational
+            // error, never a PostgreSQL 23503 surfaced as a 500.
+            if (targetIdentityId !== undefined) {
+                const target = await tx.query<{ id: string }>(
+                    'SELECT id FROM student_auth_identities WHERE id = $1 AND user_id = $2 AND revoked_at IS NULL',
+                    [targetIdentityId, userId],
+                );
+                if (!target.rows[0]) throw new NotFoundError('Student SSO login identity not found');
+            }
+            if (pendingCodeId !== undefined) {
+                const pending = await tx.query<{ id: string }>(
+                    'SELECT id FROM student_auth_recovery_codes WHERE id = $1 AND user_id = $2',
+                    [pendingCodeId, userId],
+                );
+                if (!pending.rows[0]) throw new NotFoundError('Student SSO recovery code not found');
+            }
             return issueActionGrant(tx, {
                 userId, sid, purpose, credentialGeneration: Number(locked.rows[0]!.credential_generation),
                 ...(targetIdentityId === undefined ? {} : { targetIdentityId }),

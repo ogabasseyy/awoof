@@ -1321,6 +1321,66 @@ test('unlink of another owner identity reports not found', async () => {
     });
 });
 
+test('reauth issuance rejects foreign, missing, and revoked action targets without a grant', async () => {
+    await withLinkPool(async (pool) => {
+        const attemptKey = randomBytes(32).toString('base64url');
+        const service = makeService(pool, attemptKey);
+        const client = await pool.connect();
+        let ownerA;
+        let ownerB;
+        let foreignIdentity = '';
+        let revokedIdentity = '';
+        let foreignCode = '';
+        let ownCode = '';
+        try {
+            ownerA = await seedOwner(client, {});
+            ownerB = await seedOwner(client, { domain: ownerA.email.split('@')[1]! });
+            foreignIdentity = (await client.query<{ id: string }>(
+                `INSERT INTO student_auth_identities (user_id, university_id, provider, issuer, subject)
+                 VALUES ($1, $2, 'google', $3, $4) RETURNING id`,
+                [ownerB.userId, ownerB.universityId, GOOGLE_ISSUER, `foreign-sub-${uniqueLabel()}`],
+            )).rows[0]!.id;
+            revokedIdentity = (await client.query<{ id: string }>(
+                `INSERT INTO student_auth_identities (user_id, university_id, provider, issuer, subject, revoked_at)
+                 VALUES ($1, $2, 'google', $3, $4, clock_timestamp()) RETURNING id`,
+                [ownerA.userId, ownerA.universityId, GOOGLE_ISSUER, `revoked-sub-${uniqueLabel()}`],
+            )).rows[0]!.id;
+            foreignCode = (await client.query<{ id: string }>(
+                `INSERT INTO student_auth_recovery_codes (user_id, generation, code_digest, status, activated_at)
+                 VALUES ($1, 1, 'foreign-digest', 'active', clock_timestamp()) RETURNING id`,
+                [ownerB.userId],
+            )).rows[0]!.id;
+            ownCode = (await client.query<{ id: string }>(
+                `INSERT INTO student_auth_recovery_codes (user_id, generation, code_digest, status, activated_at)
+                 VALUES ($1, 1, 'own-digest', 'active', clock_timestamp()) RETURNING id`,
+                [ownerA.userId],
+            )).rows[0]!.id;
+        } finally {
+            client.release();
+        }
+        const notFound = (error: unknown) => (error as { code?: string }).code === 'NOT_FOUND';
+        await assert.rejects(
+            service.reauth({ userId: ownerA.userId, sid: ownerA.sid, password: PASSWORD, purpose: 'unlink', targetIdentityId: foreignIdentity }),
+            notFound,
+        );
+        await assert.rejects(
+            service.reauth({ userId: ownerA.userId, sid: ownerA.sid, password: PASSWORD, purpose: 'unlink', targetIdentityId: randomUUID() }),
+            notFound,
+        );
+        await assert.rejects(
+            service.reauth({ userId: ownerA.userId, sid: ownerA.sid, password: PASSWORD, purpose: 'unlink', targetIdentityId: revokedIdentity }),
+            notFound,
+        );
+        await assert.rejects(
+            service.reauth({ userId: ownerA.userId, sid: ownerA.sid, password: PASSWORD, purpose: 'recovery_code_activate', pendingCodeId: foreignCode }),
+            notFound,
+        );
+        // Owned targets still issue.
+        const issued = await service.reauth({ userId: ownerA.userId, sid: ownerA.sid, password: PASSWORD, purpose: 'recovery_code_activate', pendingCodeId: ownCode });
+        assert.ok(issued.grantId);
+    });
+});
+
 test('concurrent unlink attempts serialize to a single revocation', async () => {
     await withLinkPool(async (pool) => {
         const attemptKey = randomBytes(32).toString('base64url');

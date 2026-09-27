@@ -34,7 +34,7 @@ test('an unlinked Microsoft handoff creates a passwordless pending-enrollment ac
     await page.getByLabel('I accept the current Terms').check();
     await page.getByLabel('I consent to the processing notice').check();
     await page.getByRole('button', { name: 'Create passwordless account' }).click();
-    await page.waitForURL('**/student/security**');
+    await page.waitForURL('**/marketplace**');
     expect(requests.map(({ path }) => path)).toEqual([
         '/api/auth/student/sso/signup/context',
         '/api/auth/student/sso/signup/send-code',

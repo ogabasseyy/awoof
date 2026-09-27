@@ -111,6 +111,46 @@ test('fresh start constrains the identity lookup to Microsoft before selecting t
     assert.ok(calls.some((text) => text.includes("identity.provider = 'microsoft'")));
 });
 
+test('fresh start rejects foreign or missing action targets before issuing an attempt', async () => {
+    const ownedTarget = '77777777-7777-4777-8777-777777777777';
+    const ownedCode = '88888888-8888-4888-8888-888888888888';
+    const identity = {
+        identity_id: identityId, provider: 'microsoft', observed_email: 'student@example.invalid',
+        policy_id: policyId, policy_version: 1, issuer, realm: '55555555-5555-4555-8555-555555555555',
+        university_id: randomUUID(), credential_generation: 0,
+    };
+    const query = async (text: string, params: unknown[] = []) => {
+        if (text.includes('FROM users')) return { rows: [identity], rowCount: 1 };
+        if (text.includes('FROM student_auth_identities WHERE id = $1')) {
+            return params[0] === ownedTarget ? { rows: [{ id: ownedTarget }], rowCount: 1 } : { rows: [], rowCount: 0 };
+        }
+        if (text.includes('FROM student_auth_recovery_codes WHERE id = $1')) {
+            return params[0] === ownedCode ? { rows: [{ id: ownedCode }], rowCount: 1 } : { rows: [], rowCount: 0 };
+        }
+        return { rows: [], rowCount: 1 };
+    };
+    const service = new StudentReauthService({
+        pool: { query, connect: async () => ({ query, release: () => undefined }) } as never,
+        attemptKey, completionUrl: new URL('https://app.example.invalid/auth/student/sso/complete'),
+        isProviderEnabled: () => true,
+        oidcForPolicy: () => ({ authorizeFresh: async () => new URL('https://provider.example.invalid/authorize') }) as never,
+    });
+    await assert.rejects(
+        service.start({ userId, sid, purpose: 'unlink', targetIdentityId: randomUUID() }),
+        /login identity not found/,
+    );
+    await assert.rejects(
+        service.start({ userId, sid, purpose: 'recovery_code_activate', pendingCodeId: randomUUID() }),
+        /recovery code not found/,
+    );
+    await assert.rejects(
+        service.start({ userId, sid, purpose: 'unlink', targetIdentityId: 'not-a-uuid' }),
+        /reauthentication is no longer valid/,
+    );
+    const issued = await service.start({ userId, sid, purpose: 'unlink', targetIdentityId: ownedTarget });
+    assert.ok(issued.authorizationUrl.startsWith('https://'));
+});
+
 test('fresh callback and finish lock the owner before the attempt', async () => {
     const ready = callbackService({ issuer, subject: 'subject', authTime: Math.floor(Date.now() / 1000) });
     await ready.service.callback({ callbackUrl: new URL('https://api.example.invalid/callback?state=state&code=code'), callbackCookie: 'browser' });

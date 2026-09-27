@@ -4,6 +4,7 @@ import { ConflictError } from '../../common/errors/AppError.js';
 import { appLogger } from '../../common/logger.js';
 import { sendRecoveryCodeSecurityNotice } from '../email/email.service.js';
 import { consumeActionGrant } from './student-action-grant.service.js';
+import type { LoginProvider } from './student-sso.types.js';
 
 type RecoveryCodeStatus = 'unconfigured' | 'pending' | 'active';
 
@@ -34,6 +35,11 @@ export type StudentRecoveryCodeDependencies = {
     codeKey: string;
     randomCode?: () => string;
     notify?: (email: string, event: 'activated' | 'replaced' | 'removed') => Promise<{ success: boolean }>;
+    /**
+     * Deployment provider gate. Proof-backed operations fail closed without
+     * it; password-backed grants (null proof) never consult it.
+     */
+    isProviderEnabled?: (provider: LoginProvider) => boolean;
 };
 
 function unavailable(): ConflictError {
@@ -275,10 +281,22 @@ export class StudentRecoveryCodeService {
 
     private async requireLiveProofIdentity(tx: PoolClient, identityId: string | null, userId: string): Promise<void> {
         if (!identityId) return;
-        const result = await tx.query<{ revoked_at: Date | null }>(
-            'SELECT revoked_at FROM student_auth_identities WHERE id = $1 AND user_id = $2 FOR UPDATE', [identityId, userId],
+        const result = await tx.query<{ revoked_at: Date | null; provider: string; university_id: string }>(
+            'SELECT revoked_at, provider, university_id FROM student_auth_identities WHERE id = $1 AND user_id = $2 FOR UPDATE', [identityId, userId],
         );
-        if (!result.rows[0] || result.rows[0].revoked_at !== null) throw unavailable();
+        const row = result.rows[0];
+        if (!row || row.revoked_at !== null || (row.provider !== 'google' && row.provider !== 'microsoft')) throw unavailable();
+        // A five-minute grant outlives authority edits: revalidate the
+        // deployment kill switch and the identity's currently enabled,
+        // unexpired institution policy at action time.
+        if (this.dependencies.isProviderEnabled?.(row.provider) !== true) throw unavailable();
+        const policy = await tx.query<{ id: string }>(
+            `SELECT id FROM institution_login_policies
+             WHERE university_id = $1 AND provider = $2 AND enabled AND approved_until > clock_timestamp()
+             LIMIT 1`,
+            [row.university_id, row.provider],
+        );
+        if (!policy.rows[0]) throw unavailable();
     }
 
     private async sendSecurityNotice(email: string, event: 'activated' | 'replaced' | 'removed'): Promise<void> {

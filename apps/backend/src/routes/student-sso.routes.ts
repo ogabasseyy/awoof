@@ -346,7 +346,10 @@ function defaultSignup(): StudentSsoSignupService {
 function defaultRecoveryCode(): StudentRecoveryCodeService {
     const key = config.studentAccountRecovery.codeKey;
     if (!key) throw new ServiceUnavailableError('Account recovery is unavailable');
-    return new StudentRecoveryCodeService({ pool: getPool(), codeKey: key });
+    return new StudentRecoveryCodeService({
+        pool: getPool(), codeKey: key,
+        isProviderEnabled: (provider) => enabledStudentSsoProviders(config.studentSso).includes(provider),
+    });
 }
 function defaultAccountRecovery(): StudentAccountRecoveryService {
     const key = config.studentAccountRecovery.codeKey;
@@ -936,6 +939,7 @@ export default createStudentSsoRouter();
  *       400: { description: Invalid body, origin, or content type }
  *       401: { description: Authentication failed or session unavailable }
  *       403: { description: Password reauthentication is not available for this account }
+ *       404: { description: Bound target identity or recovery code not found }
  *       409: { description: Link-purpose reauthentication is unavailable while providers are disabled }
  *       429: { description: Too many reauthentication requests }
  * /api/auth/student/sso/link:

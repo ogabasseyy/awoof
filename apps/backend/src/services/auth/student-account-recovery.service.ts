@@ -115,7 +115,10 @@ export class StudentAccountRecoveryService {
         });
         // Always provide an indistinguishable browser handle. A non-existent,
         // suspended, or code-less account receives a handle that cannot verify.
-        if ('email' in started && 'otp' in started && this.deps.deliverOtp) await this.deps.deliverOtp(started.email, started.otp).catch(() => undefined);
+        // Delivery is never awaited: transport latency would otherwise mark
+        // real accounts by response timing. Failures stay silent by design —
+        // the OTP remains consumable and the caller can request a new one.
+        if ('email' in started && 'otp' in started && this.deps.deliverOtp) void this.deps.deliverOtp(started.email, started.otp).catch(() => undefined);
         return { attemptId, secret, expiresAt: started.expiresAt };
     }
 

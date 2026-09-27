@@ -1,6 +1,6 @@
 import { randomBytes, randomUUID } from 'node:crypto';
 import type { Pool, PoolClient } from 'pg';
-import { ConflictError, ServiceUnavailableError, UnauthorizedError } from '../../common/errors/AppError.js';
+import { ConflictError, NotFoundError, ServiceUnavailableError, UnauthorizedError } from '../../common/errors/AppError.js';
 import { encryptMicrosoftAttemptVerifier, hashMicrosoftAttemptSecret } from '../verification/microsoft-attempt-crypto.js';
 import type { ApprovedLoginPolicy, FreshProviderObservation, LoginProvider, StudentOidcAdapter } from './student-sso.types.js';
 import type { ActionPurpose, ActionGrantResult } from './student-action-grant.service.js';
@@ -58,6 +58,25 @@ export class StudentReauthService {
         );
         const identity = row.rows[0];
         if (!identity || identity.provider !== 'microsoft' || !identity.observed_email || !this.deps.isProviderEnabled(identity.provider)) throw invalidReauth();
+        // Bound the composite attempt foreign keys before issuance, mirroring
+        // password reauthentication: a missing or foreign target must surface
+        // as an operational error, never a PostgreSQL 23503 surfaced as a 500.
+        if (input.targetIdentityId !== undefined) {
+            if (!UUID.test(input.targetIdentityId)) throw invalidReauth();
+            const target = await this.deps.pool.query<{ id: string }>(
+                'SELECT id FROM student_auth_identities WHERE id = $1 AND user_id = $2 AND revoked_at IS NULL',
+                [input.targetIdentityId, input.userId],
+            );
+            if (!target.rows[0]) throw new NotFoundError('Student SSO login identity not found');
+        }
+        if (input.pendingCodeId !== undefined) {
+            if (!UUID.test(input.pendingCodeId)) throw invalidReauth();
+            const pending = await this.deps.pool.query<{ id: string }>(
+                'SELECT id FROM student_auth_recovery_codes WHERE id = $1 AND user_id = $2',
+                [input.pendingCodeId, input.userId],
+            );
+            if (!pending.rows[0]) throw new NotFoundError('Student SSO recovery code not found');
+        }
         const policy: ApprovedLoginPolicy = {
             id: identity.policy_id, version: identity.policy_version, provider: identity.provider,
             issuer: identity.issuer, realm: identity.realm, universityId: identity.university_id,

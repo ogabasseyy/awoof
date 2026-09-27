@@ -117,7 +117,11 @@ function SignupOnboarding() {
             const r = await studentSsoApiClient.post('/auth/student/sso/signup/complete', { handoffId: handoff.current.handoffId, handoffSecret: handoff.current.handoffSecret, fullName: name.trim(), ageAttested: true, termsAccepted: true, termsVersion: context!.termsVersion, verificationConsent: true, noticeVersion: context!.noticeVersion });
             const data = (r.data as { data?: { tokens?: { accessToken?: unknown; refreshToken?: unknown } } }).data;
             if (!data || typeof data.tokens?.accessToken !== 'string' || typeof data.tokens.refreshToken !== 'string' || initialSession.current !== getSessionSnapshot().generation) throw new Error('stale');
-            storeTokens({ accessToken: data.tokens.accessToken, refreshToken: data.tokens.refreshToken }); forgetHandoff(); window.location.href = '/student/security';
+            // Preserve the validated continuation the handoff carried for
+            // this sign-in; resolve it before the handoff is forgotten.
+            // Recovery setup stays available from account security.
+            const destination = resolveStudentReturn(handoff.current?.returnPath ?? null, window.location.origin);
+            storeTokens({ accessToken: data.tokens.accessToken, refreshToken: data.tokens.refreshToken }); forgetHandoff(); window.location.href = destination;
         } catch { setError('We could not finish setup. Your confirmed details were not silently accepted; retry or restart Microsoft sign-in.'); setBusy(false); }
     };
     if (!context) return <AuthShell role="student" title="Finish setting up Awoof" subtitle="Checking your school sign-in." footer={null}><p role="status">{error ?? 'Checking the pending sign-in…'}</p>{error ? <Button className="mt-5 w-full rounded-full" asChild><Link href="/auth/student/login">Restart Microsoft sign-in</Link></Button> : null}</AuthShell>;
