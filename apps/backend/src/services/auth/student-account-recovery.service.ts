@@ -249,6 +249,13 @@ export class StudentAccountRecoveryService {
         finally { tx.release(); }
     }
 
+    // Both lookups lock the user row, then recheck status from a
+    // separately locked student row: the active-status check must serialize
+    // with a concurrent suspension, or recovery could replace the password
+    // for an account suspended for suspected compromise and leave a usable
+    // credential on reactivation. FOR UPDATE cannot target the nullable
+    // side of the outer join, hence the second keyed lock; order follows
+    // users → students.
     private async findRecoverableAccount(tx: PoolClient, email: string): Promise<Account | null> {
         const result = await tx.query<Account>(
             `SELECT u.id, u.email, u.credential_generation, u.deleted_at, s.status AS student_status
@@ -256,7 +263,8 @@ export class StudentAccountRecoveryService {
              WHERE lower(btrim(u.email)) = $1 AND u.role = 'student' FOR UPDATE OF u`, [email],
         );
         const account = result.rows[0];
-        return account && account.deleted_at === null && account.student_status === 'active' ? account : null;
+        if (!account || account.deleted_at !== null) return null;
+        return (await this.lockedStudentStatus(tx, account.id)) === 'active' ? account : null;
     }
 
     private async lockAccount(tx: PoolClient, userId: string): Promise<Account | null> {
@@ -265,7 +273,15 @@ export class StudentAccountRecoveryService {
              FROM users u LEFT JOIN students s ON s.user_id = u.id WHERE u.id = $1 FOR UPDATE OF u`, [userId],
         );
         const account = result.rows[0];
-        return account && account.deleted_at === null && account.student_status === 'active' ? account : null;
+        if (!account || account.deleted_at !== null) return null;
+        return (await this.lockedStudentStatus(tx, account.id)) === 'active' ? account : null;
+    }
+
+    private async lockedStudentStatus(tx: PoolClient, userId: string): Promise<string | null> {
+        const student = await tx.query<{ status: string }>(
+            'SELECT status FROM students WHERE user_id = $1 FOR UPDATE', [userId],
+        );
+        return student.rows[0]?.status ?? null;
     }
 
     private async lockActiveCode(tx: PoolClient, userId: string): Promise<RecoveryCode | null> {

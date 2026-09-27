@@ -30,6 +30,31 @@ test('recovery verify and complete reject malformed attempt ids before touching 
     );
 });
 
+test('recovery account lookups lock the student row with the user row', async () => {
+    const queries: string[] = [];
+    const client = {
+        query: async (text: string) => {
+            queries.push(text);
+            if (text.includes('SELECT clock_timestamp() AS now')) return { rows: [{ now: new Date() }], rowCount: 1 };
+            if (text.includes('FROM users u LEFT JOIN students s')) {
+                return { rows: [{ id: 'u1', email: 's@x.invalid', credential_generation: 0, deleted_at: null, student_status: 'active' }], rowCount: 1 };
+            }
+            return { rows: [], rowCount: 0 };
+        },
+        release: () => undefined,
+    };
+    const service = new StudentAccountRecoveryService({
+        pool: { connect: async () => client } as never,
+        recoveryCodeKey: 'test-recovery-code-key',
+    });
+
+    await service.start({ email: 'student@example.test', purpose: 'lost_access' });
+    const userLock = queries.findIndex((text) => text.includes('FROM users u LEFT JOIN students s'));
+    const studentLock = queries.findIndex((text) => text.includes('FROM students WHERE user_id') && text.includes('FOR UPDATE'));
+    assert.ok(userLock >= 0 && studentLock > userLock,
+        'suspension must serialize with the active-status check via a locked student row after the user lock');
+});
+
 test('recovery complete does not hash passwords for unknown attempts', async () => {
     let hashes = 0;
     const client = { query: async () => ({ rows: [], rowCount: 0 }), release: () => undefined };

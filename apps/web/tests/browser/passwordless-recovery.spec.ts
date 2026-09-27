@@ -272,6 +272,28 @@ test('account security surfaces the last-method guard instead of removing', asyn
     api.assertNoUnexpectedRequests();
 });
 
+test('failed school sign-in start keeps the password fallback available', async ({ page }) => {
+    const api = await installSyntheticApi(page);
+    const pendingId = '91000000-0000-4000-8000-000000000001';
+    await page.route(`${apiOrigin}/api/auth/student/sso/recovery-code`, route => route.fulfill({ headers, json: { success: true, data: { status: 'unconfigured', generation: null, pendingCodeId: null } } }));
+    await page.route(`${apiOrigin}/api/auth/student/sso/identities`, route => route.fulfill({ headers, json: { success: true, data: { identities: [] } } }));
+    await page.route(`${apiOrigin}/api/auth/student/sso/reauth/microsoft/start`, route => route.fulfill({ status: 503, headers, json: { success: false, error: { message: 'unavailable', statusCode: 503 } } }));
+    await page.route(`${apiOrigin}/api/auth/student/sso/reauth`, route => route.fulfill({ status: 201, headers, json: { success: true, data: { grantId: '92000000-0000-4000-8000-000000000001', grantSecret: 'pw-grant', expiresAt: new Date(Date.now() + 60_000).toISOString() } } }));
+    await page.route(`${apiOrigin}/api/auth/student/sso/recovery-code/generate`, route => route.fulfill({ status: 201, headers, json: { success: true, data: { pendingCodeId: pendingId, code: 'fallback-code' } } }));
+    await page.goto('/auth/student/login'); await seedSession(page, 'student');
+    await page.goto('/student/security');
+    await page.getByRole('button', { name: 'Confirm identity to generate a code' }).click();
+    await expect(page.getByText('School sign-in confirmation is unavailable right now.')).toBeVisible();
+    // The password toggle survives the school failure: the
+    // provider-independent flow still completes generation.
+    await page.getByRole('button', { name: 'Use your password instead' }).click();
+    await page.getByRole('button', { name: 'Confirm identity to generate a code' }).click();
+    await page.getByLabel('Current password').fill('Correct!horse-9-battery');
+    await page.getByRole('button', { name: 'Generate code' }).click();
+    await expect(page.getByText('fallback-code')).toBeVisible();
+    api.assertNoUnexpectedRequests();
+});
+
 test('account security links a new school sign-in through sign-out and sign-in', async ({ page }) => {
     const api = await installSyntheticApi(page);
     await page.route(`${apiOrigin}/api/auth/student/sso/recovery-code`, route => route.fulfill({ headers, json: { success: true, data: { status: 'unconfigured', generation: null, pendingCodeId: null } } }));

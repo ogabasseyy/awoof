@@ -855,6 +855,15 @@ test('OpenAPI documents disabled passwordless signup and recovery contracts with
     for (const schema of ['PasswordlessSignupHandoffRequest', 'PasswordlessSignupCompleteRequest', 'RecoveryCodeGenerateRequest', 'RecoveryCodeStatusResponse', 'AccountRecoveryVerifyRequest']) {
         assert.ok(spec.components.schemas[schema], `missing typed OpenAPI schema ${schema}`);
     }
+    // Both OTP fields reject anything but six digits at runtime; the
+    // published contract must match so generated forms cannot accept
+    // requests the API deterministically rejects.
+    assert.deepEqual(spec.components.schemas.PasswordlessSignupVerifyRequest.properties.code, {
+        type: 'string', minLength: 6, maxLength: 6, pattern: '^\\d{6}$', description: 'Six-digit mailbox OTP; anything else is rejected.',
+    });
+    assert.deepEqual(spec.components.schemas.AccountRecoveryVerifyRequest.properties.otp, {
+        type: 'string', minLength: 6, maxLength: 6, pattern: '^\\d{6}$', description: 'Six-digit mailbox OTP; anything else is rejected.',
+    });
 });
 
 const LINK_ACTOR_ID = 'aaaaaaaa-aaaa-4aaa-aaaa-aaaaaaaaaaaa';

@@ -83,6 +83,37 @@ test('independent lost-access recovery consumes the active code, requires normal
     }
 });
 
+test('suspension after verification blocks recovery completion without consuming the code', async () => {
+    const pool = createTestPool();
+    const client = await pool.connect();
+    try {
+        const account = await seedRecoverableStudent(client);
+        let otp = '';
+        const service = new StudentAccountRecoveryService({
+            pool, recoveryCodeKey: 'test-recovery-code-key',
+            deliverOtp: async (_email, delivered) => { otp = delivered; return { success: true }; },
+            validatePassword: () => ({ valid: true, errors: [] }), hashPassword: async () => 'recovered-password-hash',
+        });
+        const started = await service.start({ email: account.email, purpose: 'lost_access' });
+        await service.verify({ attemptId: started.attemptId, secret: started.secret, code: account.code, otp });
+        // Suspend after both proofs verified: completion rechecks the
+        // locked student row instead of replacing the password.
+        await client.query("UPDATE students SET status = 'suspended' WHERE user_id = $1", [account.userId]);
+        await assert.rejects(
+            () => service.complete({ attemptId: started.attemptId, secret: started.secret, password: 'ValidNew1!' }),
+            /not available/i,
+            'a suspension for suspected compromise must not still mint a usable credential',
+        );
+        const after = await client.query<{ password_hash: string | null }>('SELECT password_hash FROM users WHERE id = $1', [account.userId]);
+        assert.equal(after.rows[0]!.password_hash, null);
+        const code = await client.query<{ status: string }>('SELECT status FROM student_auth_recovery_codes WHERE user_id = $1', [account.userId]);
+        assert.equal(code.rows[0]!.status, 'active');
+    } finally {
+        client.release();
+        await pool.end();
+    }
+});
+
 test('unknown-mailbox recovery handles expire exactly like committed ones', async () => {
     const pool = createTestPool();
     const client = await pool.connect();

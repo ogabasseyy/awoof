@@ -72,6 +72,54 @@ test('an expired setup link shows an explicit restart state instead of usable co
     api.assertNoUnexpectedRequests();
 });
 
+test('stale assent versions refetch the new text instead of retrying rejected versions', async ({ page }) => {
+    const requests: string[] = [];
+    const api = await installSyntheticApi(page);
+    let contextCalls = 0; let completeCalls = 0;
+    await page.route(`${apiOrigin}/api/auth/student/sso/signup/**`, async (route) => {
+        const path = new URL(route.request().url()).pathname;
+        requests.push(path);
+        if (path.endsWith('/context')) { contextCalls++; const v = contextCalls === 1 ? '2026-01' : '2026-02'; return route.fulfill({ json: { success: true, data: { email: 'student@school.example', universityId: '72000000-0000-4000-8000-000000000001', termsVersion: v, noticeVersion: v, noticeText: `Synthetic notice ${v}.`, expiresAt: expiresAt() } }, headers }); }
+        if (path.endsWith('/send-code')) return route.fulfill({ status: 201, json: { success: true, data: { challengeId: '73000000-0000-4000-8000-000000000001', expiresAt: expiresAt() } }, headers });
+        if (path.endsWith('/verify-code')) return route.fulfill({ json: { success: true, data: { verified: true, expiresAt: expiresAt() } }, headers });
+        completeCalls++;
+        if (completeCalls === 1) return route.fulfill({ status: 400, json: { success: false, error: { message: 'assent', statusCode: 400 } }, headers });
+        return route.fulfill({ status: 201, json: { success: true, data: { user: { id: 'student-1', email: 'student@school.example', role: 'student' }, tokens: { accessToken: 'signup-access', refreshToken: 'signup-refresh' } } }, headers });
+    });
+    await page.goto('/auth/student/login');
+    await page.evaluate(({ key, handoffId }) => sessionStorage.setItem(key, JSON.stringify({ handoffId, handoffSecret: 'handoff-secret', expiresAt: new Date(Date.now() + 600_000).toISOString(), returnPath: '/marketplace' })), { key: HANDOFF_KEY, handoffId: HANDOFF_ID });
+    await page.goto('/auth/student/sso/onboarding?mode=signup');
+    await page.getByRole('button', { name: 'Send confirmation code' }).click();
+    await page.getByLabel('Email confirmation code').fill('123456');
+    await page.getByRole('button', { name: 'Confirm email' }).click();
+    await expect(page.getByText('Synthetic notice 2026-01.')).toBeVisible();
+    await page.getByLabel('Full name').fill('Synthetic Student');
+    await page.getByLabel('I am at least 18 years old').check();
+    await page.getByLabel('I accept the current Terms').check();
+    await page.getByLabel('I consent to the processing notice').check();
+    await page.getByRole('button', { name: 'Create passwordless account' }).click();
+    // The version-mismatch 400 refetches the new text, resets assent, and
+    // keeps the entered name; the retry then completes the account.
+    await expect(page.getByText('changed while you were signing up')).toBeVisible();
+    await expect(page.getByText('Synthetic notice 2026-02.')).toBeVisible();
+    await expect(page.getByLabel('I accept the current Terms')).not.toBeChecked();
+    await expect(page.getByLabel('Full name')).toHaveValue('Synthetic Student');
+    await page.getByLabel('I am at least 18 years old').check();
+    await page.getByLabel('I accept the current Terms').check();
+    await page.getByLabel('I consent to the processing notice').check();
+    await page.getByRole('button', { name: 'Create passwordless account' }).click();
+    await page.waitForURL('**/marketplace**');
+    expect(requests).toEqual([
+        '/api/auth/student/sso/signup/context',
+        '/api/auth/student/sso/signup/send-code',
+        '/api/auth/student/sso/signup/verify-code',
+        '/api/auth/student/sso/signup/complete',
+        '/api/auth/student/sso/signup/context',
+        '/api/auth/student/sso/signup/complete',
+    ]);
+    api.assertNoUnexpectedRequests();
+});
+
 test('passwordless-session reload keeps security setup separate from enrollment benefits', async ({ page }) => {
     const api = await installSyntheticApi(page);
     await page.route(`${apiOrigin}/api/auth/student/sso/recovery-code`, route => route.fulfill({ headers: { 'access-control-allow-origin': appOrigin, 'access-control-allow-credentials': 'true' }, json: { success: true, data: { status: 'unconfigured', generation: null, pendingCodeId: null } } }));
