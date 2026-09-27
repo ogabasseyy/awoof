@@ -263,7 +263,7 @@ export class AuthController {
 
         // Find user
         const userResult = await db.query(
-            `SELECT id, email, password_hash, role, verification_status, deleted_at
+            `SELECT id, email, password_hash, role, verification_status, deleted_at, recovery_reenrollment_requires_password
              FROM users
              WHERE lower(btrim(email)) = $1`,
             [normalizedEmail]
@@ -314,6 +314,11 @@ export class AuthController {
                     ...(user.role === 'student'
                         ? { studentAssurance: await this.readAssurance(user.id) }
                         : {}),
+                    // Recovery consumes the only active code; surface the
+                    // persistent re-enrollment action until a new code activates.
+                    ...(user.role === 'student' && user.recovery_reenrollment_requires_password === true
+                        ? { recoveryReenrollmentRequired: true }
+                        : {}),
                 },
                 tokens,
             },
@@ -360,7 +365,7 @@ export class AuthController {
 
         // Get user details
         const userResult = await db.query(
-            `SELECT id, email, role, verification_status, created_at
+            `SELECT id, email, role, verification_status, created_at, recovery_reenrollment_requires_password
              FROM users
              WHERE id = $1 AND deleted_at IS NULL`,
             [req.user.userId]
@@ -397,6 +402,9 @@ export class AuthController {
                 verificationStatus: user.verification_status,
                 ...(user.role === 'student'
                     ? { studentAssurance: await this.readAssurance(user.id) }
+                    : {}),
+                ...(user.role === 'student' && user.recovery_reenrollment_requires_password === true
+                    ? { recoveryReenrollmentRequired: true }
                     : {}),
                 profile,
             },

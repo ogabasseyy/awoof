@@ -200,16 +200,24 @@ function StudentLoginInner() {
             title="Welcome back"
             subtitle="Enter your email to find the right way to sign in."
             footer={
-                <p className="text-center text-sm text-slate-600">
-                    Don&apos;t have an account?{' '}
-                    <Link href={registerPath} className="text-[#1D4ED8] hover:underline font-semibold">
-                        Sign up free
-                    </Link>
-                    <span className="mx-2 text-slate-300">·</span>
-                    <Link href="/auth/vendor/login" className="text-slate-500 hover:text-[#1D4ED8] hover:underline">
-                        Vendor login
-                    </Link>
-                </p>
+                <>
+                    <p className="text-center text-sm text-slate-600">
+                        Don&apos;t have an account?{' '}
+                        <Link href={registerPath} className="text-[#1D4ED8] hover:underline font-semibold">
+                            Sign up free
+                        </Link>
+                        <span className="mx-2 text-slate-300">·</span>
+                        <Link href="/auth/vendor/login" className="text-slate-500 hover:text-[#1D4ED8] hover:underline">
+                            Vendor login
+                        </Link>
+                    </p>
+                    <p className="mt-2 text-center text-sm text-slate-600">
+                        Lost access to school sign-in?{' '}
+                        <Link href="/auth/student/recovery" className="text-slate-500 hover:text-[#1D4ED8] hover:underline font-medium">
+                            Recover your account
+                        </Link>
+                    </p>
+                </>
             }
         >
             {noticeCode && (

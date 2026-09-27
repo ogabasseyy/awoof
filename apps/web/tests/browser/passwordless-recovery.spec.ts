@@ -56,11 +56,13 @@ test('fresh grants drive generation then a second re-entry activation without pe
             ? { grantId: '76000000-0000-4000-8000-000000000002', grantSecret: 'activate-grant', expiresAt: new Date(Date.now() + 60_000).toISOString(), purpose: 'recovery_code_activate', pendingCodeId: pendingId, targetIdentityId: null, activeCodeGeneration: null }
             : { grantId: '76000000-0000-4000-8000-000000000001', grantSecret: 'generate-grant', expiresAt: new Date(Date.now() + 60_000).toISOString(), purpose: 'recovery_code_generate', pendingCodeId: null, targetIdentityId: null, activeCodeGeneration: null } } });
     });
-    await page.route(`${apiOrigin}/api/auth/student/sso/recovery-code/generate`, route => route.fulfill({ status: 201, headers, json: { success: true, data: { pendingCodeId: pendingId, code: 'one-time-recovery-code' } } }));
+    await page.route(`${apiOrigin}/api/auth/student/sso/recovery-code/generate`, route => route.fulfill({ status: 201, headers, json: { success: true, data: { pendingCodeId: pendingId, code: 'one-time-recovery-code', expiresAt: new Date(Date.now() + 600_000).toISOString() } } }));
     await page.route(`${apiOrigin}/api/auth/student/sso/recovery-code/activate`, route => { activationBodies.push(JSON.parse(route.request().postData() ?? '{}')); return route.fulfill({ headers, json: { success: true, data: { active: true } } }); });
+    await page.route(`${apiOrigin}/api/auth/student/sso/recovery-code`, route => route.fulfill({ headers, json: { success: true, data: { status: 'pending', generation: 1, pendingCodeId: pendingId, pendingExpiresAt: new Date(Date.now() + 600_000).toISOString() } } }));
     await page.goto('/auth/student/login'); await seedSession(page, 'student');
     await page.goto('/auth/student/sso/complete?reauth=75000000-0000-4000-8000-000000000001');
     await expect(page.getByText('one-time-recovery-code')).toBeVisible();
+    await expect(page.getByRole('timer')).toContainText(/Activate this code within \d+:\d\d/);
     expect(await page.evaluate(() => `${location.href}|${localStorage.getItem('awoof.session.v1')}|${sessionStorage.getItem('awoof.recovery.intent.v1.tab') ?? ''}`)).not.toContain('one-time-recovery-code');
     await page.getByRole('button', { name: 'I saved my code' }).click();
     await page.goto('/auth/student/sso/complete?reauth=75000000-0000-4000-8000-000000000002');
@@ -97,8 +99,10 @@ test('replacement activation submits the current code alongside the re-entered c
     const activationBodies: unknown[] = [];
     await page.route(`${apiOrigin}/api/auth/student/sso/reauth/finish`, route => route.fulfill({ status: 201, headers, json: { success: true, data: { grantId: '80000000-0000-4000-8000-000000000001', grantSecret: 'activate-grant', expiresAt: new Date(Date.now() + 60_000).toISOString(), purpose: 'recovery_code_activate', pendingCodeId: pendingId, targetIdentityId: null, activeCodeGeneration: 1 } } }));
     await page.route(`${apiOrigin}/api/auth/student/sso/recovery-code/activate`, route => { activationBodies.push(JSON.parse(route.request().postData() ?? '{}')); return route.fulfill({ headers, json: { success: true, data: { active: true } } }); });
+    await page.route(`${apiOrigin}/api/auth/student/sso/recovery-code`, route => route.fulfill({ headers, json: { success: true, data: { status: 'pending', generation: 2, pendingCodeId: pendingId, pendingExpiresAt: new Date(Date.now() + 600_000).toISOString() } } }));
     await page.goto('/auth/student/login'); await seedSession(page, 'student');
     await page.goto('/auth/student/sso/complete?reauth=81000000-0000-4000-8000-000000000001');
+    await expect(page.getByRole('timer')).toContainText(/Activate this code within \d+:\d\d/);
     await page.getByLabel('Re-enter saved recovery code').fill('replacement-code');
     await page.getByLabel('Current recovery code').fill('old-code');
     await page.getByRole('button', { name: 'Activate recovery code' }).click();
@@ -114,7 +118,7 @@ test('password confirmation drives generation then activation without a provider
     let statusCalls = 0;
     await page.route(`${apiOrigin}/api/auth/student/sso/recovery-code`, route => { statusCalls++; return route.fulfill({ headers, json: { success: true, data: statusCalls === 1 ? { status: 'unconfigured', generation: null, pendingCodeId: null } : { status: 'active', generation: 1, pendingCodeId: null } } }); });
     await page.route(`${apiOrigin}/api/auth/student/sso/reauth`, route => { bodies.push(JSON.parse(route.request().postData() ?? '{}')); return route.fulfill({ status: 201, headers, json: { success: true, data: { grantId: '83000000-0000-4000-8000-000000000001', grantSecret: 'pw-grant', expiresAt: new Date(Date.now() + 60_000).toISOString() } } }); });
-    await page.route(`${apiOrigin}/api/auth/student/sso/recovery-code/generate`, route => { bodies.push(JSON.parse(route.request().postData() ?? '{}')); return route.fulfill({ status: 201, headers, json: { success: true, data: { pendingCodeId: pendingId, code: 'password-flow-code' } } }); });
+    await page.route(`${apiOrigin}/api/auth/student/sso/recovery-code/generate`, route => { bodies.push(JSON.parse(route.request().postData() ?? '{}')); return route.fulfill({ status: 201, headers, json: { success: true, data: { pendingCodeId: pendingId, code: 'password-flow-code', expiresAt: new Date(Date.now() + 600_000).toISOString() } } }); });
     await page.route(`${apiOrigin}/api/auth/student/sso/recovery-code/activate`, route => { bodies.push(JSON.parse(route.request().postData() ?? '{}')); return route.fulfill({ headers, json: { success: true, data: { active: true } } }); });
     await page.route(`${apiOrigin}/api/auth/student/sso/identities`, route => route.fulfill({ headers, json: { success: true, data: { identities: [] } } }));
     await page.goto('/auth/student/login'); await seedSession(page, 'student');
@@ -124,7 +128,9 @@ test('password confirmation drives generation then activation without a provider
     await page.getByLabel('Current password').fill('Correct!horse-9-battery');
     await page.getByRole('button', { name: 'Generate code' }).click();
     await expect(page.getByText('password-flow-code')).toBeVisible();
+    await expect(page.getByRole('timer')).toContainText(/Activate this code within \d+:\d\d/);
     await page.getByRole('button', { name: 'I saved my code' }).click();
+    await expect(page.getByRole('timer')).toContainText(/Activate this code within \d+:\d\d/);
     await page.getByLabel('Current password').fill('Correct!horse-9-battery');
     await page.getByLabel('Re-enter saved recovery code').fill('password-flow-code');
     await page.getByRole('button', { name: 'Activate code' }).click();
@@ -294,17 +300,61 @@ test('failed school sign-in start keeps the password fallback available', async 
     api.assertNoUnexpectedRequests();
 });
 
-test('account security links a new school sign-in through sign-out and sign-in', async ({ page }) => {
+test('account security links a new school sign-in through school confirmation', async ({ page }) => {
     const api = await installSyntheticApi(page);
+    const bodies: unknown[] = [];
     await page.route(`${apiOrigin}/api/auth/student/sso/recovery-code`, route => route.fulfill({ headers, json: { success: true, data: { status: 'unconfigured', generation: null, pendingCodeId: null } } }));
     await page.route(`${apiOrigin}/api/auth/student/sso/identities`, route => route.fulfill({ headers, json: { success: true, data: { identities: [] } } }));
+    await page.route(`${apiOrigin}/api/auth/student/sso/reauth/microsoft/start`, route => { bodies.push(JSON.parse(route.request().postData() ?? '{}')); return route.fulfill({ status: 503, headers, json: { success: false, error: { message: 'unavailable', statusCode: 503 } } }); });
     await page.goto('/auth/student/login'); await seedSession(page, 'student');
     await page.goto('/student/security');
     await expect(page.getByText('No school sign-ins are linked.')).toBeVisible();
-    // Linking completes through provider sign-in while signed out, so the
-    // entry point revokes this session before returning to sign-in.
-    await page.getByRole('button', { name: 'Sign out and link a school sign-in' }).click();
-    await expect.poll(() => api.logoutCalls).toBe(1);
-    await expect(page).toHaveURL(/\/auth\/student\/login$/);
+    // Linking confirms against the signed-in account with a Microsoft
+    // fresh proof, so passwordless owners are not sent down a password
+    // journey. The failure path stays inline with the session intact.
+    await page.getByRole('button', { name: 'Link a school sign-in' }).click();
+    await expect(page.getByText('School sign-in confirmation could not start.')).toBeVisible();
+    expect(bodies).toEqual([{ purpose: 'link' }]);
+    expect(api.logoutCalls).toBe(0);
+    await expect(page).toHaveURL(/\/student\/security$/);
+    api.assertNoUnexpectedRequests();
+});
+
+test('an expired pending code shows a restart state instead of a usable activation form', async ({ page }) => {
+    const api = await installSyntheticApi(page);
+    const pendingId = '93000000-0000-4000-8000-000000000001';
+    await page.route(`${apiOrigin}/api/auth/student/sso/reauth/finish`, route => route.fulfill({ status: 201, headers, json: { success: true, data: { grantId: '94000000-0000-4000-8000-000000000001', grantSecret: 'activate-grant', expiresAt: new Date(Date.now() + 60_000).toISOString(), purpose: 'recovery_code_activate', pendingCodeId: pendingId, targetIdentityId: null, activeCodeGeneration: null } } }));
+    await page.route(`${apiOrigin}/api/auth/student/sso/recovery-code`, route => route.fulfill({ headers, json: { success: true, data: { status: 'pending', generation: 1, pendingCodeId: pendingId, pendingExpiresAt: new Date(Date.now() + 2_000).toISOString() } } }));
+    await page.goto('/auth/student/login'); await seedSession(page, 'student');
+    await page.goto('/auth/student/sso/complete?reauth=95000000-0000-4000-8000-000000000001');
+    await expect(page.getByRole('timer')).toContainText(/Activate this code within \d+:\d\d/);
+    await expect(page.getByRole('heading', { name: 'Pending code expired' })).toBeVisible();
+    await expect(page.getByText('expired before activation and cannot recover your account')).toBeVisible();
+    expect(await page.getByRole('button', { name: 'Activate recovery code' }).count()).toBe(0);
+    api.assertNoUnexpectedRequests();
+});
+
+test('an expired pending on account security refreshes to current status and restarts', async ({ page }) => {
+    const api = await installSyntheticApi(page);
+    const pendingId = '96000000-0000-4000-8000-000000000001';
+    let statusCalls = 0;
+    await page.route(`${apiOrigin}/api/auth/student/sso/recovery-code`, route => { statusCalls++; return route.fulfill({ headers, json: { success: true, data: statusCalls === 1 ? { status: 'pending', generation: 1, pendingCodeId: pendingId, pendingExpiresAt: new Date(Date.now() + 2_000).toISOString() } : { status: 'unconfigured', generation: 1, pendingCodeId: null, pendingExpiresAt: null } } }); });
+    await page.route(`${apiOrigin}/api/auth/student/sso/identities`, route => route.fulfill({ headers, json: { success: true, data: { identities: [] } } }));
+    await page.goto('/auth/student/login'); await seedSession(page, 'student');
+    await page.goto('/student/security');
+    await expect(page.getByRole('timer')).toContainText(/Activate this code within \d+:\d\d/);
+    await expect(page.getByText('expired before activation and cannot recover your account')).toBeVisible();
+    await page.getByRole('button', { name: 'Refresh status' }).click();
+    await expect(page.getByRole('button', { name: 'Confirm identity to generate a code' })).toBeVisible();
+    api.assertNoUnexpectedRequests();
+});
+
+test('marketplace surfaces recovery-code re-enrollment after account recovery', async ({ page }) => {
+    const api = await installSyntheticApi(page);
+    await page.route(`${apiOrigin}/api/auth/me`, route => route.fulfill({ headers, json: { success: true, data: { id: '00000000-0000-4000-8000-000000000001', email: 'student@approved.test', role: 'student', verificationStatus: 'verified', recoveryReenrollmentRequired: true } } }));
+    await page.goto('/auth/student/login'); await seedSession(page, 'student');
+    await page.goto('/marketplace');
+    await expect(page.getByText('Account recovery used your only recovery code.')).toBeVisible();
+    await expect(page.getByRole('link', { name: 'Set up a new code' })).toHaveAttribute('href', '/student/security');
     api.assertNoUnexpectedRequests();
 });

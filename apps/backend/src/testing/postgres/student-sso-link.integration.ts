@@ -8,6 +8,7 @@ import {
     type StudentSsoLinkDependencies,
 } from '../../services/auth/student-sso-link.service.js';
 import { passwordService } from '../../services/auth/password.service.js';
+import { issueActionGrant } from '../../services/auth/student-action-grant.service.js';
 import { studentSsoCookieName } from '../../services/auth/student-sso-flow.service.js';
 import {
     encryptMicrosoftAttemptVerifier,
@@ -1071,6 +1072,111 @@ test('link permits microsoft login without membership but records no assertion',
         assert.equal(result.outcome, 'linked');
         if (result.outcome !== 'linked') throw new Error('Microsoft link did not succeed');
         assert.equal(result.schoolAssertion, 'not_attested');
+    });
+});
+
+test('link revalidates a revoked provider proof at grant consumption', async () => {
+    await withLinkPool(async (pool) => {
+        const attemptKey = randomBytes(32).toString('base64url');
+        const service = makeService(pool, attemptKey);
+        const client = await pool.connect();
+        let owner;
+        let policy;
+        let handoff;
+        let grantA: { grantId: string; grantSecret: string };
+        let grantB: { grantId: string; grantSecret: string };
+        try {
+            owner = await seedOwner(client, {});
+            policy = await seedPolicy(client, owner.universityId, owner.email.split('@')[1]!, {
+                provider: 'microsoft',
+                realm: MICROSOFT_TENANT,
+            });
+            const proofA = (await client.query<{ id: string }>(
+                `INSERT INTO student_auth_identities (user_id, university_id, provider, issuer, subject)
+                 VALUES ($1, $2, 'microsoft', $3, $4) RETURNING id`,
+                [owner.userId, owner.universityId, policy.issuer, `proof-a-${uniqueLabel()}`],
+            )).rows[0]!.id;
+            const proofB = (await client.query<{ id: string }>(
+                `INSERT INTO student_auth_identities (user_id, university_id, provider, issuer, subject)
+                 VALUES ($1, $2, 'microsoft', $3, $4) RETURNING id`,
+                [owner.userId, owner.universityId, policy.issuer, `proof-b-${uniqueLabel()}`],
+            )).rows[0]!.id;
+            handoff = await seedHandoff(client, attemptKey, policy, {
+                provider: 'microsoft',
+                issuer: policy.issuer,
+                subject: `ms-proof-${uniqueLabel()}`,
+                email: owner.email,
+                mailboxVerified: false,
+                realm: MICROSOFT_TENANT,
+                schoolMembershipAttested: false,
+                objectId: randomUUID(),
+            });
+            grantA = await issueActionGrant(client, { userId: owner.userId, sid: owner.sid, purpose: 'link', credentialGeneration: 0, proofIdentityId: proofA });
+            grantB = await issueActionGrant(client, { userId: owner.userId, sid: owner.sid, purpose: 'link', credentialGeneration: 0, proofIdentityId: proofB });
+            // Revoke after issuance: the five-minute grant must not survive it.
+            await client.query('UPDATE student_auth_identities SET revoked_at = clock_timestamp() WHERE id = $1', [proofA]);
+        } finally {
+            client.release();
+        }
+        const attempt = (grant: { grantId: string; grantSecret: string }) => service.link({
+            userId: owner.userId,
+            sid: owner.sid,
+            handoffId: handoff.handoffId,
+            handoffSecret: handoff.handoffSecret,
+            browserCookies: cookiesFor(handoff.attemptId, handoff.cookieSecret),
+            grantId: grant.grantId,
+            grantSecret: grant.grantSecret,
+        });
+        await assert.rejects(() => attempt(grantA), /no longer valid/,
+            'a provider proof revoked mid-grant must not authorize linking another identity');
+        // The failed consumption spent neither the handoff nor the live grant.
+        const result = await attempt(grantB);
+        assert.equal(result.outcome, 'linked');
+    });
+});
+
+test('unlink revalidates a revoked provider proof at grant consumption', async () => {
+    await withLinkPool(async (pool) => {
+        const attemptKey = randomBytes(32).toString('base64url');
+        const service = makeService(pool, attemptKey);
+        const client = await pool.connect();
+        let owner;
+        let target: string;
+        let grant: { grantId: string; grantSecret: string };
+        try {
+            owner = await seedOwner(client, {});
+            // The proof revalidation requires a live policy for the proof
+            // identity's exact university, provider, and issuer.
+            await seedPolicy(client, owner.universityId, owner.email.split('@')[1]!);
+            const proof = (await client.query<{ id: string }>(
+                `INSERT INTO student_auth_identities (user_id, university_id, provider, issuer, subject)
+                 VALUES ($1, $2, 'google', $3, $4) RETURNING id`,
+                [owner.userId, owner.universityId, GOOGLE_ISSUER, `proof-${uniqueLabel()}`],
+            )).rows[0]!.id;
+            target = (await client.query<{ id: string }>(
+                `INSERT INTO student_auth_identities (user_id, university_id, provider, issuer, subject)
+                 VALUES ($1, $2, 'google', $3, $4) RETURNING id`,
+                [owner.userId, owner.universityId, GOOGLE_ISSUER, `target-${uniqueLabel()}`],
+            )).rows[0]!.id;
+            grant = await issueActionGrant(client, { userId: owner.userId, sid: owner.sid, purpose: 'unlink', credentialGeneration: 0, proofIdentityId: proof, targetIdentityId: target });
+            await client.query('UPDATE student_auth_identities SET revoked_at = clock_timestamp() WHERE id = $1', [proof]);
+        } finally {
+            client.release();
+        }
+        await assert.rejects(
+            () => service.unlink({ userId: owner.userId, sid: owner.sid, identityId: target, grantId: grant.grantId, grantSecret: grant.grantSecret }),
+            /no longer valid/,
+            'a provider proof revoked mid-grant must not authorize removing another identity',
+        );
+        const check = await pool.connect();
+        try {
+            const kept = await check.query<{ revoked_at: Date | null }>(
+                'SELECT revoked_at FROM student_auth_identities WHERE id = $1', [target],
+            );
+            assert.equal(kept.rows[0]!.revoked_at, null);
+        } finally {
+            check.release();
+        }
     });
 });
 

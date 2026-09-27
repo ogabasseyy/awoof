@@ -839,7 +839,8 @@ export async function cleanupStudentSsoTransients(client: PoolClient): Promise<S
             + (SELECT count(*) FROM student_auth_attempts
                WHERE expires_at <= clock_timestamp() - interval '1 hour' AND status IN ('pending', 'processing', 'ready'))
             + (SELECT count(*) FROM student_auth_link_handoffs
-               WHERE expires_at <= clock_timestamp() - interval '1 hour' AND consumed_at IS NULL
+               WHERE ((expires_at <= clock_timestamp() - interval '1 hour' AND consumed_at IS NULL)
+                      OR (consumed_at IS NOT NULL AND consumed_at <= clock_timestamp() - interval '1 hour'))
                  AND (secret_hash IS NOT NULL OR browser_binding_hash IS NOT NULL OR encrypted_observation IS NOT NULL))
             + (SELECT count(*) FROM student_auth_signup_challenges
                WHERE expires_at <= clock_timestamp() - interval '1 hour' AND status IN ('pending', 'mailbox_verified'))
@@ -917,10 +918,16 @@ export async function cleanupStudentSsoTransients(client: PoolClient): Promise<S
     );
     // Handoff ciphertext and one-use/browser secrets all become inert at
     // expiry; migration 074 permits this only after expiry or consumption.
+    // Consumed handoffs past the one-hour bound are included: rows consumed
+    // before the consume-time scrub deployed still carry binding digests
+    // that would otherwise wait out the seven-day tombstone. The bound
+    // mirrors the overdue predicate below and keeps fresh in-flight rows
+    // (which the consume path already scrubs) out of this catch-up.
     const scrubbed = await client.query(
         `UPDATE student_auth_link_handoffs
          SET secret_hash = NULL, browser_binding_hash = NULL, encrypted_observation = NULL
-         WHERE expires_at <= clock_timestamp() AND consumed_at IS NULL
+         WHERE ((expires_at <= clock_timestamp() AND consumed_at IS NULL)
+                OR (consumed_at IS NOT NULL AND consumed_at <= clock_timestamp() - interval '1 hour'))
            AND (secret_hash IS NOT NULL OR browser_binding_hash IS NOT NULL OR encrypted_observation IS NOT NULL)`,
     );
     // The signup FK intentionally does not cascade: retain completed

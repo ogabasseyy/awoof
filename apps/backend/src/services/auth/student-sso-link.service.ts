@@ -370,7 +370,7 @@ export class StudentSsoLinkService {
                     // conflict, no revelation of the match.
                     throw new ConflictError('Student SSO identity is already linked');
                 }
-                await consumeActionGrant(tx, { userId, sid, grantId, secret: grantSecret, purpose: 'link' }).catch(() => { throw invalidLink(); });
+                await this.consumeProofGrant(tx, { userId, sid, grantId, secret: grantSecret, purpose: 'link' }, invalidLink);
                 // Mailbox binding: the owner must hold an independently proven
                 // school mailbox whose domain this policy approves, at the
                 // policy's university. Email claim equality alone never links.
@@ -526,8 +526,7 @@ export class StudentSsoLinkService {
             if (!row || row.user_id !== userId || row.revoked_at !== null) {
                 throw new NotFoundError('Student SSO login identity not found');
             }
-            await consumeActionGrant(tx, { userId, sid, grantId, secret: grantSecret, purpose: 'unlink', targetIdentityId: identityId })
-                .catch(() => { throw invalidUnlink(); });
+            await this.consumeProofGrant(tx, { userId, sid, grantId, secret: grantSecret, purpose: 'unlink', targetIdentityId: identityId }, invalidUnlink);
             const sibling = await tx.query<{ provider: LoginProvider }>(
                 `SELECT identity.provider FROM student_auth_identities identity
                  JOIN institution_login_policies policy ON policy.university_id = identity.university_id
@@ -590,6 +589,48 @@ export class StudentSsoLinkService {
             }));
     }
 
+
+    /**
+     * Consume a link/unlink grant only while its provider proof is still
+     * live. A five-minute grant outlives revocation, policy expiry, and
+     * provider rollback, so the proof identity and its exact current
+     * policy/provider gate are rechecked under lock first, mirroring
+     * recovery-code consumers. Password-backed grants carry no provider
+     * proof and skip the recheck, keeping owner unlink available.
+     */
+    private async consumeProofGrant(
+        tx: PoolClient,
+        input: { userId: string; sid: string; grantId: string; secret: string; purpose: 'link' | 'unlink'; targetIdentityId?: string },
+        invalid: () => Error,
+    ): Promise<void> {
+        const grant = await tx.query<{ proof_identity_id: string | null }>(
+            'SELECT proof_identity_id FROM student_auth_action_grants WHERE id = $1 AND user_id = $2 FOR UPDATE',
+            [input.grantId, input.userId],
+        );
+        const proofIdentityId = grant.rows[0]?.proof_identity_id ?? null;
+        if (proofIdentityId) {
+            const identity = await tx.query<{ revoked_at: Date | null; provider: string; university_id: string; issuer: string }>(
+                'SELECT revoked_at, provider, university_id, issuer FROM student_auth_identities WHERE id = $1 AND user_id = $2 FOR UPDATE',
+                [proofIdentityId, input.userId],
+            );
+            const row = identity.rows[0];
+            if (!row || row.revoked_at !== null || (row.provider !== 'google' && row.provider !== 'microsoft')) throw invalid();
+            if (this.deps.isProviderEnabled?.(row.provider as LoginProvider) !== true) throw invalid();
+            const policy = await tx.query<{ id: string }>(
+                `SELECT id FROM institution_login_policies
+                 WHERE university_id = $1 AND provider = $2 AND issuer = $3 AND enabled AND approved_until > clock_timestamp()
+                 LIMIT 1`,
+                [row.university_id, row.provider, row.issuer],
+            );
+            if (!policy.rows[0]) throw invalid();
+        }
+        try {
+            await consumeActionGrant(tx, {
+                userId: input.userId, sid: input.sid, grantId: input.grantId, secret: input.secret, purpose: input.purpose,
+                ...(input.targetIdentityId === undefined ? {} : { targetIdentityId: input.targetIdentityId }),
+            });
+        } catch { throw invalid(); }
+    }
 
     private async consumeHandoff(tx: PoolClient, handoffId: string, userId: string, sid: string): Promise<void> {
         // The observation is decoded before use on the link and mismatch

@@ -177,3 +177,15 @@ test('student login submits once by Enter and locks password controls while pend
     await api.drainPendingHandlers();
   }
 });
+
+test('student login links the passwordless lockout path to account recovery', async ({ page }) => {
+  const api = await installSyntheticApi(page);
+  const faults = collectBrowserFaults(page, api);
+
+  await page.goto('/auth/student/login');
+  await expect(page.getByRole('link', { name: 'Recover your account' }))
+    .toHaveAttribute('href', '/auth/student/recovery');
+  await page.getByRole('link', { name: 'Recover your account' }).click();
+  await expect(page.getByRole('heading', { name: 'Account recovery' })).toBeVisible();
+  await assertCleanFixture(api, faults);
+});

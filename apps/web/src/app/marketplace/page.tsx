@@ -239,6 +239,13 @@ export default function MarketplacePage() {
                 <span>Student-only discounts — verified campus prices</span>
             </div>
 
+            {user?.role === 'student' && user.recoveryReenrollmentRequired === true ? (
+                <div className="bg-amber-50 text-amber-900 px-4 py-2.5 flex items-center justify-center gap-2 text-xs sm:text-sm font-medium border-b border-amber-200">
+                    <span role="status">Account recovery used your only recovery code. Save a replacement so you keep independent recovery.</span>
+                    <Link href="/student/security" className="underline font-semibold shrink-0">Set up a new code</Link>
+                </div>
+            ) : null}
+
             <header className="sticky top-0 z-40 bg-white/80 backdrop-blur-md border-b border-slate-200/80">
                 <div className="mx-auto max-w-6xl px-4 py-3">
                     <div className="flex items-center justify-between gap-3">

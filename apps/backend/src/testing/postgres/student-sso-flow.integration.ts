@@ -1322,6 +1322,7 @@ test('cleanup scrubs expired ciphertext and deletes only aged transients', async
         let freshAttempt: string;
         let handoffAttempt: string;
         let laggedHandoffAttempt: string;
+        let legacyHandoffId: string;
         let expiredReauthAttempt: string;
         let expiredRecoveryAttempt: string;
         let terminalReauthAttempt: string;
@@ -1415,6 +1416,20 @@ test('cleanup scrubs expired ciphertext and deletes only aged transients', async
                          clock_timestamp() - interval '8 days', clock_timestamp() - interval '6 days', clock_timestamp() - interval '8 days')`,
                 [laggedHandoffAttempt, hashMicrosoftAttemptSecret(`signup-${uniqueLabel()}`), hashMicrosoftAttemptSecret(`signup-binding-${uniqueLabel()}`)],
             );
+            // A pre-deployment consumed handoff: the old consume path kept
+            // the binding digests, so cleanup must catch the residue up
+            // instead of retaining it until the tombstone is deleted.
+            const legacyHandoffAttempt = await insertAttempt('8 days', 'consumed', false);
+            legacyHandoffId = (await setup.query<{ id: string }>(
+                `INSERT INTO student_auth_link_handoffs
+                     (attempt_id, secret_hash, encrypted_observation, policy_id, policy_version, browser_binding_hash,
+                      expires_at, created_at, consumed_at, target_user_id, target_sid)
+                 VALUES ($1, $2, 'scrubbed', $3, 1, $4, clock_timestamp() - interval '8 days',
+                         clock_timestamp() - interval '8 days', clock_timestamp() - interval '8 days', $5, $6::uuid)
+                 RETURNING id`,
+                [legacyHandoffAttempt, hashMicrosoftAttemptSecret(`legacy-handoff-${uniqueLabel()}`), policyId,
+                    hashMicrosoftAttemptSecret('legacy-binding'), userId, randomUUID()],
+            )).rows[0]!.id;
             await setup.query(
                 `INSERT INTO student_auth_reauth_grants (user_id, sid, purpose, secret_hash, expires_at, created_at)
                  VALUES ($1, $2, 'link', $3, clock_timestamp() - interval '8 days', clock_timestamp() - interval '8 days')`,
@@ -1542,22 +1557,23 @@ test('cleanup scrubs expired ciphertext and deletes only aged transients', async
         }
         // The aged handoff is scrubbed before it is deleted, so it counts in
         // both steps; the lagged handoff is scrubbed in place and retained
-        // for its referencing signup child. No other suite backdates SSO transients.
+        // for its referencing signup child. The legacy consumed handoff is
+        // scrubbed and deleted with its attempt. No other suite backdates SSO transients.
         assert.equal(result.attemptsFailed, 1);
-        assert.equal(result.handoffsScrubbed, 3);
-        assert.equal(result.attemptsDeleted, 2);
-        assert.equal(result.handoffsDeleted, 1);
+        assert.equal(result.handoffsScrubbed, 4);
+        assert.equal(result.attemptsDeleted, 3);
+        assert.equal(result.handoffsDeleted, 2);
         assert.equal(result.grantsDeleted, 1);
         assert.equal((result as unknown as { actionGrantsScrubbed?: number }).actionGrantsScrubbed, 1,
             'expired action grants must lose their digest on the next cleanup pass');
         assert.equal((result as unknown as { recoveryCodesScrubbed?: number }).recoveryCodesScrubbed, 1,
             'expired pending recovery-code digests must be terminalized on the next cleanup pass');
-        assert.equal((result as unknown as { terminalSecretsScrubbed?: number }).terminalSecretsScrubbed, 7,
-            'catch-up scrubs already-terminal login, reauthentication, and recovery rows before their expiry');
-        assert.equal((result as unknown as { overdueExpired?: number }).overdueExpired, 3,
-            'monitoring reports every class that sat expired past the one-hour retention bound: the action grant plus the two aged handoffs');
-        assert.equal((result as unknown as { overdueTerminalSecrets?: number }).overdueTerminalSecrets, 6,
-            'monitoring reports terminal rows that kept secrets past the one-hour retention bound, including ones this pass repairs');
+        assert.equal((result as unknown as { terminalSecretsScrubbed?: number }).terminalSecretsScrubbed, 8,
+            'catch-up scrubs already-terminal login, reauthentication, and recovery rows before their expiry, including the legacy handoff attempt');
+        assert.equal((result as unknown as { overdueExpired?: number }).overdueExpired, 4,
+            'monitoring reports every class that sat expired past the one-hour retention bound: the action grant, the two aged handoffs, and the legacy consumed handoff');
+        assert.equal((result as unknown as { overdueTerminalSecrets?: number }).overdueTerminalSecrets, 7,
+            'monitoring reports terminal rows that kept secrets past the one-hour retention bound, including ones this pass repairs and the legacy handoff attempt');
 
         const unblock = await pool.connect();
         try {
@@ -1635,6 +1651,8 @@ test('cleanup scrubs expired ciphertext and deletes only aged transients', async
                 'aged completed signup tombstones are deleted before their non-cascading handoff parent');
             const deletedHandoff = await check.query('SELECT id FROM student_auth_link_handoffs WHERE attempt_id = $1', [handoffAttempt]);
             assert.equal(deletedHandoff.rowCount, 0, 'the completed signup handoff is deleted without aborting later cleanup');
+            const legacyHandoff = await check.query('SELECT id FROM student_auth_link_handoffs WHERE id = $1', [legacyHandoffId]);
+            assert.equal(legacyHandoff.rowCount, 0, 'the legacy consumed handoff is scrubbed then deleted with no residue retained');
             const lagged = await check.query(
                 `SELECT signup.id AS signup_id
                  FROM student_auth_signup_challenges signup

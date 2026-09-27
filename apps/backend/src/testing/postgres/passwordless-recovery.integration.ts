@@ -579,14 +579,18 @@ test('pending codes cannot recover and activation leaves only a digest at rest',
         );
         assert.equal(stored.rows[0]!.status, 'pending');
         assert.notEqual(stored.rows[0]!.code_digest, pending.code);
-        assert.equal((await service.status({ userId })).status, 'pending');
+        const pendingStatus = await service.status({ userId });
+        assert.equal(pendingStatus.status, 'pending');
+        assert.equal(pendingStatus.pendingCodeId, pending.pendingCodeId);
+        assert.ok(pendingStatus.pendingExpiresAt && Date.parse(pendingStatus.pendingExpiresAt) > Date.now(),
+            'status exposes the live pending activation deadline for display across navigation and reload');
 
         const activation = await grant(client, { userId, purpose: 'recovery_code_activate', pendingCodeId: pending.pendingCodeId });
         await service.activate({
             userId, sid: SID, grantId: activation.grantId, secret: activation.grantSecret,
             pendingCodeId: pending.pendingCodeId, code: pending.code,
         });
-        assert.deepEqual(await service.status({ userId }), { status: 'active', generation: 1, pendingCodeId: null });
+        assert.deepEqual(await service.status({ userId }), { status: 'active', generation: 1, pendingCodeId: null, pendingExpiresAt: null });
         const activated = await client.query<{ pending_sid: string | null; pending_credential_generation: string | null; pending_proof_identity_id: string | null }>(
             'SELECT pending_sid, pending_credential_generation, pending_proof_identity_id FROM student_auth_recovery_codes WHERE id = $1',
             [pending.pendingCodeId],
@@ -620,7 +624,7 @@ test('suspension after grant issuance blocks recovery-code enrollment and activa
             /not available/i,
             'a grant issued before suspension must not enroll a code after it',
         );
-        assert.deepEqual(await service.status({ userId }), { status: 'unconfigured', generation: null, pendingCodeId: null });
+        assert.deepEqual(await service.status({ userId }), { status: 'unconfigured', generation: null, pendingCodeId: null, pendingExpiresAt: null });
     } finally {
         client.release();
         await pool.end();
@@ -670,7 +674,7 @@ test('status falls back to the active code when a replacement candidate expired'
         const replacement = await service.generate({ userId, sid: SID, grantId: replacementGrant.grantId, secret: replacementGrant.grantSecret, oldCode: initial.code });
         assert.equal((await service.status({ userId })).status, 'pending');
         await client.query(`UPDATE student_auth_recovery_codes SET expires_at = clock_timestamp() WHERE id = $1`, [replacement.pendingCodeId]);
-        assert.deepEqual(await service.status({ userId }), { status: 'active', generation: 1, pendingCodeId: null });
+        assert.deepEqual(await service.status({ userId }), { status: 'active', generation: 1, pendingCodeId: null, pendingExpiresAt: null });
         // The shared suite asserts exact cleanup counts: an expired pending
         // left behind would inflate the next file's terminalization count.
         await client.query(`DELETE FROM student_auth_recovery_codes WHERE id = $1`, [replacement.pendingCodeId]);
@@ -703,7 +707,7 @@ test('replacement and removal require the current active code and exact separate
             (error: unknown) => (error as { code?: string }).code === 'CONFLICT',
         );
         await service.activate({ userId, sid: SID, grantId: replacementActivation.grantId, secret: replacementActivation.grantSecret, pendingCodeId: replacement.pendingCodeId, code: replacement.code, oldCode: initial.code });
-        assert.deepEqual(await service.status({ userId }), { status: 'active', generation: 2, pendingCodeId: null });
+        assert.deepEqual(await service.status({ userId }), { status: 'active', generation: 2, pendingCodeId: null, pendingExpiresAt: null });
 
         const remove = await grant(client, { userId, purpose: 'recovery_code_remove', activeCodeGeneration: 2 });
         await assert.rejects(
@@ -711,7 +715,7 @@ test('replacement and removal require the current active code and exact separate
             (error: unknown) => (error as { code?: string }).code === 'CONFLICT',
         );
         await service.remove({ userId, sid: SID, grantId: remove.grantId, secret: remove.grantSecret, oldCode: replacement.code });
-        assert.deepEqual(await service.status({ userId }), { status: 'unconfigured', generation: 2, pendingCodeId: null });
+        assert.deepEqual(await service.status({ userId }), { status: 'unconfigured', generation: 2, pendingCodeId: null, pendingExpiresAt: null });
     } finally {
         client.release();
         await pool.end();
@@ -909,11 +913,11 @@ test('credential-free activation, replacement, and removal notices run after com
         const replacement = await service.generate({ userId, sid: SID, grantId: replacementGrant.grantId, secret: replacementGrant.grantSecret, oldCode: first.code });
         const replacementActivation = await grant(client, { userId, purpose: 'recovery_code_activate', pendingCodeId: replacement.pendingCodeId, activeCodeGeneration: 1 });
         await service.activate({ userId, sid: SID, grantId: replacementActivation.grantId, secret: replacementActivation.grantSecret, pendingCodeId: replacement.pendingCodeId, code: replacement.code, oldCode: first.code });
-        assert.deepEqual(await service.status({ userId }), { status: 'active', generation: 2, pendingCodeId: null }, 'failed delivery must not roll back replacement');
+        assert.deepEqual(await service.status({ userId }), { status: 'active', generation: 2, pendingCodeId: null, pendingExpiresAt: null }, 'failed delivery must not roll back replacement');
 
         const removal = await grant(client, { userId, purpose: 'recovery_code_remove', activeCodeGeneration: 2 });
         await service.remove({ userId, sid: SID, grantId: removal.grantId, secret: removal.grantSecret, oldCode: replacement.code });
-        assert.deepEqual(await service.status({ userId }), { status: 'unconfigured', generation: 2, pendingCodeId: null });
+        assert.deepEqual(await service.status({ userId }), { status: 'unconfigured', generation: 2, pendingCodeId: null, pendingExpiresAt: null });
         assert.deepEqual(events, ['activated', 'replaced', 'removed']);
     } finally {
         client.release();

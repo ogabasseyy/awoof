@@ -39,7 +39,7 @@ export const helpSections: HelpSection[] = [
   {
     heading: 'Account recovery',
     paragraphs: [
-      'Account recovery needs the proofs requested by the account-recovery flow. For passwordless accounts, control of a school mailbox by itself does not transfer the account or prove current enrollment; the saved recovery code is required as well. Accounts with a password use password reset instead.',
+      'Account recovery needs the proofs requested by the account-recovery flow. For passwordless accounts, control of a school mailbox by itself does not transfer the account or prove current enrollment; the saved recovery code is required as well. Accounts with a password can still use password reset, and can also enroll a recovery code to use this flow.',
       'If you cannot complete a recovery step, use the support route shown by the product. Receipts on an existing account remain its history; account-specific help may need a signed-in session to inspect the account state.',
     ],
   },
