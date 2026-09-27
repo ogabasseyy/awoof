@@ -1753,3 +1753,82 @@ test('unlink keeps the last method when the sibling provider is disabled', async
         } finally { check.release(); }
     });
 });
+
+test('unlink keeps the last method when the sibling domain mapping is withdrawn', async () => {
+    await withLinkPool(async (pool) => {
+        const attemptKey = randomBytes(32).toString('base64url');
+        const service = makeService(pool, attemptKey);
+        const client = await pool.connect();
+        let owner;
+        let first = '';
+        let second = '';
+        try {
+            owner = await seedOwner(client, {});
+            const domain = owner.email.split('@')[1]!;
+            await seedPolicy(client, owner.universityId, domain);
+            // The policy row stays live while login discovery rejects the
+            // domain: the sibling cannot authenticate, so it must not
+            // satisfy the last-method guard.
+            await client.query('UPDATE institution_login_domains SET is_active = false WHERE domain = $1 AND university_id = $2', [domain, owner.universityId]);
+            first = (await client.query<{ id: string }>(`INSERT INTO student_auth_identities (user_id, university_id, provider, issuer, subject) VALUES ($1, $2, 'google', $3, $4) RETURNING id`, [owner.userId, owner.universityId, GOOGLE_ISSUER, `withdrawn-a-${uniqueLabel()}`])).rows[0]!.id;
+            second = (await client.query<{ id: string }>(`INSERT INTO student_auth_identities (user_id, university_id, provider, issuer, subject) VALUES ($1, $2, 'google', $3, $4) RETURNING id`, [owner.userId, owner.universityId, GOOGLE_ISSUER, `withdrawn-b-${uniqueLabel()}`])).rows[0]!.id;
+        } finally { client.release(); }
+        const grantA = await mintGrant(service, owner.userId, owner.sid, PASSWORD, 'unlink', first);
+        const grantB = await mintGrant(service, owner.userId, owner.sid, PASSWORD, 'unlink', second);
+        const remover = await pool.connect();
+        try { await remover.query('UPDATE users SET password_hash = NULL WHERE id = $1', [owner.userId]); }
+        finally { remover.release(); }
+        assert.deepEqual(await service.unlink({ userId: owner.userId, sid: owner.sid, identityId: first, grantId: grantA.grantId, grantSecret: grantA.grantSecret }), { outcome: 'last_method' });
+        assert.deepEqual(await service.unlink({ userId: owner.userId, sid: owner.sid, identityId: second, grantId: grantB.grantId, grantSecret: grantB.grantSecret }), { outcome: 'last_method' });
+        const check = await pool.connect();
+        try {
+            const active = await check.query('SELECT 1 FROM student_auth_identities WHERE user_id = $1 AND revoked_at IS NULL', [owner.userId]);
+            assert.equal(active.rowCount, 2);
+        } finally { check.release(); }
+    });
+});
+
+test('unlink keeps the last method when the sibling university is deactivated', async () => {
+    await withLinkPool(async (pool) => {
+        const attemptKey = randomBytes(32).toString('base64url');
+        const service = makeService(pool, attemptKey);
+        const client = await pool.connect();
+        let owner;
+        let first = '';
+        let second = '';
+        let siblingUniversityId = '';
+        try {
+            owner = await seedOwner(client, {});
+            await seedPolicy(client, owner.universityId, owner.email.split('@')[1]!);
+            first = (await client.query<{ id: string }>(`INSERT INTO student_auth_identities (user_id, university_id, provider, issuer, subject) VALUES ($1, $2, 'google', $3, $4) RETURNING id`, [owner.userId, owner.universityId, GOOGLE_ISSUER, `deactivated-a-${uniqueLabel()}`])).rows[0]!.id;
+            siblingUniversityId = (await client.query<{ id: string }>(
+                'INSERT INTO universities (name, is_active) VALUES ($1, true) RETURNING id',
+                [`Sibling School ${uniqueLabel()}`],
+            )).rows[0]!.id;
+            await seedPolicy(client, siblingUniversityId, `sibling${uniqueLabel()}.school.example`);
+            second = (await client.query<{ id: string }>(`INSERT INTO student_auth_identities (user_id, university_id, provider, issuer, subject) VALUES ($1, $2, 'google', $3, $4) RETURNING id`, [owner.userId, siblingUniversityId, GOOGLE_ISSUER, `deactivated-b-${uniqueLabel()}`])).rows[0]!.id;
+        } finally { client.release(); }
+        const grantA = await mintGrant(service, owner.userId, owner.sid, PASSWORD, 'unlink', first);
+        const grantB = await mintGrant(service, owner.userId, owner.sid, PASSWORD, 'unlink', second);
+        const remover = await pool.connect();
+        try {
+            await remover.query('UPDATE users SET password_hash = NULL WHERE id = $1', [owner.userId]);
+            // The canonical university stays active while the sibling's
+            // university is deactivated with its policy row intact: login
+            // through the sibling is impossible, so removing the live
+            // identity must refuse as the last method.
+            await remover.query('UPDATE universities SET is_active = false WHERE id = $1', [siblingUniversityId]);
+        }
+        finally { remover.release(); }
+        assert.deepEqual(await service.unlink({ userId: owner.userId, sid: owner.sid, identityId: first, grantId: grantA.grantId, grantSecret: grantA.grantSecret }), { outcome: 'last_method' });
+        // The reverse direction still succeeds: the live sibling satisfies
+        // the guard, so the dead identity can be removed.
+        const removed = await service.unlink({ userId: owner.userId, sid: owner.sid, identityId: second, grantId: grantB.grantId, grantSecret: grantB.grantSecret });
+        assert.equal(removed.unlinked, true);
+        const check = await pool.connect();
+        try {
+            const active = await check.query('SELECT id FROM student_auth_identities WHERE user_id = $1 AND revoked_at IS NULL', [owner.userId]);
+            assert.deepEqual(active.rows.map(row => row.id), [first]);
+        } finally { check.release(); }
+    });
+});

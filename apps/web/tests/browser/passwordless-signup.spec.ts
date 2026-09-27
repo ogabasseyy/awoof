@@ -151,6 +151,36 @@ test('passwordless-session reload keeps security setup separate from enrollment 
     api.assertNoUnexpectedRequests();
 });
 
+test('ambiguous signup completion sends a fresh sign-in restart instead of an unrepeatable retry', async ({ page }) => {
+    const api = await installSyntheticApi(page);
+    await page.route(`${apiOrigin}/api/auth/student/sso/signup/**`, async (route) => {
+        const path = new URL(route.request().url()).pathname;
+        if (path.endsWith('/context')) return route.fulfill({ json: { success: true, data: { email: 'student@school.example', universityId: '72000000-0000-4000-8000-000000000001', termsVersion: '2026-01', noticeVersion: '2026-01', noticeText: 'Synthetic verification processing notice.', expiresAt: expiresAt() } }, headers });
+        if (path.endsWith('/send-code')) return route.fulfill({ status: 201, json: { success: true, data: { challengeId: '73000000-0000-4000-8000-000000000001', expiresAt: expiresAt() } }, headers });
+        if (path.endsWith('/verify-code')) return route.fulfill({ json: { success: true, data: { verified: true, expiresAt: expiresAt() } }, headers });
+        // Account creation may have committed with the response lost: the
+        // consumed handoff makes every form retry fail, so the page sends
+        // a fresh Microsoft sign-in that discovers the new identity.
+        return route.fulfill({ status: 500, json: { success: false, error: { message: 'unavailable' } }, headers });
+    });
+    await page.goto('/auth/student/login');
+    await page.evaluate(({ key, handoffId }) => sessionStorage.setItem(key, JSON.stringify({ handoffId, handoffSecret: 'handoff-secret', expiresAt: new Date(Date.now() + 600_000).toISOString(), returnPath: '/marketplace' })), { key: HANDOFF_KEY, handoffId: HANDOFF_ID });
+    await page.goto('/auth/student/sso/onboarding?mode=signup');
+    await page.getByRole('button', { name: 'Send confirmation code' }).click();
+    await page.getByLabel('Email confirmation code').fill('123456');
+    await page.getByRole('button', { name: 'Confirm email' }).click();
+    await page.getByLabel('Full name').fill('Synthetic Student');
+    await page.getByLabel('I am at least 18 years old').check();
+    await page.getByLabel('I accept the current Terms').check();
+    await page.getByLabel('I consent to the processing notice').check();
+    await page.getByRole('button', { name: 'Create passwordless account' }).click();
+    await expect(page.getByText('Setup may have finished but the confirmation was lost.')).toBeVisible();
+    await expect(page.getByRole('link', { name: 'Sign in with Microsoft' })).toHaveAttribute('href', '/auth/student/login');
+    expect(await page.getByRole('button', { name: 'Create passwordless account' }).count()).toBe(0);
+    expect(await page.evaluate((key) => sessionStorage.getItem(key), HANDOFF_KEY)).toBeNull();
+    api.assertNoUnexpectedRequests();
+});
+
 test('a session switch while passwordless completion is in flight cannot replace the newer session', async ({ page }) => {
     let release!: () => void; let started!: () => void; const held = new Promise<void>(resolve => { release = resolve; }); const begun = new Promise<void>(resolve => { started = resolve; });
     const api = await installSyntheticApi(page);

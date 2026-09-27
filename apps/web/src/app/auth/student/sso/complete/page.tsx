@@ -151,12 +151,37 @@ function RecoveryReauthComplete({ attemptId }: { attemptId: string }) {
     };
     const activate = async () => {
         const session = getSessionSnapshot(); if (actionBusy.current || !grant || !pendingCodeId || !session.accessToken || !code || (needsOldCode && !oldCode)) return; actionBusy.current = true; setBusy(true);
-        try { await studentSsoApiClient.post('/auth/student/sso/recovery-code/activate', { reauthGrant: grant, pendingCodeId, code, ...(needsOldCode ? { oldCode } : {}) }, { headers: { Authorization: `Bearer ${session.accessToken}` } }); setGrant(null); setCode(''); setOldCode(''); setStatus('active'); await refreshUser().catch(() => undefined); }
-        catch { setError('This confirmation could not be completed. If the pending code expired, restart setup.'); } finally { actionBusy.current = false; setBusy(false); }
+        const pendingId = pendingCodeId;
+        const reconcile = async (): Promise<boolean> => {
+            try {
+                const current = await studentSsoApiClient.get('/auth/student/sso/recovery-code', { headers: { Authorization: `Bearer ${session.accessToken}` } });
+                const live = (current.data as { data?: { status?: unknown; pendingCodeId?: unknown; pendingExpiresAt?: unknown; serverNow?: unknown } }).data;
+                // An ambiguous transport failure may have committed: the
+                // grant is then consumed and retrying cannot succeed. An
+                // active code means ours activated — a still-pending
+                // candidate would outrank it — so render success instead.
+                if (live?.status === 'active') { setGrant(null); setCode(''); setOldCode(''); setStatus('active'); await refreshUser().catch(() => undefined); return true; }
+                if (live?.status === 'pending' && live.pendingCodeId === pendingId && typeof live.pendingExpiresAt === 'string') {
+                    setPendingExpiresAt(live.pendingExpiresAt);
+                    setSkewMs(serverSkewSince(typeof live.serverNow === 'string' && !Number.isNaN(Date.parse(live.serverNow)) ? live.serverNow : null));
+                }
+            } catch { /* reconciliation failed; fall through to the generic error */ }
+            return false;
+        };
+        try {
+            await studentSsoApiClient.post('/auth/student/sso/recovery-code/activate', { reauthGrant: grant, pendingCodeId: pendingId, code, ...(needsOldCode ? { oldCode } : {}) }, { headers: { Authorization: `Bearer ${session.accessToken}` } });
+            setGrant(null); setCode(''); setOldCode(''); setStatus('active'); await refreshUser().catch(() => undefined);
+        } catch (cause: unknown) {
+            const response = axios.isAxiosError(cause) ? cause.response : undefined;
+            // Deterministic rejections keep the form with its error; only
+            // response-loss/network failures reconcile against status.
+            if ((!response || response.status >= 500) && await reconcile()) return;
+            setError('This confirmation could not be completed. If the pending code expired, restart setup.');
+        } finally { actionBusy.current = false; setBusy(false); }
     };
     const generateReplacement = async () => {
         const session = getSessionSnapshot(); if (actionBusy.current || !grant || !session.accessToken || !code) return; actionBusy.current = true; setBusy(true);
-        try { const r = await studentSsoApiClient.post('/auth/student/sso/recovery-code/generate', { reauthGrant: grant, oldCode: code }, { headers: { Authorization: `Bearer ${session.accessToken}` } }); const data = (r.data as { data?: { pendingCodeId?: unknown; code?: unknown; expiresAt?: unknown } }).data; if (!data || typeof data.pendingCodeId !== 'string' || typeof data.code !== 'string') throw new Error(); setGrant(null); setPendingCodeId(data.pendingCodeId); setCode(data.code); setPendingExpiresAt(typeof data.expiresAt === 'string' ? data.expiresAt : null); setStatus('display'); } catch { setError('The current recovery code could not be confirmed.'); } finally { actionBusy.current = false; setBusy(false); }
+        try { const r = await studentSsoApiClient.post('/auth/student/sso/recovery-code/generate', { reauthGrant: grant, oldCode: code }, { headers: { Authorization: `Bearer ${session.accessToken}` } }); const data = (r.data as { data?: { pendingCodeId?: unknown; code?: unknown; expiresAt?: unknown; serverNow?: unknown } }).data; if (!data || typeof data.pendingCodeId !== 'string' || typeof data.code !== 'string') throw new Error(); setGrant(null); setPendingCodeId(data.pendingCodeId); setCode(data.code); setPendingExpiresAt(typeof data.expiresAt === 'string' ? data.expiresAt : null); setSkewMs(serverSkewSince(typeof data.serverNow === 'string' && !Number.isNaN(Date.parse(data.serverNow)) ? data.serverNow : null)); setStatus('display'); } catch { setError('The current recovery code could not be confirmed.'); } finally { actionBusy.current = false; setBusy(false); }
     };
     const remove = async () => { const session = getSessionSnapshot(); if (actionBusy.current || !grant || !session.accessToken || !code) return; actionBusy.current = true; setBusy(true); try { await studentSsoApiClient.post('/auth/student/sso/recovery-code/remove', { reauthGrant: grant, oldCode: code }, { headers: { Authorization: `Bearer ${session.accessToken}` } }); setGrant(null); setCode(''); setStatus('removed'); } catch { setError('The current recovery code could not be confirmed.'); } finally { actionBusy.current = false; setBusy(false); } };
     if (status === 'generate') return <AuthShell role="student" title="Replace recovery code" subtitle="Confirm your current code." footer={null}><label htmlFor="old-recovery-code">Current recovery code<input id="old-recovery-code" value={code} onChange={e => setCode(e.target.value)} className="mt-1 w-full rounded-2xl border px-4 h-11" /></label>{error ? <p role="alert">{error}</p> : null}<Button disabled={busy} className="mt-5 w-full rounded-full" onClick={generateReplacement}>Generate replacement code</Button></AuthShell>;

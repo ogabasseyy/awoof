@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import { passwordService } from '../services/auth/password.service.js';
 import { swaggerSpec } from './swagger.js';
 
 interface Schema {
@@ -135,4 +136,21 @@ test('publishes exact strict error envelopes for redacted verification diagnosti
     assert.equal(components.VerificationDiagnosticAggregate.properties?.averageFinishedRequestDurationMs?.nullable, true);
     assert.equal(components.VerificationDiagnosticAggregate.properties?.p95FinishedRequestDurationMs?.nullable, true);
     assert.equal(data?.additionalProperties, false);
+});
+
+test('recovery password schema encodes the enforced complexity rules', () => {
+    type JsonSchema = { type?: string; minLength?: number; maxLength?: number; pattern?: string; description?: string };
+    const spec = swaggerSpec as { components: { schemas: Record<string, { properties: Record<string, JsonSchema> }> } };
+    const password = spec.components.schemas.AccountRecoveryCompleteRequest.properties.password;
+    assert.equal(password.type, 'string');
+    assert.equal(password.minLength, 8);
+    assert.ok(password.pattern, 'password schema must encode the complexity rules, not just the length floor');
+    const documented = new RegExp(password.pattern);
+    for (const candidate of ['ValidNew1!', 'all-lowercase-1!', 'ALL-UPPER-1!', 'NoDigits!!', 'NoSpecial11', 'Sh0rt!A', 'Br@cket[1]Aa', 'Back`tick1Aa']) {
+        assert.equal(
+            documented.test(candidate) && candidate.length <= (password.maxLength ?? Number.MAX_SAFE_INTEGER),
+            passwordService.validatePassword(candidate).valid,
+            `documented pattern must agree with enforcement for ${JSON.stringify(candidate)}`,
+        );
+    }
 });

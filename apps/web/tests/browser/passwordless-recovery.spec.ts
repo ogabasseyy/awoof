@@ -398,6 +398,59 @@ test('pending-code deadlines use the server clock on skewed devices', async ({ p
     api.assertNoUnexpectedRequests();
 });
 
+test('replacement deadlines use the server clock on skewed devices', async ({ page }) => {
+    const api = await installSyntheticApi(page);
+    const pendingId = '9c000000-0000-4000-8000-000000000001';
+    await page.route(`${apiOrigin}/api/auth/student/sso/reauth/finish`, route => route.fulfill({ status: 201, headers, json: { success: true, data: { grantId: '9d000000-0000-4000-8000-000000000001', grantSecret: 'grant', expiresAt: new Date(Date.now() + 60_000).toISOString(), purpose: 'recovery_code_generate', pendingCodeId: null, targetIdentityId: null, activeCodeGeneration: 1 } } }));
+    await page.route(`${apiOrigin}/api/auth/student/sso/recovery-code/generate`, route => route.fulfill({ status: 201, headers, json: { success: true, data: { pendingCodeId: pendingId, code: 'skewed-replacement-code', expiresAt: new Date(Date.now() - 30_000).toISOString(), serverNow: new Date(Date.now() - 600_000).toISOString() } } }));
+    await page.goto('/auth/student/login'); await seedSession(page, 'student');
+    await page.goto('/auth/student/sso/complete?reauth=9e000000-0000-4000-8000-000000000001');
+    await page.getByLabel('Current recovery code').fill('old-code');
+    await page.getByRole('button', { name: 'Generate replacement code' }).click();
+    // The replacement response carries the skew sample, so the fresh
+    // code displays with its countdown instead of the expired view.
+    await expect(page.getByText('skewed-replacement-code')).toBeVisible();
+    await expect(page.getByRole('timer')).toContainText(/Activate this code within 9:(29|30|31)/);
+    api.assertNoUnexpectedRequests();
+});
+
+test('ambiguous activation reconciles against status and renders success', async ({ page }) => {
+    const api = await installSyntheticApi(page);
+    const pendingId = '9f000000-0000-4000-8000-000000000001';
+    await page.route(`${apiOrigin}/api/auth/student/sso/reauth/finish`, route => route.fulfill({ status: 201, headers, json: { success: true, data: { grantId: 'a0000000-0000-4000-8000-000000000001', grantSecret: 'grant', expiresAt: new Date(Date.now() + 60_000).toISOString(), purpose: 'recovery_code_activate', pendingCodeId: pendingId, targetIdentityId: null, activeCodeGeneration: null } } }));
+    let statusCalls = 0;
+    await page.route(`${apiOrigin}/api/auth/student/sso/recovery-code`, route => {
+        statusCalls++;
+        return statusCalls === 1
+            ? route.fulfill({ headers, json: { success: true, data: { status: 'pending', generation: 1, pendingCodeId: pendingId, pendingExpiresAt: new Date(Date.now() + 600_000).toISOString(), serverNow: new Date().toISOString() } } })
+            : route.fulfill({ headers, json: { success: true, data: { status: 'active', generation: 1, pendingCodeId: null, pendingExpiresAt: null, serverNow: new Date().toISOString() } } });
+    });
+    await page.route(`${apiOrigin}/api/auth/student/sso/recovery-code/activate`, route => route.fulfill({ status: 500, headers, json: { success: false, error: { message: 'unavailable' } } }));
+    await page.goto('/auth/student/login'); await seedSession(page, 'student');
+    await page.goto('/auth/student/sso/complete?reauth=a1000000-0000-4000-8000-000000000001');
+    await page.getByLabel('Re-enter saved recovery code').fill('saved-code');
+    await page.getByRole('button', { name: 'Activate recovery code' }).click();
+    // The activation committed but the response was lost: the consumed
+    // grant cannot retry, so status confirms the active code instead.
+    await expect(page.getByRole('heading', { name: 'Recovery code active' })).toBeVisible();
+    api.assertNoUnexpectedRequests();
+});
+
+test('ambiguous activation keeps the form when status shows the code still pending', async ({ page }) => {
+    const api = await installSyntheticApi(page);
+    const pendingId = 'a2000000-0000-4000-8000-000000000001';
+    await page.route(`${apiOrigin}/api/auth/student/sso/reauth/finish`, route => route.fulfill({ status: 201, headers, json: { success: true, data: { grantId: 'a3000000-0000-4000-8000-000000000001', grantSecret: 'grant', expiresAt: new Date(Date.now() + 60_000).toISOString(), purpose: 'recovery_code_activate', pendingCodeId: pendingId, targetIdentityId: null, activeCodeGeneration: null } } }));
+    await page.route(`${apiOrigin}/api/auth/student/sso/recovery-code`, route => route.fulfill({ headers, json: { success: true, data: { status: 'pending', generation: 1, pendingCodeId: pendingId, pendingExpiresAt: new Date(Date.now() + 600_000).toISOString(), serverNow: new Date().toISOString() } } }));
+    await page.route(`${apiOrigin}/api/auth/student/sso/recovery-code/activate`, route => route.fulfill({ status: 500, headers, json: { success: false, error: { message: 'unavailable' } } }));
+    await page.goto('/auth/student/login'); await seedSession(page, 'student');
+    await page.goto('/auth/student/sso/complete?reauth=a4000000-0000-4000-8000-000000000001');
+    await page.getByLabel('Re-enter saved recovery code').fill('saved-code');
+    await page.getByRole('button', { name: 'Activate recovery code' }).click();
+    await expect(page.getByText('This confirmation could not be completed.')).toBeVisible();
+    await expect(page.getByRole('button', { name: 'Activate recovery code' })).toBeVisible();
+    api.assertNoUnexpectedRequests();
+});
+
 test('failed school sign-in start keeps the password fallback available', async ({ page }) => {
     const api = await installSyntheticApi(page);
     const pendingId = '91000000-0000-4000-8000-000000000001';
