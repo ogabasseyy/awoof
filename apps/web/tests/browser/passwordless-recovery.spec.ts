@@ -87,6 +87,58 @@ test('replacement activation submits the current code alongside the re-entered c
     api.assertNoUnexpectedRequests();
 });
 
+test('password confirmation drives generation then activation without a provider redirect', async ({ page }) => {
+    const api = await installSyntheticApi(page);
+    const pendingId = '82000000-0000-4000-8000-000000000001';
+    const bodies: unknown[] = [];
+    let statusCalls = 0;
+    await page.route(`${apiOrigin}/api/auth/student/sso/recovery-code`, route => { statusCalls++; return route.fulfill({ headers, json: { success: true, data: statusCalls === 1 ? { status: 'unconfigured', generation: null, pendingCodeId: null } : { status: 'active', generation: 1, pendingCodeId: null } } }); });
+    await page.route(`${apiOrigin}/api/auth/student/sso/reauth`, route => { bodies.push(JSON.parse(route.request().postData() ?? '{}')); return route.fulfill({ status: 201, headers, json: { success: true, data: { grantId: '83000000-0000-4000-8000-000000000001', grantSecret: 'pw-grant', expiresAt: new Date(Date.now() + 60_000).toISOString() } } }); });
+    await page.route(`${apiOrigin}/api/auth/student/sso/recovery-code/generate`, route => { bodies.push(JSON.parse(route.request().postData() ?? '{}')); return route.fulfill({ status: 201, headers, json: { success: true, data: { pendingCodeId: pendingId, code: 'password-flow-code' } } }); });
+    await page.route(`${apiOrigin}/api/auth/student/sso/recovery-code/activate`, route => { bodies.push(JSON.parse(route.request().postData() ?? '{}')); return route.fulfill({ headers, json: { success: true, data: { active: true } } }); });
+    await page.goto('/auth/student/login'); await seedSession(page, 'student');
+    await page.goto('/student/security');
+    await page.getByRole('button', { name: 'Use your password instead' }).click();
+    await page.getByRole('button', { name: 'Confirm identity to generate a code' }).click();
+    await page.getByLabel('Current password').fill('Correct!horse-9-battery');
+    await page.getByRole('button', { name: 'Generate code' }).click();
+    await expect(page.getByText('password-flow-code')).toBeVisible();
+    await page.getByRole('button', { name: 'I saved my code' }).click();
+    await page.getByLabel('Current password').fill('Correct!horse-9-battery');
+    await page.getByLabel('Re-enter saved recovery code').fill('password-flow-code');
+    await page.getByRole('button', { name: 'Activate code' }).click();
+    await expect(page.getByText('A recovery code is active.')).toBeVisible();
+    expect(bodies).toEqual([
+        { password: 'Correct!horse-9-battery', purpose: 'recovery_code_generate' },
+        { reauthGrant: { grantId: '83000000-0000-4000-8000-000000000001', grantSecret: 'pw-grant' } },
+        { password: 'Correct!horse-9-battery', purpose: 'recovery_code_activate', pendingCodeId: pendingId },
+        { reauthGrant: { grantId: '83000000-0000-4000-8000-000000000001', grantSecret: 'pw-grant' }, pendingCodeId: pendingId, code: 'password-flow-code' },
+    ]);
+    api.assertNoUnexpectedRequests();
+});
+
+test('fresh unlink proof continues to identity removal with a last-method escape', async ({ page }) => {
+    const api = await installSyntheticApi(page);
+    const targetId = '84000000-0000-4000-8000-000000000001';
+    await page.route(`${apiOrigin}/api/auth/student/sso/reauth/finish`, route => route.fulfill({ status: 201, headers, json: { success: true, data: { grantId: '85000000-0000-4000-8000-000000000001', grantSecret: 'unlink-grant', expiresAt: new Date(Date.now() + 60_000).toISOString(), purpose: 'unlink', pendingCodeId: null, targetIdentityId: targetId, activeCodeGeneration: null } } }));
+    await page.route(`${apiOrigin}/api/auth/student/sso/identities/${targetId}/unlink`, route => route.fulfill({ headers, json: { success: true, data: { outcome: 'unlinked' } } }));
+    await page.goto('/auth/student/login'); await seedSession(page, 'student');
+    await page.goto('/auth/student/sso/complete?reauth=86000000-0000-4000-8000-000000000001');
+    await expect(page.getByRole('heading', { name: 'Sign-in method removed' })).toBeVisible();
+    api.assertNoUnexpectedRequests();
+});
+
+test('fresh unlink proof surfaces the last-method guard instead of failing', async ({ page }) => {
+    const api = await installSyntheticApi(page);
+    const targetId = '87000000-0000-4000-8000-000000000001';
+    await page.route(`${apiOrigin}/api/auth/student/sso/reauth/finish`, route => route.fulfill({ status: 201, headers, json: { success: true, data: { grantId: '88000000-0000-4000-8000-000000000001', grantSecret: 'unlink-grant', expiresAt: new Date(Date.now() + 60_000).toISOString(), purpose: 'unlink', pendingCodeId: null, targetIdentityId: targetId, activeCodeGeneration: null } } }));
+    await page.route(`${apiOrigin}/api/auth/student/sso/identities/${targetId}/unlink`, route => route.fulfill({ status: 409, headers, json: { success: false, error: { message: 'Removing this sign-in would lock the account.', code: 'SSO_LAST_LOGIN_METHOD', statusCode: 409 } } }));
+    await page.goto('/auth/student/login'); await seedSession(page, 'student');
+    await page.goto('/auth/student/sso/complete?reauth=89000000-0000-4000-8000-000000000001');
+    await expect(page.getByRole('heading', { name: 'Cannot remove the last sign-in method' })).toBeVisible();
+    api.assertNoUnexpectedRequests();
+});
+
 test('expired fresh callback and lost generation response leave no code active in the browser', async ({ page }) => {
     const api = await installSyntheticApi(page);
     await page.route(`${apiOrigin}/api/auth/student/sso/reauth/finish`, route => route.fulfill({ status: 409, headers, json: { success: false, error: { code: 'SSO_RESTART_REQUIRED' } } }));

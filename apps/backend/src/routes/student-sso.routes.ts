@@ -600,6 +600,10 @@ export function createStudentSsoRouter(factory: FlowFactory = defaultFlow, optio
         const bound = await signupBinding(req, handoff); const result = await signupFactory().complete({ ...bound, fullName: body.fullName, ageAttested: body.ageAttested, termsAccepted: body.termsAccepted, termsVersion: body.termsVersion, verificationConsent: body.verificationConsent, noticeVersion: body.noticeVersion }); responseHeaders(res); const linked = await poolForRequest().query<{ attempt_id: string }>('SELECT attempt_id FROM student_auth_link_handoffs WHERE id = $1', [handoff.handoffId]); clearSsoCookie(res, studentSsoCookieName(linked.rows[0]?.attempt_id ?? handoff.handoffId)); res.status(201).json({ success: true, data: result });
     }));
 
+    router.get('/signup/availability', asyncHandler(async (_req, res) => {
+        responseHeaders(res); res.json({ success: true, data: { available: signupEnabled() } });
+    }));
+
     router.post('/reauth', authenticate, requireRole('student'), reauthLimiter, exactRecoveryOrigin, exactJson, asyncHandler(async (req, res) => {
         const body = reauthBody(req);
         const actor = ssoActor(req);

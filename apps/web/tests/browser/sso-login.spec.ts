@@ -359,6 +359,10 @@ test('an unlinked provider identity stays signed out with an explicit link-requi
         },
         headers: ssoHeaders,
     }));
+    await page.route(`${apiOrigin}/api/auth/student/sso/signup/availability`, (route) => route.fulfill({
+        json: { success: true, data: { available: true } },
+        headers: ssoHeaders,
+    }));
 
     await page.goto('/auth/student/login');
     await seedTabAttempt(page, {
@@ -383,6 +387,40 @@ test('an unlinked provider identity stays signed out with an explicit link-requi
     // onboarding page can continue to the initiating destination.
     expect(handoff?.returnPath).toBe('/marketplace');
     expect(page.url()).not.toContain('synthetic-handoff-secret');
+    api.assertNoUnexpectedRequests();
+});
+
+test('link-required hides passwordless signup while issuance is disabled', async ({ page }) => {
+    const api = await installSyntheticApi(page);
+    await page.route(`${apiOrigin}/api/auth/student/sso/finish`, (route) => route.fulfill({
+        json: {
+            success: true,
+            data: {
+                outcome: 'link_required',
+                handoffId: HANDOFF_ID,
+                handoffSecret: 'synthetic-handoff-secret',
+                expiresAt: liveExpiry(),
+            },
+        },
+        headers: ssoHeaders,
+    }));
+    await page.route(`${apiOrigin}/api/auth/student/sso/signup/availability`, (route) => route.fulfill({
+        json: { success: true, data: { available: false } },
+        headers: ssoHeaders,
+    }));
+
+    await page.goto('/auth/student/login');
+    await seedTabAttempt(page, {
+        attemptId: ATTEMPT_ID,
+        finishSecret: 'synthetic-finish-secret',
+        expiresAt: liveExpiry(),
+        generation: 0,
+        returnPath: '/marketplace',
+    });
+    await page.goto(`/auth/student/sso/complete?attempt=${ATTEMPT_ID}`);
+    await expect(page.getByRole('heading', { name: 'Link your school account' })).toBeVisible();
+    await expect(page.getByRole('link', { name: 'Sign in with your password' })).toBeVisible();
+    await expect(page.getByRole('link', { name: 'Create a passwordless account' })).toHaveCount(0);
     api.assertNoUnexpectedRequests();
 });
 

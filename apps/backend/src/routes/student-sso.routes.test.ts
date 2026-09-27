@@ -255,6 +255,19 @@ test('recovery routes default to the trusted frontend origin without the option'
     });
 });
 
+test('signup availability reports the deployment flag without authentication', async () => {
+    await withServer(routerWith(stubFlow(), { isSignupEnabled: () => true }), async (baseUrl) => {
+        const response = await fetch(`${baseUrl}/signup/availability`);
+        assert.equal(response.status, 200);
+        assert.deepEqual(await response.json(), { success: true, data: { available: true } });
+    });
+    await withServer(routerWith(stubFlow(), { isSignupEnabled: () => false }), async (baseUrl) => {
+        const response = await fetch(`${baseUrl}/signup/availability`);
+        assert.equal(response.status, 200);
+        assert.deepEqual(await response.json(), { success: true, data: { available: false } });
+    });
+});
+
 test('signup routes default to the deployment flag when the option is omitted', async () => {
     const router = createStudentSsoRouter(() => stubFlow(), {
         isIssuanceEnabled: () => true,

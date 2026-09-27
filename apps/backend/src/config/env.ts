@@ -8,7 +8,7 @@
 import { z } from 'zod';
 import dotenv from 'dotenv';
 import { readMicrosoftOidcConfiguration } from '../services/verification/microsoft-oidc.config.js';
-import { readStudentSsoConfiguration } from '../services/auth/student-oidc.config.js';
+import { readStudentSsoConfiguration, retainedSsoAttemptKey } from '../services/auth/student-oidc.config.js';
 
 // Load environment variables
 // override: false ensures docker-compose env vars take precedence
@@ -237,8 +237,10 @@ export const config = {
         // 069–072 recovery-code rows digest with the established SSO attempt
         // key. A dedicated key may be configured for new deployments, but a
         // silent rotation would strand active codes; migrate/rekey explicitly.
-        // Disabling a provider must not remove the retained key.
-        codeKey: env.STUDENT_ACCOUNT_RECOVERY_CODE_KEY ?? studentSso.attemptKey,
+        // Disabling a provider must not remove the retained key, so the
+        // fallback resolves from the raw environment value independently of
+        // provider enablement instead of the nulled SSO configuration.
+        codeKey: env.STUDENT_ACCOUNT_RECOVERY_CODE_KEY ?? retainedSsoAttemptKey(env.STUDENT_SSO_ATTEMPT_KEY),
     },
     // This trusted frontend setting is intentionally independent from OIDC
     // credentials so owner/history routes can remain available while issuance

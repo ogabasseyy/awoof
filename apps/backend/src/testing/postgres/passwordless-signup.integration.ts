@@ -89,6 +89,8 @@ test('passwordless signup creates one passwordless account, mailbox proof, ident
         await assert.rejects(service.complete({ handoffId: state.handoffId, handoffSecret: state.handoffSecret, browserBinding: state.browser, fullName: 'Ada Student', ageAttested: true, termsAccepted: false, termsVersion: STUDENT_TERMS_VERSION, verificationConsent: true, noticeVersion: VERIFICATION_NOTICE_VERSION }), /current age, terms, and verification processing assent/i);
         assert.equal((await pool.query<{ count: string }>(`SELECT count(*)::text AS count FROM users WHERE email=$1`, [state.email])).rows[0]!.count, '0');
         const sent = await service.sendCode({ handoffId: state.handoffId, handoffSecret: state.handoffSecret, browserBinding: state.browser });
+        const stored = await pool.query<{ bindings: Record<string, unknown> }>(`SELECT bindings FROM verification_challenges WHERE id = $1`, [sent.challengeId]);
+        assert.deepEqual(Object.keys(stored.rows[0]!.bindings).sort(), ['email', 'matricNumber', 'name', 'noticeVersion', 'policyVersion', 'universityId']);
         await service.verifyCode({ handoffId: state.handoffId, handoffSecret: state.handoffSecret, browserBinding: state.browser, challengeId: sent.challengeId, code });
         const completed = await service.complete({ handoffId: state.handoffId, handoffSecret: state.handoffSecret, browserBinding: state.browser, fullName: 'Ada Student', ageAttested: true, termsAccepted: true, termsVersion: STUDENT_TERMS_VERSION, verificationConsent: true, noticeVersion: VERIFICATION_NOTICE_VERSION });
         assert.equal(completed.user.email, state.email);

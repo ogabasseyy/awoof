@@ -7,6 +7,7 @@ import {
     STUDENT_SSO_MICROSOFT_CALLBACK_PATH,
     enabledStudentSsoProviders,
     readStudentSsoConfiguration,
+    retainedSsoAttemptKey,
 } from './student-oidc.config.js';
 
 const GOOGLE_CALLBACK = 'https://api.awoof.example/api/auth/student/sso/google/callback';
@@ -225,4 +226,11 @@ test('configuration carries no per-institution entries: tenants and hosted domai
     const serialized = JSON.stringify(configuration, (_key, value) => (value instanceof URL ? value.href : value));
     assert.doesNotMatch(serialized, /tenant|hosted|domain|university|institution/i);
     assert.deepEqual(Object.keys(configuration).sort(), ['attemptKey', 'completionUrl', 'google', 'microsoft']);
+});
+
+test('retained recovery key survives provider disablement but never throws', () => {
+    assert.equal(retainedSsoAttemptKey(ATTEMPT_KEY), ATTEMPT_KEY);
+    assert.equal(retainedSsoAttemptKey(undefined), null);
+    assert.equal(retainedSsoAttemptKey(''), null);
+    assert.equal(retainedSsoAttemptKey('not-a-key'), null);
 });
