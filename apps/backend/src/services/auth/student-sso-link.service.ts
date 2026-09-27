@@ -511,15 +511,20 @@ export class StudentSsoLinkService {
             }
             await consumeActionGrant(tx, { userId, sid, grantId, secret: grantSecret, purpose: 'unlink', targetIdentityId: identityId })
                 .catch(() => { throw invalidUnlink(); });
-            const sibling = await tx.query(
-                `SELECT 1 FROM student_auth_identities
-                 WHERE user_id = $1 AND id <> $2 AND revoked_at IS NULL
+            const sibling = await tx.query<{ provider: LoginProvider }>(
+                `SELECT identity.provider FROM student_auth_identities identity
+                 JOIN institution_login_policies policy ON policy.university_id = identity.university_id
+                     AND policy.provider = identity.provider AND policy.enabled AND policy.approved_until > clock_timestamp()
+                 WHERE identity.user_id = $1 AND identity.id <> $2 AND identity.revoked_at IS NULL
                  LIMIT 1`,
                 [userId, identityId],
             );
             // Another usable login method must remain: a usable password or a
-            // second active identity. Nothing is consumed on this path.
-            if (account.rows[0]?.password_hash == null && (sibling.rowCount ?? 0) === 0) {
+            // second identity that can still authenticate (live institution
+            // policy, enabled provider). Nothing is consumed on this path.
+            const siblingUsable = sibling.rows[0] !== undefined
+                && this.deps.isProviderEnabled?.(sibling.rows[0].provider) === true;
+            if (account.rows[0]?.password_hash == null && !siblingUsable) {
                 return { outcome: 'last_method' };
             }
             await tx.query('UPDATE student_auth_identities SET revoked_at = clock_timestamp() WHERE id = $1', [identityId]);

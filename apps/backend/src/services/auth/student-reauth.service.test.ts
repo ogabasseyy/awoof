@@ -111,6 +111,24 @@ test('fresh start constrains the identity lookup to Microsoft before selecting t
     assert.ok(calls.some((text) => text.includes("identity.provider = 'microsoft'")));
 });
 
+test('fresh callback and finish lock the owner before the attempt', async () => {
+    const ready = callbackService({ issuer, subject: 'subject', authTime: Math.floor(Date.now() / 1000) });
+    await ready.service.callback({ callbackUrl: new URL('https://api.example.invalid/callback?state=state&code=code'), callbackCookie: 'browser' });
+    const callbackUser = ready.calls.findIndex((text) => text.includes('FROM users WHERE id = $1 FOR UPDATE'));
+    const callbackAttempt = ready.calls.findIndex((text) => text.includes('WHERE attempt.id = $1 FOR UPDATE'));
+    assert.ok(callbackUser !== -1 && callbackAttempt !== -1 && callbackUser < callbackAttempt);
+
+    const consumed = pendingAttempt({ status: 'consumed' });
+    const finished = callbackService({ issuer, subject: 'subject', authTime: Math.floor(Date.now() / 1000) }, consumed);
+    await assert.rejects(
+        finished.service.finish({ userId, sid, attemptId: consumed.id, callbackCookie: 'browser' }),
+        /reauthentication is no longer valid/,
+    );
+    const finishUser = finished.calls.findIndex((text) => text.includes('FROM users WHERE id = $1 FOR UPDATE'));
+    const finishAttempt = finished.calls.findIndex((text) => text.includes('FROM student_auth_reauth_attempts WHERE id = $1 FOR UPDATE'));
+    assert.ok(finishUser !== -1 && finishAttempt !== -1 && finishUser < finishAttempt);
+});
+
 test('fresh finish rejects a consumed attempt before any action grant is issued', async () => {
     const consumed = pendingAttempt({ status: 'consumed' });
     const { service, calls } = callbackService({ issuer, subject: 'subject', authTime: Math.floor(Date.now() / 1000) }, consumed);

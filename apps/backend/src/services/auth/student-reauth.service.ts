@@ -105,6 +105,11 @@ export class StudentReauthService {
         if (!adapter.redeemFresh) throw new ServiceUnavailableError('Fresh Microsoft authentication is unavailable');
         const observation = await adapter.redeemFresh({ callback: input.callbackUrl, state, nonce: attempt.nonce, verifier: decryptMicrosoftAttemptVerifier(attempt.encrypted_verifier, this.deps.attemptKey, attempt.id) });
         return this.transaction(async (tx) => {
+            // Canonical lock order (see finish): the owner row precedes the
+            // attempt row so this cannot deadlock against account recovery.
+            const account = await tx.query<{ active_session_id: string | null; credential_generation: string | number; deleted_at: Date | null }>(
+                'SELECT active_session_id, credential_generation, deleted_at FROM users WHERE id = $1 FOR UPDATE', [attempt.user_id],
+            );
             const locked = await tx.query<ReauthAttempt>(
                 `SELECT attempt.*, identity.provider AS identity_provider, identity.issuer AS identity_issuer, identity.subject AS identity_subject,
                         policy.issuer AS policy_issuer, policy.provider_realm AS policy_realm, policy.university_id,
@@ -122,9 +127,6 @@ export class StudentReauthService {
                 || !this.deps.isProviderEnabled('microsoft')
                 || observation.issuer !== current.identity_issuer || observation.subject !== current.identity_subject) throw invalidReauth();
             assertFreshAuthTime(observation.authTime, current.created_at, clock.rows[0]!.now);
-            const account = await tx.query<{ active_session_id: string | null; credential_generation: string | number; deleted_at: Date | null }>(
-                'SELECT active_session_id, credential_generation, deleted_at FROM users WHERE id = $1 FOR UPDATE', [current.user_id],
-            );
             if (!account.rows[0] || account.rows[0]!.deleted_at !== null || account.rows[0]!.active_session_id !== current.sid
                 || Number(account.rows[0]!.credential_generation) !== Number(current.credential_generation)) throw invalidReauth();
             await tx.query("UPDATE student_auth_reauth_attempts SET status = 'ready' WHERE id = $1 AND status = 'pending'", [current.id]);
@@ -138,6 +140,10 @@ export class StudentReauthService {
         if (!UUID.test(input.userId) || !UUID.test(input.sid) || !UUID.test(input.attemptId) || !input.callbackCookie) throw invalidReauth();
         const callbackCookie = input.callbackCookie;
         return this.transaction(async (tx) => {
+            // Canonical lock order: the owner row precedes the attempt row,
+            // matching account recovery (user first, attempts later) so the
+            // two cannot deadlock when they race for the same user.
+            const account = await tx.query<{ active_session_id: string | null; credential_generation: string | number }>('SELECT active_session_id, credential_generation FROM users WHERE id = $1 FOR UPDATE', [input.userId]);
             const attemptResult = await tx.query<ReauthAttempt>('SELECT * FROM student_auth_reauth_attempts WHERE id = $1 FOR UPDATE', [input.attemptId]);
             const attempt = attemptResult.rows[0];
             const clock = await tx.query<{ now: Date }>('SELECT clock_timestamp() AS now');
@@ -145,7 +151,6 @@ export class StudentReauthService {
                 || attempt.expires_at <= clock.rows[0]!.now || hashMicrosoftAttemptSecret(callbackCookie) !== attempt.callback_cookie_hash) throw invalidReauth();
             const context = await lockStudentContext(tx, input.userId);
             if (!context.active) throw invalidReauth();
-            const account = await tx.query<{ active_session_id: string | null; credential_generation: string | number }>('SELECT active_session_id, credential_generation FROM users WHERE id = $1 FOR UPDATE', [input.userId]);
             const policy = await tx.query<{ enabled: boolean; approved_until: Date }>('SELECT enabled, approved_until FROM institution_login_policies WHERE id = $1 AND version = $2 FOR UPDATE', [attempt.policy_id, attempt.policy_version]);
             const identity = await tx.query<{ user_id: string; revoked_at: Date | null }>('SELECT user_id, revoked_at FROM student_auth_identities WHERE id = $1 FOR UPDATE', [attempt.proof_identity_id]);
             if (!account.rows[0] || account.rows[0]!.active_session_id !== input.sid || Number(account.rows[0]!.credential_generation) !== Number(attempt.credential_generation)

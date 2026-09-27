@@ -27,6 +27,33 @@ test('retention removes expired PII and secrets, clears stale budget pointers an
     } finally { client.release(); await pool.end(); }
 });
 
+test('retention keeps consumed signup bindings through the handoff window but purges recovery OTPs at expiry', async () => {
+    const pool = createTestPool();
+    const client = await pool.connect();
+    try {
+        await assertFixtureDatabase(client);
+        const digest = randomUUID().replaceAll('-', '').repeat(2);
+        const signupFresh = randomUUID(); const signupAged = randomUUID(); const recovery = randomUUID();
+        for (const [id, purpose, ago] of [
+            [signupFresh, 'student_sso_signup', '5 minutes'],
+            [signupAged, 'student_sso_signup', '2 hours'],
+            [recovery, 'student_account_recovery', '5 minutes'],
+        ] as const) {
+            await client.query(`INSERT INTO verification_challenges (id,purpose,subject_digest,secret_digest,bindings,created_at,expires_at,consumed_at)
+                VALUES ($1,$2,$3,$3,'{"email":"synthetic@example.invalid"}',
+                clock_timestamp() - interval '3 hours', clock_timestamp() - interval '${ago}', clock_timestamp() - interval '3 hours' + interval '1 minute')`, [id, purpose, digest]);
+        }
+        await purgeExpiredChallenges(pool);
+        const rows = await client.query('SELECT id, bindings, purged_at FROM verification_challenges WHERE id = ANY($1)', [[signupFresh, signupAged, recovery]]);
+        const fresh = rows.rows.find((row) => row.id === signupFresh)!;
+        assert.equal(fresh.bindings.email, 'synthetic@example.invalid'); assert.equal(fresh.purged_at, null);
+        for (const id of [signupAged, recovery]) {
+            const row = rows.rows.find((r) => r.id === id)!;
+            assert.deepEqual(row.bindings, {}); assert.ok(row.purged_at);
+        }
+    } finally { client.release(); await pool.end(); }
+});
+
 test('identity changes atomically release registration reservations and rollback restores them', async () => {
     const pool = createTestPool(); const client = await pool.connect();
     try {

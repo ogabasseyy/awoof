@@ -80,6 +80,30 @@ test('independent lost-access recovery consumes the active code, requires normal
     }
 });
 
+test('recovery completion sends a post-commit notice without credentials', async () => {
+    const pool = createTestPool();
+    const client = await pool.connect();
+    try {
+        const account = await seedRecoverableStudent(client);
+        let otp = '';
+        const notices: Array<{ email: string; purpose: string }> = [];
+        const service = new StudentAccountRecoveryService({
+            pool, recoveryCodeKey: 'test-recovery-code-key',
+            deliverOtp: async (_email, delivered) => { otp = delivered; return { success: true }; },
+            validatePassword: () => ({ valid: true, errors: [] }), hashPassword: async () => 'recovered-password-hash',
+            notify: async (email, purpose) => { notices.push({ email, purpose }); return { success: true }; },
+        });
+        const started = await service.start({ email: account.email, purpose: 'lost_access' });
+        await service.verify({ attemptId: started.attemptId, secret: started.secret, code: account.code, otp });
+        assert.equal(notices.length, 0);
+        await service.complete({ attemptId: started.attemptId, secret: started.secret, password: 'ValidNew1!' });
+        assert.deepEqual(notices, [{ email: account.email, purpose: 'lost_access' }]);
+    } finally {
+        client.release();
+        await pool.end();
+    }
+});
+
 test('recovery terminal failure writers scrub superseded and rejected-at-verification secrets immediately', async () => {
     const pool = createTestPool();
     const client = await pool.connect();

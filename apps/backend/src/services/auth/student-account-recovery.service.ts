@@ -1,7 +1,9 @@
 import { createHmac, randomBytes, randomUUID, timingSafeEqual } from 'node:crypto';
 import type { Pool, PoolClient } from 'pg';
 import { ConflictError } from '../../common/errors/AppError.js';
+import { appLogger } from '../../common/logger.js';
 import { passwordService } from './password.service.js';
+import { sendAccountRecoveryCompletionNotice } from '../email/email.service.js';
 import { consumeChallenge, requestChallenge } from '../verification/challenge.service.js';
 import { revokeSsoSchoolAssertions } from './student-sso-onboarding.service.js';
 
@@ -36,6 +38,7 @@ export type StudentAccountRecoveryDependencies = {
     deliverOtp?: (email: string, otp: string) => Promise<{ success: boolean }>;
     hashPassword?: (password: string) => Promise<string>;
     validatePassword?: (password: string) => { valid: boolean; errors: string[] };
+    notify?: (email: string, purpose: RecoveryPurpose) => Promise<{ success: boolean }>;
 };
 
 function unavailable(): ConflictError {
@@ -154,7 +157,7 @@ export class StudentAccountRecoveryService {
         if (!candidate || candidate.status !== 'verified' || candidate.expires_at <= new Date()
             || !candidate.secret_hash || !this.matchesDigest(candidate.secret_hash, this.secretDigest(secret))) throw unavailable();
         const hash = await (this.deps.hashPassword ?? ((candidate: string) => passwordService.hashPassword(candidate)))(password);
-        await this.transaction(async (tx) => {
+        const committed = await this.transaction(async (tx) => {
             // Read only to establish the owner, then acquire the canonical user
             // lock before taking mutable attempt/code/identity locks.
             const owner = await tx.query<{ user_id: string }>('SELECT user_id FROM student_auth_recovery_attempts WHERE id = $1', [attemptId]);
@@ -220,7 +223,9 @@ export class StudentAccountRecoveryService {
                  WHERE id = $1 AND status = 'verified'`, [attempt.id],
             );
             if (consumed.rowCount !== 1) throw unavailable();
+            return { email: account.email, purpose: attempt.purpose };
         });
+        await this.sendCompletionNotice(committed.email, committed.purpose);
     }
 
     private async transaction<T>(operation: (tx: PoolClient) => Promise<T>): Promise<T> {
@@ -259,6 +264,17 @@ export class StudentAccountRecoveryService {
     private async lockAttempt(tx: PoolClient, id: string): Promise<Attempt | null> {
         const result = await tx.query<Attempt>('SELECT * FROM student_auth_recovery_attempts WHERE id = $1 FOR UPDATE', [id]);
         return result.rows[0] ?? null;
+    }
+
+    private async sendCompletionNotice(email: string, purpose: RecoveryPurpose): Promise<void> {
+        try {
+            const delivery = await (this.deps.notify ?? sendAccountRecoveryCompletionNotice)(email, purpose);
+            if (!delivery.success) appLogger.error('Account recovery completion notice delivery failed');
+        } catch {
+            // Credential state has already committed. A transport failure must
+            // not reopen or roll back a consumed recovery.
+            appLogger.error('Account recovery completion notice transport failed');
+        }
     }
 
     private async previewAttempt(id: string): Promise<{ status: string; secret_hash: string | null; expires_at: Date } | null> {

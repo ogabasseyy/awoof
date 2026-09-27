@@ -195,6 +195,25 @@ export const sendWelcomeEmail = async (
     return await sendEmail(email, subject, html);
 };
 
+/** Completion notice only: never include a recovery code or password. */
+export const sendAccountRecoveryCompletionNotice = async (
+    email: string,
+    purpose: 'lost_access' | 'compromise',
+): Promise<{ success: boolean; messageId?: string; error?: string }> => {
+    const detail = purpose === 'compromise'
+        ? 'Account recovery set a new password for your Awoof account, signed out all sessions, and disconnected linked external sign-in identities.'
+        : 'Account recovery set a new password for your Awoof account and signed out all sessions. Linked school sign-ins were left connected.';
+    const frontendUrl = process.env.FRONTEND_URL || 'http://localhost:3000';
+    return sendEmail(email, 'Awoof account recovery completed', `
+        <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
+            <h1>Awoof account security</h1>
+            <p>${detail}</p>
+            <p>No recovery code or password is included in this notice.</p>
+            <p>If you did not make this change, secure your mailbox and <a href="${frontendUrl}/contact">contact support through the verified Awoof support channel</a>.</p>
+        </div>
+    `);
+};
+
 /** Security notice only: never include a recovery code or password. */
 export const sendRecoveryCodeSecurityNotice = async (
     email: string,

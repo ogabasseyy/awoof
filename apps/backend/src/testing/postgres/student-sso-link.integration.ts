@@ -1378,6 +1378,7 @@ test('concurrent removal of the final two methods leaves one usable identity', a
         let second = '';
         try {
             owner = await seedOwner(client, {});
+            await seedPolicy(client, owner.universityId, owner.email.split('@')[1]!);
             first = (await client.query<{ id: string }>(`INSERT INTO student_auth_identities (user_id, university_id, provider, issuer, subject) VALUES ($1, $2, 'google', $3, $4) RETURNING id`, [owner.userId, owner.universityId, GOOGLE_ISSUER, `last-a-${uniqueLabel()}`])).rows[0]!.id;
             second = (await client.query<{ id: string }>(`INSERT INTO student_auth_identities (user_id, university_id, provider, issuer, subject) VALUES ($1, $2, 'google', $3, $4) RETURNING id`, [owner.userId, owner.universityId, GOOGLE_ISSUER, `last-b-${uniqueLabel()}`])).rows[0]!.id;
         } finally { client.release(); }
@@ -1417,5 +1418,64 @@ test('reauth mints a usable grant with the real password check', async () => {
             service.reauth({ userId: owner.userId, sid: owner.sid, password: 'Wrong!password-0', purpose: 'link' }),
             /incorrect/,
         );
+    });
+});
+
+test('unlink keeps the last method when the sibling policy expired', async () => {
+    await withLinkPool(async (pool) => {
+        const attemptKey = randomBytes(32).toString('base64url');
+        const service = makeService(pool, attemptKey);
+        const client = await pool.connect();
+        let owner;
+        let first = '';
+        let second = '';
+        try {
+            owner = await seedOwner(client, {});
+            await seedPolicy(client, owner.universityId, owner.email.split('@')[1]!, { approvedUntil: new Date(Date.now() - 1000).toISOString() });
+            first = (await client.query<{ id: string }>(`INSERT INTO student_auth_identities (user_id, university_id, provider, issuer, subject) VALUES ($1, $2, 'google', $3, $4) RETURNING id`, [owner.userId, owner.universityId, GOOGLE_ISSUER, `expired-a-${uniqueLabel()}`])).rows[0]!.id;
+            second = (await client.query<{ id: string }>(`INSERT INTO student_auth_identities (user_id, university_id, provider, issuer, subject) VALUES ($1, $2, 'google', $3, $4) RETURNING id`, [owner.userId, owner.universityId, GOOGLE_ISSUER, `expired-b-${uniqueLabel()}`])).rows[0]!.id;
+        } finally { client.release(); }
+        const grantA = await mintGrant(service, owner.userId, owner.sid, PASSWORD, 'unlink', first);
+        const grantB = await mintGrant(service, owner.userId, owner.sid, PASSWORD, 'unlink', second);
+        const remover = await pool.connect();
+        try { await remover.query('UPDATE users SET password_hash = NULL WHERE id = $1', [owner.userId]); }
+        finally { remover.release(); }
+        assert.deepEqual(await service.unlink({ userId: owner.userId, sid: owner.sid, identityId: first, grantId: grantA.grantId, grantSecret: grantA.grantSecret }), { outcome: 'last_method' });
+        assert.deepEqual(await service.unlink({ userId: owner.userId, sid: owner.sid, identityId: second, grantId: grantB.grantId, grantSecret: grantB.grantSecret }), { outcome: 'last_method' });
+        const check = await pool.connect();
+        try {
+            const active = await check.query('SELECT 1 FROM student_auth_identities WHERE user_id = $1 AND revoked_at IS NULL', [owner.userId]);
+            assert.equal(active.rowCount, 2);
+        } finally { check.release(); }
+    });
+});
+
+test('unlink keeps the last method when the sibling provider is disabled', async () => {
+    await withLinkPool(async (pool) => {
+        const attemptKey = randomBytes(32).toString('base64url');
+        const service = makeService(pool, attemptKey);
+        const client = await pool.connect();
+        let owner;
+        let first = '';
+        let second = '';
+        try {
+            owner = await seedOwner(client, {});
+            await seedPolicy(client, owner.universityId, owner.email.split('@')[1]!);
+            first = (await client.query<{ id: string }>(`INSERT INTO student_auth_identities (user_id, university_id, provider, issuer, subject) VALUES ($1, $2, 'google', $3, $4) RETURNING id`, [owner.userId, owner.universityId, GOOGLE_ISSUER, `disabled-a-${uniqueLabel()}`])).rows[0]!.id;
+            second = (await client.query<{ id: string }>(`INSERT INTO student_auth_identities (user_id, university_id, provider, issuer, subject) VALUES ($1, $2, 'google', $3, $4) RETURNING id`, [owner.userId, owner.universityId, GOOGLE_ISSUER, `disabled-b-${uniqueLabel()}`])).rows[0]!.id;
+        } finally { client.release(); }
+        const grantA = await mintGrant(service, owner.userId, owner.sid, PASSWORD, 'unlink', first);
+        const grantB = await mintGrant(service, owner.userId, owner.sid, PASSWORD, 'unlink', second);
+        const remover = await pool.connect();
+        try { await remover.query('UPDATE users SET password_hash = NULL WHERE id = $1', [owner.userId]); }
+        finally { remover.release(); }
+        const gated = makeService(pool, attemptKey, { isProviderEnabled: () => false });
+        assert.deepEqual(await gated.unlink({ userId: owner.userId, sid: owner.sid, identityId: first, grantId: grantA.grantId, grantSecret: grantA.grantSecret }), { outcome: 'last_method' });
+        assert.deepEqual(await gated.unlink({ userId: owner.userId, sid: owner.sid, identityId: second, grantId: grantB.grantId, grantSecret: grantB.grantSecret }), { outcome: 'last_method' });
+        const check = await pool.connect();
+        try {
+            const active = await check.query('SELECT 1 FROM student_auth_identities WHERE user_id = $1 AND revoked_at IS NULL', [owner.userId]);
+            assert.equal(active.rowCount, 2);
+        } finally { check.release(); }
     });
 });
