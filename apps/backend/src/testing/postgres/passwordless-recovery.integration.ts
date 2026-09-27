@@ -3,11 +3,22 @@ import { createHmac, randomUUID } from 'node:crypto';
 import test from 'node:test';
 import type { PoolClient } from 'pg';
 import { issueActionGrant } from '../../services/auth/student-action-grant.service.js';
+import { StudentReauthService } from '../../services/auth/student-reauth.service.js';
 import { StudentRecoveryCodeService } from '../../services/auth/student-recovery-code.service.js';
 import { StudentAccountRecoveryService } from '../../services/auth/student-account-recovery.service.js';
 import { createTestPool } from './test-database.js';
 
 const SID = '22222222-2222-4222-8222-222222222222';
+
+type RecoveryStatusResult = Awaited<ReturnType<StudentRecoveryCodeService['status']>>;
+
+function assertRecoveryStatus(actual: RecoveryStatusResult, expected: { status: string; generation: number | null; pendingCodeId: string | null; pendingExpiresAt: string | null }, message?: string): void {
+    assert.ok(Number.isFinite(Date.parse(actual.serverNow)), 'status must report the server clock for client skew correction');
+    assert.deepEqual(
+        { status: actual.status, generation: actual.generation, pendingCodeId: actual.pendingCodeId, pendingExpiresAt: actual.pendingExpiresAt },
+        expected, message,
+    );
+}
 
 async function seedStudent(client: PoolClient, sid = SID): Promise<string> {
     const suffix = randomUUID().slice(0, 8);
@@ -129,10 +140,14 @@ test('unknown-mailbox recovery handles expire exactly like committed ones', asyn
         const decoyMs = Date.parse(decoy.expiresAt);
         const committedMs = Date.parse(committed.expiresAt);
         assert.ok(Number.isFinite(decoyMs) && Number.isFinite(committedMs));
+        const decoyNow = Date.parse(decoy.serverNow);
+        const committedNow = Date.parse(committed.serverNow);
+        assert.ok(Number.isFinite(decoyNow) && Number.isFinite(committedNow), 'both handles report the server clock for skew correction');
         // Both derive from the same server clock plus the shared mailbox
         // TTL: neither clock skew nor the shorter OTP window may mark a
         // real attempt.
         assert.ok(Math.abs(decoyMs - committedMs) < 30_000, `decoy and committed expiries must be indistinguishable (delta ${Math.abs(decoyMs - committedMs)}ms)`);
+        assert.ok(Math.abs(decoyNow - committedNow) < 30_000, 'decoy and committed server clocks must be indistinguishable');
         for (const ms of [decoyMs, committedMs]) {
             const ttlMs = ms - Date.now();
             assert.ok(ttlMs > 4 * 60 * 1000 && ttlMs <= 6 * 60 * 1000, `expiry must sit on the shared mailbox TTL (saw ${Math.round(ttlMs / 1000)}s)`);
@@ -519,7 +534,7 @@ test('five wrong recovery OTPs persist their shared failure budget despite gener
     }
 });
 
-async function seedProviderProof(client: PoolClient, userId: string, options: { policy?: boolean } = {}): Promise<string> {
+async function seedProviderProof(client: PoolClient, userId: string, options: { policy?: boolean; linkedAt?: string } = {}): Promise<string> {
     const suffix = randomUUID().slice(0, 8);
     const university = await client.query<{ id: string }>(
         'INSERT INTO universities (name, is_active) VALUES ($1, true) RETURNING id',
@@ -527,9 +542,9 @@ async function seedProviderProof(client: PoolClient, userId: string, options: { 
     );
     const identity = await client.query<{ id: string }>(
         `INSERT INTO student_auth_identities
-             (user_id, university_id, provider, issuer, subject, observed_email)
-         VALUES ($1, $2, 'microsoft', $3, $4, $5) RETURNING id`,
-        [userId, university.rows[0]!.id, `https://issuer.example.invalid/${suffix}`, `subject-${suffix}`, `recovery-${suffix}@example.invalid`],
+             (user_id, university_id, provider, issuer, subject, observed_email, linked_at)
+         VALUES ($1, $2, 'microsoft', $3, $4, $5, COALESCE($6::timestamptz, clock_timestamp())) RETURNING id`,
+        [userId, university.rows[0]!.id, `https://issuer.example.invalid/${suffix}`, `subject-${suffix}`, `recovery-${suffix}@example.invalid`, options.linkedAt ?? null],
     );
     // Proof consumption revalidates the identity's currently live policy,
     // so proof-consumption tests opt into one; other callers seed their
@@ -590,7 +605,7 @@ test('pending codes cannot recover and activation leaves only a digest at rest',
             userId, sid: SID, grantId: activation.grantId, secret: activation.grantSecret,
             pendingCodeId: pending.pendingCodeId, code: pending.code,
         });
-        assert.deepEqual(await service.status({ userId }), { status: 'active', generation: 1, pendingCodeId: null, pendingExpiresAt: null });
+        assertRecoveryStatus(await service.status({ userId }), { status: 'active', generation: 1, pendingCodeId: null, pendingExpiresAt: null });
         const activated = await client.query<{ pending_sid: string | null; pending_credential_generation: string | null; pending_proof_identity_id: string | null }>(
             'SELECT pending_sid, pending_credential_generation, pending_proof_identity_id FROM student_auth_recovery_codes WHERE id = $1',
             [pending.pendingCodeId],
@@ -624,7 +639,7 @@ test('suspension after grant issuance blocks recovery-code enrollment and activa
             /not available/i,
             'a grant issued before suspension must not enroll a code after it',
         );
-        assert.deepEqual(await service.status({ userId }), { status: 'unconfigured', generation: null, pendingCodeId: null, pendingExpiresAt: null });
+        assertRecoveryStatus(await service.status({ userId }), { status: 'unconfigured', generation: null, pendingCodeId: null, pendingExpiresAt: null });
     } finally {
         client.release();
         await pool.end();
@@ -646,7 +661,7 @@ test('adding a dedicated digest key keeps codes enrolled under the previous key 
         const rotated = new StudentRecoveryCodeService({ pool, codeKey: 'test-recovery-code-key-v2-dedicated', previousCodeKey: 'test-recovery-code-key' });
         const activation = await grant(client, { userId, purpose: 'recovery_code_activate', pendingCodeId: pending.pendingCodeId });
         await rotated.activate({ userId, sid: SID, grantId: activation.grantId, secret: activation.grantSecret, pendingCodeId: pending.pendingCodeId, code: pending.code });
-        assert.deepEqual(await rotated.status({ userId }), { status: 'active', generation: 1, pendingCodeId: null, pendingExpiresAt: null });
+        assertRecoveryStatus(await rotated.status({ userId }), { status: 'active', generation: 1, pendingCodeId: null, pendingExpiresAt: null });
         // Replacement proves the old code against the previous key, while
         // the replacement itself digests under the new dedicated key.
         const replacement = await grant(client, { userId, purpose: 'recovery_code_generate', activeCodeGeneration: 1 });
@@ -655,13 +670,13 @@ test('adding a dedicated digest key keeps codes enrolled under the previous key 
         assert.ok(stored.rows[0]!.code_digest.startsWith('v1:'), 'new digests are versioned under the current key');
         const activation2 = await grant(client, { userId, purpose: 'recovery_code_activate', pendingCodeId: second.pendingCodeId, activeCodeGeneration: 1 });
         await rotated.activate({ userId, sid: SID, grantId: activation2.grantId, secret: activation2.grantSecret, pendingCodeId: second.pendingCodeId, code: second.code, oldCode: pending.code });
-        assert.deepEqual(await rotated.status({ userId }), { status: 'active', generation: 2, pendingCodeId: null, pendingExpiresAt: null });
+        assertRecoveryStatus(await rotated.status({ userId }), { status: 'active', generation: 2, pendingCodeId: null, pendingExpiresAt: null });
         // The replacement digest verifies under the dedicated key alone:
         // removal without the fallback proves the new code against it.
         const standalone = new StudentRecoveryCodeService({ pool, codeKey: 'test-recovery-code-key-v2-dedicated' });
         const removal = await grant(client, { userId, purpose: 'recovery_code_remove', activeCodeGeneration: 2 });
         await standalone.remove({ userId, sid: SID, grantId: removal.grantId, secret: removal.grantSecret, oldCode: second.code });
-        assert.deepEqual(await standalone.status({ userId }), { status: 'unconfigured', generation: 2, pendingCodeId: null, pendingExpiresAt: null });
+        assertRecoveryStatus(await standalone.status({ userId }), { status: 'unconfigured', generation: 2, pendingCodeId: null, pendingExpiresAt: null });
     } finally {
         client.release();
         await pool.end();
@@ -734,7 +749,7 @@ test('status falls back to the active code when a replacement candidate expired'
         const replacement = await service.generate({ userId, sid: SID, grantId: replacementGrant.grantId, secret: replacementGrant.grantSecret, oldCode: initial.code });
         assert.equal((await service.status({ userId })).status, 'pending');
         await client.query(`UPDATE student_auth_recovery_codes SET expires_at = clock_timestamp() WHERE id = $1`, [replacement.pendingCodeId]);
-        assert.deepEqual(await service.status({ userId }), { status: 'active', generation: 1, pendingCodeId: null, pendingExpiresAt: null });
+        assertRecoveryStatus(await service.status({ userId }), { status: 'active', generation: 1, pendingCodeId: null, pendingExpiresAt: null });
         // The shared suite asserts exact cleanup counts: an expired pending
         // left behind would inflate the next file's terminalization count.
         await client.query(`DELETE FROM student_auth_recovery_codes WHERE id = $1`, [replacement.pendingCodeId]);
@@ -767,7 +782,7 @@ test('replacement and removal require the current active code and exact separate
             (error: unknown) => (error as { code?: string }).code === 'CONFLICT',
         );
         await service.activate({ userId, sid: SID, grantId: replacementActivation.grantId, secret: replacementActivation.grantSecret, pendingCodeId: replacement.pendingCodeId, code: replacement.code, oldCode: initial.code });
-        assert.deepEqual(await service.status({ userId }), { status: 'active', generation: 2, pendingCodeId: null, pendingExpiresAt: null });
+        assertRecoveryStatus(await service.status({ userId }), { status: 'active', generation: 2, pendingCodeId: null, pendingExpiresAt: null });
 
         const remove = await grant(client, { userId, purpose: 'recovery_code_remove', activeCodeGeneration: 2 });
         await assert.rejects(
@@ -775,7 +790,7 @@ test('replacement and removal require the current active code and exact separate
             (error: unknown) => (error as { code?: string }).code === 'CONFLICT',
         );
         await service.remove({ userId, sid: SID, grantId: remove.grantId, secret: remove.grantSecret, oldCode: replacement.code });
-        assert.deepEqual(await service.status({ userId }), { status: 'unconfigured', generation: 2, pendingCodeId: null, pendingExpiresAt: null });
+        assertRecoveryStatus(await service.status({ userId }), { status: 'unconfigured', generation: 2, pendingCodeId: null, pendingExpiresAt: null });
     } finally {
         client.release();
         await pool.end();
@@ -977,6 +992,40 @@ test('proof-backed recovery operations reject proofs after their university is d
     }
 });
 
+test('fresh reauthentication skips a newer Microsoft identity without an observed email', async () => {
+    const pool = createTestPool();
+    const client = await pool.connect();
+    try {
+        const userId = await seedStudent(client);
+        // Pin the intended recency order at insert: linked_at is immutable,
+        // so the email identity links a minute before the email-less one.
+        const emailIdentityId = await seedProviderProof(client, userId, { policy: true, linkedAt: new Date(Date.now() - 60_000).toISOString() });
+        const email = (await client.query<{ observed_email: string }>(
+            'SELECT observed_email FROM student_auth_identities WHERE id = $1', [emailIdentityId],
+        )).rows[0]!.observed_email;
+        const bareIdentityId = await seedProviderProof(client, userId, { policy: true });
+        await client.query('UPDATE student_auth_identities SET observed_email = NULL WHERE id = $1', [bareIdentityId]);
+        let loginHint: string | null = null;
+        const reauth = new StudentReauthService({
+            pool,
+            attemptKey: Buffer.alloc(32, 7).toString('base64url'),
+            completionUrl: new URL('https://app.example.invalid/auth/student/sso/complete'),
+            isProviderEnabled: () => true,
+            oidcForPolicy: () => ({ authorizeFresh: async (input: { loginHint: string }) => { loginHint = input.loginHint; return new URL('https://provider.example.invalid/fresh'); } }) as never,
+        });
+        const started = await reauth.start({ userId, sid: SID, purpose: 'link' });
+        assert.ok(started.attemptId);
+        assert.equal(loginHint, email);
+        const proof = await client.query<{ proof_identity_id: string }>(
+            'SELECT proof_identity_id FROM student_auth_reauth_attempts WHERE id = $1', [started.attemptId],
+        );
+        assert.equal(proof.rows[0]!.proof_identity_id, emailIdentityId);
+    } finally {
+        client.release();
+        await pool.end();
+    }
+});
+
 test('credential-free activation, replacement, and removal notices run after commit', async () => {
     const pool = createTestPool();
     const client = await pool.connect();
@@ -1001,11 +1050,11 @@ test('credential-free activation, replacement, and removal notices run after com
         const replacement = await service.generate({ userId, sid: SID, grantId: replacementGrant.grantId, secret: replacementGrant.grantSecret, oldCode: first.code });
         const replacementActivation = await grant(client, { userId, purpose: 'recovery_code_activate', pendingCodeId: replacement.pendingCodeId, activeCodeGeneration: 1 });
         await service.activate({ userId, sid: SID, grantId: replacementActivation.grantId, secret: replacementActivation.grantSecret, pendingCodeId: replacement.pendingCodeId, code: replacement.code, oldCode: first.code });
-        assert.deepEqual(await service.status({ userId }), { status: 'active', generation: 2, pendingCodeId: null, pendingExpiresAt: null }, 'failed delivery must not roll back replacement');
+        assertRecoveryStatus(await service.status({ userId }), { status: 'active', generation: 2, pendingCodeId: null, pendingExpiresAt: null }, 'failed delivery must not roll back replacement');
 
         const removal = await grant(client, { userId, purpose: 'recovery_code_remove', activeCodeGeneration: 2 });
         await service.remove({ userId, sid: SID, grantId: removal.grantId, secret: removal.grantSecret, oldCode: replacement.code });
-        assert.deepEqual(await service.status({ userId }), { status: 'unconfigured', generation: 2, pendingCodeId: null, pendingExpiresAt: null });
+        assertRecoveryStatus(await service.status({ userId }), { status: 'unconfigured', generation: 2, pendingCodeId: null, pendingExpiresAt: null });
         assert.deepEqual(events, ['activated', 'replaced', 'removed']);
     } finally {
         client.release();

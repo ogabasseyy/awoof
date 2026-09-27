@@ -8,6 +8,7 @@ import { Button } from '@/components/ui/button';
 import { useAuth } from '@/contexts/AuthContext';
 import { clearTokens, getSessionSnapshot } from '@/lib/auth';
 import { studentSsoApiClient } from '@/lib/api-client';
+import { serverSkewSince } from '@/lib/student-login-flow';
 
 type RecoveryStatus = 'loading' | 'unconfigured' | 'pending' | 'active' | 'unavailable';
 const intentKey = 'awoof.recovery.intent.v1.tab';
@@ -39,6 +40,8 @@ function formatPendingRemaining(deadlineMs: number, nowMs: number): string {
     return `${Math.floor(total / 60)}:${String(total % 60).padStart(2, '0')}`;
 }
 
+const IDENTITIES_UNAVAILABLE = 'School sign-ins could not be loaded. Sign in again and retry.';
+
 /** Only opaque server ids and operation names survive a provider redirect. No grant, code, or password is persisted. */
 function saveIntent(intent: { purpose: 'recovery_code_generate' | 'recovery_code_activate'; pendingCodeId?: string }): boolean {
     try { sessionStorage.setItem(intentKey, JSON.stringify(intent)); return true; } catch { return false; }
@@ -57,9 +60,13 @@ export default function StudentSecurityPage() {
     }, []);
     // The ten-minute activation deadline is displayed and enforced in the
     // UI: at expiry the pending views swap to an explicit restart state
-    // instead of letting activation degrade into a generic failure.
+    // instead of letting activation degrade into a generic failure. The
+    // server clock travels with each deadline so skewed devices evaluate
+    // it on server time instead of expiring a live code early.
+    const [skewMs, setSkewMs] = useState(0);
+    const [pwSkewMs, setPwSkewMs] = useState(0);
     const pendingDeadlineMs = pendingExpiresAt ? Date.parse(pendingExpiresAt) : NaN;
-    const pendingExpired = status === 'pending' && pendingExpiresAt !== null && !Number.isNaN(pendingDeadlineMs) && pendingDeadlineMs <= now;
+    const pendingExpired = status === 'pending' && pendingExpiresAt !== null && !Number.isNaN(pendingDeadlineMs) && pendingDeadlineMs <= now + skewMs;
     const [identities, setIdentities] = useState<LinkedIdentity[] | null>(null);
     const [identitiesError, setIdentitiesError] = useState<string | null>(null);
     const [unlinkTarget, setUnlinkTarget] = useState<LinkedIdentity | null>(null);
@@ -72,9 +79,9 @@ export default function StudentSecurityPage() {
     const [password, setPassword] = useState(''); const [pwOld, setPwOld] = useState(''); const [pwCode, setPwCode] = useState('');
     const [pwPendingId, setPwPendingId] = useState<string | null>(null); const [pwExpiresAt, setPwExpiresAt] = useState<string | null>(null); const [formError, setFormError] = useState<string | null>(null);
     const pwDeadlineMs = pwExpiresAt ? Date.parse(pwExpiresAt) : NaN;
-    const pwExpired = (pwMode === 'display' || pwMode === 'activate') && pwExpiresAt !== null && !Number.isNaN(pwDeadlineMs) && pwDeadlineMs <= now;
+    const pwExpired = (pwMode === 'display' || pwMode === 'activate') && pwExpiresAt !== null && !Number.isNaN(pwDeadlineMs) && pwDeadlineMs <= now + pwSkewMs;
     const loadStatus = async (accessToken: string) => {
-        try { const r = await studentSsoApiClient.get('/auth/student/sso/recovery-code', { headers: { Authorization: `Bearer ${accessToken}` } }); const data = (r.data as { data?: { status?: unknown; pendingCodeId?: unknown; pendingExpiresAt?: unknown } }).data; const value = data?.status; setPendingCodeId(typeof data?.pendingCodeId === 'string' ? data.pendingCodeId : null); setPendingExpiresAt(typeof data?.pendingExpiresAt === 'string' ? data.pendingExpiresAt : null); setStatus(value === 'active' || value === 'pending' || value === 'unconfigured' ? value : 'unavailable'); } catch { setStatus('unavailable'); }
+        try { const r = await studentSsoApiClient.get('/auth/student/sso/recovery-code', { headers: { Authorization: `Bearer ${accessToken}` } }); const data = (r.data as { data?: { status?: unknown; pendingCodeId?: unknown; pendingExpiresAt?: unknown; serverNow?: unknown } }).data; const value = data?.status; setPendingCodeId(typeof data?.pendingCodeId === 'string' ? data.pendingCodeId : null); setPendingExpiresAt(typeof data?.pendingExpiresAt === 'string' ? data.pendingExpiresAt : null); setSkewMs(serverSkewSince(typeof data?.serverNow === 'string' && !Number.isNaN(Date.parse(data.serverNow)) ? data.serverNow : null)); setStatus(value === 'active' || value === 'pending' || value === 'unconfigured' ? value : 'unavailable'); } catch { setStatus('unavailable'); }
     };
     const loadIdentities = async (accessToken: string) => {
         try {
@@ -82,12 +89,12 @@ export default function StudentSecurityPage() {
             const parsed = parseIdentities((r.data as { data?: unknown }).data);
             if (!parsed) throw new Error('invalid');
             setIdentities(parsed); setIdentitiesError(null);
-        } catch { setIdentitiesError('School sign-ins could not be loaded. Sign in again and retry.'); }
+        } catch { setIdentitiesError(IDENTITIES_UNAVAILABLE); }
     };
     useEffect(() => {
         if (started.current) return; started.current = true;
         const session = getSessionSnapshot();
-        if (!session.accessToken) { setStatus('unavailable'); return; }
+        if (!session.accessToken) { setStatus('unavailable'); setIdentitiesError(IDENTITIES_UNAVAILABLE); return; }
         void loadStatus(session.accessToken);
         void loadIdentities(session.accessToken);
     }, []);
@@ -132,10 +139,11 @@ export default function StudentSecurityPage() {
             const reauthGrant = { grantId: g.grantId, grantSecret: g.grantSecret };
             if (pwMode === 'generate') {
                 const generated = await studentSsoApiClient.post('/auth/student/sso/recovery-code/generate', { reauthGrant, ...(pwOld ? { oldCode: pwOld } : {}) }, { headers });
-                const data = (generated.data as { data?: { pendingCodeId?: unknown; code?: unknown; expiresAt?: unknown } }).data;
+                const data = (generated.data as { data?: { pendingCodeId?: unknown; code?: unknown; expiresAt?: unknown; serverNow?: unknown } }).data;
                 if (!data || typeof data.pendingCodeId !== 'string' || typeof data.code !== 'string') throw new Error('invalid code');
                 setPwPendingId(data.pendingCodeId); setPwCode(data.code); setPassword('');
                 setPwExpiresAt(typeof data.expiresAt === 'string' ? data.expiresAt : null);
+                setPwSkewMs(serverSkewSince(typeof data.serverNow === 'string' && !Number.isNaN(Date.parse(data.serverNow)) ? data.serverNow : null));
                 setPwMode('display'); return;
             }
             if (pwMode === 'activate' && pwPendingId) {
@@ -155,7 +163,8 @@ export default function StudentSecurityPage() {
     // Linking confirms the new school sign-in against this signed-in
     // account, so passwordless owners use the same Microsoft fresh proof as
     // unlinking instead of a password they do not have. The completion page
-    // continues the link against the waiting tab handoff.
+    // continues the link against the waiting tab handoff, so this must run
+    // in the tab showing the link prompt: session storage is per-tab.
     const beginLink = async () => {
         if (linkBusy) return; const session = getSessionSnapshot(); if (!session.accessToken) { setStatus('unavailable'); return; }
         setLinkBusy(true); setLinkError(null);
@@ -164,7 +173,7 @@ export default function StudentSecurityPage() {
             const url = (r.data as { data?: { authorizationUrl?: unknown } }).data?.authorizationUrl;
             if (typeof url !== 'string' || !url.startsWith('https:')) throw new Error('invalid');
             window.location.assign(url);
-        } catch { setLinkBusy(false); setLinkError('School sign-in confirmation could not start. Make sure a school sign-in is waiting on the link prompt; accounts without a linked Microsoft sign-in can link by following the sign-in prompts instead.'); }
+        } catch { setLinkBusy(false); setLinkError('School sign-in confirmation could not start. Make sure a school sign-in is waiting on the link prompt in this tab; accounts without a linked Microsoft sign-in can link by following the sign-in prompts instead.'); }
     };
     const beginUnlink = async (target: LinkedIdentity) => {
         if (unlinkBusy) return; const session = getSessionSnapshot(); if (!session.accessToken) { setStatus('unavailable'); return; }
@@ -198,12 +207,15 @@ export default function StudentSecurityPage() {
             setUnlinkError(failed?.status === 409 && code === 'SSO_LAST_LOGIN_METHOD' ? 'This is the last sign-in method. Link another school sign-in first.' : failed?.status === 401 ? 'Current password is incorrect.' : failed?.status === 403 ? 'This account has no password. Use school sign-in instead.' : 'Removal failed. Try again.');
         } finally { setUnlinkBusy(false); }
     };
-    if (status === 'unavailable') return <AuthShell role="student" title="Account security" subtitle="Security setup is unavailable." footer={null}><p role="status">Sign in again and retry. If school sign-in is unavailable, use recovery only if you already saved a recovery code.</p><Link className="mt-5 inline-block text-primary underline" href="/auth/student/recovery">Account recovery</Link></AuthShell>;
+    // No early return on recovery-status failure: identity listing,
+    // password reauthentication, and unlinking stay available without the
+    // recovery service, so the recovery section reports its own outage
+    // inline while school sign-in controls render independently below.
     if (pwMode === 'display') return pwExpired
         ? <AuthShell role="student" title="Pending code expired" subtitle="The activation deadline passed." footer={null}><p role="alert">This pending code expired before activation and cannot recover your account. Start setup again for a fresh code.</p><Button type="button" onClick={() => { setPwMode(null); setPwCode(''); setPwPendingId(null); setPwExpiresAt(null); }} className="mt-5 w-full rounded-full">Back to account security</Button></AuthShell>
-        : <AuthShell role="student" title="Save your recovery code" subtitle="Shown once. It will not be displayed again." footer={null}><p role="status" className="break-all rounded-2xl border px-4 py-3 text-left font-mono text-sm">{pwCode}</p>{Number.isNaN(pwDeadlineMs) ? null : <p role="timer" className="mt-3 text-left text-sm">Activate this code within {formatPendingRemaining(pwDeadlineMs, now)}.</p>}<Button type="button" onClick={() => { setPwCode(''); setPwMode('activate'); }} className="mt-5 w-full rounded-full">I saved my code</Button></AuthShell>;
+        : <AuthShell role="student" title="Save your recovery code" subtitle="Shown once. It will not be displayed again." footer={null}><p role="status" className="break-all rounded-2xl border px-4 py-3 text-left font-mono text-sm">{pwCode}</p>{Number.isNaN(pwDeadlineMs) ? null : <p role="timer" className="mt-3 text-left text-sm">Activate this code within {formatPendingRemaining(pwDeadlineMs, now + pwSkewMs)}.</p>}<Button type="button" onClick={() => { setPwCode(''); setPwMode('activate'); }} className="mt-5 w-full rounded-full">I saved my code</Button></AuthShell>;
     if (pwMode) return <AuthShell role="student" title="Confirm with your password" subtitle={pwMode === 'generate' ? 'Password confirmation for a new code.' : pwMode === 'activate' ? 'Password confirmation to activate the saved code.' : 'Password confirmation to remove the code.'} footer={null}>
-        {pwMode === 'activate' && !Number.isNaN(pwDeadlineMs) ? <p role="timer" className="mb-3 text-left text-sm">Activate this code within {formatPendingRemaining(pwDeadlineMs, now)}.</p> : null}
+        {pwMode === 'activate' && !Number.isNaN(pwDeadlineMs) ? <p role="timer" className="mb-3 text-left text-sm">Activate this code within {formatPendingRemaining(pwDeadlineMs, now + pwSkewMs)}.</p> : null}
         {pwMode === 'activate' && pwExpired ? <p role="alert" className="mb-3 text-sm text-red-600">This pending code expired before activation. Go back and start setup again for a fresh code.</p> : null}
         <div className="space-y-3"><label className="block text-left text-sm" htmlFor="recovery-password">Current password<input id="recovery-password" type="password" autoComplete="current-password" value={password} onChange={e => setPassword(e.target.value)} className="mt-1 w-full rounded-2xl border px-4 h-11" /></label>
         {pwMode === 'activate' ? <label className="block text-left text-sm" htmlFor="recovery-code-confirm">Re-enter saved recovery code<input id="recovery-code-confirm" value={pwCode} onChange={e => setPwCode(e.target.value)} className="mt-1 w-full rounded-2xl border px-4 h-11" /></label> : null}
@@ -218,7 +230,7 @@ export default function StudentSecurityPage() {
         {schoolError ? <p role="alert" className="mt-3 text-left text-sm text-red-600">{schoolError}</p> : null}
         {status === 'active' ? <div className="mt-4 space-y-3"><p role="status" className="text-left text-sm">A recovery code is active. Replacing or removing it requires the current code and fresh confirmation.</p><Button type="button" onClick={() => pwPreferred ? startPassword('generate') : begin()} disabled={busy} className="w-full rounded-full">Replace recovery code</Button><Button type="button" variant="outline" onClick={() => pwPreferred ? startPassword('remove') : beginRemove()} disabled={busy} className="w-full rounded-full">Remove recovery code</Button>{methodToggle}</div> : status === 'pending' ? pendingExpired
             ? <div className="mt-4 space-y-3"><p role="alert" className="text-left text-sm">This pending code expired before activation and cannot recover your account. Refresh for current status, then start setup again for a fresh code.</p><Button type="button" onClick={() => { const live = getSessionSnapshot(); if (live.accessToken) void loadStatus(live.accessToken); }} disabled={busy} className="w-full rounded-full">Refresh status</Button>{methodToggle}</div>
-            : <div className="mt-4 space-y-3"><p role="status" className="text-left text-sm">A pending code exists but cannot recover your account. Confirm your identity again before it expires.</p>{Number.isNaN(pendingDeadlineMs) ? null : <p role="timer" className="text-left text-sm">Activate this code within {formatPendingRemaining(pendingDeadlineMs, now)}.</p>}<Button type="button" onClick={() => pwPreferred ? startPassword('activate') : beginActivation()} disabled={busy || !pendingCodeId} className="w-full rounded-full">Confirm identity to activate saved code</Button><Button type="button" variant="outline" onClick={cancelPending} disabled={busy || !pendingCodeId} className="w-full rounded-full">Cancel pending code</Button>{methodToggle}</div> : <div className="mt-5 space-y-2"><Button type="button" onClick={() => pwPreferred ? startPassword('generate') : begin()} disabled={busy || status === 'loading'} className="w-full rounded-full">{busy ? (pwPreferred ? 'Working…' : 'Redirecting…') : 'Confirm identity to generate a code'}</Button>{methodToggle}</div>}
+            : <div className="mt-4 space-y-3"><p role="status" className="text-left text-sm">A pending code exists but cannot recover your account. Confirm your identity again before it expires.</p>{Number.isNaN(pendingDeadlineMs) ? null : <p role="timer" className="text-left text-sm">Activate this code within {formatPendingRemaining(pendingDeadlineMs, now + skewMs)}.</p>}<Button type="button" onClick={() => pwPreferred ? startPassword('activate') : beginActivation()} disabled={busy || !pendingCodeId} className="w-full rounded-full">Confirm identity to activate saved code</Button><Button type="button" variant="outline" onClick={cancelPending} disabled={busy || !pendingCodeId} className="w-full rounded-full">Cancel pending code</Button>{methodToggle}</div> : status === 'unavailable' ? <div className="mt-4 space-y-3"><p role="status" className="text-left text-sm">Recovery-code setup is unavailable. Sign in again and retry. If school sign-in is unavailable, use recovery only if you already saved a recovery code.</p><Link className="text-left text-sm text-primary underline" href="/auth/student/recovery">Account recovery</Link></div> : <div className="mt-5 space-y-2"><Button type="button" onClick={() => pwPreferred ? startPassword('generate') : begin()} disabled={busy || status === 'loading'} className="w-full rounded-full">{busy ? (pwPreferred ? 'Working…' : 'Redirecting…') : 'Confirm identity to generate a code'}</Button>{methodToggle}</div>}
         <div className="mt-8 border-t pt-5 text-left">
             <h2 className="text-base font-semibold">School sign-ins</h2>
             <p className="mt-1 text-sm text-slate-600">School accounts linked to this Awoof account. Removing one needs fresh confirmation; the last sign-in method cannot be removed.</p>
@@ -239,7 +251,7 @@ export default function StudentSecurityPage() {
                 </div> : <Button type="button" variant="outline" onClick={() => { setUnlinkTarget(identity); setUnlinkPassword(''); setUnlinkError(null); }} disabled={unlinkBusy} className="mt-2 rounded-full">Remove</Button>}
             </li>)}</ul>}
             {signedOut ? null : <div className="mt-5 border-t pt-5">
-                <p className="text-sm text-slate-600">To link a new school sign-in, first sign out and sign in with that school account until it shows the link prompt, keeping the tab open. Then, signed in to this account, confirm below with school sign-in. Accounts with a password can also link by following the sign-in prompts.</p>
+                <p className="text-sm text-slate-600">To link a new school sign-in, first sign out and sign in with that school account until it shows the link prompt, keeping the tab open. Then, signed in to this account, return to the tab showing the link prompt, open Account security there, and confirm below with school sign-in. Accounts with a password can also link by following the sign-in prompts.</p>
                 {linkError ? <p role="alert" className="mt-2 text-sm text-red-600">{linkError}</p> : null}
                 <Button type="button" variant="outline" onClick={() => void beginLink()} disabled={linkBusy} className="mt-3 w-full rounded-full">Link a school sign-in</Button>
             </div>}

@@ -570,10 +570,10 @@ export class AuthController {
 
         // Find user with valid OTP
         const userResult = await db.query(
-            `SELECT id, email, password_reset_otp, password_reset_otp_expires_at
-             FROM users 
+            `SELECT id, email, password_reset_otp, password_reset_otp_expires_at, credential_generation
+             FROM users
              WHERE lower(btrim(email)) = $1
-               AND password_reset_otp = $2 
+               AND password_reset_otp = $2
                AND deleted_at IS NULL
                AND password_setup_requires_recovery_code = false`,
             [normalizedEmail, validated.otp]
@@ -593,11 +593,14 @@ export class AuthController {
         // Hash new password
         const passwordHash = await passwordService.hashPassword(validated.newPassword);
 
-        // Update password and clear OTP
-        await db.query(
-            `UPDATE users 
-             SET password_hash = $1, 
-                 password_reset_otp = NULL, 
+        // Conditional write: hashing is slow, so an account-recovery commit
+        // or a superseding OTP may land between verification and this
+        // update. The write must fail instead of overwriting the recovered
+        // password with stale OTP authority.
+        const updated = await db.query(
+            `UPDATE users
+             SET password_hash = $1,
+                 password_reset_otp = NULL,
                  password_reset_otp_expires_at = NULL,
                  refresh_token_hash = NULL,
                  refresh_token_expires_at = NULL,
@@ -605,9 +608,11 @@ export class AuthController {
                  active_session_issued_at = NULL,
                  credential_generation = credential_generation + 1,
                  updated_at = CURRENT_TIMESTAMP
-             WHERE id = $2`,
-            [passwordHash, user.id]
+             WHERE id = $2 AND password_reset_otp = $3 AND credential_generation = $4
+               AND password_reset_otp_expires_at > CURRENT_TIMESTAMP AND deleted_at IS NULL`,
+            [passwordHash, user.id, validated.otp, user.credential_generation]
         );
+        if ((updated.rowCount ?? 0) !== 1) throw new UnauthorizedError('Invalid OTP');
 
         // Clear the password-reset cache entry; refresh-session authority is durable.
         const redisClient = redis.getClient();
@@ -645,7 +650,7 @@ export class AuthController {
 
         // Get user with password hash
         const userResult = await db.query(
-            `SELECT id, password_hash FROM users WHERE id = $1 AND deleted_at IS NULL`,
+            `SELECT id, password_hash, credential_generation FROM users WHERE id = $1 AND deleted_at IS NULL`,
             [req.user.userId]
         );
 
@@ -668,19 +673,22 @@ export class AuthController {
         // Hash new password
         const passwordHash = await passwordService.hashPassword(validated.newPassword);
 
-        // Update password
-        await db.query(
-            `UPDATE users 
-             SET password_hash = $1, 
+        // Conditional write: hashing is slow, so an account-recovery commit
+        // may land between old-password verification and this update. The
+        // write must fail instead of overwriting the recovered password.
+        const updated = await db.query(
+            `UPDATE users
+             SET password_hash = $1,
                  refresh_token_hash = NULL,
                  refresh_token_expires_at = NULL,
                  active_session_id = NULL,
                  active_session_issued_at = NULL,
                  credential_generation = credential_generation + 1,
                  updated_at = CURRENT_TIMESTAMP
-             WHERE id = $2`,
-            [passwordHash, user.id]
+             WHERE id = $2 AND password_hash = $3 AND credential_generation = $4 AND deleted_at IS NULL`,
+            [passwordHash, user.id, user.password_hash, user.credential_generation]
         );
+        if ((updated.rowCount ?? 0) !== 1) throw new ConflictError('Password changed during this update. Sign in again if needed.');
 
         success(res, {
             message: 'Password updated successfully',

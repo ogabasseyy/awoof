@@ -90,6 +90,19 @@ test('expired recovery attempts show an explicit restart state', async ({ page }
     api.assertNoUnexpectedRequests();
 });
 
+test('recovery deadlines use the server clock on skewed devices', async ({ page }) => {
+    const api = await installSyntheticApi(page);
+    // The device clock runs ten minutes fast: the expiry is device-past
+    // but the server clock in the same response keeps nine minutes left.
+    await page.route(`${apiOrigin}/api/auth/student/sso/account-recovery/start`, route => route.fulfill({ status: 202, headers, json: { success: true, data: { attemptId: '9a000000-0000-4000-8000-000000000001', secret: 'recovery-secret', expiresAt: new Date(Date.now() - 30_000).toISOString(), serverNow: new Date(Date.now() - 600_000).toISOString() } } }));
+    await page.goto('/auth/student/recovery');
+    await page.getByLabel('School email').fill('student@school.example');
+    await page.getByRole('button', { name: 'Start recovery' }).click();
+    await expect(page.getByRole('timer')).toContainText(/Complete this recovery within 9:(29|30|31)/);
+    await expect(page.getByLabel('Saved recovery code')).toBeVisible();
+    api.assertNoUnexpectedRequests();
+});
+
 test('fresh grants drive generation then a second re-entry activation without persisting plaintext', async ({ page }) => {
     const api = await installSyntheticApi(page);
     const pendingId = '74000000-0000-4000-8000-000000000001';
@@ -353,6 +366,35 @@ test('account security surfaces the last-method guard instead of removing', asyn
     await page.getByRole('button', { name: 'Remove with password' }).click();
     await expect(page.getByText('This is the last sign-in method. Link another school sign-in first.')).toBeVisible();
     await expect(page.getByText('Google · Fixture University')).toBeVisible();
+    api.assertNoUnexpectedRequests();
+});
+
+test('identity controls stay available when recovery status is unavailable', async ({ page }) => {
+    const api = await installSyntheticApi(page);
+    const targetId = '93000000-0000-4000-8000-000000000001';
+    await page.route(`${apiOrigin}/api/auth/student/sso/recovery-code`, route => route.fulfill({ status: 503, headers, json: { success: false, error: { message: 'Account recovery is unavailable', statusCode: 503 } } }));
+    await page.route(`${apiOrigin}/api/auth/student/sso/identities`, route => route.fulfill({ headers, json: { success: true, data: { identities: [{ id: targetId, provider: 'microsoft', universityName: 'Fixture University', linkedAt: new Date().toISOString() }] } } }));
+    await page.goto('/auth/student/login'); await seedSession(page, 'student');
+    await page.goto('/student/security');
+    // The recovery section reports its own outage inline while the
+    // already-loaded school sign-in stays removable.
+    await expect(page.getByText('Recovery-code setup is unavailable.')).toBeVisible();
+    await expect(page.getByText('Microsoft · Fixture University')).toBeVisible();
+    await expect(page.getByRole('button', { name: 'Remove', exact: true })).toBeVisible();
+    api.assertNoUnexpectedRequests();
+});
+
+test('pending-code deadlines use the server clock on skewed devices', async ({ page }) => {
+    const api = await installSyntheticApi(page);
+    const pendingId = '9b000000-0000-4000-8000-000000000001';
+    await page.route(`${apiOrigin}/api/auth/student/sso/recovery-code`, route => route.fulfill({ headers, json: { success: true, data: { status: 'pending', generation: 1, pendingCodeId: pendingId, pendingExpiresAt: new Date(Date.now() - 30_000).toISOString(), serverNow: new Date(Date.now() - 600_000).toISOString() } } }));
+    await page.route(`${apiOrigin}/api/auth/student/sso/identities`, route => route.fulfill({ headers, json: { success: true, data: { identities: [] } } }));
+    await page.goto('/auth/student/login'); await seedSession(page, 'student');
+    await page.goto('/student/security');
+    // The device-past deadline is server-live, so the pending view and
+    // its countdown render instead of the expired restart state.
+    await expect(page.getByRole('timer')).toContainText(/Activate this code within 9:(29|30|31)/);
+    await expect(page.getByRole('button', { name: 'Confirm identity to activate saved code' })).toBeVisible();
     api.assertNoUnexpectedRequests();
 });
 

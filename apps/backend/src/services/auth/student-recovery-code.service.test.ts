@@ -14,6 +14,7 @@ test('status exposes recovery state and generation without a recovery digest', a
                         id: '11111111-1111-4111-8111-111111111111', generation: 3, code_digest: 'must-not-leak',
                         status: 'active', expires_at: null, pending_sid: null,
                         pending_credential_generation: null, pending_proof_identity_id: null,
+                        now: new Date('2026-09-27T22:00:00.000Z'),
                     }],
                     rowCount: 1,
                 };
@@ -29,6 +30,7 @@ test('status exposes recovery state and generation without a recovery digest', a
 
     assert.deepEqual(await service.status({ userId: '22222222-2222-4222-8222-222222222222' }), {
         status: 'active', generation: 3, pendingCodeId: null, pendingExpiresAt: null,
+        serverNow: '2026-09-27T22:00:00.000Z',
     });
     assert.equal(queries.length, 1);
     assert.ok(queries[0]!.includes("status = 'pending' AND expires_at > clock_timestamp()"),

@@ -89,6 +89,7 @@ function formatSignupRemaining(deadlineMs: number, nowMs: number): string {
 
 function SignupOnboarding() {
     const [context, setContext] = useState<SignupContext | null>(null);
+    const [skewMs, setSkewMs] = useState(0);
     const [now, setNow] = useState(() => Date.now());
     const [challengeId, setChallengeId] = useState<string | null>(null);
     const [code, setCode] = useState(''); const [name, setName] = useState('');
@@ -100,7 +101,7 @@ function SignupOnboarding() {
         if (started.current) return; started.current = true;
         const record = readSsoHandoff(tabStorage());
         if (!record || !isSsoAttemptLive(record, Date.now()) || getSessionSnapshot().accessToken) { forgetHandoff(); setError('This setup link expired or this tab changed accounts. Start Microsoft sign-in again.'); return; }
-        handoff.current = record; initialSession.current = getSessionSnapshot().generation;
+        handoff.current = record; setSkewMs(record.serverSkewMs); initialSession.current = getSessionSnapshot().generation;
         void studentSsoApiClient.post('/auth/student/sso/signup/context', { handoffId: record.handoffId, handoffSecret: record.handoffSecret })
             .then(response => { const parsed = signupContext(response.data); if (!parsed) throw new Error('invalid'); setContext(parsed); })
             .catch(() => setError('This setup link is unavailable or expired. Start Microsoft sign-in again.'));
@@ -113,9 +114,12 @@ function SignupOnboarding() {
     // The ten-minute handoff window can lapse while the student waits for
     // mail or fills the form. The countdown names the deadline up front and
     // the page swaps to an explicit restart state at expiry instead of
-    // presenting controls whose next request fails generically.
+    // presenting controls whose next request fails generically. The
+    // server-issued deadline is evaluated on the server clock using the
+    // skew sampled at sign-in start, so a fast device clock cannot expire
+    // a live handoff early.
     const deadlineMs = context ? Date.parse(context.expiresAt) : NaN;
-    const linkExpired = context !== null && !Number.isNaN(deadlineMs) && deadlineMs <= now;
+    const linkExpired = context !== null && !Number.isNaN(deadlineMs) && deadlineMs <= now + skewMs;
     useEffect(() => { if (linkExpired) forgetHandoff(); }, [linkExpired]);
     const requestCode = async () => {
         if (!handoff.current || busy) return; setBusy(true); setError(null);
@@ -169,7 +173,7 @@ function SignupOnboarding() {
     if (linkExpired) return <AuthShell role="student" title="Finish setting up Awoof" subtitle="This setup link expired." footer={null}><p role="alert">This setup link expired before setup finished. Start Microsoft sign-in again for a fresh link.</p><Button className="mt-5 w-full rounded-full" asChild><Link href="/auth/student/login">Restart Microsoft sign-in</Link></Button></AuthShell>;
     return <AuthShell role="student" title="Finish setting up Awoof" subtitle="Create an account without a password." footer={null}>
         <p className="text-left text-sm text-slate-600">Microsoft sign-in succeeded. Confirm <strong>{context.email}</strong> for your Awoof account and recovery. Enrollment is pending; confirming this email does not verify current enrollment or independently verify age.</p>
-        {Number.isNaN(deadlineMs) ? null : <p role="timer" className="mt-3 text-left text-sm text-slate-600">This setup link expires in {formatSignupRemaining(deadlineMs, now)}. Finish before then or restart Microsoft sign-in.</p>}
+        {Number.isNaN(deadlineMs) ? null : <p role="timer" className="mt-3 text-left text-sm text-slate-600">This setup link expires in {formatSignupRemaining(deadlineMs, now + skewMs)}. Finish before then or restart Microsoft sign-in.</p>}
         {!challengeId ? <Button type="button" onClick={requestCode} disabled={busy} className="mt-5 w-full rounded-full">{busy ? 'Sending…' : 'Send confirmation code'}</Button> : challengeId !== 'verified' ? <div className="mt-5 space-y-3"><label className="block text-left text-sm font-medium" htmlFor="signup-code">Email confirmation code<input id="signup-code" aria-label="Email confirmation code" inputMode="numeric" value={code} onChange={e => setCode(e.target.value)} className="mt-1 w-full rounded-2xl border px-4 h-11" /></label><Button type="button" onClick={verifyCode} disabled={busy || !/^\d{6}$/.test(code)} className="w-full rounded-full">Confirm email</Button><Button type="button" variant="outline" onClick={requestCode} disabled={busy} className="w-full rounded-full">Request a new code</Button></div> : <div className="mt-5 space-y-3"><label className="block text-left text-sm font-medium" htmlFor="signup-name">Full name<input id="signup-name" aria-label="Full name" value={name} onChange={e => setName(e.target.value)} maxLength={255} className="mt-1 w-full rounded-2xl border px-4 h-11" /></label><label className="flex gap-2 text-left text-sm"><input aria-label="I am at least 18 years old" type="checkbox" checked={age} onChange={e => setAge(e.target.checked)} />I am at least 18 years old</label><p className="text-left text-sm text-slate-600">Creating an account records your acceptance of version {context.termsVersion} of the <Link href="/terms" target="_blank" rel="noreferrer" className="text-primary underline">Terms of Service</Link>.</p><label className="flex gap-2 text-left text-sm"><input aria-label="I accept the current Terms" type="checkbox" checked={terms} onChange={e => setTerms(e.target.checked)} />I accept the current Terms</label><p className="text-left text-sm text-slate-600">Processing notice ({context.noticeVersion}): {context.noticeText}</p><label className="flex gap-2 text-left text-sm"><input aria-label="I consent to the processing notice" type="checkbox" checked={consent} onChange={e => setConsent(e.target.checked)} />I consent to the processing notice</label><Button type="button" onClick={complete} disabled={busy || !age || !terms || !consent || name.trim().length < 2} className="w-full rounded-full">Create passwordless account</Button></div>}
         {error ? <p role="alert" className="mt-3 text-left text-sm text-red-600">{error}</p> : null}
     </AuthShell>;

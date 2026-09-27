@@ -72,6 +72,24 @@ test('an expired setup link shows an explicit restart state instead of usable co
     api.assertNoUnexpectedRequests();
 });
 
+test('signup deadlines use the recorded server skew on fast devices', async ({ page }) => {
+    const api = await installSyntheticApi(page);
+    await page.route(`${apiOrigin}/api/auth/student/sso/signup/**`, async (route) => {
+        const path = new URL(route.request().url()).pathname;
+        // The device clock runs ten minutes fast: the context expiry is
+        // device-past but server-live, matching the handoff skew sample.
+        if (path.endsWith('/context')) return route.fulfill({ json: { success: true, data: { email: 'student@school.example', universityId: '72000000-0000-4000-8000-000000000001', termsVersion: '2026-01', noticeVersion: '2026-01', noticeText: 'Synthetic verification processing notice.', expiresAt: new Date(Date.now() - 30_000).toISOString() } }, headers });
+        return route.fulfill({ status: 409, json: { success: false, error: { message: 'expired' } }, headers });
+    });
+    await page.goto('/auth/student/login');
+    await page.evaluate(({ key, handoffId }) => sessionStorage.setItem(key, JSON.stringify({ handoffId, handoffSecret: 'handoff-secret', expiresAt: new Date(Date.now() + 600_000).toISOString(), returnPath: '/marketplace', serverSkewMs: -600_000 })), { key: HANDOFF_KEY, handoffId: HANDOFF_ID });
+    await page.goto('/auth/student/sso/onboarding?mode=signup');
+    await expect(page.getByRole('heading', { name: 'Finish setting up Awoof' })).toBeVisible();
+    await expect(page.getByRole('timer')).toContainText(/expires in 9:(29|30|31)/);
+    await expect(page.getByRole('button', { name: 'Send confirmation code' })).toBeVisible();
+    api.assertNoUnexpectedRequests();
+});
+
 test('stale assent versions refetch the new text instead of retrying rejected versions', async ({ page }) => {
     const requests: string[] = [];
     const api = await installSyntheticApi(page);

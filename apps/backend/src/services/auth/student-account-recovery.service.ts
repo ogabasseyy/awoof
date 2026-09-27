@@ -75,7 +75,7 @@ export class StudentAccountRecoveryService {
         }
     }
 
-    async start(input: { email: unknown; purpose: unknown }): Promise<{ attemptId: string; secret: string; expiresAt: string }> {
+    async start(input: { email: unknown; purpose: unknown }): Promise<{ attemptId: string; secret: string; expiresAt: string; serverNow: string }> {
         if (!validPurpose(input.purpose)) throw new TypeError('Recovery purpose is invalid');
         if (typeof input.email !== 'string' || input.email.trim().length === 0 || input.email.length > 255) {
             throw new TypeError('Recovery email is invalid');
@@ -92,17 +92,18 @@ export class StudentAccountRecoveryService {
         // clock skew and by the shorter mailbox TTL.
         const ttlMs = challengeTtlMs('student_account_recovery');
         const started = await this.transaction(async (tx) => {
-            const serverExpiry = new Date((await databaseNow(tx)).getTime() + ttlMs);
+            const serverNow = await databaseNow(tx);
+            const serverExpiry = new Date(serverNow.getTime() + ttlMs);
             const account = await this.findRecoverableAccount(tx, email);
-            if (!account) return { expiresAt: serverExpiry.toISOString() };
+            if (!account) return { expiresAt: serverExpiry.toISOString(), serverNow: serverNow.toISOString() };
             const active = await this.lockActiveCode(tx, account.id);
-            if (!active) return { expiresAt: serverExpiry.toISOString() };
+            if (!active) return { expiresAt: serverExpiry.toISOString(), serverNow: serverNow.toISOString() };
             const challenge = await requestChallenge(tx, {
                 purpose: 'student_account_recovery', subjectKey: account.email,
                 bindings: { recoveryAttemptId: attemptId, recoveryPurpose: input.purpose },
                 expiresAt: serverExpiry,
             });
-            if (challenge.status !== 'issued') return { expiresAt: serverExpiry.toISOString() };
+            if (challenge.status !== 'issued') return { expiresAt: serverExpiry.toISOString(), serverNow: serverNow.toISOString() };
             await tx.query(
                 `UPDATE student_auth_recovery_attempts
                  SET status = 'failed', secret_hash = NULL
@@ -117,7 +118,7 @@ export class StudentAccountRecoveryService {
                  RETURNING expires_at`,
                 [attemptId, account.id, Number(account.credential_generation), input.purpose, this.secretDigest(secret), Number(active.generation), challenge.challengeId, challenge.expiresAt],
             );
-            return { email: account.email, otp: challenge.code, expiresAt: inserted.rows[0]!.expires_at.toISOString() };
+            return { email: account.email, otp: challenge.code, expiresAt: inserted.rows[0]!.expires_at.toISOString(), serverNow: serverNow.toISOString() };
         });
         // Always provide an indistinguishable browser handle. A non-existent,
         // suspended, or code-less account receives a handle that cannot verify.
@@ -125,7 +126,7 @@ export class StudentAccountRecoveryService {
         // real accounts by response timing. Failures stay silent by design —
         // the OTP remains consumable and the caller can request a new one.
         if ('email' in started && 'otp' in started && this.deps.deliverOtp) void this.deps.deliverOtp(started.email, started.otp).catch(() => undefined);
-        return { attemptId, secret, expiresAt: started.expiresAt };
+        return { attemptId, secret, expiresAt: started.expiresAt, serverNow: started.serverNow };
     }
 
     async verify(input: { attemptId: unknown; secret: unknown; code: unknown; otp: unknown }): Promise<void> {

@@ -93,7 +93,7 @@ export class StudentRecoveryCodeService {
         }
     }
 
-    async generate(input: { userId: string; sid: string; grantId: string; secret: string; oldCode?: string }): Promise<{ pendingCodeId: string; code: string; expiresAt: string }> {
+    async generate(input: { userId: string; sid: string; grantId: string; secret: string; oldCode?: string }): Promise<{ pendingCodeId: string; code: string; expiresAt: string; serverNow: string }> {
         return this.inTransaction(async (tx) => {
             const account = await this.lockAccount(tx, input.userId, input.sid);
             const active = await this.lockCurrentCode(tx, input.userId, 'active');
@@ -123,16 +123,16 @@ export class StudentRecoveryCodeService {
             );
             const code = this.dependencies.randomCode?.() ?? codeForDisplay();
             const codeId = randomUUID();
-            const result = await tx.query<{ expires_at: Date }>(
+            const result = await tx.query<{ expires_at: Date; now: Date }>(
                 `INSERT INTO student_auth_recovery_codes
                      (id, user_id, generation, code_digest, status, expires_at,
                       pending_sid, pending_credential_generation, pending_proof_identity_id)
                  VALUES ($1, $2, COALESCE((SELECT max(generation) + 1 FROM student_auth_recovery_codes WHERE user_id = $2), 1),
                          $3, 'pending', clock_timestamp() + interval '10 minutes', $4::uuid, $5, $6)
-                 RETURNING expires_at`,
+                 RETURNING expires_at, clock_timestamp() AS now`,
                 [codeId, input.userId, this.digest(code), input.sid, Number(account.credential_generation), proofIdentityId],
             );
-            return { pendingCodeId: codeId, code, expiresAt: result.rows[0]!.expires_at.toISOString() };
+            return { pendingCodeId: codeId, code, expiresAt: result.rows[0]!.expires_at.toISOString(), serverNow: result.rows[0]!.now.toISOString() };
         });
     }
 
@@ -218,12 +218,12 @@ export class StudentRecoveryCodeService {
         await this.sendSecurityNotice(committed.email, 'removed');
     }
 
-    async status(input: { userId: string }): Promise<{ status: RecoveryCodeStatus; generation: number | null; pendingCodeId: string | null; pendingExpiresAt: string | null }> {
+    async status(input: { userId: string }): Promise<{ status: RecoveryCodeStatus; generation: number | null; pendingCodeId: string | null; pendingExpiresAt: string | null; serverNow: string }> {
         const result = await this.dependencies.pool.connect();
         try {
-            const current = await result.query<RecoveryCodeRow>(
+            const current = await result.query<RecoveryCodeRow & { now: Date }>(
                 `SELECT id, generation, code_digest, status, expires_at, pending_sid,
-                        pending_credential_generation, pending_proof_identity_id
+                        pending_credential_generation, pending_proof_identity_id, clock_timestamp() AS now
                  FROM student_auth_recovery_codes
                  WHERE user_id = $1 AND (status = 'active' OR (status = 'pending' AND expires_at > clock_timestamp()))
                  ORDER BY generation DESC LIMIT 1`,
@@ -233,16 +233,19 @@ export class StudentRecoveryCodeService {
             if (code && (code.status === 'active' || code.status === 'pending')) {
                 // The pending activation deadline must survive navigation and
                 // reload: clients display it and restart on expiry instead of
-                // failing a stale activation generically.
+                // failing a stale activation generically. The server clock
+                // travels with it so skewed devices correct their countdown
+                // instead of expiring a live deadline early.
                 return {
                     status: code.status, generation: Number(code.generation), pendingCodeId: code.status === 'pending' ? code.id : null,
                     pendingExpiresAt: code.status === 'pending' && code.expires_at ? code.expires_at.toISOString() : null,
+                    serverNow: code.now.toISOString(),
                 };
             }
-            const generation = await result.query<{ generation: string | number }>(
-                'SELECT max(generation) AS generation FROM student_auth_recovery_codes WHERE user_id = $1', [input.userId],
+            const generation = await result.query<{ generation: string | number; now: Date }>(
+                'SELECT max(generation) AS generation, clock_timestamp() AS now FROM student_auth_recovery_codes WHERE user_id = $1', [input.userId],
             );
-            return { status: 'unconfigured', generation: generation.rows[0]?.generation == null ? null : Number(generation.rows[0].generation), pendingCodeId: null, pendingExpiresAt: null };
+            return { status: 'unconfigured', generation: generation.rows[0]?.generation == null ? null : Number(generation.rows[0].generation), pendingCodeId: null, pendingExpiresAt: null, serverNow: generation.rows[0]!.now.toISOString() };
         } finally {
             result.release();
         }
