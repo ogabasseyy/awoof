@@ -622,10 +622,12 @@ export function createStudentSsoRouter(factory: FlowFactory = defaultFlow, optio
     router.get('/signup/availability', asyncHandler(async (req, res) => {
         // Provider-specific gating: a link_required outcome offers signup
         // only when the provider that produced the unknown identity is still
-        // enabled for signup, not when any provider is on.
+        // enabled for signup, not when any provider is on. The signup service
+        // accepts Microsoft handoffs only, so Google handoffs are never
+        // offered an account creation that /signup/context would reject.
         const provider = req.query.provider;
         if (provider !== undefined && provider !== 'google' && provider !== 'microsoft') throw new BadRequestError('Unknown provider');
-        const available = signupEnabled() && (provider === undefined || providersEnabled().includes(provider));
+        const available = signupEnabled() && (provider === undefined || (provider === 'microsoft' && providersEnabled().includes(provider)));
         responseHeaders(res); res.json({ success: true, data: { available } });
     }));
 
@@ -942,6 +944,73 @@ export default createStudentSsoRouter();
  *       404: { description: Bound target identity or recovery code not found }
  *       409: { description: Link-purpose reauthentication is unavailable while providers are disabled }
  *       429: { description: Too many reauthentication requests }
+ * /api/auth/student/sso/reauth/microsoft/start:
+ *   post:
+ *     summary: Start a fresh Microsoft proof for the current student account
+ *     description: >
+ *       Strict JSON. Starts a five-minute fresh-Microsoft authentication for
+ *       the current user and session, bound to the requested purpose and
+ *       optional action targets. Returns an authorization URL and sets a
+ *       per-attempt Secure HttpOnly SameSite=Lax browser cookie. The provider
+ *       callback lands on the fixed completion route; no session is issued.
+ *     tags: [Authentication]
+ *     security: [{ bearerAuth: [] }]
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             additionalProperties: false
+ *             required: [purpose]
+ *             properties:
+ *               purpose: { type: string, enum: [link, unlink, recovery_code_generate, recovery_code_activate, recovery_code_remove] }
+ *               targetIdentityId: { type: string, format: uuid, description: Binds the grant to one identity for unlink consumption }
+ *               pendingCodeId: { type: string, format: uuid, description: Binds the grant to one pending code }
+ *     responses:
+ *       201:
+ *         description: Fresh-proof attempt with browser binding
+ *         headers:
+ *           Cache-Control: { schema: { type: string, example: no-store } }
+ *           Set-Cookie: { schema: { type: string, example: awoof_reauth_<attemptId>=<secret>; Path=/api/auth/student/sso; HttpOnly; Secure; SameSite=Lax } }
+ *         content: { application/json: { schema: { $ref: '#/components/schemas/StudentSsoReauthStartResponse' } } }
+ *       400: { description: Invalid body, origin, or content type }
+ *       401: { description: Authentication failed or session unavailable }
+ *       404: { description: Bound target identity or recovery code not found }
+ *       409: { description: No live Microsoft identity, or Microsoft is unavailable }
+ *       429: { description: Too many reauthentication requests }
+ *       503: { description: Fresh Microsoft authentication is unavailable }
+ * /api/auth/student/sso/reauth/finish:
+ *   post:
+ *     summary: Exchange a completed fresh proof for an action grant
+ *     description: >
+ *       Strict JSON with the reauthentication attempt ID plus the browser
+ *       binding cookie. Consumes the ready attempt exactly once and issues a
+ *       five-minute single-use grant bound to the current user, session,
+ *       purpose, and recorded action targets. Clears the binding cookie.
+ *     tags: [Authentication]
+ *     security: [{ bearerAuth: [] }]
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             additionalProperties: false
+ *             required: [attemptId]
+ *             properties:
+ *               attemptId: { type: string, format: uuid }
+ *     responses:
+ *       201:
+ *         description: Single-use reauthentication grant with bindings
+ *         headers:
+ *           Cache-Control: { schema: { type: string, example: no-store } }
+ *           Set-Cookie: { schema: { type: string, example: awoof_reauth_<attemptId>=; Path=/api/auth/student/sso } }
+ *         content: { application/json: { schema: { $ref: '#/components/schemas/StudentSsoReauthFinishResponse' } } }
+ *       400: { description: Invalid body, origin, or content type }
+ *       401: { description: Authentication failed or session unavailable }
+ *       409: { description: Attempt expired, consumed, replayed, or no longer valid }
+ *       429: { description: Too many reauthentication requests }
  * /api/auth/student/sso/link:
  *   post:
  *     summary: Link an unlinked provider handoff to the proven owner
@@ -1099,7 +1168,7 @@ export default createStudentSsoRouter();
  * /api/auth/student/sso/signup/availability:
  *   get:
  *     summary: Read passwordless signup availability
- *     description: Reports the deployment signup flag, optionally scoped to one provider. A link-required completion passes the handoff provider so the signup offer appears only while that provider is still enabled.
+ *     description: Reports the deployment signup flag, optionally scoped to one provider. A link-required completion passes the handoff provider so the signup offer appears only while that provider is still enabled. Signup accepts Microsoft handoffs only, so scoped Google requests always report unavailable.
  *     tags: [Authentication]
  *     security: []
  *     parameters:
@@ -1161,6 +1230,27 @@ export default createStudentSsoRouter();
  *       401: { description: Missing, invalid, or non-student bearer session }
  *       409: { description: Invalid, expired, consumed, revoked, or replayed fresh grant }
  *       429: { description: Fresh-proof quota exhausted }
+ * /api/auth/student/sso/recovery-code/cancel:
+ *   post:
+ *     summary: Cancel the owner's pending recovery code
+ *     description: Owner-only cancellation of one pending code for the current session. Revokes the pending candidate without touching an active code and without consuming a grant.
+ *     tags: [Authentication]
+ *     security: [{ bearerAuth: [] }]
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             additionalProperties: false
+ *             required: [pendingCodeId]
+ *             properties:
+ *               pendingCodeId: { type: string, format: uuid }
+ *     responses:
+ *       204: { description: Pending recovery code cancelled }
+ *       400: { description: JSON, exact-origin, or malformed request }
+ *       401: { description: Missing, invalid, or non-student bearer session }
+ *       409: { description: Code is not pending for this owner session }
  * /api/auth/student/sso/account-recovery/start:
  *   post:
  *     summary: Start independent password recovery

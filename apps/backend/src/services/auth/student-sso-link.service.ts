@@ -531,14 +531,17 @@ export class StudentSsoLinkService {
             const sibling = await tx.query<{ provider: LoginProvider }>(
                 `SELECT identity.provider FROM student_auth_identities identity
                  JOIN institution_login_policies policy ON policy.university_id = identity.university_id
-                     AND policy.provider = identity.provider AND policy.enabled AND policy.approved_until > clock_timestamp()
+                     AND policy.provider = identity.provider AND policy.issuer = identity.issuer
+                     AND policy.enabled AND policy.approved_until > clock_timestamp()
                  WHERE identity.user_id = $1 AND identity.id <> $2 AND identity.revoked_at IS NULL
                  LIMIT 1`,
                 [userId, identityId],
             );
             // Another usable login method must remain: a usable password or a
             // second identity that can still authenticate (live institution
-            // policy, enabled provider). Nothing is consumed on this path.
+            // policy for its exact issuer, enabled provider). A sibling from
+            // a replaced tenant cannot log in, so it cannot satisfy this.
+            // Nothing is consumed on this path.
             const siblingUsable = sibling.rows[0] !== undefined
                 && this.deps.isProviderEnabled?.(sibling.rows[0].provider) === true;
             if (account.rows[0]?.password_hash == null && !siblingUsable) {

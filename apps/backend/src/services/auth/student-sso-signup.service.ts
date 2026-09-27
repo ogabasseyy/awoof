@@ -64,7 +64,17 @@ export class StudentSsoSignupService {
     }
     async verifyCode(input: { handoffId: unknown; handoffSecret: unknown; browserBinding: unknown; challengeId: unknown; code: unknown }): Promise<{ verified: true; expiresAt: string }> {
         if (!UUID.test(String(input.challengeId)) || typeof input.code !== 'string' || !/^\d{6}$/.test(input.code)) throw new BadRequestError('Signup OTP must be six digits');
-        const result = await this.transaction(async tx => { const state = await this.load(tx, input); if (state.signup.mailbox_challenge_id !== input.challengeId) throw invalid(); const consumed = await consumeChallenge(tx, { purpose: 'student_sso_signup', subjectKey: state.email, challengeId: input.challengeId as string, code: input.code as string }); if (consumed.status !== 'verified') return consumed.status; await tx.query(`UPDATE student_auth_signup_challenges SET status = 'mailbox_verified', mailbox_verified_at = clock_timestamp() WHERE id = $1 AND status = 'pending'`, [state.signup.id]); return 'verified' as const; });
+        const result = await this.transaction(async tx => {
+            const state = await this.load(tx, input);
+            if (state.signup.mailbox_challenge_id !== input.challengeId) throw invalid();
+            // Idempotent replay: when the success response was lost after
+            // commit, retrying the same bound challenge returns the verified
+            // result instead of consuming the spent challenge twice. The
+            // challenge stays bound and the signup stays verified; no new
+            // proof is minted and resend remains trigger-forbidden.
+            if (state.signup.status === 'mailbox_verified') return 'verified' as const;
+            const consumed = await consumeChallenge(tx, { purpose: 'student_sso_signup', subjectKey: state.email, challengeId: input.challengeId as string, code: input.code as string }); if (consumed.status !== 'verified') return consumed.status; await tx.query(`UPDATE student_auth_signup_challenges SET status = 'mailbox_verified', mailbox_verified_at = clock_timestamp() WHERE id = $1 AND status = 'pending'`, [state.signup.id]); return 'verified' as const;
+        });
         if (result !== 'verified') throw new UnauthorizedError('Invalid or expired signup code.');
         return { verified: true, expiresAt: (await this.context(input)).expiresAt };
     }

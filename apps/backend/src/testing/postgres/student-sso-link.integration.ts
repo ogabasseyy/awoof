@@ -1282,6 +1282,50 @@ test('unlink refuses the last login method without revoking anything', async () 
     });
 });
 
+test('unlink ignores a sibling from a replaced tenant when guarding the last login method', async () => {
+    await withLinkPool(async (pool) => {
+        const attemptKey = randomBytes(32).toString('base64url');
+        const service = makeService(pool, attemptKey);
+        const client = await pool.connect();
+        let owner;
+        let policy;
+        let identityId = '';
+        try {
+            owner = await seedOwner(client, {});
+            policy = await seedPolicy(client, owner.universityId, owner.email.split('@')[1]!, { provider: 'microsoft' });
+            identityId = (await client.query<{ id: string }>(
+                `INSERT INTO student_auth_identities (user_id, university_id, provider, issuer, subject)
+                 VALUES ($1, $2, 'microsoft', $3, $4) RETURNING id`,
+                [owner.userId, owner.universityId, policy.issuer, `current-sub-${uniqueLabel()}`],
+            )).rows[0]!.id;
+            await client.query(
+                `INSERT INTO student_auth_identities (user_id, university_id, provider, issuer, subject)
+                 VALUES ($1, $2, 'microsoft', $3, $4)`,
+                [owner.userId, owner.universityId, `https://login.microsoftonline.com/old-tenant-${uniqueLabel()}/v2.0`, `stale-sub-${uniqueLabel()}`],
+            );
+        } finally {
+            client.release();
+        }
+        // Proof precedes the destructive precondition: the grant pins the
+        // credential generation, and the password is removed only after.
+        const grant = await mintGrant(service, owner.userId, owner.sid, PASSWORD, 'unlink', identityId);
+        const remover = await pool.connect();
+        try {
+            await remover.query('UPDATE users SET password_hash = NULL WHERE id = $1', [owner.userId]);
+        } finally {
+            remover.release();
+        }
+        const result = await service.unlink({
+            userId: owner.userId,
+            sid: owner.sid,
+            identityId,
+            grantId: grant.grantId,
+            grantSecret: grant.grantSecret,
+        });
+        assert.deepEqual(result, { outcome: 'last_method' });
+    });
+});
+
 test('unlink of another owner identity reports not found', async () => {
     await withLinkPool(async (pool) => {
         const attemptKey = randomBytes(32).toString('base64url');

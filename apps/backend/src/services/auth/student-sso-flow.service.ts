@@ -127,9 +127,9 @@ type SsoAttempt = {
     policy_version: number;
     provider: string;
     requested_email: string;
-    state_hash: string;
-    callback_cookie_hash: string;
-    finish_secret_hash: string;
+    state_hash: string | null;
+    callback_cookie_hash: string | null;
+    finish_secret_hash: string | null;
     encrypted_verifier: string | null;
     nonce: string | null;
     encrypted_observation: string | null;
@@ -234,7 +234,8 @@ export class StudentSsoFlowService {
         await this.transaction(async (tx) => {
             await tx.query(
                 `UPDATE student_auth_attempts
-                 SET status = 'failed', encrypted_verifier = NULL, nonce = NULL, encrypted_observation = NULL
+                 SET status = 'failed', state_hash = NULL, callback_cookie_hash = NULL, finish_secret_hash = NULL,
+                     encrypted_verifier = NULL, nonce = NULL, encrypted_observation = NULL
                  WHERE id = $1 AND status IN ('pending', 'processing', 'ready')`,
                 [attemptId],
             );
@@ -612,7 +613,8 @@ export class StudentSsoFlowService {
     private async terminalizeAttempt(tx: PoolClient, attemptId: string): Promise<void> {
         await tx.query(
             `UPDATE student_auth_attempts
-             SET status = 'failed', encrypted_verifier = NULL, nonce = NULL, encrypted_observation = NULL
+             SET status = 'failed', state_hash = NULL, callback_cookie_hash = NULL, finish_secret_hash = NULL,
+                 encrypted_verifier = NULL, nonce = NULL, encrypted_observation = NULL
              WHERE id = $1 AND status IN ('pending', 'processing', 'ready')`,
             [attemptId],
         );
@@ -622,7 +624,8 @@ export class StudentSsoFlowService {
     private async invalidateAbandonedAttempts(tx: PoolClient, attempt: SsoAttempt): Promise<void> {
         await tx.query(
             `UPDATE student_auth_attempts
-             SET status = 'failed', encrypted_verifier = NULL, nonce = NULL, encrypted_observation = NULL
+             SET status = 'failed', state_hash = NULL, callback_cookie_hash = NULL, finish_secret_hash = NULL,
+                 encrypted_verifier = NULL, nonce = NULL, encrypted_observation = NULL
              WHERE policy_id = $1 AND requested_email = $2
                AND status IN ('pending', 'processing') AND id <> $3`,
             [attempt.policy_id, attempt.requested_email, attempt.id],
@@ -697,7 +700,8 @@ export class StudentSsoFlowService {
         await tx.query('UPDATE users SET active_session_auth_identity_id = $2 WHERE id = $1', [context.userId, identity.id]);
         const consumed = await tx.query(
             `UPDATE student_auth_attempts
-             SET status = 'consumed', encrypted_verifier = NULL, nonce = NULL, encrypted_observation = NULL
+             SET status = 'consumed', state_hash = NULL, callback_cookie_hash = NULL, finish_secret_hash = NULL,
+                 encrypted_verifier = NULL, nonce = NULL, encrypted_observation = NULL
              WHERE id = $1 AND status = 'ready'`,
             [attempt.id],
         );
@@ -774,7 +778,8 @@ export class StudentSsoFlowService {
         );
         const consumed = await tx.query(
             `UPDATE student_auth_attempts
-             SET status = 'consumed', encrypted_verifier = NULL, nonce = NULL, encrypted_observation = NULL
+             SET status = 'consumed', state_hash = NULL, callback_cookie_hash = NULL, finish_secret_hash = NULL,
+                 encrypted_verifier = NULL, nonce = NULL, encrypted_observation = NULL
              WHERE id = $1 AND status = 'ready'`,
             [attempt.id],
         );
@@ -821,7 +826,8 @@ export async function cleanupStudentSsoTransients(client: PoolClient): Promise<S
     try {
     const failed = await client.query(
         `UPDATE student_auth_attempts
-         SET status = 'failed', encrypted_verifier = NULL, nonce = NULL, encrypted_observation = NULL
+         SET status = 'failed', state_hash = NULL, callback_cookie_hash = NULL, finish_secret_hash = NULL,
+             encrypted_verifier = NULL, nonce = NULL, encrypted_observation = NULL
          WHERE expires_at <= clock_timestamp() AND status IN ('pending', 'processing', 'ready')`,
     );
     // Terminalize each passwordless attempt before deleting its tombstone.
@@ -846,6 +852,14 @@ export async function cleanupStudentSsoTransients(client: PoolClient): Promise<S
     // Catch up terminal tombstones written by older failure paths. This is
     // deliberately status- and timestamp-preserving: immutable bindings and
     // the seven-day replay tombstone remain available to the retention policy.
+    const terminalAttemptSecrets = await client.query(
+        `UPDATE student_auth_attempts
+         SET state_hash = NULL, callback_cookie_hash = NULL, finish_secret_hash = NULL,
+             encrypted_verifier = NULL, nonce = NULL, encrypted_observation = NULL
+         WHERE status IN ('consumed', 'failed')
+           AND (state_hash IS NOT NULL OR callback_cookie_hash IS NOT NULL OR finish_secret_hash IS NOT NULL
+                OR encrypted_verifier IS NOT NULL OR nonce IS NOT NULL OR encrypted_observation IS NOT NULL)`,
+    );
     const terminalReauthSecrets = await client.query(
         `UPDATE student_auth_reauth_attempts
          SET state_hash = NULL, callback_cookie_hash = NULL, encrypted_verifier = NULL, nonce = NULL
@@ -945,7 +959,11 @@ export async function cleanupStudentSsoTransients(client: PoolClient): Promise<S
     );
     const overdueTerminalSecrets = await client.query<{ count: string }>(
         `SELECT (
-            (SELECT count(*) FROM student_auth_reauth_attempts
+            (SELECT count(*) FROM student_auth_attempts
+             WHERE status IN ('consumed', 'failed')
+               AND (state_hash IS NOT NULL OR callback_cookie_hash IS NOT NULL OR finish_secret_hash IS NOT NULL
+                    OR encrypted_verifier IS NOT NULL OR nonce IS NOT NULL OR encrypted_observation IS NOT NULL))
+            + (SELECT count(*) FROM student_auth_reauth_attempts
              WHERE status IN ('consumed', 'failed')
                AND (state_hash IS NOT NULL OR callback_cookie_hash IS NOT NULL
                     OR encrypted_verifier IS NOT NULL OR nonce IS NOT NULL))
@@ -973,7 +991,7 @@ export async function cleanupStudentSsoTransients(client: PoolClient): Promise<S
         grantsDeleted: grants.rowCount ?? 0,
         actionGrantsScrubbed: actionGrants.rowCount ?? 0,
         recoveryCodesScrubbed: recoveryCodes.rowCount ?? 0,
-        terminalSecretsScrubbed: (terminalReauthSecrets.rowCount ?? 0) + (terminalRecoverySecrets.rowCount ?? 0),
+        terminalSecretsScrubbed: (terminalAttemptSecrets.rowCount ?? 0) + (terminalReauthSecrets.rowCount ?? 0) + (terminalRecoverySecrets.rowCount ?? 0),
         overdueExpired: Number(overdue.rows[0]?.count ?? 0),
         overdueTerminalSecrets: Number(overdueTerminalSecrets.rows[0]?.count ?? 0),
     };

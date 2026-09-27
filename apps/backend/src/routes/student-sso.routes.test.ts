@@ -287,19 +287,27 @@ test('signup availability reports the deployment flag without authentication', a
 });
 
 test('signup availability scopes to the handoff provider when requested', async () => {
-    const options = { isSignupEnabled: () => true, enabledProviders: () => ['google' as const] };
+    const options = { isSignupEnabled: () => true, enabledProviders: () => ['google' as const, 'microsoft' as const] };
     await withServer(routerWith(stubFlow(), options), async (baseUrl) => {
-        const enabled = await fetch(`${baseUrl}/signup/availability?provider=google`);
+        const enabled = await fetch(`${baseUrl}/signup/availability?provider=microsoft`);
         assert.equal(enabled.status, 200);
         assert.deepEqual(await enabled.json(), { success: true, data: { available: true } });
-        const disabled = await fetch(`${baseUrl}/signup/availability?provider=microsoft`);
-        assert.equal(disabled.status, 200);
-        assert.deepEqual(await disabled.json(), { success: true, data: { available: false } });
+        // The signup service accepts Microsoft handoffs only: an enabled
+        // Google must not be offered an account creation that fails at
+        // context with 409.
+        const google = await fetch(`${baseUrl}/signup/availability?provider=google`);
+        assert.equal(google.status, 200);
+        assert.deepEqual(await google.json(), { success: true, data: { available: false } });
         const unknown = await fetch(`${baseUrl}/signup/availability?provider=github`);
         assert.equal(unknown.status, 400);
     });
+    await withServer(routerWith(stubFlow(), { isSignupEnabled: () => true, enabledProviders: () => ['google' as const] }), async (baseUrl) => {
+        const disabled = await fetch(`${baseUrl}/signup/availability?provider=microsoft`);
+        assert.equal(disabled.status, 200);
+        assert.deepEqual(await disabled.json(), { success: true, data: { available: false } });
+    });
     await withServer(routerWith(stubFlow(), { ...options, isSignupEnabled: () => false }), async (baseUrl) => {
-        const response = await fetch(`${baseUrl}/signup/availability?provider=google`);
+        const response = await fetch(`${baseUrl}/signup/availability?provider=microsoft`);
         assert.equal(response.status, 200);
         assert.deepEqual(await response.json(), { success: true, data: { available: false } });
     });
@@ -1056,12 +1064,24 @@ test('link-confirmation endpoints are independently rate limited', async () => {
 });
 
 test('OpenAPI documents the SSO linking contract', () => {
-    const spec = swaggerSpec as { paths: Record<string, unknown>; components: { schemas: Record<string, unknown> } };
+    const spec = swaggerSpec as { paths: Record<string, unknown>; components: { schemas: Record<string, Record<string, unknown>> } };
     assert.ok(spec.paths['/api/auth/student/sso/reauth']);
+    assert.ok(spec.paths['/api/auth/student/sso/reauth/microsoft/start']);
+    assert.ok(spec.paths['/api/auth/student/sso/reauth/finish']);
     assert.ok(spec.paths['/api/auth/student/sso/link']);
     assert.ok(spec.paths['/api/auth/student/sso/identities']);
     assert.ok(spec.paths['/api/auth/student/sso/identities/{id}/unlink']);
+    assert.ok(spec.paths['/api/auth/student/sso/recovery-code/cancel']);
     assert.ok(spec.components.schemas['StudentSsoReauthResponse']);
+    assert.ok(spec.components.schemas['StudentSsoReauthStartResponse']);
+    assert.ok(spec.components.schemas['StudentSsoReauthFinishResponse']);
     assert.ok(spec.components.schemas['StudentSsoLinkResponse']);
     assert.ok(spec.components.schemas['StudentSsoIdentitiesResponse']);
+    // Server-provided deadlines are part of the contract: generated clients
+    // need them to determine when a pending code or handle expires.
+    for (const name of ['RecoveryCodeGeneratedResponse', 'AccountRecoveryStartResponse', 'PasswordlessSignupVerifiedResponse']) {
+        const schema = spec.components.schemas[name] as { properties: { data: { required: string[]; properties: Record<string, unknown> } } };
+        assert.ok(schema.properties.data.required.includes('expiresAt'), `${name} requires expiresAt`);
+        assert.ok(schema.properties.data.properties['expiresAt'], `${name} describes expiresAt`);
+    }
 });

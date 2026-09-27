@@ -642,8 +642,8 @@ test('attempt payloads match their status', async () => {
         );
         await client.query(
             `UPDATE student_auth_attempts
-             SET status = 'consumed', encrypted_verifier = NULL, nonce = NULL,
-                 encrypted_observation = NULL WHERE id = $1`,
+             SET status = 'consumed', state_hash = NULL, callback_cookie_hash = NULL, finish_secret_hash = NULL,
+                 encrypted_verifier = NULL, nonce = NULL, encrypted_observation = NULL WHERE id = $1`,
             [attemptId],
         );
         const row = (await client.query<{ status: string; encrypted_observation: string | null }>(

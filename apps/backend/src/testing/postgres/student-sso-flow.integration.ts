@@ -632,12 +632,23 @@ test('two concurrent finishes issue one session', async () => {
             browserCookie: started.callbackCookie.value,
         };
         const outcomes = await Promise.allSettled([service.finish(input), service.finish(input)]);
-        assert.ok(outcomes.every((outcome) => outcome.status === 'fulfilled'));
-        const results = outcomes.map((outcome) => (outcome as PromiseFulfilledResult<Awaited<ReturnType<typeof service.finish>>>).value);
+        const results = outcomes
+            .filter((outcome): outcome is PromiseFulfilledResult<Awaited<ReturnType<typeof service.finish>>> => outcome.status === 'fulfilled')
+            .map((outcome) => outcome.value);
         const authenticated = results.filter((result) => result.outcome === 'authenticated');
-        const restarts = results.filter((result) => result.outcome === 'restart_required');
         assert.equal(authenticated.length, 1);
-        assert.equal(restarts.length, 1);
+        // The loser either restarts (its pre-read won the race and the
+        // locked re-read found the consumed row) or is rejected outright
+        // (its pre-read landed after the winner scrubbed the binding
+        // digests). Either way exactly one session is issued.
+        for (const outcome of outcomes) {
+            if (outcome.status === 'rejected') {
+                assert.match(String((outcome as PromiseRejectedResult).reason), /no longer valid/);
+            } else {
+                const result = (outcome as PromiseFulfilledResult<Awaited<ReturnType<typeof service.finish>>>).value;
+                assert.ok(result.outcome === 'authenticated' || result.outcome === 'restart_required');
+            }
+        }
 
         const winner = authenticated[0]!;
         if (winner.outcome !== 'authenticated') throw new Error('unreachable');
@@ -674,20 +685,24 @@ test('provider denial cannot skip state and browser checks', async () => {
         const check = await pool.connect();
         try {
             const row = await check.query(
-                'SELECT status, encrypted_verifier, nonce, encrypted_observation FROM student_auth_attempts WHERE id = $1',
+                'SELECT status, state_hash, callback_cookie_hash, finish_secret_hash, encrypted_verifier, nonce, encrypted_observation FROM student_auth_attempts WHERE id = $1',
                 [started.publicResult.attemptId],
             );
-            assert.deepEqual(row.rows[0], { status: 'failed', encrypted_verifier: null, nonce: null, encrypted_observation: null });
+            assert.deepEqual(row.rows[0], { status: 'failed', state_hash: null, callback_cookie_hash: null, finish_secret_hash: null, encrypted_verifier: null, nonce: null, encrypted_observation: null });
         } finally {
             check.release();
         }
 
-        const finished = await service.finish({
-            attemptId: started.publicResult.attemptId,
-            finishSecret: started.publicResult.finishSecret,
-            browserCookie: started.callbackCookie.value,
-        });
-        assert.equal(finished.outcome, 'restart_required');
+        // The failed attempt scrubbed its binding digests: a finish replay
+        // cannot prove the secrets and is rejected instead of restarting.
+        await assert.rejects(
+            service.finish({
+                attemptId: started.publicResult.attemptId,
+                finishSecret: started.publicResult.finishSecret,
+                browserCookie: started.callbackCookie.value,
+            }),
+            /no longer valid/,
+        );
     });
 });
 
@@ -725,13 +740,19 @@ test('unlinked identity receives a handoff and retains the browser binding', asy
             assert.equal(handoff.policy_id, fixture.policyId);
             assert.equal(handoff.policy_version, 1);
             assert.ok(handoff.expires_at.getTime() > Date.now());
-            const attempts = await check.query<{ callback_cookie_hash: string; status: string; encrypted_observation: string | null }>(
-                'SELECT callback_cookie_hash, status, encrypted_observation FROM student_auth_attempts WHERE id = $1',
+            const attempts = await check.query<{ state_hash: string | null; callback_cookie_hash: string | null; finish_secret_hash: string | null; status: string; encrypted_observation: string | null }>(
+                'SELECT state_hash, callback_cookie_hash, finish_secret_hash, status, encrypted_observation FROM student_auth_attempts WHERE id = $1',
                 [started.publicResult.attemptId],
             );
             assert.equal(attempts.rows[0]!.status, 'consumed');
             assert.equal(attempts.rows[0]!.encrypted_observation, null);
-            assert.equal(handoff.browser_binding_hash, attempts.rows[0]!.callback_cookie_hash);
+            // The handoff inherits a copy of the browser binding, then the
+            // consumed attempt scrubs its own binding digests.
+            assert.equal(handoff.browser_binding_hash, hashMicrosoftAttemptSecret(started.callbackCookie.value));
+            assert.deepEqual(
+                { state_hash: attempts.rows[0]!.state_hash, callback_cookie_hash: attempts.rows[0]!.callback_cookie_hash, finish_secret_hash: attempts.rows[0]!.finish_secret_hash },
+                { state_hash: null, callback_cookie_hash: null, finish_secret_hash: null },
+            );
             const decrypted = JSON.parse(decryptMicrosoftAttemptVerifier(handoff.encrypted_observation, attemptKey, finished.handoffId));
             assert.equal(decrypted.subject, subject);
             assert.equal(decrypted.provider, 'google');
@@ -766,7 +787,7 @@ test('finish refuses a provider disabled after the attempt went ready', async ()
     });
 });
 
-test('duplicate finish after commit returns restart without a new session', async () => {
+test('duplicate finish after commit is rejected without a new session', async () => {
     await withSsoPool(async (pool) => {
         const fixture = await approvedGoogleFixture(pool);
         const email = `replay-${uniqueLabel()}@${fixture.domain}`;
@@ -800,10 +821,10 @@ test('duplicate finish after commit returns restart without a new session', asyn
             before.release();
         }
 
-        // A lost response replays the same proofs: no tokens are persisted
-        // for replay, so the client gets a controlled restart instead.
-        const second = await service.finish(input);
-        assert.equal(second.outcome, 'restart_required');
+        // A lost response replays the same proofs, but the commit scrubbed
+        // the binding digests: the replay cannot prove the secrets and is
+        // rejected, and no second session is persisted.
+        await assert.rejects(service.finish(input), /no longer valid/);
 
         const after = await pool.connect();
         try {
@@ -855,8 +876,7 @@ test('logout then stale finish cannot commit a new session', async () => {
             logout.release();
         }
 
-        const stale = await service.finish(input);
-        assert.equal(stale.outcome, 'restart_required');
+        await assert.rejects(service.finish(input), /no longer valid/);
         const check = await pool.connect();
         try {
             const users = await check.query<{ refresh_token_hash: string | null; active_session_id: string | null }>(
@@ -889,13 +909,26 @@ test('restart invalidates abandoned pending flows but spares ready siblings', as
         assert.equal(consumedFinish.outcome, 'link_required');
 
         const pending = await startGoogle(service, oidc, email);
+        const abandoned = await startGoogle(service, oidc, email);
         const ready = await startGoogle(service, oidc, email);
         await service.callback({ provider: 'google', callbackUrl: ready.callbackUrl, browserCookies: ready.cookies });
 
+        // One pending flow expires: its finish restarts and invalidates the
+        // abandoned sibling while the ready sibling survives. (A replay on
+        // the consumed attempt cannot drive this: terminalized digests no
+        // longer prove, so replays are rejected outright.)
+        const ager = await pool.connect();
+        try {
+            await ager.query(`UPDATE student_auth_attempts SET expires_at = clock_timestamp() - interval '1 minute' WHERE id = $1`, [
+                pending.started.publicResult.attemptId,
+            ]);
+        } finally {
+            ager.release();
+        }
         const restart = await service.finish({
-            attemptId: consumed.started.publicResult.attemptId,
-            finishSecret: consumed.started.publicResult.finishSecret,
-            browserCookie: consumed.started.callbackCookie.value,
+            attemptId: pending.started.publicResult.attemptId,
+            finishSecret: pending.started.publicResult.finishSecret,
+            browserCookie: pending.started.callbackCookie.value,
         });
         assert.equal(restart.outcome, 'restart_required');
 
@@ -908,6 +941,8 @@ test('restart invalidates abandoned pending flows but spares ready siblings', as
             const byId = new Map(rows.rows.map((row) => [row.id, row]));
             assert.equal(byId.get(pending.started.publicResult.attemptId)!.status, 'failed');
             assert.equal(byId.get(pending.started.publicResult.attemptId)!.encrypted_verifier, null);
+            assert.equal(byId.get(abandoned.started.publicResult.attemptId)!.status, 'failed');
+            assert.equal(byId.get(abandoned.started.publicResult.attemptId)!.encrypted_verifier, null);
             assert.equal(byId.get(ready.started.publicResult.attemptId)!.status, 'ready');
         } finally {
             check.release();
@@ -1517,8 +1552,8 @@ test('cleanup scrubs expired ciphertext and deletes only aged transients', async
             'expired action grants must lose their digest on the next cleanup pass');
         assert.equal((result as unknown as { recoveryCodesScrubbed?: number }).recoveryCodesScrubbed, 1,
             'expired pending recovery-code digests must be terminalized on the next cleanup pass');
-        assert.equal((result as unknown as { terminalSecretsScrubbed?: number }).terminalSecretsScrubbed, 4,
-            'catch-up scrubs already-terminal reauthentication and recovery rows before their expiry');
+        assert.equal((result as unknown as { terminalSecretsScrubbed?: number }).terminalSecretsScrubbed, 7,
+            'catch-up scrubs already-terminal login, reauthentication, and recovery rows before their expiry');
         assert.equal((result as unknown as { overdueTerminalSecrets?: number }).overdueTerminalSecrets, 1,
             'monitoring detects a terminal row whose secret scrub was skipped');
 
@@ -1542,6 +1577,12 @@ test('cleanup scrubs expired ciphertext and deletes only aged transients', async
             );
             assert.equal(fresh.rows[0]!.status, 'pending');
             assert.ok(fresh.rows[0]!.encrypted_verifier);
+            const laggedAttempt = await check.query<{ state_hash: string | null; callback_cookie_hash: string | null; finish_secret_hash: string | null }>(
+                'SELECT state_hash, callback_cookie_hash, finish_secret_hash FROM student_auth_attempts WHERE id = $1',
+                [laggedHandoffAttempt],
+            );
+            assert.deepEqual(laggedAttempt.rows[0], { state_hash: null, callback_cookie_hash: null, finish_secret_hash: null },
+                'retained terminal login tombstones lose their binding digests to catch-up scrubbing');
             const scrubbed = await check.query<{ encrypted_observation: string | null }>(
                 'SELECT encrypted_observation FROM student_auth_link_handoffs WHERE policy_id = $1',
                 [policyId],

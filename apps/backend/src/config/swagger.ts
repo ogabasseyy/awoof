@@ -129,7 +129,7 @@ Access tokens expire in 15 minutes. Use the refresh token endpoint to get a new 
                 PasswordlessSignupCompleteRequest: { type: 'object', additionalProperties: false, required: ['handoffId', 'handoffSecret', 'fullName', 'ageAttested', 'termsAccepted', 'termsVersion', 'verificationConsent', 'noticeVersion'], properties: { handoffId: { type: 'string', format: 'uuid' }, handoffSecret: { type: 'string', minLength: 1 }, fullName: { type: 'string', minLength: 1 }, ageAttested: { type: 'boolean', enum: [true] }, termsAccepted: { type: 'boolean', enum: [true] }, termsVersion: { type: 'string', minLength: 1 }, verificationConsent: { type: 'boolean', enum: [true] }, noticeVersion: { type: 'string', minLength: 1 } } },
                 PasswordlessSignupContextResponse: { type: 'object', required: ['success', 'data'], properties: { success: { type: 'boolean', enum: [true] }, data: { type: 'object', required: ['email', 'universityId', 'termsVersion', 'noticeVersion', 'noticeText', 'expiresAt'], properties: { email: { type: 'string', format: 'email' }, universityId: { type: 'string', format: 'uuid' }, termsVersion: { type: 'string', minLength: 1 }, noticeVersion: { type: 'string', minLength: 1 }, noticeText: { type: 'string', minLength: 1 }, expiresAt: { type: 'string', format: 'date-time' } } } } },
                 PasswordlessSignupCodeResponse: { type: 'object', required: ['success', 'data'], properties: { success: { type: 'boolean', enum: [true] }, data: { type: 'object', required: ['challengeId', 'expiresAt'], properties: { challengeId: { type: 'string', format: 'uuid' }, expiresAt: { type: 'string', format: 'date-time' } } } } },
-                PasswordlessSignupVerifiedResponse: { type: 'object', required: ['success', 'data'], properties: { success: { type: 'boolean', enum: [true] }, data: { type: 'object', required: ['verified'], properties: { verified: { type: 'boolean', enum: [true] } } } } },
+                PasswordlessSignupVerifiedResponse: { type: 'object', required: ['success', 'data'], properties: { success: { type: 'boolean', enum: [true] }, data: { type: 'object', required: ['verified', 'expiresAt'], properties: { verified: { type: 'boolean', enum: [true] }, expiresAt: { type: 'string', format: 'date-time', description: 'Pending signup expiry; verification does not extend the handoff window.' } } } } },
                 PasswordlessSignupAvailabilityResponse: { type: 'object', required: ['success', 'data'], properties: { success: { type: 'boolean', enum: [true] }, data: { type: 'object', required: ['available'], properties: { available: { type: 'boolean' } } } } },
                 PasswordlessSignupCompleteResponse: { type: 'object', required: ['success', 'data'], properties: { success: { type: 'boolean', enum: [true] }, data: { type: 'object', required: ['user', 'tokens'], properties: { user: { type: 'object', required: ['id', 'email', 'role'], properties: { id: { type: 'string', format: 'uuid' }, email: { type: 'string', format: 'email' }, role: { type: 'string', enum: ['student'] } } }, tokens: { type: 'object', required: ['accessToken', 'refreshToken'], properties: { accessToken: { type: 'string', readOnly: true }, refreshToken: { type: 'string', readOnly: true } } } } } } },
                 ReauthGrant: { type: 'object', additionalProperties: false, required: ['grantId', 'grantSecret'], properties: { grantId: { type: 'string', format: 'uuid' }, grantSecret: { type: 'string', minLength: 1 } } },
@@ -137,10 +137,10 @@ Access tokens expire in 15 minutes. Use the refresh token endpoint to get a new 
                 RecoveryCodeActivateRequest: { type: 'object', additionalProperties: false, required: ['reauthGrant', 'pendingCodeId', 'code'], properties: { reauthGrant: { $ref: '#/components/schemas/ReauthGrant' }, pendingCodeId: { type: 'string', format: 'uuid' }, code: { type: 'string', minLength: 1, maxLength: 1024 }, oldCode: { type: 'string', minLength: 1, maxLength: 1024 } } },
                 RecoveryCodeRemoveRequest: { type: 'object', additionalProperties: false, required: ['reauthGrant', 'oldCode'], properties: { reauthGrant: { $ref: '#/components/schemas/ReauthGrant' }, oldCode: { type: 'string', minLength: 1, maxLength: 1024 } } },
                 RecoveryCodeStatusResponse: { type: 'object', required: ['success', 'data'], properties: { success: { type: 'boolean', enum: [true] }, data: { type: 'object', required: ['status', 'generation', 'pendingCodeId'], properties: { status: { type: 'string', enum: ['unconfigured', 'pending', 'active'] }, generation: { type: ['integer', 'null'] }, pendingCodeId: { type: ['string', 'null'], format: 'uuid' } } } } },
-                RecoveryCodeGeneratedResponse: { type: 'object', required: ['success', 'data'], properties: { success: { type: 'boolean', enum: [true] }, data: { type: 'object', required: ['pendingCodeId', 'code'], properties: { pendingCodeId: { type: 'string', format: 'uuid' }, code: { type: 'string', readOnly: true } } } } },
+                RecoveryCodeGeneratedResponse: { type: 'object', required: ['success', 'data'], properties: { success: { type: 'boolean', enum: [true] }, data: { type: 'object', required: ['pendingCodeId', 'code', 'expiresAt'], properties: { pendingCodeId: { type: 'string', format: 'uuid' }, code: { type: 'string', readOnly: true }, expiresAt: { type: 'string', format: 'date-time', description: 'Pending-code activation deadline.' } } } } },
                 RecoveryCodeActivatedResponse: { type: 'object', required: ['success', 'data'], properties: { success: { type: 'boolean', enum: [true] }, data: { type: 'object', required: ['active'], properties: { active: { type: 'boolean', enum: [true] } } } } },
                 AccountRecoveryStartRequest: { type: 'object', additionalProperties: false, required: ['email', 'purpose'], properties: { email: { type: 'string', format: 'email', minLength: 1, maxLength: 255 }, purpose: { type: 'string', enum: ['lost_access', 'compromise'] } } },
-                AccountRecoveryStartResponse: { type: 'object', required: ['success', 'data'], properties: { success: { type: 'boolean', enum: [true] }, data: { type: 'object', required: ['attemptId', 'secret'], properties: { attemptId: { type: 'string', format: 'uuid' }, secret: { type: 'string', readOnly: true } } } } },
+                AccountRecoveryStartResponse: { type: 'object', required: ['success', 'data'], properties: { success: { type: 'boolean', enum: [true] }, data: { type: 'object', required: ['attemptId', 'secret', 'expiresAt'], properties: { attemptId: { type: 'string', format: 'uuid' }, secret: { type: 'string', readOnly: true }, expiresAt: { type: 'string', format: 'date-time', description: 'Recovery-handle expiry; identical for decoy and committed handles.' } } } } },
                 AccountRecoveryVerifyRequest: { type: 'object', additionalProperties: false, required: ['attemptId', 'secret', 'code', 'otp'], properties: { attemptId: { type: 'string', format: 'uuid' }, secret: { type: 'string', minLength: 1 }, code: { type: 'string', minLength: 1, maxLength: 1024 }, otp: { type: 'string', minLength: 1, maxLength: 1024 } } },
                 AccountRecoveryCompleteRequest: { type: 'object', additionalProperties: false, required: ['attemptId', 'secret', 'password'], properties: { attemptId: { type: 'string', format: 'uuid' }, secret: { type: 'string', minLength: 1 }, password: { type: 'string', minLength: 8, maxLength: 1024, writeOnly: true } } },
                 User: {
@@ -328,6 +328,41 @@ Access tokens expire in 15 minutes. Use the refresh token endpoint to get a new 
                                 grantId: { type: 'string', format: 'uuid' },
                                 grantSecret: { type: 'string', description: 'Single-use grant secret, bound to the current user and session for five minutes.' },
                                 expiresAt: { type: 'string', format: 'date-time' },
+                            },
+                        },
+                    },
+                },
+                StudentSsoReauthStartResponse: {
+                    type: 'object',
+                    required: ['success', 'data'],
+                    properties: {
+                        success: { type: 'boolean', example: true },
+                        data: {
+                            type: 'object',
+                            required: ['attemptId', 'authorizationUrl'],
+                            properties: {
+                                attemptId: { type: 'string', format: 'uuid' },
+                                authorizationUrl: { type: 'string', format: 'uri', description: 'Microsoft authorization URL for the fresh proof; the browser binding travels as a Secure HttpOnly cookie.' },
+                            },
+                        },
+                    },
+                },
+                StudentSsoReauthFinishResponse: {
+                    type: 'object',
+                    required: ['success', 'data'],
+                    properties: {
+                        success: { type: 'boolean', example: true },
+                        data: {
+                            type: 'object',
+                            required: ['grantId', 'grantSecret', 'expiresAt', 'purpose', 'pendingCodeId', 'targetIdentityId', 'activeCodeGeneration'],
+                            properties: {
+                                grantId: { type: 'string', format: 'uuid' },
+                                grantSecret: { type: 'string', description: 'Single-use grant secret, bound to the current user and session for five minutes.' },
+                                expiresAt: { type: 'string', format: 'date-time' },
+                                purpose: { type: 'string', enum: ['link', 'unlink', 'recovery_code_generate', 'recovery_code_activate', 'recovery_code_remove'] },
+                                pendingCodeId: { type: ['string', 'null'], format: 'uuid', description: 'Pending code this grant is bound to, if any.' },
+                                targetIdentityId: { type: ['string', 'null'], format: 'uuid', description: 'Identity this grant is bound to, if any.' },
+                                activeCodeGeneration: { type: ['integer', 'null'], description: 'Active recovery-code generation pinned at proof time, if any.' },
                             },
                         },
                     },

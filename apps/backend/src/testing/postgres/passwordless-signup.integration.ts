@@ -129,6 +129,26 @@ test('passwordless signup creates one passwordless account, mailbox proof, ident
     });
 });
 
+test('signup OTP verification is idempotent for a lost success response', async () => {
+    await withPool(async pool => {
+        const key = randomBytes(32).toString('base64url'); let code = '';
+        const service = new StudentSsoSignupService({ pool, attemptKey: key, isEnabled: () => true, isProviderEnabled: () => true, deliverOtp: async (_email, sent) => { code = sent; return { success: true }; } });
+        const c = await pool.connect(); let state; try { state = await seed(c, key); } finally { c.release(); }
+        const sent = await service.sendCode({ handoffId: state.handoffId, handoffSecret: state.handoffSecret, browserBinding: state.browser });
+        const first = await service.verifyCode({ handoffId: state.handoffId, handoffSecret: state.handoffSecret, browserBinding: state.browser, challengeId: sent.challengeId, code });
+        assert.deepEqual(first, { verified: true, expiresAt: first.expiresAt });
+        // The success response was lost after commit: retrying the same
+        // bound challenge replays the verified result instead of consuming
+        // the spent challenge twice and forcing a sign-in restart.
+        const replay = await service.verifyCode({ handoffId: state.handoffId, handoffSecret: state.handoffSecret, browserBinding: state.browser, challengeId: sent.challengeId, code });
+        assert.deepEqual(replay, first);
+        await assert.rejects(
+            service.verifyCode({ handoffId: state.handoffId, handoffSecret: state.handoffSecret, browserBinding: state.browser, challengeId: randomUUID(), code }),
+            /not available/i,
+        );
+    });
+});
+
 test('signup completion succeeds when the consumed OTP expired after verification but the handoff is live', async () => {
     await withPool(async pool => {
         const key = randomBytes(32).toString('base64url'); let code = '';
@@ -186,7 +206,7 @@ test('passwordless signup fails closed for a wrong browser and expired handoff',
         // This test deliberately seeds an expired row; terminalize it so the
         // later shared cleanup regression owns only its own fixture.
         await pool.query(`UPDATE student_auth_link_handoffs SET consumed_at=clock_timestamp(), encrypted_observation='scrubbed' WHERE id=$1`, [expired.handoffId]);
-        await pool.query(`UPDATE student_auth_attempts SET status='failed', encrypted_verifier=NULL, nonce=NULL WHERE id=$1`, [expired.attemptId]);
+        await pool.query(`UPDATE student_auth_attempts SET status='failed', state_hash=NULL, callback_cookie_hash=NULL, finish_secret_hash=NULL, encrypted_verifier=NULL, nonce=NULL WHERE id=$1`, [expired.attemptId]);
     });
 });
 
@@ -218,7 +238,7 @@ test('signup refuses an immediate resend and expiry after verified OTP creates n
         await assert.rejects(service.complete({ handoffId: state.handoffId, handoffSecret: state.handoffSecret, browserBinding: state.browser, fullName: 'Ada Student', ageAttested: true, termsAccepted: true, termsVersion: STUDENT_TERMS_VERSION, verificationConsent: true, noticeVersion: VERIFICATION_NOTICE_VERSION }), /not available/i);
         assert.equal((await pool.query<{ count: string }>(`SELECT count(*)::text AS count FROM users WHERE email=$1`, [state.email])).rows[0]!.count, '0');
         await pool.query(`UPDATE student_auth_link_handoffs SET consumed_at=clock_timestamp(), encrypted_observation='scrubbed' WHERE id=$1`, [state.handoffId]);
-        await pool.query(`UPDATE student_auth_attempts SET status='failed', encrypted_verifier=NULL, nonce=NULL WHERE id=$1`, [state.attemptId]);
+        await pool.query(`UPDATE student_auth_attempts SET status='failed', state_hash=NULL, callback_cookie_hash=NULL, finish_secret_hash=NULL, encrypted_verifier=NULL, nonce=NULL WHERE id=$1`, [state.attemptId]);
     });
 });
 
