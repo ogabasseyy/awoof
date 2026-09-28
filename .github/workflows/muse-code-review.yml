@@ -255,6 +255,8 @@ jobs:
             --reasoning-effort "${MUSE_EFFORT_RESOLVED}" \
             --max-model-steps 35 \
             --disable-approval \
+            --disable-write \
+            --disable-shell \
             --no-session-log \
             "${model_args[@]}" </dev/null > "${review_file}" 2>"${RUNNER_TEMP}/muse-stderr.log" || true
 
@@ -299,7 +301,7 @@ jobs:
           # Defense in depth: the agent has web access and the prompt is partly
           # attacker-controlled, so scrub common secret patterns from the
           # review body before posting it publicly.
-          review="$(printf '%s' "${review}" | perl -pe 's/(sk-|rk-|ghp_|gho_|github_pat_|xox[bap]-|AKIA)[A-Za-z0-9_\-]+/[REDACTED]/g; s/eyJ[A-Za-z0-9_\-]+\.eyJ[A-Za-z0-9_\-]+\.[A-Za-z0-9_\-]+/[REDACTED-JWT]/g; s/-----BEGIN [A-Z ]*PRIVATE KEY-----/[REDACTED-KEY]/g')"
+          review="$(printf '%s' "${review}" | perl -pe 's/\b(sk-|rk-|ghp_|gho_|github_pat_|xox[bap]-|AKIA)[A-Za-z0-9_\-]+/[REDACTED]/g; s/eyJ[A-Za-z0-9_\-]{10,}\.eyJ[A-Za-z0-9_\-]{10,}\.[A-Za-z0-9_\-]+/[REDACTED-JWT]/g; s/-----BEGIN [A-Z ]*PRIVATE KEY-----/[REDACTED-KEY]/g')"
 
           {
             printf '%s\n' "${marker}"
