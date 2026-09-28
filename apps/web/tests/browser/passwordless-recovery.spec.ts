@@ -769,3 +769,42 @@ test('ambiguous provider-backed replacement guides cancel-and-regenerate', async
     await expect(page.getByRole('link', { name: 'Back to account security' })).toHaveAttribute('href', '/student/security');
     api.assertNoUnexpectedRequests();
 });
+
+test('ambiguous password activation keeps the form when status falls back to the older code', async ({ page }) => {
+    const api = await installSyntheticApi(page);
+    const pendingId = 'c3000000-0000-4000-8000-000000000001';
+    let statusCalls = 0;
+    await page.route(`${apiOrigin}/api/auth/student/sso/recovery-code`, route => { statusCalls++; return route.fulfill({ headers, json: { success: true, data: statusCalls === 1 ? { status: 'pending', generation: 2, pendingCodeId: pendingId, pendingExpiresAt: new Date(Date.now() + 600_000).toISOString() } : { status: 'active', generation: 1, pendingCodeId: null } } }); });
+    await page.route(`${apiOrigin}/api/auth/student/sso/reauth`, route => route.fulfill({ status: 201, headers, json: { success: true, data: { grantId: 'c3000000-0000-4000-8000-000000000002', grantSecret: 'pw-grant', expiresAt: new Date(Date.now() + 60_000).toISOString() } } }));
+    await page.route(`${apiOrigin}/api/auth/student/sso/recovery-code/activate`, route => route.fulfill({ status: 500, headers, json: { success: false, error: { message: 'boom', statusCode: 500 } } }));
+    await page.route(`${apiOrigin}/api/auth/student/sso/identities`, route => route.fulfill({ headers, json: { success: true, data: { identities: [] } } }));
+    await page.goto('/auth/student/login'); await seedSession(page, 'student');
+    await page.goto('/student/security');
+    await page.getByRole('button', { name: 'Use your password instead' }).click();
+    await page.getByRole('button', { name: 'Confirm identity to activate saved code' }).click();
+    await page.getByLabel('Current password').fill('Correct!horse-9-battery');
+    await page.getByLabel('Re-enter saved recovery code').fill('saved-code');
+    await page.getByRole('button', { name: 'Activate code' }).click();
+    // The pending candidate died before the reload, so status falls back
+    // to the older active code: the older generation must not read as the
+    // replacement succeeding.
+    await expect(page.getByText('Password confirmation failed. Check the entries and try again.')).toBeVisible();
+    await expect(page.getByRole('button', { name: 'Activate code' })).toBeVisible();
+    await expect(page.getByText('A recovery code is active.')).toHaveCount(0);
+    api.assertNoUnexpectedRequests();
+});
+
+test('ambiguous first generation routes a committed pending to cancel-and-regenerate', async ({ page }) => {
+    const api = await installSyntheticApi(page);
+    const pendingId = 'c4000000-0000-4000-8000-000000000001';
+    await page.route(`${apiOrigin}/api/auth/student/sso/reauth/finish`, route => route.fulfill({ status: 201, headers, json: { success: true, data: { grantId: 'c4000000-0000-4000-8000-000000000002', grantSecret: 'first-grant', expiresAt: new Date(Date.now() + 60_000).toISOString(), purpose: 'recovery_code_generate', pendingCodeId: null, targetIdentityId: null, activeCodeGeneration: null } } }));
+    await page.route(`${apiOrigin}/api/auth/student/sso/recovery-code/generate`, route => route.fulfill({ status: 500, headers, json: { success: false, error: { message: 'boom', statusCode: 500 } } }));
+    await page.route(`${apiOrigin}/api/auth/student/sso/recovery-code`, route => route.fulfill({ headers, json: { success: true, data: { status: 'pending', generation: 1, pendingCodeId: pendingId, pendingExpiresAt: new Date(Date.now() + 600_000).toISOString() } } }));
+    await page.goto('/auth/student/login'); await seedSession(page, 'student');
+    await page.goto('/auth/student/sso/complete?reauth=c4000000-0000-4000-8000-000000000003');
+    // The initial generation committed but its one-time display is lost:
+    // route to cancel-and-regenerate instead of the generic failed view.
+    await expect(page.getByRole('heading', { name: 'Replacement code unclear' })).toBeVisible();
+    await expect(page.getByRole('link', { name: 'Back to account security' })).toHaveAttribute('href', '/student/security');
+    api.assertNoUnexpectedRequests();
+});
