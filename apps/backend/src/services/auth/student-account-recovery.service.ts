@@ -240,7 +240,7 @@ export class StudentAccountRecoveryService {
                 );
                 if (!challenge.rows[0]) return;
                 await tx.query(
-                    `UPDATE student_auth_recovery_attempts SET status = 'failed', secret_hash = NULL
+                    `UPDATE student_auth_recovery_attempts SET status = 'failed', secret_hash = NULL, idempotency_key = NULL
                      WHERE mailbox_challenge_id = $1 AND status = 'pending'`,
                     [challengeId],
                 );
@@ -293,7 +293,7 @@ export class StudentAccountRecoveryService {
             // its failure budget.
             if (!account || !code || Number(account.credential_generation) !== Number(attempt.credential_generation)
                 || Number(code.generation) !== Number(attempt.recovery_code_generation)) {
-                await tx.query("UPDATE student_auth_recovery_attempts SET status = 'failed', secret_hash = NULL WHERE id = $1 AND status = 'pending'", [attempt.id]);
+                await tx.query("UPDATE student_auth_recovery_attempts SET status = 'failed', secret_hash = NULL, idempotency_key = NULL WHERE id = $1 AND status = 'pending'", [attempt.id]);
                 return false;
             }
             if (!this.matchesRecoveryCode(code.code_digest, recoveryCode)) return false;
@@ -306,7 +306,7 @@ export class StudentAccountRecoveryService {
                 || otp.bindings.recoveryPurpose !== attempt.purpose) return false;
             const updated = await tx.query(
                 `UPDATE student_auth_recovery_attempts
-                 SET status = 'verified', verified_at = clock_timestamp()
+                 SET status = 'verified', verified_at = clock_timestamp(), idempotency_key = NULL
                  WHERE id = $1 AND status = 'pending'`, [attempt.id],
             );
             return updated.rowCount === 1;
@@ -396,12 +396,12 @@ export class StudentAccountRecoveryService {
             );
             await tx.query(
                 `UPDATE student_auth_recovery_attempts
-                 SET status = 'failed', secret_hash = NULL
+                 SET status = 'failed', secret_hash = NULL, idempotency_key = NULL
                  WHERE user_id = $1 AND id <> $2 AND status IN ('pending', 'verified')`,
                 [userId, attempt.id],
             );
             const consumed = await tx.query(
-                `UPDATE student_auth_recovery_attempts SET status = 'consumed', consumed_at = clock_timestamp(), secret_hash = NULL
+                `UPDATE student_auth_recovery_attempts SET status = 'consumed', consumed_at = clock_timestamp(), secret_hash = NULL, idempotency_key = NULL
                  WHERE id = $1 AND status = 'verified'`, [attempt.id],
             );
             if (consumed.rowCount !== 1) throw unavailable();
@@ -576,7 +576,7 @@ export class StudentAccountRecoveryService {
     private async failPriorAttempts(tx: PoolClient, userId: string): Promise<void> {
         await tx.query(
             `UPDATE student_auth_recovery_attempts
-             SET status = 'failed', secret_hash = NULL
+             SET status = 'failed', secret_hash = NULL, idempotency_key = NULL
              WHERE user_id = $1 AND status = 'pending'`,
             [userId],
         );

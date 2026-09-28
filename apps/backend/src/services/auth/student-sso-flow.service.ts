@@ -991,7 +991,7 @@ export async function cleanupStudentSsoTransients(client: PoolClient): Promise<S
            ORDER BY expires_at, id LIMIT ${SSO_CLEANUP_BATCH_SIZE} FOR UPDATE SKIP LOCKED
          )
          UPDATE student_auth_recovery_attempts AS recovery
-         SET status = 'expired', secret_hash = NULL
+         SET status = 'expired', secret_hash = NULL, idempotency_key = NULL
          FROM batch WHERE recovery.id = batch.id`,
     );
     // Catch up terminal tombstones written by older failure paths. This is

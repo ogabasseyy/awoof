@@ -405,6 +405,18 @@ test('expired fresh callback and lost generation response leave no code active i
     api.assertNoUnexpectedRequests();
 });
 
+test('lost fresh-proof finish response offers a safe restart instead of replaying proof', async ({ page }) => {
+    const api = await installSyntheticApi(page);
+    await page.route(`${apiOrigin}/api/auth/student/sso/reauth/finish`, route => route.abort('failed'));
+    await page.goto('/auth/student/login'); await seedSession(page, 'student');
+    await page.goto('/auth/student/sso/complete?reauth=7a000000-0000-4000-8000-000000000002');
+    await expect(page.getByRole('heading', { name: 'Security confirmation unavailable' })).toBeVisible();
+    await expect(page.getByText('No recovery code was activated. Start the optional setup again.')).toBeVisible();
+    await expect(page.getByRole('link', { name: 'Back to account security' })).toHaveAttribute('href', '/student/security');
+    expect(await page.evaluate(() => `${location.href}|${localStorage.getItem('awoof.session.v1')}|${sessionStorage.getItem('awoof.recovery.intent.v1.tab') ?? ''}`)).not.toContain('recovery-code');
+    api.assertNoUnexpectedRequests();
+});
+
 test('server callback context does not require a tab intent and never persists generated plaintext', async ({ page }) => {
     const api = await installSyntheticApi(page); const pendingId = '7b000000-0000-4000-8000-000000000001';
     await page.route(`${apiOrigin}/api/auth/student/sso/reauth/finish`, route => route.fulfill({ status: 201, headers, json: { success: true, data: { grantId: '7c000000-0000-4000-8000-000000000001', grantSecret: 'grant', expiresAt: new Date(Date.now() + 60_000).toISOString(), purpose: 'recovery_code_generate', pendingCodeId: null, targetIdentityId: null, activeCodeGeneration: null } } }));

@@ -205,10 +205,11 @@ test('a lost start response retries onto a rebound handle without a second OTP',
         assert.notEqual(second.attemptId, first.attemptId);
         assert.equal(deliveries.length, 1, 'the original OTP is reused, never re-sent');
         await service.verify({ attemptId: second.attemptId, secret: second.secret, code: account.code, otp: deliveries[0]! });
-        const rows = await client.query<{ id: string; status: string }>(
-            'SELECT id, status FROM student_auth_recovery_attempts WHERE user_id = $1 ORDER BY created_at', [account.userId],
+        const rows = await client.query<{ id: string; status: string; idempotency_key: string | null }>(
+            'SELECT id, status, idempotency_key FROM student_auth_recovery_attempts WHERE user_id = $1 ORDER BY created_at', [account.userId],
         );
         assert.deepEqual(rows.rows.map((row) => row.status), ['failed', 'verified']);
+        assert.deepEqual(rows.rows.map((row) => row.idempotency_key), [null, null], 'only pending attempts retain the cooldown retry binding');
         await service.complete({ attemptId: second.attemptId, secret: second.secret, password: 'ValidNew1!' });
     } finally {
         client.release();
