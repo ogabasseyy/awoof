@@ -138,6 +138,16 @@ test('publishes exact strict error envelopes for redacted verification diagnosti
     assert.equal(data?.additionalProperties, false);
 });
 
+test('signup name schema encodes the enforced trimmed length limits', () => {
+    type JsonSchema = { type?: string; minLength?: number; maxLength?: number; description?: string };
+    const spec = swaggerSpec as { components: { schemas: Record<string, { properties: Record<string, JsonSchema> }> } };
+    const fullName = spec.components.schemas.PasswordlessSignupCompleteRequest.properties.fullName;
+    // StudentSsoSignupService.complete() trims then enforces 2-255.
+    assert.equal(fullName.type, 'string');
+    assert.equal(fullName.minLength, 2);
+    assert.equal(fullName.maxLength, 255);
+});
+
 test('recovery password schema encodes the enforced complexity rules', () => {
     type JsonSchema = { type?: string; minLength?: number; maxLength?: number; pattern?: string; description?: string };
     const spec = swaggerSpec as { components: { schemas: Record<string, { properties: Record<string, JsonSchema> }> } };

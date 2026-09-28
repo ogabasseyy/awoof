@@ -500,6 +500,38 @@ test('recovery-code replacement and account recovery race through the same accou
     }
 });
 
+test('recovery verification is idempotent across a lost 204 without failing the attempt', async () => {
+    const pool = createTestPool();
+    const client = await pool.connect();
+    try {
+        const account = await seedRecoverableStudent(client);
+        let otp = '';
+        const service = new StudentAccountRecoveryService({
+            pool, recoveryCodeKey: 'test-recovery-code-key',
+            deliverOtp: async (_email, delivered) => { otp = delivered; return { success: true }; },
+            validatePassword: () => ({ valid: true, errors: [] }), hashPassword: async () => 'idempotent-password-hash',
+        });
+        const started = await service.start({ email: account.email, purpose: 'lost_access' });
+        await service.verify({ attemptId: started.attemptId, secret: started.secret, code: account.code, otp });
+        // The commit landed but the response was lost: the same proofs
+        // retry cleanly even though the mailbox challenge is consumed.
+        await service.verify({ attemptId: started.attemptId, secret: started.secret, code: account.code, otp });
+        // A mistyped retry still fails, but the verified attempt survives
+        // it: the user keeps what they already earned.
+        await assert.rejects(() => service.verify({
+            attemptId: started.attemptId, secret: started.secret, code: 'wrong-code', otp,
+        }));
+        const status = await client.query<{ status: string }>(
+            'SELECT status FROM student_auth_recovery_attempts WHERE id = $1', [started.attemptId],
+        );
+        assert.equal(status.rows[0]!.status, 'verified');
+        await service.complete({ attemptId: started.attemptId, secret: started.secret, password: 'ValidNew1!' });
+    } finally {
+        client.release();
+        await pool.end();
+    }
+});
+
 test('five wrong recovery OTPs persist their shared failure budget despite generic verification errors', async () => {
     const pool = createTestPool();
     const client = await pool.connect();

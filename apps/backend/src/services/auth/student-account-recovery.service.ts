@@ -139,8 +139,23 @@ export class StudentAccountRecoveryService {
             if (!userId) return false;
             const account = await this.lockAccount(tx, userId);
             const attempt = await this.lockAttempt(tx, attemptId);
-            if (!attempt || attempt.status !== 'pending' || attempt.expires_at <= await this.now(tx)
+            if (!attempt || attempt.expires_at <= await this.now(tx)
                 || !this.matchesDigest(attempt.secret_hash, this.secretDigest(secret))) return false;
+            // Idempotent retry: the verification commit landed but its 204
+            // was lost. The mailbox OTP was already proven and its
+            // challenge consumed, so revalidate the still-checkable proofs
+            // (attempt bearer, live recovery code, pinned generations)
+            // instead of consuming the OTP twice. A mismatch returns false
+            // without failing the attempt: a mistyped retry must not
+            // destroy a verified attempt the user already earned.
+            if (attempt.status === 'verified') {
+                const code = await this.lockActiveCode(tx, userId);
+                if (!account || !code || Number(account.credential_generation) !== Number(attempt.credential_generation)
+                    || Number(code.generation) !== Number(attempt.recovery_code_generation)
+                    || !this.matchesRecoveryCode(code.code_digest, recoveryCode)) return false;
+                return true;
+            }
+            if (attempt.status !== 'pending') return false;
             const code = await this.lockActiveCode(tx, userId);
             if (!account || !code || Number(account.credential_generation) !== Number(attempt.credential_generation)
                 || Number(code.generation) !== Number(attempt.recovery_code_generation) || !this.matchesRecoveryCode(code.code_digest, recoveryCode)) {

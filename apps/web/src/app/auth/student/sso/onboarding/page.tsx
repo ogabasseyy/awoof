@@ -91,6 +91,7 @@ function SignupOnboarding() {
     const [context, setContext] = useState<SignupContext | null>(null);
     const [skewMs, setSkewMs] = useState(0);
     const [ambiguousComplete, setAmbiguousComplete] = useState(false);
+    const [existingAccount, setExistingAccount] = useState(false);
     const [now, setNow] = useState(() => Date.now());
     const [challengeId, setChallengeId] = useState<string | null>(null);
     const [code, setCode] = useState(''); const [name, setName] = useState('');
@@ -164,6 +165,13 @@ function SignupOnboarding() {
             if (statusOf(cause) === 400 && await refreshContext()) {
                 setAge(false); setTerms(false); setConsent(false);
                 setError('The Terms or processing notice changed while you were signing up. Review the new text and accept again.');
+            } else if (statusOf(cause) === 409) {
+                // The school email already belongs to an Awoof account (or
+                // the subject is linked elsewhere): this signup can never
+                // succeed, but the handoff stays live. Route to password
+                // sign-in with a return to the linking flow, which consumes
+                // the same handoff — never back into this signup form.
+                setExistingAccount(true);
             } else if (axios.isAxiosError(cause) && (!cause.response || cause.response.status >= 500)) {
                 // Response-loss/5xx after account creation is ambiguous:
                 // the handoff was consumed with the account, so no retry of
@@ -179,6 +187,7 @@ function SignupOnboarding() {
     };
     if (!context) return <AuthShell role="student" title="Finish setting up Awoof" subtitle="Checking your school sign-in." footer={null}><p role="status">{error ?? 'Checking the pending sign-in…'}</p>{error ? <Button className="mt-5 w-full rounded-full" asChild><Link href="/auth/student/login">Restart Microsoft sign-in</Link></Button> : null}</AuthShell>;
     if (ambiguousComplete) return <AuthShell role="student" title="Finish setting up Awoof" subtitle="Setup may have completed." footer={null}><p role="alert">Setup may have finished but the confirmation was lost. Sign in with Microsoft again: if your account was created, you will be signed straight in.</p><Button className="mt-5 w-full rounded-full" asChild><Link href="/auth/student/login">Sign in with Microsoft</Link></Button></AuthShell>;
+    if (existingAccount) return <AuthShell role="student" title="Finish setting up Awoof" subtitle="An account already uses this email." footer={null}><p role="alert">An Awoof account already uses this school email, so a new account cannot be created. Sign in to that account with your password — you will return here to link Microsoft school sign-in instead.</p><Button className="mt-5 w-full rounded-full" asChild><Link href={`/auth/student/login?redirect=${encodeURIComponent(ONBOARDING_PATH)}`}>Sign in to link instead</Link></Button></AuthShell>;
     if (linkExpired) return <AuthShell role="student" title="Finish setting up Awoof" subtitle="This setup link expired." footer={null}><p role="alert">This setup link expired before setup finished. Start Microsoft sign-in again for a fresh link.</p><Button className="mt-5 w-full rounded-full" asChild><Link href="/auth/student/login">Restart Microsoft sign-in</Link></Button></AuthShell>;
     return <AuthShell role="student" title="Finish setting up Awoof" subtitle="Create an account without a password." footer={null}>
         <p className="text-left text-sm text-slate-600">Microsoft sign-in succeeded. Confirm <strong>{context.email}</strong> for your Awoof account and recovery. Enrollment is pending; confirming this email does not verify current enrollment or independently verify age.</p>
