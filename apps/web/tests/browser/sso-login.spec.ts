@@ -53,6 +53,12 @@ async function readTabHandoff(page: Page): Promise<{ handoffId: string; handoffS
     }, HANDOFF_KEY);
 }
 
+async function seedTabHandoff(page: Page, record: { handoffId: string; handoffSecret: string; expiresAt: string; returnPath: string }): Promise<void> {
+    await page.evaluate(({ key, value }) => {
+        sessionStorage.setItem(key, JSON.stringify(value));
+    }, { key: HANDOFF_KEY, value: record });
+}
+
 async function readSessionEnvelope(page: Page): Promise<string | null> {
     return page.evaluate((key) => localStorage.getItem(key), SESSION_KEY);
 }
@@ -274,6 +280,48 @@ test('an enrolled student completes SSO at the requested page', async ({ page })
     expect(finishBodies).toEqual([{ attemptId: ATTEMPT_ID, finishSecret: 'synthetic-finish-secret' }]);
     expect(await readTabAttempt(page)).toBeNull();
     expect(await readSessionEnvelope(page)).toContain('"state":"active"');
+    api.assertNoUnexpectedRequests();
+});
+
+test('an authenticated onboarding return preserves the waiting link handoff', async ({ page }) => {
+    const api = await installSyntheticApi(page);
+    await page.route(`${apiOrigin}/api/auth/student/sso/finish`, (route) => route.fulfill({
+        json: {
+            success: true,
+            data: {
+                outcome: 'authenticated',
+                user: { id: 'student-1', email: 'student@school.example', role: 'student' },
+                tokens: { accessToken: 'student-access', refreshToken: 'student-refresh' },
+                studentAssurance: enrolledAssurance(),
+                assuranceStatus: 'available',
+            },
+        },
+        headers: ssoHeaders,
+    }));
+
+    await page.goto('/auth/student/login');
+    // The onboarding conflict flow signs an existing passwordless account
+    // in from this same tab: the waiting link handoff must survive the
+    // authenticated completion so the return can link instead of
+    // rendering "Nothing to link".
+    await seedTabAttempt(page, {
+        attemptId: ATTEMPT_ID,
+        finishSecret: 'synthetic-finish-secret',
+        expiresAt: liveExpiry(),
+        generation: 0,
+        returnPath: '/auth/student/sso/onboarding',
+    });
+    await seedTabHandoff(page, {
+        handoffId: HANDOFF_ID,
+        handoffSecret: 'synthetic-handoff-secret',
+        expiresAt: liveExpiry(),
+        returnPath: '/marketplace',
+    });
+    await page.goto(`/auth/student/sso/complete?attempt=${ATTEMPT_ID}`);
+    await page.waitForURL('**/auth/student/sso/onboarding**');
+    expect(await readTabAttempt(page)).toBeNull();
+    const kept = await readTabHandoff(page);
+    expect(kept?.handoffId).toBe(HANDOFF_ID);
     api.assertNoUnexpectedRequests();
 });
 

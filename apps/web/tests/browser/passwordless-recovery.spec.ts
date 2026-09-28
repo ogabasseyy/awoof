@@ -105,6 +105,17 @@ test('recovery deadlines use the server clock on skewed devices', async ({ page 
     api.assertNoUnexpectedRequests();
 });
 
+test('recovery without both proofs points at guidance instead of an unusable support route', async ({ page }) => {
+    const api = await installSyntheticApi(page);
+    await page.goto('/auth/student/recovery');
+    // Locked-out users cannot use the signed-in support section, so the
+    // fallback links the public recovery guidance rather than /contact.
+    const guidance = page.getByRole('link', { name: 'how account recovery works' });
+    await expect(guidance).toBeVisible();
+    await expect(guidance).toHaveAttribute('href', '/help');
+    api.assertNoUnexpectedRequests();
+});
+
 test('fresh grants drive generation then a second re-entry activation without persisting plaintext', async ({ page }) => {
     const api = await installSyntheticApi(page);
     const pendingId = '74000000-0000-4000-8000-000000000001';

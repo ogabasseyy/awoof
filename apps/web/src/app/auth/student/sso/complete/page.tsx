@@ -454,7 +454,14 @@ function StudentSsoCompleteInner() {
             }
             const committed = await completeSsoLogin(startedGeneration, response.data);
             clearSsoAttempt(storage);
-            clearSsoHandoff(storage);
+            // The onboarding conflict flow signs an existing account in
+            // from the same tab and returns to onboarding to link: the
+            // waiting link handoff must survive this authenticated
+            // completion, unlike a stale handoff after an ordinary login.
+            // The continuation consumes it; the server stays authoritative.
+            const onboardingReturn = record.returnPath === '/auth/student/sso/onboarding'
+                || record.returnPath.startsWith('/auth/student/sso/onboarding?');
+            if (!onboardingReturn) clearSsoHandoff(storage);
             if (!committed.committed) {
                 setView({ kind: 'discarded' });
                 return;
