@@ -366,6 +366,7 @@ export class StudentAccountRecoveryService {
                      refresh_token_hash = NULL, refresh_token_expires_at = NULL, active_session_id = NULL,
                      active_session_issued_at = NULL, active_session_auth_identity_id = NULL,
                      credential_generation = credential_generation + 1,
+                     student_sso_attempts_not_before = clock_timestamp(),
                      recovery_reenrollment_requires_password = true, recovery_session_binding_required = true,
                      updated_at = clock_timestamp()
                  WHERE id = $1`, [userId, hash],

@@ -136,18 +136,20 @@ type FakeOidc = {
     authorizeInputs: { policy: ApprovedLoginPolicy; state: string; nonce: string; verifier: string; loginHint: string }[];
     redeemCount: number;
     redeemWith: (observation: ProviderObservation) => void;
+    redeemWithPromise: (promise: Promise<ProviderObservation>) => void;
     redeemFailsWith: (error: Error) => void;
 };
 
 function makeOidc(): FakeOidc {
     const authorizeInputs: FakeOidc['authorizeInputs'] = [];
     let redeemCount = 0;
-    let behavior: () => ProviderObservation = () => { throw new StudentOidcOperationalError('upstream_unavailable'); };
+    let behavior: () => ProviderObservation | Promise<ProviderObservation> = () => { throw new StudentOidcOperationalError('upstream_unavailable'); };
     return {
         authorizeInputs,
         get redeemCount() { return redeemCount; },
         set redeemCount(_value: number) { redeemCount = _value; },
         redeemWith: (observation: ProviderObservation) => { behavior = () => observation; },
+        redeemWithPromise: (promise: Promise<ProviderObservation>) => { behavior = () => promise; },
         redeemFailsWith: (error: Error) => { behavior = () => { throw error; }; },
         oidc: {
             forPolicy: (policy: ApprovedLoginPolicy) => ({
@@ -500,6 +502,78 @@ test('a provider finish racing lost-access recovery cannot issue a post-recovery
             service.finish({ attemptId: started.publicResult.attemptId, finishSecret: started.publicResult.finishSecret, browserCookie: started.callbackCookie.value }),
             recovery.complete({ attemptId: startedRecovery.attemptId, secret: startedRecovery.secret, password: 'ValidNew1!' }),
         ]);
+        const check = await pool.connect();
+        try {
+            const user = await check.query<{ active_session_id: string | null }>('SELECT active_session_id FROM users WHERE id = $1', [userId]);
+            assert.equal(user.rows[0]!.active_session_id, null);
+        } finally { check.release(); }
+    });
+});
+
+test('lost-access recovery fences a ready SSO attempt even when the login used an alias mailbox', async () => {
+    await withSsoPool(async (pool) => {
+        const fixture = await approvedGoogleFixture(pool);
+        const canonicalEmail = `canonical-${uniqueLabel()}@${fixture.domain}`;
+        const aliasEmail = `alias-${uniqueLabel()}@${fixture.domain}`;
+        const setup = await pool.connect();
+        let userId: string;
+        const subject = `alias-recovery-sub-${uniqueLabel()}`;
+        try {
+            userId = await createStudent(setup, fixture.universityId, canonicalEmail);
+            await createIdentity(setup, userId, fixture.universityId, { subject });
+            await setup.query('BEGIN');
+            await issueSessionInTransaction(setup, { userId, email: canonicalEmail, role: 'student' });
+            await setup.query('COMMIT');
+        } finally { setup.release(); }
+        const oidc = makeOidc();
+        oidc.redeemWith(observationFor(fixture.realm, subject));
+        const { service } = makeService(pool, oidc.oidc);
+        const { started, callbackUrl, cookies } = await startGoogle(service, oidc, aliasEmail);
+        await service.callback({ provider: 'google', callbackUrl, browserCookies: cookies });
+        const fence = await pool.connect();
+        try {
+            await fence.query('UPDATE users SET student_sso_attempts_not_before = clock_timestamp() WHERE id = $1', [userId]);
+        } finally { fence.release(); }
+        const result = await service.finish({ attemptId: started.publicResult.attemptId, finishSecret: started.publicResult.finishSecret, browserCookie: started.callbackCookie.value });
+        assert.equal(result.outcome, 'restart_required');
+        const check = await pool.connect();
+        try {
+            const user = await check.query<{ active_session_id: string | null }>('SELECT active_session_id FROM users WHERE id = $1', [userId]);
+            assert.ok(user.rows[0]!.active_session_id, 'the migration/recovery fence must not revoke an already-issued session');
+        } finally { check.release(); }
+    });
+});
+
+test('account recovery fences an SSO callback that becomes ready after recovery commits', async () => {
+    await withSsoPool(async (pool) => {
+        const fixture = await approvedGoogleFixture(pool);
+        const canonicalEmail = `callback-after-recovery-${uniqueLabel()}@${fixture.domain}`;
+        const aliasEmail = `callback-after-recovery-alias-${uniqueLabel()}@${fixture.domain}`;
+        const setup = await pool.connect();
+        let userId: string;
+        const subject = `callback-after-recovery-sub-${uniqueLabel()}`;
+        try {
+            userId = await createStudent(setup, fixture.universityId, canonicalEmail);
+            await createIdentity(setup, userId, fixture.universityId, { subject });
+        } finally { setup.release(); }
+        let providerEntered!: () => void;
+        let releaseProvider!: (observation: ProviderObservation) => void;
+        const providerStarted = new Promise<void>((resolve) => { providerEntered = resolve; });
+        const providerResult = new Promise<ProviderObservation>((resolve) => { releaseProvider = resolve; });
+        const oidc = makeOidc();
+        oidc.redeemWithPromise((async () => { providerEntered(); return providerResult; })());
+        const { service } = makeService(pool, oidc.oidc);
+        const { started, callbackUrl, cookies } = await startGoogle(service, oidc, aliasEmail);
+        const callback = service.callback({ provider: 'google', callbackUrl, browserCookies: cookies });
+        await providerStarted;
+        const fence = await pool.connect();
+        try {
+            await fence.query('UPDATE users SET student_sso_attempts_not_before = clock_timestamp() WHERE id = $1', [userId]);
+        } finally { fence.release(); }
+        releaseProvider(observationFor(fixture.realm, subject));
+        await callback;
+        const result = await service.finish({ attemptId: started.publicResult.attemptId, finishSecret: started.publicResult.finishSecret, browserCookie: started.callbackCookie.value });
+        assert.equal(result.outcome, 'restart_required');
         const check = await pool.connect();
         try {
             const user = await check.query<{ active_session_id: string | null }>('SELECT active_session_id FROM users WHERE id = $1', [userId]);

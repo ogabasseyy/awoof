@@ -720,6 +720,20 @@ export class StudentSsoFlowService {
         }
         if (locked.rows[0].status !== 'ready') throw invalidAttempt();
         if (locked.rows[0].expires_at <= finalClock.rows[0]!.now) throw new StudentSsoAttemptExpiredError(locked.rows[0].id);
+        // This DB-time fence is initialized at migration and advanced by
+        // account recovery. Compare it while holding the user lock so a
+        // provider callback that began before either boundary cannot create
+        // a session afterward, even if readiness races recovery or used an alias.
+        const recoveryFence = await tx.query<{ predates_fence: boolean }>(
+            `SELECT student_sso_attempts_not_before IS NOT NULL
+                    AND (SELECT created_at FROM student_auth_attempts WHERE id = $2) <= student_sso_attempts_not_before AS predates_fence
+             FROM users WHERE id = $1`, [context.userId, attempt.id],
+        );
+        if (recoveryFence.rows[0]?.predates_fence === true) {
+            await this.terminalizeAttempt(tx, attempt.id);
+            await this.invalidateAbandonedAttempts(tx, attempt);
+            return { restart: true };
+        }
         // Another tab may have signed this account in after the attempt
         // started. The browser keeps that concurrent session and discards
         // this finish, so issuing here would destroy a live session while
