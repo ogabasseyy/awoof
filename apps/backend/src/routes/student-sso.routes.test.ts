@@ -1626,4 +1626,9 @@ test('OpenAPI documents the SSO linking contract', () => {
         assert.ok(schema.properties.data.required.includes('expiresAt'), `${name} requires expiresAt`);
         assert.ok(schema.properties.data.properties['expiresAt'], `${name} describes expiresAt`);
     }
+    // The pre-verification view counts down the shorter OTP deadline,
+    // not the ten-minute attempt window.
+    const recoveryStart = spec.components.schemas['AccountRecoveryStartResponse'] as { properties: { data: { required: string[]; properties: Record<string, unknown> } } };
+    assert.ok(recoveryStart.properties.data.required.includes('otpExpiresAt'), 'AccountRecoveryStartResponse requires otpExpiresAt');
+    assert.ok(recoveryStart.properties.data.properties['otpExpiresAt'], 'AccountRecoveryStartResponse describes otpExpiresAt');
 });

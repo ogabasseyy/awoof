@@ -68,19 +68,21 @@ test('recovery completion surfaces password-policy rejections without sign-in ad
     api.assertNoUnexpectedRequests();
 });
 
-test('recovery shows the attempt deadline while proofs are pending', async ({ page }) => {
+test('recovery shows the OTP deadline while proofs are pending', async ({ page }) => {
     const api = await installSyntheticApi(page);
-    await page.route(`${apiOrigin}/api/auth/student/sso/account-recovery/start`, route => route.fulfill({ status: 202, headers, json: { success: true, data: { attemptId: '98000000-0000-4000-8000-000000000001', secret: 'recovery-secret', expiresAt: new Date(Date.now() + 300_000).toISOString() } } }));
+    await page.route(`${apiOrigin}/api/auth/student/sso/account-recovery/start`, route => route.fulfill({ status: 202, headers, json: { success: true, data: { attemptId: '98000000-0000-4000-8000-000000000001', secret: 'recovery-secret', expiresAt: new Date(Date.now() + 600_000).toISOString(), otpExpiresAt: new Date(Date.now() + 300_000).toISOString() } } }));
     await page.goto('/auth/student/recovery');
     await page.getByLabel('School email').fill('student@school.example');
     await page.getByRole('button', { name: 'Start recovery' }).click();
-    await expect(page.getByRole('timer')).toContainText(/Complete this recovery within \d+:\d\d/);
+    // The pre-verification view counts down the five-minute OTP, not the
+    // ten-minute attempt window it switches to after verification.
+    await expect(page.getByRole('timer')).toContainText(/Confirm both codes within [0-5]:\d\d/);
     api.assertNoUnexpectedRequests();
 });
 
 test('expired recovery attempts show an explicit restart state', async ({ page }) => {
     const api = await installSyntheticApi(page);
-    await page.route(`${apiOrigin}/api/auth/student/sso/account-recovery/start`, route => route.fulfill({ status: 202, headers, json: { success: true, data: { attemptId: '99000000-0000-4000-8000-000000000001', secret: 'recovery-secret', expiresAt: new Date(Date.now() - 1_000).toISOString() } } }));
+    await page.route(`${apiOrigin}/api/auth/student/sso/account-recovery/start`, route => route.fulfill({ status: 202, headers, json: { success: true, data: { attemptId: '99000000-0000-4000-8000-000000000001', secret: 'recovery-secret', expiresAt: new Date(Date.now() - 1_000).toISOString(), otpExpiresAt: new Date(Date.now() - 1_000).toISOString() } } }));
     await page.goto('/auth/student/recovery');
     await page.getByLabel('School email').fill('student@school.example');
     await page.getByRole('button', { name: 'Start recovery' }).click();
@@ -94,11 +96,11 @@ test('recovery deadlines use the server clock on skewed devices', async ({ page 
     const api = await installSyntheticApi(page);
     // The device clock runs ten minutes fast: the expiry is device-past
     // but the server clock in the same response keeps nine minutes left.
-    await page.route(`${apiOrigin}/api/auth/student/sso/account-recovery/start`, route => route.fulfill({ status: 202, headers, json: { success: true, data: { attemptId: '9a000000-0000-4000-8000-000000000001', secret: 'recovery-secret', expiresAt: new Date(Date.now() - 30_000).toISOString(), serverNow: new Date(Date.now() - 600_000).toISOString() } } }));
+    await page.route(`${apiOrigin}/api/auth/student/sso/account-recovery/start`, route => route.fulfill({ status: 202, headers, json: { success: true, data: { attemptId: '9a000000-0000-4000-8000-000000000001', secret: 'recovery-secret', expiresAt: new Date(Date.now() - 30_000).toISOString(), otpExpiresAt: new Date(Date.now() - 30_000).toISOString(), serverNow: new Date(Date.now() - 600_000).toISOString() } } }));
     await page.goto('/auth/student/recovery');
     await page.getByLabel('School email').fill('student@school.example');
     await page.getByRole('button', { name: 'Start recovery' }).click();
-    await expect(page.getByRole('timer')).toContainText(/Complete this recovery within 9:(29|30|31)/);
+    await expect(page.getByRole('timer')).toContainText(/Confirm both codes within 9:(29|30|31)/);
     await expect(page.getByLabel('Saved recovery code')).toBeVisible();
     api.assertNoUnexpectedRequests();
 });

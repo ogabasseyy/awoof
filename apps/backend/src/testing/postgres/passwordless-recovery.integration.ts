@@ -136,7 +136,8 @@ test('unknown-mailbox recovery handles expire exactly like committed ones', asyn
             pool, recoveryCodeKey: 'test-recovery-code-key',
             deliverOtp: async (email, _otp) => { deliveries.push(email); return { success: true }; },
         });
-        const decoy = await service.start({ email: `unknown-${randomUUID().slice(0, 8)}@example.invalid`, purpose: 'lost_access' });
+        const unknown = `unknown-${randomUUID().slice(0, 8)}@example.invalid`;
+        const decoy = await service.start({ email: unknown, purpose: 'lost_access' });
         const committed = await service.start({ email: account.email, purpose: 'compromise' });
         const decoyMs = Date.parse(decoy.expiresAt);
         const committedMs = Date.parse(committed.expiresAt);
@@ -158,6 +159,23 @@ test('unknown-mailbox recovery handles expire exactly like committed ones', asyn
         // let expiresAt - serverNow fingerprint committed handles.
         assert.equal(decoyMs - decoyNow, 10 * 60 * 1000, 'decoy deadline must be exactly serverNow plus ten minutes');
         assert.equal(committedMs - committedNow, 10 * 60 * 1000, 'committed deadline must be exactly serverNow plus ten minutes');
+        // Fresh handles also report the shorter OTP deadline the
+        // pre-verification view counts down, on both paths alike.
+        const committedOtp = await client.query<{ expires_at: Date }>(
+            `SELECT challenge.expires_at FROM verification_challenges challenge
+             JOIN student_auth_recovery_attempts attempt ON attempt.mailbox_challenge_id = challenge.id
+             WHERE attempt.id = $1`,
+            [committed.attemptId],
+        );
+        assert.equal(committed.otpExpiresAt, committedOtp.rows[0]!.expires_at.toISOString());
+        assert.ok(committedMs - Date.parse(committed.otpExpiresAt) > 4 * 60 * 1000, 'the OTP deadline must sit well inside the attempt window');
+        const decoyOtp = await client.query<{ expires_at: Date }>(
+            `SELECT challenge.expires_at FROM verification_challenges challenge
+             JOIN verification_challenge_budgets budget ON budget.current_challenge_id = challenge.id
+             WHERE budget.purpose = 'student_account_recovery' AND budget.subject_digest = $1`,
+            [challengeSubjectDigest('student_account_recovery', unknown)],
+        );
+        assert.equal(decoy.otpExpiresAt, decoyOtp.rows[0]!.expires_at.toISOString(), 'decoy handles report their challenge OTP deadline too');
         assert.deepEqual(deliveries, [account.email]);
         const decoyRows = await client.query('SELECT id FROM student_auth_recovery_attempts WHERE id = $1', [decoy.attemptId]);
         assert.equal(decoyRows.rowCount, 0, 'decoy handles write no attempt rows');

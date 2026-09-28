@@ -77,7 +77,7 @@ export class StudentAccountRecoveryService {
         }
     }
 
-    async start(input: { email: unknown; purpose: unknown; idempotencyKey?: unknown }): Promise<{ attemptId: string; secret: string; expiresAt: string; serverNow: string }> {
+    async start(input: { email: unknown; purpose: unknown; idempotencyKey?: unknown }): Promise<{ attemptId: string; secret: string; expiresAt: string; otpExpiresAt: string; serverNow: string }> {
         if (!validPurpose(input.purpose)) throw new TypeError('Recovery purpose is invalid');
         if (typeof input.email !== 'string' || input.email.trim().length === 0 || input.email.length > 255) {
             throw new TypeError('Recovery email is invalid');
@@ -98,8 +98,9 @@ export class StudentAccountRecoveryService {
         // checks both (attempt live, challenge consumable); complete checks
         // only the attempt, so a consumed OTP leaves the remaining window
         // for password choice. Fresh handles report the attempt expiry on
-        // both paths; cooldown retries report the frozen challenge expiry
-        // on both paths. A generic client-clock expiry would mark real
+        // both paths plus the shorter OTP deadline the pre-verification
+        // view counts down; cooldown retries report the frozen challenge
+        // expiry for both. A generic client-clock expiry would mark real
         // attempts by clock skew and by the shorter mailbox TTL.
         const ttlMs = challengeTtlMs('student_account_recovery');
         const started = await this.transaction(async (tx) => {
@@ -148,7 +149,8 @@ export class StudentAccountRecoveryService {
                     // committed handles against decoy retries, which return
                     // the same frozen value. Fresh only when none is live.
                     const current = await this.liveBudgetChallengeExpiry(tx, challengeSubjectDigest('student_account_recovery', account.email));
-                    return { expiresAt: (current ?? serverExpiry).toISOString(), serverNow: serverNow.toISOString() };
+                    const frozen = (current ?? serverExpiry).toISOString();
+                    return { expiresAt: frozen, otpExpiresAt: frozen, serverNow: serverNow.toISOString() };
                 }
                 await this.failPriorAttempts(tx, account.id);
                 // Rebind the shared challenge to the rebound handle: verify
@@ -177,7 +179,8 @@ export class StudentAccountRecoveryService {
                      VALUES ($1, $2, $3, $4, $5, $6, $7, $8::timestamptz, $9)`,
                     [attemptId, account.id, Number(account.credential_generation), input.purpose, this.secretDigest(secret), Number(active.generation), live.mailbox_challenge_id, attemptExpiry, idempotencyKey],
                 );
-                return { expiresAt: live.challenge_expires_at.toISOString(), serverNow: serverNow.toISOString() };
+                const reboundOtp = live.challenge_expires_at.toISOString();
+                return { expiresAt: reboundOtp, otpExpiresAt: reboundOtp, serverNow: serverNow.toISOString() };
             }
             await this.failPriorAttempts(tx, account.id);
             const inserted = await tx.query<{ expires_at: Date }>(
@@ -188,7 +191,7 @@ export class StudentAccountRecoveryService {
                  RETURNING expires_at`,
                 [attemptId, account.id, Number(account.credential_generation), input.purpose, this.secretDigest(secret), Number(active.generation), challenge.challengeId, attemptExpiry, idempotencyKey],
             );
-            return { email: account.email, otp: challenge.code, challengeId: challenge.challengeId, expiresAt: inserted.rows[0]!.expires_at.toISOString(), serverNow: serverNow.toISOString() };
+            return { email: account.email, otp: challenge.code, challengeId: challenge.challengeId, expiresAt: inserted.rows[0]!.expires_at.toISOString(), otpExpiresAt: challenge.expiresAt.toISOString(), serverNow: serverNow.toISOString() };
         });
         // Always provide an indistinguishable browser handle. A non-existent,
         // suspended, or code-less account receives a handle that cannot verify.
@@ -197,7 +200,7 @@ export class StudentAccountRecoveryService {
         // retire the challenge asynchronously (see deliverAndCompensate) so
         // cooldown retries cannot rebound to an OTP that was never emailed.
         if ('challengeId' in started) void this.deliverAndCompensate(started.challengeId, started.email, started.otp);
-        return { attemptId, secret, expiresAt: started.expiresAt, serverNow: started.serverNow };
+        return { attemptId, secret, expiresAt: started.expiresAt, otpExpiresAt: started.otpExpiresAt, serverNow: started.serverNow };
     }
 
     /**
@@ -477,7 +480,7 @@ export class StudentAccountRecoveryService {
      * enrollment — simply delays the first committed attempt row until
      * the caller's retry past the cooldown.
      */
-    private async decoyStart(tx: PoolClient, handle: { email: string; attemptId: string; purpose: RecoveryPurpose; serverExpiry: Date; serverNow: Date; attemptExpiry: Date }): Promise<{ expiresAt: string; serverNow: string }> {
+    private async decoyStart(tx: PoolClient, handle: { email: string; attemptId: string; purpose: RecoveryPurpose; serverExpiry: Date; serverNow: Date; attemptExpiry: Date }): Promise<{ expiresAt: string; otpExpiresAt: string; serverNow: string }> {
         // Workload mirror for the committed start's post-branch queries,
         // in the same order (the attempt and code probes already ran
         // pre-branch on both paths): without this the decoy exits after
@@ -506,15 +509,15 @@ export class StudentAccountRecoveryService {
             // is heap/WAL cost only, sub-round-trip noise.
             await this.lockedStudentStatus(tx, randomUUID());
             // Fresh handles report the shared captured attempt expiry,
-            // identical to the committed path's attempt row; the decoy
-            // challenge itself still carries the shorter OTP TTL
-            // underneath.
-            return { expiresAt: handle.attemptExpiry.toISOString(), serverNow: handle.serverNow.toISOString() };
+            // identical to the committed path's attempt row, plus the
+            // decoy challenge's shorter OTP deadline underneath.
+            return { expiresAt: handle.attemptExpiry.toISOString(), otpExpiresAt: decoy.expiresAt.toISOString(), serverNow: handle.serverNow.toISOString() };
         }
         // Cooldown/locked: the live current challenge's frozen expiry,
         // mirroring the committed rebound; fresh only when none is live.
         const live = await this.liveBudgetChallengeExpiry(tx, challengeSubjectDigest('student_account_recovery', handle.email));
-        return { expiresAt: (live ?? handle.serverExpiry).toISOString(), serverNow: handle.serverNow.toISOString() };
+        const frozen = (live ?? handle.serverExpiry).toISOString();
+        return { expiresAt: frozen, otpExpiresAt: frozen, serverNow: handle.serverNow.toISOString() };
     }
 
     /**
