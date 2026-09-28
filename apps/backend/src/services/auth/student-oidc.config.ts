@@ -145,6 +145,18 @@ export function readStudentSsoConfiguration(raw: RawStudentSsoConfiguration): St
     return { google, microsoft, completionUrl, attemptKey: readAttemptKey(raw.attemptKey) };
 }
 
+/**
+ * The completion page consumes browser auth state created by the frontend,
+ * so an enabled SSO provider must return to that exact origin (not merely
+ * another same-site origin).
+ */
+export function validateStudentSsoFrontendOrigin(frontendUrl: string, configuration: StudentSsoConfiguration): void {
+    if (!configuration.google.enabled && !configuration.microsoft.enabled) return;
+    if (!configuration.completionUrl || new URL(frontendUrl).origin !== configuration.completionUrl.origin) {
+        throw new TypeError('FRONTEND_URL must match the Student SSO completion origin when a provider is enabled');
+    }
+}
+
 /** Deployment readiness: discovery advertises only these providers. */
 export function enabledStudentSsoProviders(configuration: StudentSsoConfiguration): LoginProvider[] {
     return [

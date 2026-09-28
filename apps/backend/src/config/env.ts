@@ -8,7 +8,7 @@
 import { z } from 'zod';
 import dotenv from 'dotenv';
 import { readMicrosoftOidcConfiguration } from '../services/verification/microsoft-oidc.config.js';
-import { readStudentSsoConfiguration, retainedSsoAttemptKey } from '../services/auth/student-oidc.config.js';
+import { readStudentSsoConfiguration, retainedSsoAttemptKey, validateStudentSsoFrontendOrigin } from '../services/auth/student-oidc.config.js';
 
 // Load environment variables
 // override: false ensures docker-compose env vars take precedence
@@ -148,6 +148,7 @@ const studentSso = readStudentSsoConfiguration({
     completionUrl: env.STUDENT_SSO_COMPLETION_URL,
     attemptKey: env.STUDENT_SSO_ATTEMPT_KEY,
 });
+validateStudentSsoFrontendOrigin(env.FRONTEND_URL, studentSso);
 
 const dedicatedRecoveryCodeKey = env.STUDENT_ACCOUNT_RECOVERY_CODE_KEY ?? null;
 const retainedRecoveryCodeKey = retainedSsoAttemptKey(env.STUDENT_SSO_ATTEMPT_KEY);

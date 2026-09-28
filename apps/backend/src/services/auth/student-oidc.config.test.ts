@@ -8,6 +8,7 @@ import {
     enabledStudentSsoProviders,
     readStudentSsoConfiguration,
     retainedSsoAttemptKey,
+    validateStudentSsoFrontendOrigin,
 } from './student-oidc.config.js';
 
 const GOOGLE_CALLBACK = 'https://api.awoof.example/api/auth/student/sso/google/callback';
@@ -112,6 +113,25 @@ test('callback URLs must match the fixed per-provider API path', () => {
         }),
         /fixed Microsoft callback/,
     );
+});
+
+test('enabled SSO completion must use the frontend origin because browser auth state is origin-bound', () => {
+    const configuration = readStudentSsoConfiguration({
+        googleEnabled: true,
+        googleClientId: 'client',
+        googleClientSecret: 'secret',
+        googleCallbackUrl: GOOGLE_CALLBACK,
+        completionUrl: COMPLETION,
+        attemptKey: ATTEMPT_KEY,
+    });
+    assert.doesNotThrow(() => validateStudentSsoFrontendOrigin('https://app.awoof.example/', configuration));
+    assert.throws(
+        () => validateStudentSsoFrontendOrigin('https://awoof.example/', configuration),
+        /FRONTEND_URL must match the Student SSO completion origin/,
+    );
+
+    const disabled = readStudentSsoConfiguration({ completionUrl: COMPLETION });
+    assert.doesNotThrow(() => validateStudentSsoFrontendOrigin('https://awoof.example/', disabled));
 });
 
 test('completion URL is required with the fixed path when any provider is enabled', () => {
