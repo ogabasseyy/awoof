@@ -474,13 +474,27 @@ export function createStudentSsoRouter(factory: FlowFactory = defaultFlow, optio
         next();
     };
 
-    // Provider-independent recovery actions (password reauth, recovery-code
-    // mutations, and the unlink continuation) stay available when SSO
-    // issuance is disabled and no SSO completion URL is configured, so they
-    // validate against the trusted frontend origin instead of the optional
-    // SSO completion origin.
+    // Password reauth stays available when SSO issuance is disabled and no
+    // completion URL exists, so it validates against the trusted frontend
+    // origin instead of the optional SSO completion origin.
     const exactRecoveryOrigin = (req: Request, _res: Response, next: NextFunction): void => {
         if (req.header('origin') !== recoveryAllowedOrigin) {
+            return next(new BadRequestError('Student SSO origin is invalid'));
+        }
+        next();
+    };
+
+    // Fresh Microsoft proof continuations POST from the configured SSO
+    // completion page, while password reauth and recovery initiation POST
+    // from the trusted frontend. Accept either exact configured origin only
+    // for grant-consuming recovery/unlink actions; do not widen /reauth or
+    // the one-use /reauth/finish exchange.
+    const exactContinuationOrigin = (req: Request, _res: Response, next: NextFunction): void => {
+        const origin = req.header('origin');
+        const matchesConfiguredOrigin = typeof origin === 'string'
+            && ((typeof recoveryAllowedOrigin === 'string' && origin === recoveryAllowedOrigin)
+                || (typeof completionOrigin === 'string' && origin === completionOrigin));
+        if (!matchesConfiguredOrigin) {
             return next(new BadRequestError('Student SSO origin is invalid'));
         }
         next();
@@ -850,7 +864,7 @@ export function createStudentSsoRouter(factory: FlowFactory = defaultFlow, optio
         res.json({ success: true, data: result });
     }));
 
-    router.post('/recovery-code/generate', authenticate, requireRole('student'), recoveryCodeGenerateLimiter, exactRecoveryOrigin, exactJson, asyncHandler(async (req, res) => {
+    router.post('/recovery-code/generate', authenticate, requireRole('student'), recoveryCodeGenerateLimiter, exactContinuationOrigin, exactJson, asyncHandler(async (req, res) => {
         const body = recoveryCodeBody(req, 'generate');
         const actor = ssoActor(req);
         const result = await recoveryCodeFactory().generate({
@@ -861,7 +875,7 @@ export function createStudentSsoRouter(factory: FlowFactory = defaultFlow, optio
         res.status(201).json({ success: true, data: result });
     }));
 
-    router.post('/recovery-code/activate', authenticate, requireRole('student'), recoveryCodeActivateLimiter, exactRecoveryOrigin, exactJson, asyncHandler(async (req, res) => {
+    router.post('/recovery-code/activate', authenticate, requireRole('student'), recoveryCodeActivateLimiter, exactContinuationOrigin, exactJson, asyncHandler(async (req, res) => {
         const body = recoveryCodeBody(req, 'activate');
         if (!body.pendingCodeId || !body.code) throw new BadRequestError('Recovery-code request is invalid');
         const actor = ssoActor(req);
@@ -874,7 +888,7 @@ export function createStudentSsoRouter(factory: FlowFactory = defaultFlow, optio
         res.json({ success: true, data: result });
     }));
 
-    router.post('/recovery-code/remove', authenticate, requireRole('student'), recoveryCodeRemoveLimiter, exactRecoveryOrigin, exactJson, asyncHandler(async (req, res) => {
+    router.post('/recovery-code/remove', authenticate, requireRole('student'), recoveryCodeRemoveLimiter, exactContinuationOrigin, exactJson, asyncHandler(async (req, res) => {
         const body = recoveryCodeBody(req, 'remove');
         if (!body.oldCode) throw new BadRequestError('Recovery-code request is invalid');
         const actor = ssoActor(req);
@@ -885,7 +899,7 @@ export function createStudentSsoRouter(factory: FlowFactory = defaultFlow, optio
         res.status(204).end();
     }));
 
-    router.post('/recovery-code/cancel', authenticate, requireRole('student'), exactRecoveryOrigin, exactJson, asyncHandler(async (req, res) => {
+    router.post('/recovery-code/cancel', authenticate, requireRole('student'), exactContinuationOrigin, exactJson, asyncHandler(async (req, res) => {
         const body = req.body as { pendingCodeId?: unknown };
         if (!body || typeof body !== 'object' || Array.isArray(body) || Object.keys(body).length !== 1 || typeof body.pendingCodeId !== 'string' || !UUID.test(body.pendingCodeId)) throw new BadRequestError('Recovery-code request is invalid');
         const actor = ssoActor(req);
@@ -954,11 +968,10 @@ export function createStudentSsoRouter(factory: FlowFactory = defaultFlow, optio
         res.json({ success: true, data: { identities } });
     }));
 
-    // The unlink continuation accepts the recovery/frontend origin: it
-    // consumes a reauth grant, and password grants are
-    // provider-independent, so a rollback that omits the SSO completion
-    // URL must not strand a proven unlink after its reauth succeeded.
-    router.post('/identities/:id/unlink', authenticate, requireRole('student'), unlinkLimiter, exactRecoveryOrigin, exactJson, asyncHandler(async (req, res) => {
+    // Continuation routes accept the completion origin for provider proofs
+    // and the recovery/frontend origin for password proofs. The helper
+    // permits either configured exact origin, never an arbitrary caller.
+    router.post('/identities/:id/unlink', authenticate, requireRole('student'), unlinkLimiter, exactContinuationOrigin, exactJson, asyncHandler(async (req, res) => {
         if (typeof req.params.id !== 'string' || !UUID.test(req.params.id)) {
             throw new BadRequestError('Student SSO unlink request is invalid');
         }

@@ -861,6 +861,36 @@ test('duplicate reauth callback waits instead of failing the in-flight confirmat
     api.assertNoUnexpectedRequests();
 });
 
+test('duplicate manual fresh-proof checks do not race or hide the winning grant', async ({ page }) => {
+    const api = await installSyntheticApi(page);
+    let finishCalls = 0;
+    let releaseWinner!: () => void;
+    const winnerGate = new Promise<void>(resolve => { releaseWinner = resolve; });
+    await page.route(`${apiOrigin}/api/auth/student/sso/reauth/finish`, async route => {
+        finishCalls += 1;
+        if (finishCalls > 1) {
+            return route.fulfill({ status: 409, headers, json: { success: false, error: { message: 'Already consumed', code: 'CONFLICT', statusCode: 409 } } });
+        }
+        await winnerGate;
+        return route.fulfill({ status: 201, headers, json: { success: true, data: { grantId: 'c6000000-0000-4000-8000-000000000004', grantSecret: 'remove-grant', expiresAt: new Date(Date.now() + 60_000).toISOString(), purpose: 'recovery_code_remove', pendingCodeId: null, targetIdentityId: null, activeCodeGeneration: 1 } } });
+    });
+    await page.goto('/auth/student/login'); await seedSession(page, 'student');
+    await page.goto('/auth/student/sso/complete?reauth=c6000000-0000-4000-8000-000000000005&reauthDuplicate=1');
+    const checkAgain = page.getByRole('button', { name: 'Check again' });
+    await expect(checkAgain).toBeVisible();
+    await checkAgain.evaluate(button => {
+        button.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+        button.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    });
+    await expect.poll(() => finishCalls).toBe(1);
+    await page.waitForTimeout(100);
+    expect(finishCalls).toBe(1);
+    releaseWinner();
+    await expect(page.getByRole('heading', { name: 'Remove recovery code' })).toBeVisible();
+    expect(finishCalls).toBe(1);
+    api.assertNoUnexpectedRequests();
+});
+
 test('still-redeeming checks stay waiting instead of failing', async ({ page }) => {
     const api = await installSyntheticApi(page);
     let finishCalls = 0;

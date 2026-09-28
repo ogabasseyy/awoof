@@ -65,7 +65,7 @@ function RecoveryReauthComplete({ attemptId, duplicate }: { attemptId: string; d
     const { refreshUser } = useAuth();
     const [status, setStatus] = useState<'checking' | 'waiting' | 'generate' | 'generate_ambiguous' | 'display' | 'activate' | 'remove' | 'failed' | 'active' | 'removed' | 'link_unavailable' | 'unlinked' | 'unlinked_signed_out' | 'last_method' | 'last_proof_method' | 'link_ambiguous'>('checking');
     const [code, setCode] = useState(''); const [oldCode, setOldCode] = useState(''); const [needsOldCode, setNeedsOldCode] = useState(false); const [pendingCodeId, setPendingCodeId] = useState<string | null>(null); const [pendingExpiresAt, setPendingExpiresAt] = useState<string | null>(null); const [expectedGeneration, setExpectedGeneration] = useState<number | null>(null); const [grant, setGrant] = useState<{ grantId: string; grantSecret: string } | null>(null); const [error, setError] = useState<string | null>(null);
-    const [busy, setBusy] = useState(false); const started = useRef(false); const actionBusy = useRef(false); const waitingAutoTries = useRef(0);
+    const [busy, setBusy] = useState(false); const started = useRef(false); const actionBusy = useRef(false); const finishInFlight = useRef(false); const waitingAutoTries = useRef(0);
     const [now, setNow] = useState(() => Date.now());
     useEffect(() => {
         const timer = window.setInterval(() => setNow(Date.now()), 1000);
@@ -83,6 +83,11 @@ function RecoveryReauthComplete({ attemptId, duplicate }: { attemptId: string; d
     // token that expired during the provider prompt instead of
     // collapsing the fresh proof into the failed view.
     const runFinish = () => {
+        // The automatic backoff and manual button can fire in the same turn.
+        // Only one caller may exchange the one-use proof; otherwise a losing
+        // duplicate 409 can overwrite the continuation from the winner.
+        if (finishInFlight.current) return;
+        finishInFlight.current = true;
         void studentSsoSessionApiClient.post('/auth/student/sso/reauth/finish', { attemptId }).then(async response => {
             const grant = parseSsoReauthFinish(response.data); if (!grant) throw new Error('invalid grant');
             if (grant.purpose === 'link' || grant.purpose === 'unlink') { await continueIdentity({ grantId: grant.grantId, grantSecret: grant.grantSecret, purpose: grant.purpose, targetIdentityId: grant.targetIdentityId }); return; }
@@ -144,7 +149,7 @@ function RecoveryReauthComplete({ attemptId, duplicate }: { attemptId: string; d
             // is terminal.
             if (isRetryableFinishConflict(cause)) { setStatus('waiting'); return; }
             clearRecoveryIntent(); setStatus('failed');
-        });
+        }).finally(() => { finishInFlight.current = false; });
     };
     useEffect(() => {
         // Backoff polling while the winner redeems: bounded automatic

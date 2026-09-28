@@ -544,6 +544,33 @@ test('recovery routes default to the trusted frontend origin without the option'
     });
 });
 
+test('fresh-proof continuation accepts only the exact frontend and SSO completion origins', async () => {
+    const frontendOrigin = 'https://web.example.invalid';
+    const recovery = { cancel: async () => undefined };
+    await withServer(routerWith(stubFlow(), {
+        recoveryOrigin: frontendOrigin,
+        recoveryCodeService: () => recovery as never,
+    }), async (baseUrl) => {
+        const headers = (origin: string) => ({ 'content-type': 'application/json', origin, authorization: `Bearer ${studentToken(true)}` });
+        const body = JSON.stringify({ pendingCodeId: ATTEMPT_ID });
+        const completion = await fetch(`${baseUrl}/recovery-code/cancel`, { method: 'POST', headers: headers(COMPLETION_ORIGIN), body });
+        assert.equal(completion.status, 204);
+        const frontend = await fetch(`${baseUrl}/recovery-code/cancel`, { method: 'POST', headers: headers(frontendOrigin), body });
+        assert.equal(frontend.status, 204);
+        const untrusted = await fetch(`${baseUrl}/recovery-code/cancel`, { method: 'POST', headers: headers('https://evil.example.invalid'), body });
+        assert.equal(untrusted.status, 400);
+        const missingOrigin = await fetch(`${baseUrl}/recovery-code/cancel`, {
+            method: 'POST', headers: { 'content-type': 'application/json', authorization: `Bearer ${studentToken(true)}` }, body,
+        });
+        assert.equal(missingOrigin.status, 400);
+
+        const passwordReauthFromCompletion = await fetch(`${baseUrl}/reauth`, {
+            method: 'POST', headers: headers(COMPLETION_ORIGIN), body: JSON.stringify({ password: 'correct horse', purpose: 'unlink', targetIdentityId: ATTEMPT_ID }),
+        });
+        assert.equal(passwordReauthFromCompletion.status, 400);
+    });
+});
+
 test('signup availability reports the deployment flag without authentication', async () => {
     await withServer(routerWith(stubFlow(), { isSignupEnabled: () => true }), async (baseUrl) => {
         const response = await fetch(`${baseUrl}/signup/availability`);
@@ -1642,14 +1669,22 @@ test('unlink accepts the recovery origin when the SSO completion URL is unconfig
         // password-proven unlink continuation still validates against the
         // trusted frontend origin instead of stranding after its reauth.
         const link = stubLink();
-        await withServer(linkRouter(link, { completionOrigin: undefined }), async (baseUrl) => {
+        const frontendOrigin = 'https://web.example.invalid';
+        await withServer(linkRouter(link, { completionOrigin: undefined, recoveryOrigin: frontendOrigin }), async (baseUrl) => {
             const response = await fetch(`${baseUrl}/identities/${LINK_IDENTITY_ID}/unlink`, {
                 method: 'POST',
-                headers: authHeaders(studentToken(true)),
+                headers: { ...authHeaders(studentToken(true)), origin: frontendOrigin },
                 body: JSON.stringify({ reauthGrant: { grantId: LINK_GRANT_ID, grantSecret: 'grant-secret' } }),
             });
             assert.equal(response.status, 200);
             assert.deepEqual(await response.json(), { success: true, data: { unlinked: true, sessionRevoked: false } });
+
+            const absentOrigin = await fetch(`${baseUrl}/identities/${LINK_IDENTITY_ID}/unlink`, {
+                method: 'POST',
+                headers: { 'content-type': 'application/json', authorization: `Bearer ${studentToken(true)}` },
+                body: JSON.stringify({ reauthGrant: { grantId: LINK_GRANT_ID, grantSecret: 'grant-secret' } }),
+            });
+            assert.equal(absentOrigin.status, 400);
         });
     } finally {
         config.studentSso.completionUrl = previous;
