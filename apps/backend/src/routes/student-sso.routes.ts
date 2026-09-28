@@ -462,13 +462,16 @@ export function createStudentSsoRouter(factory: FlowFactory = defaultFlow, optio
         }
         next();
     };
-    // The Microsoft proof ceremony is initiated by Account security on the
-    // trusted application origin, while its callback returns to the separate
-    // completion origin. Allow both only for the initiation request; finish
+    // Browser-initiated login and Microsoft reauth starts come from the
+    // trusted frontend; provider callbacks return to the separate completion
+    // origin. Allow either exact configured origin only for starts. Finish
     // remains pinned to the completion origin above.
-    const exactReauthStartOrigin = (req: Request, _res: Response, next: NextFunction): void => {
+    const exactStartOrigin = (req: Request, _res: Response, next: NextFunction): void => {
         const origin = req.header('origin');
-        if (origin !== completionOrigin && origin !== recoveryAllowedOrigin) {
+        const matchesConfiguredOrigin = typeof origin === 'string'
+            && ((typeof completionOrigin === 'string' && origin === completionOrigin)
+                || (typeof recoveryAllowedOrigin === 'string' && origin === recoveryAllowedOrigin));
+        if (!matchesConfiguredOrigin) {
             return next(new BadRequestError('Student SSO origin is invalid'));
         }
         next();
@@ -550,7 +553,7 @@ export function createStudentSsoRouter(factory: FlowFactory = defaultFlow, optio
         await accountRecoveryFactory().complete({ attemptId: body.attemptId, secret: body.secret, password: body.password }); responseHeaders(res); res.status(204).end();
     }));
 
-    router.post('/:provider/start', requireIssuance, exactOrigin, exactJson, asyncHandler(async (req, res) => {
+    router.post('/:provider/start', requireIssuance, exactStartOrigin, exactJson, asyncHandler(async (req, res) => {
         const provider = parseStudentSsoProvider(req.params.provider);
         if (!providersEnabled().includes(provider)) throw new NotFoundError('Student SSO is not available');
         const body = startBody(req);
@@ -828,7 +831,7 @@ export function createStudentSsoRouter(factory: FlowFactory = defaultFlow, optio
         res.status(201).json({ success: true, data: result });
     }));
 
-    router.post('/reauth/microsoft/start', authenticate, requireRole('student'), reauthMicrosoftStartLimiter, exactReauthStartOrigin, exactJson, asyncHandler(async (req, res) => {
+    router.post('/reauth/microsoft/start', authenticate, requireRole('student'), reauthMicrosoftStartLimiter, exactStartOrigin, exactJson, asyncHandler(async (req, res) => {
         const body = req.body as { purpose?: unknown; targetIdentityId?: unknown; pendingCodeId?: unknown };
         if (!body || typeof body !== 'object' || Array.isArray(body)
             || Object.keys(body).some((key) => key !== 'purpose' && key !== 'targetIdentityId' && key !== 'pendingCodeId')

@@ -141,6 +141,30 @@ test('start sets the exact per-attempt handoff cookie and no-store headers', asy
     });
 });
 
+test('ordinary SSO start accepts the exact frontend origin while finish stays completion-bound', async () => {
+    const frontendOrigin = 'https://web.example.invalid';
+    let starts = 0;
+    const flow = stubFlow({ start: async () => { starts++; return stubFlow().start(); } });
+    await withServer(routerWith(flow, { recoveryOrigin: frontendOrigin }), async (baseUrl) => {
+        const headers = (origin?: string) => ({
+            'content-type': 'application/json',
+            ...(origin === undefined ? {} : { origin }),
+        });
+        const payload = JSON.stringify({ email: 'ada@students.school.example' });
+        const started = await fetch(`${baseUrl}/google/start`, { method: 'POST', headers: headers(frontendOrigin), body: payload });
+        assert.equal(started.status, 201);
+        await started.text();
+        assert.equal(starts, 1);
+        const untrusted = await fetch(`${baseUrl}/google/start`, { method: 'POST', headers: headers('https://evil.example.invalid'), body: payload });
+        assert.equal(untrusted.status, 400);
+        await untrusted.text();
+        const absent = await fetch(`${baseUrl}/google/start`, { method: 'POST', headers: headers(), body: payload });
+        assert.equal(absent.status, 400);
+        await absent.text();
+        assert.equal(starts, 1);
+    });
+});
+
 test('passwordless signup context and send-code reject extra JSON fields before service invocation', async () => {
     let invoked = 0;
     const signup = { context: async () => { invoked++; return {}; }, sendCode: async () => { invoked++; return {}; }, verifyCode: async () => ({}), complete: async () => ({}) };
