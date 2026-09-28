@@ -278,6 +278,23 @@ export class StudentReauthService {
         return status === undefined || (status !== 'pending' && status !== 'ready' && status !== 'processing');
     }
 
+    /**
+     * True when a failed callback raced a live redemption: the row is
+     * claimed (processing) or the winner already validated it (ready).
+     * The callback dispatcher uses this to retain the browser binding
+     * for duplicates instead of applying terminal-failure cleanup that
+     * would stop finish from exchanging the winner's proof. Pending rows
+     * are never in flight: their failure owns terminalization.
+     */
+    async isInFlightAttempt(attemptId: string): Promise<boolean> {
+        if (!UUID.test(attemptId)) return false;
+        const row = await this.deps.pool.query<{ status: string }>(
+            'SELECT status FROM student_auth_reauth_attempts WHERE id = $1', [attemptId],
+        );
+        const status = row.rows[0]?.status;
+        return status === 'processing' || status === 'ready';
+    }
+
     async finish(input: { userId: string; sid: string; attemptId: string; callbackCookie: string | undefined }): Promise<ActionGrantResult & { purpose: ActionPurpose; pendingCodeId: string | null; targetIdentityId: string | null; activeCodeGeneration: number | null }> {
         if (!UUID.test(input.userId) || !UUID.test(input.sid) || !UUID.test(input.attemptId) || !input.callbackCookie) throw invalidReauth();
         const callbackCookie = input.callbackCookie;

@@ -239,7 +239,8 @@ export class StudentAccountRecoveryService {
                      refresh_token_hash = NULL, refresh_token_expires_at = NULL, active_session_id = NULL,
                      active_session_issued_at = NULL, active_session_auth_identity_id = NULL,
                      credential_generation = credential_generation + 1,
-                     recovery_reenrollment_requires_password = true, updated_at = clock_timestamp()
+                     recovery_reenrollment_requires_password = true, recovery_session_binding_required = true,
+                     updated_at = clock_timestamp()
                  WHERE id = $1`, [userId, hash],
             );
             await tx.query("UPDATE student_auth_action_grants SET revoked_at = clock_timestamp(), secret_hash = 'scrubbed' WHERE user_id = $1 AND consumed_at IS NULL AND revoked_at IS NULL", [userId]);

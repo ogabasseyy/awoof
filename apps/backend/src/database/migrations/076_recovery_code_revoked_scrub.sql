@@ -6,7 +6,8 @@
 -- one-way scrub for revoked rows too, backfill existing revoked and
 -- consumed rows, and enforce the scrubbed shape going forward. Consumed
 -- rows originate only from scrubbed active rows, but the backfill covers
--- them defensively.
+-- them defensively — and the transition must permit consumed-to-consumed
+-- nulling first, or the backfill aborts on the very rows it targets.
 CREATE OR REPLACE FUNCTION student_passwordless_recovery_code_transition() RETURNS trigger LANGUAGE plpgsql AS $$
 BEGIN
     IF (NEW.pending_sid IS DISTINCT FROM OLD.pending_sid
@@ -14,7 +15,8 @@ BEGIN
         OR NEW.pending_proof_identity_id IS DISTINCT FROM OLD.pending_proof_identity_id)
         AND NOT (NEW.pending_sid IS NULL AND NEW.pending_credential_generation IS NULL
                  AND NEW.pending_proof_identity_id IS NULL
-                 AND NEW.status IN ('active', 'revoked') AND OLD.status IN ('pending', 'active', 'revoked')) THEN
+                 AND ((NEW.status IN ('active', 'revoked') AND OLD.status IN ('pending', 'active', 'revoked'))
+                      OR (NEW.status = 'consumed' AND OLD.status = 'consumed'))) THEN
         RAISE EXCEPTION 'Recovery-code ownership is immutable';
     END IF;
     IF NEW.id IS DISTINCT FROM OLD.id OR NEW.user_id IS DISTINCT FROM OLD.user_id

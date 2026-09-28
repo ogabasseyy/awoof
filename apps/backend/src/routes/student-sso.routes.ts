@@ -555,11 +555,17 @@ export function createStudentSsoRouter(factory: FlowFactory = defaultFlow, optio
                     const failureBase = config.studentSso.completionUrl
                         ?? (completionOrigin ? new URL(STUDENT_SSO_COMPLETION_PATH, completionOrigin) : undefined);
                     if (!attemptId || !failureBase) throw error;
-                    // The failure redirect deletes the only browser binding
-                    // that could finish this attempt: terminalize and scrub
-                    // the dead row instead of retaining it until expiry.
-                    await reauth.terminalizeFailedAttempt(attemptId);
-                    clearSsoCookie(res, reauthCookie);
+                    // A duplicate racing a live redemption (or landing just
+                    // after it validated) must not destroy the winner's
+                    // binding: terminalize and clear only when no live
+                    // redemption owns this attempt.
+                    if (!await reauth.isInFlightAttempt(attemptId)) {
+                        // The failure redirect deletes the only browser binding
+                        // that could finish this attempt: terminalize and scrub
+                        // the dead row instead of retaining it until expiry.
+                        await reauth.terminalizeFailedAttempt(attemptId);
+                        clearSsoCookie(res, reauthCookie);
+                    }
                     // Bounded failure redirects are unauthenticated like
                     // outage redirects: they stay counted against the
                     // callback quota so replayed states cannot perform

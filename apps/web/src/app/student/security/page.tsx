@@ -7,7 +7,7 @@ import { AuthShell } from '@/components/auth/AuthShell';
 import { Button } from '@/components/ui/button';
 import { useAuth } from '@/contexts/AuthContext';
 import { clearTokens, getSessionSnapshot } from '@/lib/auth';
-import { studentSsoApiClient } from '@/lib/api-client';
+import { studentSsoApiClient, studentSsoSessionApiClient } from '@/lib/api-client';
 import { serverSkewSince } from '@/lib/student-login-flow';
 
 type RecoveryStatus = 'loading' | 'unconfigured' | 'pending' | 'active' | 'unavailable';
@@ -80,12 +80,15 @@ export default function StudentSecurityPage() {
     const [pwPendingId, setPwPendingId] = useState<string | null>(null); const [pwExpiresAt, setPwExpiresAt] = useState<string | null>(null); const [formError, setFormError] = useState<string | null>(null);
     const pwDeadlineMs = pwExpiresAt ? Date.parse(pwExpiresAt) : NaN;
     const pwExpired = (pwMode === 'display' || pwMode === 'activate') && pwExpiresAt !== null && !Number.isNaN(pwDeadlineMs) && pwDeadlineMs <= now + pwSkewMs;
-    const loadStatus = async (accessToken: string) => {
-        try { const r = await studentSsoApiClient.get('/auth/student/sso/recovery-code', { headers: { Authorization: `Bearer ${accessToken}` } }); const data = (r.data as { data?: { status?: unknown; pendingCodeId?: unknown; pendingExpiresAt?: unknown; serverNow?: unknown } }).data; const value = data?.status; setPendingCodeId(typeof data?.pendingCodeId === 'string' ? data.pendingCodeId : null); setPendingExpiresAt(typeof data?.pendingExpiresAt === 'string' ? data.pendingExpiresAt : null); setSkewMs(serverSkewSince(typeof data?.serverNow === 'string' && !Number.isNaN(Date.parse(data.serverNow)) ? data.serverNow : null)); setStatus(value === 'active' || value === 'pending' || value === 'unconfigured' ? value : 'unavailable'); } catch { setStatus('unavailable'); }
+    // The session client refreshes a token that expired before this page
+    // loaded instead of permanently rendering recovery and identity
+    // management as unavailable after one 401.
+    const loadStatus = async () => {
+        try { const r = await studentSsoSessionApiClient.get('/auth/student/sso/recovery-code'); const data = (r.data as { data?: { status?: unknown; pendingCodeId?: unknown; pendingExpiresAt?: unknown; serverNow?: unknown } }).data; const value = data?.status; setPendingCodeId(typeof data?.pendingCodeId === 'string' ? data.pendingCodeId : null); setPendingExpiresAt(typeof data?.pendingExpiresAt === 'string' ? data.pendingExpiresAt : null); setSkewMs(serverSkewSince(typeof data?.serverNow === 'string' && !Number.isNaN(Date.parse(data.serverNow)) ? data.serverNow : null)); setStatus(value === 'active' || value === 'pending' || value === 'unconfigured' ? value : 'unavailable'); } catch { setStatus('unavailable'); }
     };
-    const loadIdentities = async (accessToken: string) => {
+    const loadIdentities = async () => {
         try {
-            const r = await studentSsoApiClient.get('/auth/student/sso/identities', { headers: { Authorization: `Bearer ${accessToken}` } });
+            const r = await studentSsoSessionApiClient.get('/auth/student/sso/identities');
             const parsed = parseIdentities((r.data as { data?: unknown }).data);
             if (!parsed) throw new Error('invalid');
             setIdentities(parsed); setIdentitiesError(null);
@@ -95,8 +98,8 @@ export default function StudentSecurityPage() {
         if (started.current) return; started.current = true;
         const session = getSessionSnapshot();
         if (!session.accessToken) { setStatus('unavailable'); setIdentitiesError(IDENTITIES_UNAVAILABLE); return; }
-        void loadStatus(session.accessToken);
-        void loadIdentities(session.accessToken);
+        void loadStatus();
+        void loadIdentities();
     }, []);
     // A failed school-sign-in start must not strand password users: the
     // provider-independent password flow stays usable, so these report an
@@ -118,7 +121,7 @@ export default function StudentSecurityPage() {
     };
     const cancelPending = async () => {
         const session = getSessionSnapshot(); if (!pendingCodeId || !session.accessToken || busy) return;
-        setBusy(true); try { await studentSsoApiClient.post('/auth/student/sso/recovery-code/cancel', { pendingCodeId }, { headers: { Authorization: `Bearer ${session.accessToken}` } }); setPendingCodeId(null); await loadStatus(session.accessToken); } catch { setStatus('unavailable'); } finally { setBusy(false); }
+        setBusy(true); try { await studentSsoApiClient.post('/auth/student/sso/recovery-code/cancel', { pendingCodeId }, { headers: { Authorization: `Bearer ${session.accessToken}` } }); setPendingCodeId(null); await loadStatus(); } catch { setStatus('unavailable'); } finally { setBusy(false); }
     };
     const startPassword = (mode: 'generate' | 'activate' | 'remove') => {
         const session = getSessionSnapshot(); if (!session.accessToken) { setStatus('unavailable'); return; }
@@ -151,7 +154,7 @@ export default function StudentSecurityPage() {
             } else if (pwMode === 'remove') {
                 await studentSsoApiClient.post('/auth/student/sso/recovery-code/remove', { reauthGrant, oldCode: pwOld }, { headers });
             } else { throw new Error('invalid state'); }
-            setPwMode(null); setPassword(''); setPwOld(''); setPwCode(''); setPwPendingId(null); setPwExpiresAt(null); await loadStatus(session.accessToken);
+            setPwMode(null); setPassword(''); setPwOld(''); setPwCode(''); setPwPendingId(null); setPwExpiresAt(null); await loadStatus();
             // Activation clears the server re-enrollment marker; refresh the
             // account so post-recovery notices disappear without a reload.
             await refreshUser().catch(() => undefined);
@@ -200,7 +203,7 @@ export default function StudentSecurityPage() {
             // The server clears the session only when the removed identity
             // issued it; drop local tokens exactly then, before rendering.
             if (data.sessionRevoked) { clearTokens(); setSignedOut(true); return; }
-            setUnlinkTarget(null); setUnlinkPassword(''); await loadIdentities(session.accessToken);
+            setUnlinkTarget(null); setUnlinkPassword(''); await loadIdentities();
         } catch (cause: unknown) {
             const failed = axios.isAxiosError(cause) ? cause.response : undefined;
             const code = (failed?.data as { error?: { code?: unknown } } | undefined)?.error?.code;
@@ -229,7 +232,7 @@ export default function StudentSecurityPage() {
         <p className="text-left text-sm text-slate-600">Confirm your identity, save your code, then confirm your identity again to activate it. The code is shown once and is never stored in this browser, emailed, or placed in a URL. Recovery also needs access to your school mailbox; it does not promise permanent access.</p>
         {schoolError ? <p role="alert" className="mt-3 text-left text-sm text-red-600">{schoolError}</p> : null}
         {status === 'active' ? <div className="mt-4 space-y-3"><p role="status" className="text-left text-sm">A recovery code is active. Replacing or removing it requires the current code and fresh confirmation.</p><Button type="button" onClick={() => pwPreferred ? startPassword('generate') : begin()} disabled={busy} className="w-full rounded-full">Replace recovery code</Button><Button type="button" variant="outline" onClick={() => pwPreferred ? startPassword('remove') : beginRemove()} disabled={busy} className="w-full rounded-full">Remove recovery code</Button>{methodToggle}</div> : status === 'pending' ? pendingExpired
-            ? <div className="mt-4 space-y-3"><p role="alert" className="text-left text-sm">This pending code expired before activation and cannot recover your account. Refresh for current status, then start setup again for a fresh code.</p><Button type="button" onClick={() => { const live = getSessionSnapshot(); if (live.accessToken) void loadStatus(live.accessToken); }} disabled={busy} className="w-full rounded-full">Refresh status</Button>{methodToggle}</div>
+            ? <div className="mt-4 space-y-3"><p role="alert" className="text-left text-sm">This pending code expired before activation and cannot recover your account. Refresh for current status, then start setup again for a fresh code.</p><Button type="button" onClick={() => { const live = getSessionSnapshot(); if (live.accessToken) void loadStatus(); }} disabled={busy} className="w-full rounded-full">Refresh status</Button>{methodToggle}</div>
             : <div className="mt-4 space-y-3"><p role="status" className="text-left text-sm">A pending code exists but cannot recover your account. Confirm your identity again before it expires.</p>{Number.isNaN(pendingDeadlineMs) ? null : <p role="timer" className="text-left text-sm">Activate this code within {formatPendingRemaining(pendingDeadlineMs, now + skewMs)}.</p>}<Button type="button" onClick={() => pwPreferred ? startPassword('activate') : beginActivation()} disabled={busy || !pendingCodeId} className="w-full rounded-full">Confirm identity to activate saved code</Button><Button type="button" variant="outline" onClick={cancelPending} disabled={busy || !pendingCodeId} className="w-full rounded-full">Cancel pending code</Button>{methodToggle}</div> : status === 'unavailable' ? <div className="mt-4 space-y-3"><p role="status" className="text-left text-sm">Recovery-code setup is unavailable. Sign in again and retry. If school sign-in is unavailable, use recovery only if you already saved a recovery code.</p><Link className="text-left text-sm text-primary underline" href="/auth/student/recovery">Account recovery</Link></div> : <div className="mt-5 space-y-2"><Button type="button" onClick={() => pwPreferred ? startPassword('generate') : begin()} disabled={busy || status === 'loading'} className="w-full rounded-full">{busy ? (pwPreferred ? 'Working…' : 'Redirecting…') : 'Confirm identity to generate a code'}</Button>{methodToggle}</div>}
         <div className="mt-8 border-t pt-5 text-left">
             <h2 className="text-base font-semibold">School sign-ins</h2>

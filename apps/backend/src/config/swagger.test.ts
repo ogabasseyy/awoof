@@ -160,6 +160,18 @@ test('signup schemas encode the enforced handoff-secret ceiling', () => {
     }
 });
 
+test('recovery schemas encode the enforced handle-secret ceiling', () => {
+    type JsonSchema = { type?: string; minLength?: number; maxLength?: number };
+    const spec = swaggerSpec as { components: { schemas: Record<string, { properties: Record<string, JsonSchema> }> } };
+    // StudentAccountRecoveryService.validOpaque() rejects secrets over 1024 chars.
+    for (const name of ['AccountRecoveryVerifyRequest', 'AccountRecoveryCompleteRequest']) {
+        const secret = spec.components.schemas[name].properties.secret;
+        assert.equal(secret.type, 'string');
+        assert.equal(secret.minLength, 1);
+        assert.equal(secret.maxLength, 1024, `${name} must publish the enforced ceiling`);
+    }
+});
+
 test('recovery password schema encodes the enforced complexity rules', () => {
     type JsonSchema = { type?: string; minLength?: number; maxLength?: number; pattern?: string; description?: string };
     const spec = swaggerSpec as { components: { schemas: Record<string, { properties: Record<string, JsonSchema> }> } };

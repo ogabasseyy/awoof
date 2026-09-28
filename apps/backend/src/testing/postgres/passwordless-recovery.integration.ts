@@ -650,6 +650,43 @@ test('recovery completion rejects passwords over the published maximum', async (
     }
 });
 
+test('recovery permanently session-binds the account across re-enrollment', async () => {
+    const pool = createTestPool();
+    const client = await pool.connect();
+    try {
+        const account = await seedRecoverableStudent(client);
+        let otp = '';
+        const recovery = new StudentAccountRecoveryService({
+            pool, recoveryCodeKey: 'test-recovery-code-key',
+            deliverOtp: async (_email, delivered) => { otp = delivered; return { success: true }; },
+            validatePassword: () => ({ valid: true, errors: [] }), hashPassword: async () => 'binding-password-hash',
+        });
+        const started = await recovery.start({ email: account.email, purpose: 'compromise' });
+        await recovery.verify({ attemptId: started.attemptId, secret: started.secret, code: account.code, otp });
+        await recovery.complete({ attemptId: started.attemptId, secret: started.secret, password: 'ValidNew1!' });
+        const bound = await client.query<{ recovery_reenrollment_requires_password: boolean; recovery_session_binding_required: boolean }>(
+            'SELECT recovery_reenrollment_requires_password, recovery_session_binding_required FROM users WHERE id = $1', [account.userId],
+        );
+        assert.deepEqual(bound.rows[0], { recovery_reenrollment_requires_password: true, recovery_session_binding_required: true });
+        // The owner signs in fresh and re-enrolls with a password grant:
+        // activation clears the UX marker but the session binding it
+        // imposed persists, so legacy sid-less tokens stay revoked.
+        await client.query('UPDATE users SET active_session_id = $2::uuid WHERE id = $1', [account.userId, SID]);
+        const codes = new StudentRecoveryCodeService({ pool, codeKey: 'test-recovery-code-key' });
+        const generated = await grant(client, { userId: account.userId, purpose: 'recovery_code_generate', credentialGeneration: 1 });
+        const pending = await codes.generate({ userId: account.userId, sid: SID, grantId: generated.grantId, secret: generated.grantSecret });
+        const activated = await grant(client, { userId: account.userId, purpose: 'recovery_code_activate', pendingCodeId: pending.pendingCodeId, credentialGeneration: 1 });
+        await codes.activate({ userId: account.userId, sid: SID, grantId: activated.grantId, secret: activated.grantSecret, pendingCodeId: pending.pendingCodeId, code: pending.code });
+        const reenrolled = await client.query<{ recovery_reenrollment_requires_password: boolean; recovery_session_binding_required: boolean }>(
+            'SELECT recovery_reenrollment_requires_password, recovery_session_binding_required FROM users WHERE id = $1', [account.userId],
+        );
+        assert.deepEqual(reenrolled.rows[0], { recovery_reenrollment_requires_password: false, recovery_session_binding_required: true });
+    } finally {
+        client.release();
+        await pool.end();
+    }
+});
+
 test('five wrong recovery OTPs persist their shared failure budget despite generic verification errors', async () => {
     const pool = createTestPool();
     const client = await pool.connect();
@@ -731,13 +768,13 @@ async function seedProviderProof(client: PoolClient, userId: string, options: { 
 
 async function grant(
     client: PoolClient,
-    input: { userId: string; sid?: string; purpose: 'recovery_code_generate' | 'recovery_code_activate' | 'recovery_code_remove'; pendingCodeId?: string; activeCodeGeneration?: number; proofIdentityId?: string },
+    input: { userId: string; sid?: string; purpose: 'recovery_code_generate' | 'recovery_code_activate' | 'recovery_code_remove'; pendingCodeId?: string; activeCodeGeneration?: number; proofIdentityId?: string; credentialGeneration?: number },
 ) {
     return issueActionGrant(client, {
         userId: input.userId,
         sid: input.sid ?? SID,
         purpose: input.purpose,
-        credentialGeneration: 0,
+        credentialGeneration: input.credentialGeneration ?? 0,
         ...(input.pendingCodeId === undefined ? {} : { pendingCodeId: input.pendingCodeId }),
         ...(input.activeCodeGeneration === undefined ? {} : { activeCodeGeneration: input.activeCodeGeneration }),
         ...(input.proofIdentityId === undefined ? {} : { proofIdentityId: input.proofIdentityId }),
@@ -1331,11 +1368,17 @@ test('terminalizeFailedAttempt marks the dead reauth attempt failed and scrubs i
              VALUES ($1, $2::uuid, 0, 'link', 'ready-state', 'ready-cookie', 'ready-verifier', 'ready-nonce', $3, 'ready', clock_timestamp() + interval '5 minutes') RETURNING id`,
             [userId, SID, readyProof],
         )).rows[0]!.id;
+        const processing = (await client.query<{ id: string }>(
+            `INSERT INTO student_auth_reauth_attempts (user_id, sid, credential_generation, purpose, state_hash, callback_cookie_hash, encrypted_verifier, nonce, proof_identity_id, status, expires_at)
+             VALUES ($1, $2::uuid, 0, 'link', 'processing-state', 'processing-cookie', 'processing-verifier', 'processing-nonce', $3, 'processing', clock_timestamp() + interval '5 minutes') RETURNING id`,
+            [userId, SID, readyProof],
+        )).rows[0]!.id;
         await reauth.terminalizeFailedAttempt(pending);
         await reauth.terminalizeFailedAttempt(ready);
+        await reauth.terminalizeFailedAttempt(processing);
         const rows = await client.query<{ id: string; status: string; consumed_at: Date | null; state_hash: string | null; callback_cookie_hash: string | null; encrypted_verifier: string | null; nonce: string | null }>(
             'SELECT id, status, consumed_at, state_hash, callback_cookie_hash, encrypted_verifier, nonce FROM student_auth_reauth_attempts WHERE id = ANY($1::uuid[])',
-            [[pending, ready]],
+            [[pending, ready, processing]],
         );
         const dead = rows.rows.find(row => row.id === pending)!;
         assert.deepEqual(
@@ -1346,11 +1389,21 @@ test('terminalizeFailedAttempt marks the dead reauth attempt failed and scrubs i
         // Ready rows are never touched: a callback that already validated
         // keeps its finishable state.
         assert.equal(rows.rows.find(row => row.id === ready)!.status, 'ready');
+        // A claimed row belongs to its in-flight redemption: failure
+        // handling must not terminalize it either.
+        assert.equal(rows.rows.find(row => row.id === processing)!.status, 'processing');
         // Dead-attempt dispatch: terminal and missing rows read dead so a
         // delayed provider callback lands bounded; live rows never do.
         assert.equal(await reauth.isDeadAttempt(pending), true);
         assert.equal(await reauth.isDeadAttempt(ready), false);
+        assert.equal(await reauth.isDeadAttempt(processing), false);
         assert.equal(await reauth.isDeadAttempt(randomUUID()), true);
+        // Duplicate dispatch: claimed and validated rows read in flight
+        // so the loser's redirect retains the winner's binding.
+        assert.equal(await reauth.isInFlightAttempt(pending), false);
+        assert.equal(await reauth.isInFlightAttempt(processing), true);
+        assert.equal(await reauth.isInFlightAttempt(ready), true);
+        assert.equal(await reauth.isInFlightAttempt(randomUUID()), false);
     } finally {
         client.release();
         await pool.end();
@@ -1471,6 +1524,37 @@ test('status hides pending codes whose provider proof lost login authority', asy
         // dead pending must not shadow the still-valid active code.
         await client.query('UPDATE student_auth_identities SET revoked_at = clock_timestamp() WHERE id = $1', [proofIdentityId]);
         assertRecoveryStatus(await live.status({ userId }), { status: 'active', generation: 1, pendingCodeId: null, pendingExpiresAt: null });
+    } finally { client.release(); await pool.end(); }
+});
+
+test('consumed recovery-code rows accept the one-way binding scrub without replay', async () => {
+    const pool = createTestPool();
+    const client = await pool.connect();
+    try {
+        const userId = await seedStudent(client);
+        // Legacy pre-076 shape: consumed but still carrying bindings.
+        const row = (await client.query<{ id: string }>(
+            `INSERT INTO student_auth_recovery_codes (user_id, generation, status, consumed_at, pending_sid, pending_credential_generation)
+             VALUES ($1, 0, 'consumed', clock_timestamp(), $2::uuid, 0) RETURNING id`,
+            [userId, SID],
+        )).rows[0]!.id;
+        // Migration 076's backfill shape: null the bindings in place.
+        // Before the consumed-to-consumed transition, the trigger aborted
+        // this on the very rows the migration targets.
+        await client.query(
+            `UPDATE student_auth_recovery_codes
+             SET pending_sid = NULL, pending_credential_generation = NULL, pending_proof_identity_id = NULL
+             WHERE id = $1`, [row],
+        );
+        const scrubbed = await client.query<{ status: string; pending_sid: string | null; pending_credential_generation: string | null; pending_proof_identity_id: string | null }>(
+            'SELECT status, pending_sid, pending_credential_generation, pending_proof_identity_id FROM student_auth_recovery_codes WHERE id = $1', [row],
+        );
+        assert.deepEqual(scrubbed.rows[0], { status: 'consumed', pending_sid: null, pending_credential_generation: null, pending_proof_identity_id: null });
+        // The terminal guard still holds: consumed rows cannot replay.
+        await assert.rejects(
+            client.query(`UPDATE student_auth_recovery_codes SET status = 'active' WHERE id = $1`, [row]),
+            /Terminal recovery codes cannot be replayed/,
+        );
     } finally { client.release(); await pool.end(); }
 });
 
