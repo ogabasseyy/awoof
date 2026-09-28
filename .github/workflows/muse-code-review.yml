@@ -95,7 +95,11 @@ jobs:
           set -euo pipefail
 
           pr_file="${RUNNER_TEMP}/muse-pr.json"
-          gh api "repos/${GITHUB_REPOSITORY}/pulls/${PR_NUMBER}" > "${pr_file}"
+          if ! gh api "repos/${GITHUB_REPOSITORY}/pulls/${PR_NUMBER}" > "${pr_file}" 2>/dev/null; then
+            echo "should_review=false" >> "${GITHUB_OUTPUT}"
+            echo "::warning::Could not fetch PR metadata; skipping (retry on next event)."
+            exit 0
+          fi
 
           # Use the event SHA everywhere so checkout, diff, commit_id, and the
           # review marker always agree. If the PR moved since this run started
@@ -128,7 +132,11 @@ jobs:
           # or diff hunks from two commits.
           base_sha="$(jq -r '.base.sha' "${pr_file}")"
           compare_file="${RUNNER_TEMP}/muse-compare.json"
-          gh api "repos/${GITHUB_REPOSITORY}/compare/${base_sha}...${HEAD_SHA_EVENT}" > "${compare_file}"
+          if ! gh api "repos/${GITHUB_REPOSITORY}/compare/${base_sha}...${HEAD_SHA_EVENT}" \
+            > "${compare_file}" 2>"${RUNNER_TEMP}/muse-ghcompare.err"; then
+            echo '{"files":[]}' > "${compare_file}"
+            echo "::warning::compare metadata failed: $(head -c 300 "${RUNNER_TEMP}/muse-ghcompare.err" 2>/dev/null || true)"
+          fi
           files_file="${RUNNER_TEMP}/muse-files.json"
           jq '.files // []' "${compare_file}" > "${files_file}"
 
@@ -344,8 +352,7 @@ jobs:
           real_count="$(jq -s --arg marker "${marker}" \
             '[add // [] | .[] | select(.user.login == "github-actions[bot]"
               and (.body | startswith($marker))
-              and ((.body | contains("Muse did not return a review")) | not)
-              and ((.body | contains("diff collection failed")) | not))] | length' \
+              and ((.body | contains("muse-fallback:v1")) | not))] | length' \
             "${dup_reviews}" 2>/dev/null || echo 0)"
           duplicate=false
           if [[ "${real_count}" =~ [1-9] ]]; then
@@ -451,10 +458,12 @@ jobs:
           review=""
           inline_payload='[]'
           raw_output=""
+          is_fallback=false
           if [[ -f "${{ steps.muse.outputs.review_file }}" ]]; then
             raw_output="$(cat "${{ steps.muse.outputs.review_file }}")"
           fi
           if [[ "${DIFF_FAILED}" == "true" ]]; then
+            is_fallback=true
             review="## Verdict
 
           Muse did not review this PR: diff collection failed, so there was no
@@ -471,6 +480,7 @@ jobs:
           elif [[ "${MUSE_OUTCOME}" != "success" ]]; then
             # Nonzero/skipped runs can leave partial output behind; never
             # publish it as a successful review (it would also poison dedupe).
+            is_fallback=true
             review="## Verdict
 
           Muse did not return a review (step outcome: \`${MUSE_OUTCOME}\`).
@@ -490,7 +500,7 @@ jobs:
             verdict="$(jq -r '.verdict // ""' "${findings_json}")"
             # Valid inline lines = new-side ranges of the collected diff.
             ranges_json="${RUNNER_TEMP}/muse-ranges.json"
-            awk '/^\+\+\+ b\// {file=$2; sub(/^b\//, "", file)} /^@@ -[0-9]+(,[0-9]+)? \+/ {s=$3; sub(/^\+/, "", s); n=split(s, a, ","); start=a[1]+0; len=(n>1?a[2]+0:1); if (len>0) print file"\t"start"\t"(start+len-1)}' \
+            awk '/^\+\+\+ / {file=$0; sub(/^\+\+\+ (b\/)?/, "", file); if (file ~ /^".*"$/) {sub(/^"/, "", file); sub(/"$/, "", file); gsub(/\\"/, "\"", file); gsub(/\\\\/, "\\", file)}; if (file == "/dev/null") file=""} file != "" && /^@@ -[0-9]+(,[0-9]+)? \+/ {s=$3; sub(/^\+/, "", s); n=split(s, a, ","); start=a[1]+0; len=(n>1?a[2]+0:1); if (len>0) print file"\t"start"\t"(start+len-1)}' \
               "${RUNNER_TEMP}/muse.diff" 2>/dev/null \
               | jq -R -s '[split("\n")[] | select(length>0) | split("\t") | {path:.[0],start:.[1]|tonumber,end:.[2]|tonumber}]' \
               > "${ranges_json}" 2>/dev/null || echo '[]' > "${ranges_json}"
@@ -573,6 +583,11 @@ jobs:
 
           {
             printf '%s\n' "${marker}"
+            # Machine-readable fallback tag for dedupe: never infer fallback
+            # state from review prose (a real review could quote it).
+            if [[ "${is_fallback}" == "true" ]]; then
+              printf '%s\n' "<!-- muse-fallback:v1 -->"
+            fi
             cat <<EOF
           ## Muse code review (advisory)
 
