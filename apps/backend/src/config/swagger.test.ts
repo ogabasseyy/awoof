@@ -139,13 +139,22 @@ test('publishes exact strict error envelopes for redacted verification diagnosti
 });
 
 test('signup name schema encodes the enforced trimmed length limits', () => {
-    type JsonSchema = { type?: string; minLength?: number; maxLength?: number; description?: string };
+    type JsonSchema = { type?: string; minLength?: number; maxLength?: number; pattern?: string; description?: string };
     const spec = swaggerSpec as { components: { schemas: Record<string, { properties: Record<string, JsonSchema> }> } };
     const fullName = spec.components.schemas.PasswordlessSignupCompleteRequest.properties.fullName;
-    // StudentSsoSignupService.complete() trims then enforces 2-255.
+    // StudentSsoSignupService.complete() trims then enforces 2-255, so raw
+    // min/maxLength would diverge in both directions (' a' passes raw but
+    // fails trimmed; a padded 255-char name fails raw but passes
+    // trimmed). The pattern measures the trimmed value instead.
     assert.equal(fullName.type, 'string');
-    assert.equal(fullName.minLength, 2);
-    assert.equal(fullName.maxLength, 255);
+    assert.equal(fullName.minLength, undefined);
+    assert.equal(fullName.maxLength, undefined);
+    assert.equal(typeof fullName.pattern, 'string');
+    const pattern = new RegExp(fullName.pattern!);
+    assert.equal(pattern.test(' a'), false);
+    assert.equal(pattern.test('ab'), true);
+    assert.equal(pattern.test(`  ${'x'.repeat(255)}  `), true);
+    assert.equal(pattern.test('x'.repeat(256)), false);
 });
 
 test('signup schemas encode the enforced handoff-secret ceiling', () => {

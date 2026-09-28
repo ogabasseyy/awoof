@@ -1254,6 +1254,7 @@ export default createStudentSsoRouter();
  *     responses:
  *       200: { description: Mailbox confirmation accepted, no-store, content: { application/json: { schema: { $ref: '#/components/schemas/PasswordlessSignupVerifiedResponse' } } } }
  *       400: { description: JSON, exact-origin, malformed, or stale proof }
+ *       401: { description: Wrong, expired, or exhausted confirmation code, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
  *       409: { description: Disabled, expired, consumed, replayed, or invalid signup state, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
  *       429: { description: Signup quota exhausted }
  * /api/auth/student/sso/signup/complete:

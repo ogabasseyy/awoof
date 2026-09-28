@@ -93,13 +93,31 @@ function RecoveryReauthComplete({ attemptId }: { attemptId: string }) {
             if (grant.purpose === 'recovery_code_generate') {
                 clearRecoveryIntent(); setGrant({ grantId: grant.grantId, grantSecret: grant.grantSecret });
                 if (grant.activeCodeGeneration !== null) { setStatus('generate'); return; }
-                const generated = await studentSsoSessionApiClient.post('/auth/student/sso/recovery-code/generate', { reauthGrant: { grantId: grant.grantId, grantSecret: grant.grantSecret } });
-                const data = (generated.data as { data?: { pendingCodeId?: unknown; code?: unknown; expiresAt?: unknown; serverNow?: unknown } }).data;
-                if (!data || typeof data.pendingCodeId !== 'string' || typeof data.code !== 'string') throw new Error('invalid code');
-                setGrant(null); setPendingCodeId(data.pendingCodeId); setCode(data.code);
-                setPendingExpiresAt(typeof data.expiresAt === 'string' ? data.expiresAt : null);
-                setSkewMs(serverSkewSince(typeof data.serverNow === 'string' && !Number.isNaN(Date.parse(data.serverNow)) ? data.serverNow : null));
-                setStatus('display'); return;
+                try {
+                    const generated = await studentSsoSessionApiClient.post('/auth/student/sso/recovery-code/generate', { reauthGrant: { grantId: grant.grantId, grantSecret: grant.grantSecret } });
+                    const data = (generated.data as { data?: { pendingCodeId?: unknown; code?: unknown; expiresAt?: unknown; serverNow?: unknown } }).data;
+                    if (!data || typeof data.pendingCodeId !== 'string' || typeof data.code !== 'string') throw new Error('invalid code');
+                    setGrant(null); setPendingCodeId(data.pendingCodeId); setCode(data.code);
+                    setPendingExpiresAt(typeof data.expiresAt === 'string' ? data.expiresAt : null);
+                    setSkewMs(serverSkewSince(typeof data.serverNow === 'string' && !Number.isNaN(Date.parse(data.serverNow)) ? data.serverNow : null));
+                    setStatus('display'); return;
+                } catch (cause: unknown) {
+                    // An ambiguous transport failure may have committed while
+                    // consuming the grant, leaving a pending code whose
+                    // one-time plaintext is irretrievable. A pending status
+                    // reading back routes to cancel-and-regenerate guidance
+                    // instead of the generic failed view; anything else
+                    // rethrows into it.
+                    const failed = statusOf(cause);
+                    if (failed === undefined || failed >= 500) {
+                        try {
+                            const current = await studentSsoSessionApiClient.get('/auth/student/sso/recovery-code');
+                            const live = (current.data as { data?: { status?: unknown } }).data;
+                            if (live?.status === 'pending') { setGrant(null); setStatus('generate_ambiguous'); return; }
+                        } catch { /* reload failed; fall through to failed */ }
+                    }
+                    throw cause;
+                }
             }
             if (grant.purpose === 'recovery_code_remove') { clearRecoveryIntent(); setGrant({ grantId: grant.grantId, grantSecret: grant.grantSecret }); setStatus('remove'); return; }
             if (grant.purpose !== 'recovery_code_activate' || !grant.pendingCodeId) throw new Error('missing pending');

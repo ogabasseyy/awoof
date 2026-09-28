@@ -94,7 +94,7 @@ export class StudentRecoveryCodeService {
         }
     }
 
-    async generate(input: { userId: string; sid: string; grantId: string; secret: string; oldCode?: string }): Promise<{ pendingCodeId: string; code: string; expiresAt: string; serverNow: string }> {
+    async generate(input: { userId: string; sid: string; grantId: string; secret: string; oldCode?: string }): Promise<{ pendingCodeId: string; code: string; generation: number; expiresAt: string; serverNow: string }> {
         return this.inTransaction(async (tx) => {
             const account = await this.lockAccount(tx, input.userId, input.sid);
             const active = await this.lockCurrentCode(tx, input.userId, 'active');
@@ -124,16 +124,20 @@ export class StudentRecoveryCodeService {
             );
             const code = this.dependencies.randomCode?.() ?? codeForDisplay();
             const codeId = randomUUID();
-            const result = await tx.query<{ expires_at: Date; now: Date }>(
+            const result = await tx.query<{ generation: number; expires_at: Date; now: Date }>(
                 `INSERT INTO student_auth_recovery_codes
                      (id, user_id, generation, code_digest, status, expires_at,
                       pending_sid, pending_credential_generation, pending_proof_identity_id)
                  VALUES ($1, $2, COALESCE((SELECT max(generation) + 1 FROM student_auth_recovery_codes WHERE user_id = $2), 1),
                          $3, 'pending', clock_timestamp() + interval '10 minutes', $4::uuid, $5, $6)
-                 RETURNING expires_at, clock_timestamp() AS now`,
+                 RETURNING generation, expires_at, clock_timestamp() AS now`,
                 [codeId, input.userId, this.digest(code), input.sid, Number(account.credential_generation), proofIdentityId],
             );
-            return { pendingCodeId: codeId, code, expiresAt: result.rows[0]!.expires_at.toISOString(), serverNow: result.rows[0]!.now.toISOString() };
+            // The pending generation travels with the one-time display so an
+            // ambiguous activation can require the reloaded active
+            // generation to match instead of accepting a fallback to an
+            // older code as success.
+            return { pendingCodeId: codeId, code, generation: Number(result.rows[0]!.generation), expiresAt: result.rows[0]!.expires_at.toISOString(), serverNow: result.rows[0]!.now.toISOString() };
         });
     }
 

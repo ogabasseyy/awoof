@@ -1816,6 +1816,8 @@ test('status hides pending codes whose provider proof lost login authority', asy
         await live.activate({ userId, sid: SID, grantId: firstActivation.grantId, secret: firstActivation.grantSecret, pendingCodeId: first.pendingCodeId, code: first.code });
         const replacementGrant = await grant(client, { userId, purpose: 'recovery_code_generate', activeCodeGeneration: 1, proofIdentityId });
         const replacement = await live.generate({ userId, sid: SID, grantId: replacementGrant.grantId, secret: replacementGrant.grantSecret, oldCode: first.code });
+        assert.equal(first.generation, 1, 'generate returns the pending generation for ambiguous-activation reconciliation');
+        assert.equal(replacement.generation, 2, 'generate returns the pending generation for ambiguous-activation reconciliation');
         assertRecoveryStatus(await live.status({ userId }), { status: 'pending', generation: 2, pendingCodeId: replacement.pendingCodeId, pendingExpiresAt: replacement.expiresAt });
         // A deployment-wide provider rollback hides the candidate that
         // activate() would now deterministically reject.

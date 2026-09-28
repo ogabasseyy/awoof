@@ -58,6 +58,7 @@ export default function StudentSecurityPage() {
     const passwordOnlyEnrollment = user?.recoveryReenrollmentRequired === true;
     const [status, setStatus] = useState<RecoveryStatus>('loading'); const [pendingCodeId, setPendingCodeId] = useState<string | null>(null);
     const [pendingExpiresAt, setPendingExpiresAt] = useState<string | null>(null);
+    const [generation, setGeneration] = useState<number | null>(null);
     const [busy, setBusy] = useState(false); const started = useRef(false);
     const [now, setNow] = useState(() => Date.now());
     useEffect(() => {
@@ -84,13 +85,14 @@ export default function StudentSecurityPage() {
     const [pwMode, setPwMode] = useState<'generate' | 'activate' | 'remove' | 'display' | null>(null);
     const [password, setPassword] = useState(''); const [pwOld, setPwOld] = useState(''); const [pwCode, setPwCode] = useState('');
     const [pwPendingId, setPwPendingId] = useState<string | null>(null); const [pwExpiresAt, setPwExpiresAt] = useState<string | null>(null); const [formError, setFormError] = useState<string | null>(null);
+    const [pwExpectedGeneration, setPwExpectedGeneration] = useState<number | null>(null);
     const pwDeadlineMs = pwExpiresAt ? Date.parse(pwExpiresAt) : NaN;
     const pwExpired = (pwMode === 'display' || pwMode === 'activate') && pwExpiresAt !== null && !Number.isNaN(pwDeadlineMs) && pwDeadlineMs <= now + pwSkewMs;
     // The session client refreshes a token that expired before this page
     // loaded instead of permanently rendering recovery and identity
     // management as unavailable after one 401.
     const loadStatus = async () => {
-        try { const r = await studentSsoSessionApiClient.get('/auth/student/sso/recovery-code'); const data = (r.data as { data?: { status?: unknown; pendingCodeId?: unknown; pendingExpiresAt?: unknown; serverNow?: unknown } }).data; const value = data?.status; setPendingCodeId(typeof data?.pendingCodeId === 'string' ? data.pendingCodeId : null); setPendingExpiresAt(typeof data?.pendingExpiresAt === 'string' ? data.pendingExpiresAt : null); setSkewMs(serverSkewSince(typeof data?.serverNow === 'string' && !Number.isNaN(Date.parse(data.serverNow)) ? data.serverNow : null)); setStatus(value === 'active' || value === 'pending' || value === 'unconfigured' ? value : 'unavailable'); } catch { setStatus('unavailable'); }
+        try { const r = await studentSsoSessionApiClient.get('/auth/student/sso/recovery-code'); const data = (r.data as { data?: { status?: unknown; generation?: unknown; pendingCodeId?: unknown; pendingExpiresAt?: unknown; serverNow?: unknown } }).data; const value = data?.status; setPendingCodeId(typeof data?.pendingCodeId === 'string' ? data.pendingCodeId : null); setPendingExpiresAt(typeof data?.pendingExpiresAt === 'string' ? data.pendingExpiresAt : null); setGeneration(typeof data?.generation === 'number' ? data.generation : null); setSkewMs(serverSkewSince(typeof data?.serverNow === 'string' && !Number.isNaN(Date.parse(data.serverNow)) ? data.serverNow : null)); setStatus(value === 'active' || value === 'pending' || value === 'unconfigured' ? value : 'unavailable'); } catch { setStatus('unavailable'); }
     };
     const loadIdentities = async () => {
         try {
@@ -131,7 +133,11 @@ export default function StudentSecurityPage() {
     };
     const startPassword = (mode: 'generate' | 'activate' | 'remove') => {
         const session = getSessionSnapshot(); if (!session.accessToken) { setStatus('unavailable'); return; }
-        if (mode === 'activate') { const id = pendingCodeId ?? pendingIntent(); if (!id) { setStatus('unavailable'); return; } setPwPendingId(id); setPwExpiresAt(id === pendingCodeId ? pendingExpiresAt : null); }
+        // The expected generation binds ambiguous-activation
+        // reconciliation, mirroring the provider-backed path: success
+        // requires the reloaded active generation to match the pending one
+        // being activated, not merely any active code.
+        if (mode === 'activate') { const id = pendingCodeId ?? pendingIntent(); if (!id) { setStatus('unavailable'); return; } setPwPendingId(id); setPwExpiresAt(id === pendingCodeId ? pendingExpiresAt : null); setPwExpectedGeneration(id === pendingCodeId ? generation : null); }
         setPassword(''); setPwOld(''); setPwCode(''); setFormError(null); setPwMode(mode);
     };
     const submitPassword = async () => {
@@ -140,7 +146,10 @@ export default function StudentSecurityPage() {
         if (pwMode === 'activate' && !pwCode) { setFormError('Re-enter the saved recovery code.'); return; }
         // Reconcile baseline: ambiguous failures compare the reloaded
         // status against the pre-submit pending, not just its presence.
-        const submittedMode = pwMode; const priorPendingId = pendingCodeId;
+        // Activation additionally requires the generation to match: a
+        // cancelled or expired pending falls back to reporting the older
+        // active code, which must not read as the replacement succeeding.
+        const submittedMode = pwMode; const priorPendingId = pendingCodeId; const expectedGeneration = pwExpectedGeneration;
         setBusy(true); setFormError(null);
         // The raw password travels on the non-refreshing client, so the
         // token is renewed first: a stale snapshot would 401 before the
@@ -161,9 +170,10 @@ export default function StudentSecurityPage() {
             const reauthGrant = { grantId: g.grantId, grantSecret: g.grantSecret };
             if (pwMode === 'generate') {
                 const generated = await studentSsoSessionApiClient.post('/auth/student/sso/recovery-code/generate', { reauthGrant, ...(pwOld ? { oldCode: pwOld } : {}) });
-                const data = (generated.data as { data?: { pendingCodeId?: unknown; code?: unknown; expiresAt?: unknown; serverNow?: unknown } }).data;
+                const data = (generated.data as { data?: { pendingCodeId?: unknown; code?: unknown; generation?: unknown; expiresAt?: unknown; serverNow?: unknown } }).data;
                 if (!data || typeof data.pendingCodeId !== 'string' || typeof data.code !== 'string') throw new Error('invalid code');
                 setPwPendingId(data.pendingCodeId); setPwCode(data.code); setPassword('');
+                setPwExpectedGeneration(typeof data.generation === 'number' ? data.generation : null);
                 setPwExpiresAt(typeof data.expiresAt === 'string' ? data.expiresAt : null);
                 setPwSkewMs(serverSkewSince(typeof data.serverNow === 'string' && !Number.isNaN(Date.parse(data.serverNow)) ? data.serverNow : null));
                 setPwMode('display'); return;
@@ -188,8 +198,8 @@ export default function StudentSecurityPage() {
             if (failed === undefined || failed >= 500) {
                 try {
                     const current = await studentSsoSessionApiClient.get('/auth/student/sso/recovery-code');
-                    const live = (current.data as { data?: { status?: unknown; pendingCodeId?: unknown } }).data;
-                    if (submittedMode === 'activate' && live?.status === 'active') {
+                    const live = (current.data as { data?: { status?: unknown; generation?: unknown; pendingCodeId?: unknown } }).data;
+                    if (submittedMode === 'activate' && live?.status === 'active' && expectedGeneration !== null && live.generation === expectedGeneration) {
                         setPwMode(null); setPassword(''); setPwOld(''); setPwCode(''); setPwPendingId(null); setPwExpiresAt(null);
                         await loadStatus();
                         await refreshUser().catch(() => undefined);
