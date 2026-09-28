@@ -185,7 +185,7 @@ test('recovery completion sends a post-commit notice without credentials', async
     }
 });
 
-test('recovery terminal failure writers scrub superseded and rejected-at-verification secrets immediately', async () => {
+test('recovery terminal failure writers scrub superseded and stale-state secrets immediately', async () => {
     const pool = createTestPool();
     const client = await pool.connect();
     try {
@@ -213,14 +213,31 @@ test('recovery terminal failure writers scrub superseded and rejected-at-verific
         assert.deepEqual(superseded.rows[0], { status: 'failed', secret_hash: null },
             'starting a replacement recovery immediately scrubs the superseded secret');
 
+        // An ordinary code typo rejects but stays pending with its bearer
+        // intact; only unrecoverable state terminalizes below.
         await assert.rejects(() => service.verify({
             attemptId: second.attemptId, secret: second.secret, code: `${account.code}-wrong`, otp,
+        }));
+        const typo = await client.query<{ status: string; secret_hash: string | null }>(
+            'SELECT status, secret_hash FROM student_auth_recovery_attempts WHERE id = $1', [second.attemptId],
+        );
+        assert.equal(typo.rows[0]!.status, 'pending');
+        assert.ok(typo.rows[0]!.secret_hash, 'a code typo keeps the attempt retryable');
+
+        // A password change pins stale generations: verification can never
+        // succeed, so the attempt fails and its secret scrubs at once.
+        const owner = await client.query<{ user_id: string }>(
+            'SELECT user_id FROM student_auth_recovery_attempts WHERE id = $1', [second.attemptId],
+        );
+        await client.query('UPDATE users SET credential_generation = credential_generation + 1 WHERE id = $1', [owner.rows[0]!.user_id]);
+        await assert.rejects(() => service.verify({
+            attemptId: second.attemptId, secret: second.secret, code: account.code, otp,
         }));
         const rejected = await client.query<{ status: string; secret_hash: string | null }>(
             'SELECT status, secret_hash FROM student_auth_recovery_attempts WHERE id = $1', [second.attemptId],
         );
         assert.deepEqual(rejected.rows[0], { status: 'failed', secret_hash: null },
-            'a rejected recovery verification immediately scrubs its terminal secret');
+            'a stale-state recovery verification immediately scrubs its terminal secret');
     } finally {
         client.release();
         await pool.end();
@@ -563,6 +580,64 @@ test('recovery verification is idempotent across a lost 204 without failing the 
         );
         assert.equal(status.rows[0]!.status, 'verified');
         await service.complete({ attemptId: started.attemptId, secret: started.secret, password: 'ValidNew1!' });
+    } finally {
+        client.release();
+        await pool.end();
+    }
+});
+
+test('a mistyped recovery code stays retryable while stale account state terminalizes', async () => {
+    const pool = createTestPool();
+    const client = await pool.connect();
+    try {
+        const account = await seedRecoverableStudent(client);
+        let otp = '';
+        const service = new StudentAccountRecoveryService({
+            pool, recoveryCodeKey: 'test-recovery-code-key',
+            deliverOtp: async (_email, delivered) => { otp = delivered; return { success: true }; },
+            validatePassword: () => ({ valid: true, errors: [] }), hashPassword: async () => 'typo-password-hash',
+        });
+        const started = await service.start({ email: account.email, purpose: 'lost_access' });
+        // A copy/paste error rejects but leaves the attempt pending: the
+        // corrected code with the same OTP verifies without a new email.
+        await assert.rejects(() => service.verify({
+            attemptId: started.attemptId, secret: started.secret, code: 'wrong-code', otp,
+        }));
+        const kept = await client.query<{ status: string; secret_hash: string | null }>(
+            'SELECT status, secret_hash FROM student_auth_recovery_attempts WHERE id = $1', [started.attemptId],
+        );
+        assert.equal(kept.rows[0]!.status, 'pending');
+        assert.ok(kept.rows[0]!.secret_hash);
+        await service.verify({ attemptId: started.attemptId, secret: started.secret, code: account.code, otp });
+        await service.complete({ attemptId: started.attemptId, secret: started.secret, password: 'ValidNew1!' });
+    } finally {
+        client.release();
+        await pool.end();
+    }
+});
+
+test('recovery completion rejects passwords over the published maximum', async () => {
+    const pool = createTestPool();
+    const client = await pool.connect();
+    try {
+        const account = await seedRecoverableStudent(client);
+        let otp = '';
+        const service = new StudentAccountRecoveryService({
+            pool, recoveryCodeKey: 'test-recovery-code-key',
+            deliverOtp: async (_email, delivered) => { otp = delivered; return { success: true }; },
+            validatePassword: () => ({ valid: true, errors: [] }), hashPassword: async () => 'unused',
+        });
+        const started = await service.start({ email: account.email, purpose: 'lost_access' });
+        await service.verify({ attemptId: started.attemptId, secret: started.secret, code: account.code, otp });
+        // 1025 characters of otherwise valid complexity: the published
+        // maxLength 1024 is enforced at runtime, not just documented.
+        await assert.rejects(() => service.complete({
+            attemptId: started.attemptId, secret: started.secret, password: `Valid1!${'a'.repeat(1019)}`,
+        }));
+        const status = await client.query<{ status: string }>(
+            'SELECT status FROM student_auth_recovery_attempts WHERE id = $1', [started.attemptId],
+        );
+        assert.equal(status.rows[0]!.status, 'verified');
     } finally {
         client.release();
         await pool.end();
@@ -1210,6 +1285,11 @@ test('terminalizeFailedAttempt marks the dead reauth attempt failed and scrubs i
         // Ready rows are never touched: a callback that already validated
         // keeps its finishable state.
         assert.equal(rows.rows.find(row => row.id === ready)!.status, 'ready');
+        // Dead-attempt dispatch: terminal and missing rows read dead so a
+        // delayed provider callback lands bounded; live rows never do.
+        assert.equal(await reauth.isDeadAttempt(pending), true);
+        assert.equal(await reauth.isDeadAttempt(ready), false);
+        assert.equal(await reauth.isDeadAttempt(randomUUID()), true);
     } finally {
         client.release();
         await pool.end();
@@ -1303,6 +1383,33 @@ test('status hides pending codes whose session binding no longer matches', async
         await service.generate({ userId, sid: SID, grantId: replacementGrant.grantId, secret: replacementGrant.grantSecret, oldCode: first.code });
         await client.query('UPDATE users SET active_session_id = $2::uuid, credential_generation = credential_generation + 1 WHERE id = $1', [userId, randomUUID()]);
         assertRecoveryStatus(await service.status({ userId }), { status: 'active', generation: 1, pendingCodeId: null, pendingExpiresAt: null });
+    } finally { client.release(); await pool.end(); }
+});
+
+test('status hides pending codes whose provider proof lost login authority', async () => {
+    const pool = createTestPool();
+    const client = await pool.connect();
+    try {
+        const live = new StudentRecoveryCodeService({ pool, codeKey: 'test-recovery-code-key', isProviderEnabled: () => true });
+        const gated = new StudentRecoveryCodeService({ pool, codeKey: 'test-recovery-code-key', isProviderEnabled: () => false });
+        const userId = await seedStudent(client);
+        const proofIdentityId = await seedProviderProof(client, userId, { policy: true });
+        // An active code plus a provider-proven replacement: while the
+        // proof is live the pending candidate advertises.
+        const firstGrant = await grant(client, { userId, purpose: 'recovery_code_generate' });
+        const first = await live.generate({ userId, sid: SID, grantId: firstGrant.grantId, secret: firstGrant.grantSecret });
+        const firstActivation = await grant(client, { userId, purpose: 'recovery_code_activate', pendingCodeId: first.pendingCodeId });
+        await live.activate({ userId, sid: SID, grantId: firstActivation.grantId, secret: firstActivation.grantSecret, pendingCodeId: first.pendingCodeId, code: first.code });
+        const replacementGrant = await grant(client, { userId, purpose: 'recovery_code_generate', activeCodeGeneration: 1, proofIdentityId });
+        const replacement = await live.generate({ userId, sid: SID, grantId: replacementGrant.grantId, secret: replacementGrant.grantSecret, oldCode: first.code });
+        assertRecoveryStatus(await live.status({ userId }), { status: 'pending', generation: 2, pendingCodeId: replacement.pendingCodeId, pendingExpiresAt: replacement.expiresAt });
+        // A deployment-wide provider rollback hides the candidate that
+        // activate() would now deterministically reject.
+        assertRecoveryStatus(await gated.status({ userId }), { status: 'active', generation: 1, pendingCodeId: null, pendingExpiresAt: null });
+        // Unlinking the proof identity does the same permanently: the
+        // dead pending must not shadow the still-valid active code.
+        await client.query('UPDATE student_auth_identities SET revoked_at = clock_timestamp() WHERE id = $1', [proofIdentityId]);
+        assertRecoveryStatus(await live.status({ userId }), { status: 'active', generation: 1, pendingCodeId: null, pendingExpiresAt: null });
     } finally { client.release(); await pool.end(); }
 });
 

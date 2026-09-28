@@ -21,7 +21,7 @@ import type { ApprovedLoginPolicy, StudentSsoOidcResolver } from '../services/au
 import { StudentSsoLinkService } from '../services/auth/student-sso-link.service.js';
 import { StudentSsoSignupService } from '../services/auth/student-sso-signup.service.js';
 import { isEmailConfigured, sendEmail, sendEmailVerificationOTP } from '../services/email/email.service.js';
-import { StudentReauthService, studentReauthCookieName } from '../services/auth/student-reauth.service.js';
+import { STUDENT_REAUTH_COOKIE_PREFIX, StudentReauthService, studentReauthCookieName } from '../services/auth/student-reauth.service.js';
 import { StudentRecoveryCodeService } from '../services/auth/student-recovery-code.service.js';
 import { StudentAccountRecoveryService } from '../services/auth/student-account-recovery.service.js';
 import type { LoginProvider } from '../services/auth/student-sso.types.js';
@@ -574,6 +574,40 @@ export function createStudentSsoRouter(factory: FlowFactory = defaultFlow, optio
                     res.redirect(303, failureCompletion.href);
                 }
                 return;
+            }
+            // Terminal reauth rows carry no state hash (scrubbed at
+            // terminalization by cleanup, recovery, or failure handling),
+            // so a delayed provider callback for one resolves nothing
+            // above. The per-attempt cookie still names it: when the state
+            // also resolves to no login attempt and the named row is
+            // confirmed dead, clear the dead binding and land on the
+            // bounded completion page instead of returning generic login
+            // JSON. Both guards matter: a live login callback must never
+            // be hijacked by a stale dead cookie, and a live reauth row
+            // (state intact) must never be cleared by a forged state.
+            if (reauth) {
+                const deadCookie = browserCookies.find((cookie) => cookie.name.startsWith(STUDENT_REAUTH_COOKIE_PREFIX));
+                const deadAttemptId = deadCookie?.name.slice(STUDENT_REAUTH_COOKIE_PREFIX.length) ?? null;
+                if (deadCookie && deadAttemptId && UUID.test(deadAttemptId)) {
+                    let loginCookie: string | null = null;
+                    let loginAvailable = false;
+                    try {
+                        loginCookie = await factory().callbackCookieNameForState(callbackUrl, provider);
+                        loginAvailable = true;
+                    } catch (error) {
+                        if (!(error instanceof ServiceUnavailableError)) throw error;
+                    }
+                    const failureBase = config.studentSso.completionUrl
+                        ?? (completionOrigin ? new URL(STUDENT_SSO_COMPLETION_PATH, completionOrigin) : undefined);
+                    if (loginAvailable && !loginCookie && failureBase && await reauth.isDeadAttempt(deadAttemptId)) {
+                        clearSsoCookie(res, deadCookie.name);
+                        res.locals.outageRedirect = true;
+                        const failureCompletion = new URL(failureBase.href);
+                        failureCompletion.searchParams.set('reauth', deadAttemptId);
+                        res.redirect(303, failureCompletion.href);
+                        return;
+                    }
+                }
             }
         }
         let flow: StudentSsoFlow;

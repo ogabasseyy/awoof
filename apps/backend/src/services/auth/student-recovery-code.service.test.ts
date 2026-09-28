@@ -35,6 +35,8 @@ test('status exposes recovery state and generation without a recovery digest', a
     assert.equal(queries.length, 1);
     assert.ok(queries[0]!.includes("code.status = 'pending' AND code.expires_at > clock_timestamp()"),
         'expired pending candidates must not shadow the active recovery code');
+    assert.ok(queries[0]!.includes('code.pending_proof_identity_id IS NULL OR EXISTS'),
+        'pending codes with dead provider proofs must not shadow the active recovery code');
 });
 
 test('recovery-code digest key must have sufficient deployment-held entropy', () => {

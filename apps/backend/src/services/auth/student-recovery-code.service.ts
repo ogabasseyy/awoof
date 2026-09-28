@@ -222,6 +222,12 @@ export class StudentRecoveryCodeService {
     async status(input: { userId: string }): Promise<{ status: RecoveryCodeStatus; generation: number | null; pendingCodeId: string | null; pendingExpiresAt: string | null; serverNow: string }> {
         const result = await this.dependencies.pool.connect();
         try {
+            // Provider-proven pendings advertise only while their proof
+            // could still activate: the enabled-provider set mirrors the
+            // requireLiveProofIdentity gate (an absent gate rejects proofs,
+            // so an empty set filters them here too).
+            const enabledProviders = (['google', 'microsoft'] as LoginProvider[])
+                .filter((provider) => this.dependencies.isProviderEnabled?.(provider) === true);
             const current = await result.query<RecoveryCodeRow & { now: Date }>(
                 `SELECT code.id, code.generation, code.code_digest, code.status, code.expires_at, code.pending_sid,
                         code.pending_credential_generation, code.pending_proof_identity_id, clock_timestamp() AS now
@@ -232,9 +238,26 @@ export class StudentRecoveryCodeService {
                         OR (code.status = 'pending' AND code.expires_at > clock_timestamp()
                             AND (code.pending_sid IS NULL OR code.pending_sid = account.active_session_id)
                             AND (code.pending_credential_generation IS NULL
-                                 OR code.pending_credential_generation = account.credential_generation)))
+                                 OR code.pending_credential_generation = account.credential_generation)
+                            AND (code.pending_proof_identity_id IS NULL OR EXISTS (
+                                SELECT 1 FROM student_auth_identities identity
+                                JOIN students student ON student.user_id = identity.user_id
+                                    AND student.status = 'active'
+                                    AND student.university_id = identity.university_id
+                                JOIN universities university ON university.id = identity.university_id AND university.is_active
+                                JOIN institution_login_policies policy ON policy.university_id = identity.university_id
+                                    AND policy.provider = identity.provider AND policy.issuer = identity.issuer
+                                    AND policy.enabled AND policy.approved_by IS NOT NULL AND policy.approved_until > clock_timestamp()
+                                JOIN institution_login_domain_providers mapping ON mapping.policy_id = policy.id
+                                    AND mapping.university_id = policy.university_id AND mapping.provider = policy.provider
+                                JOIN institution_login_domains domain ON domain.domain = mapping.domain
+                                    AND domain.university_id = mapping.university_id AND domain.is_active
+                                WHERE identity.id = code.pending_proof_identity_id
+                                  AND identity.user_id = code.user_id
+                                  AND identity.revoked_at IS NULL
+                                  AND identity.provider = ANY($2)))))
                  ORDER BY generation DESC LIMIT 1`,
-                [input.userId],
+                [input.userId, enabledProviders],
             );
             const code = current.rows[0];
             if (code && (code.status === 'active' || code.status === 'pending')) {
@@ -244,8 +267,10 @@ export class StudentRecoveryCodeService {
                 // travels with it so skewed devices correct their countdown
                 // instead of expiring a live deadline early. Pending
                 // candidates whose session binding no longer matches the
-                // account are filtered above: activate() would reject them,
-                // so status must not advertise them as actionable (which
+                // account, or whose provider proof lost login authority
+                // (unlinked, withdrawn policy/domain, disabled provider),
+                // are filtered above: activate() would reject them, so
+                // status must not advertise them as actionable (which
                 // would also shadow a still-valid older active code).
                 return {
                     status: code.status, generation: Number(code.generation), pendingCodeId: code.status === 'pending' ? code.id : null,

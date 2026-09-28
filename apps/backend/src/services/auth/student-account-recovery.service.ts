@@ -157,11 +157,17 @@ export class StudentAccountRecoveryService {
             }
             if (attempt.status !== 'pending') return false;
             const code = await this.lockActiveCode(tx, userId);
+            // Stale account/code state terminalizes the attempt: the pinned
+            // generations can never match again. An ordinary code typo
+            // stays pending so correcting it and resubmitting the
+            // still-valid OTP works, exactly like an incorrect OTP within
+            // its failure budget.
             if (!account || !code || Number(account.credential_generation) !== Number(attempt.credential_generation)
-                || Number(code.generation) !== Number(attempt.recovery_code_generation) || !this.matchesRecoveryCode(code.code_digest, recoveryCode)) {
+                || Number(code.generation) !== Number(attempt.recovery_code_generation)) {
                 await tx.query("UPDATE student_auth_recovery_attempts SET status = 'failed', secret_hash = NULL WHERE id = $1 AND status = 'pending'", [attempt.id]);
                 return false;
             }
+            if (!this.matchesRecoveryCode(code.code_digest, recoveryCode)) return false;
             const otp = await consumeChallenge(tx, {
                 purpose: 'student_account_recovery', subjectKey: account.email,
                 challengeId: attempt.mailbox_challenge_id, code: mailboxOtp,
@@ -180,7 +186,10 @@ export class StudentAccountRecoveryService {
     }
 
     async complete(input: { attemptId: unknown; secret: unknown; password: unknown }): Promise<void> {
-        if (!validAttemptId(input.attemptId) || !validOpaque(input.secret) || typeof input.password !== 'string') throw unavailable();
+        // The published contract caps passwords at 1024 characters;
+        // validatePassword() enforces only the complexity floor, so the
+        // ceiling is enforced here to keep runtime and schema in agreement.
+        if (!validAttemptId(input.attemptId) || !validOpaque(input.secret) || typeof input.password !== 'string' || input.password.length > 1024) throw unavailable();
         const { attemptId, secret, password } = input;
         const validation = (this.deps.validatePassword ?? ((candidate: string) => passwordService.validatePassword(candidate)))(password);
         if (!validation.valid) throw new ConflictError(validation.errors.join(', '));

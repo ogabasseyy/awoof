@@ -15,8 +15,11 @@ export const STUDENT_REAUTH_CLOCK_SKEW_SECONDS = 60;
 function secret(bytes = 32): string { return randomBytes(bytes).toString('base64url'); }
 function invalidReauth(): ConflictError { return new ConflictError('Student SSO reauthentication is no longer valid'); }
 
+/** Per-attempt browser binding cookie prefix; the route layer scans it to dispatch callbacks for scrubbed attempts. */
+export const STUDENT_REAUTH_COOKIE_PREFIX = 'awoof_reauth_';
+
 /** Browser binding cookie for one reauthentication attempt; shared with the route layer. */
-export function studentReauthCookieName(attemptId: string): string { return `awoof_reauth_${attemptId}`; }
+export function studentReauthCookieName(attemptId: string): string { return `${STUDENT_REAUTH_COOKIE_PREFIX}${attemptId}`; }
 
 /** Validates the provider assertion relative to the server-held attempt, not token issuance time. */
 export function assertFreshAuthTime(authTime: unknown, startedAt: Date, now: Date): asserts authTime is number {
@@ -207,6 +210,24 @@ export class StudentReauthService {
              WHERE id = $1 AND status = 'pending'`,
             [attemptId],
         );
+    }
+
+    /**
+     * True when the attempt can never finish: terminal (failed, consumed)
+     * or missing entirely. The callback dispatcher uses this to recognize
+     * a delayed provider callback for a scrubbed attempt from its
+     * per-attempt cookie after state-hash dispatch fails. Pending and
+     * ready rows are never dead: their state hashes are intact, so a
+     * state miss with a live cookie falls through to ordinary login
+     * instead of hijacking it.
+     */
+    async isDeadAttempt(attemptId: string): Promise<boolean> {
+        if (!UUID.test(attemptId)) return false;
+        const row = await this.deps.pool.query<{ status: string }>(
+            'SELECT status FROM student_auth_reauth_attempts WHERE id = $1', [attemptId],
+        );
+        const status = row.rows[0]?.status;
+        return status === undefined || (status !== 'pending' && status !== 'ready');
     }
 
     async finish(input: { userId: string; sid: string; attemptId: string; callbackCookie: string | undefined }): Promise<ActionGrantResult & { purpose: ActionPurpose; pendingCodeId: string | null; targetIdentityId: string | null; activeCodeGeneration: number | null }> {
