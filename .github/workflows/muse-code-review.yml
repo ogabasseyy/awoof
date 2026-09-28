@@ -122,6 +122,16 @@ jobs:
           base_ref="$(jq -r '.base.ref' "${pr_file}")"
           base_sha_full="$(jq -r '.base.sha' "${pr_file}")"
           echo "base_sha=${base_sha_full}" >> "${GITHUB_OUTPUT}"
+
+          # Best-effort base fetch up front: the file list, diff ranges, and
+          # trusted guidance all derive from it. Fetches the captured base
+          # SHA (not the live branch ref, which could advance mid-run).
+          # Works anonymously on public repos; on failure the compare API
+          # backs the file list and head guidance is labeled UNTRUSTED.
+          base_available=false
+          if git fetch --depth 1 origin "${base_sha_full}" >/dev/null 2>&1; then
+            base_available=true
+          fi
           head_ref="$(jq -r '.head.ref' "${pr_file}")"
           pr_state="$(jq -r '.state' "${pr_file}")"
           pr_title="$(jq -r '.title' "${pr_file}")"
@@ -141,18 +151,45 @@ jobs:
           # base...head as fixed commits, so a mid-run push cannot mix files
           # or diff hunks from two commits.
           base_sha="$(jq -r '.base.sha' "${pr_file}")"
-          compare_file="${RUNNER_TEMP}/muse-compare.json"
-          diff_failed=false
-          if ! gh api "repos/${GITHUB_REPOSITORY}/compare/${base_sha}...${HEAD_SHA_EVENT}" \
-            > "${compare_file}" 2>"${RUNNER_TEMP}/muse-ghcompare.err"; then
-            echo '{"files":[]}' > "${compare_file}"
-            echo "::warning::compare metadata failed: $(head -c 300 "${RUNNER_TEMP}/muse-ghcompare.err" 2>/dev/null || true)"
-            # Missing file list means missing scoped guidance: route to the
-            # explicit fallback rather than reviewing blind.
-            diff_failed=true
-          fi
           files_file="${RUNNER_TEMP}/muse-files.json"
-          jq '.files // []' "${compare_file}" > "${files_file}"
+          diff_failed=false
+          # Complete path list from local git (no 300-file cap): the base
+          # commit was fetched above, so diff base...head directly. The
+          # compare API is the fallback when the fetch failed (e.g. private
+          # repos, where anonymous fetch has no credentials).
+          files_source="local"
+          if [[ "${base_available}" == "true" ]]; then
+            ns_file="${RUNNER_TEMP}/muse-namestat.txt"
+            num_file="${RUNNER_TEMP}/muse-numstat.txt"
+            if git -c core.quotePath=false diff --name-status "${base_sha}" "${head_sha}" > "${ns_file}" 2>/dev/null \
+              && git -c core.quotePath=false diff --numstat "${base_sha}" "${head_sha}" > "${num_file}" 2>/dev/null; then
+              paste -d'\t' "${ns_file}" <(cut -f1,2 "${num_file}") | awk -F'\t' '{
+                st=$1; if (st ~ /^R/) { path=$3 } else { path=$2 }
+                add=$(NF-1); del=$NF; if (add=="-") add=0; if (del=="-") del=0
+                s=(st=="A"?"added":st=="D"?"removed":(st~/^R/?"renamed":"modified"))
+                printf "%s\t%s\t%s\t%s\n", path, s, add, del
+              }' | jq -R -s '[split("\n")[] | select(length>0) | split("\t")
+                | {filename:.[0],status:.[1],additions:.[2]|tonumber,deletions:.[3]|tonumber}]' \
+                > "${files_file}" 2>/dev/null || echo '[]' > "${files_file}"
+            else
+              echo '[]' > "${files_file}"
+              echo "::warning::local git diff failed; falling back to compare API."
+              base_available=false
+            fi
+          fi
+          if [[ "${base_available}" != "true" ]]; then
+            files_source="compare"
+            compare_file="${RUNNER_TEMP}/muse-compare.json"
+            if ! gh api "repos/${GITHUB_REPOSITORY}/compare/${base_sha}...${HEAD_SHA_EVENT}" \
+              > "${compare_file}" 2>"${RUNNER_TEMP}/muse-ghcompare.err"; then
+              echo '{"files":[]}' > "${compare_file}"
+              echo "::warning::compare metadata failed: $(head -c 300 "${RUNNER_TEMP}/muse-ghcompare.err" 2>/dev/null || true)"
+              # Missing file list means missing scoped guidance: route to the
+              # explicit fallback rather than reviewing blind.
+              diff_failed=true
+            fi
+            jq '.files // []' "${compare_file}" > "${files_file}"
+          fi
 
           # Changed-file summary with a hard budget. Filenames are untrusted
           # (Git allows newlines); @tsv backslash-escapes them so records stay
@@ -167,7 +204,7 @@ jobs:
             files_summary="- No file-level diff metadata was returned by the GitHub API."
           fi
           files_note=""
-          if (( total_files >= 300 )); then
+          if [[ "${files_source}" == "compare" ]] && (( total_files >= 300 )); then
             files_note=" (file list may be truncated at 300 by the compare API)"
           fi
           if (( total_files > 200 )); then
@@ -210,16 +247,6 @@ jobs:
             if [[ ! -s "${diff_file}" ]]; then
               printf '(No textual diff was returned by the GitHub API.)\n' > "${diff_file}"
             fi
-          fi
-
-          # Best-effort base fetch so repo guidance can be read from the
-          # trusted base instead of the PR head. Fetches the captured base
-          # SHA (not the live branch ref, which could advance mid-run).
-          # Works anonymously on public repos; on failure the head version
-          # is used but labeled UNTRUSTED.
-          base_available=false
-          if git fetch --depth 1 origin "${base_sha}" >/dev/null 2>&1; then
-            base_available=true
           fi
 
           # Repo guidance: root candidates plus scoped AGENTS.md/CLAUDE.md from
@@ -265,7 +292,8 @@ jobs:
             # Candidate paths from changed files are submitter-controlled:
             # flatten newlines for display and omit the path from the block
             # attribute (a quote in the path would break out of it).
-            safe_candidate="$(printf '%s' "${candidate}" | tr '\n' '_')"
+            safe_candidate="$(printf '%s' "${candidate}" | tr '\n' '_' \
+              | perl -pe 's{<\s*/\s*(file|diff|pr_title|pr_description|changed_files|head_ref|untrusted_guidance)}{<\\/$1}gi')"
             safe_candidate="${safe_candidate:0:300}"
             {
               printf '\n### %s (%s)%s\n\n' "${safe_candidate}" "${source}" "${trunc_note}"
@@ -613,8 +641,9 @@ jobs:
             verdict="$(jq -r '.verdict // ""' "${findings_json}")"
             # Valid inline lines = new-side ranges of the collected diff.
             ranges_json="${RUNNER_TEMP}/muse-ranges.json"
-            awk '/^\+\+\+ / {file=$0; sub(/^\+\+\+ (b\/)?/, "", file); if (file ~ /^".*"$/) {sub(/^"/, "", file); sub(/"$/, "", file); gsub(/\\"/, "\"", file); gsub(/\\\\/, "\\", file)}; if (file == "/dev/null") file=""} file != "" && /^@@ -[0-9]+(,[0-9]+)? \+/ {s=$3; sub(/^\+/, "", s); n=split(s, a, ","); start=a[1]+0; len=(n>1?a[2]+0:1); if (len>0) print file"\t"start"\t"(start+len-1)}' \
+            awk '/^\+\+\+ / {file=$0; sub(/^\+\+\+ /,"",file)} /^@@ -[0-9]+(,[0-9]+)? \+/ {s=$3; sub(/^\+/, "", s); n=split(s, a, ","); start=a[1]+0; len=(n>1?a[2]+0:1); if (len>0) print file"\t"start"\t"(start+len-1)}' \
               "${RUNNER_TEMP}/muse.diff" 2>/dev/null \
+              | perl -F'\t' -lane '$F[0] =~ s/^"(.*)"$/$1/; $F[0] =~ s/^b\///; $F[0] =~ s/\\([0-7]{3})/chr(oct($1))/ge; $F[0] =~ s/\\"/"/g; $F[0] =~ s/\\\\/\\/g; print join("\t", @F) unless $F[0] eq "/dev/null"' \
               | jq -R -s '[split("\n")[] | select(length>0) | split("\t") | {path:.[0],start:.[1]|tonumber,end:.[2]|tonumber}]' \
               > "${ranges_json}" 2>/dev/null || echo '[]' > "${ranges_json}"
             validated_json="${RUNNER_TEMP}/muse-validated.json"
