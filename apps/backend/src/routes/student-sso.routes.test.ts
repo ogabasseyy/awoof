@@ -623,6 +623,14 @@ test('independent account recovery exposes the same start shape without an accou
             body: JSON.stringify({ email: '', purpose: 'compromise' }),
         });
         assert.equal(blank.status, 400);
+        // Whitespace-only mailboxes trim to empty in the service, which
+        // throws a non-application TypeError: reject them here so the
+        // documented 400 — not a 500 — is returned.
+        const whitespace = await fetch(`${baseUrl}/account-recovery/start`, {
+            method: 'POST', headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ email: '   ', purpose: 'compromise' }),
+        });
+        assert.equal(whitespace.status, 400);
         const verified = await fetch(`${baseUrl}/account-recovery/verify`, {
             method: 'POST', headers: { 'content-type': 'application/json' },
             body: JSON.stringify({ attemptId: ATTEMPT_ID, secret: 'recovery-secret', code: 'saved-code', otp: '123456' }),
@@ -1092,6 +1100,23 @@ test('OpenAPI documents disabled passwordless signup and recovery contracts with
     ]) {
         assert.ok(paths[path]?.post?.responses?.['503'], `${path} documents the key-gated outage`);
     }
+    // The reauth body parser rejects empty and over-1024-character
+    // passwords; the published schema must bound the field identically.
+    const reauthBody = paths['/api/auth/student/sso/reauth']?.post?.requestBody as {
+        content: { ['application/json']: { schema: { properties: { password: Record<string, unknown> } } } },
+    };
+    assert.deepEqual(reauthBody.content['application/json'].schema.properties.password, {
+        type: 'string', minLength: 1, maxLength: 1024,
+    });
+    // The availability component exists so generated clients can model
+    // the boolean the web client depends on; the 200 must reference it.
+    const availability = paths['/api/auth/student/sso/signup/availability']?.get?.responses?.['200'] as {
+        content: { ['application/json']: { schema: { $ref: string } } },
+    };
+    assert.equal(
+        availability.content['application/json'].schema.$ref,
+        '#/components/schemas/PasswordlessSignupAvailabilityResponse',
+    );
     for (const schema of ['PasswordlessSignupHandoffRequest', 'PasswordlessSignupCompleteRequest', 'RecoveryCodeGenerateRequest', 'RecoveryCodeStatusResponse', 'AccountRecoveryVerifyRequest']) {
         assert.ok(spec.components.schemas[schema], `missing typed OpenAPI schema ${schema}`);
     }

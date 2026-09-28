@@ -179,7 +179,10 @@ export class StudentAccountRecoveryService {
         const verified = await this.transaction(async (tx) => {
             const owner = await tx.query<{ user_id: string }>('SELECT user_id FROM student_auth_recovery_attempts WHERE id = $1', [attemptId]);
             const userId = owner.rows[0]?.user_id;
-            if (!userId) return false;
+            if (!userId) {
+                await this.probeVerifyDecoys(tx, attemptId);
+                return false;
+            }
             const account = await this.lockAccount(tx, userId);
             const attempt = await this.lockAttempt(tx, attemptId);
             if (!attempt || attempt.expires_at <= await this.now(tx)
@@ -376,7 +379,9 @@ export class StudentAccountRecoveryService {
      * Storage is bounded, not unbounded: one budget row per subject
      * (upserted), at most three challenges per ten-minute window per
      * subject (budget-enforced), plus the route's per-IP limiter — the
-     * same issuance signup already performs for unknown addresses. The
+     * same issuance signup already performs for unknown addresses. Aged
+     * tombstones and stale budgets are deleted by the retention
+     * dispatcher, so rotating addresses cannot grow the tables. The
      * budget is shared with the committed path (one subject, one cap):
      * a state transition inside the cooldown — reactivation, code
      * enrollment — simply delays the first committed attempt row until
@@ -448,6 +453,24 @@ export class StudentAccountRecoveryService {
             "SELECT id, generation, code_digest, status FROM student_auth_recovery_codes WHERE user_id = $1 AND status = 'active' FOR UPDATE", [userId],
         );
         return result.rows[0] ?? null;
+    }
+
+    /**
+     * Anti-enumeration decoy reads mirroring the committed verify path's
+     * shapes (users, students, attempt, clock, code) for handles with no
+     * attempt row. Without this, a decoy verification exits after one
+     * lookup while a recoverable address runs five more queries before
+     * the same 409, a latency oracle over repeated bogus proofs. Random
+     * ids miss every lock in the same order, so no lock is ever held,
+     * and the digest comparison runs over dummy material.
+     */
+    private async probeVerifyDecoys(tx: PoolClient, attemptId: string): Promise<void> {
+        await this.lockAccount(tx, randomUUID());
+        await this.lockedStudentStatus(tx, randomUUID());
+        await this.lockAttempt(tx, attemptId);
+        await this.now(tx);
+        await this.lockActiveCode(tx, randomUUID());
+        this.matchesDigest('decoy-expected-digest', this.secretDigest('decoy-verify-probe'));
     }
 
     private async lockAttempt(tx: PoolClient, id: string): Promise<Attempt | null> {

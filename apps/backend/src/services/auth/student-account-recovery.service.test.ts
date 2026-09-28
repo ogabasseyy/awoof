@@ -78,6 +78,40 @@ test('recovery account lookups lock the student row with the user row', async ()
         'suspension must serialize with the active-status check via a locked student row after the user lock');
 });
 
+test('recovery verify runs decoy reads for handles without an attempt row', async () => {
+    const queries: string[] = [];
+    const client = {
+        query: async (text: string) => {
+            queries.push(text);
+            if (text.includes('SELECT clock_timestamp() AS now')) return { rows: [{ now: new Date() }], rowCount: 1 };
+            return { rows: [], rowCount: 0 };
+        },
+        release: () => undefined,
+    };
+    const service = new StudentAccountRecoveryService({
+        pool: { connect: async () => client } as never,
+        recoveryCodeKey: 'test-recovery-code-key',
+    });
+
+    await assert.rejects(
+        () => service.verify({ attemptId: '11111111-1111-4111-8111-111111111111', secret: 'secret', code: 'code', otp: '123456' }),
+        /not available/i,
+    );
+    // A decoy handle must cost the same database shapes as a recoverable
+    // address (owner, users, students, attempt, clock, code) or repeated
+    // bogus proofs become a latency oracle.
+    for (const shape of [
+        'FROM student_auth_recovery_attempts WHERE id = $1',
+        'SELECT u.id, u.email',
+        'FROM students WHERE user_id',
+        'SELECT * FROM student_auth_recovery_attempts WHERE id = $1',
+        'SELECT clock_timestamp() AS now',
+        'FROM student_auth_recovery_codes WHERE user_id',
+    ]) {
+        assert.ok(queries.some((text) => text.includes(shape)), `decoy verify must probe ${shape}`);
+    }
+});
+
 test('recovery complete does not hash passwords for unknown attempts', async () => {
     let hashes = 0;
     const client = { query: async () => ({ rows: [], rowCount: 0 }), release: () => undefined };

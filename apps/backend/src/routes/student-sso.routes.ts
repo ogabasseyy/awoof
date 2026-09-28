@@ -466,7 +466,7 @@ export function createStudentSsoRouter(factory: FlowFactory = defaultFlow, optio
     // Register before the provider-parametrized /:provider/start route.
     router.post('/account-recovery/start', accountRecoveryStartLimiter, exactJson, asyncHandler(async (req, res) => {
         const body = req.body as { email?: unknown; purpose?: unknown };
-        if (!body || typeof body !== 'object' || Array.isArray(body) || Object.keys(body).length !== 2 || typeof body.email !== 'string' || body.email.length === 0 || body.email.length > 255 || (body.purpose !== 'lost_access' && body.purpose !== 'compromise')) throw new BadRequestError('Account recovery request is invalid');
+        if (!body || typeof body !== 'object' || Array.isArray(body) || Object.keys(body).length !== 2 || typeof body.email !== 'string' || body.email.length === 0 || body.email.length > 255 || body.email.trim().length === 0 || (body.purpose !== 'lost_access' && body.purpose !== 'compromise')) throw new BadRequestError('Account recovery request is invalid');
         const result = await accountRecoveryFactory().start({ email: body.email, purpose: body.purpose });
         responseHeaders(res); res.status(202).json({ success: true, data: result });
     }));
@@ -1024,7 +1024,7 @@ export default createStudentSsoRouter();
  *             additionalProperties: false
  *             required: [password, purpose]
  *             properties:
- *               password: { type: string }
+ *               password: { type: string, minLength: 1, maxLength: 1024 }
  *               purpose: { type: string, enum: [link, unlink, recovery_code_generate, recovery_code_activate, recovery_code_remove] }
  *               targetIdentityId: { type: string, format: uuid, description: Required for unlink grants that consume identity removal; binds the grant to one identity }
  *               pendingCodeId: { type: string, format: uuid, description: Binds a recovery-code purpose grant to one pending code }
@@ -1276,7 +1276,7 @@ export default createStudentSsoRouter();
  *         required: false
  *         schema: { type: string, enum: [google, microsoft] }
  *     responses:
- *       200: { description: Signup availability flag, no-store }
+ *       200: { description: Signup availability flag, no-store, content: { application/json: { schema: { $ref: '#/components/schemas/PasswordlessSignupAvailabilityResponse' } } } }
  *       400: { description: Unknown provider }
  * /api/auth/student/sso/recovery-code:
  *   get:
