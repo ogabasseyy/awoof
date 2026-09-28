@@ -61,9 +61,9 @@ function formatPendingRemaining(deadlineMs: number, nowMs: number): string {
     return `${Math.floor(total / 60)}:${String(total % 60).padStart(2, '0')}`;
 }
 
-function RecoveryReauthComplete({ attemptId, duplicate }: { attemptId: string; duplicate: boolean }) {
+function RecoveryReauthComplete({ attemptId, duplicate, unavailable }: { attemptId: string; duplicate: boolean; unavailable: boolean }) {
     const { refreshUser } = useAuth();
-    const [status, setStatus] = useState<'checking' | 'waiting' | 'generate' | 'generate_ambiguous' | 'display' | 'activate' | 'remove' | 'failed' | 'active' | 'removed' | 'link_unavailable' | 'unlinked' | 'unlinked_signed_out' | 'last_method' | 'last_proof_method' | 'link_ambiguous'>('checking');
+    const [status, setStatus] = useState<'checking' | 'waiting' | 'generate' | 'generate_ambiguous' | 'display' | 'activate' | 'remove' | 'failed' | 'active' | 'removed' | 'link_unavailable' | 'unlinked' | 'unlinked_signed_out' | 'last_method' | 'last_proof_method' | 'link_ambiguous'>(unavailable ? 'failed' : 'checking');
     const [code, setCode] = useState(''); const [oldCode, setOldCode] = useState(''); const [needsOldCode, setNeedsOldCode] = useState(false); const [pendingCodeId, setPendingCodeId] = useState<string | null>(null); const [pendingExpiresAt, setPendingExpiresAt] = useState<string | null>(null); const [expectedGeneration, setExpectedGeneration] = useState<number | null>(null); const [grant, setGrant] = useState<{ grantId: string; grantSecret: string } | null>(null); const [error, setError] = useState<string | null>(null);
     const [busy, setBusy] = useState(false); const started = useRef(false); const actionBusy = useRef(false); const finishInFlight = useRef(false); const waitingAutoTries = useRef(0);
     const [now, setNow] = useState(() => Date.now());
@@ -163,6 +163,7 @@ function RecoveryReauthComplete({ attemptId, duplicate }: { attemptId: string; d
     }, [status]);
     useEffect(() => {
         if (started.current) return; started.current = true;
+        if (unavailable) return;
         const session = getSessionSnapshot();
         if (!session.accessToken) { setStatus('failed'); return; }
         // A duplicate callback racing the winner's redemption lands here
@@ -171,7 +172,7 @@ function RecoveryReauthComplete({ attemptId, duplicate }: { attemptId: string; d
         // waiting view instead of posting.
         if (duplicate) { setStatus('waiting'); return; }
         runFinish();
-    }, [attemptId]);
+    }, [attemptId, unavailable]);
     const continueIdentity = async (grant: { grantId: string; grantSecret: string; purpose: 'link' | 'unlink'; targetIdentityId: string | null }) => {
         const auth = { grantId: grant.grantId, grantSecret: grant.grantSecret };
         if (grant.purpose === 'link') {
@@ -317,6 +318,7 @@ function RecoveryReauthComplete({ attemptId, duplicate }: { attemptId: string; d
     if (status === 'unlinked_signed_out') return <AuthShell role="student" title="Sign-in method removed" subtitle="You have been signed out." footer={null}><p role="status">The removed sign-in had issued this session, so the local sign-in was cleared. That school sign-in can no longer access this account.</p><Button className="mt-5 w-full rounded-full" asChild><Link href="/auth/student/login">Back to sign-in</Link></Button></AuthShell>;
     if (status === 'last_method') return <AuthShell role="student" title="Cannot remove the last sign-in method" subtitle="Keep another way to sign in first." footer={null}><p role="status">Removing this sign-in would lock the account. Link another school sign-in or set a password first.</p><Button className="mt-5 w-full rounded-full" asChild><Link href="/student/security">Back to account security</Link></Button></AuthShell>;
     if (status === 'last_proof_method') return <AuthShell role="student" title="Microsoft sign-in still needed" subtitle="Security confirmations need it." footer={null}><p role="status">Removing this Microsoft sign-in would strand security confirmations. Link another Microsoft sign-in first.</p><Button className="mt-5 w-full rounded-full" asChild><Link href="/student/security">Back to account security</Link></Button></AuthShell>;
+    if (unavailable) return <AuthShell role="student" title="School sign-in is unavailable" subtitle="The security confirmation was interrupted during rollback." footer={null}><p role="status">No security change was made. Return to Account security and try again when Microsoft sign-in is available.</p><Button className="mt-5 w-full rounded-full" asChild><Link href="/student/security">Back to account security</Link></Button></AuthShell>;
     return <AuthShell role="student" title="Security confirmation unavailable" subtitle="The fresh confirmation expired or was interrupted." footer={null}><p role="status">No recovery code was activated. Start the optional setup again.</p><Button className="mt-5 w-full rounded-full" asChild><Link href="/student/security">Back to account security</Link></Button></AuthShell>;
 }
 
@@ -505,7 +507,7 @@ function StudentSsoCompleteInner() {
         return () => { cancelled = true; };
     }, [linkProvider, signupOffer]);
 
-    if (reauthAttempt) return <RecoveryReauthComplete attemptId={reauthAttempt} duplicate={search.get('reauthDuplicate') === '1'} />;
+    if (reauthAttempt) return <RecoveryReauthComplete attemptId={reauthAttempt} duplicate={search.get('reauthDuplicate') === '1'} unavailable={search.get('reauthUnavailable') === '1'} />;
 
     if (view.kind === 'waiting') return <AuthShell role="student" title="Sign-in still completing" subtitle="Another sign-in is finishing." footer={null}><p role="status">This sign-in arrived twice and the first is still completing. Wait a moment, then check again — nothing failed yet.</p><Button className="mt-5 w-full rounded-full" onClick={() => { waitingAutoTries.current = 0; setView({ kind: 'checking' }); void runLoginFinish(); }}>Check again</Button></AuthShell>;
 

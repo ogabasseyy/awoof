@@ -405,6 +405,16 @@ test('expired fresh callback and lost generation response leave no code active i
     api.assertNoUnexpectedRequests();
 });
 
+test('provider rollback completion reports that no security change was made without replaying a proof', async ({ page }) => {
+    const api = await installSyntheticApi(page);
+    await page.goto('/auth/student/login'); await seedSession(page, 'student');
+    await page.goto('/auth/student/sso/complete?reauth=7a000000-0000-4000-8000-000000000003&reauthUnavailable=1');
+    await expect(page.getByRole('heading', { name: 'School sign-in is unavailable' })).toBeVisible();
+    await expect(page.getByText('No security change was made.')).toBeVisible();
+    await expect(page.getByRole('link', { name: 'Back to account security' })).toHaveAttribute('href', '/student/security');
+    api.assertNoUnexpectedRequests();
+});
+
 test('lost fresh-proof finish response offers a safe restart instead of replaying proof', async ({ page }) => {
     const api = await installSyntheticApi(page);
     await page.route(`${apiOrigin}/api/auth/student/sso/reauth/finish`, route => route.abort('failed'));

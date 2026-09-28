@@ -506,6 +506,35 @@ test('Microsoft login callbacks reach the outage redirect when reauth is unavail
     });
 });
 
+test('full rollback routes an in-flight reauth callback to bounded failure and clears its cookie', async () => {
+    const attemptId = '6f666666-6666-4666-8666-666666666666';
+    const pool = {
+        query: async (sql: string) => sql.includes('student_auth_reauth_attempts')
+            ? { rows: [{ id: attemptId }], rowCount: 1 }
+            : { rows: [], rowCount: 0 },
+    } as never;
+    const unavailable = createStudentSsoRouter(
+        () => { throw new ServiceUnavailableError('Student SSO is unavailable'); },
+        {
+            completionOrigin: COMPLETION_ORIGIN,
+            isIssuanceEnabled: () => false,
+            enabledProviders: () => [],
+            reauthService: () => { throw new ServiceUnavailableError('Student SSO is unavailable'); },
+            pool,
+        },
+    );
+    await withServer(unavailable, async (baseUrl) => {
+        const callback = await fetch(`${baseUrl}/microsoft/callback?state=random.${attemptId}&code=code`, {
+            redirect: 'manual', headers: { Cookie: `awoof_reauth_${attemptId}=reauth-browser` },
+        });
+        assert.equal(callback.status, 303);
+        assert.equal(callback.headers.get('location'), `${COMPLETION_ORIGIN}/auth/student/sso/complete?reauth=${attemptId}&reauthUnavailable=1`);
+        const [cleared] = parseSetCookies(callback);
+        assert.ok(cleared);
+        assert.match(cleared, new RegExp(`^awoof_reauth_${attemptId}=;`));
+    });
+});
+
 test('recovery-code endpoints expose only status metadata and require strict authenticated grants', async () => {
     const calls: string[] = [];
     const recovery = {

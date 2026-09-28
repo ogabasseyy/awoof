@@ -701,6 +701,36 @@ export function createStudentSsoRouter(factory: FlowFactory = defaultFlow, optio
                     }
                 }
             }
+            // During full rollback the reauth factory cannot be created
+            // because the attempt key is intentionally absent. We can still
+            // identify the nonsecret UUID suffix, require its exact browser
+            // cookie and an existing Microsoft reauth row, then fail closed
+            // to the bounded completion UI. No state is redeemed and no
+            // action grant is issued while the provider is disabled.
+            if (!reauth) {
+                const rollbackAttemptId = reauthAttemptIdFromState(callbackUrl.searchParams.get('state'));
+                const rollbackCookie = rollbackAttemptId
+                    ? browserCookies.find((cookie) => cookie.name === studentReauthCookieName(rollbackAttemptId))
+                    : undefined;
+                const failureBase = config.studentSso.completionUrl
+                    ?? (completionOrigin ? new URL(STUDENT_SSO_COMPLETION_PATH, completionOrigin) : undefined);
+                if (rollbackAttemptId && rollbackCookie && failureBase) {
+                    const attempt = await poolForRequest().query<{ id: string }>(
+                        `SELECT id FROM student_auth_reauth_attempts
+                         WHERE id = $1 AND provider = 'microsoft'`,
+                        [rollbackAttemptId],
+                    );
+                    if (attempt.rows[0]) {
+                        clearSsoCookie(res, rollbackCookie.name);
+                        res.locals.outageRedirect = true;
+                        const failureCompletion = new URL(failureBase.href);
+                        failureCompletion.searchParams.set('reauth', rollbackAttemptId);
+                        failureCompletion.searchParams.set('reauthUnavailable', '1');
+                        res.redirect(303, failureCompletion.href);
+                        return;
+                    }
+                }
+            }
         }
         let flow: StudentSsoFlow;
         try {
