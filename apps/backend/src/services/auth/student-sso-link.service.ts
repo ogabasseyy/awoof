@@ -534,7 +534,7 @@ export class StudentSsoLinkService {
                      AND student.university_id = identity.university_id
                  JOIN institution_login_policies policy ON policy.university_id = identity.university_id
                      AND policy.provider = identity.provider AND policy.issuer = identity.issuer
-                     AND policy.enabled AND policy.approved_until > clock_timestamp()
+                     AND policy.enabled AND policy.approved_by IS NOT NULL AND policy.approved_until > clock_timestamp()
                  JOIN universities university ON university.id = identity.university_id AND university.is_active
                  JOIN institution_login_domain_providers mapping
                    ON mapping.policy_id = policy.id
@@ -549,14 +549,15 @@ export class StudentSsoLinkService {
             );
             // Another usable login method must remain: a usable password or a
             // second identity that can still authenticate. That mirrors the
-            // login authority chain (canonical university, live institution
-            // policy for its exact issuer, active university, a live domain
-            // mapping, enabled provider): a sibling from a replaced tenant,
-            // a deactivated university, a withdrawn domain, or a previous
-            // institution cannot log in, so it cannot satisfy this. Every
-            // candidate provider is evaluated: with siblings across
-            // providers, an unordered LIMIT 1 could sample a disabled one
-            // and wrongly report last_method. Nothing is consumed here.
+            // login authority chain (canonical university, currently
+            // approved institution policy for its exact issuer, active
+            // university, a live domain mapping, enabled provider): a
+            // sibling from a replaced tenant, a deactivated university, a
+            // withdrawn domain or approval, or a previous institution
+            // cannot log in, so it cannot satisfy this. Every candidate
+            // provider is evaluated: with siblings across providers, an
+            // unordered LIMIT 1 could sample a disabled one and wrongly
+            // report last_method. Nothing is consumed here.
             const siblingUsable = sibling.rows.some(
                 (candidate) => this.deps.isProviderEnabled?.(candidate.provider) === true,
             );

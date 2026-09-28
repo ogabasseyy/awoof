@@ -1076,6 +1076,37 @@ test('proof-backed recovery operations reject proofs after their university is d
     }
 });
 
+test('proof-backed recovery operations reject proofs after institutional approval is withdrawn', async () => {
+    const pool = createTestPool();
+    const client = await pool.connect();
+    try {
+        const userId = await seedStudent(client);
+        const proofIdentityId = await seedProviderProof(client, userId, { policy: true });
+        const live = new StudentRecoveryCodeService({ pool, codeKey: 'test-recovery-code-key', isProviderEnabled: () => true });
+        const universityId = (await client.query<{ university_id: string }>(
+            'SELECT university_id FROM student_auth_identities WHERE id = $1', [proofIdentityId],
+        )).rows[0]!.university_id;
+        // The approver cannot be cleared while the policy stays enabled:
+        // withdrawal disables with it, and login discovery then rejects
+        // the policy — so proof consumption must reject the identity too.
+        const proof = await grant(client, { userId, purpose: 'recovery_code_generate', proofIdentityId });
+        const violation = await client.query(
+            'UPDATE institution_login_policies SET approved_by = NULL WHERE university_id = $1', [universityId],
+        ).then(() => null, (error: unknown) => error as { code?: string });
+        assert.equal(violation?.code, '23514');
+        await client.query(
+            'UPDATE institution_login_policies SET enabled = false, approved_by = NULL WHERE university_id = $1', [universityId],
+        );
+        await assert.rejects(
+            () => live.generate({ userId, sid: SID, grantId: proof.grantId, secret: proof.grantSecret }),
+            (error: unknown) => (error as { code?: string }).code === 'CONFLICT',
+        );
+    } finally {
+        client.release();
+        await pool.end();
+    }
+});
+
 test('fresh reauthentication skips a newer Microsoft identity without an observed email', async () => {
     const pool = createTestPool();
     const client = await pool.connect();
@@ -1104,6 +1135,35 @@ test('fresh reauthentication skips a newer Microsoft identity without an observe
             'SELECT proof_identity_id FROM student_auth_reauth_attempts WHERE id = $1', [started.attemptId],
         );
         assert.equal(proof.rows[0]!.proof_identity_id, emailIdentityId);
+    } finally {
+        client.release();
+        await pool.end();
+    }
+});
+
+test('fresh reauthentication refuses identities whose institutional approval was withdrawn', async () => {
+    const pool = createTestPool();
+    const client = await pool.connect();
+    try {
+        const userId = await seedStudent(client);
+        const proofIdentityId = await seedProviderProof(client, userId, { policy: true });
+        const universityId = (await client.query<{ university_id: string }>(
+            'SELECT university_id FROM student_auth_identities WHERE id = $1', [proofIdentityId],
+        )).rows[0]!.university_id;
+        await client.query('UPDATE institution_login_policies SET enabled = false, approved_by = NULL WHERE university_id = $1', [universityId]);
+        const reauth = new StudentReauthService({
+            pool,
+            attemptKey: Buffer.alloc(32, 7).toString('base64url'),
+            completionUrl: new URL('https://app.example.invalid/auth/student/sso/complete'),
+            isProviderEnabled: () => true,
+            oidcForPolicy: () => { throw new Error('must not run'); },
+        });
+        // Approval withdrawal (disabled with the approver cleared) removes
+        // the identity from login authority: no fresh proof may start.
+        await assert.rejects(
+            () => reauth.start({ userId, sid: SID, purpose: 'link' }),
+            /no longer valid/,
+        );
     } finally {
         client.release();
         await pool.end();

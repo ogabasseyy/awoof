@@ -50,6 +50,8 @@ export type StudentSsoRouterOptions = {
     accountRecoveryService?: AccountRecoveryFactory;
     /** Passwordless new-account issuance is independently fail-closed. */
     isSignupEnabled?: () => boolean;
+    /** Email delivery readiness; signup needs OTP delivery to function. */
+    isEmailConfigured?: () => boolean;
     /** Origin allowlist for provider-independent recovery actions. Defaults to the trusted frontend origin. */
     recoveryOrigin?: string;
 };
@@ -384,6 +386,7 @@ export function createStudentSsoRouter(factory: FlowFactory = defaultFlow, optio
     const linkFactory = options.linkService ?? defaultLink;
     const signupFactory = options.signupService ?? defaultSignup;
     const signupEnabled = options.isSignupEnabled ?? (() => config.passwordlessStudentSignupEnabled);
+    const emailConfigured = options.isEmailConfigured ?? isEmailConfigured;
     const reauthFactory = options.reauthService ?? defaultReauth;
     const recoveryCodeFactory = options.recoveryCodeService ?? defaultRecoveryCode;
     const accountRecoveryFactory = options.accountRecoveryService ?? defaultAccountRecovery;
@@ -666,7 +669,10 @@ export function createStudentSsoRouter(factory: FlowFactory = defaultFlow, optio
         // offered an account creation that /signup/context would reject.
         const provider = req.query.provider;
         if (provider !== undefined && provider !== 'google' && provider !== 'microsoft') throw new BadRequestError('Unknown provider');
-        const available = signupEnabled() && (provider === undefined || (provider === 'microsoft' && providersEnabled().includes(provider)));
+        // Signup is OTP-gated: without delivery readiness the endpoint
+        // would advertise an account creation whose send-code can only
+        // burn challenge allowance and 503.
+        const available = signupEnabled() && emailConfigured() && (provider === undefined || (provider === 'microsoft' && providersEnabled().includes(provider)));
         responseHeaders(res); res.json({ success: true, data: { available } });
     }));
 

@@ -1912,3 +1912,35 @@ test('unlink evaluates every sibling provider before reporting the last method',
         } finally { check.release(); }
     });
 });
+
+test('unlink keeps the last method when the sibling approval is withdrawn', async () => {
+    await withLinkPool(async (pool) => {
+        const attemptKey = randomBytes(32).toString('base64url');
+        const service = makeService(pool, attemptKey);
+        const client = await pool.connect();
+        let owner;
+        let first = '';
+        let second = '';
+        try {
+            owner = await seedOwner(client, {});
+            const domain = owner.email.split('@')[1]!;
+            const google = await seedPolicy(client, owner.universityId, domain);
+            const microsoft = await seedPolicy(client, owner.universityId, `ms-${domain}`, { provider: 'microsoft', realm: MICROSOFT_TENANT });
+            first = (await client.query<{ id: string }>(`INSERT INTO student_auth_identities (user_id, university_id, provider, issuer, subject) VALUES ($1, $2, 'google', $3, $4) RETURNING id`, [owner.userId, owner.universityId, google.issuer, `approval-a-${uniqueLabel()}`])).rows[0]!.id;
+            second = (await client.query<{ id: string }>(`INSERT INTO student_auth_identities (user_id, university_id, provider, issuer, subject) VALUES ($1, $2, 'microsoft', $3, $4) RETURNING id`, [owner.userId, owner.universityId, microsoft.issuer, `approval-b-${uniqueLabel()}`])).rows[0]!.id;
+            // Both siblings are canonical with live, unexpired policies;
+            // approval withdrawal (disabled with the approver cleared) on
+            // the Microsoft policy alone removes that sibling from login
+            // authority.
+            await client.query(`UPDATE institution_login_policies SET enabled = false, approved_by = NULL WHERE university_id = $1 AND provider = 'microsoft'`, [owner.universityId]);
+        } finally { client.release(); }
+        const grantA = await mintGrant(service, owner.userId, owner.sid, PASSWORD, 'unlink', first);
+        const grantB = await mintGrant(service, owner.userId, owner.sid, PASSWORD, 'unlink', second);
+        const remover = await pool.connect();
+        try { await remover.query('UPDATE users SET password_hash = NULL WHERE id = $1', [owner.userId]); }
+        finally { remover.release(); }
+        assert.deepEqual(await service.unlink({ userId: owner.userId, sid: owner.sid, identityId: first, grantId: grantA.grantId, grantSecret: grantA.grantSecret }), { outcome: 'last_method' });
+        const removed = await service.unlink({ userId: owner.userId, sid: owner.sid, identityId: second, grantId: grantB.grantId, grantSecret: grantB.grantSecret });
+        assert.ok(!('outcome' in removed) && removed.unlinked === true);
+    });
+});

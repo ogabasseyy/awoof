@@ -55,7 +55,7 @@ export class StudentReauthService {
              JOIN universities university ON university.id = identity.university_id AND university.is_active
              JOIN institution_login_policies policy ON policy.university_id = identity.university_id
                  AND policy.provider = identity.provider AND policy.issuer = identity.issuer
-                 AND policy.enabled AND policy.approved_until > clock_timestamp()
+                 AND policy.enabled AND policy.approved_by IS NOT NULL AND policy.approved_until > clock_timestamp()
              JOIN institution_login_domain_providers mapping ON mapping.policy_id = policy.id
                  AND mapping.university_id = policy.university_id AND mapping.provider = policy.provider
              JOIN institution_login_domains domain ON domain.domain = mapping.domain
@@ -136,16 +136,20 @@ export class StudentReauthService {
     async callback(input: { callbackUrl: URL; callbackCookie: string | undefined }): Promise<{ attemptId: string; completionUrl: URL }> {
         const state = input.callbackUrl.searchParams.get('state');
         if (!state || !input.callbackCookie) throw invalidReauth();
-        const found = await this.deps.pool.query<ReauthAttempt>(
+        const found = await this.deps.pool.query<ReauthAttempt & { now: Date }>(
             `SELECT attempt.*, identity.provider AS identity_provider, identity.issuer AS identity_issuer, identity.subject AS identity_subject,
-                    policy.issuer AS policy_issuer, policy.provider_realm AS policy_realm, policy.university_id
+                    policy.issuer AS policy_issuer, policy.provider_realm AS policy_realm, policy.university_id,
+                    clock_timestamp() AS now
              FROM student_auth_reauth_attempts attempt
              JOIN student_auth_identities identity ON identity.id = attempt.proof_identity_id
              JOIN institution_login_policies policy ON policy.id = attempt.policy_id
              WHERE attempt.state_hash = $1`, [hashMicrosoftAttemptSecret(state)],
         );
         const attempt = found.rows[0];
-        if (!attempt || attempt.status !== 'pending' || attempt.expires_at <= new Date()
+        // The preflight expiry uses the database clock from the same
+        // statement: an application host ahead of PostgreSQL must not
+        // reject an attempt the database still considers live.
+        if (!attempt || attempt.status !== 'pending' || attempt.expires_at <= attempt.now
             || hashMicrosoftAttemptSecret(input.callbackCookie) !== attempt.callback_cookie_hash
             || attempt.provider !== 'microsoft' || attempt.identity_provider !== 'microsoft'
             || !this.deps.isProviderEnabled('microsoft')) throw invalidReauth();
@@ -158,10 +162,10 @@ export class StudentReauthService {
             const account = await tx.query<{ active_session_id: string | null; credential_generation: string | number; deleted_at: Date | null }>(
                 'SELECT active_session_id, credential_generation, deleted_at FROM users WHERE id = $1 FOR UPDATE', [attempt.user_id],
             );
-            const locked = await tx.query<ReauthAttempt>(
+            const locked = await tx.query<ReauthAttempt & { policy_approved_by: string | null }>(
                 `SELECT attempt.*, identity.provider AS identity_provider, identity.issuer AS identity_issuer, identity.subject AS identity_subject,
                         policy.issuer AS policy_issuer, policy.provider_realm AS policy_realm, policy.university_id,
-                        policy.enabled AS policy_enabled, policy.approved_until
+                        policy.enabled AS policy_enabled, policy.approved_until, policy.approved_by AS policy_approved_by
                  FROM student_auth_reauth_attempts attempt
                  JOIN student_auth_identities identity ON identity.id = attempt.proof_identity_id
                  JOIN institution_login_policies policy ON policy.id = attempt.policy_id
@@ -172,6 +176,7 @@ export class StudentReauthService {
             const approvedUntil = current?.approved_until;
             if (!current || current.status !== 'pending' || current.expires_at <= clock.rows[0]!.now
                 || !current.policy_enabled || !approvedUntil || approvedUntil <= clock.rows[0]!.now
+                || current.policy_approved_by == null
                 || !this.deps.isProviderEnabled('microsoft')
                 || observation.issuer !== current.identity_issuer || observation.subject !== current.identity_subject) throw invalidReauth();
             assertFreshAuthTime(observation.authTime, current.created_at, clock.rows[0]!.now);
@@ -219,10 +224,13 @@ export class StudentReauthService {
                 || attempt.expires_at <= clock.rows[0]!.now || hashMicrosoftAttemptSecret(callbackCookie) !== attempt.callback_cookie_hash) throw invalidReauth();
             const context = await lockStudentContext(tx, input.userId);
             if (!context.active) throw invalidReauth();
-            const policy = await tx.query<{ enabled: boolean; approved_until: Date }>('SELECT enabled, approved_until FROM institution_login_policies WHERE id = $1 AND version = $2 FOR UPDATE', [attempt.policy_id, attempt.policy_version]);
+            const policy = await tx.query<{ enabled: boolean; approved_by: string | null; approved_until: Date }>('SELECT enabled, approved_by, approved_until FROM institution_login_policies WHERE id = $1 AND version = $2 FOR UPDATE', [attempt.policy_id, attempt.policy_version]);
             const identity = await tx.query<{ user_id: string; revoked_at: Date | null }>('SELECT user_id, revoked_at FROM student_auth_identities WHERE id = $1 FOR UPDATE', [attempt.proof_identity_id]);
+            // Approval withdrawal (approved_by cleared) invalidates the
+            // proof exactly like disablement or expiry: login discovery
+            // would reject the policy, so reauthentication must too.
             if (!account.rows[0] || account.rows[0]!.active_session_id !== input.sid || Number(account.rows[0]!.credential_generation) !== Number(attempt.credential_generation)
-                || !policy.rows[0]?.enabled || policy.rows[0]!.approved_until <= clock.rows[0]!.now
+                || !policy.rows[0]?.enabled || policy.rows[0]!.approved_by == null || policy.rows[0]!.approved_until <= clock.rows[0]!.now
                 || !identity.rows[0] || identity.rows[0]!.user_id !== input.userId || identity.rows[0]!.revoked_at !== null
                 || !this.deps.isProviderEnabled(attempt.provider as LoginProvider)) throw invalidReauth();
             const active = await tx.query<{ generation: string | number }>(

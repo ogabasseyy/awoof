@@ -23,7 +23,7 @@ function pendingAttempt(overrides: Record<string, unknown> = {}) {
         target_identity_id: null, pending_code_id: null, status: 'pending', expires_at: new Date(Date.now() + 60_000), created_at: new Date(Date.now() - 1_000),
         identity_provider: 'microsoft', identity_issuer: issuer, identity_subject: 'subject', policy_issuer: issuer,
         policy_realm: '55555555-5555-4555-8555-555555555555', university_id: randomUUID(), policy_enabled: true,
-        approved_until: new Date(Date.now() + 60_000),
+        approved_until: new Date(Date.now() + 60_000), policy_approved_by: randomUUID(), now: new Date(),
         ...overrides,
     };
 }
@@ -111,6 +111,8 @@ test('fresh start constrains the identity lookup to Microsoft before selecting t
     assert.ok(calls.some((text) => text.includes("identity.provider = 'microsoft'")));
     assert.ok(calls.some((text) => text.includes('policy.issuer = identity.issuer')),
         'a replaced tenant must not select a stale-issuer identity for the fresh proof');
+    assert.ok(calls.some((text) => text.includes('policy.approved_by IS NOT NULL')),
+        'a withdrawn institutional approval must not select the identity for the fresh proof');
 });
 
 test('fresh start rejects foreign or missing action targets before issuing an attempt', async () => {

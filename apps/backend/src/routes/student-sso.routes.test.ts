@@ -90,6 +90,7 @@ function routerWith(flow: Flow, overrides: Parameters<typeof createStudentSsoRou
         completionOrigin: COMPLETION_ORIGIN,
         recoveryOrigin: COMPLETION_ORIGIN,
         isSignupEnabled: () => true,
+        isEmailConfigured: () => true,
         checkStartQuota: async () => undefined,
         pool: { query: async () => ({ rows: [], rowCount: 0 }) } as never,
         ...overrides,
@@ -462,6 +463,16 @@ test('signup availability scopes to the handoff provider when requested', async 
         assert.deepEqual(await disabled.json(), { success: true, data: { available: false } });
     });
     await withServer(routerWith(stubFlow(), { ...options, isSignupEnabled: () => false }), async (baseUrl) => {
+        const response = await fetch(`${baseUrl}/signup/availability?provider=microsoft`);
+        assert.equal(response.status, 200);
+        assert.deepEqual(await response.json(), { success: true, data: { available: false } });
+    });
+});
+
+test('signup availability hides signup when email delivery is unavailable', async () => {
+    // Without a mailer, send-code can only burn challenge allowance and
+    // 503: availability must not advertise the flow.
+    await withServer(routerWith(stubFlow(), { isSignupEnabled: () => true, isEmailConfigured: () => false }), async (baseUrl) => {
         const response = await fetch(`${baseUrl}/signup/availability?provider=microsoft`);
         assert.equal(response.status, 200);
         assert.deepEqual(await response.json(), { success: true, data: { available: false } });

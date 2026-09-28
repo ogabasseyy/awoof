@@ -43,10 +43,11 @@ export class StudentSsoAuthorityInvalidatedError extends ConflictError {
 /**
  * A proof identity authorizes sensitive actions only while it remains a
  * usable login method: live and unrevoked, at the student's canonical
- * university, with a live institution policy for its exact issuer and at
- * least one live domain mapping. Mirrors the login authority chain so a
- * stale identity (transferred student, withdrawn domain) can authorize
- * neither reauthentication nor proof-bound grant consumption. Returns
+ * university, with a currently approved institution policy for its exact
+ * issuer and at least one live domain mapping. Mirrors the login
+ * authority chain (including the approved_by predicate, so a withdrawn
+ * approval cannot linger) so a stale identity can authorize neither
+ * reauthentication nor proof-bound grant consumption. Returns
  * the authority row or null; callers throw their own invalid error.
  */
 export async function selectCurrentProofAuthority(
@@ -61,7 +62,7 @@ export async function selectCurrentProofAuthority(
          JOIN universities university ON university.id = identity.university_id AND university.is_active
          JOIN institution_login_policies policy ON policy.university_id = identity.university_id
              AND policy.provider = identity.provider AND policy.issuer = identity.issuer
-             AND policy.enabled AND policy.approved_until > clock_timestamp()
+             AND policy.enabled AND policy.approved_by IS NOT NULL AND policy.approved_until > clock_timestamp()
          JOIN institution_login_domain_providers mapping ON mapping.policy_id = policy.id
              AND mapping.university_id = policy.university_id AND mapping.provider = policy.provider
          JOIN institution_login_domains domain ON domain.domain = mapping.domain

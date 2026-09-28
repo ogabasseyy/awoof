@@ -185,9 +185,12 @@ export class StudentAccountRecoveryService {
         const validation = (this.deps.validatePassword ?? ((candidate: string) => passwordService.validatePassword(candidate)))(password);
         if (!validation.valid) throw new ConflictError(validation.errors.join(', '));
         // Cheap credential check before the expensive password hash; the
-        // transaction below rechecks everything under lock.
+        // transaction below rechecks everything under lock against the
+        // database clock. Expiry is deliberately not previewed here: an
+        // application clock ahead of PostgreSQL must not reject an
+        // attempt the database still considers live.
         const candidate = await this.previewAttempt(attemptId);
-        if (!candidate || candidate.status !== 'verified' || candidate.expires_at <= new Date()
+        if (!candidate || candidate.status !== 'verified'
             || !candidate.secret_hash || !this.matchesDigest(candidate.secret_hash, this.secretDigest(secret))) throw unavailable();
         const hash = await (this.deps.hashPassword ?? ((candidate: string) => passwordService.hashPassword(candidate)))(password);
         const committed = await this.transaction(async (tx) => {
