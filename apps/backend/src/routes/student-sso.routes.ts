@@ -356,11 +356,9 @@ function defaultRecoveryCode(): StudentRecoveryCodeService {
 }
 function defaultAccountRecovery(): StudentAccountRecoveryService {
     const key = config.studentAccountRecovery.codeKey;
-    // Recovery start deliberately swallows delivery failures, so an
-    // unconfigured mailer would 202 and burn challenge allowance for an
-    // OTP that can never arrive. Fail the deployment-wide outage as a
-    // non-enumerating 503 before any account lookup instead.
-    if (!key || !isEmailConfigured()) throw new ServiceUnavailableError('Account recovery is unavailable');
+    // The digest key gates every operation; the mailer gate lives on the
+    // start route only, since verify and complete never deliver.
+    if (!key) throw new ServiceUnavailableError('Account recovery is unavailable');
     const previous = config.studentAccountRecovery.previousCodeKey;
     return new StudentAccountRecoveryService({
         pool: getPool(), recoveryCodeKey: key, ...(previous === null ? {} : { previousRecoveryCodeKey: previous }),
@@ -475,6 +473,14 @@ export function createStudentSsoRouter(factory: FlowFactory = defaultFlow, optio
         const shape = keys !== null && ((keys.length === 2 && keys[0] === 'email' && keys[1] === 'purpose') || (keys.length === 3 && keys[0] === 'email' && keys[1] === 'idempotencyKey' && keys[2] === 'purpose'));
         const key = body?.idempotencyKey;
         if (!shape || typeof body.email !== 'string' || body.email.length === 0 || body.email.length > 255 || body.email.trim().length === 0 || (body.purpose !== 'lost_access' && body.purpose !== 'compromise') || (key !== undefined && (typeof key !== 'string' || key.length === 0 || key.length > 128))) throw new BadRequestError('Account recovery request is invalid');
+        // Recovery start deliberately swallows delivery failures, so an
+        // unconfigured mailer would 202 and burn challenge allowance for
+        // an OTP that can never arrive. Fail the deployment-wide outage
+        // as a non-enumerating 503 before any account lookup instead.
+        // Verify and complete stay ungated: they never deliver (the
+        // completion notice fails safe), so a replica that loses mailer
+        // configuration mid-flow must not strand a delivered OTP.
+        if (!emailConfigured()) throw new ServiceUnavailableError('Account recovery is unavailable');
         const result = await accountRecoveryFactory().start({ email: body.email, purpose: body.purpose, ...(key === undefined ? {} : { idempotencyKey: key }) });
         responseHeaders(res); res.status(202).json({ success: true, data: result });
     }));
@@ -1412,7 +1418,7 @@ export default createStudentSsoRouter();
  *       400: { description: JSON or malformed proof request }
  *       409: { description: Expired, invalid, consumed, or replayed recovery proof }
  *       429: { description: Recovery quota exhausted }
- *       503: { description: Recovery service unavailable (recovery-code key or mailer unconfigured) }
+ *       503: { description: Recovery service unavailable (recovery-code key unconfigured; mailer gates start only) }
  * /api/auth/student/sso/account-recovery/complete:
  *   post:
  *     summary: Set a password after verified independent recovery
@@ -1427,5 +1433,5 @@ export default createStudentSsoRouter();
  *       400: { description: JSON or malformed completion request }
  *       409: { description: Expired, invalid, consumed, or replayed recovery proof }
  *       429: { description: Recovery quota exhausted }
- *       503: { description: Recovery service unavailable (recovery-code key or mailer unconfigured) }
+ *       503: { description: Recovery service unavailable (recovery-code key unconfigured; mailer gates start only) }
  */

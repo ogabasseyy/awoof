@@ -156,14 +156,22 @@ const explicitPreviousRecoveryCodeKey = env.STUDENT_ACCOUNT_RECOVERY_PREVIOUS_CO
 /**
  * Resolve the effective recovery-code digest keys. The dedicated key issues
  * new digests; verification also accepts one previous key so key changes
- * never strand active codes. Rotation procedure for K1 -> K2: set the
- * dedicated key to K2 and the explicit previous key to K1, deploy, then
- * remove the previous key only after every code enrolled under K1 has been
+ * never strand active codes. Rotation for K1 -> K2 is staged across two
+ * fully completed deploys: promoting the write key in one step would let
+ * new replicas issue K2 digests that old replicas cannot verify yet.
+ * Stage 1 (verify-only): set the explicit previous key to K2 while the
+ * dedicated key stays K1, and deploy everywhere; every replica still
+ * writes K1 but already verifies K2. Stage 2 (promote): set the dedicated
+ * key to K2 with the explicit previous key at K1, and deploy; K2 digests
+ * are now verifiable on every replica from the first write. Retire the
+ * explicit previous key only after every code enrolled under K1 has been
  * re-enrolled (replacement/activation digests always use the current key).
  * The explicit previous key must be the immediately preceding effective
  * key: codes enrolled under any older key are not verifiable, so re-enroll
  * pre-dedicated-key codes before rotating the dedicated key. Adding the
- * first dedicated key needs no explicit previous key: the established SSO
+ * first dedicated key follows the same two stages through the explicit
+ * previous key (stage 1 with the dedicated key still unset, so issuance
+ * stays on the retained SSO attempt key); once set, the established SSO
  * attempt key is retained automatically as the fallback.
  */
 export function resolveRecoveryCodeKeys(input: { dedicated: string | null; retained: string | null; explicitPrevious: string | null }): { codeKey: string | null; previousCodeKey: string | null } {

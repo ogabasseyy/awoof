@@ -144,14 +144,14 @@ test('unknown-mailbox recovery handles expire exactly like committed ones', asyn
         const decoyNow = Date.parse(decoy.serverNow);
         const committedNow = Date.parse(committed.serverNow);
         assert.ok(Number.isFinite(decoyNow) && Number.isFinite(committedNow), 'both handles report the server clock for skew correction');
-        // Both derive from the same server clock plus the shared mailbox
-        // TTL: neither clock skew nor the shorter OTP window may mark a
-        // real attempt.
+        // Both derive from the same server clock plus the shared
+        // ten-minute attempt window: neither clock skew nor the shorter
+        // OTP window underneath may mark a real attempt.
         assert.ok(Math.abs(decoyMs - committedMs) < 30_000, `decoy and committed expiries must be indistinguishable (delta ${Math.abs(decoyMs - committedMs)}ms)`);
         assert.ok(Math.abs(decoyNow - committedNow) < 30_000, 'decoy and committed server clocks must be indistinguishable');
         for (const ms of [decoyMs, committedMs]) {
             const ttlMs = ms - Date.now();
-            assert.ok(ttlMs > 4 * 60 * 1000 && ttlMs <= 6 * 60 * 1000, `expiry must sit on the shared mailbox TTL (saw ${Math.round(ttlMs / 1000)}s)`);
+            assert.ok(ttlMs > 9 * 60 * 1000 && ttlMs <= 11 * 60 * 1000, `expiry must sit on the shared ten-minute attempt window (saw ${Math.round(ttlMs / 1000)}s)`);
         }
         assert.deepEqual(deliveries, [account.email]);
         const decoyRows = await client.query('SELECT id FROM student_auth_recovery_attempts WHERE id = $1', [decoy.attemptId]);
@@ -206,6 +206,12 @@ test('cooldown retries without the original binding leave the live attempt usabl
         });
         const key = randomUUID();
         const first = await service.start({ email: account.email, purpose: 'lost_access', idempotencyKey: key });
+        const liveChallenge = await client.query<{ expires_at: Date }>(
+            `SELECT challenge.expires_at FROM verification_challenges challenge
+             JOIN student_auth_recovery_attempts attempt ON attempt.mailbox_challenge_id = challenge.id
+             WHERE attempt.id = $1`,
+            [first.attemptId],
+        );
         // An anonymous caller repeating the start with no key — or the
         // wrong one — takes the frozen-expiry path: no new attempt row,
         // no OTP re-sent, and the victim handle still verifies.
@@ -213,7 +219,7 @@ test('cooldown retries without the original binding leave the live attempt usabl
             await service.start({ email: account.email, purpose: 'lost_access' }),
             await service.start({ email: account.email, purpose: 'lost_access', idempotencyKey: randomUUID() }),
         ]) {
-            assert.equal(retry.expiresAt, first.expiresAt, 'unbound retries must replay the frozen challenge expiry');
+            assert.equal(retry.expiresAt, liveChallenge.rows[0]!.expires_at.toISOString(), 'unbound retries must replay the frozen challenge expiry');
             await assert.rejects(() => service.verify({ attemptId: retry.attemptId, secret: retry.secret, code: account.code, otp: deliveries[0]! }));
         }
         assert.equal(deliveries.length, 1);
@@ -255,7 +261,17 @@ test('cooldown retries without a live attempt return frozen expiries on both pat
         const unknown = `unknown-${randomUUID().slice(0, 8)}@example.invalid`;
         const decoy = await service.start({ email: unknown, purpose: 'lost_access' });
         const decoyRetry = await service.start({ email: unknown, purpose: 'lost_access' });
-        assert.equal(decoyRetry.expiresAt, decoy.expiresAt, 'decoy retries must replay the frozen challenge expiry');
+        // Fresh handles report the ten-minute attempt expiry; cooldown
+        // retries report the frozen challenge expiry — identically on
+        // the decoy and committed paths.
+        const decoyChallenge = await client.query<{ expires_at: Date }>(
+            `SELECT challenge.expires_at FROM verification_challenges challenge
+             JOIN verification_challenge_budgets budget ON budget.current_challenge_id = challenge.id
+             WHERE budget.purpose = 'student_account_recovery' AND budget.subject_digest = $1`,
+            [challengeSubjectDigest('student_account_recovery', unknown)],
+        );
+        assert.equal(decoyRetry.expiresAt, decoyChallenge.rows[0]!.expires_at.toISOString(), 'decoy retries must replay the frozen challenge expiry');
+        assert.ok(Date.parse(decoy.expiresAt) - Date.parse(decoyRetry.expiresAt) > 4 * 60 * 1000, 'fresh decoy handles report the ten-minute attempt window');
         await assert.rejects(() => service.verify({ attemptId: decoy.attemptId, secret: decoy.secret, code: 'code', otp: '123456' }));
         const after = await client.query<{ budgets: string; challenges: string }>(
             'SELECT (SELECT count(*)::text FROM verification_challenge_budgets) AS budgets, (SELECT count(*)::text FROM verification_challenges) AS challenges',
@@ -267,13 +283,20 @@ test('cooldown retries without a live attempt return frozen expiries on both pat
         );
         assert.equal(decoyAttempts.rows[0]!.count, '0', 'decoy handles write no attempt rows and cannot verify');
         // A failed attempt is not resumable: the cooldown retry finds no
-        // live attempt, writes no new attempt row, and returns the same
-        // frozen challenge expiry — never a fresh deadline that would mark
+        // live attempt, writes no new attempt row, and returns the frozen
+        // challenge expiry — never a fresh deadline that would mark
         // committed handles against decoy retries.
         const first = await service.start({ email: account.email, purpose: 'lost_access' });
         await client.query(`UPDATE student_auth_recovery_attempts SET status = 'failed', secret_hash = NULL WHERE id = $1`, [first.attemptId]);
         const retry = await service.start({ email: account.email, purpose: 'lost_access' });
-        assert.equal(retry.expiresAt, first.expiresAt, 'committed retries without a live attempt must replay the frozen challenge expiry');
+        const committedChallenge = await client.query<{ expires_at: Date }>(
+            `SELECT challenge.expires_at FROM verification_challenges challenge
+             JOIN student_auth_recovery_attempts attempt ON attempt.mailbox_challenge_id = challenge.id
+             WHERE attempt.id = $1`,
+            [first.attemptId],
+        );
+        assert.equal(retry.expiresAt, committedChallenge.rows[0]!.expires_at.toISOString(), 'committed retries without a live attempt must replay the frozen challenge expiry');
+        assert.ok(Date.parse(first.expiresAt) - Date.parse(retry.expiresAt) > 4 * 60 * 1000, 'fresh committed handles report the ten-minute attempt window');
         await assert.rejects(() => service.verify({ attemptId: retry.attemptId, secret: retry.secret, code: account.code, otp: '123456' }));
         const rows = await client.query<{ count: string }>(
             'SELECT count(*)::text AS count FROM student_auth_recovery_attempts WHERE user_id = $1', [account.userId],
@@ -319,7 +342,13 @@ test('failed recovery delivery retires the attempt and challenge without strandi
         // expiry — a fresh fallback here would mark compensated
         // accounts against untouched decoys by expiresAt.
         const retry = await service.start({ email: account.email, purpose: 'lost_access' });
-        assert.equal(retry.expiresAt, first.expiresAt, 'post-compensation cooldown retries must replay the frozen challenge expiry');
+        const compensatedChallenge = await client.query<{ expires_at: Date }>(
+            `SELECT challenge.expires_at FROM verification_challenges challenge
+             JOIN student_auth_recovery_attempts attempt ON attempt.mailbox_challenge_id = challenge.id
+             WHERE attempt.id = $1`,
+            [first.attemptId],
+        );
+        assert.equal(retry.expiresAt, compensatedChallenge.rows[0]!.expires_at.toISOString(), 'post-compensation cooldown retries must replay the frozen challenge expiry');
         await assert.rejects(() => service.verify({ attemptId: retry.attemptId, secret: retry.secret, code: account.code, otp: '123456' }));
         // Past the cooldown, recovery completes end to end on a fresh OTP.
         await client.query(
@@ -377,6 +406,45 @@ test('failed recovery delivery follows challenge rebinding to the live holder', 
             assert.ok(Date.now() < deadline, 'compensation must follow the rebound holder');
             await new Promise((resolve) => setTimeout(resolve, 25));
         }
+    } finally {
+        client.release();
+        await pool.end();
+    }
+});
+
+test('verified recovery completes after the OTP TTL within the ten-minute attempt window', async () => {
+    const pool = createTestPool();
+    const client = await pool.connect();
+    try {
+        const account = await seedRecoverableStudent(client);
+        let otp = '';
+        const service = new StudentAccountRecoveryService({
+            pool, recoveryCodeKey: 'test-recovery-code-key',
+            deliverOtp: async (_email, delivered) => { otp = delivered; return { success: true }; },
+            validatePassword: () => ({ valid: true, errors: [] }), hashPassword: async () => 'window-split-hash',
+        });
+        const first = await service.start({ email: account.email, purpose: 'lost_access' });
+        // The attempt owns the full ten-minute window even though the
+        // mailbox OTP underneath uses the shorter signup-style TTL.
+        const window = await client.query<{ expires_at: Date; created_at: Date }>(
+            'SELECT expires_at, created_at FROM student_auth_recovery_attempts WHERE id = $1', [first.attemptId],
+        );
+        assert.ok(window.rows[0]!.expires_at.getTime() - window.rows[0]!.created_at.getTime() > 9 * 60 * 1000,
+            'recovery attempts must own a ten-minute completion window');
+        await service.verify({ attemptId: first.attemptId, secret: first.secret, code: account.code, otp });
+        // The shorter OTP TTL elapses after the proofs were accepted: the
+        // consumed challenge expires but the verified attempt stays live.
+        // Both timestamps move together: the table requires expiry after
+        // creation even for long-dead challenges.
+        await client.query(
+            `UPDATE verification_challenges
+             SET created_at = clock_timestamp() - interval '6 minutes', expires_at = clock_timestamp() - interval '1 minute'
+             WHERE id = (SELECT mailbox_challenge_id FROM student_auth_recovery_attempts WHERE id = $1)`,
+            [first.attemptId],
+        );
+        await service.complete({ attemptId: first.attemptId, secret: first.secret, password: 'ValidNew1!' });
+        const after = await client.query<{ password_hash: string }>('SELECT password_hash FROM users WHERE id = $1', [account.userId]);
+        assert.equal(after.rows[0]!.password_hash, 'window-split-hash');
     } finally {
         client.release();
         await pool.end();
@@ -1762,6 +1830,65 @@ test('concurrent duplicate reauth callbacks redeem the one-use code exactly once
             'SELECT status FROM student_auth_reauth_attempts WHERE id = $1', [started.attemptId],
         );
         assert.equal(status.rows[0]!.status, 'ready');
+    } finally {
+        client.release();
+        await pool.end();
+    }
+});
+
+test('reauth finish rechecks proof authority before minting the grant', async () => {
+    const pool = createTestPool();
+    const client = await pool.connect();
+    try {
+        const userId = await seedStudent(client);
+        const proofIdentityId = await seedProviderProof(client, userId, { policy: true });
+        const identity = (await client.query<{ issuer: string; subject: string; observed_email: string; university_id: string }>(
+            'SELECT issuer, subject, observed_email, university_id FROM student_auth_identities WHERE id = $1', [proofIdentityId],
+        )).rows[0]!;
+        let captured: { state: string } | null = null;
+        const reauth = new StudentReauthService({
+            pool,
+            attemptKey: Buffer.alloc(32, 7).toString('base64url'),
+            completionUrl: new URL('https://app.example.invalid/auth/student/sso/complete'),
+            isProviderEnabled: () => true,
+            oidcForPolicy: () => ({
+                authorizeFresh: async (input: { state: string }) => {
+                    captured = input;
+                    return new URL('https://provider.example.invalid/fresh');
+                },
+                redeemFresh: async () => ({
+                    provider: 'microsoft' as const, issuer: identity.issuer, subject: identity.subject,
+                    email: 'student@example.invalid', mailboxVerified: true, realm: 'realm',
+                    schoolMembershipAttested: false, objectId: 'object', authTime: Math.floor(Date.now() / 1000),
+                }),
+            }) as never,
+        });
+        // Happy path first: an undisturbed ceremony mints its grant.
+        const good = await reauth.start({ userId, sid: SID, purpose: 'link' });
+        await reauth.callback({ callbackUrl: new URL(`https://api.example.invalid/callback?state=${captured!.state}&code=code`), callbackCookie: good.callbackCookie });
+        const granted = await reauth.finish({ userId, sid: SID, attemptId: good.attemptId, callbackCookie: good.callbackCookie });
+        assert.ok(granted.grantId);
+        // Second ceremony: the proof identity's mailbox domain is
+        // withdrawn after the proof validates but before finish. The
+        // pinned policy row still passes, yet every grant consumer would
+        // reject the minted grant — so finish fails the ceremony instead
+        // of issuing an apparently successful confirmation.
+        const drifted = await reauth.start({ userId, sid: SID, purpose: 'link' });
+        await reauth.callback({ callbackUrl: new URL(`https://api.example.invalid/callback?state=${captured!.state}&code=code`), callbackCookie: drifted.callbackCookie });
+        const mailboxDomain = identity.observed_email.slice(identity.observed_email.lastIndexOf('@') + 1);
+        await client.query('UPDATE institution_login_domains SET is_active = false WHERE domain = $1 AND university_id = $2', [mailboxDomain, identity.university_id]);
+        await assert.rejects(
+            () => reauth.finish({ userId, sid: SID, attemptId: drifted.attemptId, callbackCookie: drifted.callbackCookie }),
+            /no longer valid/,
+        );
+        const status = await client.query<{ status: string }>(
+            'SELECT status FROM student_auth_reauth_attempts WHERE id = $1', [drifted.attemptId],
+        );
+        assert.equal(status.rows[0]!.status, 'ready', 'the failed finish must not consume the attempt or mint a grant');
+        const grants = await client.query<{ count: string }>(
+            `SELECT count(*)::text AS count FROM student_auth_action_grants WHERE user_id = $1 AND purpose = 'link'`, [userId],
+        );
+        assert.equal(grants.rows[0]!.count, '1', 'only the undisturbed ceremony mints a grant');
     } finally {
         client.release();
         await pool.end();

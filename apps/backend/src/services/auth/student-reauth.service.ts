@@ -8,6 +8,7 @@ import type { ActionPurpose, ActionGrantResult } from './student-action-grant.se
 import { issueActionGrant } from './student-action-grant.service.js';
 import { decryptMicrosoftAttemptVerifier } from '../verification/microsoft-attempt-crypto.js';
 import { lockStudentContext } from '../verification/eligibility-context.service.js';
+import { selectCurrentProofAuthority } from './student-sso-onboarding.service.js';
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 export const STUDENT_REAUTH_LIFETIME_SECONDS = 5 * 60;
@@ -375,6 +376,13 @@ export class StudentReauthService {
                 || !policy.rows[0]?.enabled || policy.rows[0]!.approved_by == null || policy.rows[0]!.approved_until <= clock.rows[0]!.now
                 || !identity.rows[0] || identity.rows[0]!.user_id !== input.userId || identity.rows[0]!.revoked_at !== null
                 || !this.deps.isProviderEnabled(attempt.provider as LoginProvider)) throw invalidReauth();
+            // Proof authority rechecked at finish: an observed-email domain
+            // withdrawal or canonical-university change after start leaves
+            // the pinned policy row valid, but every grant consumer would
+            // reject the minted grant. Fail the ceremony here instead of
+            // issuing an apparently successful confirmation whose
+            // continuation always fails.
+            if (!await selectCurrentProofAuthority(tx, input.userId, attempt.proof_identity_id)) throw invalidReauth();
             const active = await tx.query<{ generation: string | number }>(
                 "SELECT generation FROM student_auth_recovery_codes WHERE user_id = $1 AND status = 'active' FOR UPDATE",
                 [input.userId],

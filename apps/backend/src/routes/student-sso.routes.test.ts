@@ -682,9 +682,10 @@ test('account recovery start fails closed when the mailer is unconfigured', asyn
     config.studentAccountRecovery.codeKey = 'test-recovery-code-key-unconfigured-mailer';
     delete process.env.BREVO_API_KEY;
     try {
-        // The default factory gates on the global email configuration: a
-        // recovery key alone must not 202 when no OTP can be delivered.
-        await withServer(routerWith(stubFlow()), async (baseUrl) => {
+        // The start route gates on the global email configuration by
+        // default: a recovery key alone must not 202 when no OTP can be
+        // delivered.
+        await withServer(routerWith(stubFlow(), { isEmailConfigured: undefined }), async (baseUrl) => {
             const started = await fetch(`${baseUrl}/account-recovery/start`, {
                 method: 'POST', headers: { 'content-type': 'application/json' },
                 body: JSON.stringify({ email: 'student@example.invalid', purpose: 'lost_access' }),
@@ -696,6 +697,37 @@ test('account recovery start fails closed when the mailer is unconfigured', asyn
         if (previousBrevo === undefined) delete process.env.BREVO_API_KEY;
         else process.env.BREVO_API_KEY = previousBrevo;
     }
+});
+
+test('account recovery continuations stay available when the mailer is unconfigured', async () => {
+    const calls: string[] = [];
+    const recovery = {
+        start: async () => { calls.push('start'); return { attemptId: ATTEMPT_ID, secret: 'recovery-secret', expiresAt: '2026-09-26T12:00:00.000Z' }; },
+        verify: async () => { calls.push('verify'); },
+        complete: async () => { calls.push('complete'); },
+    };
+    await withServer(routerWith(stubFlow(), { accountRecoveryService: () => recovery as never, isEmailConfigured: () => false }), async (baseUrl) => {
+        // Start still gates on the mailer: it would 202 and burn
+        // challenge allowance for an OTP that can never arrive.
+        const started = await fetch(`${baseUrl}/account-recovery/start`, {
+            method: 'POST', headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ email: 'student@example.invalid', purpose: 'lost_access' }),
+        });
+        assert.equal(started.status, 503);
+        // Verify and complete never deliver, so a replica that loses
+        // mailer configuration mid-flow must not strand a delivered OTP.
+        const verified = await fetch(`${baseUrl}/account-recovery/verify`, {
+            method: 'POST', headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ attemptId: ATTEMPT_ID, secret: 'recovery-secret', code: 'saved-code', otp: '123456' }),
+        });
+        assert.equal(verified.status, 204);
+        const completed = await fetch(`${baseUrl}/account-recovery/complete`, {
+            method: 'POST', headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ attemptId: ATTEMPT_ID, secret: 'recovery-secret', password: 'ValidNew1!' }),
+        });
+        assert.equal(completed.status, 204);
+    });
+    assert.deepEqual(calls, ['verify', 'complete']);
 });
 
 test('start rejects unknown providers, malformed bodies, non-JSON, and inexact origins', async () => {
@@ -1113,7 +1145,8 @@ test('OpenAPI documents disabled passwordless signup and recovery contracts with
     }
     assert.ok(paths['/api/auth/student/sso/recovery-code']?.get?.responses?.['401']);
     // The recovery factory gates all three operations on the deployment
-    // key and mailer, so generated clients must model the 503 outage.
+    // key, and start additionally gates on the mailer, so generated
+    // clients must model the 503 outage.
     for (const path of [
         '/api/auth/student/sso/account-recovery/start', '/api/auth/student/sso/account-recovery/verify',
         '/api/auth/student/sso/account-recovery/complete',

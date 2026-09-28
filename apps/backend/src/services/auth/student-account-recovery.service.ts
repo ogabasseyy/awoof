@@ -92,13 +92,15 @@ export class StudentAccountRecoveryService {
         const idempotencyKey = typeof input.idempotencyKey === 'string' && input.idempotencyKey.length >= 1 && input.idempotencyKey.length <= 128 ? input.idempotencyKey : null;
         const attemptId = randomUUID();
         const secret = randomBytes(32).toString('base64url');
-        // The fallback and committed handles share one server-clock expiry.
-        // The mailbox challenge TTL is the binding constraint (the attempt
-        // row takes LEAST(server clock + 10m, challenge expiry), and the
-        // challenge takes the earlier of its input and server clock + TTL —
-        // so both paths derive from the same clock read plus the shared TTL.
-        // A generic client-clock +10m expiry would mark real attempts by
-        // clock skew and by the shorter mailbox TTL.
+        // Two separate deadlines: the recovery attempt owns a ten-minute
+        // window (the design's combined proof/password flow) while the
+        // mailbox OTP uses the shorter signup-style challenge TTL. Verify
+        // checks both (attempt live, challenge consumable); complete checks
+        // only the attempt, so a consumed OTP leaves the remaining window
+        // for password choice. Fresh handles report the attempt expiry on
+        // both paths; cooldown retries report the frozen challenge expiry
+        // on both paths. A generic client-clock expiry would mark real
+        // attempts by clock skew and by the shorter mailbox TTL.
         const ttlMs = challengeTtlMs('student_account_recovery');
         const started = await this.transaction(async (tx) => {
             const serverNow = await databaseNow(tx);
@@ -122,8 +124,8 @@ export class StudentAccountRecoveryService {
                 // Cooldown with a live pending attempt: the first start
                 // committed but its 202 was lost. Supersede onto a rebound
                 // handle against the same unconsumed challenge instead of
-                // stranding the delivered OTP behind a decoy. The expiry
-                // stays bounded by the original challenge, so retries can
+                // stranding the delivered OTP behind a decoy. The reported
+                // deadline stays on the original challenge, so retries can
                 // never stretch the OTP window, and no OTP is re-sent. The
                 // retry must present the original start's idempotency key:
                 // otherwise any anonymous caller knowing the email could
@@ -153,24 +155,30 @@ export class StudentAccountRecoveryService {
                     [live.mailbox_challenge_id, attemptId],
                 );
                 if (reboundBinding.rowCount !== 1) throw unavailable();
-                const rebound = await tx.query<{ expires_at: Date }>(
+                // The rebound attempt owns a fresh ten-minute window, but
+                // the reported deadline stays on the reused challenge: the
+                // decoy path has no rebound (no stored key to match), so a
+                // fresh-looking rebound deadline would mark recoverable
+                // accounts against decoy cooldown retries by expiresAt.
+                // The OTP window itself never stretches — verify still
+                // requires the original challenge to be consumable.
+                await tx.query(
                     `INSERT INTO student_auth_recovery_attempts
                          (id, user_id, credential_generation, purpose, secret_hash, recovery_code_generation,
                           mailbox_challenge_id, expires_at, idempotency_key)
-                     VALUES ($1, $2, $3, $4, $5, $6, $7, LEAST(clock_timestamp() + interval '10 minutes', $8::timestamptz), $9)
-                     RETURNING expires_at`,
-                    [attemptId, account.id, Number(account.credential_generation), input.purpose, this.secretDigest(secret), Number(active.generation), live.mailbox_challenge_id, live.challenge_expires_at, idempotencyKey],
+                     VALUES ($1, $2, $3, $4, $5, $6, $7, clock_timestamp() + interval '10 minutes', $8)`,
+                    [attemptId, account.id, Number(account.credential_generation), input.purpose, this.secretDigest(secret), Number(active.generation), live.mailbox_challenge_id, idempotencyKey],
                 );
-                return { expiresAt: rebound.rows[0]!.expires_at.toISOString(), serverNow: serverNow.toISOString() };
+                return { expiresAt: live.challenge_expires_at.toISOString(), serverNow: serverNow.toISOString() };
             }
             await this.failPriorAttempts(tx, account.id);
             const inserted = await tx.query<{ expires_at: Date }>(
                 `INSERT INTO student_auth_recovery_attempts
                      (id, user_id, credential_generation, purpose, secret_hash, recovery_code_generation,
                       mailbox_challenge_id, expires_at, idempotency_key)
-                 VALUES ($1, $2, $3, $4, $5, $6, $7, LEAST(clock_timestamp() + interval '10 minutes', $8::timestamptz), $9)
+                 VALUES ($1, $2, $3, $4, $5, $6, $7, clock_timestamp() + interval '10 minutes', $8)
                  RETURNING expires_at`,
-                [attemptId, account.id, Number(account.credential_generation), input.purpose, this.secretDigest(secret), Number(active.generation), challenge.challengeId, challenge.expiresAt, idempotencyKey],
+                [attemptId, account.id, Number(account.credential_generation), input.purpose, this.secretDigest(secret), Number(active.generation), challenge.challengeId, idempotencyKey],
             );
             return { email: account.email, otp: challenge.code, challengeId: challenge.challengeId, expiresAt: inserted.rows[0]!.expires_at.toISOString(), serverNow: serverNow.toISOString() };
         });
@@ -445,8 +453,11 @@ export class StudentAccountRecoveryService {
      * by the normalized email so retry deadlines are stable exactly like
      * committed handles: a fresh `serverNow + TTL` on every decoy retry
      * would be a deterministic response-field oracle against the frozen
-     * rebound expiry. The challenge can never verify — verify requires an
-     * attempt row, and none is written here — and nothing is delivered.
+     * rebound expiry. Fresh handles report the ten-minute attempt expiry
+     * both paths share; cooldown retries report the frozen challenge
+     * expiry both paths share. The challenge can never verify — verify
+     * requires an attempt row, and none is written here — and nothing is
+     * delivered.
      * Storage is bounded, not unbounded: one budget row per subject
      * (upserted), at most three challenges per ten-minute window per
      * subject (budget-enforced), plus the route's per-IP limiter — the
@@ -487,7 +498,11 @@ export class StudentAccountRecoveryService {
             // the same round trip without writing anything; the residual
             // is heap/WAL cost only, sub-round-trip noise.
             await this.lockedStudentStatus(tx, randomUUID());
-            return { expiresAt: decoy.expiresAt.toISOString(), serverNow: handle.serverNow.toISOString() };
+            // Fresh handles report the ten-minute attempt expiry, matching
+            // the committed path's attempt row; the decoy challenge itself
+            // still carries the shorter OTP TTL underneath.
+            const attemptExpiry = new Date(handle.serverNow.getTime() + 10 * 60 * 1000);
+            return { expiresAt: attemptExpiry.toISOString(), serverNow: handle.serverNow.toISOString() };
         }
         // Cooldown/locked: the live current challenge's frozen expiry,
         // mirroring the committed rebound; fresh only when none is live.
