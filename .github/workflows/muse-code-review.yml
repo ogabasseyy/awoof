@@ -45,7 +45,7 @@ concurrency:
   # First attempts cancel superseded runs (quota); manual reruns (attempt>1)
   # must not cancel a newer head's in-flight review — the rerun's own
   # head-SHA check skips it cheaply instead.
-  cancel-in-progress: ${{ github.run_attempt == 1 }}
+  cancel-in-progress: ${{ github.run_attempt == 1 && (github.event.action != 'edited' || github.event.changes.base != null) }}
 
 jobs:
   muse-review:
@@ -236,8 +236,6 @@ jobs:
           emit_guidance() {
             candidate="$1"
             if [[ "${guidance_capped}" == "true" ]]; then return 0; fi
-            if grep -qxF "${candidate}" "${guidance_seen}" 2>/dev/null; then return 0; fi
-            echo "${candidate}" >> "${guidance_seen}"
             content=""
             source=""
             if [[ "${base_available}" == "true" ]] \
@@ -264,13 +262,18 @@ jobs:
               return 0
             fi
             guidance_bytes=$(( guidance_bytes + content_len ))
+            # Candidate paths from changed files are submitter-controlled:
+            # flatten newlines for display and omit the path from the block
+            # attribute (a quote in the path would break out of it).
+            safe_candidate="$(printf '%s' "${candidate}" | tr '\n' '_')"
+            safe_candidate="${safe_candidate:0:300}"
             {
-              printf '\n### %s (%s)%s\n\n' "${candidate}" "${source}" "${trunc_note}"
+              printf '\n### %s (%s)%s\n\n' "${safe_candidate}" "${source}" "${trunc_note}"
               if [[ "${source}" == UNTRUSTED* ]]; then
                 # Head-only guidance is submitter-controlled: neutralize
                 # block-closing tags and isolate it in an explicit untrusted
                 # block instead of appending it raw after the contract.
-                printf '<untrusted_guidance source="%s">\n' "${candidate}"
+                printf '<untrusted_guidance>\n'
                 printf '%s' "${content}" | iconv -c -f UTF-8 -t UTF-8 2>/dev/null \
                   | perl -pe 's{<\s*/\s*(file|diff|pr_title|pr_description|changed_files|head_ref|untrusted_guidance)}{<\\/$1}gi' || true
                 printf '\n</untrusted_guidance>\n'
@@ -280,17 +283,39 @@ jobs:
               fi
             } >> "${guidance_file}"
           }
+          guidance_candidates=()
+          add_candidate() {
+            if grep -qxF "$1" "${guidance_seen}" 2>/dev/null; then return 0; fi
+            echo "$1" >> "${guidance_seen}"
+            guidance_candidates+=("$1")
+          }
           for candidate in AGENTS.md CLAUDE.md CONTRIBUTING.md .github/copilot-instructions.md; do
-            emit_guidance "${candidate}"
+            add_candidate "${candidate}"
           done
           while IFS= read -r changed; do
             dir="$(dirname -- "${changed}")"
             while [[ "${dir}" != "." && "${dir}" != "/" ]]; do
-              emit_guidance "${dir}/AGENTS.md"
-              emit_guidance "${dir}/CLAUDE.md"
+              add_candidate "${dir}/AGENTS.md"
+              add_candidate "${dir}/CLAUDE.md"
               dir="$(dirname -- "${dir}")"
             done
           done < <(jq -r '.[].filename' "${files_file}" 2>/dev/null)
+          # Two phases: trusted base-backed guidance first, head-only files
+          # second — so PR-authored content can never exhaust the byte budget
+          # before applicable trusted rules are collected.
+          for phase in base head; do
+            for candidate in ${guidance_candidates[@]+"${guidance_candidates[@]}"}; do
+              if [[ "${base_available}" == "true" ]] \
+                && git show "FETCH_HEAD:${candidate}" >/dev/null 2>&1; then
+                is_base=true
+              else
+                is_base=false
+              fi
+              if [[ "${phase}" == "base" && "${is_base}" != "true" ]]; then continue; fi
+              if [[ "${phase}" == "head" && "${is_base}" == "true" ]]; then continue; fi
+              emit_guidance "${candidate}"
+            done
+          done
           if [[ ! -s "${guidance_file}" ]]; then
             printf '(No AGENTS.md, CLAUDE.md, CONTRIBUTING.md, or copilot instructions found in this repo.)\n' > "${guidance_file}"
           fi
@@ -565,6 +590,7 @@ jobs:
             raw_finding_count="$(jq -r '(.findings // []) | length' "${findings_json}")"
             jq '.findings |= map(select(type == "object"
               and (.path | type) == "string"
+              and ((.line | tostring) | test("^[0-9]+$"))
               and ((.line | tonumber?) // 0) > 0))' "${findings_json}" > "${findings_json}.clean" \
               && mv "${findings_json}.clean" "${findings_json}"
             clean_finding_count="$(jq -r '(.findings // []) | length' "${findings_json}")"
