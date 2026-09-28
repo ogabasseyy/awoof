@@ -166,10 +166,55 @@ export class StudentAccountRecoveryService {
         // Always provide an indistinguishable browser handle. A non-existent,
         // suspended, or code-less account receives a handle that cannot verify.
         // Delivery is never awaited: transport latency would otherwise mark
-        // real accounts by response timing. Failures stay silent by design —
-        // the OTP remains consumable and the caller can request a new one.
-        if ('email' in started && 'otp' in started && this.deps.deliverOtp) void this.deps.deliverOtp(started.email, started.otp).catch(() => undefined);
+        // real accounts by response timing. Definitive delivery failures
+        // retire the attempt asynchronously (see deliverAndCompensate) so
+        // cooldown retries cannot rebound to an OTP that was never emailed.
+        if ('email' in started && 'otp' in started) void this.deliverAndCompensate(attemptId, started.email, started.otp);
         return { attemptId, secret, expiresAt: started.expiresAt, serverNow: started.serverNow };
+    }
+
+    /**
+     * Fire-and-forget OTP delivery with post-commit compensation. A
+     * rejected transport is ambiguous (the mail may still have been
+     * sent), so the attempt stays usable; but a resolved `{ success:
+     * false }` is definitive non-delivery, and the pending attempt is
+     * terminalized and its challenge superseded. Otherwise the cooldown
+     * path would rebound retries to an undelivered challenge and report
+     * success without ever sending mail. Already-verified, consumed, or
+     * failed attempts are left alone: verification proves delivery.
+     */
+    private async deliverAndCompensate(attemptId: string, email: string, otp: string): Promise<void> {
+        const deliver = this.deps.deliverOtp;
+        if (!deliver) return;
+        let result: { success: boolean };
+        try {
+            result = await deliver(email, otp);
+        } catch {
+            return;
+        }
+        if (result.success) return;
+        try {
+            await this.transaction(async (tx) => {
+                const attempt = await tx.query<{ mailbox_challenge_id: string }>(
+                    `SELECT mailbox_challenge_id FROM student_auth_recovery_attempts
+                     WHERE id = $1 AND status = 'pending' FOR UPDATE`,
+                    [attemptId],
+                );
+                const row = attempt.rows[0];
+                if (!row) return;
+                await tx.query(
+                    `UPDATE student_auth_recovery_attempts SET status = 'failed', secret_hash = NULL WHERE id = $1`,
+                    [attemptId],
+                );
+                await tx.query(
+                    `UPDATE verification_challenges SET superseded_at = clock_timestamp()
+                     WHERE id = $1 AND consumed_at IS NULL AND superseded_at IS NULL`,
+                    [row.mailbox_challenge_id],
+                );
+            });
+        } catch {
+            // Best-effort compensation; the 202 response stands either way.
+        }
     }
 
     async verify(input: { attemptId: unknown; secret: unknown; code: unknown; otp: unknown }): Promise<void> {

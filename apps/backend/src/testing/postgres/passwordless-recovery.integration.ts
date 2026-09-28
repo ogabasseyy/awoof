@@ -6,6 +6,7 @@ import { issueActionGrant } from '../../services/auth/student-action-grant.servi
 import { StudentReauthService } from '../../services/auth/student-reauth.service.js';
 import { StudentRecoveryCodeService } from '../../services/auth/student-recovery-code.service.js';
 import { StudentAccountRecoveryService } from '../../services/auth/student-account-recovery.service.js';
+import { challengeSubjectDigest } from '../../services/verification/challenge.service.js';
 import { createTestPool } from './test-database.js';
 
 const SID = '22222222-2222-4222-8222-222222222222';
@@ -234,6 +235,57 @@ test('cooldown retries without a live attempt return frozen expiries on both pat
             'SELECT count(*)::text AS count FROM student_auth_recovery_attempts WHERE user_id = $1', [account.userId],
         );
         assert.equal(rows.rows[0]!.count, '1');
+    } finally {
+        client.release();
+        await pool.end();
+    }
+});
+
+test('failed recovery delivery retires the attempt and challenge without stranding retry', async () => {
+    const pool = createTestPool();
+    const client = await pool.connect();
+    try {
+        const account = await seedRecoverableStudent(client);
+        let sends = 0; let otp = '';
+        const service = new StudentAccountRecoveryService({
+            pool, recoveryCodeKey: 'test-recovery-code-key',
+            deliverOtp: async (_email, delivered) => { sends++; if (sends === 1) return { success: false }; otp = delivered; return { success: true }; },
+            validatePassword: () => ({ valid: true, errors: [] }), hashPassword: async () => 'delivery-retry-hash',
+        });
+        const first = await service.start({ email: account.email, purpose: 'lost_access' });
+        assert.match(first.attemptId, /^[0-9a-f-]{36}$/i, 'the 202 handle shape is preserved while compensation runs async');
+        // The delivery resolves { success: false } (Brevo retries
+        // exhausted): the pending attempt terminalizes and its challenge
+        // supersedes instead of staying reboundable.
+        const deadline = Date.now() + 5000;
+        for (;;) {
+            const row = await client.query<{ status: string; secret_hash: string | null }>(
+                'SELECT status, secret_hash FROM student_auth_recovery_attempts WHERE id = $1', [first.attemptId],
+            );
+            if (row.rows[0]?.status === 'failed') {
+                assert.equal(row.rows[0]!.secret_hash, null);
+                break;
+            }
+            assert.ok(Date.now() < deadline, 'async compensation must retire the undelivered attempt');
+            await new Promise((resolve) => setTimeout(resolve, 25));
+        }
+        // A cooldown restart cannot rebound to the undelivered challenge:
+        // no live attempt exists, so the handle cannot verify.
+        const retry = await service.start({ email: account.email, purpose: 'lost_access' });
+        await assert.rejects(() => service.verify({ attemptId: retry.attemptId, secret: retry.secret, code: account.code, otp: '123456' }));
+        // Past the cooldown, recovery completes end to end on a fresh OTP.
+        await client.query(
+            `UPDATE verification_challenge_budgets
+             SET send_count = 0, resend_available_at = clock_timestamp() - interval '1 second'
+             WHERE purpose = 'student_account_recovery' AND subject_digest = $1`,
+            [challengeSubjectDigest('student_account_recovery', account.email)],
+        );
+        const second = await service.start({ email: account.email, purpose: 'lost_access' });
+        assert.match(otp, /^\d{6}$/);
+        await service.verify({ attemptId: second.attemptId, secret: second.secret, code: account.code, otp });
+        await service.complete({ attemptId: second.attemptId, secret: second.secret, password: 'ValidNew1!' });
+        const after = await client.query<{ password_hash: string }>('SELECT password_hash FROM users WHERE id = $1', [account.userId]);
+        assert.equal(after.rows[0]!.password_hash, 'delivery-retry-hash');
     } finally {
         client.release();
         await pool.end();
