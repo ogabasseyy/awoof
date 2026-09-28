@@ -808,6 +808,10 @@ export function createStudentSsoRouter(factory: FlowFactory = defaultFlow, optio
         const actor = ssoActor(req);
         const result = await reauthFactory().start({ userId: actor.userId, sid: actor.sid, purpose: body.purpose, ...(typeof body.targetIdentityId === 'string' ? { targetIdentityId: body.targetIdentityId } : {}), ...(typeof body.pendingCodeId === 'string' ? { pendingCodeId: body.pendingCodeId } : {}) });
         responseHeaders(res);
+        // This 256-bit, five-minute bearer value must round-trip through the
+        // initiating browser to bind the OAuth callback. It is HttpOnly,
+        // Secure, SameSite=Lax, path-scoped, and only its digest is persisted.
+        // codeql[js/clear-text-storage-of-sensitive-data]: the browser must hold this one-use binding secret; these controls bound exposure.
         res.cookie(studentReauthCookieName(result.attemptId), result.callbackCookie, { maxAge: 5 * 60_000, path: STUDENT_SSO_COOKIE_PATH, httpOnly: true, secure: true, sameSite: 'lax' });
         res.status(201).json({ success: true, data: { attemptId: result.attemptId, authorizationUrl: result.authorizationUrl } });
     }));

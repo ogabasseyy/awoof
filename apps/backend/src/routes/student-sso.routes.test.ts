@@ -213,7 +213,15 @@ test('Microsoft fresh-reauth routes preserve the browser binding and never use t
         });
         assert.equal(start.status, 201);
         assert.deepEqual(await start.json(), { success: true, data: { attemptId: reauthAttemptId, authorizationUrl: 'https://provider.example.invalid/fresh' } });
-        assert.match(parseSetCookies(start)[0]!, new RegExp(`awoof_reauth_${reauthAttemptId}=reauth-browser`));
+        const [reauthCookie] = parseSetCookies(start);
+        assert.ok(reauthCookie);
+        assert.match(reauthCookie, new RegExp(`^awoof_reauth_${reauthAttemptId}=reauth-browser;`));
+        assert.match(reauthCookie, /Path=\/api\/auth\/student\/sso/);
+        assert.match(reauthCookie, /Max-Age=300/);
+        assert.match(reauthCookie, /HttpOnly/);
+        assert.match(reauthCookie, /Secure/);
+        assert.match(reauthCookie, /SameSite=Lax/);
+        assert.doesNotMatch(reauthCookie, /Domain=/);
         const callback = await fetch(`${baseUrl}/microsoft/callback?state=reauth-state&code=code`, {
             redirect: 'manual', headers: { Cookie: `awoof_reauth_${reauthAttemptId}=reauth-browser` },
         });
