@@ -517,6 +517,11 @@ export class StudentSsoLinkService {
                 'SELECT password_hash, active_session_id FROM users WHERE id = $1',
                 [userId],
             );
+            // Same usable-password test as the reauth gate above: a legacy
+            // empty-string hash cannot authenticate, so it must not count
+            // as a remaining login method either.
+            const storedHash = account.rows[0]?.password_hash;
+            const hasUsablePassword = typeof storedHash === 'string' && storedHash !== '';
             if (account.rows[0]?.active_session_id !== sid) throw invalidUnlink();
             const identity = await tx.query<{ id: string; user_id: string; university_id: string; provider: string; revoked_at: Date | null }>(
                 'SELECT id, user_id, university_id, provider, revoked_at FROM student_auth_identities WHERE id = $1 FOR UPDATE',
@@ -567,7 +572,7 @@ export class StudentSsoLinkService {
                 (candidate) => this.deps.isProviderEnabled?.(candidate.provider) === true,
             );
             const siblingUsable = usable.some((candidate) => !candidate.is_target);
-            if (account.rows[0]?.password_hash == null && !siblingUsable) {
+            if (!hasUsablePassword && !siblingUsable) {
                 return { outcome: 'last_method' };
             }
             // Fresh-proof preservation: every provider-backed sensitive
@@ -585,7 +590,7 @@ export class StudentSsoLinkService {
                 (candidate) => !candidate.is_target && candidate.provider === 'microsoft',
             );
             const targetMicrosoftUsable = row.provider === 'microsoft' && usable.some((candidate) => candidate.is_target);
-            if (targetMicrosoftUsable && account.rows[0]?.password_hash == null && !microsoftSiblingUsable) {
+            if (targetMicrosoftUsable && !hasUsablePassword && !microsoftSiblingUsable) {
                 return { outcome: 'last_proof_method' };
             }
             // Consumption follows the guard: a refused last-method removal

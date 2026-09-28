@@ -737,3 +737,35 @@ test('marketplace hides the signup recovery offer once a code exists', async ({ 
     expect(await page.evaluate(() => sessionStorage.getItem('awoof.passwordless-signup-fresh'))).toBeNull();
     api.assertNoUnexpectedRequests();
 });
+
+test('ambiguous provider-backed removal reconciles to the committed removal', async ({ page }) => {
+    const api = await installSyntheticApi(page);
+    await page.route(`${apiOrigin}/api/auth/student/sso/reauth/finish`, route => route.fulfill({ status: 201, headers, json: { success: true, data: { grantId: 'c1000000-0000-4000-8000-000000000001', grantSecret: 'remove-grant', expiresAt: new Date(Date.now() + 60_000).toISOString(), purpose: 'recovery_code_remove', pendingCodeId: null, targetIdentityId: null, activeCodeGeneration: 1 } } }));
+    await page.route(`${apiOrigin}/api/auth/student/sso/recovery-code/remove`, route => route.fulfill({ status: 500, headers, json: { success: false, error: { message: 'boom', statusCode: 500 } } }));
+    await page.route(`${apiOrigin}/api/auth/student/sso/recovery-code`, route => route.fulfill({ headers, json: { success: true, data: { status: 'unconfigured', generation: null, pendingCodeId: null } } }));
+    await page.goto('/auth/student/login'); await seedSession(page, 'student');
+    await page.goto('/auth/student/sso/complete?reauth=c1000000-0000-4000-8000-000000000002');
+    await page.getByLabel('Current recovery code').fill('old-code');
+    await page.getByRole('button', { name: 'Remove recovery code' }).click();
+    // The removal committed but the response was lost: the reloaded
+    // status renders the committed removal instead of a failure.
+    await expect(page.getByRole('heading', { name: 'Recovery code removed' })).toBeVisible();
+    api.assertNoUnexpectedRequests();
+});
+
+test('ambiguous provider-backed replacement guides cancel-and-regenerate', async ({ page }) => {
+    const api = await installSyntheticApi(page);
+    const pendingId = 'c2000000-0000-4000-8000-000000000001';
+    await page.route(`${apiOrigin}/api/auth/student/sso/reauth/finish`, route => route.fulfill({ status: 201, headers, json: { success: true, data: { grantId: 'c2000000-0000-4000-8000-000000000002', grantSecret: 'replace-grant', expiresAt: new Date(Date.now() + 60_000).toISOString(), purpose: 'recovery_code_generate', pendingCodeId: null, targetIdentityId: null, activeCodeGeneration: 1 } } }));
+    await page.route(`${apiOrigin}/api/auth/student/sso/recovery-code/generate`, route => route.fulfill({ status: 500, headers, json: { success: false, error: { message: 'boom', statusCode: 500 } } }));
+    await page.route(`${apiOrigin}/api/auth/student/sso/recovery-code`, route => route.fulfill({ headers, json: { success: true, data: { status: 'pending', generation: 2, pendingCodeId: pendingId, pendingExpiresAt: new Date(Date.now() + 600_000).toISOString() } } }));
+    await page.goto('/auth/student/login'); await seedSession(page, 'student');
+    await page.goto('/auth/student/sso/complete?reauth=c2000000-0000-4000-8000-000000000003');
+    await page.getByLabel('Current recovery code').fill('old-code');
+    await page.getByRole('button', { name: 'Generate replacement code' }).click();
+    // The replacement committed but its one-time display is lost with the
+    // response: guide cancel-and-regenerate instead of reporting failure.
+    await expect(page.getByRole('heading', { name: 'Replacement code unclear' })).toBeVisible();
+    await expect(page.getByRole('link', { name: 'Back to account security' })).toHaveAttribute('href', '/student/security');
+    api.assertNoUnexpectedRequests();
+});

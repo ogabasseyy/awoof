@@ -1409,6 +1409,67 @@ test('unlink refuses the last login method without revoking anything', async () 
 
 });
 
+test('unlink treats a legacy empty password hash as no password', async () => {
+    await withLinkPool(async (pool) => {
+        const attemptKey = randomBytes(32).toString('base64url');
+        const service = makeService(pool, attemptKey);
+        const client = await pool.connect();
+        let owner;
+        let policy;
+        let handoff;
+        try {
+            owner = await seedOwner(client, {});
+            policy = await seedPolicy(client, owner.universityId, owner.email.split('@')[1]!);
+            handoff = await seedHandoff(
+                client,
+                attemptKey,
+                policy,
+                googleObservation(policy.realm, `unlink-empty-sub-${uniqueLabel()}`, owner.email),
+            );
+        } finally {
+            client.release();
+        }
+        const identityId = await linkIdentity(service, owner, handoff);
+        const remover = await pool.connect();
+        try {
+            await remover.query('UPDATE users SET password_hash = \'\' WHERE id = $1', [owner.userId]);
+        } finally {
+            remover.release();
+        }
+        const unlinkSecret = secretHex();
+        const inserter = await pool.connect();
+        let grantId = '';
+        try {
+            grantId = (await inserter.query<{ id: string }>(
+                `INSERT INTO student_auth_action_grants (user_id, sid, credential_generation, purpose, secret_hash, target_identity_id, expires_at)
+                 VALUES ($1, $2, 0, 'unlink', $3, $4, clock_timestamp() + interval '5 minutes') RETURNING id`,
+                [owner.userId, owner.sid, hashMicrosoftAttemptSecret(unlinkSecret), identityId],
+            )).rows[0]!.id;
+        } finally {
+            inserter.release();
+        }
+        const result = await service.unlink({
+            userId: owner.userId,
+            sid: owner.sid,
+            identityId,
+            grantId,
+            grantSecret: unlinkSecret,
+        });
+        assert.deepEqual(result, { outcome: 'last_method' });
+        const check = await pool.connect();
+        try {
+            const row = await check.query<{ revoked_at: Date | null }>(
+                'SELECT revoked_at FROM student_auth_identities WHERE id = $1',
+                [identityId],
+            );
+            assert.equal(row.rows[0]!.revoked_at, null);
+        } finally {
+            check.release();
+        }
+    });
+
+});
+
 test('a refused last-method removal preserves the grant for retry', async () => {
     await withLinkPool(async (pool) => {
         const attemptKey = randomBytes(32).toString('base64url');

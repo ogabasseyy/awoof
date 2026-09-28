@@ -64,7 +64,7 @@ function formatPendingRemaining(deadlineMs: number, nowMs: number): string {
 
 function RecoveryReauthComplete({ attemptId }: { attemptId: string }) {
     const { refreshUser } = useAuth();
-    const [status, setStatus] = useState<'checking' | 'generate' | 'display' | 'activate' | 'remove' | 'failed' | 'active' | 'removed' | 'link_unavailable' | 'unlinked' | 'unlinked_signed_out' | 'last_method' | 'last_proof_method' | 'link_ambiguous'>('checking');
+    const [status, setStatus] = useState<'checking' | 'generate' | 'generate_ambiguous' | 'display' | 'activate' | 'remove' | 'failed' | 'active' | 'removed' | 'link_unavailable' | 'unlinked' | 'unlinked_signed_out' | 'last_method' | 'last_proof_method' | 'link_ambiguous'>('checking');
     const [code, setCode] = useState(''); const [oldCode, setOldCode] = useState(''); const [needsOldCode, setNeedsOldCode] = useState(false); const [pendingCodeId, setPendingCodeId] = useState<string | null>(null); const [pendingExpiresAt, setPendingExpiresAt] = useState<string | null>(null); const [expectedGeneration, setExpectedGeneration] = useState<number | null>(null); const [grant, setGrant] = useState<{ grantId: string; grantSecret: string } | null>(null); const [error, setError] = useState<string | null>(null);
     const [busy, setBusy] = useState(false); const started = useRef(false); const actionBusy = useRef(false);
     const [now, setNow] = useState(() => Date.now());
@@ -222,9 +222,39 @@ function RecoveryReauthComplete({ attemptId }: { attemptId: string }) {
     };
     const generateReplacement = async () => {
         const session = getSessionSnapshot(); if (actionBusy.current || !grant || !session.accessToken || !code) return; actionBusy.current = true; setBusy(true);
-        try { const r = await studentSsoSessionApiClient.post('/auth/student/sso/recovery-code/generate', { reauthGrant: grant, oldCode: code }); const data = (r.data as { data?: { pendingCodeId?: unknown; code?: unknown; expiresAt?: unknown; serverNow?: unknown } }).data; if (!data || typeof data.pendingCodeId !== 'string' || typeof data.code !== 'string') throw new Error(); setGrant(null); setPendingCodeId(data.pendingCodeId); setCode(data.code); setPendingExpiresAt(typeof data.expiresAt === 'string' ? data.expiresAt : null); setSkewMs(serverSkewSince(typeof data.serverNow === 'string' && !Number.isNaN(Date.parse(data.serverNow)) ? data.serverNow : null)); setStatus('display'); } catch { setError('The current recovery code could not be confirmed.'); } finally { actionBusy.current = false; setBusy(false); }
+        try { const r = await studentSsoSessionApiClient.post('/auth/student/sso/recovery-code/generate', { reauthGrant: grant, oldCode: code }); const data = (r.data as { data?: { pendingCodeId?: unknown; code?: unknown; expiresAt?: unknown; serverNow?: unknown } }).data; if (!data || typeof data.pendingCodeId !== 'string' || typeof data.code !== 'string') throw new Error(); setGrant(null); setPendingCodeId(data.pendingCodeId); setCode(data.code); setPendingExpiresAt(typeof data.expiresAt === 'string' ? data.expiresAt : null); setSkewMs(serverSkewSince(typeof data.serverNow === 'string' && !Number.isNaN(Date.parse(data.serverNow)) ? data.serverNow : null)); setStatus('display'); } catch (cause: unknown) {
+            // An ambiguous transport failure may have committed: the grant
+            // is then consumed and the replacement plaintext is lost with
+            // the response. A pending code reading back proves the commit —
+            // guide cancel-and-regenerate instead of reporting failure.
+            const failed = statusOf(cause);
+            if (failed === undefined || failed >= 500) {
+                try {
+                    const current = await studentSsoSessionApiClient.get('/auth/student/sso/recovery-code');
+                    const live = (current.data as { data?: { status?: unknown } }).data;
+                    if (live?.status === 'pending') { setGrant(null); setCode(''); setStatus('generate_ambiguous'); return; }
+                } catch { /* reload failed; fall through to the generic error */ }
+            }
+            setError('The current recovery code could not be confirmed.');
+        } finally { actionBusy.current = false; setBusy(false); }
     };
-    const remove = async () => { const session = getSessionSnapshot(); if (actionBusy.current || !grant || !session.accessToken || !code) return; actionBusy.current = true; setBusy(true); try { await studentSsoSessionApiClient.post('/auth/student/sso/recovery-code/remove', { reauthGrant: grant, oldCode: code }); setGrant(null); setCode(''); setStatus('removed'); } catch { setError('The current recovery code could not be confirmed.'); } finally { actionBusy.current = false; setBusy(false); } };
+    const remove = async () => {
+        const session = getSessionSnapshot(); if (actionBusy.current || !grant || !session.accessToken || !code) return; actionBusy.current = true; setBusy(true);
+        try { await studentSsoSessionApiClient.post('/auth/student/sso/recovery-code/remove', { reauthGrant: grant, oldCode: code }); setGrant(null); setCode(''); setStatus('removed'); } catch (cause: unknown) {
+            // An ambiguous transport failure may have committed while
+            // consuming the grant. An unconfigured status reading back
+            // proves the removal landed: render it instead of failure.
+            const failed = statusOf(cause);
+            if (failed === undefined || failed >= 500) {
+                try {
+                    const current = await studentSsoSessionApiClient.get('/auth/student/sso/recovery-code');
+                    const live = (current.data as { data?: { status?: unknown } }).data;
+                    if (live?.status === 'unconfigured') { setGrant(null); setCode(''); setStatus('removed'); return; }
+                } catch { /* reload failed; fall through to the generic error */ }
+            }
+            setError('The current recovery code could not be confirmed.');
+        } finally { actionBusy.current = false; setBusy(false); }
+    };
     if (status === 'generate') return <AuthShell role="student" title="Replace recovery code" subtitle="Confirm your current code." footer={null}><label htmlFor="old-recovery-code">Current recovery code<input id="old-recovery-code" value={code} onChange={e => setCode(e.target.value)} className="mt-1 w-full rounded-2xl border px-4 h-11" /></label>{error ? <p role="alert">{error}</p> : null}<Button disabled={busy} className="mt-5 w-full rounded-full" onClick={generateReplacement}>Generate replacement code</Button></AuthShell>;
     if (pendingExpired) return <AuthShell role="student" title="Pending code expired" subtitle="The activation deadline passed." footer={null}><p role="alert">This pending code expired before activation and cannot recover your account. Start setup again for a fresh code.</p><Button className="mt-5 w-full rounded-full" asChild><Link href="/student/security">Back to account security</Link></Button></AuthShell>;
     if (status === 'display') return <AuthShell role="student" title="Save your recovery code" subtitle="It will not be shown again." footer={null}><p role="alert" className="rounded-xl bg-amber-50 p-3 break-all font-mono text-left">{code}</p>{Number.isNaN(pendingDeadlineMs) ? null : <p role="timer" className="mt-3 text-left text-sm">Activate this code within {formatPendingRemaining(pendingDeadlineMs, now + skewMs)}.</p>}<p className="mt-3 text-left text-sm">Save this code somewhere secure. It is not stored in this browser, sent by email, or added to a URL. Then return to Account security and confirm your identity again to activate it.</p><Button className="mt-5 w-full rounded-full" onClick={() => { if (pendingCodeId) try { sessionStorage.setItem(RECOVERY_INTENT_KEY, JSON.stringify({ purpose: 'recovery_code_activate', pendingCodeId })); } catch { /* security page reports unavailable */ } setCode(''); window.location.href = '/student/security'; }}>I saved my code</Button></AuthShell>;
@@ -234,6 +264,7 @@ function RecoveryReauthComplete({ attemptId }: { attemptId: string }) {
     if (status === 'removed') return <AuthShell role="student" title="Recovery code removed" subtitle="Recovery is now unconfigured." footer={null}><p role="status">The saved code was revoked and can no longer recover this account. Set up a new code from Account security if you still want recovery.</p><Button className="mt-5 w-full rounded-full" asChild><Link href="/student/security">Back to account security</Link></Button></AuthShell>;
     if (status === 'link_unavailable') return <AuthShell role="student" title="School sign-in link unavailable" subtitle="This sign-in can no longer be linked." footer={null}><p role="status">The pending school sign-in expired or was already used. Restart school sign-in and try again.</p><Button className="mt-5 w-full rounded-full" asChild><Link href="/auth/student/login">Back to sign-in</Link></Button></AuthShell>;
     if (status === 'link_ambiguous') return <AuthShell role="student" title="School sign-in link unclear" subtitle="The confirmation was lost." footer={null}><p role="status">This school sign-in may already be linked. Sign in again to check your sign-in methods before retrying.</p><Button className="mt-5 w-full rounded-full" asChild><Link href="/auth/student/login">Sign in to check</Link></Button></AuthShell>;
+    if (status === 'generate_ambiguous') return <AuthShell role="student" title="Replacement code unclear" subtitle="The confirmation was lost." footer={null}><p role="status">A replacement code was created but its response was lost, so the code cannot be shown again. Go to Account security, cancel the pending code, and generate a new one.</p><Button className="mt-5 w-full rounded-full" asChild><Link href="/student/security">Back to account security</Link></Button></AuthShell>;
     if (status === 'unlinked') return <AuthShell role="student" title="Sign-in method removed" subtitle="The school sign-in was disconnected." footer={null}><p role="status">That school sign-in can no longer access this account.</p><Button className="mt-5 w-full rounded-full" asChild><Link href="/student/security">Back to account security</Link></Button></AuthShell>;
     if (status === 'unlinked_signed_out') return <AuthShell role="student" title="Sign-in method removed" subtitle="You have been signed out." footer={null}><p role="status">The removed sign-in had issued this session, so the local sign-in was cleared. That school sign-in can no longer access this account.</p><Button className="mt-5 w-full rounded-full" asChild><Link href="/auth/student/login">Back to sign-in</Link></Button></AuthShell>;
     if (status === 'last_method') return <AuthShell role="student" title="Cannot remove the last sign-in method" subtitle="Keep another way to sign in first." footer={null}><p role="status">Removing this sign-in would lock the account. Link another school sign-in or set a password first.</p><Button className="mt-5 w-full rounded-full" asChild><Link href="/student/security">Back to account security</Link></Button></AuthShell>;
