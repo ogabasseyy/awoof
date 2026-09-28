@@ -11,6 +11,7 @@ import { assertFixtureDatabase, createTestPool, withTestClient } from './test-da
 
 const migrationsDirectory = resolve(dirname(fileURLToPath(import.meta.url)), '../../database/migrations');
 const passwordlessMigration = resolve(migrationsDirectory, '069_passwordless_credentials.sql');
+const recoveryCodeRevokedScrubMigration = resolve(migrationsDirectory, '076_recovery_code_revoked_scrub.sql');
 
 function label(): string {
     return randomUUID().replaceAll('-', '').slice(0, 12);
@@ -178,6 +179,54 @@ test('upgradePreservesExistingLogin keeps current policy and identity usable wit
             );
             assert.deepEqual(policyAfter.rows, policyBefore.rows);
             assert.deepEqual(identityAfter.rows, identityBefore.rows);
+        } finally {
+            await client.query('ROLLBACK');
+        }
+    });
+});
+
+test('migration 076 scrubs pending bindings from legacy consumed recovery-code rows', async () => {
+    await withTestClient(async (client) => {
+        const schema = `passwordless_consumed_scrub_${label()}`;
+        await client.query('BEGIN');
+        try {
+            await client.query(`CREATE SCHEMA ${schema}`);
+            await client.query(`SET LOCAL search_path TO ${schema}, public`);
+            await applyExistingMigrations(client);
+            const upgrades = readdirSync(migrationsDirectory)
+                .filter((name) => name.endsWith('.sql') && name >= '069_' && name < '076_')
+                .sort();
+            for (const name of upgrades) {
+                await client.query(readFileSync(resolve(migrationsDirectory, name), 'utf8'));
+            }
+
+            const userId = (await client.query<{ id: string }>(
+                `INSERT INTO users (email, role, password_hash)
+                 VALUES ($1, 'student', 'legacy-hash') RETURNING id`,
+                [`consumed-scrub-${label()}@example.invalid`],
+            )).rows[0]!.id;
+            const codeId = (await client.query<{ id: string }>(
+                `INSERT INTO student_auth_recovery_codes
+                     (user_id, generation, code_digest, status, consumed_at,
+                      pending_sid, pending_credential_generation, pending_proof_identity_id)
+                 VALUES ($1, 0, 'legacy-digest', 'consumed', clock_timestamp(), $2, 0, NULL)
+                 RETURNING id`,
+                [userId, randomUUID()],
+            )).rows[0]!.id;
+
+            await client.query(readFileSync(recoveryCodeRevokedScrubMigration, 'utf8'));
+            const code = await client.query<{
+                status: string; pending_sid: string | null; pending_credential_generation: string | null;
+                pending_proof_identity_id: string | null;
+            }>(
+                `SELECT status, pending_sid, pending_credential_generation, pending_proof_identity_id
+                 FROM student_auth_recovery_codes WHERE id = $1`,
+                [codeId],
+            );
+            assert.deepEqual(code.rows, [{
+                status: 'consumed', pending_sid: null, pending_credential_generation: null,
+                pending_proof_identity_id: null,
+            }]);
         } finally {
             await client.query('ROLLBACK');
         }
