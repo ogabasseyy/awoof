@@ -496,9 +496,16 @@ export class StudentAccountRecoveryService {
     }
 
     /**
-     * Frozen expiry of the budget's live current challenge, if any. The
+     * Frozen expiry of the budget's current challenge, if any. The
      * committed no-live-attempt branch and the decoy cooldown/locked branch
      * share this so retry deadlines are indistinguishable on both paths.
+     * Superseded challenges still anchor the deadline: delivery
+     * compensation supersedes the real account's challenge, and excluding
+     * it here would fall back to a fresh `serverNow + TTL` while the same
+     * retry for an unknown address still reads its untouched decoy's
+     * frozen expiry — an expiresAt oracle. Consumed challenges stay
+     * excluded: consumption proves the OTP reached its mailbox, which a
+     * prober cannot arrange.
      */
     private async liveBudgetChallengeExpiry(tx: PoolClient, subject: string): Promise<Date | null> {
         const result = await tx.query<{ expires_at: Date }>(
@@ -506,7 +513,7 @@ export class StudentAccountRecoveryService {
              FROM verification_challenge_budgets budget
              JOIN verification_challenges challenge ON challenge.id = budget.current_challenge_id
              WHERE budget.purpose = 'student_account_recovery' AND budget.subject_digest = $1
-               AND challenge.consumed_at IS NULL AND challenge.superseded_at IS NULL
+               AND challenge.consumed_at IS NULL
                AND challenge.expires_at > clock_timestamp()`,
             [subject],
         );

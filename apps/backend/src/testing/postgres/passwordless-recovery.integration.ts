@@ -314,8 +314,12 @@ test('failed recovery delivery retires the attempt and challenge without strandi
             await new Promise((resolve) => setTimeout(resolve, 25));
         }
         // A cooldown restart cannot rebound to the undelivered challenge:
-        // no live attempt exists, so the handle cannot verify.
+        // no live attempt exists, so the handle cannot verify. The
+        // deadline still replays the superseded challenge's frozen
+        // expiry — a fresh fallback here would mark compensated
+        // accounts against untouched decoys by expiresAt.
         const retry = await service.start({ email: account.email, purpose: 'lost_access' });
+        assert.equal(retry.expiresAt, first.expiresAt, 'post-compensation cooldown retries must replay the frozen challenge expiry');
         await assert.rejects(() => service.verify({ attemptId: retry.attemptId, secret: retry.secret, code: account.code, otp: '123456' }));
         // Past the cooldown, recovery completes end to end on a fresh OTP.
         await client.query(

@@ -81,7 +81,7 @@ export type StudentSsoCallbackResult = {
 
 export type StudentSsoAuthenticatedResult = {
     outcome: 'authenticated';
-    user: { id: string; email: string; role: 'student'; verificationStatus: string };
+    user: { id: string; email: string; role: 'student'; verificationStatus: string; recoveryReenrollmentRequired?: boolean };
     tokens: TokenPair;
     /** Null is permitted only with assuranceStatus 'unavailable'; never set student verified on error. */
     studentAssurance: StudentAssurance | null;
@@ -232,9 +232,13 @@ export class StudentSsoFlowService {
 
     private async failAttempt(attemptId: string): Promise<void> {
         await this.transaction(async (tx) => {
+            // Tombstone: the finish bindings survive so an authenticated
+            // retry proves them and reaches restart_required instead of a
+            // generic invalid; single-use secrets are nulled and the
+            // retention scrub clears the tombstone at attempt expiry.
             await tx.query(
                 `UPDATE student_auth_attempts
-                 SET status = 'failed', state_hash = NULL, callback_cookie_hash = NULL, finish_secret_hash = NULL,
+                 SET status = 'failed', state_hash = NULL,
                      encrypted_verifier = NULL, nonce = NULL, encrypted_observation = NULL
                  WHERE id = $1 AND status IN ('pending', 'processing', 'ready')`,
                 [attemptId],
@@ -527,6 +531,9 @@ export class StudentSsoFlowService {
                     || hashSsoSecret(browserCookie) !== attempt.callback_cookie_hash) {
                     throw invalidAttempt();
                 }
+                // Reachable because terminalization keeps the finish bindings
+                // as a tombstone: only a retry proving both secrets lands
+                // here, and only until the retention scrub clears them.
                 if (attempt.status === 'consumed' || attempt.status === 'failed') {
                     await this.invalidateAbandonedAttempts(tx, attempt);
                     return { restart: true };
@@ -611,9 +618,12 @@ export class StudentSsoFlowService {
     }
 
     private async terminalizeAttempt(tx: PoolClient, attemptId: string): Promise<void> {
+        // Tombstone: the finish bindings survive so an authenticated retry
+        // proves them and reaches restart_required instead of a generic
+        // invalid; the retention scrub clears the tombstone at expiry.
         await tx.query(
             `UPDATE student_auth_attempts
-             SET status = 'failed', state_hash = NULL, callback_cookie_hash = NULL, finish_secret_hash = NULL,
+             SET status = 'failed', state_hash = NULL,
                  encrypted_verifier = NULL, nonce = NULL, encrypted_observation = NULL
              WHERE id = $1 AND status IN ('pending', 'processing', 'ready')`,
             [attemptId],
@@ -622,9 +632,11 @@ export class StudentSsoFlowService {
 
     /** A controlled restart invalidates abandoned pre-callback flows for the same policy mailbox. Ready siblings survive. */
     private async invalidateAbandonedAttempts(tx: PoolClient, attempt: SsoAttempt): Promise<void> {
+        // Tombstone, as above: a sibling tab retrying its invalidated
+        // attempt restarts instead of reporting a generic failure.
         await tx.query(
             `UPDATE student_auth_attempts
-             SET status = 'failed', state_hash = NULL, callback_cookie_hash = NULL, finish_secret_hash = NULL,
+             SET status = 'failed', state_hash = NULL,
                  encrypted_verifier = NULL, nonce = NULL, encrypted_observation = NULL
              WHERE policy_id = $1 AND requested_email = $2
                AND status IN ('pending', 'processing') AND id <> $3`,
@@ -698,9 +710,13 @@ export class StudentSsoFlowService {
             locked.rows[0].remember_me,
         );
         await tx.query('UPDATE users SET active_session_auth_identity_id = $2 WHERE id = $1', [context.userId, identity.id]);
+        // Tombstone: the finish bindings survive the commit so a retry
+        // after a lost success response proves them and reaches
+        // restart_required; without this the retry fails the binding
+        // comparison and the committed login reports a generic outage.
         const consumed = await tx.query(
             `UPDATE student_auth_attempts
-             SET status = 'consumed', state_hash = NULL, callback_cookie_hash = NULL, finish_secret_hash = NULL,
+             SET status = 'consumed', state_hash = NULL,
                  encrypted_verifier = NULL, nonce = NULL, encrypted_observation = NULL
              WHERE id = $1 AND status = 'ready'`,
             [attempt.id],
@@ -725,7 +741,10 @@ export class StudentSsoFlowService {
             observation,
             microsoftMembershipAttested,
         });
-        const profile = await tx.query<{ verification_status: string }>('SELECT verification_status FROM users WHERE id = $1', [context.userId]);
+        const profile = await tx.query<{ verification_status: string; recovery_reenrollment_requires_password: boolean }>(
+            'SELECT verification_status, recovery_reenrollment_requires_password FROM users WHERE id = $1',
+            [context.userId],
+        );
         // Commit issuance and consumed state together; tokens and assurance
         // go out only after commit.
         return {
@@ -735,6 +754,12 @@ export class StudentSsoFlowService {
                 email: context.email,
                 role: 'student' as const,
                 verificationStatus: profile.rows[0]?.verification_status ?? 'unverified',
+                // Recovery consumes the only active code; surface the
+                // persistent re-enrollment action until a new code
+                // activates, mirroring password login and /auth/me.
+                ...(profile.rows[0]?.recovery_reenrollment_requires_password === true
+                    ? { recoveryReenrollmentRequired: true as const }
+                    : {}),
             },
             tokens,
             readAssurance: this.deps.readAssurance ?? ((userId: string) => readStudentAssuranceOrNull(this.deps.pool, userId)),
@@ -776,9 +801,11 @@ export class StudentSsoFlowService {
                 attempt.policy_id, attempt.policy_version, attempt.callback_cookie_hash,
             ],
         );
+        // Tombstone, as in the linked consume: a retry after a lost
+        // link_required response restarts instead of failing generic.
         const consumed = await tx.query(
             `UPDATE student_auth_attempts
-             SET status = 'consumed', state_hash = NULL, callback_cookie_hash = NULL, finish_secret_hash = NULL,
+             SET status = 'consumed', state_hash = NULL,
                  encrypted_verifier = NULL, nonce = NULL, encrypted_observation = NULL
              WHERE id = $1 AND status = 'ready'`,
             [attempt.id],
@@ -896,11 +923,15 @@ export async function cleanupStudentSsoTransients(client: PoolClient): Promise<S
     // Catch up terminal tombstones written by older failure paths. This is
     // deliberately status- and timestamp-preserving: immutable bindings and
     // the seven-day replay tombstone remain available to the retention policy.
+    // The tombstone survives until the attempt's own expiry: a retry
+    // after a lost finish response restarts any time before then, and
+    // the one-hour overdue predicate above still proves scheduler lag.
     const terminalAttemptSecrets = await client.query(
         `UPDATE student_auth_attempts
          SET state_hash = NULL, callback_cookie_hash = NULL, finish_secret_hash = NULL,
              encrypted_verifier = NULL, nonce = NULL, encrypted_observation = NULL
          WHERE status IN ('consumed', 'failed')
+           AND expires_at <= clock_timestamp()
            AND (state_hash IS NOT NULL OR callback_cookie_hash IS NOT NULL OR finish_secret_hash IS NOT NULL
                 OR encrypted_verifier IS NOT NULL OR nonce IS NOT NULL OR encrypted_observation IS NOT NULL)`,
     );

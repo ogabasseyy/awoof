@@ -330,6 +330,40 @@ test('linked owner signs in with one atomic session and separated assurance', as
     });
 });
 
+test('linked sign-in surfaces the recovery re-enrollment marker', async () => {
+    await withSsoPool(async (pool) => {
+        const fixture = await approvedGoogleFixture(pool);
+        const email = `marker-${uniqueLabel()}@${fixture.domain}`;
+        const subject = `marker-sub-${uniqueLabel()}`;
+        const setup = await pool.connect();
+        try {
+            const userId = await createStudent(setup, fixture.universityId, email);
+            await createIdentity(setup, userId, fixture.universityId, { subject });
+            // lost_access recovery consumed the only active code: the
+            // persistent marker stays set until a replacement activates.
+            await setup.query('UPDATE users SET recovery_reenrollment_requires_password = true WHERE id = $1', [userId]);
+        } finally {
+            setup.release();
+        }
+        const oidc = makeOidc();
+        oidc.redeemWith(observationFor(fixture.realm, subject));
+        const { service } = makeService(pool, oidc.oidc);
+        const { started, callbackUrl, cookies } = await startGoogle(service, oidc, email);
+        await service.callback({ provider: 'google', callbackUrl, browserCookies: cookies });
+        const finished = await service.finish({
+            attemptId: started.publicResult.attemptId,
+            finishSecret: started.publicResult.finishSecret,
+            browserCookie: started.callbackCookie.value,
+        });
+        assert.equal(finished.outcome, 'authenticated');
+        if (finished.outcome !== 'authenticated') throw new Error('unreachable');
+        // Mirroring password login and /auth/me: clients committing the
+        // SSO response directly must still show the replacement-code
+        // warning instead of offering provider-backed enrollment.
+        assert.equal(finished.user.recoveryReenrollmentRequired, true);
+    });
+});
+
 test('finish yields to a session issued after the attempt started', async () => {
     await withSsoPool(async (pool) => {
         const fixture = await approvedGoogleFixture(pool);
@@ -688,21 +722,27 @@ test('provider denial cannot skip state and browser checks', async () => {
                 'SELECT status, state_hash, callback_cookie_hash, finish_secret_hash, encrypted_verifier, nonce, encrypted_observation FROM student_auth_attempts WHERE id = $1',
                 [started.publicResult.attemptId],
             );
-            assert.deepEqual(row.rows[0], { status: 'failed', state_hash: null, callback_cookie_hash: null, finish_secret_hash: null, encrypted_verifier: null, nonce: null, encrypted_observation: null });
+            // Tombstone: single-use secrets are nulled but the finish
+            // bindings survive so an authenticated retry can restart.
+            assert.equal(row.rows[0]!.status, 'failed');
+            assert.equal(row.rows[0]!.state_hash, null);
+            assert.ok(row.rows[0]!.callback_cookie_hash);
+            assert.ok(row.rows[0]!.finish_secret_hash);
+            assert.equal(row.rows[0]!.encrypted_verifier, null);
+            assert.equal(row.rows[0]!.nonce, null);
+            assert.equal(row.rows[0]!.encrypted_observation, null);
         } finally {
             check.release();
         }
 
-        // The failed attempt scrubbed its binding digests: a finish replay
-        // cannot prove the secrets and is rejected instead of restarting.
-        await assert.rejects(
-            service.finish({
-                attemptId: started.publicResult.attemptId,
-                finishSecret: started.publicResult.finishSecret,
-                browserCookie: started.callbackCookie.value,
-            }),
-            /no longer valid/,
-        );
+        // The failed attempt kept its finish tombstone: a finish replay
+        // proves the secrets and restarts instead of failing generic.
+        const replay = await service.finish({
+            attemptId: started.publicResult.attemptId,
+            finishSecret: started.publicResult.finishSecret,
+            browserCookie: started.callbackCookie.value,
+        });
+        assert.equal(replay.outcome, 'restart_required');
     });
 });
 
@@ -746,19 +786,28 @@ test('unlinked identity receives a handoff and retains the browser binding', asy
             );
             assert.equal(attempts.rows[0]!.status, 'consumed');
             assert.equal(attempts.rows[0]!.encrypted_observation, null);
-            // The handoff inherits a copy of the browser binding, then the
-            // consumed attempt scrubs its own binding digests.
+            // The handoff inherits a copy of the browser binding; the
+            // consumed attempt keeps its finish tombstone so an
+            // authenticated retry restarts instead of failing generic.
             assert.equal(handoff.browser_binding_hash, hashMicrosoftAttemptSecret(started.callbackCookie.value));
-            assert.deepEqual(
-                { state_hash: attempts.rows[0]!.state_hash, callback_cookie_hash: attempts.rows[0]!.callback_cookie_hash, finish_secret_hash: attempts.rows[0]!.finish_secret_hash },
-                { state_hash: null, callback_cookie_hash: null, finish_secret_hash: null },
-            );
+            assert.equal(attempts.rows[0]!.state_hash, null);
+            assert.ok(attempts.rows[0]!.callback_cookie_hash);
+            assert.ok(attempts.rows[0]!.finish_secret_hash);
             const decrypted = JSON.parse(decryptMicrosoftAttemptVerifier(handoff.encrypted_observation, attemptKey, finished.handoffId));
             assert.equal(decrypted.subject, subject);
             assert.equal(decrypted.provider, 'google');
         } finally {
             check.release();
         }
+
+        // A retry after a lost link_required response proves the
+        // tombstone bindings and restarts instead of failing generic.
+        const retry = await service.finish({
+            attemptId: started.publicResult.attemptId,
+            finishSecret: started.publicResult.finishSecret,
+            browserCookie: started.callbackCookie.value,
+        });
+        assert.equal(retry.outcome, 'restart_required');
     });
 });
 
@@ -787,7 +836,7 @@ test('finish refuses a provider disabled after the attempt went ready', async ()
     });
 });
 
-test('duplicate finish after commit is rejected without a new session', async () => {
+test('duplicate finish after commit restarts without a new session', async () => {
     await withSsoPool(async (pool) => {
         const fixture = await approvedGoogleFixture(pool);
         const email = `replay-${uniqueLabel()}@${fixture.domain}`;
@@ -821,10 +870,11 @@ test('duplicate finish after commit is rejected without a new session', async ()
             before.release();
         }
 
-        // A lost response replays the same proofs, but the commit scrubbed
-        // the binding digests: the replay cannot prove the secrets and is
-        // rejected, and no second session is persisted.
-        await assert.rejects(service.finish(input), /no longer valid/);
+        // A lost response replays the same proofs: the commit kept the
+        // finish tombstone, so the replay proves the secrets, restarts,
+        // and persists no second session.
+        const replay = await service.finish(input);
+        assert.equal(replay.outcome, 'restart_required');
 
         const after = await pool.connect();
         try {
@@ -876,7 +926,8 @@ test('logout then stale finish cannot commit a new session', async () => {
             logout.release();
         }
 
-        await assert.rejects(service.finish(input), /no longer valid/);
+        const stale = await service.finish(input);
+        assert.equal(stale.outcome, 'restart_required');
         const check = await pool.connect();
         try {
             const users = await check.query<{ refresh_token_hash: string | null; active_session_id: string | null }>(
@@ -993,7 +1044,7 @@ test('policy disable or version change between start and callback fails the retu
     });
 });
 
-test('expired attempts finish as restart with scrubbed secrets', async () => {
+test('expired attempts restart on a tombstone the retention scrub clears', async () => {
     await withSsoPool(async (pool) => {
         const fixture = await approvedGoogleFixture(pool);
         const email = `expired-${uniqueLabel()}@${fixture.domain}`;
@@ -1022,13 +1073,47 @@ test('expired attempts finish as restart with scrubbed secrets', async () => {
         const check = await pool.connect();
         try {
             const row = await check.query(
-                'SELECT status, encrypted_verifier, nonce, encrypted_observation FROM student_auth_attempts WHERE id = $1',
+                'SELECT status, callback_cookie_hash, finish_secret_hash, encrypted_verifier, nonce, encrypted_observation FROM student_auth_attempts WHERE id = $1',
                 [started.publicResult.attemptId],
             );
-            assert.deepEqual(row.rows[0], { status: 'failed', encrypted_verifier: null, nonce: null, encrypted_observation: null });
+            // Terminalization keeps the finish tombstone: a retry proves
+            // the bindings and restarts instead of failing generic.
+            assert.equal(row.rows[0]!.status, 'failed');
+            assert.ok(row.rows[0]!.callback_cookie_hash);
+            assert.ok(row.rows[0]!.finish_secret_hash);
+            assert.equal(row.rows[0]!.encrypted_verifier, null);
+            assert.equal(row.rows[0]!.nonce, null);
+            assert.equal(row.rows[0]!.encrypted_observation, null);
         } finally {
             check.release();
         }
+
+        const retry = await service.finish({
+            attemptId: started.publicResult.attemptId,
+            finishSecret: started.publicResult.finishSecret,
+            browserCookie: started.callbackCookie.value,
+        });
+        assert.equal(retry.outcome, 'restart_required');
+
+        // The retention scrub clears the tombstone once the attempt has
+        // expired; a post-scrub retry can no longer prove the bindings.
+        const worker = await pool.connect();
+        try {
+            await cleanupStudentSsoTransients(worker);
+            const scrubbed = await worker.query(
+                'SELECT callback_cookie_hash, finish_secret_hash FROM student_auth_attempts WHERE id = $1',
+                [started.publicResult.attemptId],
+            );
+            assert.equal(scrubbed.rows[0]!.callback_cookie_hash, null);
+            assert.equal(scrubbed.rows[0]!.finish_secret_hash, null);
+        } finally {
+            worker.release();
+        }
+        await assert.rejects(service.finish({
+            attemptId: started.publicResult.attemptId,
+            finishSecret: started.publicResult.finishSecret,
+            browserCookie: started.callbackCookie.value,
+        }), /no longer valid/);
     });
 });
 
