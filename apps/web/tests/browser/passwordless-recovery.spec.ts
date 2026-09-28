@@ -548,6 +548,25 @@ test('an expired pending on account security refreshes to current status and res
     api.assertNoUnexpectedRequests();
 });
 
+test('re-enrollment after account recovery requires the password path on account security', async ({ page }) => {
+    const api = await installSyntheticApi(page);
+    await page.route(`${apiOrigin}/api/auth/me`, route => route.fulfill({ headers, json: { success: true, data: { id: '00000000-0000-4000-8000-000000000001', email: 'student@approved.test', role: 'student', verificationStatus: 'verified', recoveryReenrollmentRequired: true } } }));
+    await page.route(`${apiOrigin}/api/auth/student/sso/recovery-code`, route => route.fulfill({ headers, json: { success: true, data: { status: 'unconfigured', generation: null, pendingCodeId: null } } }));
+    await page.route(`${apiOrigin}/api/auth/student/sso/identities`, route => route.fulfill({ headers, json: { success: true, data: { identities: [] } } }));
+    let schoolStartCalls = 0;
+    await page.route(`${apiOrigin}/api/auth/student/sso/reauth/microsoft/start`, route => { schoolStartCalls++; return route.fulfill({ status: 201, headers, json: { success: true, data: { authorizationUrl: 'https://provider.example.invalid/authorize' } } }); });
+    await page.goto('/auth/student/login'); await seedSession(page, 'student');
+    await page.goto('/student/security');
+    // generate() rejects provider-backed grants while the re-enrollment
+    // marker stands, so the page must not offer the school round-trip.
+    await expect(page.getByText('School sign-in cannot be used for this enrollment.')).toBeVisible();
+    await expect(page.getByRole('button', { name: 'Use your password instead' })).toHaveCount(0);
+    await page.getByRole('button', { name: 'Confirm identity to generate a code' }).click();
+    await expect(page.getByRole('heading', { name: 'Confirm with your password' })).toBeVisible();
+    expect(schoolStartCalls).toBe(0);
+    api.assertNoUnexpectedRequests();
+});
+
 test('marketplace surfaces recovery-code re-enrollment after account recovery', async ({ page }) => {
     const api = await installSyntheticApi(page);
     await page.route(`${apiOrigin}/api/auth/me`, route => route.fulfill({ headers, json: { success: true, data: { id: '00000000-0000-4000-8000-000000000001', email: 'student@approved.test', role: 'student', verificationStatus: 'verified', recoveryReenrollmentRequired: true } } }));

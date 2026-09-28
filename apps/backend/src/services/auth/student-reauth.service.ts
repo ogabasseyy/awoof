@@ -1,6 +1,7 @@
 import { randomBytes, randomUUID } from 'node:crypto';
 import type { Pool, PoolClient } from 'pg';
 import { ConflictError, NotFoundError, ServiceUnavailableError, UnauthorizedError } from '../../common/errors/AppError.js';
+import { StudentOidcOperationalError } from './student-google-oidc.js';
 import { encryptMicrosoftAttemptVerifier, hashMicrosoftAttemptSecret } from '../verification/microsoft-attempt-crypto.js';
 import type { ApprovedLoginPolicy, FreshProviderObservation, LoginProvider, StudentOidcAdapter } from './student-sso.types.js';
 import type { ActionPurpose, ActionGrantResult } from './student-action-grant.service.js';
@@ -121,7 +122,21 @@ export class StudentReauthService {
         const nonce = secret();
         const verifier = secret(48);
         const callbackCookie = secret();
-        const authorizationUrl = await adapter.authorizeFresh({ state, nonce, verifier, loginHint: identity.observed_email });
+        // No attempt row exists yet (the insert follows), so there is
+        // nothing to terminalize: translate the provider failure into the
+        // documented operational response instead of a 500. Discovery and
+        // authorization outages are a retryable 503; an unusable stored
+        // mailbox is terminal like the callback's terminal-vs-outage split.
+        let authorizationUrl: URL;
+        try {
+            authorizationUrl = await adapter.authorizeFresh({ state, nonce, verifier, loginHint: identity.observed_email });
+        } catch (error) {
+            if (error instanceof StudentOidcOperationalError && error.category === 'upstream_unavailable') {
+                throw new ServiceUnavailableError('Fresh Microsoft authentication is unavailable');
+            }
+            if (error instanceof StudentOidcOperationalError) throw invalidReauth();
+            throw error;
+        }
         await this.deps.pool.query(
             `INSERT INTO student_auth_reauth_attempts
                  (id, user_id, sid, credential_generation, purpose, policy_id, policy_version, provider,

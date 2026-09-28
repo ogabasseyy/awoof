@@ -1236,6 +1236,7 @@ export default createStudentSsoRouter();
  *       400: { description: JSON, exact-origin, or opaque handoff binding failure }
  *       409: { description: Disabled, invalid handoff, replay, or resend limit, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
  *       429: { description: Signup quota exhausted }
+ *       503: { description: Signup code delivery failed after the challenge was reserved }
  * /api/auth/student/sso/signup/verify-code:
  *   post:
  *     summary: Verify the pending signup mailbox confirmation code
@@ -1286,6 +1287,7 @@ export default createStudentSsoRouter();
  *     responses:
  *       200: { description: Owner recovery-code status, no-store, content: { application/json: { schema: { $ref: '#/components/schemas/RecoveryCodeStatusResponse' } } } }
  *       401: { description: Missing, invalid, or non-student bearer session }
+ *       503: { description: Recovery-code service unavailable (digest key unconfigured) }
  * /api/auth/student/sso/recovery-code/generate:
  *   post:
  *     summary: Generate a pending recovery code after fresh reauthentication
@@ -1300,6 +1302,7 @@ export default createStudentSsoRouter();
  *       401: { description: Missing, invalid, or non-student bearer session }
  *       409: { description: Invalid, expired, consumed, revoked, or replayed fresh grant, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
  *       429: { description: Fresh-proof quota exhausted }
+ *       503: { description: Recovery-code service unavailable (digest key unconfigured) }
  * /api/auth/student/sso/recovery-code/activate:
  *   post:
  *     summary: Activate a pending recovery code after a second fresh proof
@@ -1314,6 +1317,7 @@ export default createStudentSsoRouter();
  *       401: { description: Missing, invalid, or non-student bearer session }
  *       409: { description: Invalid, expired, consumed, revoked, or replayed code/grant, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
  *       429: { description: Fresh-proof quota exhausted }
+ *       503: { description: Recovery-code service unavailable (digest key unconfigured) }
  * /api/auth/student/sso/recovery-code/remove:
  *   post:
  *     summary: Remove an active recovery code after fresh reauthentication
@@ -1328,6 +1332,7 @@ export default createStudentSsoRouter();
  *       401: { description: Missing, invalid, or non-student bearer session }
  *       409: { description: Invalid, expired, consumed, revoked, or replayed fresh grant }
  *       429: { description: Fresh-proof quota exhausted }
+ *       503: { description: Recovery-code service unavailable (digest key unconfigured) }
  * /api/auth/student/sso/recovery-code/cancel:
  *   post:
  *     summary: Cancel the owner's pending recovery code
@@ -1349,6 +1354,7 @@ export default createStudentSsoRouter();
  *       400: { description: JSON, exact-origin, or malformed request }
  *       401: { description: Missing, invalid, or non-student bearer session }
  *       409: { description: Code is not pending for this owner session }
+ *       503: { description: Recovery-code service unavailable (digest key unconfigured) }
  * /api/auth/student/sso/account-recovery/start:
  *   post:
  *     summary: Start independent password recovery

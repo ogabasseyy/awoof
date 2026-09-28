@@ -3,6 +3,7 @@ import test from 'node:test';
 import { randomUUID } from 'node:crypto';
 
 import { encryptMicrosoftAttemptVerifier, hashMicrosoftAttemptSecret } from '../verification/microsoft-attempt-crypto.js';
+import { StudentOidcOperationalError } from './student-google-oidc.js';
 import { assertFreshAuthTime, reauthAttemptIdFromState, StudentReauthService, studentReauthCookieName } from './student-reauth.service.js';
 
 const startedAt = new Date('2026-09-26T12:00:00.000Z');
@@ -207,6 +208,38 @@ test('state attempt binding accepts only a single uuid suffix', () => {
     assert.equal(reauthAttemptIdFromState(`a.${id}.extra`), null);
     assert.equal(reauthAttemptIdFromState('a.not-a-uuid'), null);
     assert.equal(reauthAttemptIdFromState(null), null);
+});
+
+test('fresh start translates provider failures to operational responses instead of a 500', async () => {
+    const identity = {
+        identity_id: identityId, provider: 'microsoft', observed_email: 'student@example.invalid',
+        policy_id: policyId, policy_version: 1, issuer, realm: '55555555-5555-4555-8555-555555555555',
+        university_id: randomUUID(), credential_generation: 0,
+    };
+    const query = async (text: string) => {
+        if (text.includes('FROM users')) return { rows: [identity], rowCount: 1 };
+        return { rows: [], rowCount: 1 };
+    };
+    const startWith = (failure: unknown) => {
+        const service = new StudentReauthService({
+            pool: { query, connect: async () => ({ query, release: () => undefined }) } as never,
+            attemptKey, completionUrl: new URL('https://app.example.invalid/auth/student/sso/complete'),
+            isProviderEnabled: () => true,
+            oidcForPolicy: () => ({ authorizeFresh: async () => { throw failure; } }) as never,
+        });
+        return service.start({ userId, sid, purpose: 'link' });
+    };
+    // Discovery and authorization outages are a retryable 503 ...
+    await assert.rejects(startWith(new StudentOidcOperationalError('upstream_unavailable')), (error: unknown) => {
+        assert.equal((error as { statusCode?: number }).statusCode, 503);
+        return true;
+    });
+    // ... while an unusable stored mailbox is terminal, like the
+    // callback's terminal-vs-outage split.
+    await assert.rejects(startWith(new StudentOidcOperationalError('invalid_identity')), /no longer valid/);
+    // Programming failures still surface instead of masquerading as
+    // provider behavior.
+    await assert.rejects(startWith(new TypeError('adapter exploded')), /adapter exploded/);
 });
 
 test('callback cookie resolution selects the state-selected attempt only', async () => {
