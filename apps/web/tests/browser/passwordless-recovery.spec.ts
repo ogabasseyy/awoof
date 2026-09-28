@@ -830,3 +830,19 @@ test('recovery restarts reuse the tab idempotency binding for cooldown retries',
     expect(second.idempotencyKey).toBe(first.idempotencyKey);
     api.assertNoUnexpectedRequests();
 });
+
+test('duplicate reauth callback waits instead of failing the in-flight confirmation', async ({ page }) => {
+    const api = await installSyntheticApi(page);
+    let finishCalls = 0;
+    await page.route(`${apiOrigin}/api/auth/student/sso/reauth/finish`, route => { finishCalls++; return route.fulfill({ status: 201, headers, json: { success: true, data: { grantId: 'c6000000-0000-4000-8000-000000000001', grantSecret: 'remove-grant', expiresAt: new Date(Date.now() + 60_000).toISOString(), purpose: 'recovery_code_remove', pendingCodeId: null, targetIdentityId: null, activeCodeGeneration: 1 } } }); });
+    await page.goto('/auth/student/login'); await seedSession(page, 'student');
+    await page.goto('/auth/student/sso/complete?reauth=c6000000-0000-4000-8000-000000000002&reauthDuplicate=1');
+    // No finish is posted on landing: an immediate post would 409 on the
+    // winner's processing row and misreport failure.
+    await expect(page.getByRole('heading', { name: 'Confirmation still completing' })).toBeVisible();
+    expect(finishCalls).toBe(0);
+    await page.getByRole('button', { name: 'Check again' }).click();
+    await expect(page.getByRole('heading', { name: 'Remove recovery code' })).toBeVisible();
+    expect(finishCalls).toBe(1);
+    api.assertNoUnexpectedRequests();
+});

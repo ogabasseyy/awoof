@@ -78,6 +78,45 @@ test('recovery account lookups lock the student row with the user row', async ()
         'suspension must serialize with the active-status check via a locked student row after the user lock');
 });
 
+test('recovery start runs workload mirrors for unknown addresses', async () => {
+    const queries: string[] = [];
+    const client = {
+        query: async (text: string) => {
+            queries.push(text);
+            if (text.includes('SELECT clock_timestamp() AS now')) return { rows: [{ now: new Date() }], rowCount: 1 };
+            if (text.includes('INSERT INTO verification_challenge_budgets')) {
+                return {
+                    rows: [{
+                        current_challenge_id: null, window_started_at: new Date(), failed_attempts: 0,
+                        send_count: 0, resend_available_at: new Date(0),
+                    }], rowCount: 1,
+                };
+            }
+            if (text.includes('octet_length($1::jsonb::text)')) return { rows: [{ bytes: 100 }], rowCount: 1 };
+            return { rows: [], rowCount: 0 };
+        },
+        release: () => undefined,
+    };
+    const service = new StudentAccountRecoveryService({
+        pool: { connect: async () => client } as never,
+        recoveryCodeKey: 'test-recovery-code-key',
+    });
+
+    await service.start({ email: 'unknown@example.test', purpose: 'lost_access' });
+    // The decoy must cost the same database shapes as a committed start
+    // (live-attempt lock, issuance, terminalization) in the same order,
+    // or repeated unknown-address probes become a latency oracle. Random
+    // ids miss every lock and update zero rows; no attempt row is ever
+    // written on the decoy path.
+    const liveLock = queries.findIndex((text) => text.includes('FROM student_auth_recovery_attempts attempt'));
+    const issuance = queries.findIndex((text) => text.includes('INSERT INTO verification_challenge_budgets'));
+    const terminalize = queries.findIndex((text) => text.includes("SET status = 'failed', secret_hash = NULL"));
+    assert.ok(liveLock >= 0 && issuance > liveLock && terminalize > issuance,
+        'decoy start must mirror the live-attempt lock before issuance and terminalization after it');
+    assert.ok(!queries.some((text) => text.includes('INSERT INTO student_auth_recovery_attempts')),
+        'decoy start must never write an attempt row');
+});
+
 test('recovery verify runs decoy reads for handles without an attempt row', async () => {
     const queries: string[] = [];
     const client = {

@@ -87,7 +87,16 @@ export class StudentReauthService {
              WHERE users.id = $1 AND users.role = 'student' AND users.deleted_at IS NULL AND users.active_session_id = $2::uuid
                  AND identity.provider = 'microsoft'
                  AND identity.observed_email IS NOT NULL AND identity.observed_email <> ''
-             ORDER BY identity.linked_at DESC LIMIT 1`,
+             -- Prefer the identity that issued the current session: the
+             -- newest-linked Microsoft identity may no longer be
+             -- accessible to the user, while the session proves the older
+             -- sibling still is. Hinting an inaccessible mailbox would
+             -- fail the later subject comparison and strand recovery-code
+             -- management despite a valid proof identity. Sessions not
+             -- issued by an identity (password sign-in) fall back to
+             -- newest-first; the NULL comparison sorts last either way.
+             ORDER BY (identity.id = users.active_session_auth_identity_id) DESC NULLS LAST,
+                      identity.linked_at DESC LIMIT 1`,
             [input.userId, input.sid],
         );
         const identity = row.rows[0];

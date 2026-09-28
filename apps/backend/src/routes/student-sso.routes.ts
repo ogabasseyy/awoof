@@ -577,8 +577,13 @@ export function createStudentSsoRouter(factory: FlowFactory = defaultFlow, optio
                     // A duplicate racing a live redemption (or landing just
                     // after it validated) must not destroy the winner's
                     // binding: terminalize and clear only when no live
-                    // redemption owns this attempt.
-                    if (!await reauth.isInFlightAttempt(attemptId)) {
+                    // redemption owns this attempt. An in-flight duplicate
+                    // takes the waiting redirect instead of the terminal
+                    // failure URL: its immediate finish would 409 on
+                    // `processing` and misreport failure while the winner
+                    // may validate moments later.
+                    const inFlight = await reauth.isInFlightAttempt(attemptId);
+                    if (!inFlight) {
                         // The failure redirect deletes the only browser binding
                         // that could finish this attempt: terminalize and scrub
                         // the dead row instead of retaining it until expiry.
@@ -596,6 +601,7 @@ export function createStudentSsoRouter(factory: FlowFactory = defaultFlow, optio
                     // in this process.
                     const failureCompletion = new URL(failureBase.href);
                     failureCompletion.searchParams.set('reauth', attemptId);
+                    if (inFlight) failureCompletion.searchParams.set('reauthDuplicate', '1');
                     res.redirect(303, failureCompletion.href);
                 }
                 return;

@@ -334,9 +334,11 @@ test('a duplicate callback racing a live redemption keeps the winner binding', a
         });
         // Still a bounded redirect, but the binding belongs to the live
         // redemption: nothing terminalizes and no clearing Set-Cookie
-        // goes out, so finish can still exchange the winner's proof.
+        // goes out, so finish can still exchange the winner's proof. The
+        // duplicate takes the waiting outcome rather than the terminal
+        // failure URL, since the winner may validate moments later.
         assert.equal(callback.status, 303);
-        assert.equal(callback.headers.get('location'), `${COMPLETION_ORIGIN}/auth/student/sso/complete?reauth=${reauthAttemptId}`);
+        assert.equal(callback.headers.get('location'), `${COMPLETION_ORIGIN}/auth/student/sso/complete?reauth=${reauthAttemptId}&reauthDuplicate=1`);
         assert.equal(terminalized, false);
         assert.deepEqual(parseSetCookies(callback), []);
     });

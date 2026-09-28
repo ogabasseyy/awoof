@@ -1604,6 +1604,41 @@ test('fresh reauthentication skips a newer Microsoft identity without an observe
     }
 });
 
+test('fresh reauthentication prefers the Microsoft identity that issued the session', async () => {
+    const pool = createTestPool();
+    const client = await pool.connect();
+    try {
+        const userId = await seedStudent(client);
+        // Both siblings are authorized Microsoft proof identities; the
+        // older one issued the current session while the newer one may no
+        // longer be accessible to the user.
+        const olderIdentityId = await seedProviderProof(client, userId, { policy: true, linkedAt: new Date(Date.now() - 60_000).toISOString() });
+        const olderEmail = (await client.query<{ observed_email: string }>(
+            'SELECT observed_email FROM student_auth_identities WHERE id = $1', [olderIdentityId],
+        )).rows[0]!.observed_email;
+        await seedProviderProof(client, userId, { policy: true, canonical: false });
+        await client.query('UPDATE users SET active_session_auth_identity_id = $2 WHERE id = $1', [userId, olderIdentityId]);
+        let loginHint: string | null = null;
+        const reauth = new StudentReauthService({
+            pool,
+            attemptKey: Buffer.alloc(32, 7).toString('base64url'),
+            completionUrl: new URL('https://app.example.invalid/auth/student/sso/complete'),
+            isProviderEnabled: () => true,
+            oidcForPolicy: () => ({ authorizeFresh: async (input: { loginHint: string }) => { loginHint = input.loginHint; return new URL('https://provider.example.invalid/fresh'); } }) as never,
+        });
+        const started = await reauth.start({ userId, sid: SID, purpose: 'link' });
+        assert.ok(started.attemptId);
+        assert.equal(loginHint, olderEmail, 'the session-issuing sibling proves the user still holds it');
+        const proof = await client.query<{ proof_identity_id: string }>(
+            'SELECT proof_identity_id FROM student_auth_reauth_attempts WHERE id = $1', [started.attemptId],
+        );
+        assert.equal(proof.rows[0]!.proof_identity_id, olderIdentityId);
+    } finally {
+        client.release();
+        await pool.end();
+    }
+});
+
 test('fresh reauthentication refuses identities whose institutional approval was withdrawn', async () => {
     const pool = createTestPool();
     const client = await pool.connect();

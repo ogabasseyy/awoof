@@ -35,6 +35,14 @@ test('an unlinked Microsoft handoff creates a passwordless pending-enrollment ac
     await page.getByLabel('I accept the current Terms').check();
     await page.getByLabel('I consent to the processing notice').check();
     await page.getByRole('button', { name: 'Create passwordless account' }).click();
+    // Creation routes through the post-signup recovery notice before the
+    // continuation, whatever the destination is; continuing consumes the
+    // fresh-signup marker so the marketplace backstop stays silent.
+    await expect(page.getByRole('heading', { name: 'Account created' })).toBeVisible();
+    await expect(page.getByText('losing your school sign-in may prevent account access.')).toBeVisible();
+    await expect(page.getByRole('link', { name: 'Save your recovery code' })).toHaveAttribute('href', '/student/security');
+    expect(await page.evaluate(() => sessionStorage.getItem('awoof.passwordless-signup-fresh'))).toBeNull();
+    await page.getByRole('button', { name: 'Continue' }).click();
     await page.waitForURL('**/marketplace**');
     expect(requests.map(({ path }) => path)).toEqual([
         '/api/auth/student/sso/signup/context',
@@ -126,6 +134,8 @@ test('stale assent versions refetch the new text instead of retrying rejected ve
     await page.getByLabel('I accept the current Terms').check();
     await page.getByLabel('I consent to the processing notice').check();
     await page.getByRole('button', { name: 'Create passwordless account' }).click();
+    await expect(page.getByRole('heading', { name: 'Account created' })).toBeVisible();
+    await page.getByRole('button', { name: 'Continue' }).click();
     await page.waitForURL('**/marketplace**');
     expect(requests).toEqual([
         '/api/auth/student/sso/signup/context',

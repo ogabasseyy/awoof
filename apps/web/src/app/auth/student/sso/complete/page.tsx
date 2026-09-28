@@ -62,9 +62,9 @@ function formatPendingRemaining(deadlineMs: number, nowMs: number): string {
     return `${Math.floor(total / 60)}:${String(total % 60).padStart(2, '0')}`;
 }
 
-function RecoveryReauthComplete({ attemptId }: { attemptId: string }) {
+function RecoveryReauthComplete({ attemptId, duplicate }: { attemptId: string; duplicate: boolean }) {
     const { refreshUser } = useAuth();
-    const [status, setStatus] = useState<'checking' | 'generate' | 'generate_ambiguous' | 'display' | 'activate' | 'remove' | 'failed' | 'active' | 'removed' | 'link_unavailable' | 'unlinked' | 'unlinked_signed_out' | 'last_method' | 'last_proof_method' | 'link_ambiguous'>('checking');
+    const [status, setStatus] = useState<'checking' | 'waiting' | 'generate' | 'generate_ambiguous' | 'display' | 'activate' | 'remove' | 'failed' | 'active' | 'removed' | 'link_unavailable' | 'unlinked' | 'unlinked_signed_out' | 'last_method' | 'last_proof_method' | 'link_ambiguous'>('checking');
     const [code, setCode] = useState(''); const [oldCode, setOldCode] = useState(''); const [needsOldCode, setNeedsOldCode] = useState(false); const [pendingCodeId, setPendingCodeId] = useState<string | null>(null); const [pendingExpiresAt, setPendingExpiresAt] = useState<string | null>(null); const [expectedGeneration, setExpectedGeneration] = useState<number | null>(null); const [grant, setGrant] = useState<{ grantId: string; grantSecret: string } | null>(null); const [error, setError] = useState<string | null>(null);
     const [busy, setBusy] = useState(false); const started = useRef(false); const actionBusy = useRef(false);
     const [now, setNow] = useState(() => Date.now());
@@ -80,13 +80,10 @@ function RecoveryReauthComplete({ attemptId }: { attemptId: string }) {
     const [skewMs, setSkewMs] = useState(0);
     const pendingDeadlineMs = pendingExpiresAt ? Date.parse(pendingExpiresAt) : NaN;
     const pendingExpired = (status === 'display' || status === 'activate') && pendingExpiresAt !== null && !Number.isNaN(pendingDeadlineMs) && pendingDeadlineMs <= now + skewMs;
-    useEffect(() => {
-        if (started.current) return; started.current = true;
-        const session = getSessionSnapshot();
-        if (!session.accessToken) { setStatus('failed'); return; }
-        // The session client carries the reauth cookie and refreshes a
-        // token that expired during the provider prompt instead of
-        // collapsing the fresh proof into the failed view.
+    // The session client carries the reauth cookie and refreshes a
+    // token that expired during the provider prompt instead of
+    // collapsing the fresh proof into the failed view.
+    const runFinish = () => {
         void studentSsoSessionApiClient.post('/auth/student/sso/reauth/finish', { attemptId }).then(async response => {
             const grant = parseSsoReauthFinish(response.data); if (!grant) throw new Error('invalid grant');
             if (grant.purpose === 'link' || grant.purpose === 'unlink') { await continueIdentity({ grantId: grant.grantId, grantSecret: grant.grantSecret, purpose: grant.purpose, targetIdentityId: grant.targetIdentityId }); return; }
@@ -142,6 +139,17 @@ function RecoveryReauthComplete({ attemptId }: { attemptId: string }) {
             } catch { /* deadline display is best-effort; activation still enforces expiry server-side */ }
             setStatus('activate');
         }).catch(() => { clearRecoveryIntent(); setStatus('failed'); });
+    };
+    useEffect(() => {
+        if (started.current) return; started.current = true;
+        const session = getSessionSnapshot();
+        if (!session.accessToken) { setStatus('failed'); return; }
+        // A duplicate callback racing the winner's redemption lands here
+        // with the outcome still open: an immediate finish would 409 on
+        // `processing` and misreport failure, so hold the retryable
+        // waiting view instead of posting.
+        if (duplicate) { setStatus('waiting'); return; }
+        runFinish();
     }, [attemptId]);
     const continueIdentity = async (grant: { grantId: string; grantSecret: string; purpose: 'link' | 'unlink'; targetIdentityId: string | null }) => {
         const auth = { grantId: grant.grantId, grantSecret: grant.grantSecret };
@@ -282,6 +290,7 @@ function RecoveryReauthComplete({ attemptId }: { attemptId: string }) {
     if (status === 'removed') return <AuthShell role="student" title="Recovery code removed" subtitle="Recovery is now unconfigured." footer={null}><p role="status">The saved code was revoked and can no longer recover this account. Set up a new code from Account security if you still want recovery.</p><Button className="mt-5 w-full rounded-full" asChild><Link href="/student/security">Back to account security</Link></Button></AuthShell>;
     if (status === 'link_unavailable') return <AuthShell role="student" title="School sign-in link unavailable" subtitle="This sign-in can no longer be linked." footer={null}><p role="status">The pending school sign-in expired or was already used. Restart school sign-in and try again.</p><Button className="mt-5 w-full rounded-full" asChild><Link href="/auth/student/login">Back to sign-in</Link></Button></AuthShell>;
     if (status === 'link_ambiguous') return <AuthShell role="student" title="School sign-in link unclear" subtitle="The confirmation was lost." footer={null}><p role="status">This school sign-in may already be linked. Sign in again to check your sign-in methods before retrying.</p><Button className="mt-5 w-full rounded-full" asChild><Link href="/auth/student/login">Sign in to check</Link></Button></AuthShell>;
+    if (status === 'waiting') return <AuthShell role="student" title="Confirmation still completing" subtitle="Another confirmation is finishing." footer={null}><p role="status">This confirmation arrived twice and the first is still completing. Wait a moment, then check again — nothing failed yet.</p><Button className="mt-5 w-full rounded-full" onClick={() => { setStatus('checking'); runFinish(); }}>Check again</Button></AuthShell>;
     if (status === 'generate_ambiguous') return <AuthShell role="student" title="Replacement code unclear" subtitle="The confirmation was lost." footer={null}><p role="status">A replacement code was created but its response was lost, so the code cannot be shown again. Go to Account security, cancel the pending code, and generate a new one.</p><Button className="mt-5 w-full rounded-full" asChild><Link href="/student/security">Back to account security</Link></Button></AuthShell>;
     if (status === 'unlinked') return <AuthShell role="student" title="Sign-in method removed" subtitle="The school sign-in was disconnected." footer={null}><p role="status">That school sign-in can no longer access this account.</p><Button className="mt-5 w-full rounded-full" asChild><Link href="/student/security">Back to account security</Link></Button></AuthShell>;
     if (status === 'unlinked_signed_out') return <AuthShell role="student" title="Sign-in method removed" subtitle="You have been signed out." footer={null}><p role="status">The removed sign-in had issued this session, so the local sign-in was cleared. That school sign-in can no longer access this account.</p><Button className="mt-5 w-full rounded-full" asChild><Link href="/auth/student/login">Back to sign-in</Link></Button></AuthShell>;
@@ -447,7 +456,7 @@ function StudentSsoCompleteInner() {
         return () => { cancelled = true; };
     }, [linkProvider, signupOffer]);
 
-    if (reauthAttempt) return <RecoveryReauthComplete attemptId={reauthAttempt} />;
+    if (reauthAttempt) return <RecoveryReauthComplete attemptId={reauthAttempt} duplicate={search.get('reauthDuplicate') === '1'} />;
 
     if (view.kind === 'link_required') {
         return (

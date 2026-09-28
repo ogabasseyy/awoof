@@ -97,6 +97,7 @@ function SignupOnboarding() {
     const [code, setCode] = useState(''); const [name, setName] = useState('');
     const [age, setAge] = useState(false); const [terms, setTerms] = useState(false); const [consent, setConsent] = useState(false);
     const [busy, setBusy] = useState(false); const [error, setError] = useState<string | null>(null);
+    const [createdDestination, setCreatedDestination] = useState<string | null>(null);
     const started = useRef(false); const initialSession = useRef<number | null>(null);
     const handoff = useRef<SsoHandoffRecord | null>(null);
     useEffect(() => {
@@ -113,6 +114,13 @@ function SignupOnboarding() {
         const timer = window.setInterval(() => setNow(Date.now()), 1000);
         return () => window.clearInterval(timer);
     }, [context]);
+    useEffect(() => {
+        // The notice below delivers the post-signup recovery guidance, so
+        // showing it consumes the fresh-signup marker and the marketplace
+        // backstop stays silent.
+        if (createdDestination === null) return;
+        try { sessionStorage.removeItem('awoof.passwordless-signup-fresh'); } catch { /* already consumed */ }
+    }, [createdDestination]);
     // The ten-minute handoff window can lapse while the student waits for
     // mail or fills the form. The countdown names the deadline up front and
     // the page swaps to an explicit restart state at expiry instead of
@@ -199,13 +207,19 @@ function SignupOnboarding() {
             const destination = resolveStudentReturn(handoff.current?.returnPath ?? null, window.location.origin);
             storeTokens({ accessToken: data.tokens.accessToken, refreshToken: data.tokens.refreshToken }); forgetHandoff();
             try { sessionStorage.setItem('awoof.passwordless-signup-fresh', '1'); } catch { /* the offer simply stays hidden */ }
-            window.location.href = destination;
+            // Route through the post-signup notice instead of redirecting
+            // straight to the continuation: the recovery warning must
+            // reach the new account whatever the destination is. The
+            // notice consumes the marker when shown; if the tab is
+            // abandoned first, the marketplace offer stays as backstop.
+            setCreatedDestination(destination);
         } catch {
             forgetHandoff(); setAmbiguousComplete(true);
         } finally {
             setBusy(false);
         }
     };
+    if (createdDestination !== null) return <AuthShell role="student" title="Account created" subtitle="Your passwordless account is ready." footer={null}><p role="status" className="text-left text-sm">Recovery is not configured, and losing your school sign-in may prevent account access. Save a recovery code so you can recover with your school mailbox.</p><div className="mt-5 space-y-2"><Button className="w-full rounded-full" asChild><Link href="/student/security">Save your recovery code</Link></Button><Button variant="outline" className="w-full rounded-full" onClick={() => { window.location.href = createdDestination; }}>Continue</Button></div></AuthShell>;
     if (!context) return <AuthShell role="student" title="Finish setting up Awoof" subtitle="Checking your school sign-in." footer={null}><p role="status">{error ?? 'Checking the pending sign-in…'}</p>{error ? <Button className="mt-5 w-full rounded-full" asChild><Link href="/auth/student/login">Restart Microsoft sign-in</Link></Button> : null}</AuthShell>;
     if (ambiguousComplete) return <AuthShell role="student" title="Finish setting up Awoof" subtitle="Setup may have completed." footer={null}><p role="alert">Setup may have finished but the confirmation was lost. Sign in with Microsoft again: if your account was created, you will be signed straight in.</p><Button className="mt-5 w-full rounded-full" asChild><Link href="/auth/student/login">Sign in with Microsoft</Link></Button></AuthShell>;
     if (existingAccount) return <AuthShell role="student" title="Finish setting up Awoof" subtitle="An account already uses this email." footer={null}><p role="alert">An Awoof account already uses this school email, so a new account cannot be created. Sign in to that account with your password — you will return here to link Microsoft school sign-in instead.</p><Button className="mt-5 w-full rounded-full" asChild><Link href={`/auth/student/login?redirect=${encodeURIComponent(ONBOARDING_PATH)}`}>Sign in to link instead</Link></Button></AuthShell>;

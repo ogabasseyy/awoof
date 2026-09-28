@@ -452,12 +452,27 @@ export class StudentAccountRecoveryService {
      * the caller's retry past the cooldown.
      */
     private async decoyStart(tx: PoolClient, handle: { email: string; attemptId: string; purpose: RecoveryPurpose; serverExpiry: Date; serverNow: Date }): Promise<{ expiresAt: string; serverNow: string }> {
+        // Workload mirror for the committed start's post-probe queries, in
+        // the same order (attempt before budget/challenge, matching the
+        // deadlock order both paths share): without this the decoy exits
+        // after challenge issuance while a recoverable address runs the
+        // live-attempt lock, terminalization, handle digest, and insert
+        // first — a latency oracle over repeated probes. Random ids miss
+        // every lock and update zero rows, so no lock is held and no row
+        // changes. The attempt INSERT has no dummy form (the user_id
+        // foreign key rejects synthetic rows) and remains as
+        // sub-millisecond noise; the rebound-only challenge-bindings
+        // UPDATE needs no mirror because rebound requires the original
+        // start's idempotency key, which a prober cannot present.
+        await this.lockLiveAttempt(tx, randomUUID(), handle.purpose);
         const decoy = await requestChallenge(tx, {
             purpose: 'student_account_recovery', subjectKey: handle.email,
             bindings: { recoveryAttemptId: handle.attemptId, recoveryPurpose: handle.purpose },
             expiresAt: handle.serverExpiry,
         });
         if (decoy.status === 'issued') {
+            await this.failPriorAttempts(tx, randomUUID());
+            this.matchesDigest('decoy-expected-digest', this.secretDigest('decoy-start-probe'));
             return { expiresAt: decoy.expiresAt.toISOString(), serverNow: handle.serverNow.toISOString() };
         }
         // Cooldown/locked: the live current challenge's frozen expiry,
