@@ -9,8 +9,15 @@
 # rate, subject to plan prompt limits) or a pay-as-you-go Meta Model API key.
 # The workflow cannot tell the difference; verify billing on dev.meta.ai.
 #
+# Recency: web tools are ON so every review verifies against current
+# official docs instead of training memory. The agent determines the repo's
+# stack/versions from manifests, checks for deprecated APIs and better modern
+# alternatives, and cites sources. A redaction step scrubs common secret
+# patterns from the review body before posting (defense in depth, since web
+# access widens prompt-injection exfil options).
+#
 # Quota safety: subscription plans cap prompts per rolling window, so this
-# workflow is deliberately cheap and advisory:
+# workflow stays cheap and advisory:
 #   - concurrency cancel-in-progress: only the latest push per PR is reviewed
 #   - bounded prompt (diff + repo guidance; the agent reads full files itself)
 #   - --max-model-steps cap + job timeout
@@ -170,18 +177,29 @@ jobs:
           - READ-ONLY. Do not write, edit, delete, or move any file. Do not run
             git push, gh pr merge, or any command that changes remote state.
             Do not print secrets, tokens, or environment variable values.
+            Never transmit secrets, tokens, or env values to any URL.
           - The full file content is available to you. Do NOT claim that code,
             imports, permissions, configuration, error handling, or auth checks
             are "missing" unless you can see they are absent in the actual
             file. Quote the relevant line when you flag something.
+          - RECENCY IS MANDATORY. Your training knowledge is not authoritative
+            for version-sensitive claims. Determine the repo's stack and
+            dependency versions from its manifests (package.json, pubspec.yaml,
+            requirements, CI configs, etc.), then verify framework, library,
+            API, and platform behavior against current official documentation
+            via web search/fetch before reporting it. Flag deprecated APIs,
+            superseded patterns, and known-changed defaults, and where a
+            better modern alternative exists, name it with a doc citation.
           - Never report a claim you cannot confirm from the shown files or
-            authoritative docs — when unsure, lower the severity or omit it.
+            current authoritative docs — when unsure, lower the severity or
+            omit it. Cite the doc source for version-sensitive findings.
           - Reserve "critical"/"high" for issues you have concretely verified.
           - Follow the repo guidance below when it names project conventions.
           - Do not produce broad style commentary when there is no concrete risk.
 
           Prioritize: correctness, security, data safety, auth/tenant
-          isolation, secrets handling, regressions, and missing tests.
+          isolation, secrets handling, regressions, missing tests, and
+          outdated patterns with better modern alternatives.
 
           Return only concise Markdown with exactly these sections:
           ## Verdict
@@ -235,9 +253,8 @@ jobs:
             --prompt-file "${{ steps.diff.outputs.prompt_file }}" \
             --workspace "${GITHUB_WORKSPACE}" \
             --reasoning-effort "${MUSE_EFFORT_RESOLVED}" \
-            --max-model-steps 25 \
+            --max-model-steps 35 \
             --disable-approval \
-            --disable-web-tools \
             --no-session-log \
             "${model_args[@]}" </dev/null > "${review_file}" 2>"${RUNNER_TEMP}/muse-stderr.log" || true
 
@@ -278,6 +295,11 @@ jobs:
 
           Re-run the workflow, or inspect the logs."
           fi
+
+          # Defense in depth: the agent has web access and the prompt is partly
+          # attacker-controlled, so scrub common secret patterns from the
+          # review body before posting it publicly.
+          review="$(printf '%s' "${review}" | perl -pe 's/(sk-|rk-|ghp_|gho_|github_pat_|xox[bap]-|AKIA)[A-Za-z0-9_\-]+/[REDACTED]/g; s/eyJ[A-Za-z0-9_\-]+\.eyJ[A-Za-z0-9_\-]+\.[A-Za-z0-9_\-]+/[REDACTED-JWT]/g; s/-----BEGIN [A-Z ]*PRIVATE KEY-----/[REDACTED-KEY]/g')"
 
           {
             printf '%s\n' "${marker}"
