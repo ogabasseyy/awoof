@@ -158,38 +158,86 @@ export class StudentReauthService {
             || !this.deps.isProviderEnabled('microsoft')) throw invalidReauth();
         const adapter = this.deps.oidcForPolicy({ id: attempt.policy_id, version: attempt.policy_version, provider: 'microsoft', issuer: attempt.policy_issuer, realm: attempt.policy_realm, universityId: attempt.university_id });
         if (!adapter.redeemFresh) throw new ServiceUnavailableError('Fresh Microsoft authentication is unavailable');
-        const observation = await adapter.redeemFresh({ callback: input.callbackUrl, state, nonce: attempt.nonce, verifier: decryptMicrosoftAttemptVerifier(attempt.encrypted_verifier, this.deps.attemptKey, attempt.id) });
-        return this.transaction(async (tx) => {
-            // Canonical lock order (see finish): the owner row precedes the
-            // attempt row so this cannot deadlock against account recovery.
-            const account = await tx.query<{ active_session_id: string | null; credential_generation: string | number; deleted_at: Date | null }>(
-                'SELECT active_session_id, credential_generation, deleted_at FROM users WHERE id = $1 FOR UPDATE', [attempt.user_id],
+        // Single-use claim before any external redemption: a concurrently
+        // delivered duplicate observes processing (or loses the CAS) and
+        // never redeems the one-use authorization code. The claim holds no
+        // secrets hostage: failures revert to pending so the route layer
+        // keeps sole ownership of terminalization.
+        await this.transaction(async (tx) => {
+            await tx.query('SELECT id FROM users WHERE id = $1 FOR UPDATE', [attempt.user_id]);
+            const locked = await tx.query<{ status: string }>(
+                'SELECT status FROM student_auth_reauth_attempts WHERE id = $1 FOR UPDATE', [attempt.id],
             );
-            const locked = await tx.query<ReauthAttempt & { policy_approved_by: string | null }>(
-                `SELECT attempt.*, identity.provider AS identity_provider, identity.issuer AS identity_issuer, identity.subject AS identity_subject,
-                        policy.issuer AS policy_issuer, policy.provider_realm AS policy_realm, policy.university_id,
-                        policy.enabled AS policy_enabled, policy.approved_until, policy.approved_by AS policy_approved_by
-                 FROM student_auth_reauth_attempts attempt
-                 JOIN student_auth_identities identity ON identity.id = attempt.proof_identity_id
-                 JOIN institution_login_policies policy ON policy.id = attempt.policy_id
-                 WHERE attempt.id = $1 FOR UPDATE`, [attempt.id],
+            if (locked.rows[0]?.status !== 'pending') throw invalidReauth();
+            const claimed = await tx.query(
+                "UPDATE student_auth_reauth_attempts SET status = 'processing' WHERE id = $1 AND status = 'pending'", [attempt.id],
             );
-            const current = locked.rows[0];
-            const clock = await tx.query<{ now: Date }>('SELECT clock_timestamp() AS now');
-            const approvedUntil = current?.approved_until;
-            if (!current || current.status !== 'pending' || current.expires_at <= clock.rows[0]!.now
-                || !current.policy_enabled || !approvedUntil || approvedUntil <= clock.rows[0]!.now
-                || current.policy_approved_by == null
-                || !this.deps.isProviderEnabled('microsoft')
-                || observation.issuer !== current.identity_issuer || observation.subject !== current.identity_subject) throw invalidReauth();
-            assertFreshAuthTime(observation.authTime, current.created_at, clock.rows[0]!.now);
-            if (!account.rows[0] || account.rows[0]!.deleted_at !== null || account.rows[0]!.active_session_id !== current.sid
-                || Number(account.rows[0]!.credential_generation) !== Number(current.credential_generation)) throw invalidReauth();
-            await tx.query("UPDATE student_auth_reauth_attempts SET status = 'ready' WHERE id = $1 AND status = 'pending'", [current.id]);
-            const completionUrl = new URL(this.deps.completionUrl.href);
-            completionUrl.searchParams.set('reauth', current.id);
-            return { attemptId: current.id, completionUrl };
+            if (claimed.rowCount !== 1) throw invalidReauth();
         });
+        let observation: FreshProviderObservation;
+        try {
+            observation = await adapter.redeemFresh({ callback: input.callbackUrl, state, nonce: attempt.nonce, verifier: decryptMicrosoftAttemptVerifier(attempt.encrypted_verifier, this.deps.attemptKey, attempt.id) });
+        } catch (error) {
+            await this.revertClaim(attempt.id);
+            throw error;
+        }
+        try {
+            return await this.transaction(async (tx) => {
+                // Canonical lock order (see finish): the owner row precedes the
+                // attempt row so this cannot deadlock against account recovery.
+                const account = await tx.query<{ active_session_id: string | null; credential_generation: string | number; deleted_at: Date | null }>(
+                    'SELECT active_session_id, credential_generation, deleted_at FROM users WHERE id = $1 FOR UPDATE', [attempt.user_id],
+                );
+                const locked = await tx.query<ReauthAttempt & { policy_approved_by: string | null }>(
+                    `SELECT attempt.*, identity.provider AS identity_provider, identity.issuer AS identity_issuer, identity.subject AS identity_subject,
+                            policy.issuer AS policy_issuer, policy.provider_realm AS policy_realm, policy.university_id,
+                            policy.enabled AS policy_enabled, policy.approved_until, policy.approved_by AS policy_approved_by
+                     FROM student_auth_reauth_attempts attempt
+                     JOIN student_auth_identities identity ON identity.id = attempt.proof_identity_id
+                     JOIN institution_login_policies policy ON policy.id = attempt.policy_id
+                     WHERE attempt.id = $1 FOR UPDATE`, [attempt.id],
+                );
+                const current = locked.rows[0];
+                const clock = await tx.query<{ now: Date }>('SELECT clock_timestamp() AS now');
+                const approvedUntil = current?.approved_until;
+                if (!current || current.status !== 'processing' || current.expires_at <= clock.rows[0]!.now
+                    || !current.policy_enabled || !approvedUntil || approvedUntil <= clock.rows[0]!.now
+                    || current.policy_approved_by == null
+                    || !this.deps.isProviderEnabled('microsoft')
+                    || observation.issuer !== current.identity_issuer || observation.subject !== current.identity_subject) throw invalidReauth();
+                assertFreshAuthTime(observation.authTime, current.created_at, clock.rows[0]!.now);
+                if (!account.rows[0] || account.rows[0]!.deleted_at !== null || account.rows[0]!.active_session_id !== current.sid
+                    || Number(account.rows[0]!.credential_generation) !== Number(current.credential_generation)) throw invalidReauth();
+                const ready = await tx.query("UPDATE student_auth_reauth_attempts SET status = 'ready' WHERE id = $1 AND status = 'processing'", [current.id]);
+                if (ready.rowCount !== 1) throw invalidReauth();
+                const completionUrl = new URL(this.deps.completionUrl.href);
+                completionUrl.searchParams.set('reauth', current.id);
+                return { attemptId: current.id, completionUrl };
+            });
+        } catch (error) {
+            await this.revertClaim(attempt.id);
+            throw error;
+        }
+    }
+
+    /**
+     * Release a redemption claim back to pending. Best-effort by design: a
+     * row the winner already advanced (ready), the route terminalized
+     * (failed), or cleanup reaped simply misses the CAS. Only the claim
+     * holder's own processing row reverts, so a duplicate loser can never
+     * resurrect another in-flight redemption.
+     */
+    private async revertClaim(attemptId: string): Promise<void> {
+        const tx = await this.deps.pool.connect();
+        try {
+            await tx.query('BEGIN');
+            await tx.query("UPDATE student_auth_reauth_attempts SET status = 'pending' WHERE id = $1 AND status = 'processing'", [attemptId]);
+            await tx.query('COMMIT');
+        } catch {
+            await tx.query('ROLLBACK').catch(() => undefined);
+        } finally {
+            tx.release();
+        }
     }
 
     /**
@@ -216,9 +264,9 @@ export class StudentReauthService {
      * True when the attempt can never finish: terminal (failed, consumed)
      * or missing entirely. The callback dispatcher uses this to recognize
      * a delayed provider callback for a scrubbed attempt from its
-     * per-attempt cookie after state-hash dispatch fails. Pending and
-     * ready rows are never dead: their state hashes are intact, so a
-     * state miss with a live cookie falls through to ordinary login
+     * per-attempt cookie after state-hash dispatch fails. Pending, ready,
+     * and processing rows are never dead: their state hashes are intact,
+     * so a state miss with a live cookie falls through to ordinary login
      * instead of hijacking it.
      */
     async isDeadAttempt(attemptId: string): Promise<boolean> {
@@ -227,7 +275,7 @@ export class StudentReauthService {
             'SELECT status FROM student_auth_reauth_attempts WHERE id = $1', [attemptId],
         );
         const status = row.rows[0]?.status;
-        return status === undefined || (status !== 'pending' && status !== 'ready');
+        return status === undefined || (status !== 'pending' && status !== 'ready' && status !== 'processing');
     }
 
     async finish(input: { userId: string; sid: string; attemptId: string; callbackCookie: string | undefined }): Promise<ActionGrantResult & { purpose: ActionPurpose; pendingCodeId: string | null; targetIdentityId: string | null; activeCodeGeneration: number | null }> {
@@ -303,7 +351,7 @@ export class StudentReauthService {
 type ReauthAttempt = {
     id: string; user_id: string; sid: string; credential_generation: string | number; purpose: string; policy_id: string; policy_version: number;
     provider: string; state_hash: string; callback_cookie_hash: string; encrypted_verifier: string; nonce: string; proof_identity_id: string;
-    target_identity_id: string | null; pending_code_id: string | null; status: 'pending' | 'ready' | 'consumed' | 'failed'; expires_at: Date; created_at: Date;
+    target_identity_id: string | null; pending_code_id: string | null; status: 'pending' | 'processing' | 'ready' | 'consumed' | 'failed'; expires_at: Date; created_at: Date;
     identity_provider: string; identity_issuer: string; identity_subject: string; policy_issuer: string; policy_realm: string; university_id: string;
     policy_enabled?: boolean; approved_until?: Date;
 };

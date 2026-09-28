@@ -165,12 +165,14 @@ function SignupOnboarding() {
             if (statusOf(cause) === 400 && await refreshContext()) {
                 setAge(false); setTerms(false); setConsent(false);
                 setError('The Terms or processing notice changed while you were signing up. Review the new text and accept again.');
-            } else if (statusOf(cause) === 409) {
-                // The school email already belongs to an Awoof account (or
-                // the subject is linked elsewhere): this signup can never
-                // succeed, but the handoff stays live. Route to password
-                // sign-in with a return to the linking flow, which consumes
-                // the same handoff — never back into this signup form.
+            } else if (statusOf(cause) === 409 && (bodyOf(cause) as { error?: { code?: unknown } } | undefined)?.error?.code === 'SSO_SIGNUP_EXISTING_ACCOUNT') {
+                // Only the distinct existing-account conflict routes to
+                // linking: the school email already belongs to an Awoof
+                // account (or the subject is linked elsewhere), this
+                // signup can never succeed, but the handoff stays live.
+                // Every other 409 (expired handoff, withdrawn policy)
+                // keeps the generic retry instead of misdirecting an
+                // unusable handoff into password linking.
                 setExistingAccount(true);
             } else if (axios.isAxiosError(cause) && (!cause.response || cause.response.status >= 500)) {
                 // Response-loss/5xx after account creation is ambiguous:

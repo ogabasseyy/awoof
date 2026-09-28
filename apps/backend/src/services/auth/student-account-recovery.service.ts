@@ -23,7 +23,9 @@ type Attempt = {
     user_id: string;
     credential_generation: number | string;
     purpose: RecoveryPurpose;
-    secret_hash: string;
+    // Terminal rows (failed, consumed, superseded) scrub the bearer to
+    // NULL: every comparison must null-check first, never Buffer.from it.
+    secret_hash: string | null;
     recovery_code_generation: number | string;
     mailbox_challenge_id: string;
     status: 'pending' | 'verified' | 'consumed' | 'failed' | 'expired';
@@ -140,7 +142,7 @@ export class StudentAccountRecoveryService {
             const account = await this.lockAccount(tx, userId);
             const attempt = await this.lockAttempt(tx, attemptId);
             if (!attempt || attempt.expires_at <= await this.now(tx)
-                || !this.matchesDigest(attempt.secret_hash, this.secretDigest(secret))) return false;
+                || !attempt.secret_hash || !this.matchesDigest(attempt.secret_hash, this.secretDigest(secret))) return false;
             // Idempotent retry: the verification commit landed but its 204
             // was lost. The mailbox OTP was already proven and its
             // challenge consumed, so revalidate the still-checkable proofs
@@ -212,7 +214,7 @@ export class StudentAccountRecoveryService {
             const attempt = await this.lockAttempt(tx, attemptId);
             const code = await this.lockActiveCode(tx, userId);
             if (!account || !attempt || !code || attempt.status !== 'verified' || attempt.expires_at <= await this.now(tx)
-                || !this.matchesDigest(attempt.secret_hash, this.secretDigest(secret))
+                || !attempt.secret_hash || !this.matchesDigest(attempt.secret_hash, this.secretDigest(secret))
                 || Number(account.credential_generation) !== Number(attempt.credential_generation)
                 || Number(code.generation) !== Number(attempt.recovery_code_generation)) throw unavailable();
 
@@ -246,7 +248,7 @@ export class StudentAccountRecoveryService {
                 `UPDATE student_auth_reauth_attempts
                  SET status = 'failed', consumed_at = clock_timestamp(), state_hash = NULL, callback_cookie_hash = NULL,
                      encrypted_verifier = NULL, nonce = NULL
-                 WHERE user_id = $1 AND status IN ('pending', 'ready')`,
+                 WHERE user_id = $1 AND status IN ('pending', 'processing', 'ready')`,
                 [userId],
             );
             // A ready provider callback is not yet a session. Invalidate every

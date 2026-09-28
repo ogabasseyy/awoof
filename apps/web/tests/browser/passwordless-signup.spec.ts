@@ -191,7 +191,7 @@ test('a signup conflict routes to password sign-in with a return to linking inst
         // The school email already belongs to an Awoof account: signup can
         // never succeed for this handoff, so the page routes to password
         // sign-in with a return to the linking flow that consumes it.
-        return route.fulfill({ status: 409, json: { success: false, error: { message: 'Use existing-account sign-in or recovery.', code: 'CONFLICT', statusCode: 409 } }, headers });
+        return route.fulfill({ status: 409, json: { success: false, error: { message: 'Use existing-account sign-in or recovery.', code: 'SSO_SIGNUP_EXISTING_ACCOUNT', statusCode: 409 } }, headers });
     });
     await page.goto('/auth/student/login');
     await page.evaluate(({ key, handoffId }) => sessionStorage.setItem(key, JSON.stringify({ handoffId, handoffSecret: 'handoff-secret', expiresAt: new Date(Date.now() + 600_000).toISOString(), returnPath: '/marketplace' })), { key: HANDOFF_KEY, handoffId: HANDOFF_ID });
@@ -209,6 +209,35 @@ test('a signup conflict routes to password sign-in with a return to linking inst
     expect(await page.getByRole('button', { name: 'Create passwordless account' }).count()).toBe(0);
     // The handoff stays live for the linking flow to consume.
     expect(await page.evaluate((key) => sessionStorage.getItem(key), HANDOFF_KEY)).not.toBeNull();
+    api.assertNoUnexpectedRequests();
+});
+
+test('a generic signup conflict keeps the retry form instead of the linking journey', async ({ page }) => {
+    const api = await installSyntheticApi(page);
+    await page.route(`${apiOrigin}/api/auth/student/sso/signup/**`, async (route) => {
+        const path = new URL(route.request().url()).pathname;
+        if (path.endsWith('/context')) return route.fulfill({ json: { success: true, data: { email: 'student@school.example', universityId: '72000000-0000-4000-8000-000000000001', termsVersion: '2026-01', noticeVersion: '2026-01', noticeText: 'Synthetic verification processing notice.', expiresAt: expiresAt() } }, headers });
+        if (path.endsWith('/send-code')) return route.fulfill({ status: 201, json: { success: true, data: { challengeId: '73000000-0000-4000-8000-000000000001', expiresAt: expiresAt() } }, headers });
+        if (path.endsWith('/verify-code')) return route.fulfill({ json: { success: true, data: { verified: true, expiresAt: expiresAt() } }, headers });
+        // An expired handoff or withdrawn policy shares the 409 status
+        // without the existing-account code: the page must not claim an
+        // account exists or direct the unusable handoff into linking.
+        return route.fulfill({ status: 409, json: { success: false, error: { message: 'Passwordless student signup is not available. Restart Microsoft sign-in.', code: 'CONFLICT', statusCode: 409 } }, headers });
+    });
+    await page.goto('/auth/student/login');
+    await page.evaluate(({ key, handoffId }) => sessionStorage.setItem(key, JSON.stringify({ handoffId, handoffSecret: 'handoff-secret', expiresAt: new Date(Date.now() + 600_000).toISOString(), returnPath: '/marketplace' })), { key: HANDOFF_KEY, handoffId: HANDOFF_ID });
+    await page.goto('/auth/student/sso/onboarding?mode=signup');
+    await page.getByRole('button', { name: 'Send confirmation code' }).click();
+    await page.getByLabel('Email confirmation code').fill('123456');
+    await page.getByRole('button', { name: 'Confirm email' }).click();
+    await page.getByLabel('Full name').fill('Synthetic Student');
+    await page.getByLabel('I am at least 18 years old').check();
+    await page.getByLabel('I accept the current Terms').check();
+    await page.getByLabel('I consent to the processing notice').check();
+    await page.getByRole('button', { name: 'Create passwordless account' }).click();
+    await expect(page.getByText('We could not finish setup.')).toBeVisible();
+    await expect(page.getByRole('button', { name: 'Create passwordless account' })).toBeVisible();
+    await expect(page.getByRole('link', { name: 'Sign in to link instead' })).toHaveCount(0);
     api.assertNoUnexpectedRequests();
 });
 

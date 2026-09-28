@@ -34,7 +34,10 @@ function callbackService(observation: { issuer: string; subject: string; authTim
         calls.push(text);
         if (text.includes('WHERE attempt.state_hash')) return { rows: [attempt], rowCount: 1 };
         if (text === 'BEGIN' || text === 'COMMIT' || text === 'ROLLBACK') return { rows: [], rowCount: 0 };
-        if (text.includes('WHERE attempt.id = $1 FOR UPDATE')) return { rows: [attempt], rowCount: 1 };
+        // The claim transaction observes pending; the post-redemption
+        // transaction observes the claimed processing row.
+        if (text.includes("SET status = 'processing'")) return { rows: [], rowCount: 1 };
+        if (text.includes('WHERE attempt.id = $1 FOR UPDATE')) return { rows: [{ ...attempt, status: 'processing' }], rowCount: 1 };
         if (text.includes('FROM student_auth_reauth_attempts WHERE id = $1 FOR UPDATE')) return { rows: [attempt], rowCount: 1 };
         if (text.includes('clock_timestamp')) return { rows: [{ now: new Date() }], rowCount: 1 };
         if (text.includes('SELECT active_session_id')) return { rows: [{ active_session_id: sid, credential_generation: 0, deleted_at: null }], rowCount: 1 };

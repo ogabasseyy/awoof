@@ -15,7 +15,7 @@ import axios from 'axios';
 import { AuthShell } from '@/components/auth/AuthShell';
 import { Button } from '@/components/ui/button';
 import { useAuth } from '@/contexts/AuthContext';
-import { publicApiClient, studentSsoApiClient } from '@/lib/api-client';
+import { publicApiClient, studentSsoApiClient, studentSsoSessionApiClient } from '@/lib/api-client';
 import { clearTokens, getSessionSnapshot } from '@/lib/auth';
 import { resolveStudentReturn } from '@/lib/student-return';
 import {
@@ -84,14 +84,16 @@ function RecoveryReauthComplete({ attemptId }: { attemptId: string }) {
         if (started.current) return; started.current = true;
         const session = getSessionSnapshot();
         if (!session.accessToken) { setStatus('failed'); return; }
-        const accessToken = session.accessToken;
-        void studentSsoApiClient.post('/auth/student/sso/reauth/finish', { attemptId }, { headers: { Authorization: `Bearer ${accessToken}` } }).then(async response => {
+        // The session client carries the reauth cookie and refreshes a
+        // token that expired during the provider prompt instead of
+        // collapsing the fresh proof into the failed view.
+        void studentSsoSessionApiClient.post('/auth/student/sso/reauth/finish', { attemptId }).then(async response => {
             const grant = parseSsoReauthFinish(response.data); if (!grant) throw new Error('invalid grant');
-            if (grant.purpose === 'link' || grant.purpose === 'unlink') { await continueIdentity({ grantId: grant.grantId, grantSecret: grant.grantSecret, purpose: grant.purpose, targetIdentityId: grant.targetIdentityId }, accessToken); return; }
+            if (grant.purpose === 'link' || grant.purpose === 'unlink') { await continueIdentity({ grantId: grant.grantId, grantSecret: grant.grantSecret, purpose: grant.purpose, targetIdentityId: grant.targetIdentityId }); return; }
             if (grant.purpose === 'recovery_code_generate') {
                 clearRecoveryIntent(); setGrant({ grantId: grant.grantId, grantSecret: grant.grantSecret });
                 if (grant.activeCodeGeneration !== null) { setStatus('generate'); return; }
-                const generated = await studentSsoApiClient.post('/auth/student/sso/recovery-code/generate', { reauthGrant: { grantId: grant.grantId, grantSecret: grant.grantSecret } }, { headers: { Authorization: `Bearer ${session.accessToken}` } });
+                const generated = await studentSsoSessionApiClient.post('/auth/student/sso/recovery-code/generate', { reauthGrant: { grantId: grant.grantId, grantSecret: grant.grantSecret } });
                 const data = (generated.data as { data?: { pendingCodeId?: unknown; code?: unknown; expiresAt?: unknown; serverNow?: unknown } }).data;
                 if (!data || typeof data.pendingCodeId !== 'string' || typeof data.code !== 'string') throw new Error('invalid code');
                 setGrant(null); setPendingCodeId(data.pendingCodeId); setCode(data.code);
@@ -107,7 +109,7 @@ function RecoveryReauthComplete({ attemptId }: { attemptId: string }) {
             setPendingCodeId(grant.pendingCodeId); setGrant({ grantId: grant.grantId, grantSecret: grant.grantSecret });
             setNeedsOldCode(grant.activeCodeGeneration !== null);
             try {
-                const current = await studentSsoApiClient.get('/auth/student/sso/recovery-code', { headers: { Authorization: `Bearer ${accessToken}` } });
+                const current = await studentSsoSessionApiClient.get('/auth/student/sso/recovery-code');
                 const live = (current.data as { data?: { status?: unknown; generation?: unknown; pendingCodeId?: unknown; pendingExpiresAt?: unknown; serverNow?: unknown } }).data;
                 // The expected generation binds ambiguous-activation
                 // reconciliation: success requires the active generation to
@@ -123,13 +125,13 @@ function RecoveryReauthComplete({ attemptId }: { attemptId: string }) {
             setStatus('activate');
         }).catch(() => { clearRecoveryIntent(); setStatus('failed'); });
     }, [attemptId]);
-    const continueIdentity = async (grant: { grantId: string; grantSecret: string; purpose: 'link' | 'unlink'; targetIdentityId: string | null }, accessToken: string) => {
+    const continueIdentity = async (grant: { grantId: string; grantSecret: string; purpose: 'link' | 'unlink'; targetIdentityId: string | null }) => {
         const auth = { grantId: grant.grantId, grantSecret: grant.grantSecret };
         if (grant.purpose === 'link') {
             const handoff = readSsoHandoff(tabStorage());
             if (!handoff) { setStatus('link_unavailable'); return; }
             try {
-                const response = await studentSsoApiClient.post('/auth/student/sso/link', { handoffId: handoff.handoffId, handoffSecret: handoff.handoffSecret, reauthGrant: auth }, { headers: { Authorization: `Bearer ${accessToken}` } });
+                const response = await studentSsoSessionApiClient.post('/auth/student/sso/link', { handoffId: handoff.handoffId, handoffSecret: handoff.handoffSecret, reauthGrant: auth });
                 if (parseSsoLinkResponse(response.status, response.data)?.kind !== 'linked') throw new Error('not linked');
                 clearSsoHandoff(tabStorage()); window.location.assign(handoff.returnPath); return;
             } catch (cause: unknown) {
@@ -145,7 +147,7 @@ function RecoveryReauthComplete({ attemptId }: { attemptId: string }) {
         }
         if (!grant.targetIdentityId) { setStatus('failed'); return; }
         try {
-            const response = await studentSsoApiClient.post(`/auth/student/sso/identities/${grant.targetIdentityId}/unlink`, { reauthGrant: auth }, { headers: { Authorization: `Bearer ${accessToken}` } });
+            const response = await studentSsoSessionApiClient.post(`/auth/student/sso/identities/${grant.targetIdentityId}/unlink`, { reauthGrant: auth });
             const data = (response.data as { success?: unknown; data?: unknown })?.success === true ? (response.data as { data?: unknown }).data as { unlinked?: unknown; sessionRevoked?: unknown } : null;
             if (!data || data.unlinked !== true || typeof data.sessionRevoked !== 'boolean') throw new Error('invalid unlink');
             // The server clears the session only when the removed identity
@@ -163,7 +165,7 @@ function RecoveryReauthComplete({ attemptId }: { attemptId: string }) {
         const pendingId = pendingCodeId;
         const reconcile = async (): Promise<boolean> => {
             try {
-                const current = await studentSsoApiClient.get('/auth/student/sso/recovery-code', { headers: { Authorization: `Bearer ${session.accessToken}` } });
+                const current = await studentSsoSessionApiClient.get('/auth/student/sso/recovery-code');
                 const live = (current.data as { data?: { status?: unknown; generation?: unknown; pendingCodeId?: unknown; pendingExpiresAt?: unknown; serverNow?: unknown } }).data;
                 // An ambiguous transport failure may have committed: the
                 // grant is then consumed and retrying cannot succeed. Only
@@ -180,7 +182,7 @@ function RecoveryReauthComplete({ attemptId }: { attemptId: string }) {
             return false;
         };
         try {
-            await studentSsoApiClient.post('/auth/student/sso/recovery-code/activate', { reauthGrant: grant, pendingCodeId: pendingId, code, ...(needsOldCode ? { oldCode } : {}) }, { headers: { Authorization: `Bearer ${session.accessToken}` } });
+            await studentSsoSessionApiClient.post('/auth/student/sso/recovery-code/activate', { reauthGrant: grant, pendingCodeId: pendingId, code, ...(needsOldCode ? { oldCode } : {}) });
             setGrant(null); setCode(''); setOldCode(''); setStatus('active'); await refreshUser().catch(() => undefined);
         } catch (cause: unknown) {
             const response = axios.isAxiosError(cause) ? cause.response : undefined;
@@ -192,9 +194,9 @@ function RecoveryReauthComplete({ attemptId }: { attemptId: string }) {
     };
     const generateReplacement = async () => {
         const session = getSessionSnapshot(); if (actionBusy.current || !grant || !session.accessToken || !code) return; actionBusy.current = true; setBusy(true);
-        try { const r = await studentSsoApiClient.post('/auth/student/sso/recovery-code/generate', { reauthGrant: grant, oldCode: code }, { headers: { Authorization: `Bearer ${session.accessToken}` } }); const data = (r.data as { data?: { pendingCodeId?: unknown; code?: unknown; expiresAt?: unknown; serverNow?: unknown } }).data; if (!data || typeof data.pendingCodeId !== 'string' || typeof data.code !== 'string') throw new Error(); setGrant(null); setPendingCodeId(data.pendingCodeId); setCode(data.code); setPendingExpiresAt(typeof data.expiresAt === 'string' ? data.expiresAt : null); setSkewMs(serverSkewSince(typeof data.serverNow === 'string' && !Number.isNaN(Date.parse(data.serverNow)) ? data.serverNow : null)); setStatus('display'); } catch { setError('The current recovery code could not be confirmed.'); } finally { actionBusy.current = false; setBusy(false); }
+        try { const r = await studentSsoSessionApiClient.post('/auth/student/sso/recovery-code/generate', { reauthGrant: grant, oldCode: code }); const data = (r.data as { data?: { pendingCodeId?: unknown; code?: unknown; expiresAt?: unknown; serverNow?: unknown } }).data; if (!data || typeof data.pendingCodeId !== 'string' || typeof data.code !== 'string') throw new Error(); setGrant(null); setPendingCodeId(data.pendingCodeId); setCode(data.code); setPendingExpiresAt(typeof data.expiresAt === 'string' ? data.expiresAt : null); setSkewMs(serverSkewSince(typeof data.serverNow === 'string' && !Number.isNaN(Date.parse(data.serverNow)) ? data.serverNow : null)); setStatus('display'); } catch { setError('The current recovery code could not be confirmed.'); } finally { actionBusy.current = false; setBusy(false); }
     };
-    const remove = async () => { const session = getSessionSnapshot(); if (actionBusy.current || !grant || !session.accessToken || !code) return; actionBusy.current = true; setBusy(true); try { await studentSsoApiClient.post('/auth/student/sso/recovery-code/remove', { reauthGrant: grant, oldCode: code }, { headers: { Authorization: `Bearer ${session.accessToken}` } }); setGrant(null); setCode(''); setStatus('removed'); } catch { setError('The current recovery code could not be confirmed.'); } finally { actionBusy.current = false; setBusy(false); } };
+    const remove = async () => { const session = getSessionSnapshot(); if (actionBusy.current || !grant || !session.accessToken || !code) return; actionBusy.current = true; setBusy(true); try { await studentSsoSessionApiClient.post('/auth/student/sso/recovery-code/remove', { reauthGrant: grant, oldCode: code }); setGrant(null); setCode(''); setStatus('removed'); } catch { setError('The current recovery code could not be confirmed.'); } finally { actionBusy.current = false; setBusy(false); } };
     if (status === 'generate') return <AuthShell role="student" title="Replace recovery code" subtitle="Confirm your current code." footer={null}><label htmlFor="old-recovery-code">Current recovery code<input id="old-recovery-code" value={code} onChange={e => setCode(e.target.value)} className="mt-1 w-full rounded-2xl border px-4 h-11" /></label>{error ? <p role="alert">{error}</p> : null}<Button disabled={busy} className="mt-5 w-full rounded-full" onClick={generateReplacement}>Generate replacement code</Button></AuthShell>;
     if (pendingExpired) return <AuthShell role="student" title="Pending code expired" subtitle="The activation deadline passed." footer={null}><p role="alert">This pending code expired before activation and cannot recover your account. Start setup again for a fresh code.</p><Button className="mt-5 w-full rounded-full" asChild><Link href="/student/security">Back to account security</Link></Button></AuthShell>;
     if (status === 'display') return <AuthShell role="student" title="Save your recovery code" subtitle="It will not be shown again." footer={null}><p role="alert" className="rounded-xl bg-amber-50 p-3 break-all font-mono text-left">{code}</p>{Number.isNaN(pendingDeadlineMs) ? null : <p role="timer" className="mt-3 text-left text-sm">Activate this code within {formatPendingRemaining(pendingDeadlineMs, now + skewMs)}.</p>}<p className="mt-3 text-left text-sm">Save this code somewhere secure. It is not stored in this browser, sent by email, or added to a URL. Then return to Account security and confirm your identity again to activate it.</p><Button className="mt-5 w-full rounded-full" onClick={() => { if (pendingCodeId) try { sessionStorage.setItem(RECOVERY_INTENT_KEY, JSON.stringify({ purpose: 'recovery_code_activate', pendingCodeId })); } catch { /* security page reports unavailable */ } setCode(''); window.location.href = '/student/security'; }}>I saved my code</Button></AuthShell>;

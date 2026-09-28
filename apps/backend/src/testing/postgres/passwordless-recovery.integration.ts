@@ -215,6 +215,12 @@ test('recovery terminal failure writers scrub superseded and stale-state secrets
 
         // An ordinary code typo rejects but stays pending with its bearer
         // intact; only unrecoverable state terminalizes below.
+        // A stale tab resubmitting the scrubbed attempt gets a bounded
+        // rejection, not a 500 from comparing its NULL digest.
+        await assert.rejects(
+            () => service.verify({ attemptId: first.attemptId, secret: first.secret, code: account.code, otp: '000000' }),
+            (error: unknown) => (error as { code?: string }).code === 'CONFLICT',
+        );
         await assert.rejects(() => service.verify({
             attemptId: second.attemptId, secret: second.secret, code: `${account.code}-wrong`, otp,
         }));
@@ -1239,6 +1245,61 @@ test('fresh reauthentication refuses identities whose institutional approval was
             () => reauth.start({ userId, sid: SID, purpose: 'link' }),
             /no longer valid/,
         );
+    } finally {
+        client.release();
+        await pool.end();
+    }
+});
+
+test('concurrent duplicate reauth callbacks redeem the one-use code exactly once', async () => {
+    const pool = createTestPool();
+    const client = await pool.connect();
+    try {
+        const userId = await seedStudent(client);
+        const proofIdentityId = await seedProviderProof(client, userId, { policy: true });
+        const identity = (await client.query<{ issuer: string; subject: string }>(
+            'SELECT issuer, subject FROM student_auth_identities WHERE id = $1', [proofIdentityId],
+        )).rows[0]!;
+        let captured: { state: string } | null = null;
+        let redemptions = 0;
+        const reauth = new StudentReauthService({
+            pool,
+            attemptKey: Buffer.alloc(32, 7).toString('base64url'),
+            completionUrl: new URL('https://app.example.invalid/auth/student/sso/complete'),
+            isProviderEnabled: () => true,
+            oidcForPolicy: () => ({
+                authorizeFresh: async (input: { state: string }) => {
+                    captured = input;
+                    return new URL('https://provider.example.invalid/fresh');
+                },
+                redeemFresh: async () => {
+                    redemptions += 1;
+                    await new Promise((resolve) => setTimeout(resolve, 100));
+                    return {
+                        provider: 'microsoft' as const, issuer: identity.issuer, subject: identity.subject,
+                        email: 'student@example.invalid', mailboxVerified: true, realm: 'realm',
+                        schoolMembershipAttested: false, objectId: 'object', authTime: Math.floor(Date.now() / 1000),
+                    };
+                },
+            }) as never,
+        });
+        const started = await reauth.start({ userId, sid: SID, purpose: 'link' });
+        const callbackUrl = new URL(`https://api.example.invalid/callback?state=${captured!.state}&code=code`);
+        // The same provider callback delivered twice: the loser observes
+        // the winner's processing claim and never redeems, so the
+        // winner's locked recheck still finds its own claim.
+        const [first, second] = await Promise.allSettled([
+            reauth.callback({ callbackUrl, callbackCookie: started.callbackCookie }),
+            reauth.callback({ callbackUrl, callbackCookie: started.callbackCookie }),
+        ]);
+        assert.equal([first, second].filter((result) => result.status === 'fulfilled').length, 1);
+        const rejected = [first, second].find((result) => result.status === 'rejected') as PromiseRejectedResult;
+        assert.match(String(rejected.reason), /no longer valid/);
+        assert.equal(redemptions, 1);
+        const status = await client.query<{ status: string }>(
+            'SELECT status FROM student_auth_reauth_attempts WHERE id = $1', [started.attemptId],
+        );
+        assert.equal(status.rows[0]!.status, 'ready');
     } finally {
         client.release();
         await pool.end();

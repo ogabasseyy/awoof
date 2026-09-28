@@ -148,6 +148,18 @@ test('signup name schema encodes the enforced trimmed length limits', () => {
     assert.equal(fullName.maxLength, 255);
 });
 
+test('signup schemas encode the enforced handoff-secret ceiling', () => {
+    type JsonSchema = { type?: string; minLength?: number; maxLength?: number };
+    const spec = swaggerSpec as { components: { schemas: Record<string, { properties: Record<string, JsonSchema> }> } };
+    // signupHandoffBody() and checked() reject secrets over 1024 chars.
+    for (const name of ['PasswordlessSignupHandoffRequest', 'PasswordlessSignupVerifyRequest', 'PasswordlessSignupCompleteRequest']) {
+        const secret = spec.components.schemas[name].properties.handoffSecret;
+        assert.equal(secret.type, 'string');
+        assert.equal(secret.minLength, 1);
+        assert.equal(secret.maxLength, 1024, `${name} must publish the enforced ceiling`);
+    }
+});
+
 test('recovery password schema encodes the enforced complexity rules', () => {
     type JsonSchema = { type?: string; minLength?: number; maxLength?: number; pattern?: string; description?: string };
     const spec = swaggerSpec as { components: { schemas: Record<string, { properties: Record<string, JsonSchema> }> } };

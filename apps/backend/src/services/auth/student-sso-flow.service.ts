@@ -845,7 +845,7 @@ export async function cleanupStudentSsoTransients(client: PoolClient): Promise<S
             + (SELECT count(*) FROM student_auth_signup_challenges
                WHERE expires_at <= clock_timestamp() - interval '1 hour' AND status IN ('pending', 'mailbox_verified'))
             + (SELECT count(*) FROM student_auth_reauth_attempts
-               WHERE expires_at <= clock_timestamp() - interval '1 hour' AND status IN ('pending', 'ready'))
+               WHERE expires_at <= clock_timestamp() - interval '1 hour' AND status IN ('pending', 'processing', 'ready'))
             + (SELECT count(*) FROM student_auth_recovery_attempts
                WHERE expires_at <= clock_timestamp() - interval '1 hour' AND status IN ('pending', 'verified'))
         )::text AS count`,
@@ -886,7 +886,7 @@ export async function cleanupStudentSsoTransients(client: PoolClient): Promise<S
         `UPDATE student_auth_reauth_attempts
          SET status = 'failed', consumed_at = clock_timestamp(), state_hash = NULL, callback_cookie_hash = NULL,
              encrypted_verifier = NULL, nonce = NULL
-         WHERE expires_at <= clock_timestamp() AND status IN ('pending', 'ready')`,
+         WHERE expires_at <= clock_timestamp() AND status IN ('pending', 'processing', 'ready')`,
     );
     const recoveryTerminalized = await client.query(
         `UPDATE student_auth_recovery_attempts

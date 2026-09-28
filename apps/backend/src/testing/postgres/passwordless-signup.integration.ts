@@ -254,7 +254,7 @@ test('active and revoked provider identities cannot be claimed by passwordless s
     await withPool(async pool => {
         const key = randomBytes(32).toString('base64url'); const service = new StudentSsoSignupService({ pool, attemptKey: key, isEnabled: () => true, isProviderEnabled: () => true, deliverOtp: async () => ({ success: true }) });
         const c = await pool.connect(); let state; try { state = await seed(c, key); const owner = (await c.query<{ id: string }>(`INSERT INTO users (email, role) VALUES ($1,'student') RETURNING id`, [`owner-${label()}@example.invalid`])).rows[0]!.id; await c.query(`INSERT INTO student_auth_identities (user_id, university_id, provider, issuer, subject, observed_email, revoked_at) VALUES ($1,$2,'microsoft',$3,$4,$5,clock_timestamp())`, [owner, state.university, state.issuer, state.subject, state.email]); } finally { c.release(); }
-        await assert.rejects(service.context({ handoffId: state.handoffId, handoffSecret: state.handoffSecret, browserBinding: state.browser }), /existing-account sign-in or recovery/i);
+        await assert.rejects(service.context({ handoffId: state.handoffId, handoffSecret: state.handoffSecret, browserBinding: state.browser }), (error: unknown) => (error as { code?: string }).code === 'SSO_SIGNUP_EXISTING_ACCOUNT');
     });
 });
 
@@ -279,7 +279,7 @@ test('signup rejects an existing email or provider identity without creating a s
         const c = await pool.connect(); let state; try { state = await seed(c, key); await c.query(`INSERT INTO users (email, role) VALUES ($1, 'student')`, [state.email]); } finally { c.release(); }
         const sent = await service.sendCode({ handoffId: state.handoffId, handoffSecret: state.handoffSecret, browserBinding: state.browser });
         await service.verifyCode({ handoffId: state.handoffId, handoffSecret: state.handoffSecret, browserBinding: state.browser, challengeId: sent.challengeId, code });
-        await assert.rejects(service.complete({ handoffId: state.handoffId, handoffSecret: state.handoffSecret, browserBinding: state.browser, fullName: 'Ada Student', ageAttested: true, termsAccepted: true, termsVersion: STUDENT_TERMS_VERSION, verificationConsent: true, noticeVersion: VERIFICATION_NOTICE_VERSION }), /existing-account sign-in or recovery/i);
+        await assert.rejects(service.complete({ handoffId: state.handoffId, handoffSecret: state.handoffSecret, browserBinding: state.browser, fullName: 'Ada Student', ageAttested: true, termsAccepted: true, termsVersion: STUDENT_TERMS_VERSION, verificationConsent: true, noticeVersion: VERIFICATION_NOTICE_VERSION }), (error: unknown) => (error as { code?: string }).code === 'SSO_SIGNUP_EXISTING_ACCOUNT');
         const users = await pool.query<{ count: string }>(`SELECT count(*)::text AS count FROM users WHERE email=$1`, [state.email]); assert.equal(users.rows[0]!.count, '1');
     });
 });

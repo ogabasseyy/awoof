@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 import type { Pool, PoolClient } from 'pg';
-import { BadRequestError, ConflictError, ServiceUnavailableError, UnauthorizedError } from '../../common/errors/AppError.js';
+import { AppError, BadRequestError, ConflictError, ServiceUnavailableError, UnauthorizedError } from '../../common/errors/AppError.js';
 import { consumeChallenge, requestChallenge } from '../verification/challenge.service.js';
 import { normalizeMailbox } from '../verification/eligibility-policy.service.js';
 import { recordPasswordlessSignupMailboxProof } from '../verification/eligibility-evidence.service.js';
@@ -25,6 +25,19 @@ export type StudentSsoSignupDependencies = {
 };
 
 function invalid(): ConflictError { return new ConflictError('Passwordless student signup is not available. Restart Microsoft sign-in.'); }
+
+/**
+ * The school email (or Microsoft subject) already belongs to an account.
+ * Carries a distinct machine-readable code so the client routes only
+ * this conflict to existing-account linking: every other signup failure
+ * (expired handoff, withdrawn policy, version drift) shares the generic
+ * 409/400 shapes and must not present the linking journey.
+ */
+export class StudentSsoSignupExistingAccountError extends AppError {
+    constructor() {
+        super('Use existing-account sign-in or recovery.', 409, 'SSO_SIGNUP_EXISTING_ACCOUNT');
+    }
+}
 function checked(input: { handoffId: unknown; handoffSecret: unknown; browserBinding: unknown }): { handoffId: string; handoffSecret: string; browserBinding: string } {
     if (!UUID.test(String(input.handoffId)) || typeof input.handoffSecret !== 'string' || input.handoffSecret.length < 1 || input.handoffSecret.length > 1024 || typeof input.browserBinding !== 'string' || input.browserBinding.length < 1 || input.browserBinding.length > 1024) throw invalid();
     return input as { handoffId: string; handoffSecret: string; browserBinding: string };
@@ -68,7 +81,7 @@ export class StudentSsoSignupService {
         let policy; try { policy = await assertCurrentLoginPolicy(tx, handoff.policy_id, handoff.policy_version, attempt.requested_email); } catch (error) { if (error instanceof StudentSsoAuthorityInvalidatedError) throw invalid(); throw error; }
         if (policy.provider !== observation.provider || policy.issuer !== observation.issuer || normalizeMailbox(observation.email) !== normalizeMailbox(attempt.requested_email)) throw invalid();
         const existing = await tx.query<{ id: string }>('SELECT id FROM student_auth_identities WHERE provider = $1 AND issuer = $2 AND subject = $3 FOR UPDATE', [observation.provider, observation.issuer, observation.subject]);
-        if (existing.rowCount) throw new ConflictError('Use existing-account sign-in or recovery.');
+        if (existing.rowCount) throw new StudentSsoSignupExistingAccountError();
         const secret = signupSecretHash(input.handoffId, input.handoffSecret);
         await tx.query(`INSERT INTO student_auth_signup_challenges (handoff_id, secret_hash, browser_binding_hash, expires_at)
             VALUES ($1, $2, $3, $4) ON CONFLICT (handoff_id) DO NOTHING`, [input.handoffId, secret, hashMicrosoftAttemptSecret(input.browserBinding), handoff.expires_at]);
@@ -136,6 +149,6 @@ export class StudentSsoSignupService {
                 SET consumed_at = clock_timestamp(), secret_hash = NULL, browser_binding_hash = NULL, encrypted_observation = NULL
                 WHERE id = $1 AND consumed_at IS NULL`, [state.handoff.id]); if (consumed.rowCount !== 1) throw invalid(); await tx.query(`UPDATE student_auth_signup_challenges
                 SET status = 'consumed', consumed_at = clock_timestamp(), terminal_at = clock_timestamp(), secret_hash = NULL, browser_binding_hash = NULL
-                WHERE id = $1`, [state.signup.id]); return { user, tokens }; }); } catch (error) { if ((error as { code?: string }).code === '23505') throw new ConflictError('Use existing-account sign-in or recovery.'); throw error; }
+                WHERE id = $1`, [state.signup.id]); return { user, tokens }; }); } catch (error) { if ((error as { code?: string }).code === '23505') throw new StudentSsoSignupExistingAccountError(); throw error; }
     }
 }
