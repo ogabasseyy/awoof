@@ -357,14 +357,21 @@ test('a delayed callback for a scrubbed reauth attempt redirects to bounded comp
         callback: async () => { throw new Error('ordinary login callback must not run'); },
     });
     await withServer(routerWith(flow, { reauthService: () => reauth as never }), async (baseUrl) => {
-        const callback = await fetch(`${baseUrl}/microsoft/callback?state=scrubbed-state&code=code`, {
-            redirect: 'manual', headers: { Cookie: `awoof_reauth_${reauthAttemptId}=reauth-browser` },
+        // A sibling cookie rides along first: the state's attempt suffix —
+        // not cookie order — must select the cleared binding.
+        const siblingId = '6d666666-6666-4666-8666-666666666667';
+        const callback = await fetch(`${baseUrl}/microsoft/callback?state=scrubbed-random.${reauthAttemptId}&code=code`, {
+            redirect: 'manual',
+            headers: { Cookie: `awoof_reauth_${siblingId}=sibling-browser; awoof_reauth_${reauthAttemptId}=reauth-browser` },
         });
-        // Neither state resolves, but the per-attempt cookie names a
-        // confirmed-dead row: clear it and land bounded.
+        // Neither state resolves by hash, but the suffix names a
+        // confirmed-dead row with a same-named cookie: clear exactly it
+        // and land bounded.
         assert.equal(callback.status, 303);
         assert.equal(callback.headers.get('location'), `${COMPLETION_ORIGIN}/auth/student/sso/complete?reauth=${reauthAttemptId}`);
-        assert.match(parseSetCookies(callback)[0]!, new RegExp(`awoof_reauth_${reauthAttemptId}=;`));
+        const cleared = parseSetCookies(callback);
+        assert.equal(cleared.length, 1);
+        assert.match(cleared[0]!, new RegExp(`awoof_reauth_${reauthAttemptId}=;`));
     });
 });
 
@@ -1066,6 +1073,14 @@ test('OpenAPI documents disabled passwordless signup and recovery contracts with
         assert.ok(paths[path]?.post?.responses?.['409']);
     }
     assert.ok(paths['/api/auth/student/sso/recovery-code']?.get?.responses?.['401']);
+    // The recovery factory gates all three operations on the deployment
+    // key and mailer, so generated clients must model the 503 outage.
+    for (const path of [
+        '/api/auth/student/sso/account-recovery/start', '/api/auth/student/sso/account-recovery/verify',
+        '/api/auth/student/sso/account-recovery/complete',
+    ]) {
+        assert.ok(paths[path]?.post?.responses?.['503'], `${path} documents the deployment-wide recovery outage`);
+    }
     for (const schema of ['PasswordlessSignupHandoffRequest', 'PasswordlessSignupCompleteRequest', 'RecoveryCodeGenerateRequest', 'RecoveryCodeStatusResponse', 'AccountRecoveryVerifyRequest']) {
         assert.ok(spec.components.schemas[schema], `missing typed OpenAPI schema ${schema}`);
     }
@@ -1315,6 +1330,18 @@ test('unlink reports the last login method honestly and revokes otherwise', asyn
         const body = await response.json();
         assert.equal(body.error.code, 'SSO_LAST_LOGIN_METHOD');
         assert.equal(response.headers.get('cache-control'), 'no-store');
+    });
+    const proofMethod = stubLink({ unlink: async () => ({ outcome: 'last_proof_method' as const }) });
+    await withServer(linkRouter(proofMethod), async (baseUrl) => {
+        const response = await fetch(`${baseUrl}/identities/${LINK_IDENTITY_ID}/unlink`, {
+            method: 'POST',
+            headers: authHeaders(studentToken(true)),
+            body: JSON.stringify({ reauthGrant: { grantId: LINK_GRANT_ID, grantSecret: 'grant-secret' } }),
+        });
+        assert.equal(response.status, 409);
+        const body = await response.json();
+        assert.equal(body.error.code, 'SSO_LAST_PROOF_METHOD');
+        assert.deepEqual(body.error.details, { outcome: 'last_proof_method' });
     });
     const revoked = stubLink();
     await withServer(linkRouter(revoked), async (baseUrl) => {

@@ -7,7 +7,7 @@ import { AuthShell } from '@/components/auth/AuthShell';
 import { Button } from '@/components/ui/button';
 import { useAuth } from '@/contexts/AuthContext';
 import { clearTokens, getSessionSnapshot } from '@/lib/auth';
-import { studentSsoApiClient, studentSsoSessionApiClient } from '@/lib/api-client';
+import { refreshSessionAccessToken, studentSsoApiClient, studentSsoSessionApiClient } from '@/lib/api-client';
 import { serverSkewSince } from '@/lib/student-login-flow';
 
 type RecoveryStatus = 'loading' | 'unconfigured' | 'pending' | 'active' | 'unavailable';
@@ -133,7 +133,17 @@ export default function StudentSecurityPage() {
         if (pwMode === 'remove' && !pwOld) { setFormError('Enter the current recovery code.'); return; }
         if (pwMode === 'activate' && !pwCode) { setFormError('Re-enter the saved recovery code.'); return; }
         setBusy(true); setFormError(null);
-        const headers = { Authorization: `Bearer ${session.accessToken}` };
+        // The raw password travels on the non-refreshing client, so the
+        // token is renewed first: a stale snapshot would 401 before the
+        // password is checked and misreport as "incorrect" with no recovery.
+        let headers: { Authorization: string };
+        try {
+            headers = { Authorization: `Bearer ${await refreshSessionAccessToken()}` };
+        } catch {
+            setBusy(false);
+            setFormError('Your session expired. Sign in again and retry.');
+            return;
+        }
         try {
             const purpose = pwMode === 'generate' ? 'recovery_code_generate' : pwMode === 'activate' ? 'recovery_code_activate' : 'recovery_code_remove';
             const reauth = await studentSsoApiClient.post('/auth/student/sso/reauth', pwMode === 'activate' && pwPendingId ? { password, purpose, pendingCodeId: pwPendingId } : { password, purpose }, { headers });
@@ -191,7 +201,17 @@ export default function StudentSecurityPage() {
     const submitUnlinkPassword = async () => {
         const session = getSessionSnapshot(); if (!session.accessToken || unlinkBusy || !unlinkTarget || !unlinkPassword) return;
         setUnlinkBusy(true); setUnlinkError(null);
-        const headers = { Authorization: `Bearer ${session.accessToken}` };
+        // Same pre-refresh as recovery-code password proofs: the unlink
+        // proof uses the non-refreshing client, so a stale token would 401
+        // before the password is checked and misreport as "incorrect".
+        let headers: { Authorization: string };
+        try {
+            headers = { Authorization: `Bearer ${await refreshSessionAccessToken()}` };
+        } catch {
+            setUnlinkBusy(false);
+            setUnlinkError('Your session expired. Sign in again and retry.');
+            return;
+        }
         const targetId = unlinkTarget.id;
         try {
             const reauth = await studentSsoApiClient.post('/auth/student/sso/reauth', { password: unlinkPassword, purpose: 'unlink', targetIdentityId: targetId }, { headers });
@@ -207,7 +227,7 @@ export default function StudentSecurityPage() {
         } catch (cause: unknown) {
             const failed = axios.isAxiosError(cause) ? cause.response : undefined;
             const code = (failed?.data as { error?: { code?: unknown } } | undefined)?.error?.code;
-            setUnlinkError(failed?.status === 409 && code === 'SSO_LAST_LOGIN_METHOD' ? 'This is the last sign-in method. Link another school sign-in first.' : failed?.status === 401 ? 'Current password is incorrect.' : failed?.status === 403 ? 'This account has no password. Use school sign-in instead.' : 'Removal failed. Try again.');
+            setUnlinkError(failed?.status === 409 && code === 'SSO_LAST_LOGIN_METHOD' ? 'This is the last sign-in method. Link another school sign-in first.' : failed?.status === 409 && code === 'SSO_LAST_PROOF_METHOD' ? 'This Microsoft sign-in is needed for security confirmations. Link another Microsoft sign-in first.' : failed?.status === 401 ? 'Current password is incorrect.' : failed?.status === 403 ? 'This account has no password. Use school sign-in instead.' : 'Removal failed. Try again.');
         } finally { setUnlinkBusy(false); }
     };
     // No early return on recovery-status failure: identity listing,

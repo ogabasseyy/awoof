@@ -88,9 +88,9 @@ export class StudentAccountRecoveryService {
         const email = input.email.trim().toLowerCase();
         const attemptId = randomUUID();
         const secret = randomBytes(32).toString('base64url');
-        // The decoy and committed handles share one server-clock expiry. The
-        // mailbox challenge TTL is the binding constraint (the attempt row
-        // takes LEAST(server clock + 10m, challenge expiry), and the
+        // The fallback and committed handles share one server-clock expiry.
+        // The mailbox challenge TTL is the binding constraint (the attempt
+        // row takes LEAST(server clock + 10m, challenge expiry), and the
         // challenge takes the earlier of its input and server clock + TTL —
         // so both paths derive from the same clock read plus the shared TTL.
         // A generic client-clock +10m expiry would mark real attempts by
@@ -100,18 +100,9 @@ export class StudentAccountRecoveryService {
             const serverNow = await databaseNow(tx);
             const serverExpiry = new Date(serverNow.getTime() + ttlMs);
             const account = await this.findRecoverableAccount(tx, email);
-            // Anti-enumeration decoy path: unknown, deleted, suspended, and
-            // code-less addresses run the same database shapes as the
-            // committed path (code lookup, budget lock probe, live-attempt
-            // probe) instead of returning after one lookup, so only small
-            // constant persistence deltas remain. Nothing persists here by
-            // design: issuing budget/challenge rows for unknown subjects
-            // would hand unauthenticated callers unbounded writable
-            // storage, and no pruning job covers it.
             const active = account ? await this.lockActiveCode(tx, account.id) : await this.lockActiveCode(tx, randomUUID());
             if (!account || !active) {
-                await this.probeStartDecoys(tx, email);
-                return { expiresAt: serverExpiry.toISOString(), serverNow: serverNow.toISOString() };
+                return this.decoyStart(tx, { email, attemptId, purpose, serverExpiry, serverNow });
             }
             // Locked before challenge issuance so concurrent starts and
             // verifications serialize on the attempt row in one order
@@ -130,7 +121,14 @@ export class StudentAccountRecoveryService {
                 // stranding the delivered OTP behind a decoy. The expiry
                 // stays bounded by the original challenge, so retries can
                 // never stretch the OTP window, and no OTP is re-sent.
-                if (!live) return { expiresAt: serverExpiry.toISOString(), serverNow: serverNow.toISOString() };
+                if (!live) {
+                    // No resumable attempt, but the frozen budget-challenge
+                    // expiry still applies: a fresh deadline here would mark
+                    // committed handles against decoy retries, which return
+                    // the same frozen value. Fresh only when none is live.
+                    const current = await this.liveBudgetChallengeExpiry(tx, challengeSubjectDigest('student_account_recovery', account.email));
+                    return { expiresAt: (current ?? serverExpiry).toISOString(), serverNow: serverNow.toISOString() };
+                }
                 await this.failPriorAttempts(tx, account.id);
                 // Rebind the shared challenge to the rebound handle: verify
                 // pins consumption to exactly one live attempt, and the
@@ -298,13 +296,15 @@ export class StudentAccountRecoveryService {
             // A ready provider callback is not yet a session. Invalidate every
             // same-mailbox attempt before releasing the account lock so a
             // pre-recovery callback cannot mint a post-recovery session.
+            // The comparison is normalized: a legacy stored email may carry
+            // case or whitespace the normalized attempt mailboxes do not.
             // Terminal binding digests are scrubbed immediately, matching
             // the reauthentication and recovery terminalization above.
             await tx.query(
                 `UPDATE student_auth_attempts
                  SET status = 'failed', state_hash = NULL, callback_cookie_hash = NULL, finish_secret_hash = NULL,
                      encrypted_verifier = NULL, nonce = NULL, encrypted_observation = NULL
-                 WHERE requested_email = $1 AND status IN ('pending', 'processing', 'ready')`,
+                 WHERE lower(btrim(requested_email)) = lower(btrim($1)) AND status IN ('pending', 'processing', 'ready')`,
                 [account.email],
             );
             await tx.query(
@@ -366,18 +366,53 @@ export class StudentAccountRecoveryService {
     }
 
     /**
-     * Non-persistent decoy reads mirroring the committed start path's
-     * remaining shapes (budget lock, live-attempt lookup) for addresses
-     * that will receive a decoy handle.
+     * Anti-enumeration decoy start for unknown, deleted, suspended, and
+     * code-less addresses. The decoy issues a real mailbox challenge keyed
+     * by the normalized email so retry deadlines are stable exactly like
+     * committed handles: a fresh `serverNow + TTL` on every decoy retry
+     * would be a deterministic response-field oracle against the frozen
+     * rebound expiry. The challenge can never verify — verify requires an
+     * attempt row, and none is written here — and nothing is delivered.
+     * Storage is bounded, not unbounded: one budget row per subject
+     * (upserted), at most three challenges per ten-minute window per
+     * subject (budget-enforced), plus the route's per-IP limiter — the
+     * same issuance signup already performs for unknown addresses. The
+     * budget is shared with the committed path (one subject, one cap):
+     * a state transition inside the cooldown — reactivation, code
+     * enrollment — simply delays the first committed attempt row until
+     * the caller's retry past the cooldown.
      */
-    private async probeStartDecoys(tx: PoolClient, email: string): Promise<void> {
-        const subject = challengeSubjectDigest('student_account_recovery', email);
-        await tx.query(
-            `SELECT purpose FROM verification_challenge_budgets
-             WHERE purpose = 'student_account_recovery' AND subject_digest = $1 FOR UPDATE`,
+    private async decoyStart(tx: PoolClient, handle: { email: string; attemptId: string; purpose: RecoveryPurpose; serverExpiry: Date; serverNow: Date }): Promise<{ expiresAt: string; serverNow: string }> {
+        const decoy = await requestChallenge(tx, {
+            purpose: 'student_account_recovery', subjectKey: handle.email,
+            bindings: { recoveryAttemptId: handle.attemptId, recoveryPurpose: handle.purpose },
+            expiresAt: handle.serverExpiry,
+        });
+        if (decoy.status === 'issued') {
+            return { expiresAt: decoy.expiresAt.toISOString(), serverNow: handle.serverNow.toISOString() };
+        }
+        // Cooldown/locked: the live current challenge's frozen expiry,
+        // mirroring the committed rebound; fresh only when none is live.
+        const live = await this.liveBudgetChallengeExpiry(tx, challengeSubjectDigest('student_account_recovery', handle.email));
+        return { expiresAt: (live ?? handle.serverExpiry).toISOString(), serverNow: handle.serverNow.toISOString() };
+    }
+
+    /**
+     * Frozen expiry of the budget's live current challenge, if any. The
+     * committed no-live-attempt branch and the decoy cooldown/locked branch
+     * share this so retry deadlines are indistinguishable on both paths.
+     */
+    private async liveBudgetChallengeExpiry(tx: PoolClient, subject: string): Promise<Date | null> {
+        const result = await tx.query<{ expires_at: Date }>(
+            `SELECT challenge.expires_at
+             FROM verification_challenge_budgets budget
+             JOIN verification_challenges challenge ON challenge.id = budget.current_challenge_id
+             WHERE budget.purpose = 'student_account_recovery' AND budget.subject_digest = $1
+               AND challenge.consumed_at IS NULL AND challenge.superseded_at IS NULL
+               AND challenge.expires_at > clock_timestamp()`,
             [subject],
         );
-        await this.lockLiveAttempt(tx, randomUUID(), 'lost_access');
+        return result.rows[0]?.expires_at ?? null;
     }
 
     /**

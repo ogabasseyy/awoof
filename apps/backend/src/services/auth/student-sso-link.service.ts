@@ -77,7 +77,8 @@ export type StudentSsoLinkResult =
 
 export type StudentSsoUnlinkResult =
     | { unlinked: true; sessionRevoked: boolean }
-    | { outcome: 'last_method' };
+    | { outcome: 'last_method' }
+    | { outcome: 'last_proof_method' };
 
 export type StudentSsoLinkDependencies = {
     pool: Pool;
@@ -527,8 +528,8 @@ export class StudentSsoLinkService {
             if (!row || row.user_id !== userId || row.revoked_at !== null) {
                 throw new NotFoundError('Student SSO login identity not found');
             }
-            const sibling = await tx.query<{ provider: LoginProvider }>(
-                `SELECT identity.provider FROM student_auth_identities identity
+            const candidates = await tx.query<{ provider: LoginProvider; is_target: boolean }>(
+                `SELECT identity.provider, identity.id = $2 AS is_target FROM student_auth_identities identity
                  JOIN students student ON student.user_id = identity.user_id
                      AND student.status = 'active'
                      AND student.university_id = identity.university_id
@@ -544,7 +545,7 @@ export class StudentSsoLinkService {
                    ON domain.domain = mapping.domain
                   AND domain.university_id = mapping.university_id
                   AND domain.is_active
-                 WHERE identity.user_id = $1 AND identity.id <> $2 AND identity.revoked_at IS NULL`,
+                 WHERE identity.user_id = $1 AND identity.revoked_at IS NULL`,
                 [userId, identityId],
             );
             // Another usable login method must remain: a usable password or a
@@ -558,11 +559,30 @@ export class StudentSsoLinkService {
             // provider is evaluated: with siblings across providers, an
             // unordered LIMIT 1 could sample a disabled one and wrongly
             // report last_method. Nothing is consumed here.
-            const siblingUsable = sibling.rows.some(
+            const usable = candidates.rows.filter(
                 (candidate) => this.deps.isProviderEnabled?.(candidate.provider) === true,
             );
+            const siblingUsable = usable.some((candidate) => !candidate.is_target);
             if (account.rows[0]?.password_hash == null && !siblingUsable) {
                 return { outcome: 'last_method' };
+            }
+            // Fresh-proof preservation: every provider-backed sensitive
+            // action requires a live Microsoft identity, and password
+            // reauthentication rejects a null password. Removing a usable
+            // Microsoft identity from a passwordless account with no
+            // second usable Microsoft identity would leave a Google-only
+            // owner unable to manage recovery codes or link another
+            // identity, so that removal waits. A target that already fails
+            // the authority chain (withdrawn approval, replaced tenant)
+            // cannot fresh-proof today, so removing it strands nothing and
+            // stays allowed. Like last_method, this precedes consumption:
+            // the target-bound grant stays retryable.
+            const microsoftSiblingUsable = usable.some(
+                (candidate) => !candidate.is_target && candidate.provider === 'microsoft',
+            );
+            const targetMicrosoftUsable = row.provider === 'microsoft' && usable.some((candidate) => candidate.is_target);
+            if (targetMicrosoftUsable && account.rows[0]?.password_hash == null && !microsoftSiblingUsable) {
+                return { outcome: 'last_proof_method' };
             }
             // Consumption follows the guard: a refused last-method removal
             // leaves the still-valid, target-bound grant retryable after the

@@ -21,7 +21,7 @@ import type { ApprovedLoginPolicy, StudentSsoOidcResolver } from '../services/au
 import { StudentSsoLinkService } from '../services/auth/student-sso-link.service.js';
 import { StudentSsoSignupService } from '../services/auth/student-sso-signup.service.js';
 import { isEmailConfigured, sendEmail, sendEmailVerificationOTP } from '../services/email/email.service.js';
-import { STUDENT_REAUTH_COOKIE_PREFIX, StudentReauthService, studentReauthCookieName } from '../services/auth/student-reauth.service.js';
+import { StudentReauthService, reauthAttemptIdFromState, studentReauthCookieName } from '../services/auth/student-reauth.service.js';
 import { StudentRecoveryCodeService } from '../services/auth/student-recovery-code.service.js';
 import { StudentAccountRecoveryService } from '../services/auth/student-account-recovery.service.js';
 import type { LoginProvider } from '../services/auth/student-sso.types.js';
@@ -399,6 +399,12 @@ export function createStudentSsoRouter(factory: FlowFactory = defaultFlow, optio
     const recoveryCodeGenerateLimiter = studentSsoLinkLimiter(linkLimiterMax);
     const recoveryCodeActivateLimiter = studentSsoLinkLimiter(linkLimiterMax);
     const recoveryCodeRemoveLimiter = studentSsoLinkLimiter(linkLimiterMax);
+    // Unauthenticated recovery issues budget-bounded challenges even for
+    // unknown addresses (indistinguishable retry deadlines), so each
+    // recovery route gets its own per-IP bucket like the link routes.
+    const accountRecoveryStartLimiter = studentSsoLinkLimiter(linkLimiterMax);
+    const accountRecoveryVerifyLimiter = studentSsoLinkLimiter(linkLimiterMax);
+    const accountRecoveryCompleteLimiter = studentSsoLinkLimiter(linkLimiterMax);
 
     const signupHandoffBody = (req: Request): { handoffId: string; handoffSecret: string } => {
         const value = req.body as Record<string, unknown>;
@@ -458,18 +464,18 @@ export function createStudentSsoRouter(factory: FlowFactory = defaultFlow, optio
     };
 
     // Register before the provider-parametrized /:provider/start route.
-    router.post('/account-recovery/start', exactJson, asyncHandler(async (req, res) => {
+    router.post('/account-recovery/start', accountRecoveryStartLimiter, exactJson, asyncHandler(async (req, res) => {
         const body = req.body as { email?: unknown; purpose?: unknown };
         if (!body || typeof body !== 'object' || Array.isArray(body) || Object.keys(body).length !== 2 || typeof body.email !== 'string' || body.email.length === 0 || body.email.length > 255 || (body.purpose !== 'lost_access' && body.purpose !== 'compromise')) throw new BadRequestError('Account recovery request is invalid');
         const result = await accountRecoveryFactory().start({ email: body.email, purpose: body.purpose });
         responseHeaders(res); res.status(202).json({ success: true, data: result });
     }));
-    router.post('/account-recovery/verify', exactJson, asyncHandler(async (req, res) => {
+    router.post('/account-recovery/verify', accountRecoveryVerifyLimiter, exactJson, asyncHandler(async (req, res) => {
         const body = req.body as { attemptId?: unknown; secret?: unknown; code?: unknown; otp?: unknown };
         if (!body || typeof body !== 'object' || Array.isArray(body) || Object.keys(body).length !== 4) throw new BadRequestError('Account recovery request is invalid');
         await accountRecoveryFactory().verify({ attemptId: body.attemptId, secret: body.secret, code: body.code, otp: body.otp }); responseHeaders(res); res.status(204).end();
     }));
-    router.post('/account-recovery/complete', exactJson, asyncHandler(async (req, res) => {
+    router.post('/account-recovery/complete', accountRecoveryCompleteLimiter, exactJson, asyncHandler(async (req, res) => {
         const body = req.body as { attemptId?: unknown; secret?: unknown; password?: unknown };
         if (!body || typeof body !== 'object' || Array.isArray(body) || Object.keys(body).length !== 3) throw new BadRequestError('Account recovery request is invalid');
         await accountRecoveryFactory().complete({ attemptId: body.attemptId, secret: body.secret, password: body.password }); responseHeaders(res); res.status(204).end();
@@ -584,17 +590,19 @@ export function createStudentSsoRouter(factory: FlowFactory = defaultFlow, optio
             // Terminal reauth rows carry no state hash (scrubbed at
             // terminalization by cleanup, recovery, or failure handling),
             // so a delayed provider callback for one resolves nothing
-            // above. The per-attempt cookie still names it: when the state
-            // also resolves to no login attempt and the named row is
-            // confirmed dead, clear the dead binding and land on the
-            // bounded completion page instead of returning generic login
-            // JSON. Both guards matter: a live login callback must never
-            // be hijacked by a stale dead cookie, and a live reauth row
-            // (state intact) must never be cleared by a forged state.
+            // above. The state's nonsecret attempt suffix still names it:
+            // when the state also resolves to no login attempt and the
+            // named row is confirmed dead, clear the dead binding and land
+            // on the bounded completion page instead of returning generic
+            // login JSON. The suffix selects the same-named cookie, never
+            // an arbitrary sibling, and both guards still matter: a live
+            // login callback must never be hijacked by a stale dead cookie,
+            // and a live reauth row (state intact) must never be cleared by
+            // a forged state.
             if (reauth) {
-                const deadCookie = browserCookies.find((cookie) => cookie.name.startsWith(STUDENT_REAUTH_COOKIE_PREFIX));
-                const deadAttemptId = deadCookie?.name.slice(STUDENT_REAUTH_COOKIE_PREFIX.length) ?? null;
-                if (deadCookie && deadAttemptId && UUID.test(deadAttemptId)) {
+                const deadAttemptId = reauthAttemptIdFromState(callbackUrl.searchParams.get('state'));
+                const deadCookie = deadAttemptId ? browserCookies.find((cookie) => cookie.name === studentReauthCookieName(deadAttemptId)) : undefined;
+                if (deadCookie && deadAttemptId) {
                     let loginCookie: string | null = null;
                     let loginAvailable = false;
                     try {
@@ -879,13 +887,16 @@ export function createStudentSsoRouter(factory: FlowFactory = defaultFlow, optio
         });
         responseHeaders(res);
         if ('outcome' in result) {
+            const proof = result.outcome === 'last_proof_method';
             res.status(409).json({
                 success: false,
                 error: {
-                    message: 'Removing this sign-in would lock the account. Keep another sign-in method first.',
-                    code: 'SSO_LAST_LOGIN_METHOD',
+                    message: proof
+                        ? 'Removing this Microsoft sign-in would strand security confirmations. Link another Microsoft sign-in first.'
+                        : 'Removing this sign-in would lock the account. Keep another sign-in method first.',
+                    code: proof ? 'SSO_LAST_PROOF_METHOD' : 'SSO_LAST_LOGIN_METHOD',
                     statusCode: 409,
-                    details: { outcome: 'last_method' },
+                    details: { outcome: result.outcome },
                 },
             });
             return;
@@ -1162,7 +1173,9 @@ export default createStudentSsoRouter();
  *       Strict JSON with an unlink-purpose reauthentication grant. Revokes
  *       the login identity and its school assertions, and clears the active
  *       session only when it was issued by the removed identity. Requires
- *       another usable login method (SSO_LAST_LOGIN_METHOD otherwise).
+ *       another usable login method (SSO_LAST_LOGIN_METHOD otherwise), and
+ *       removing a usable Microsoft identity from a passwordless account
+ *       with no second usable Microsoft identity waits (SSO_LAST_PROOF_METHOD).
  *       Independent enrollment consents are never mutated. Available while
  *       providers are disabled.
  *     tags: [Authentication]
@@ -1193,7 +1206,7 @@ export default createStudentSsoRouter();
  *       400: { description: Invalid body, origin, or content type }
  *       401: { description: Authentication failed or session unavailable }
  *       404: { description: Login identity not found }
- *       409: { description: Unlink invalid or last login method (SSO_LAST_LOGIN_METHOD) }
+ *       409: { description: Unlink invalid, last login method (SSO_LAST_LOGIN_METHOD), or last fresh-proof method (SSO_LAST_PROOF_METHOD) }
  *       429: { description: Too many unlink requests }
  * /api/auth/student/sso/signup/context:
  *   post:
@@ -1350,6 +1363,7 @@ export default createStudentSsoRouter();
  *       400: { description: JSON or malformed explicit-purpose request }
  *       409: { description: Expired, unavailable, or conflict recovery state }
  *       429: { description: Recovery quota exhausted }
+ *       503: { description: Recovery service unavailable (recovery-code key or mailer unconfigured) }
  * /api/auth/student/sso/account-recovery/verify:
  *   post:
  *     summary: Verify both recovery-code and mailbox proofs
@@ -1363,6 +1377,7 @@ export default createStudentSsoRouter();
  *       400: { description: JSON or malformed proof request }
  *       409: { description: Expired, invalid, consumed, or replayed recovery proof }
  *       429: { description: Recovery quota exhausted }
+ *       503: { description: Recovery service unavailable (recovery-code key or mailer unconfigured) }
  * /api/auth/student/sso/account-recovery/complete:
  *   post:
  *     summary: Set a password after verified independent recovery
@@ -1377,4 +1392,5 @@ export default createStudentSsoRouter();
  *       400: { description: JSON or malformed completion request }
  *       409: { description: Expired, invalid, consumed, or replayed recovery proof }
  *       429: { description: Recovery quota exhausted }
+ *       503: { description: Recovery service unavailable (recovery-code key or mailer unconfigured) }
  */

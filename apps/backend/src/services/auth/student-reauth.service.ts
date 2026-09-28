@@ -15,11 +15,27 @@ export const STUDENT_REAUTH_CLOCK_SKEW_SECONDS = 60;
 function secret(bytes = 32): string { return randomBytes(bytes).toString('base64url'); }
 function invalidReauth(): ConflictError { return new ConflictError('Student SSO reauthentication is no longer valid'); }
 
-/** Per-attempt browser binding cookie prefix; the route layer scans it to dispatch callbacks for scrubbed attempts. */
+/** Per-attempt browser binding cookie prefix. */
 export const STUDENT_REAUTH_COOKIE_PREFIX = 'awoof_reauth_';
 
 /** Browser binding cookie for one reauthentication attempt; shared with the route layer. */
 export function studentReauthCookieName(attemptId: string): string { return `${STUDENT_REAUTH_COOKIE_PREFIX}${attemptId}`; }
+
+/**
+ * Nonsecret callback routing binding: the OAuth state carries `<random>.<attemptId>`
+ * so a delayed provider callback for a scrubbed (terminal) attempt still names
+ * its attempt without a state-hash row. The random component keeps live-attempt
+ * CSRF protection — hashing covers the full value — while the suffix is only
+ * ever a routing hint into the same-named cookie plus the dead-row check.
+ * Pre-deploy states without the suffix return null and skip that fallback.
+ */
+export function reauthAttemptIdFromState(state: string | null): string | null {
+    if (!state || state.length > 1024) return null;
+    const dot = state.indexOf('.');
+    if (dot <= 0) return null;
+    const candidate = state.slice(dot + 1);
+    return UUID.test(candidate) && !candidate.includes('.') ? candidate : null;
+}
 
 /** Validates the provider assertion relative to the server-held attempt, not token issuance time. */
 export function assertFreshAuthTime(authTime: unknown, startedAt: Date, now: Date): asserts authTime is number {
@@ -97,7 +113,11 @@ export class StudentReauthService {
         const adapter = this.deps.oidcForPolicy(policy);
         if (!adapter.authorizeFresh) throw new ServiceUnavailableError('Fresh Microsoft authentication is unavailable');
         const attemptId = randomUUID();
-        const state = secret();
+        // The state binds its attempt nonsecretly (see
+        // reauthAttemptIdFromState): live dispatch hashes the full value,
+        // and a delayed callback for a scrubbed row still routes to the
+        // same-named cookie instead of an arbitrary sibling attempt.
+        const state = `${secret()}.${attemptId}`;
         const nonce = secret();
         const verifier = secret(48);
         const callbackCookie = secret();

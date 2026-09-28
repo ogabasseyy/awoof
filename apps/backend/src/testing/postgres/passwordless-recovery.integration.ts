@@ -154,7 +154,7 @@ test('unknown-mailbox recovery handles expire exactly like committed ones', asyn
         }
         assert.deepEqual(deliveries, [account.email]);
         const decoyRows = await client.query('SELECT id FROM student_auth_recovery_attempts WHERE id = $1', [decoy.attemptId]);
-        assert.equal(decoyRows.rowCount, 0, 'decoy handles persist nothing');
+        assert.equal(decoyRows.rowCount, 0, 'decoy handles write no attempt rows');
     } finally {
         client.release();
         await pool.end();
@@ -191,7 +191,7 @@ test('a lost start response retries onto a rebound handle without a second OTP',
     }
 });
 
-test('cooldown retries without a live attempt keep returning decoys that persist nothing', async () => {
+test('cooldown retries without a live attempt return frozen expiries on both paths', async () => {
     const pool = createTestPool();
     const client = await pool.connect();
     try {
@@ -203,24 +203,89 @@ test('cooldown retries without a live attempt keep returning decoys that persist
         const before = await client.query<{ budgets: string; challenges: string }>(
             'SELECT (SELECT count(*)::text FROM verification_challenge_budgets) AS budgets, (SELECT count(*)::text FROM verification_challenges) AS challenges',
         );
-        // Unknown addresses run the decoy database shapes without
-        // persisting budget or challenge rows for the unknown subject.
-        const decoy = await service.start({ email: `unknown-${randomUUID().slice(0, 8)}@example.invalid`, purpose: 'lost_access' });
+        // Unknown addresses issue a budget-bounded challenge so retry
+        // deadlines stay stable: exactly one budget row and one challenge
+        // row, never an attempt row, and the retry replays the frozen
+        // expiry instead of minting a fresh deadline oracle.
+        const unknown = `unknown-${randomUUID().slice(0, 8)}@example.invalid`;
+        const decoy = await service.start({ email: unknown, purpose: 'lost_access' });
+        const decoyRetry = await service.start({ email: unknown, purpose: 'lost_access' });
+        assert.equal(decoyRetry.expiresAt, decoy.expiresAt, 'decoy retries must replay the frozen challenge expiry');
         await assert.rejects(() => service.verify({ attemptId: decoy.attemptId, secret: decoy.secret, code: 'code', otp: '123456' }));
         const after = await client.query<{ budgets: string; challenges: string }>(
             'SELECT (SELECT count(*)::text FROM verification_challenge_budgets) AS budgets, (SELECT count(*)::text FROM verification_challenges) AS challenges',
         );
-        assert.deepEqual(after.rows[0], before.rows[0]);
+        assert.equal(Number(after.rows[0]!.budgets) - Number(before.rows[0]!.budgets), 1, 'one upserted budget row per unknown subject');
+        assert.equal(Number(after.rows[0]!.challenges) - Number(before.rows[0]!.challenges), 1, 'one challenge row per unknown subject');
+        const decoyAttempts = await client.query<{ count: string }>(
+            'SELECT count(*)::text AS count FROM student_auth_recovery_attempts WHERE id = $1 OR id = $2', [decoy.attemptId, decoyRetry.attemptId],
+        );
+        assert.equal(decoyAttempts.rows[0]!.count, '0', 'decoy handles write no attempt rows and cannot verify');
         // A failed attempt is not resumable: the cooldown retry finds no
-        // live attempt and returns a decoy.
+        // live attempt, writes no new attempt row, and returns the same
+        // frozen challenge expiry — never a fresh deadline that would mark
+        // committed handles against decoy retries.
         const first = await service.start({ email: account.email, purpose: 'lost_access' });
         await client.query(`UPDATE student_auth_recovery_attempts SET status = 'failed', secret_hash = NULL WHERE id = $1`, [first.attemptId]);
         const retry = await service.start({ email: account.email, purpose: 'lost_access' });
+        assert.equal(retry.expiresAt, first.expiresAt, 'committed retries without a live attempt must replay the frozen challenge expiry');
         await assert.rejects(() => service.verify({ attemptId: retry.attemptId, secret: retry.secret, code: account.code, otp: '123456' }));
         const rows = await client.query<{ count: string }>(
             'SELECT count(*)::text AS count FROM student_auth_recovery_attempts WHERE user_id = $1', [account.userId],
         );
         assert.equal(rows.rows[0]!.count, '1');
+    } finally {
+        client.release();
+        await pool.end();
+    }
+});
+
+test('recovery completion invalidates pending SSO attempts despite a messy stored email', async () => {
+    const pool = createTestPool();
+    const client = await pool.connect();
+    try {
+        const account = await seedRecoverableStudent(client);
+        // Legacy stored representation: recovery still finds the account
+        // through lower(btrim(email)), and the SSO invalidation must match
+        // the normalized mailbox the attempt rows store.
+        await client.query('UPDATE users SET email = $2 WHERE id = $1', [account.userId, `  ${account.email.toUpperCase()} `]);
+        const universityId = (await client.query<{ id: string }>(
+            'INSERT INTO universities (name, is_active) VALUES ($1, true) RETURNING id',
+            [`Recovery normalization ${randomUUID().slice(0, 8)}`],
+        )).rows[0]!.id;
+        const adminId = (await client.query<{ id: string }>(
+            `INSERT INTO users (email, role) VALUES ($1, 'admin') RETURNING id`,
+            [`recovery-norm-admin-${randomUUID().slice(0, 8)}@example.invalid`],
+        )).rows[0]!.id;
+        const policyId = (await client.query<{ id: string }>(
+            `INSERT INTO institution_login_policies
+                 (university_id, provider, issuer, provider_realm, version, enabled, approved_until, approved_by, school_assertion_days)
+             VALUES ($1, 'microsoft', $2, $3, 1, true, clock_timestamp() + interval '30 days', $4, 90) RETURNING id`,
+            [universityId, 'https://login.microsoftonline.com/recovery-norm-tenant/v2.0', 'recovery-norm-tenant', adminId],
+        )).rows[0]!.id;
+        // A provider return begun before recovery, stored normalized.
+        const attemptId = (await client.query<{ id: string }>(
+            `INSERT INTO student_auth_attempts
+                 (policy_id, policy_version, provider, requested_email, state_hash, callback_cookie_hash,
+                  finish_secret_hash, encrypted_verifier, nonce, status, expires_at, remember_me)
+             VALUES ($1, 1, 'microsoft', $2, $3, $4, $5, $6, $7, 'pending', clock_timestamp() + interval '9 minutes', false)
+             RETURNING id`,
+            [policyId, account.email, randomUUID(), randomUUID(), randomUUID(), randomUUID(), randomUUID()],
+        )).rows[0]!.id;
+        let otp = '';
+        const service = new StudentAccountRecoveryService({
+            pool, recoveryCodeKey: 'test-recovery-code-key',
+            deliverOtp: async (_email, delivered) => { otp = delivered; return { success: true }; },
+            validatePassword: () => ({ valid: true, errors: [] }), hashPassword: async () => 'normalized-password-hash',
+        });
+        const started = await service.start({ email: account.email, purpose: 'lost_access' });
+        await service.verify({ attemptId: started.attemptId, secret: started.secret, code: account.code, otp });
+        await service.complete({ attemptId: started.attemptId, secret: started.secret, password: 'ValidNew1!' });
+        const attempt = await client.query<{ status: string; state_hash: string | null }>(
+            'SELECT status, state_hash FROM student_auth_attempts WHERE id = $1', [attemptId],
+        );
+        assert.deepEqual(attempt.rows[0], { status: 'failed', state_hash: null },
+            'a pre-recovery provider return must not mint a post-recovery session');
     } finally {
         client.release();
         await pool.end();
@@ -509,6 +574,15 @@ test('suspended accounts, pending codes, replay, and purpose substitution fail c
         await assert.rejects(() => service.verify({ attemptId: pending.attemptId, secret: pending.secret, code: account.code, otp: '123456' }));
 
         await client.query("UPDATE student_auth_recovery_codes SET status = 'active', expires_at = NULL, activated_at = clock_timestamp(), pending_sid = NULL, pending_credential_generation = NULL, pending_proof_identity_id = NULL WHERE user_id = $1 AND status = 'pending'", [account.userId]);
+        // The decoy phases above share the subject's challenge budget with
+        // the committed path (one subject, one cap). Re-arm it so this
+        // phase starts from issuance instead of a cooldown the production
+        // state transitions (reactivation, enrollment) would outlast.
+        await client.query(
+            `UPDATE verification_challenge_budgets
+             SET send_count = 0, resend_available_at = clock_timestamp() - interval '1 second'
+             WHERE purpose = 'student_account_recovery'`,
+        );
         // This active code deliberately has a known digest only in this test fixture.
         await client.query("UPDATE student_auth_recovery_codes SET code_digest = $2 WHERE user_id = $1 AND status = 'active'", [account.userId, createHmac('sha256', 'test-recovery-code-key').update(account.code, 'utf8').digest('base64url')]);
         let otp = '';

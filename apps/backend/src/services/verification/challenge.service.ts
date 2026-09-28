@@ -38,8 +38,8 @@ function limitsFor(purpose: ChallengePurpose): { failures: number; sends: number
 }
 
 /**
- * Single source of truth for a purpose TTL, so decoy handles (which cannot
- * issue a challenge) expire exactly like committed ones.
+ * Single source of truth for a purpose TTL, so first-start and fallback
+ * expiries derive from the same server clock plus TTL on every path.
  */
 export function challengeTtlMs(purpose: ChallengePurpose): number {
     return limitsFor(purpose).ttlMs;

@@ -136,6 +136,18 @@ function refreshFor(snapshotAtStart: SessionSnapshot): Promise<string> {
     return pending;
 }
 
+/**
+ * Renew the ambient access token before a raw-secret proof. The proof
+ * itself still travels on the non-refreshing client with a snapshot
+ * Bearer [REDACTED] a page left open past the access-token lifetime would
+ * otherwise 401 on the stale token before the password is even checked,
+ * misreporting every attempt as an incorrect password with no recovery.
+ * Resolves to the fresh access token; rejects when the session is gone.
+ */
+export function refreshSessionAccessToken(): Promise<string> {
+    return refreshFor(getSessionSnapshot());
+}
+
 function exactFailedRequest(request: SessionBoundRequest): SessionSnapshot | null {
     const started = request.__awoofSession;
     const credentials = request.__awoofCredentials;

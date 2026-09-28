@@ -1452,6 +1452,71 @@ test('a refused last-method removal preserves the grant for retry', async () => 
     });
 });
 
+test('unlink keeps the last Microsoft identity on a passwordless account but releases Google', async () => {
+    await withLinkPool(async (pool) => {
+        const attemptKey = randomBytes(32).toString('base64url');
+        const service = makeService(pool, attemptKey);
+        const client = await pool.connect();
+        let owner;
+        let microsoftId = '';
+        let googleId = '';
+        try {
+            owner = await seedOwner(client, {});
+            const domain = owner.email.split('@')[1]!;
+            const googlePolicy = await seedPolicy(client, owner.universityId, domain);
+            // A second provider needs its own domain mapping row.
+            const microsoftPolicy = await seedPolicy(client, owner.universityId, `ms-${uniqueLabel()}.school.example`, {
+                provider: 'microsoft', realm: MICROSOFT_TENANT,
+            });
+            microsoftId = (await client.query<{ id: string }>(
+                `INSERT INTO student_auth_identities (user_id, university_id, provider, issuer, subject)
+                 VALUES ($1, $2, 'microsoft', $3, $4) RETURNING id`,
+                [owner.userId, owner.universityId, microsoftPolicy.issuer, `proof-ms-sub-${uniqueLabel()}`],
+            )).rows[0]!.id;
+            googleId = (await client.query<{ id: string }>(
+                `INSERT INTO student_auth_identities (user_id, university_id, provider, issuer, subject)
+                 VALUES ($1, $2, 'google', $3, $4) RETURNING id`,
+                [owner.userId, owner.universityId, googlePolicy.issuer, `proof-google-sub-${uniqueLabel()}`],
+            )).rows[0]!.id;
+        } finally {
+            client.release();
+        }
+        const microsoftGrant = await mintGrant(service, owner.userId, owner.sid, PASSWORD, 'unlink', microsoftId);
+        const googleGrant = await mintGrant(service, owner.userId, owner.sid, PASSWORD, 'unlink', googleId);
+        const editor = await pool.connect();
+        try {
+            await editor.query('UPDATE users SET password_hash = NULL WHERE id = $1', [owner.userId]);
+        } finally {
+            editor.release();
+        }
+        // Google stays a usable login, so last_method would pass — but
+        // every fresh-proof action needs a live Microsoft identity, and a
+        // null password cannot reauthenticate. The removal waits.
+        assert.deepEqual(await service.unlink({
+            userId: owner.userId, sid: owner.sid, identityId: microsoftId,
+            grantId: microsoftGrant.grantId, grantSecret: microsoftGrant.grantSecret,
+        }), { outcome: 'last_proof_method' });
+        const liveness = await pool.connect();
+        try {
+            const grant = await liveness.query<{ consumed_at: Date | null }>(
+                'SELECT consumed_at FROM student_auth_action_grants WHERE id = $1', [microsoftGrant.grantId],
+            );
+            assert.equal(grant.rows[0]!.consumed_at, null, 'the proof guard must not spend the target-bound grant');
+            const identity = await liveness.query<{ revoked_at: Date | null }>(
+                'SELECT revoked_at FROM student_auth_identities WHERE id = $1', [microsoftId],
+            );
+            assert.equal(identity.rows[0]!.revoked_at, null);
+        } finally {
+            liveness.release();
+        }
+        // Removing Google instead leaves Microsoft for fresh proof: allowed.
+        assert.deepEqual(await service.unlink({
+            userId: owner.userId, sid: owner.sid, identityId: googleId,
+            grantId: googleGrant.grantId, grantSecret: googleGrant.grantSecret,
+        }), { unlinked: true, sessionRevoked: false });
+    });
+});
+
 test('unlink ignores a sibling from a replaced tenant when guarding the last login method', async () => {
     await withLinkPool(async (pool) => {
         const attemptKey = randomBytes(32).toString('base64url');

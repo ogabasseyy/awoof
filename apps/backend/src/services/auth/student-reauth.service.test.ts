@@ -3,7 +3,7 @@ import test from 'node:test';
 import { randomUUID } from 'node:crypto';
 
 import { encryptMicrosoftAttemptVerifier, hashMicrosoftAttemptSecret } from '../verification/microsoft-attempt-crypto.js';
-import { assertFreshAuthTime, StudentReauthService, studentReauthCookieName } from './student-reauth.service.js';
+import { assertFreshAuthTime, reauthAttemptIdFromState, StudentReauthService, studentReauthCookieName } from './student-reauth.service.js';
 
 const startedAt = new Date('2026-09-26T12:00:00.000Z');
 const now = new Date('2026-09-26T12:01:00.000Z');
@@ -174,6 +174,39 @@ test('fresh callback and finish lock the owner before the attempt', async () => 
     const finishUser = finished.calls.findIndex((text) => text.includes('FROM users WHERE id = $1 FOR UPDATE'));
     const finishAttempt = finished.calls.findIndex((text) => text.includes('FROM student_auth_reauth_attempts WHERE id = $1 FOR UPDATE'));
     assert.ok(finishUser !== -1 && finishAttempt !== -1 && finishUser < finishAttempt);
+});
+
+test('fresh start binds the issued state to its attempt for scrubbed-callback routing', async () => {
+    const identity = {
+        identity_id: identityId, provider: 'microsoft', observed_email: 'student@example.invalid',
+        policy_id: policyId, policy_version: 1, issuer, realm: '55555555-5555-4555-8555-555555555555',
+        university_id: randomUUID(), credential_generation: 0,
+    };
+    const query = async (text: string) => {
+        if (text.includes('FROM users')) return { rows: [identity], rowCount: 1 };
+        return { rows: [], rowCount: 1 };
+    };
+    let issuedState = '';
+    const service = new StudentReauthService({
+        pool: { query, connect: async () => ({ query, release: () => undefined }) } as never,
+        attemptKey, completionUrl: new URL('https://app.example.invalid/auth/student/sso/complete'),
+        isProviderEnabled: () => true,
+        oidcForPolicy: () => ({
+            authorizeFresh: async (input: { state: string }) => { issuedState = input.state; return new URL('https://provider.example.invalid/authorize'); },
+        }) as never,
+    });
+    const result = await service.start({ userId, sid, purpose: 'link' });
+    assert.equal(reauthAttemptIdFromState(issuedState), result.attemptId);
+});
+
+test('state attempt binding accepts only a single uuid suffix', () => {
+    const id = '66666666-6666-4666-8666-666666666666';
+    assert.equal(reauthAttemptIdFromState(`random-part.${id}`), id);
+    assert.equal(reauthAttemptIdFromState('no-suffix-state'), null);
+    assert.equal(reauthAttemptIdFromState(`${id}`), null);
+    assert.equal(reauthAttemptIdFromState(`a.${id}.extra`), null);
+    assert.equal(reauthAttemptIdFromState('a.not-a-uuid'), null);
+    assert.equal(reauthAttemptIdFromState(null), null);
 });
 
 test('callback cookie resolution selects the state-selected attempt only', async () => {

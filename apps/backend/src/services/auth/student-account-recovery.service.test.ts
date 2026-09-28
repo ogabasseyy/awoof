@@ -50,6 +50,18 @@ test('recovery account lookups lock the student row with the user row', async ()
             if (text.includes('FROM users u LEFT JOIN students s')) {
                 return { rows: [{ id: 'u1', email: 's@x.invalid', credential_generation: 0, deleted_at: null, student_status: 'active' }], rowCount: 1 };
             }
+            // The inactive account falls into the decoy start, which issues
+            // a real (unverifiable, undelivered) challenge so retry
+            // deadlines stay stable: feed the budget issuance shape.
+            if (text.includes('INSERT INTO verification_challenge_budgets')) {
+                return {
+                    rows: [{
+                        current_challenge_id: null, window_started_at: new Date(), failed_attempts: 0,
+                        send_count: 0, resend_available_at: new Date(0),
+                    }], rowCount: 1,
+                };
+            }
+            if (text.includes('octet_length($1::jsonb::text)')) return { rows: [{ bytes: 100 }], rowCount: 1 };
             return { rows: [], rowCount: 0 };
         },
         release: () => undefined,
