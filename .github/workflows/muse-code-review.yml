@@ -57,7 +57,9 @@ jobs:
       github.event.pull_request.head.repo.full_name == github.repository &&
       (github.event.action != 'edited' || github.event.changes.base != null)
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    # Budget: install 5 + run 10 + headroom for collect/post. Step timeouts
+    # must sum below this or a hung step starves the fallback post.
+    timeout-minutes: 20
     env:
       MUSE_MODEL_RESOLVED: ${{ vars.MUSE_MODEL != '' && vars.MUSE_MODEL || '' }}
       MUSE_EFFORT_RESOLVED: ${{ vars.MUSE_REASONING_EFFORT != '' && vars.MUSE_REASONING_EFFORT || 'medium' }}
@@ -205,10 +207,12 @@ jobs:
           fi
 
           # Best-effort base fetch so repo guidance can be read from the
-          # trusted base instead of the PR head. Works anonymously on public
-          # repos; on failure the head version is used but labeled UNTRUSTED.
+          # trusted base instead of the PR head. Fetches the captured base
+          # SHA (not the live branch ref, which could advance mid-run).
+          # Works anonymously on public repos; on failure the head version
+          # is used but labeled UNTRUSTED.
           base_available=false
-          if git fetch --depth 1 origin "${base_ref}" >/dev/null 2>&1; then
+          if git fetch --depth 1 origin "${base_sha}" >/dev/null 2>&1; then
             base_available=true
           fi
 
