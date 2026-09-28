@@ -28,7 +28,7 @@ import { passwordService } from '../services/auth/password.service.js';
 import type { LoginProvider } from '../services/auth/student-sso.types.js';
 import { hashMicrosoftAttemptSecret } from '../services/verification/microsoft-attempt-crypto.js';
 
-export type StudentSsoFlow = Pick<StudentSsoFlowService, 'start' | 'callback' | 'finish' | 'callbackCookieNameForState'>;
+export type StudentSsoFlow = Pick<StudentSsoFlowService, 'start' | 'callback' | 'finish' | 'callbackCookieNameForState' | 'callbackDuplicateState'>;
 export type StudentSsoLink = Pick<StudentSsoLinkService, 'reauth' | 'link' | 'listIdentities' | 'unlink'>;
 type FlowFactory = () => StudentSsoFlow;
 type LinkFactory = () => StudentSsoLink;
@@ -682,8 +682,10 @@ export function createStudentSsoRouter(factory: FlowFactory = defaultFlow, optio
             const result = await flow.callback({ provider, callbackUrl, browserCookies });
             // The binding is retained through callback success so finish and
             // an unlinked handoff still prove the same browser. Terminal
-            // failure redirects clear it instead.
+            // failure redirects clear it instead, and stay counted against
+            // the callback quota like any other bounded redirect.
             if (result.outcome) {
+                res.locals.outageRedirect = true;
                 clearSsoCookie(res, studentSsoCookieName(result.attemptId));
             }
             res.redirect(303, result.completionUrl.href);
@@ -697,6 +699,21 @@ export function createStudentSsoRouter(factory: FlowFactory = defaultFlow, optio
                 return;
             }
             if (resolvedCookieName && error instanceof AppError && error.statusCode >= 400 && error.statusCode < 500) {
+                // A duplicate delivered while the winner still redeems must
+                // not clear the shared binding: retain it and send the
+                // duplicate to the waiting completion, where finish stays
+                // retryable until the winner settles. The bounded redirect
+                // stays counted against the callback quota.
+                const duplicate = await flow.callbackDuplicateState(callbackUrl, provider);
+                const waitingBase = config.studentSso.completionUrl
+                    ?? (completionOrigin ? new URL(STUDENT_SSO_COMPLETION_PATH, completionOrigin) : undefined);
+                if (duplicate?.inFlight && waitingBase) {
+                    res.locals.outageRedirect = true;
+                    const waiting = new URL(waitingBase.href);
+                    waiting.searchParams.set('attempt', duplicate.attemptId);
+                    res.redirect(303, waiting.href);
+                    return;
+                }
                 clearSsoCookie(res, resolvedCookieName);
             }
             throw error;
@@ -1050,7 +1067,7 @@ export default createStudentSsoRouter();
  *           Cache-Control: { schema: { type: string, example: no-store } }
  *         content: { application/json: { schema: { $ref: '#/components/schemas/StudentSsoFinishResponse' } } }
  *       400: { description: Invalid body, origin, or content type }
- *       409: { description: Attempt is no longer valid, or restart required (SSO_RESTART_REQUIRED) }
+ *       409: { description: Attempt is no longer valid, restart required (SSO_RESTART_REQUIRED), or still redeeming when error.details.retryable is true }
  *       503: { description: Student SSO is unavailable }
  * /api/auth/student/sso/reauth:
  *   post:

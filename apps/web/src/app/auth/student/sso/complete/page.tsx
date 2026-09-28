@@ -8,7 +8,7 @@
 
 'use client';
 
-import { Suspense, useEffect, useRef, useState } from 'react';
+import { Suspense, useCallback, useEffect, useRef, useState } from 'react';
 import Link from 'next/link';
 import { useSearchParams } from 'next/navigation';
 import axios from 'axios';
@@ -47,7 +47,7 @@ function bodyOf(cause: unknown): unknown {
 
 // A 409 whose error details flag retryable means the attempt is still
 // redeeming upstream: the check must wait, never fail.
-function isRetryableReauthConflict(cause: unknown): boolean {
+function isRetryableFinishConflict(cause: unknown): boolean {
     if (!axios.isAxiosError(cause) || cause.response?.status !== 409) return false;
     const details = (cause.response.data as { error?: { details?: unknown } })?.error?.details;
     return typeof details === 'object' && details !== null && (details as { retryable?: unknown }).retryable === true;
@@ -151,7 +151,7 @@ function RecoveryReauthComplete({ attemptId, duplicate }: { attemptId: string; d
             // the permanent failed view would falsely report failure when
             // the user checks before the winner finishes. Anything else
             // is terminal.
-            if (isRetryableReauthConflict(cause)) { setStatus('waiting'); return; }
+            if (isRetryableFinishConflict(cause)) { setStatus('waiting'); return; }
             clearRecoveryIntent(); setStatus('failed');
         });
     };
@@ -326,6 +326,7 @@ function RecoveryReauthComplete({ attemptId, duplicate }: { attemptId: string; d
 
 type CompleteView =
     | { kind: 'checking' }
+    | { kind: 'waiting' }
     | { kind: 'link_required'; provider: 'google' | 'microsoft' }
     | { kind: 'already_signed_in'; continuePath: string }
     | { kind: 'discarded' };
@@ -349,13 +350,11 @@ function StudentSsoCompleteInner() {
     const [view, setView] = useState<CompleteView>({ kind: 'checking' });
     const [signupOffer, setSignupOffer] = useState<'checking' | 'available' | 'hidden'>('checking');
     const started = useRef(false);
+    const waitingAutoTries = useRef(0);
 
     const reauthAttempt = search.get('reauth');
 
-    useEffect(() => {
-        if (reauthAttempt) return;
-        if (started.current) return;
-        started.current = true;
+    const runLoginFinish = useCallback(async (): Promise<void> => {
         const attemptId = search.get('attempt');
         const outcome = search.get('outcome');
         const storage = tabStorage();
@@ -425,6 +424,10 @@ function StudentSsoCompleteInner() {
                     failToLogin('sso_expired', record.returnPath);
                     return;
                 }
+                // A still-redeeming attempt stays retryable: converting it
+                // to a login error would misreport a duplicate whose winner
+                // has not settled yet. Anything else fails through below.
+                if (isRetryableFinishConflict(cause)) { setView({ kind: 'waiting' }); return; }
                 failToLogin(status === 401 ? 'sso_not_completed' : 'sso_unavailable', record.returnPath);
                 return;
             }
@@ -474,7 +477,25 @@ function StudentSsoCompleteInner() {
             });
         };
         void finish();
-    }, [search, completeSsoLogin, reauthAttempt]);
+    }, [search, completeSsoLogin]);
+
+    useEffect(() => {
+        if (reauthAttempt) return;
+        if (started.current) return;
+        started.current = true;
+        void runLoginFinish();
+    }, [reauthAttempt, runLoginFinish]);
+
+    // Bounded automatic checks while a duplicate redemption settles, then
+    // the manual button keeps the outcome retryable without failing.
+    useEffect(() => {
+        if (reauthAttempt) return;
+        if (view.kind !== 'waiting' || waitingAutoTries.current >= 6) return;
+        const delay = Math.min(1000 * 2 ** waitingAutoTries.current, 8000);
+        waitingAutoTries.current += 1;
+        const timer = setTimeout(() => { setView({ kind: 'checking' }); void runLoginFinish(); }, delay);
+        return () => clearTimeout(timer);
+    }, [reauthAttempt, view.kind, runLoginFinish]);
 
     const linkProvider = view.kind === 'link_required' ? view.provider : null;
     useEffect(() => {
@@ -489,6 +510,8 @@ function StudentSsoCompleteInner() {
     }, [linkProvider, signupOffer]);
 
     if (reauthAttempt) return <RecoveryReauthComplete attemptId={reauthAttempt} duplicate={search.get('reauthDuplicate') === '1'} />;
+
+    if (view.kind === 'waiting') return <AuthShell role="student" title="Sign-in still completing" subtitle="Another sign-in is finishing." footer={null}><p role="status">This sign-in arrived twice and the first is still completing. Wait a moment, then check again — nothing failed yet.</p><Button className="mt-5 w-full rounded-full" onClick={() => { waitingAutoTries.current = 0; setView({ kind: 'checking' }); void runLoginFinish(); }}>Check again</Button></AuthShell>;
 
     if (view.kind === 'link_required') {
         return (

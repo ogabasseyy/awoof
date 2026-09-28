@@ -245,6 +245,7 @@ test('finish responses accept only the authenticated or link-required union', ()
                 handoffId: HANDOFF_ID,
                 handoffSecret: 'opaque-handoff-secret',
                 expiresAt: new Date(Date.now() + 600_000).toISOString(),
+                provider: 'google',
             },
         })?.kind,
         'link_required',
@@ -252,7 +253,19 @@ test('finish responses accept only the authenticated or link-required union', ()
     assert.equal(
         parseSsoFinishResponse({
             success: true,
-            data: { outcome: 'link_required', handoffId: 'nope', handoffSecret: 's', expiresAt: new Date().toISOString() },
+            data: { outcome: 'link_required', handoffId: 'nope', handoffSecret: 's', expiresAt: new Date().toISOString(), provider: 'google' },
+        }),
+        null,
+    );
+    assert.equal(
+        parseSsoFinishResponse({
+            success: true,
+            data: {
+                outcome: 'link_required',
+                handoffId: HANDOFF_ID,
+                handoffSecret: 'opaque-handoff-secret',
+                expiresAt: new Date(Date.now() + 600_000).toISOString(),
+            },
         }),
         null,
     );

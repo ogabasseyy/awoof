@@ -641,6 +641,103 @@ test('two concurrent callbacks redeem exactly once', async () => {
     });
 });
 
+test('duplicate callbacks report in-flight state while the winner finishes', async () => {
+    await withSsoPool(async (pool) => {
+        const fixture = await approvedGoogleFixture(pool);
+        const email = `duplicate-${uniqueLabel()}@${fixture.domain}`;
+        const subject = `duplicate-sub-${uniqueLabel()}`;
+        const setup = await pool.connect();
+        try {
+            const userId = await createStudent(setup, fixture.universityId, email);
+            await createIdentity(setup, userId, fixture.universityId, { subject });
+        } finally {
+            setup.release();
+        }
+        const oidc = makeOidc();
+        oidc.redeemWith(observationFor(fixture.realm, subject));
+        const { service } = makeService(pool, oidc.oidc);
+        const { started, callbackUrl, cookies } = await startGoogle(service, oidc, email);
+
+        const outcomes = await Promise.allSettled([
+            service.callback({ provider: 'google', callbackUrl, browserCookies: cookies }),
+            service.callback({ provider: 'google', callbackUrl, browserCookies: cookies }),
+        ]);
+        assert.equal(outcomes.filter((outcome) => outcome.status === 'fulfilled').length, 1);
+        assert.equal(outcomes.filter((outcome) => outcome.status === 'rejected').length, 1);
+        assert.equal(oidc.redeemCount, 1);
+
+        // The loser does not consume or fail the attempt: the same state
+        // still resolves, still reports in flight, and the winner's
+        // browser binding still proves at finish.
+        const duplicate = await service.callbackDuplicateState(callbackUrl, 'google');
+        assert.deepEqual(duplicate, { attemptId: started.publicResult.attemptId, inFlight: true });
+        assert.equal(
+            await service.callbackCookieNameForState(callbackUrl, 'google'),
+            studentSsoCookieName(started.publicResult.attemptId),
+        );
+        const finished = await service.finish({
+            attemptId: started.publicResult.attemptId,
+            finishSecret: started.publicResult.finishSecret,
+            browserCookie: started.callbackCookie.value,
+        });
+        assert.equal(finished.outcome, 'authenticated');
+    });
+});
+
+test('login finish stays retryable while redemption is processing', async () => {
+    await withSsoPool(async (pool) => {
+        const fixture = await approvedGoogleFixture(pool);
+        const email = `redeeming-${uniqueLabel()}@${fixture.domain}`;
+        const oidc = makeOidc();
+        const { service } = makeService(pool, oidc.oidc);
+        const { started, captured, callbackUrl } = await startGoogle(service, oidc, email);
+        const client = await pool.connect();
+        try {
+            await client.query(`UPDATE student_auth_attempts SET status = 'processing' WHERE id = $1`, [started.publicResult.attemptId]);
+        } finally {
+            client.release();
+        }
+
+        const duplicate = await service.callbackDuplicateState(callbackUrl, 'google');
+        assert.deepEqual(duplicate, { attemptId: started.publicResult.attemptId, inFlight: true });
+        const microsoftUrl = new URL(MICROSOFT_CALLBACK.href);
+        microsoftUrl.searchParams.set('code', 'opaque-code');
+        microsoftUrl.searchParams.set('state', captured.state);
+        assert.equal(await service.callbackDuplicateState(microsoftUrl, 'microsoft'), null);
+        const unknownUrl = new URL(callbackUrl.href);
+        unknownUrl.searchParams.set('state', randomUUID());
+        assert.equal(await service.callbackDuplicateState(unknownUrl, 'google'), null);
+
+        // The bound owner learns the attempt is still redeeming and waits
+        // instead of failing; anyone without the browser binding gets the
+        // uniform terminal shape with no state signal.
+        await assert.rejects(
+            () => service.finish({
+                attemptId: started.publicResult.attemptId,
+                finishSecret: started.publicResult.finishSecret,
+                browserCookie: started.callbackCookie.value,
+            }),
+            (error: unknown) => {
+                assert.ok(error instanceof Error && /still completing/.test(error.message));
+                assert.deepEqual((error as { details?: unknown }).details, { retryable: true });
+                return true;
+            },
+        );
+        await assert.rejects(
+            () => service.finish({
+                attemptId: started.publicResult.attemptId,
+                finishSecret: started.publicResult.finishSecret,
+                browserCookie: 'wrong-cookie',
+            }),
+            (error: unknown) => {
+                assert.ok(error instanceof Error && /no longer valid/.test(error.message));
+                assert.equal((error as { details?: unknown }).details, undefined);
+                return true;
+            },
+        );
+    });
+});
+
 test('two concurrent finishes issue one session', async () => {
     await withSsoPool(async (pool) => {
         const fixture = await approvedGoogleFixture(pool);
@@ -1317,6 +1414,39 @@ test('open attempts are capped per policy mailbox', async () => {
         await assert.rejects(service.start({ provider: 'google', email }), /Too many outstanding/);
         const other = await service.start({ provider: 'google', email: `other-${uniqueLabel()}@${fixture.domain}` });
         assert.ok(other.publicResult.attemptId);
+    });
+});
+
+test('concurrent starts cannot exceed the open-attempt cap', async () => {
+    await withSsoPool(async (pool) => {
+        const fixture = await approvedGoogleFixture(pool);
+        const email = `racing-start-${uniqueLabel()}@${fixture.domain}`;
+        const oidc = makeOidc();
+        const { service } = makeService(pool, oidc.oidc);
+
+        const outcomes = await Promise.allSettled(
+            Array.from({ length: 5 }, () => service.start({ provider: 'google', email })),
+        );
+        const fulfilled = outcomes.filter((outcome) => outcome.status === 'fulfilled');
+        const rejected = outcomes.filter((outcome) => outcome.status === 'rejected');
+        assert.equal(fulfilled.length, 3);
+        assert.equal(rejected.length, 2);
+        for (const outcome of rejected) {
+            assert.match(String((outcome as PromiseRejectedResult).reason), /Too many outstanding/);
+        }
+
+        const check = await pool.connect();
+        try {
+            const rows = await check.query<{ count: string }>(
+                `SELECT count(*) AS count FROM student_auth_attempts
+                 WHERE requested_email = $1 AND status IN ('pending', 'processing', 'ready')
+                 AND expires_at > clock_timestamp()`,
+                [email],
+            );
+            assert.equal(Number(rows.rows[0]!.count), 3);
+        } finally {
+            check.release();
+        }
     });
 });
 

@@ -299,6 +299,12 @@ export class StudentSsoFlowService {
                 version: row.version,
             };
             assertAdapterPolicy(approved);
+            // Serialize concurrent starts per policy mailbox: without this,
+            // two simultaneous starts each count fewer than the cap and
+            // both insert, exceeding the open-attempt guard. One advisory
+            // lock per transaction (released at commit/rollback), taken in
+            // the same order by every start, so no lock cycle can form.
+            await tx.query(`SELECT pg_advisory_xact_lock(hashtextextended($1, 0))`, [`${approved.id}|${mailbox}`]);
             const open = await tx.query<{ count: string }>(
                 `SELECT count(*) FROM student_auth_attempts
                  WHERE policy_id = $1 AND requested_email = $2
@@ -510,6 +516,26 @@ export class StudentSsoFlowService {
         return result.rows[0] ? studentSsoCookieName(result.rows[0].id) : null;
     }
 
+    /**
+     * Duplicate-callback state behind a provider return: resolves the
+     * attempt the state addresses and reports whether it is still in
+     * flight (processing/ready). Lets the route retain the shared
+     * per-attempt binding for a duplicate instead of clearing the cookie
+     * the winner's finish still needs.
+     */
+    async callbackDuplicateState(callbackUrl: URL, provider: LoginProvider): Promise<{ attemptId: string; inFlight: boolean } | null> {
+        if (!fixedCallback(callbackUrl, this.deps.callbackUrls[provider])) return null;
+        const state = callbackUrl.searchParams.get('state');
+        if (!state) return null;
+        const result = await this.deps.pool.query<{ id: string; status: string }>(
+            'SELECT id, status FROM student_auth_attempts WHERE state_hash = $1 AND provider = $2',
+            [hashSsoSecret(state), provider],
+        );
+        const row = result.rows[0];
+        if (!row) return null;
+        return { attemptId: row.id, inFlight: row.status === 'processing' || row.status === 'ready' };
+    }
+
     async finish(input: { attemptId: unknown; finishSecret: unknown; browserCookie: string | undefined }): Promise<StudentSsoFinishResult> {
         this.assertEnabled();
         if (typeof input.attemptId !== 'string' || !UUID.test(input.attemptId)) throw invalidAttempt();
@@ -544,6 +570,10 @@ export class StudentSsoFlowService {
                     await this.invalidateAbandonedAttempts(tx, attempt);
                     return { restart: true };
                 }
+                // Both secrets already proved above, so flagging the race
+                // leaks nothing: a concurrent redemption still completing
+                // stays retryable instead of misreporting failure.
+                if (attempt.status === 'processing') throw new ConflictError('Student SSO login is still completing', { retryable: true });
                 if (attempt.status !== 'ready' || !attempt.encrypted_observation) throw invalidAttempt();
                 let observation: ProviderObservation;
                 try {

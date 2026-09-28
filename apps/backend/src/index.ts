@@ -30,7 +30,7 @@ export type AppOptions = {
   microsoftFlowFactory?: () => Pick<MicrosoftFlowService, 'start' | 'callback' | 'finish' | 'callbackCookieNameForState'>;
   /** Local integration harness only; production keeps server-held config. */
   microsoftIssuanceEnabled?: () => boolean;
-  studentSsoFlowFactory?: () => Pick<StudentSsoFlowService, 'start' | 'callback' | 'finish' | 'callbackCookieNameForState'>;
+  studentSsoFlowFactory?: () => Pick<StudentSsoFlowService, 'start' | 'callback' | 'finish' | 'callbackCookieNameForState' | 'callbackDuplicateState'>;
   /** Local integration harness only; production keeps server-held config. */
   studentSsoIssuanceEnabled?: () => boolean;
 };

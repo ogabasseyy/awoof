@@ -283,6 +283,56 @@ test('an enrolled student completes SSO at the requested page', async ({ page })
     api.assertNoUnexpectedRequests();
 });
 
+test('a still-redeeming login waits and completes instead of failing', async ({ page }) => {
+    const finishBodies: unknown[] = [];
+    let finishCalls = 0;
+    const api = await installSyntheticApi(page);
+    await page.route(`${apiOrigin}/api/auth/student/sso/finish`, async (route) => {
+        finishBodies.push(JSON.parse(route.request().postData() ?? '{}'));
+        finishCalls += 1;
+        if (finishCalls === 1) {
+            await route.fulfill({
+                status: 409,
+                json: { success: false, error: { message: 'Student SSO login is still completing', code: 'CONFLICT', statusCode: 409, details: { retryable: true } } },
+                headers: ssoHeaders,
+            });
+            return;
+        }
+        await route.fulfill({
+            json: {
+                success: true,
+                data: {
+                    outcome: 'authenticated',
+                    user: { id: 'student-1', email: 'student@school.example', role: 'student' },
+                    tokens: { accessToken: 'student-access', refreshToken: 'student-refresh' },
+                    studentAssurance: enrolledAssurance(),
+                    assuranceStatus: 'available',
+                },
+            },
+            headers: ssoHeaders,
+        });
+    });
+
+    await page.goto('/auth/student/login');
+    await seedTabAttempt(page, {
+        attemptId: ATTEMPT_ID,
+        finishSecret: 'synthetic-finish-secret',
+        expiresAt: liveExpiry(),
+        generation: 0,
+        returnPath: '/marketplace?from=sso-test',
+    });
+    await page.goto(`/auth/student/sso/complete?attempt=${ATTEMPT_ID}`);
+    await expect(page.getByRole('heading', { name: 'Sign-in still completing' })).toBeVisible();
+    await page.waitForURL('**/marketplace?from=sso-test');
+    expect(finishBodies).toEqual([
+        { attemptId: ATTEMPT_ID, finishSecret: 'synthetic-finish-secret' },
+        { attemptId: ATTEMPT_ID, finishSecret: 'synthetic-finish-secret' },
+    ]);
+    expect(await readTabAttempt(page)).toBeNull();
+    expect(await readSessionEnvelope(page)).toContain('"state":"active"');
+    api.assertNoUnexpectedRequests();
+});
+
 test('an authenticated onboarding return preserves the waiting link handoff', async ({ page }) => {
     const api = await installSyntheticApi(page);
     await page.route(`${apiOrigin}/api/auth/student/sso/finish`, (route) => route.fulfill({

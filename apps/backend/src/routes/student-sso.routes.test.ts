@@ -12,7 +12,7 @@ import { swaggerSpec } from '../config/swagger.js';
 import { config } from '../config/env.js';
 import { db } from '../config/database.js';
 
-type Flow = Pick<StudentSsoFlowService, 'start' | 'callback' | 'finish' | 'callbackCookieNameForState'>;
+type Flow = Pick<StudentSsoFlowService, 'start' | 'callback' | 'finish' | 'callbackCookieNameForState' | 'callbackDuplicateState'>;
 
 const COMPLETION_ORIGIN = 'https://app.example.invalid';
 const ATTEMPT_ID = '11111111-1111-4111-8111-111111111111';
@@ -44,6 +44,7 @@ function stubFlow(overrides: Partial<Flow> = {}): Flow {
         }),
         finish: async () => ({ outcome: 'restart_required' as const }),
         callbackCookieNameForState: async () => COOKIE_NAME,
+        callbackDuplicateState: async () => null,
         ...overrides,
     };
 }
@@ -941,6 +942,65 @@ test('callback failure outcome clears the resolved cookie on redirect', async ()
         assert.match(setCookie, new RegExp(`^${COOKIE_NAME}=;`));
         assert.match(setCookie, /Path=\/api\/auth\/student\/sso/);
     });
+});
+
+test('bounded failure outcomes consume the callback quota', async () => {
+    const flow = stubFlow({
+        callback: async () => ({
+            attemptId: ATTEMPT_ID,
+            completionUrl: new URL(`${COMPLETION_ORIGIN}/auth/student/sso/complete?attempt=${ATTEMPT_ID}&outcome=connection_not_completed`),
+            outcome: 'connection_not_completed',
+        }),
+    });
+    await withServer(routerWith(flow, { callbackLimiterMax: 1 }), async (baseUrl) => {
+        const first = await fetch(`${baseUrl}/google/callback?state=opaque-state`, {
+            redirect: 'manual',
+            headers: { Cookie: `${COOKIE_NAME}=browser-secret` },
+        });
+        assert.equal(first.status, 303);
+        // The bounded redirect is unauthenticated, so replaying it counts
+        // against the quota instead of excusing like a completion.
+        const replay = await fetch(`${baseUrl}/google/callback?state=opaque-state`, {
+            redirect: 'manual',
+            headers: { Cookie: `${COOKIE_NAME}=browser-secret` },
+        });
+        assert.equal(replay.status, 429);
+    });
+});
+
+test('duplicate callbacks retain the binding and wait while the winner redeems', async () => {
+    const { config } = await import('../config/env.js');
+    const googleEnabled = config.studentSso.google.enabled;
+    Object.assign(config.studentSso.google, { enabled: true });
+    try {
+        const racing = stubFlow({
+            callback: async () => { throw new ConflictError('Student SSO attempt is no longer valid'); },
+            callbackDuplicateState: async () => ({ attemptId: ATTEMPT_ID, inFlight: true }),
+        });
+        await withServer(routerWith(racing, { callbackLimiterMax: 1 }), async (baseUrl) => {
+            const response = await fetch(`${baseUrl}/google/callback?state=opaque-state`, {
+                redirect: 'manual',
+                headers: { Cookie: `${COOKIE_NAME}=browser-secret` },
+            });
+            // The shared per-attempt cookie survives for the winner's
+            // finish; the duplicate lands on the waiting completion with
+            // no secret in the URL.
+            assert.equal(response.status, 303);
+            const location = response.headers.get('location')!;
+            assert.equal(location, `${COMPLETION_ORIGIN}/auth/student/sso/complete?attempt=${ATTEMPT_ID}`);
+            assert.ok(!location.includes('browser-secret'));
+            assert.ok(!location.includes('opaque-state'));
+            assert.equal(response.headers.get('set-cookie'), null);
+            // The waiting redirect stays counted against the quota.
+            const replay = await fetch(`${baseUrl}/google/callback?state=opaque-state`, {
+                redirect: 'manual',
+                headers: { Cookie: `${COOKIE_NAME}=browser-secret` },
+            });
+            assert.equal(replay.status, 429);
+        });
+    } finally {
+        Object.assign(config.studentSso.google, { enabled: googleEnabled });
+    }
 });
 
 test('callback client errors clear the resolved cookie while outages redirect bounded', async () => {
