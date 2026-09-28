@@ -837,12 +837,27 @@ test('duplicate reauth callback waits instead of failing the in-flight confirmat
     await page.route(`${apiOrigin}/api/auth/student/sso/reauth/finish`, route => { finishCalls++; return route.fulfill({ status: 201, headers, json: { success: true, data: { grantId: 'c6000000-0000-4000-8000-000000000001', grantSecret: 'remove-grant', expiresAt: new Date(Date.now() + 60_000).toISOString(), purpose: 'recovery_code_remove', pendingCodeId: null, targetIdentityId: null, activeCodeGeneration: 1 } } }); });
     await page.goto('/auth/student/login'); await seedSession(page, 'student');
     await page.goto('/auth/student/sso/complete?reauth=c6000000-0000-4000-8000-000000000002&reauthDuplicate=1');
-    // No finish is posted on landing: an immediate post would 409 on the
-    // winner's processing row and misreport failure.
+    // No finish is posted on landing: the waiting view holds, then the
+    // backoff poll exchanges the winner's proof without any click.
     await expect(page.getByRole('heading', { name: 'Confirmation still completing' })).toBeVisible();
     expect(finishCalls).toBe(0);
-    await page.getByRole('button', { name: 'Check again' }).click();
     await expect(page.getByRole('heading', { name: 'Remove recovery code' })).toBeVisible();
     expect(finishCalls).toBe(1);
+    api.assertNoUnexpectedRequests();
+});
+
+test('still-redeeming checks stay waiting instead of failing', async ({ page }) => {
+    const api = await installSyntheticApi(page);
+    let finishCalls = 0;
+    await page.route(`${apiOrigin}/api/auth/student/sso/reauth/finish`, route => { finishCalls++; return route.fulfill({ status: 409, headers, json: { success: false, error: { message: 'Student SSO reauthentication is still completing', code: 'CONFLICT', statusCode: 409, details: { retryable: true } } } }); });
+    await page.goto('/auth/student/login'); await seedSession(page, 'student');
+    await page.goto('/auth/student/sso/complete?reauth=c6000000-0000-4000-8000-000000000003&reauthDuplicate=1');
+    await expect(page.getByRole('heading', { name: 'Confirmation still completing' })).toBeVisible();
+    // Retryable rejections poll on (1s, 2s) without ever converting to
+    // the permanent failed view.
+    await page.waitForTimeout(3500);
+    await expect(page.getByRole('heading', { name: 'Confirmation still completing' })).toBeVisible();
+    expect(finishCalls).toBeGreaterThanOrEqual(2);
+    await expect(page.getByRole('button', { name: 'Check again' })).toBeVisible();
     api.assertNoUnexpectedRequests();
 });

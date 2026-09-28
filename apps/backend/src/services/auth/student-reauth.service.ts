@@ -354,8 +354,16 @@ export class StudentReauthService {
             const attemptResult = await tx.query<ReauthAttempt>('SELECT * FROM student_auth_reauth_attempts WHERE id = $1 FOR UPDATE', [input.attemptId]);
             const attempt = attemptResult.rows[0];
             const clock = await tx.query<{ now: Date }>('SELECT clock_timestamp() AS now');
-            if (!attempt || attempt.status !== 'ready' || attempt.user_id !== input.userId || attempt.sid !== input.sid
+            if (!attempt || attempt.user_id !== input.userId || attempt.sid !== input.sid
                 || attempt.expires_at <= clock.rows[0]!.now || hashMicrosoftAttemptSecret(callbackCookie) !== attempt.callback_cookie_hash) throw invalidReauth();
+            // Bound to this browser and session but still redeeming: the
+            // winner's upstream redemption owns the attempt. The owner
+            // gets a retryable signal instead of the terminal shape, so a
+            // duplicate callback's first check waits rather than
+            // misreporting failure. Ownership is verified above, so the
+            // signal leaks nothing to anyone else holding the attempt id.
+            if (attempt.status === 'processing') throw new ConflictError('Student SSO reauthentication is still completing', { retryable: true });
+            if (attempt.status !== 'ready') throw invalidReauth();
             const context = await lockStudentContext(tx, input.userId);
             if (!context.active) throw invalidReauth();
             const policy = await tx.query<{ enabled: boolean; approved_by: string | null; approved_until: Date }>('SELECT enabled, approved_by, approved_until FROM institution_login_policies WHERE id = $1 AND version = $2 FOR UPDATE', [attempt.policy_id, attempt.policy_version]);

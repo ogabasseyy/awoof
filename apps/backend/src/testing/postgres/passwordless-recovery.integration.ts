@@ -1639,6 +1639,47 @@ test('fresh reauthentication prefers the Microsoft identity that issued the sess
     }
 });
 
+test('reauth finish signals retryable while the winner still redeems', async () => {
+    const pool = createTestPool();
+    const client = await pool.connect();
+    try {
+        const userId = await seedStudent(client);
+        await seedProviderProof(client, userId, { policy: true });
+        const reauth = new StudentReauthService({
+            pool,
+            attemptKey: Buffer.alloc(32, 7).toString('base64url'),
+            completionUrl: new URL('https://app.example.invalid/auth/student/sso/complete'),
+            isProviderEnabled: () => true,
+            oidcForPolicy: () => ({ authorizeFresh: async () => new URL('https://provider.example.invalid/fresh') }) as never,
+        });
+        const started = await reauth.start({ userId, sid: SID, purpose: 'link' });
+        const callbackCookie = started.callbackCookie;
+        await client.query('UPDATE student_auth_reauth_attempts SET status = \'processing\' WHERE id = $1', [started.attemptId]);
+        // The bound owner learns the attempt is still redeeming and waits
+        // instead of failing; anyone without the browser binding gets the
+        // uniform terminal shape with no state signal.
+        await assert.rejects(
+            () => reauth.finish({ userId, sid: SID, attemptId: started.attemptId, callbackCookie }),
+            (error: unknown) => {
+                assert.ok(error instanceof Error && /still completing/.test(error.message));
+                assert.deepEqual((error as { details?: unknown }).details, { retryable: true });
+                return true;
+            },
+        );
+        await assert.rejects(
+            () => reauth.finish({ userId, sid: SID, attemptId: started.attemptId, callbackCookie: 'wrong-cookie' }),
+            (error: unknown) => {
+                assert.ok(error instanceof Error && /no longer valid/.test(error.message));
+                assert.equal((error as { details?: unknown }).details, undefined);
+                return true;
+            },
+        );
+    } finally {
+        client.release();
+        await pool.end();
+    }
+});
+
 test('fresh reauthentication refuses identities whose institutional approval was withdrawn', async () => {
     const pool = createTestPool();
     const client = await pool.connect();

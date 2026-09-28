@@ -1129,7 +1129,7 @@ export default createStudentSsoRouter();
  *         content: { application/json: { schema: { $ref: '#/components/schemas/StudentSsoReauthFinishResponse' } } }
  *       400: { description: Invalid body, origin, or content type }
  *       401: { description: Authentication failed or session unavailable }
- *       409: { description: Attempt expired, consumed, replayed, or no longer valid }
+ *       409: { description: Attempt expired, consumed, replayed, or no longer valid; still redeeming when error.details.retryable is true }
  *       429: { description: Too many reauthentication requests }
  *       503: { description: Fresh Microsoft authentication or student session validation unavailable }
  * /api/auth/student/sso/link:

@@ -411,7 +411,14 @@ export class StudentAccountRecoveryService {
              WHERE lower(btrim(u.email)) = $1 AND u.role = 'student' FOR UPDATE OF u`, [email],
         );
         const account = result.rows[0];
-        if (!account || account.deleted_at !== null) return null;
+        if (!account || account.deleted_at !== null) {
+            // Enumeration mirror: a known account pays a second round
+            // trip for the separately locked student row below, so
+            // unknown and deleted addresses probe the same shape with a
+            // random id (miss, no lock held) instead of returning early.
+            await this.lockedStudentStatus(tx, randomUUID());
+            return null;
+        }
         return (await this.lockedStudentStatus(tx, account.id)) === 'active' ? account : null;
     }
 
@@ -460,10 +467,11 @@ export class StudentAccountRecoveryService {
         // first — a latency oracle over repeated probes. Random ids miss
         // every lock and update zero rows, so no lock is held and no row
         // changes. The attempt INSERT has no dummy form (the user_id
-        // foreign key rejects synthetic rows) and remains as
-        // sub-millisecond noise; the rebound-only challenge-bindings
-        // UPDATE needs no mirror because rebound requires the original
-        // start's idempotency key, which a prober cannot present.
+        // foreign key rejects synthetic rows), so a lock-miss probe pays
+        // its round trip below and the residual is heap/WAL cost only;
+        // the rebound-only challenge-bindings UPDATE needs no mirror
+        // because rebound requires the original start's idempotency key,
+        // which a prober cannot present.
         await this.lockLiveAttempt(tx, randomUUID(), handle.purpose);
         const decoy = await requestChallenge(tx, {
             purpose: 'student_account_recovery', subjectKey: handle.email,
@@ -473,6 +481,12 @@ export class StudentAccountRecoveryService {
         if (decoy.status === 'issued') {
             await this.failPriorAttempts(tx, randomUUID());
             this.matchesDigest('decoy-expected-digest', this.secretDigest('decoy-start-probe'));
+            // Attempt-INSERT round-trip mirror: the committed path writes
+            // the handle row here, which has no dummy form (the user_id
+            // foreign key rejects synthetic rows). A lock-miss probe pays
+            // the same round trip without writing anything; the residual
+            // is heap/WAL cost only, sub-round-trip noise.
+            await this.lockedStudentStatus(tx, randomUUID());
             return { expiresAt: decoy.expiresAt.toISOString(), serverNow: handle.serverNow.toISOString() };
         }
         // Cooldown/locked: the live current challenge's frozen expiry,

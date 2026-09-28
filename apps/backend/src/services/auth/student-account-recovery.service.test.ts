@@ -104,15 +104,25 @@ test('recovery start runs workload mirrors for unknown addresses', async () => {
 
     await service.start({ email: 'unknown@example.test', purpose: 'lost_access' });
     // The decoy must cost the same database shapes as a committed start
-    // (live-attempt lock, issuance, terminalization) in the same order,
-    // or repeated unknown-address probes become a latency oracle. Random
-    // ids miss every lock and update zero rows; no attempt row is ever
-    // written on the decoy path.
+    // in the same order, or repeated unknown-address probes become a
+    // latency oracle: the student-row lock after the user miss (known
+    // accounts lock it for real), the live-attempt lock before
+    // issuance, terminalization after issuance, and one more probe for
+    // the attempt-INSERT round trip. Random ids miss every lock and
+    // update zero rows; no attempt row is ever written on the decoy path.
+    const userProbe = queries.findIndex((text) => text.includes('FROM users u LEFT JOIN students s'));
+    const studentProbes = queries
+        .map((text, index) => ({ text, index }))
+        .filter(({ text }) => text.includes('FROM students WHERE user_id') && text.includes('FOR UPDATE'))
+        .map(({ index }) => index);
+    const codeProbe = queries.findIndex((text) => text.includes('FROM student_auth_recovery_codes WHERE user_id'));
     const liveLock = queries.findIndex((text) => text.includes('FROM student_auth_recovery_attempts attempt'));
     const issuance = queries.findIndex((text) => text.includes('INSERT INTO verification_challenge_budgets'));
     const terminalize = queries.findIndex((text) => text.includes("SET status = 'failed', secret_hash = NULL"));
-    assert.ok(liveLock >= 0 && issuance > liveLock && terminalize > issuance,
-        'decoy start must mirror the live-attempt lock before issuance and terminalization after it');
+    assert.ok(userProbe >= 0 && studentProbes.length === 2 && studentProbes[0]! > userProbe && studentProbes[0]! < codeProbe,
+        'decoy start must probe the student row after the user miss, like known accounts lock it');
+    assert.ok(liveLock > codeProbe && issuance > liveLock && terminalize > issuance && studentProbes[1]! > terminalize,
+        'decoy start must mirror live-attempt lock, issuance, terminalization, and the insert round trip in order');
     assert.ok(!queries.some((text) => text.includes('INSERT INTO student_auth_recovery_attempts')),
         'decoy start must never write an attempt row');
 });

@@ -45,6 +45,14 @@ function bodyOf(cause: unknown): unknown {
     return axios.isAxiosError(cause) ? cause.response?.data : undefined;
 }
 
+// A 409 whose error details flag retryable means the attempt is still
+// redeeming upstream: the check must wait, never fail.
+function isRetryableReauthConflict(cause: unknown): boolean {
+    if (!axios.isAxiosError(cause) || cause.response?.status !== 409) return false;
+    const details = (cause.response.data as { error?: { details?: unknown } })?.error?.details;
+    return typeof details === 'object' && details !== null && (details as { retryable?: unknown }).retryable === true;
+}
+
 type RecoveryIntent = { purpose: 'recovery_code_generate' | 'recovery_code_activate'; pendingCodeId?: string };
 const RECOVERY_INTENT_KEY = 'awoof.recovery.intent.v1.tab';
 function readRecoveryIntent(): RecoveryIntent | null {
@@ -66,7 +74,7 @@ function RecoveryReauthComplete({ attemptId, duplicate }: { attemptId: string; d
     const { refreshUser } = useAuth();
     const [status, setStatus] = useState<'checking' | 'waiting' | 'generate' | 'generate_ambiguous' | 'display' | 'activate' | 'remove' | 'failed' | 'active' | 'removed' | 'link_unavailable' | 'unlinked' | 'unlinked_signed_out' | 'last_method' | 'last_proof_method' | 'link_ambiguous'>('checking');
     const [code, setCode] = useState(''); const [oldCode, setOldCode] = useState(''); const [needsOldCode, setNeedsOldCode] = useState(false); const [pendingCodeId, setPendingCodeId] = useState<string | null>(null); const [pendingExpiresAt, setPendingExpiresAt] = useState<string | null>(null); const [expectedGeneration, setExpectedGeneration] = useState<number | null>(null); const [grant, setGrant] = useState<{ grantId: string; grantSecret: string } | null>(null); const [error, setError] = useState<string | null>(null);
-    const [busy, setBusy] = useState(false); const started = useRef(false); const actionBusy = useRef(false);
+    const [busy, setBusy] = useState(false); const started = useRef(false); const actionBusy = useRef(false); const waitingAutoTries = useRef(0);
     const [now, setNow] = useState(() => Date.now());
     useEffect(() => {
         const timer = window.setInterval(() => setNow(Date.now()), 1000);
@@ -138,8 +146,25 @@ function RecoveryReauthComplete({ attemptId, duplicate }: { attemptId: string; d
                 }
             } catch { /* deadline display is best-effort; activation still enforces expiry server-side */ }
             setStatus('activate');
-        }).catch(() => { clearRecoveryIntent(); setStatus('failed'); });
+        }).catch((cause: unknown) => {
+            // A still-redeeming attempt stays retryable: converting it to
+            // the permanent failed view would falsely report failure when
+            // the user checks before the winner finishes. Anything else
+            // is terminal.
+            if (isRetryableReauthConflict(cause)) { setStatus('waiting'); return; }
+            clearRecoveryIntent(); setStatus('failed');
+        });
     };
+    useEffect(() => {
+        // Backoff polling while the winner redeems: bounded automatic
+        // checks, then the manual button keeps the outcome retryable
+        // indefinitely instead of failing on its own.
+        if (status !== 'waiting' || waitingAutoTries.current >= 6) return;
+        const delay = Math.min(1000 * 2 ** waitingAutoTries.current, 8000);
+        waitingAutoTries.current += 1;
+        const timer = window.setTimeout(() => { setStatus('checking'); runFinish(); }, delay);
+        return () => window.clearTimeout(timer);
+    }, [status]);
     useEffect(() => {
         if (started.current) return; started.current = true;
         const session = getSessionSnapshot();
@@ -290,7 +315,7 @@ function RecoveryReauthComplete({ attemptId, duplicate }: { attemptId: string; d
     if (status === 'removed') return <AuthShell role="student" title="Recovery code removed" subtitle="Recovery is now unconfigured." footer={null}><p role="status">The saved code was revoked and can no longer recover this account. Set up a new code from Account security if you still want recovery.</p><Button className="mt-5 w-full rounded-full" asChild><Link href="/student/security">Back to account security</Link></Button></AuthShell>;
     if (status === 'link_unavailable') return <AuthShell role="student" title="School sign-in link unavailable" subtitle="This sign-in can no longer be linked." footer={null}><p role="status">The pending school sign-in expired or was already used. Restart school sign-in and try again.</p><Button className="mt-5 w-full rounded-full" asChild><Link href="/auth/student/login">Back to sign-in</Link></Button></AuthShell>;
     if (status === 'link_ambiguous') return <AuthShell role="student" title="School sign-in link unclear" subtitle="The confirmation was lost." footer={null}><p role="status">This school sign-in may already be linked. Sign in again to check your sign-in methods before retrying.</p><Button className="mt-5 w-full rounded-full" asChild><Link href="/auth/student/login">Sign in to check</Link></Button></AuthShell>;
-    if (status === 'waiting') return <AuthShell role="student" title="Confirmation still completing" subtitle="Another confirmation is finishing." footer={null}><p role="status">This confirmation arrived twice and the first is still completing. Wait a moment, then check again — nothing failed yet.</p><Button className="mt-5 w-full rounded-full" onClick={() => { setStatus('checking'); runFinish(); }}>Check again</Button></AuthShell>;
+    if (status === 'waiting') return <AuthShell role="student" title="Confirmation still completing" subtitle="Another confirmation is finishing." footer={null}><p role="status">This confirmation arrived twice and the first is still completing. Wait a moment, then check again — nothing failed yet.</p><Button className="mt-5 w-full rounded-full" onClick={() => { waitingAutoTries.current = 0; setStatus('checking'); runFinish(); }}>Check again</Button></AuthShell>;
     if (status === 'generate_ambiguous') return <AuthShell role="student" title="Replacement code unclear" subtitle="The confirmation was lost." footer={null}><p role="status">A replacement code was created but its response was lost, so the code cannot be shown again. Go to Account security, cancel the pending code, and generate a new one.</p><Button className="mt-5 w-full rounded-full" asChild><Link href="/student/security">Back to account security</Link></Button></AuthShell>;
     if (status === 'unlinked') return <AuthShell role="student" title="Sign-in method removed" subtitle="The school sign-in was disconnected." footer={null}><p role="status">That school sign-in can no longer access this account.</p><Button className="mt-5 w-full rounded-full" asChild><Link href="/student/security">Back to account security</Link></Button></AuthShell>;
     if (status === 'unlinked_signed_out') return <AuthShell role="student" title="Sign-in method removed" subtitle="You have been signed out." footer={null}><p role="status">The removed sign-in had issued this session, so the local sign-in was cleared. That school sign-in can no longer access this account.</p><Button className="mt-5 w-full rounded-full" asChild><Link href="/auth/student/login">Back to sign-in</Link></Button></AuthShell>;
