@@ -153,6 +153,11 @@ test('unknown-mailbox recovery handles expire exactly like committed ones', asyn
             const ttlMs = ms - Date.now();
             assert.ok(ttlMs > 9 * 60 * 1000 && ttlMs <= 11 * 60 * 1000, `expiry must sit on the shared ten-minute attempt window (saw ${Math.round(ttlMs / 1000)}s)`);
         }
+        // Both deadlines derive from the same captured timestamp: any
+        // statement-latency skew between serverNow and expiresAt would
+        // let expiresAt - serverNow fingerprint committed handles.
+        assert.equal(decoyMs - decoyNow, 10 * 60 * 1000, 'decoy deadline must be exactly serverNow plus ten minutes');
+        assert.equal(committedMs - committedNow, 10 * 60 * 1000, 'committed deadline must be exactly serverNow plus ten minutes');
         assert.deepEqual(deliveries, [account.email]);
         const decoyRows = await client.query('SELECT id FROM student_auth_recovery_attempts WHERE id = $1', [decoy.attemptId]);
         assert.equal(decoyRows.rowCount, 0, 'decoy handles write no attempt rows');
@@ -445,6 +450,47 @@ test('verified recovery completes after the OTP TTL within the ten-minute attemp
         await service.complete({ attemptId: first.attemptId, secret: first.secret, password: 'ValidNew1!' });
         const after = await client.query<{ password_hash: string }>('SELECT password_hash FROM users WHERE id = $1', [account.userId]);
         assert.equal(after.rows[0]!.password_hash, 'window-split-hash');
+    } finally {
+        client.release();
+        await pool.end();
+    }
+});
+
+test('recovery attempts verify across a stage-two key rotation in either direction', async () => {
+    const pool = createTestPool();
+    const client = await pool.connect();
+    try {
+        // Stage-two rolling deploy: restarted replicas write K2 and fall
+        // back to K1, while not-yet-restarted replicas still run the
+        // stage-one config (write K1, fall back to K2). The seed enrolls
+        // codes under K1, so both replicas also prove the code fallback.
+        const K1 = 'test-recovery-code-key';
+        const K2 = 'test-recovery-code-key-k2-rotation';
+        let oldOtp = ''; let newOtp = '';
+        const oldReplica = new StudentAccountRecoveryService({
+            pool, recoveryCodeKey: K1, previousRecoveryCodeKey: K2,
+            deliverOtp: async (_email, delivered) => { oldOtp = delivered; return { success: true }; },
+            validatePassword: () => ({ valid: true, errors: [] }), hashPassword: async () => 'rotation-old-hash',
+        });
+        const newReplica = new StudentAccountRecoveryService({
+            pool, recoveryCodeKey: K2, previousRecoveryCodeKey: K1,
+            deliverOtp: async (_email, delivered) => { newOtp = delivered; return { success: true }; },
+            validatePassword: () => ({ valid: true, errors: [] }), hashPassword: async () => 'rotation-new-hash',
+        });
+        // K1-created attempt verifies and completes on a K2 replica.
+        const firstAccount = await seedRecoverableStudent(client);
+        const first = await oldReplica.start({ email: firstAccount.email, purpose: 'lost_access' });
+        await newReplica.verify({ attemptId: first.attemptId, secret: first.secret, code: firstAccount.code, otp: oldOtp });
+        await newReplica.complete({ attemptId: first.attemptId, secret: first.secret, password: 'ValidNew1!' });
+        const firstAfter = await client.query<{ password_hash: string }>('SELECT password_hash FROM users WHERE id = $1', [firstAccount.userId]);
+        assert.equal(firstAfter.rows[0]!.password_hash, 'rotation-new-hash');
+        // K2-created attempt verifies and completes on a K1 replica.
+        const secondAccount = await seedRecoverableStudent(client);
+        const second = await newReplica.start({ email: secondAccount.email, purpose: 'lost_access' });
+        await oldReplica.verify({ attemptId: second.attemptId, secret: second.secret, code: secondAccount.code, otp: newOtp });
+        await oldReplica.complete({ attemptId: second.attemptId, secret: second.secret, password: 'ValidNew1!' });
+        const secondAfter = await client.query<{ password_hash: string }>('SELECT password_hash FROM users WHERE id = $1', [secondAccount.userId]);
+        assert.equal(secondAfter.rows[0]!.password_hash, 'rotation-old-hash');
     } finally {
         client.release();
         await pool.end();

@@ -105,16 +105,24 @@ export class StudentAccountRecoveryService {
         const started = await this.transaction(async (tx) => {
             const serverNow = await databaseNow(tx);
             const serverExpiry = new Date(serverNow.getTime() + ttlMs);
+            // The attempt expiry derives from the same captured timestamp
+            // on both paths: a later clock_timestamp() here would let
+            // expiresAt - serverNow distinguish committed handles (whose
+            // INSERT runs after the account probes) from decoys (which
+            // report exactly serverNow + 10 minutes).
+            const attemptExpiry = new Date(serverNow.getTime() + 10 * 60 * 1000);
             const account = await this.findRecoverableAccount(tx, email);
+            // Attempt before code, matching verify and complete: the
+            // attempt row locks before challenge issuance so concurrent
+            // starts and verifications serialize in one order (attempt
+            // before budget/challenge) instead of code-against-attempt.
+            // Both probes run on both paths (random ids on the decoy
+            // path) so the branch itself adds no timing signal.
+            const live = account ? await this.lockLiveAttempt(tx, account.id, purpose) : await this.lockLiveAttempt(tx, randomUUID(), purpose);
             const active = account ? await this.lockActiveCode(tx, account.id) : await this.lockActiveCode(tx, randomUUID());
             if (!account || !active) {
-                return this.decoyStart(tx, { email, attemptId, purpose, serverExpiry, serverNow });
+                return this.decoyStart(tx, { email, attemptId, purpose, serverExpiry, serverNow, attemptExpiry });
             }
-            // Locked before challenge issuance so concurrent starts and
-            // verifications serialize on the attempt row in one order
-            // (attempt before budget/challenge, matching verify) instead
-            // of deadlocking budget-against-attempt.
-            const live = await this.lockLiveAttempt(tx, account.id, purpose);
             const challenge = await requestChallenge(tx, {
                 purpose: 'student_account_recovery', subjectKey: account.email,
                 bindings: { recoveryAttemptId: attemptId, recoveryPurpose: input.purpose },
@@ -166,8 +174,8 @@ export class StudentAccountRecoveryService {
                     `INSERT INTO student_auth_recovery_attempts
                          (id, user_id, credential_generation, purpose, secret_hash, recovery_code_generation,
                           mailbox_challenge_id, expires_at, idempotency_key)
-                     VALUES ($1, $2, $3, $4, $5, $6, $7, clock_timestamp() + interval '10 minutes', $8)`,
-                    [attemptId, account.id, Number(account.credential_generation), input.purpose, this.secretDigest(secret), Number(active.generation), live.mailbox_challenge_id, idempotencyKey],
+                     VALUES ($1, $2, $3, $4, $5, $6, $7, $8::timestamptz, $9)`,
+                    [attemptId, account.id, Number(account.credential_generation), input.purpose, this.secretDigest(secret), Number(active.generation), live.mailbox_challenge_id, attemptExpiry, idempotencyKey],
                 );
                 return { expiresAt: live.challenge_expires_at.toISOString(), serverNow: serverNow.toISOString() };
             }
@@ -176,9 +184,9 @@ export class StudentAccountRecoveryService {
                 `INSERT INTO student_auth_recovery_attempts
                      (id, user_id, credential_generation, purpose, secret_hash, recovery_code_generation,
                       mailbox_challenge_id, expires_at, idempotency_key)
-                 VALUES ($1, $2, $3, $4, $5, $6, $7, clock_timestamp() + interval '10 minutes', $8)
+                 VALUES ($1, $2, $3, $4, $5, $6, $7, $8::timestamptz, $9)
                  RETURNING expires_at`,
-                [attemptId, account.id, Number(account.credential_generation), input.purpose, this.secretDigest(secret), Number(active.generation), challenge.challengeId, idempotencyKey],
+                [attemptId, account.id, Number(account.credential_generation), input.purpose, this.secretDigest(secret), Number(active.generation), challenge.challengeId, attemptExpiry, idempotencyKey],
             );
             return { email: account.email, otp: challenge.code, challengeId: challenge.challengeId, expiresAt: inserted.rows[0]!.expires_at.toISOString(), serverNow: serverNow.toISOString() };
         });
@@ -258,7 +266,7 @@ export class StudentAccountRecoveryService {
             const account = await this.lockAccount(tx, userId);
             const attempt = await this.lockAttempt(tx, attemptId);
             if (!attempt || attempt.expires_at <= await this.now(tx)
-                || !attempt.secret_hash || !this.matchesDigest(attempt.secret_hash, this.secretDigest(secret))) return false;
+                || !this.matchesAttemptSecret(attempt.secret_hash, secret)) return false;
             // Idempotent retry: the verification commit landed but its 204
             // was lost. The mailbox OTP was already proven and its
             // challenge consumed, so revalidate the still-checkable proofs
@@ -318,7 +326,7 @@ export class StudentAccountRecoveryService {
         // attempt the database still considers live.
         const candidate = await this.previewAttempt(attemptId);
         if (!candidate || candidate.status !== 'verified'
-            || !candidate.secret_hash || !this.matchesDigest(candidate.secret_hash, this.secretDigest(secret))) throw unavailable();
+            || !this.matchesAttemptSecret(candidate.secret_hash, secret)) throw unavailable();
         const hash = await (this.deps.hashPassword ?? ((candidate: string) => passwordService.hashPassword(candidate)))(password);
         const committed = await this.transaction(async (tx) => {
             // Read only to establish the owner, then acquire the canonical user
@@ -330,7 +338,7 @@ export class StudentAccountRecoveryService {
             const attempt = await this.lockAttempt(tx, attemptId);
             const code = await this.lockActiveCode(tx, userId);
             if (!account || !attempt || !code || attempt.status !== 'verified' || attempt.expires_at <= await this.now(tx)
-                || !attempt.secret_hash || !this.matchesDigest(attempt.secret_hash, this.secretDigest(secret))
+                || !this.matchesAttemptSecret(attempt.secret_hash, secret)
                 || Number(account.credential_generation) !== Number(attempt.credential_generation)
                 || Number(code.generation) !== Number(attempt.recovery_code_generation)) throw unavailable();
 
@@ -469,21 +477,20 @@ export class StudentAccountRecoveryService {
      * enrollment — simply delays the first committed attempt row until
      * the caller's retry past the cooldown.
      */
-    private async decoyStart(tx: PoolClient, handle: { email: string; attemptId: string; purpose: RecoveryPurpose; serverExpiry: Date; serverNow: Date }): Promise<{ expiresAt: string; serverNow: string }> {
-        // Workload mirror for the committed start's post-probe queries, in
-        // the same order (attempt before budget/challenge, matching the
-        // deadlock order both paths share): without this the decoy exits
-        // after challenge issuance while a recoverable address runs the
-        // live-attempt lock, terminalization, handle digest, and insert
-        // first — a latency oracle over repeated probes. Random ids miss
-        // every lock and update zero rows, so no lock is held and no row
-        // changes. The attempt INSERT has no dummy form (the user_id
-        // foreign key rejects synthetic rows), so a lock-miss probe pays
-        // its round trip below and the residual is heap/WAL cost only;
-        // the rebound-only challenge-bindings UPDATE needs no mirror
-        // because rebound requires the original start's idempotency key,
-        // which a prober cannot present.
-        await this.lockLiveAttempt(tx, randomUUID(), handle.purpose);
+    private async decoyStart(tx: PoolClient, handle: { email: string; attemptId: string; purpose: RecoveryPurpose; serverExpiry: Date; serverNow: Date; attemptExpiry: Date }): Promise<{ expiresAt: string; serverNow: string }> {
+        // Workload mirror for the committed start's post-branch queries,
+        // in the same order (the attempt and code probes already ran
+        // pre-branch on both paths): without this the decoy exits after
+        // challenge issuance while a recoverable address runs
+        // terminalization, handle digest, and insert first — a latency
+        // oracle over repeated probes. Random ids miss every lock and
+        // update zero rows, so no lock is held and no row changes. The
+        // attempt INSERT has no dummy form (the user_id foreign key
+        // rejects synthetic rows), so a lock-miss probe pays its round
+        // trip below and the residual is heap/WAL cost only; the
+        // rebound-only challenge-bindings UPDATE needs no mirror because
+        // rebound requires the original start's idempotency key, which a
+        // prober cannot present.
         const decoy = await requestChallenge(tx, {
             purpose: 'student_account_recovery', subjectKey: handle.email,
             bindings: { recoveryAttemptId: handle.attemptId, recoveryPurpose: handle.purpose },
@@ -498,11 +505,11 @@ export class StudentAccountRecoveryService {
             // the same round trip without writing anything; the residual
             // is heap/WAL cost only, sub-round-trip noise.
             await this.lockedStudentStatus(tx, randomUUID());
-            // Fresh handles report the ten-minute attempt expiry, matching
-            // the committed path's attempt row; the decoy challenge itself
-            // still carries the shorter OTP TTL underneath.
-            const attemptExpiry = new Date(handle.serverNow.getTime() + 10 * 60 * 1000);
-            return { expiresAt: attemptExpiry.toISOString(), serverNow: handle.serverNow.toISOString() };
+            // Fresh handles report the shared captured attempt expiry,
+            // identical to the committed path's attempt row; the decoy
+            // challenge itself still carries the shorter OTP TTL
+            // underneath.
+            return { expiresAt: handle.attemptExpiry.toISOString(), serverNow: handle.serverNow.toISOString() };
         }
         // Cooldown/locked: the live current challenge's frozen expiry,
         // mirroring the committed rebound; fresh only when none is live.
@@ -585,7 +592,10 @@ export class StudentAccountRecoveryService {
         await this.lockAttempt(tx, attemptId);
         await this.now(tx);
         await this.lockActiveCode(tx, randomUUID());
-        this.matchesDigest('decoy-expected-digest', this.secretDigest('decoy-verify-probe'));
+        // Shape-mirrored through the same fallback helper: dummy material
+        // always mismatches, paying the same one-or-two digest rounds as
+        // a bogus committed proof.
+        this.matchesAttemptSecret('decoy-expected-digest', 'decoy-verify-probe');
     }
 
     private async lockAttempt(tx: PoolClient, id: string): Promise<Attempt | null> {
@@ -619,7 +629,22 @@ export class StudentAccountRecoveryService {
         return result.rows[0]!.now;
     }
 
-    private secretDigest(secret: string): string { return createHmac('sha256', this.deps.recoveryCodeKey).update(`attempt\u0000${secret}`).digest('base64url'); }
+    private secretDigest(secret: string): string { return this.attemptDigest(secret, this.deps.recoveryCodeKey); }
+    private attemptDigest(secret: string, key: string): string { return createHmac('sha256', key).update(`attempt\u0000${secret}`).digest('base64url'); }
+    /**
+     * Attempt Bearer [REDACTED] verification with the rotation fallback, mirroring
+     * recovery-code verification: without this, a stage-two rolling deploy
+     * strands in-flight attempts, since an attempt created under K1 fails
+     * on a K2 replica and vice versa. Creation always uses the current
+     * key; only verification accepts the previous one.
+     */
+    private matchesAttemptSecret(expected: string | null, supplied: string): boolean {
+        if (!expected) return false;
+        if (this.matchesDigest(expected, this.attemptDigest(supplied, this.deps.recoveryCodeKey))) return true;
+        const previous = this.deps.previousRecoveryCodeKey;
+        if (!previous || previous === this.deps.recoveryCodeKey) return false;
+        return this.matchesDigest(expected, this.attemptDigest(supplied, previous));
+    }
     private matchesRecoveryCode(expected: string | null, supplied: string): boolean {
         return verifyRecoveryCodeDigest(expected, supplied, this.deps.recoveryCodeKey, this.deps.previousRecoveryCodeKey);
     }

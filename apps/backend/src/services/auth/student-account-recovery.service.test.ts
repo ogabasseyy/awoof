@@ -106,10 +106,11 @@ test('recovery start runs workload mirrors for unknown addresses', async () => {
     // The decoy must cost the same database shapes as a committed start
     // in the same order, or repeated unknown-address probes become a
     // latency oracle: the student-row lock after the user miss (known
-    // accounts lock it for real), the live-attempt lock before
-    // issuance, terminalization after issuance, and one more probe for
-    // the attempt-INSERT round trip. Random ids miss every lock and
-    // update zero rows; no attempt row is ever written on the decoy path.
+    // accounts lock it for real), the live-attempt lock then the code
+    // lock before issuance (attempt-then-code, matching verify),
+    // terminalization after issuance, and one more probe for the
+    // attempt-INSERT round trip. Random ids miss every lock and update
+    // zero rows; no attempt row is ever written on the decoy path.
     const userProbe = queries.findIndex((text) => text.includes('FROM users u LEFT JOIN students s'));
     const studentProbes = queries
         .map((text, index) => ({ text, index }))
@@ -121,8 +122,8 @@ test('recovery start runs workload mirrors for unknown addresses', async () => {
     const terminalize = queries.findIndex((text) => text.includes("SET status = 'failed', secret_hash = NULL"));
     assert.ok(userProbe >= 0 && studentProbes.length === 2 && studentProbes[0]! > userProbe && studentProbes[0]! < codeProbe,
         'decoy start must probe the student row after the user miss, like known accounts lock it');
-    assert.ok(liveLock > codeProbe && issuance > liveLock && terminalize > issuance && studentProbes[1]! > terminalize,
-        'decoy start must mirror live-attempt lock, issuance, terminalization, and the insert round trip in order');
+    assert.ok(liveLock > studentProbes[0]! && codeProbe > liveLock && issuance > codeProbe && terminalize > issuance && studentProbes[1]! > terminalize,
+        'decoy start must mirror live-attempt lock, code lock, issuance, terminalization, and the insert round trip in order');
     assert.ok(!queries.some((text) => text.includes('INSERT INTO student_auth_recovery_attempts')),
         'decoy start must never write an attempt row');
 });
