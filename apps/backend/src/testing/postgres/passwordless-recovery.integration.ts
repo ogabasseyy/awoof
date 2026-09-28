@@ -292,6 +292,48 @@ test('failed recovery delivery retires the attempt and challenge without strandi
     }
 });
 
+test('failed recovery delivery follows challenge rebinding to the live holder', async () => {
+    const pool = createTestPool();
+    const client = await pool.connect();
+    try {
+        const account = await seedRecoverableStudent(client);
+        let resolveDelivery: ((value: { success: boolean }) => void) | null = null;
+        const service = new StudentAccountRecoveryService({
+            pool, recoveryCodeKey: 'test-recovery-code-key',
+            deliverOtp: async () => new Promise<{ success: boolean }>((resolve) => { resolveDelivery = resolve; }),
+        });
+        const first = await service.start({ email: account.email, purpose: 'lost_access' });
+        // A cooldown restart rebounds while delivery is still in flight:
+        // the original attempt fails and the live challenge moves to the
+        // new holder without any redelivery.
+        const second = await service.start({ email: account.email, purpose: 'lost_access' });
+        assert.notEqual(second.attemptId, first.attemptId);
+        resolveDelivery!({ success: false });
+        // Compensation keys by the challenge, not the superseded attempt:
+        // the rebound holder retires with the original, and the
+        // undelivered challenge supersedes so nothing can resume it.
+        const deadline = Date.now() + 5000;
+        for (;;) {
+            const rows = await client.query<{ id: string; status: string }>(
+                'SELECT id, status FROM student_auth_recovery_attempts WHERE id = ANY($1)',
+                [[first.attemptId, second.attemptId]],
+            );
+            const byId = new Map(rows.rows.map((row) => [row.id, row.status]));
+            const challenge = await client.query<{ superseded_at: Date | null }>(
+                `SELECT superseded_at FROM verification_challenges c
+                 JOIN student_auth_recovery_attempts a ON a.mailbox_challenge_id = c.id WHERE a.id = $1`,
+                [second.attemptId],
+            );
+            if (byId.get(first.attemptId) === 'failed' && byId.get(second.attemptId) === 'failed' && challenge.rows[0]?.superseded_at !== null) break;
+            assert.ok(Date.now() < deadline, 'compensation must follow the rebound holder');
+            await new Promise((resolve) => setTimeout(resolve, 25));
+        }
+    } finally {
+        client.release();
+        await pool.end();
+    }
+});
+
 test('recovery completion invalidates pending SSO attempts despite a messy stored email', async () => {
     const pool = createTestPool();
     const client = await pool.connect();

@@ -64,7 +64,7 @@ function formatPendingRemaining(deadlineMs: number, nowMs: number): string {
 
 function RecoveryReauthComplete({ attemptId }: { attemptId: string }) {
     const { refreshUser } = useAuth();
-    const [status, setStatus] = useState<'checking' | 'generate' | 'display' | 'activate' | 'remove' | 'failed' | 'active' | 'removed' | 'link_unavailable' | 'unlinked' | 'unlinked_signed_out' | 'last_method' | 'last_proof_method'>('checking');
+    const [status, setStatus] = useState<'checking' | 'generate' | 'display' | 'activate' | 'remove' | 'failed' | 'active' | 'removed' | 'link_unavailable' | 'unlinked' | 'unlinked_signed_out' | 'last_method' | 'last_proof_method' | 'link_ambiguous'>('checking');
     const [code, setCode] = useState(''); const [oldCode, setOldCode] = useState(''); const [needsOldCode, setNeedsOldCode] = useState(false); const [pendingCodeId, setPendingCodeId] = useState<string | null>(null); const [pendingExpiresAt, setPendingExpiresAt] = useState<string | null>(null); const [expectedGeneration, setExpectedGeneration] = useState<number | null>(null); const [grant, setGrant] = useState<{ grantId: string; grantSecret: string } | null>(null); const [error, setError] = useState<string | null>(null);
     const [busy, setBusy] = useState(false); const started = useRef(false); const actionBusy = useRef(false);
     const [now, setNow] = useState(() => Date.now());
@@ -139,8 +139,11 @@ function RecoveryReauthComplete({ attemptId }: { attemptId: string }) {
                 // Only terminal mismatch/restart outcomes spend the handoff.
                 // Ambiguous failures (network loss, 5xx) keep the tab's copy
                 // so the live server-side handoff stays retryable with a
-                // fresh grant, mirroring the onboarding link flow.
-                if (!result || result.kind === 'linked') { setStatus('failed'); return; }
+                // fresh grant, mirroring the onboarding link flow — but the
+                // commit may already have consumed it, so the outcome is
+                // reported as ambiguous-link rather than recovery failure,
+                // directing the user to verify via a fresh sign-in.
+                if (!result || result.kind === 'linked') { setStatus('link_ambiguous'); return; }
                 clearSsoHandoff(tabStorage());
                 setStatus('link_unavailable'); return;
             }
@@ -172,7 +175,15 @@ function RecoveryReauthComplete({ attemptId }: { attemptId: string }) {
                     if (Array.isArray(listed) && !listed.some((entry) => (entry as { id?: unknown } | null)?.id === grant.targetIdentityId)) {
                         setStatus('unlinked'); return;
                     }
-                } catch { /* fall through to failure below */ }
+                } catch (inner: unknown) {
+                    // On this /auth/ page the session interceptor clears
+                    // tokens without redirecting, so a 401 here is the
+                    // committed outcome with the session revoked by the
+                    // removed identity: report the signed-out removal
+                    // instead of generic failure.
+                    if (statusOf(inner) === 401) { clearTokens(); setStatus('unlinked_signed_out'); return; }
+                    /* other reload failures fall through below */
+                }
             }
             setStatus('failed');
         }
@@ -222,6 +233,7 @@ function RecoveryReauthComplete({ attemptId }: { attemptId: string }) {
     if (status === 'active') return <AuthShell role="student" title="Recovery code active" subtitle="Your optional recovery setup is complete." footer={null}><p role="status">Keep your saved code secure. It is required with your school mailbox for independent password recovery.</p><Button className="mt-5 w-full rounded-full" asChild><Link href="/marketplace">Continue</Link></Button></AuthShell>;
     if (status === 'removed') return <AuthShell role="student" title="Recovery code removed" subtitle="Recovery is now unconfigured." footer={null}><p role="status">The saved code was revoked and can no longer recover this account. Set up a new code from Account security if you still want recovery.</p><Button className="mt-5 w-full rounded-full" asChild><Link href="/student/security">Back to account security</Link></Button></AuthShell>;
     if (status === 'link_unavailable') return <AuthShell role="student" title="School sign-in link unavailable" subtitle="This sign-in can no longer be linked." footer={null}><p role="status">The pending school sign-in expired or was already used. Restart school sign-in and try again.</p><Button className="mt-5 w-full rounded-full" asChild><Link href="/auth/student/login">Back to sign-in</Link></Button></AuthShell>;
+    if (status === 'link_ambiguous') return <AuthShell role="student" title="School sign-in link unclear" subtitle="The confirmation was lost." footer={null}><p role="status">This school sign-in may already be linked. Sign in again to check your sign-in methods before retrying.</p><Button className="mt-5 w-full rounded-full" asChild><Link href="/auth/student/login">Sign in to check</Link></Button></AuthShell>;
     if (status === 'unlinked') return <AuthShell role="student" title="Sign-in method removed" subtitle="The school sign-in was disconnected." footer={null}><p role="status">That school sign-in can no longer access this account.</p><Button className="mt-5 w-full rounded-full" asChild><Link href="/student/security">Back to account security</Link></Button></AuthShell>;
     if (status === 'unlinked_signed_out') return <AuthShell role="student" title="Sign-in method removed" subtitle="You have been signed out." footer={null}><p role="status">The removed sign-in had issued this session, so the local sign-in was cleared. That school sign-in can no longer access this account.</p><Button className="mt-5 w-full rounded-full" asChild><Link href="/auth/student/login">Back to sign-in</Link></Button></AuthShell>;
     if (status === 'last_method') return <AuthShell role="student" title="Cannot remove the last sign-in method" subtitle="Keep another way to sign in first." footer={null}><p role="status">Removing this sign-in would lock the account. Link another school sign-in or set a password first.</p><Button className="mt-5 w-full rounded-full" asChild><Link href="/student/security">Back to account security</Link></Button></AuthShell>;

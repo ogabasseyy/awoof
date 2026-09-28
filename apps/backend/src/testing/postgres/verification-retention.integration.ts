@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import test from 'node:test';
 import { purgeExpiredChallenges } from '../../services/verification/challenge-retention.service.js';
 import { assertFixtureDatabase, createTestPool } from './test-database.js';
@@ -94,6 +94,73 @@ test('retention deletes unreferenced tombstones and stale budgets but keeps evid
         const subjects = budgets.rows.map((row) => row.subject_digest);
         assert.ok(!subjects.includes(staleBudget), 'stale pointerless budgets must be deleted');
         assert.ok(subjects.includes(liveBudget), 'budgets with a live challenge pointer are kept');
+    } finally { client.release(); await pool.end(); }
+});
+
+test('capped retention batches clear and scrub the same challenge set', async () => {
+    const pool = createTestPool();
+    const client = await pool.connect();
+    try {
+        await assertFixtureDatabase(client);
+        // 505 expired pairs whose subject order reverses their expiry
+        // order: two independently capped batches would clear pointers
+        // for one 500-subset while scrubbing another, stranding purged
+        // challenges behind live pointers forever.
+        const total = 505;
+        const ids: string[] = [];
+        const subjects: string[] = [];
+        // Salted per run: deterministic subjects collide with other runs
+        // sharing a database, and index 0 ('0'.repeat(64)) collides with
+        // the scrub sentinel every purged tombstone carries.
+        const salt = randomUUID();
+        for (let index = 0; index < total; index++) {
+            ids.push(randomUUID());
+            subjects.push(createHash('sha256').update(`${salt}:${index}`).digest('hex'));
+        }
+        const challengeValues = ids.map((id, index) =>
+            `('${id}','student_signup','${subjects[index]}','${'b'.repeat(64)}','{}',clock_timestamp()-interval '${1560 + index} minutes',clock_timestamp()-interval '${1500 + index} minutes',NULL)`,
+        ).join(',');
+        await client.query(`INSERT INTO verification_challenges (id,purpose,subject_digest,secret_digest,bindings,created_at,expires_at,purged_at) VALUES ${challengeValues}`);
+        const budgetValues = ids.map((id, index) =>
+            `('student_signup','${subjects[index]}','${id}',clock_timestamp()-interval '2 days',clock_timestamp()-interval '2 days')`,
+        ).join(',');
+        await client.query('INSERT INTO verification_challenge_budgets (purpose,subject_digest,current_challenge_id,window_started_at,resend_available_at) VALUES ' + budgetValues);
+        // Converge scrubbing across passes: the 500-cap splits the set,
+        // and other tests' expired rows may share a batch. Backdating an
+        // unscrubbed row would exclude it from every later scrub set while
+        // its pointer stays live, stranding it, so only converged
+        // (fully scrubbed) rows are aged below.
+        for (let pass = 0; pass < 6; pass++) {
+            await purgeExpiredChallenges(pool);
+            const pending = await client.query<{ count: string }>(
+                'SELECT count(*)::text AS count FROM verification_challenges WHERE id = ANY($1) AND purged_at IS NULL',
+                [ids],
+            );
+            if (pending.rows[0]!.count === '0') break;
+            if (pass === 5) assert.equal(pending.rows[0]!.count, '0', 'scrubbing must converge across capped passes');
+        }
+        const stranded = await client.query<{ count: string }>(
+            `SELECT count(*)::text AS count FROM verification_challenge_budgets b
+             JOIN verification_challenges c ON c.id = b.current_challenge_id
+             WHERE c.purged_at IS NOT NULL AND b.subject_digest = ANY($1)`,
+            [subjects],
+        );
+        assert.equal(stranded.rows[0]!.count, '0', 'every scrubbed challenge must have its budget pointer cleared in the same batch');
+        // Age the converged tombstones and reap everything: deletion
+        // converges across passes with nothing stranded behind a pointer.
+        // Scoping by id: scrubbed rows carry the zeroed subject sentinel,
+        // so subject scoping would miss them and match other tombstones.
+        await client.query('UPDATE verification_challenges SET purged_at = clock_timestamp() - interval \'25 hours\' WHERE id = ANY($1) AND purged_at IS NOT NULL', [ids]);
+        for (let pass = 0; pass < 6; pass++) {
+            await purgeExpiredChallenges(pool);
+            const remaining = await client.query<{ challenges: string; budgets: string }>(
+                `SELECT (SELECT count(*)::text FROM verification_challenges WHERE id = ANY($1)) AS challenges,
+                        (SELECT count(*)::text FROM verification_challenge_budgets WHERE subject_digest = ANY($2)) AS budgets`,
+                [ids, subjects],
+            );
+            if (remaining.rows[0]!.challenges === '0' && remaining.rows[0]!.budgets === '0') break;
+            if (pass === 5) assert.deepEqual(remaining.rows[0], { challenges: '0', budgets: '0' });
+        }
     } finally { client.release(); await pool.end(); }
 });
 

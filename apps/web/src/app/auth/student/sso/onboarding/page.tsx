@@ -192,9 +192,14 @@ function SignupOnboarding() {
             if (!data || typeof data.tokens?.accessToken !== 'string' || typeof data.tokens.refreshToken !== 'string' || initialSession.current !== getSessionSnapshot().generation) throw new Error('unusable');
             // Preserve the validated continuation the handoff carried for
             // this sign-in; resolve it before the handoff is forgotten.
-            // Recovery setup stays available from account security.
+            // Mark this tab's fresh passwordless signup so the
+            // post-continuation recovery offer ("Save your recovery code")
+            // can surface outside this journey, per the signup spec,
+            // without blocking the redirect below.
             const destination = resolveStudentReturn(handoff.current?.returnPath ?? null, window.location.origin);
-            storeTokens({ accessToken: data.tokens.accessToken, refreshToken: data.tokens.refreshToken }); forgetHandoff(); window.location.href = destination;
+            storeTokens({ accessToken: data.tokens.accessToken, refreshToken: data.tokens.refreshToken }); forgetHandoff();
+            try { sessionStorage.setItem('awoof.passwordless-signup-fresh', '1'); } catch { /* the offer simply stays hidden */ }
+            window.location.href = destination;
         } catch {
             forgetHandoff(); setAmbiguousComplete(true);
         } finally {

@@ -138,6 +138,9 @@ export default function StudentSecurityPage() {
         const session = getSessionSnapshot(); if (!session.accessToken || busy || !pwMode || !password) return;
         if (pwMode === 'remove' && !pwOld) { setFormError('Enter the current recovery code.'); return; }
         if (pwMode === 'activate' && !pwCode) { setFormError('Re-enter the saved recovery code.'); return; }
+        // Reconcile baseline: ambiguous failures compare the reloaded
+        // status against the pre-submit pending, not just its presence.
+        const submittedMode = pwMode; const priorPendingId = pendingCodeId;
         setBusy(true); setFormError(null);
         // The raw password travels on the non-refreshing client, so the
         // token is renewed first: a stale snapshot would 401 before the
@@ -175,8 +178,41 @@ export default function StudentSecurityPage() {
             // account so post-recovery notices disappear without a reload.
             await refreshUser().catch(() => undefined);
         } catch (cause: unknown) {
-            const code = axios.isAxiosError(cause) ? cause.response?.status : undefined;
-            setFormError(code === 401 ? 'Current password is incorrect.' : code === 403 ? 'This account has no password. Use school sign-in instead.' : 'Password confirmation failed. Check the entries and try again.');
+            const failed = axios.isAxiosError(cause) ? cause.response?.status : undefined;
+            // Ambiguous transport failures (network loss, 5xx) may have
+            // committed and consumed the one-use grant; retrying then
+            // fails against the new state instead of confirming the
+            // outcome. Reload status first and render the committed
+            // result when it matches, mirroring the provider-backed
+            // activation reconcile.
+            if (failed === undefined || failed >= 500) {
+                try {
+                    const current = await studentSsoSessionApiClient.get('/auth/student/sso/recovery-code');
+                    const live = (current.data as { data?: { status?: unknown; pendingCodeId?: unknown } }).data;
+                    if (submittedMode === 'activate' && live?.status === 'active') {
+                        setPwMode(null); setPassword(''); setPwOld(''); setPwCode(''); setPwPendingId(null); setPwExpiresAt(null);
+                        await loadStatus();
+                        await refreshUser().catch(() => undefined);
+                        return;
+                    }
+                    if (submittedMode === 'remove' && live?.status === 'unconfigured') {
+                        setPwMode(null); setPassword(''); setPwOld(''); setPwCode(''); setPwPendingId(null); setPwExpiresAt(null);
+                        await loadStatus();
+                        await refreshUser().catch(() => undefined);
+                        return;
+                    }
+                    if (submittedMode === 'generate' && live?.status === 'pending' && typeof live.pendingCodeId === 'string' && live.pendingCodeId !== priorPendingId) {
+                        // A code was created but its one-time display is
+                        // lost with the response: sync the pending view
+                        // underneath and guide back to cancel-and-regenerate
+                        // instead of a dead activate.
+                        await loadStatus();
+                        setFormError('A new code was created but its response was lost, so the code cannot be shown again. Go back, cancel the pending code, and generate a new one.');
+                        return;
+                    }
+                } catch { /* fall through to the failure mapping below */ }
+            }
+            setFormError(failed === 401 ? 'Current password is incorrect.' : failed === 403 ? 'This account has no password. Use school sign-in instead.' : 'Password confirmation failed. Check the entries and try again.');
         } finally { setBusy(false); }
     };
     // Linking confirms the new school sign-in against this signed-in

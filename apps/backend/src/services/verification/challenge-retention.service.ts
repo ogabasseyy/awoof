@@ -21,21 +21,18 @@ export async function purgeExpiredChallenges(pool: Pick<Pool, 'connect'>): Promi
     const tx = await pool.connect();
     try {
         await tx.query('BEGIN');
-        // Challenge issuance locks budgets before challenges. Preserve that order.
-        await tx.query(`WITH expired AS (
-            SELECT b.purpose, b.subject_digest FROM verification_challenge_budgets b
-            JOIN verification_challenges c ON c.id = b.current_challenge_id
-            WHERE c.purged_at IS NULL AND (
-                c.expires_at < clock_timestamp() - interval '24 hours'
-                OR (c.purpose = 'student_account_recovery'
-                    AND c.expires_at <= clock_timestamp())
-                OR (c.purpose = 'student_sso_signup'
-                    AND c.expires_at <= clock_timestamp() - interval '1 hour')
-            )
-            ORDER BY b.purpose, b.subject_digest FOR UPDATE OF b SKIP LOCKED LIMIT 500
-        ) UPDATE verification_challenge_budgets b SET current_challenge_id = NULL
-          FROM expired e WHERE b.purpose = e.purpose AND b.subject_digest = e.subject_digest`);
-        const result = await tx.query(`WITH expired AS (
+        // Pointer clearing and scrubbing derive from one selected ID set:
+        // two independently capped batches could otherwise scrub a
+        // challenge its budget still points to, stranding the pair
+        // forever (later passes exclude purged rows, and deletion refuses
+        // referenced ones). Challenge issuance locks budgets before
+        // challenges; the pointer update precedes the row locks to
+        // preserve that order, and the scrub yields with SKIP LOCKED to
+        // concurrent issuance and consumption. A skipped challenge keeps
+        // purged_at NULL and is re-selected next pass, so yielding here
+        // cannot strand anything.
+        await tx.query('CREATE TEMPORARY TABLE purge_expired_challenges (id uuid PRIMARY KEY) ON COMMIT DROP');
+        await tx.query(`INSERT INTO purge_expired_challenges
             SELECT id FROM verification_challenges
             WHERE purged_at IS NULL AND (
                 expires_at < clock_timestamp() - interval '24 hours'
@@ -44,11 +41,17 @@ export async function purgeExpiredChallenges(pool: Pick<Pool, 'connect'>): Promi
                 OR (purpose = 'student_sso_signup'
                     AND expires_at <= clock_timestamp() - interval '1 hour')
             )
-            ORDER BY expires_at FOR UPDATE SKIP LOCKED LIMIT 500
+            ORDER BY expires_at LIMIT 500`);
+        await tx.query(`UPDATE verification_challenge_budgets b SET current_challenge_id = NULL
+            FROM purge_expired_challenges e WHERE b.current_challenge_id = e.id`);
+        const result = await tx.query(`WITH lockable AS (
+            SELECT c.id FROM verification_challenges c
+            JOIN purge_expired_challenges e ON e.id = c.id
+            ORDER BY c.expires_at FOR UPDATE OF c SKIP LOCKED
         ) UPDATE verification_challenges c
           SET bindings = '{}'::jsonb, secret_digest = repeat('0', 64),
               subject_digest = repeat('0', 64), purged_at = clock_timestamp()
-          FROM expired e WHERE c.id = e.id`);
+          FROM lockable l WHERE c.id = l.id`);
         // Lifecycle deletion, budget-first like issuance: stale budgets
         // with no live challenge pointer, then tombstones nothing
         // references. Issuance only ever points budgets at newly inserted

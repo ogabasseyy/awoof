@@ -201,6 +201,70 @@ test('password confirmation drives generation then activation without a provider
     api.assertNoUnexpectedRequests();
 });
 
+test('ambiguous password activation reconciles against status and renders success', async ({ page }) => {
+    const api = await installSyntheticApi(page);
+    const pendingId = 'b0000000-0000-4000-8000-000000000001';
+    let statusCalls = 0;
+    await page.route(`${apiOrigin}/api/auth/student/sso/recovery-code`, route => { statusCalls++; return route.fulfill({ headers, json: { success: true, data: statusCalls === 1 ? { status: 'pending', generation: 1, pendingCodeId: pendingId, pendingExpiresAt: new Date(Date.now() + 600_000).toISOString() } : { status: 'active', generation: 1, pendingCodeId: null } } }); });
+    await page.route(`${apiOrigin}/api/auth/student/sso/reauth`, route => route.fulfill({ status: 201, headers, json: { success: true, data: { grantId: 'b1000000-0000-4000-8000-000000000001', grantSecret: 'pw-grant', expiresAt: new Date(Date.now() + 60_000).toISOString() } } }));
+    await page.route(`${apiOrigin}/api/auth/student/sso/recovery-code/activate`, route => route.fulfill({ status: 500, headers, json: { success: false, error: { message: 'boom', statusCode: 500 } } }));
+    await page.route(`${apiOrigin}/api/auth/student/sso/identities`, route => route.fulfill({ headers, json: { success: true, data: { identities: [] } } }));
+    await page.goto('/auth/student/login'); await seedSession(page, 'student');
+    await page.goto('/student/security');
+    await page.getByRole('button', { name: 'Use your password instead' }).click();
+    await page.getByRole('button', { name: 'Confirm identity to activate saved code' }).click();
+    await page.getByLabel('Current password').fill('Correct!horse-9-battery');
+    await page.getByLabel('Re-enter saved recovery code').fill('saved-code');
+    await page.getByRole('button', { name: 'Activate code' }).click();
+    // The activation committed but the response was lost: status shows
+    // the flipped code instead of a password failure.
+    await expect(page.getByText('A recovery code is active.')).toBeVisible();
+    api.assertNoUnexpectedRequests();
+});
+
+test('ambiguous password removal reconciles against status and renders success', async ({ page }) => {
+    const api = await installSyntheticApi(page);
+    let statusCalls = 0;
+    await page.route(`${apiOrigin}/api/auth/student/sso/recovery-code`, route => { statusCalls++; return route.fulfill({ headers, json: { success: true, data: statusCalls === 1 ? { status: 'active', generation: 1, pendingCodeId: null } : { status: 'unconfigured', generation: null, pendingCodeId: null } } }); });
+    await page.route(`${apiOrigin}/api/auth/student/sso/reauth`, route => route.fulfill({ status: 201, headers, json: { success: true, data: { grantId: 'b2000000-0000-4000-8000-000000000001', grantSecret: 'pw-grant', expiresAt: new Date(Date.now() + 60_000).toISOString() } } }));
+    await page.route(`${apiOrigin}/api/auth/student/sso/recovery-code/remove`, route => route.fulfill({ status: 500, headers, json: { success: false, error: { message: 'boom', statusCode: 500 } } }));
+    await page.route(`${apiOrigin}/api/auth/student/sso/identities`, route => route.fulfill({ headers, json: { success: true, data: { identities: [] } } }));
+    await page.goto('/auth/student/login'); await seedSession(page, 'student');
+    await page.goto('/student/security');
+    await expect(page.getByText('A recovery code is active.')).toBeVisible();
+    await page.getByRole('button', { name: 'Use your password instead' }).click();
+    await page.getByRole('button', { name: 'Remove recovery code' }).click();
+    await page.getByLabel('Current password').fill('Correct!horse-9-battery');
+    await page.getByLabel('Current recovery code').fill('old-code');
+    await page.getByRole('button', { name: 'Remove code' }).click();
+    // The removal committed but the response was lost: status shows the
+    // cleared setup instead of a password failure.
+    await expect(page.getByRole('button', { name: 'Confirm identity to generate a code' })).toBeVisible();
+    api.assertNoUnexpectedRequests();
+});
+
+test('ambiguous password generation guides cancel-and-regenerate when a new pending appears', async ({ page }) => {
+    const api = await installSyntheticApi(page);
+    const pendingId = 'b4000000-0000-4000-8000-000000000001';
+    let statusCalls = 0;
+    await page.route(`${apiOrigin}/api/auth/student/sso/recovery-code`, route => { statusCalls++; return route.fulfill({ headers, json: { success: true, data: statusCalls === 1 ? { status: 'unconfigured', generation: null, pendingCodeId: null } : { status: 'pending', generation: 1, pendingCodeId: pendingId, pendingExpiresAt: new Date(Date.now() + 600_000).toISOString() } } }); });
+    await page.route(`${apiOrigin}/api/auth/student/sso/reauth`, route => route.fulfill({ status: 201, headers, json: { success: true, data: { grantId: 'b5000000-0000-4000-8000-000000000001', grantSecret: 'pw-grant', expiresAt: new Date(Date.now() + 60_000).toISOString() } } }));
+    await page.route(`${apiOrigin}/api/auth/student/sso/recovery-code/generate`, route => route.fulfill({ status: 500, headers, json: { success: false, error: { message: 'boom', statusCode: 500 } } }));
+    await page.route(`${apiOrigin}/api/auth/student/sso/identities`, route => route.fulfill({ headers, json: { success: true, data: { identities: [] } } }));
+    await page.goto('/auth/student/login'); await seedSession(page, 'student');
+    await page.goto('/student/security');
+    await page.getByRole('button', { name: 'Use your password instead' }).click();
+    await page.getByRole('button', { name: 'Confirm identity to generate a code' }).click();
+    await page.getByLabel('Current password').fill('Correct!horse-9-battery');
+    await page.getByRole('button', { name: 'Generate code' }).click();
+    // A code was created but its one-time display is lost: guide back to
+    // cancel-and-regenerate instead of a dead activate.
+    await expect(page.getByText('cannot be shown again')).toBeVisible();
+    await page.getByRole('button', { name: 'Back' }).click();
+    await expect(page.getByRole('button', { name: 'Cancel pending code' })).toBeVisible();
+    api.assertNoUnexpectedRequests();
+});
+
 test('fresh unlink proof continues to identity removal with a last-method escape', async ({ page }) => {
     const api = await installSyntheticApi(page);
     const targetId = '84000000-0000-4000-8000-000000000001';
@@ -247,6 +311,40 @@ test('ambiguous provider unlink failure reconciles against the reloaded identity
     await page.goto('/auth/student/login'); await seedSession(page, 'student');
     await page.goto('/auth/student/sso/complete?reauth=9c000000-0000-4000-8000-000000000001');
     await expect(page.getByRole('heading', { name: 'Sign-in method removed' })).toBeVisible();
+    api.assertNoUnexpectedRequests();
+});
+
+test('provider unlink reconcile treats a cleared session as signed-out removal', async ({ page }) => {
+    const api = await installSyntheticApi(page);
+    const targetId = '9d000000-0000-4000-8000-000000000001';
+    await page.route(`${apiOrigin}/api/auth/student/sso/reauth/finish`, route => route.fulfill({ status: 201, headers, json: { success: true, data: { grantId: '9e000000-0000-4000-8000-000000000001', grantSecret: 'unlink-grant', expiresAt: new Date(Date.now() + 60_000).toISOString(), purpose: 'unlink', pendingCodeId: null, targetIdentityId: targetId, activeCodeGeneration: null } } }));
+    await page.route(`${apiOrigin}/api/auth/student/sso/identities/${targetId}/unlink`, route => route.fulfill({ status: 500, headers, json: { success: false, error: { message: 'boom', statusCode: 500 } } }));
+    // The revocation committed and cleared this session: the reload 401s
+    // (refresh fails too), and the interceptor does not redirect from
+    // /auth/ pages, so the page reports the signed-out removal.
+    await page.route(`${apiOrigin}/api/auth/student/sso/identities`, route => route.fulfill({ status: 401, headers, json: { success: false, error: { message: 'gone', statusCode: 401 } } }));
+    await page.route(`${apiOrigin}/api/auth/refresh`, route => route.fulfill({ status: 401, headers, json: { success: false, error: { message: 'gone', statusCode: 401 } } }));
+    await page.goto('/auth/student/login'); await seedSession(page, 'student');
+    await page.goto('/auth/student/sso/complete?reauth=9c000000-0000-4000-8000-000000000002');
+    await expect(page.getByText('You have been signed out.')).toBeVisible();
+    api.assertNoUnexpectedRequests();
+});
+
+test('ambiguous provider link failure renders a link-specific outcome', async ({ page }) => {
+    const api = await installSyntheticApi(page);
+    const handoffId = '67000000-0000-4000-8000-000000000001';
+    await page.route(`${apiOrigin}/api/auth/student/sso/reauth/finish`, route => route.fulfill({ status: 201, headers, json: { success: true, data: { grantId: '68000000-0000-4000-8000-000000000001', grantSecret: 'link-grant', expiresAt: new Date(Date.now() + 60_000).toISOString(), purpose: 'link', pendingCodeId: null, targetIdentityId: null, activeCodeGeneration: null } } }));
+    await page.route(`${apiOrigin}/api/auth/student/sso/link`, route => route.fulfill({ status: 500, headers, json: { success: false, error: { message: 'Link is temporarily unavailable', code: 'INTERNAL', statusCode: 500 } } }));
+    await page.goto('/auth/student/login'); await seedSession(page, 'student');
+    await page.evaluate(({ key, value }) => sessionStorage.setItem(key, JSON.stringify(value)), {
+        key: 'awoof.sso.handoff.v1.tab',
+        value: { handoffId, handoffSecret: 'synthetic-handoff-secret', expiresAt: new Date(Date.now() + 600_000).toISOString(), returnPath: '/marketplace' },
+    });
+    await page.goto('/auth/student/sso/complete?reauth=69000000-0000-4000-8000-000000000001');
+    // The link may have committed despite the lost response: report the
+    // ambiguous link outcome, not a recovery-code failure.
+    await expect(page.getByRole('heading', { name: 'School sign-in link unclear' })).toBeVisible();
+    await expect(page.getByText('may already be linked')).toBeVisible();
     api.assertNoUnexpectedRequests();
 });
 
@@ -610,5 +708,32 @@ test('marketplace surfaces recovery-code re-enrollment after account recovery', 
     await page.goto('/marketplace');
     await expect(page.getByText('Account recovery used your only recovery code.')).toBeVisible();
     await expect(page.getByRole('link', { name: 'Set up a new code' })).toHaveAttribute('href', '/student/security');
+    api.assertNoUnexpectedRequests();
+});
+
+test('marketplace offers recovery setup after a fresh passwordless signup', async ({ page }) => {
+    const api = await installSyntheticApi(page);
+    await page.route(`${apiOrigin}/api/auth/student/sso/recovery-code`, route => route.fulfill({ headers, json: { success: true, data: { status: 'unconfigured', generation: null, pendingCodeId: null } } }));
+    await page.goto('/auth/student/login'); await seedSession(page, 'student');
+    await page.evaluate(() => sessionStorage.setItem('awoof.passwordless-signup-fresh', '1'));
+    await page.goto('/marketplace');
+    // The offer surfaces after the requested continuation, outside the
+    // signup journey, and states the stakes before the user can skip it.
+    await expect(page.getByText('losing your school sign-in may prevent account access.')).toBeVisible();
+    await expect(page.getByRole('link', { name: 'Save your recovery code' })).toHaveAttribute('href', '/student/security');
+    await page.getByRole('button', { name: 'Skip for now' }).click();
+    await expect(page.getByText('losing your school sign-in may prevent account access.')).toHaveCount(0);
+    expect(await page.evaluate(() => sessionStorage.getItem('awoof.passwordless-signup-fresh'))).toBeNull();
+    api.assertNoUnexpectedRequests();
+});
+
+test('marketplace hides the signup recovery offer once a code exists', async ({ page }) => {
+    const api = await installSyntheticApi(page);
+    await page.route(`${apiOrigin}/api/auth/student/sso/recovery-code`, route => route.fulfill({ headers, json: { success: true, data: { status: 'active', generation: 1, pendingCodeId: null } } }));
+    await page.goto('/auth/student/login'); await seedSession(page, 'student');
+    await page.evaluate(() => sessionStorage.setItem('awoof.passwordless-signup-fresh', '1'));
+    await page.goto('/marketplace');
+    await expect(page.getByText('losing your school sign-in may prevent account access.')).toHaveCount(0);
+    expect(await page.evaluate(() => sessionStorage.getItem('awoof.passwordless-signup-fresh'))).toBeNull();
     api.assertNoUnexpectedRequests();
 });

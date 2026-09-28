@@ -161,29 +161,33 @@ export class StudentAccountRecoveryService {
                  RETURNING expires_at`,
                 [attemptId, account.id, Number(account.credential_generation), input.purpose, this.secretDigest(secret), Number(active.generation), challenge.challengeId, challenge.expiresAt],
             );
-            return { email: account.email, otp: challenge.code, expiresAt: inserted.rows[0]!.expires_at.toISOString(), serverNow: serverNow.toISOString() };
+            return { email: account.email, otp: challenge.code, challengeId: challenge.challengeId, expiresAt: inserted.rows[0]!.expires_at.toISOString(), serverNow: serverNow.toISOString() };
         });
         // Always provide an indistinguishable browser handle. A non-existent,
         // suspended, or code-less account receives a handle that cannot verify.
         // Delivery is never awaited: transport latency would otherwise mark
         // real accounts by response timing. Definitive delivery failures
-        // retire the attempt asynchronously (see deliverAndCompensate) so
+        // retire the challenge asynchronously (see deliverAndCompensate) so
         // cooldown retries cannot rebound to an OTP that was never emailed.
-        if ('email' in started && 'otp' in started) void this.deliverAndCompensate(attemptId, started.email, started.otp);
+        if ('challengeId' in started) void this.deliverAndCompensate(started.challengeId, started.email, started.otp);
         return { attemptId, secret, expiresAt: started.expiresAt, serverNow: started.serverNow };
     }
 
     /**
      * Fire-and-forget OTP delivery with post-commit compensation. A
      * rejected transport is ambiguous (the mail may still have been
-     * sent), so the attempt stays usable; but a resolved `{ success:
-     * false }` is definitive non-delivery, and the pending attempt is
-     * terminalized and its challenge superseded. Otherwise the cooldown
-     * path would rebound retries to an undelivered challenge and report
-     * success without ever sending mail. Already-verified, consumed, or
-     * failed attempts are left alone: verification proves delivery.
+     * sent), so the challenge stays usable; but a resolved `{ success:
+     * false }` is definitive non-delivery, and the challenge is
+     * superseded while whichever pending attempt currently owns it —
+     * the original or a rebound successor created while delivery was
+     * in flight — is terminalized. Keying by the attempt would miss
+     * the rebound holder and leave it usable against an OTP that was
+     * never emailed. A consumed challenge is left alone: consumption
+     * proves the OTP reached its mailbox. Attempts lock before the
+     * challenge, matching verify, so compensation cannot deadlock a
+     * concurrent proof.
      */
-    private async deliverAndCompensate(attemptId: string, email: string, otp: string): Promise<void> {
+    private async deliverAndCompensate(challengeId: string, email: string, otp: string): Promise<void> {
         const deliver = this.deps.deliverOtp;
         if (!deliver) return;
         let result: { success: boolean };
@@ -195,21 +199,25 @@ export class StudentAccountRecoveryService {
         if (result.success) return;
         try {
             await this.transaction(async (tx) => {
-                const attempt = await tx.query<{ mailbox_challenge_id: string }>(
-                    `SELECT mailbox_challenge_id FROM student_auth_recovery_attempts
-                     WHERE id = $1 AND status = 'pending' FOR UPDATE`,
-                    [attemptId],
-                );
-                const row = attempt.rows[0];
-                if (!row) return;
                 await tx.query(
-                    `UPDATE student_auth_recovery_attempts SET status = 'failed', secret_hash = NULL WHERE id = $1`,
-                    [attemptId],
+                    `SELECT id FROM student_auth_recovery_attempts
+                     WHERE mailbox_challenge_id = $1 AND status = 'pending' FOR UPDATE`,
+                    [challengeId],
+                );
+                const challenge = await tx.query<{ id: string }>(
+                    `SELECT id FROM verification_challenges WHERE id = $1 AND consumed_at IS NULL FOR UPDATE`,
+                    [challengeId],
+                );
+                if (!challenge.rows[0]) return;
+                await tx.query(
+                    `UPDATE student_auth_recovery_attempts SET status = 'failed', secret_hash = NULL
+                     WHERE mailbox_challenge_id = $1 AND status = 'pending'`,
+                    [challengeId],
                 );
                 await tx.query(
                     `UPDATE verification_challenges SET superseded_at = clock_timestamp()
-                     WHERE id = $1 AND consumed_at IS NULL AND superseded_at IS NULL`,
-                    [row.mailbox_challenge_id],
+                     WHERE id = $1 AND superseded_at IS NULL`,
+                    [challengeId],
                 );
             });
         } catch {

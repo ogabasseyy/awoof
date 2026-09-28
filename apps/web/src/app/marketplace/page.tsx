@@ -5,7 +5,7 @@
 
 'use client';
 
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import {
     Search,
     Plane,
@@ -18,7 +18,7 @@ import {
 } from 'lucide-react';
 import { Input } from '@/components/ui/input';
 import { Button } from '@/components/ui/button';
-import apiClient, { getImageUrl } from '@/lib/api-client';
+import apiClient, { getImageUrl, studentSsoSessionApiClient } from '@/lib/api-client';
 import Image from 'next/image';
 import Link from 'next/link';
 import { useAuth } from '@/contexts/AuthContext';
@@ -87,6 +87,26 @@ export default function MarketplacePage() {
     const firstName = getFirstName(user as { email?: string; profile?: { name?: string } } | null);
     const [eligibility, setEligibility] = useState<{ userId: string; eligible: boolean } | null>(null);
     const isVerified = user?.role === 'student' && eligibility?.userId === user.id && eligibility.eligible;
+    // Post-signup recovery offer (signup spec): a fresh passwordless
+    // account has neither a password nor a recovery code, and the user
+    // must see that recovery is not configured. The onboarding page
+    // marks this tab; the offer surfaces here — after the requested
+    // continuation, outside the signup journey — only while recovery
+    // is actually unconfigured. Skipping or completing setup clears it.
+    const [freshSignupOffer, setFreshSignupOffer] = useState(false);
+    const freshSignupChecked = useRef(false);
+    useEffect(() => {
+        if (user?.role !== 'student' || freshSignupChecked.current) return;
+        freshSignupChecked.current = true;
+        let fresh = false;
+        try { fresh = sessionStorage.getItem('awoof.passwordless-signup-fresh') === '1'; } catch { return; }
+        if (!fresh) return;
+        studentSsoSessionApiClient.get('/auth/student/sso/recovery-code').then((response) => {
+            const status = (response.data as { data?: { status?: unknown } }).data?.status;
+            if (status === 'unconfigured') { setFreshSignupOffer(true); return; }
+            try { sessionStorage.removeItem('awoof.passwordless-signup-fresh'); } catch { /* kept for a later visit */ }
+        }).catch(() => { /* status unavailable: keep the marker for a later visit */ });
+    }, [user]);
 
     useEffect(() => {
         if (user?.role !== 'student') return;
@@ -243,6 +263,14 @@ export default function MarketplacePage() {
                 <div className="bg-amber-50 text-amber-900 px-4 py-2.5 flex items-center justify-center gap-2 text-xs sm:text-sm font-medium border-b border-amber-200">
                     <span role="status">Account recovery used your only recovery code. Save a replacement so you keep independent recovery.</span>
                     <Link href="/student/security" className="underline font-semibold shrink-0">Set up a new code</Link>
+                </div>
+            ) : null}
+
+            {user?.role === 'student' && freshSignupOffer ? (
+                <div className="bg-amber-50 text-amber-900 px-4 py-2.5 flex items-center justify-center gap-2 text-xs sm:text-sm font-medium border-b border-amber-200">
+                    <span role="status">Save your recovery code — recovery is not configured, and losing your school sign-in may prevent account access.</span>
+                    <Link href="/student/security" className="underline font-semibold shrink-0">Save your recovery code</Link>
+                    <button type="button" onClick={() => { try { sessionStorage.removeItem('awoof.passwordless-signup-fresh'); } catch { /* hidden for this visit */ } setFreshSignupOffer(false); }} className="underline shrink-0">Skip for now</button>
                 </div>
             ) : null}
 
