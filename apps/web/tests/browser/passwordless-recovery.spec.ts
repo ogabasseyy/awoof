@@ -236,6 +236,20 @@ test('fresh unlink proof surfaces the last-method guard instead of failing', asy
     api.assertNoUnexpectedRequests();
 });
 
+test('ambiguous provider unlink failure reconciles against the reloaded identity list', async ({ page }) => {
+    const api = await installSyntheticApi(page);
+    const targetId = '9a000000-0000-4000-8000-000000000001';
+    await page.route(`${apiOrigin}/api/auth/student/sso/reauth/finish`, route => route.fulfill({ status: 201, headers, json: { success: true, data: { grantId: '9b000000-0000-4000-8000-000000000001', grantSecret: 'unlink-grant', expiresAt: new Date(Date.now() + 60_000).toISOString(), purpose: 'unlink', pendingCodeId: null, targetIdentityId: targetId, activeCodeGeneration: null } } }));
+    // The revocation commits but its response is lost: the reconcile
+    // reload finds the target gone and renders success, not failure.
+    await page.route(`${apiOrigin}/api/auth/student/sso/identities/${targetId}/unlink`, route => route.fulfill({ status: 500, headers, json: { success: false, error: { message: 'boom', statusCode: 500 } } }));
+    await page.route(`${apiOrigin}/api/auth/student/sso/identities`, route => route.fulfill({ headers, json: { success: true, data: { identities: [] } } }));
+    await page.goto('/auth/student/login'); await seedSession(page, 'student');
+    await page.goto('/auth/student/sso/complete?reauth=9c000000-0000-4000-8000-000000000001');
+    await expect(page.getByRole('heading', { name: 'Sign-in method removed' })).toBeVisible();
+    api.assertNoUnexpectedRequests();
+});
+
 test('ambiguous fresh-proof link failure retains the handoff for retry', async ({ page }) => {
     const api = await installSyntheticApi(page);
     const handoffId = '61000000-0000-4000-8000-000000000001';

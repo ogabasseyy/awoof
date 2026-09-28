@@ -1400,6 +1400,8 @@ test('proof authority ends when only the identity mailbox domain is withdrawn', 
         await client.query('UPDATE institution_login_domains SET is_active = false WHERE domain = $1 AND university_id = $2', [spare, universityId]);
         const spareGone = await grant(client, { userId, purpose: 'recovery_code_generate', proofIdentityId });
         await live.generate({ userId, sid: SID, grantId: spareGone.grantId, secret: spareGone.grantSecret });
+        const advertised = await live.status({ userId });
+        assert.equal(advertised.status, 'pending', 'the provider-proven pending advertises while its proof is live');
         // Withdrawing the identity's own mailbox domain ends its proof
         // authority even though the policy still serves the spare domain:
         // a normal login for the stored mailbox would fail the same check.
@@ -1410,6 +1412,10 @@ test('proof authority ends when only the identity mailbox domain is withdrawn', 
             () => live.generate({ userId, sid: SID, grantId: dead.grantId, secret: dead.grantSecret }),
             conflict,
         );
+        // Status mirrors the gate: the stale pending hides instead of
+        // advertising an activation that can only be rejected.
+        const hidden = await live.status({ userId });
+        assert.equal(hidden.status, 'unconfigured');
         // ...and no fresh proof may start for it either.
         const reauth = new StudentReauthService({
             pool,

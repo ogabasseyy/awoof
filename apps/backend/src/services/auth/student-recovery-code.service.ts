@@ -252,6 +252,7 @@ export class StudentRecoveryCodeService {
                                     AND mapping.university_id = policy.university_id AND mapping.provider = policy.provider
                                 JOIN institution_login_domains domain ON domain.domain = mapping.domain
                                     AND domain.university_id = mapping.university_id AND domain.is_active
+                                    AND domain.domain = split_part(lower(btrim(identity.observed_email)), '@', 2)
                                 WHERE identity.id = code.pending_proof_identity_id
                                   AND identity.user_id = code.user_id
                                   AND identity.revoked_at IS NULL

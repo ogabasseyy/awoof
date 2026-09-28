@@ -158,6 +158,22 @@ function RecoveryReauthComplete({ attemptId }: { attemptId: string }) {
             const body = bodyOf(cause) as { error?: { code?: unknown } } | undefined;
             if (statusOf(cause) === 409 && body?.error?.code === 'SSO_LAST_LOGIN_METHOD') { setStatus('last_method'); return; }
             if (statusOf(cause) === 409 && body?.error?.code === 'SSO_LAST_PROOF_METHOD') { setStatus('last_proof_method'); return; }
+            // Ambiguous transport failures (network loss, 5xx) may have
+            // committed: the grant is then consumed and retrying cannot
+            // confirm the outcome. Reload before reporting failure — a
+            // missing target means the removal landed, and the 200 proves
+            // the session survived (a server-cleared session 401s through
+            // the session client's global expired-session handling instead).
+            const failed = statusOf(cause);
+            if (failed === undefined || failed >= 500) {
+                try {
+                    const current = await studentSsoSessionApiClient.get('/auth/student/sso/identities');
+                    const listed = (current.data as { data?: { identities?: unknown } }).data?.identities;
+                    if (Array.isArray(listed) && !listed.some((entry) => (entry as { id?: unknown } | null)?.id === grant.targetIdentityId)) {
+                        setStatus('unlinked'); return;
+                    }
+                } catch { /* fall through to failure below */ }
+            }
             setStatus('failed');
         }
     };

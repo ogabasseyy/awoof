@@ -1112,6 +1112,7 @@ export default createStudentSsoRouter();
  *       401: { description: Authentication failed or session unavailable }
  *       409: { description: Attempt expired, consumed, replayed, or no longer valid }
  *       429: { description: Too many reauthentication requests }
+ *       503: { description: Fresh Microsoft authentication is unavailable }
  * /api/auth/student/sso/link:
  *   post:
  *     summary: Link an unlinked provider handoff to the proven owner

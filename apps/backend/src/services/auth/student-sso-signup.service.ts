@@ -127,8 +127,42 @@ export class StudentSsoSignupService {
             await tx.query('UPDATE student_auth_signup_challenges SET mailbox_challenge_id = $2 WHERE id = $1', [state.signup.id, issued.challengeId]); return { email: state.email, code: issued.code, challengeId: issued.challengeId, expiresAt: issued.expiresAt };
         });
         if (sent.email === null || sent.code === null) return { challengeId: sent.challengeId, expiresAt: sent.expiresAt.toISOString() };
-        try { const result = await this.deps.deliverOtp(sent.email, sent.code, '', sent.expiresAt); if (!result.success) throw new Error('rejected'); } catch { throw new ServiceUnavailableError('We could not deliver a signup code. Please wait before trying again.'); }
+        try {
+            const result = await this.deps.deliverOtp(sent.email, sent.code, '', sent.expiresAt);
+            if (!result.success) throw new Error('rejected');
+        } catch {
+            // The challenge committed before delivery failed. Supersede it
+            // so the pending resume cannot replay an OTP that was never
+            // emailed as success; the retry then waits out the cooldown and
+            // issues a fresh challenge. Consumed challenges are left alone:
+            // consumption proves the OTP reached its mailbox.
+            await this.supersedeUndeliveredChallenge(sent.challengeId);
+            throw new ServiceUnavailableError('We could not deliver a signup code. Please wait before trying again.');
+        }
         return { challengeId: sent.challengeId, expiresAt: sent.expiresAt.toISOString() };
+    }
+    /**
+     * Post-commit compensation for a failed OTP delivery: the signup row
+     * already binds the challenge, so supersede it outside the committed
+     * transaction. A consumed challenge is never superseded here —
+     * consumption proves the OTP reached its mailbox. Best-effort: on a
+     * database failure the 503 below is still the correct outcome, and a
+     * replayed challenge can only fail closed at verification.
+     */
+    private async supersedeUndeliveredChallenge(challengeId: string): Promise<void> {
+        let cleanup: PoolClient | null = null;
+        try {
+            cleanup = await this.deps.pool.connect();
+            await cleanup.query(
+                `UPDATE verification_challenges SET superseded_at = clock_timestamp()
+                 WHERE id = $1 AND consumed_at IS NULL AND superseded_at IS NULL`,
+                [challengeId],
+            );
+        } catch {
+            // Best-effort compensation; the delivery 503 stands either way.
+        } finally {
+            cleanup?.release();
+        }
     }
     async verifyCode(input: { handoffId: unknown; handoffSecret: unknown; browserBinding: unknown; challengeId: unknown; code: unknown }): Promise<{ verified: true; expiresAt: string }> {
         if (!UUID.test(String(input.challengeId)) || typeof input.code !== 'string' || !/^\d{6}$/.test(input.code)) throw new BadRequestError('Signup OTP must be six digits');

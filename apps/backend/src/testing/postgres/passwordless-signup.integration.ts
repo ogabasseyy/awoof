@@ -247,6 +247,38 @@ test('signup send budgets survive rejected transactions and cap delivery at thre
     });
 });
 
+test('failed signup delivery supersedes the bound challenge instead of resuming it', async () => {
+    await withPool(async pool => {
+        const key = randomBytes(32).toString('base64url'); let code = ''; let sends = 0;
+        const service = new StudentSsoSignupService({
+            pool, attemptKey: key, isEnabled: () => true, isProviderEnabled: () => true,
+            deliverOtp: async (_email, value) => { sends++; if (sends === 1) return { success: false }; code = value; return { success: true }; },
+        });
+        const c = await pool.connect(); let state; try { state = await seed(c, key); } finally { c.release(); }
+        await assert.rejects(service.sendCode({ handoffId: state.handoffId, handoffSecret: state.handoffSecret, browserBinding: state.browser }), /could not deliver/);
+        // The bound challenge was never emailed: the cooldown retry must
+        // refuse instead of resuming it as success with an unusable OTP.
+        await assert.rejects(service.sendCode({ handoffId: state.handoffId, handoffSecret: state.handoffSecret, browserBinding: state.browser }), /wait before/i);
+        await pool.query(`UPDATE verification_challenge_budgets SET resend_available_at = clock_timestamp() - interval '1 second'`);
+        const retry = await service.sendCode({ handoffId: state.handoffId, handoffSecret: state.handoffSecret, browserBinding: state.browser });
+        assert.equal(sends, 2);
+        const bound = await pool.query<{ id: string; superseded_at: Date | null }>(
+            `SELECT c.id, c.superseded_at FROM verification_challenges c
+             JOIN student_auth_signup_challenges s ON s.mailbox_challenge_id = c.id
+             WHERE s.handoff_id = $1`, [state.handoffId],
+        );
+        assert.equal(bound.rows[0]!.id, retry.challengeId);
+        assert.equal(bound.rows[0]!.superseded_at, null);
+        const dead = await pool.query<{ count: string }>(
+            `SELECT count(*)::text AS count FROM verification_challenges
+             WHERE purpose = 'student_sso_signup' AND subject_digest = $1 AND superseded_at IS NOT NULL`,
+            [challengeSubjectDigest('student_sso_signup', state.email)],
+        );
+        assert.equal(dead.rows[0]!.count, '1', 'the undelivered challenge is superseded exactly once');
+        await service.verifyCode({ handoffId: state.handoffId, handoffSecret: state.handoffSecret, browserBinding: state.browser, challengeId: retry.challengeId, code });
+    });
+});
+
 test('signup resumes a pending send after response loss and expiry after verified OTP creates no account', async () => {
     await withPool(async pool => {
         const key = randomBytes(32).toString('base64url'); let code = ''; let sends = 0;

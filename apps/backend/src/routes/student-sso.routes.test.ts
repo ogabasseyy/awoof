@@ -1108,6 +1108,9 @@ test('OpenAPI documents disabled passwordless signup and recovery contracts with
     assert.deepEqual(reauthBody.content['application/json'].schema.properties.password, {
         type: 'string', minLength: 1, maxLength: 1024,
     });
+    // Finish reaches the same deployment-gated factory as start, so its
+    // controlled 503 belongs in the contract too.
+    assert.ok(paths['/api/auth/student/sso/reauth/finish']?.post?.responses?.['503'], 'reauth finish documents the deployment-gated outage');
     // The availability component exists so generated clients can model
     // the boolean the web client depends on; the 200 must reference it.
     const availability = paths['/api/auth/student/sso/signup/availability']?.get?.responses?.['200'] as {
