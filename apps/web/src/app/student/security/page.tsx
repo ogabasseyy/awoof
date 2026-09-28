@@ -293,7 +293,22 @@ export default function StudentSecurityPage() {
                         setUnlinkTarget(null); setUnlinkPassword('');
                         return;
                     }
-                } catch { /* fall through to the failure mapping below */ }
+                } catch (inner: unknown) {
+                    // A 401 here is the committed outcome with the session
+                    // revoked by the removed identity: the proof token was
+                    // pre-refreshed seconds ago, so an independently
+                    // expired session is not the explanation. Override the
+                    // interceptor's queued generic redirect with the
+                    // signed-out removal notice, mirroring the completion
+                    // page — the last location write wins.
+                    if (axios.isAxiosError(inner) && inner.response?.status === 401) {
+                        clearTokens();
+                        // eslint-disable-next-line @next/next/no-location-assign-relative-destination
+                        window.location.assign('/auth/student/login?error=unlinked_signed_out');
+                        return;
+                    }
+                    /* other reload failures fall through below */
+                }
             }
             const code = (failed?.data as { error?: { code?: unknown } } | undefined)?.error?.code;
             setUnlinkError(failed?.status === 409 && code === 'SSO_LAST_LOGIN_METHOD' ? 'This is the last sign-in method. Link another school sign-in first.' : failed?.status === 409 && code === 'SSO_LAST_PROOF_METHOD' ? 'This Microsoft sign-in is needed for security confirmations. Link another Microsoft sign-in first.' : failed?.status === 401 ? 'Current password is incorrect.' : failed?.status === 403 ? 'This account has no password. Use school sign-in instead.' : 'Removal failed. Try again.');

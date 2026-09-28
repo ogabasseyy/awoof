@@ -24,6 +24,7 @@ import { isEmailConfigured, sendEmail, sendEmailVerificationOTP } from '../servi
 import { StudentReauthService, reauthAttemptIdFromState, studentReauthCookieName } from '../services/auth/student-reauth.service.js';
 import { StudentRecoveryCodeService } from '../services/auth/student-recovery-code.service.js';
 import { StudentAccountRecoveryService } from '../services/auth/student-account-recovery.service.js';
+import { passwordService } from '../services/auth/password.service.js';
 import type { LoginProvider } from '../services/auth/student-sso.types.js';
 import { hashMicrosoftAttemptSecret } from '../services/verification/microsoft-attempt-crypto.js';
 
@@ -486,17 +487,29 @@ export function createStudentSsoRouter(factory: FlowFactory = defaultFlow, optio
     }));
     router.post('/account-recovery/verify', accountRecoveryVerifyLimiter, exactJson, asyncHandler(async (req, res) => {
         const body = req.body as { attemptId?: unknown; secret?: unknown; code?: unknown; otp?: unknown };
-        // Exact required key set: a four-key body missing a required field
-        // must 400 here, not reach the service with undefined and return
-        // the 409 the strict OpenAPI schema does not document for it.
+        // Exact required key set plus per-field values: a four-key body
+        // missing a required field — or carrying a mistyped one — must
+        // 400 here, not reach the service and return the 409 the strict
+        // OpenAPI schema does not document for malformed input.
         const verifyKeys = body && typeof body === 'object' && !Array.isArray(body) ? Object.keys(body).sort() : null;
-        if (verifyKeys === null || verifyKeys.length !== 4 || verifyKeys[0] !== 'attemptId' || verifyKeys[1] !== 'code' || verifyKeys[2] !== 'otp' || verifyKeys[3] !== 'secret') throw new BadRequestError('Account recovery request is invalid');
+        if (verifyKeys === null || verifyKeys.length !== 4 || verifyKeys[0] !== 'attemptId' || verifyKeys[1] !== 'code' || verifyKeys[2] !== 'otp' || verifyKeys[3] !== 'secret'
+            || typeof body.attemptId !== 'string' || !UUID.test(body.attemptId)
+            || typeof body.secret !== 'string' || body.secret.length === 0 || body.secret.length > 1024
+            || typeof body.code !== 'string' || body.code.length === 0 || body.code.length > 1024
+            || typeof body.otp !== 'string' || !/^\d{6}$/.test(body.otp)) throw new BadRequestError('Account recovery request is invalid');
         await accountRecoveryFactory().verify({ attemptId: body.attemptId, secret: body.secret, code: body.code, otp: body.otp }); responseHeaders(res); res.status(204).end();
     }));
     router.post('/account-recovery/complete', accountRecoveryCompleteLimiter, exactJson, asyncHandler(async (req, res) => {
         const body = req.body as { attemptId?: unknown; secret?: unknown; password?: unknown };
         const completeKeys = body && typeof body === 'object' && !Array.isArray(body) ? Object.keys(body).sort() : null;
-        if (completeKeys === null || completeKeys.length !== 3 || completeKeys[0] !== 'attemptId' || completeKeys[1] !== 'password' || completeKeys[2] !== 'secret') throw new BadRequestError('Account recovery request is invalid');
+        if (completeKeys === null || completeKeys.length !== 3 || completeKeys[0] !== 'attemptId' || completeKeys[1] !== 'password' || completeKeys[2] !== 'secret'
+            || typeof body.attemptId !== 'string' || !UUID.test(body.attemptId)
+            || typeof body.secret !== 'string' || body.secret.length === 0 || body.secret.length > 1024
+            || typeof body.password !== 'string' || body.password.length === 0 || body.password.length > 1024) throw new BadRequestError('Account recovery request is invalid');
+        // Complexity is a malformed request, not a proof conflict: 400
+        // with the specific failures, mirroring registration and reset.
+        const passwordValidation = passwordService.validatePassword(body.password);
+        if (!passwordValidation.valid) throw new BadRequestError(passwordValidation.errors.join(', '));
         await accountRecoveryFactory().complete({ attemptId: body.attemptId, secret: body.secret, password: body.password }); responseHeaders(res); res.status(204).end();
     }));
 

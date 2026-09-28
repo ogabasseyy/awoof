@@ -714,8 +714,67 @@ test('account recovery continuations stay available when the mailer is unconfigu
             body: JSON.stringify({ email: 'student@example.invalid', purpose: 'lost_access' }),
         });
         assert.equal(started.status, 503);
+        assert.deepEqual(calls, []);
         // Verify and complete never deliver, so a replica that loses
         // mailer configuration mid-flow must not strand a delivered OTP.
+        const verified = await fetch(`${baseUrl}/account-recovery/verify`, {
+            method: 'POST', headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ attemptId: ATTEMPT_ID, secret: 'recovery-secret', code: 'saved-code', otp: '123456' }),
+        });
+        assert.equal(verified.status, 204);
+        const completed = await fetch(`${baseUrl}/account-recovery/complete`, {
+            method: 'POST', headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ attemptId: ATTEMPT_ID, secret: 'recovery-secret', password: 'ValidNew1!' }),
+        });
+        assert.equal(completed.status, 204);
+    });
+    assert.deepEqual(calls, ['verify', 'complete']);
+});
+
+test('account recovery verify and complete reject malformed values at the route boundary', async () => {
+    const calls: string[] = [];
+    const recovery = {
+        start: async () => { calls.push('start'); return { attemptId: ATTEMPT_ID, secret: 'recovery-secret', expiresAt: '2026-09-26T12:00:00.000Z' }; },
+        verify: async () => { calls.push('verify'); },
+        complete: async () => { calls.push('complete'); },
+    };
+    await withServer(routerWith(stubFlow(), { accountRecoveryService: () => recovery as never }), async (baseUrl) => {
+        // Mistyped values with the exact key set must 400 here, not reach
+        // the service and return the undocumented 409.
+        for (const body of [
+            { attemptId: 1, secret: {}, code: [], otp: 123456 },
+            { attemptId: 'not-a-uuid', secret: 'recovery-secret', code: 'saved-code', otp: '123456' },
+            { attemptId: ATTEMPT_ID, secret: '', code: 'saved-code', otp: '123456' },
+            { attemptId: ATTEMPT_ID, secret: 'x'.repeat(1025), code: 'saved-code', otp: '123456' },
+            { attemptId: ATTEMPT_ID, secret: 'recovery-secret', code: '', otp: '123456' },
+            { attemptId: ATTEMPT_ID, secret: 'recovery-secret', code: 'saved-code', otp: '12345' },
+            { attemptId: ATTEMPT_ID, secret: 'recovery-secret', code: 'saved-code', otp: '1234567' },
+            { attemptId: ATTEMPT_ID, secret: 'recovery-secret', code: 'saved-code', otp: 'abcdef' },
+        ]) {
+            const response = await fetch(`${baseUrl}/account-recovery/verify`, {
+                method: 'POST', headers: { 'content-type': 'application/json' },
+                body: JSON.stringify(body),
+            });
+            assert.equal(response.status, 400, JSON.stringify(body));
+        }
+        for (const body of [
+            { attemptId: 1, secret: {}, password: [] },
+            { attemptId: 'not-a-uuid', secret: 'recovery-secret', password: 'ValidNew1!' },
+            { attemptId: ATTEMPT_ID, secret: '', password: 'ValidNew1!' },
+            { attemptId: ATTEMPT_ID, secret: 'recovery-secret', password: '' },
+            { attemptId: ATTEMPT_ID, secret: 'recovery-secret', password: 'x'.repeat(1025) },
+            // Complexity failures are malformed requests with specific
+            // feedback, not proof conflicts.
+            { attemptId: ATTEMPT_ID, secret: 'recovery-secret', password: 'weak' },
+            { attemptId: ATTEMPT_ID, secret: 'recovery-secret', password: 'alllowercase1!' },
+        ]) {
+            const response = await fetch(`${baseUrl}/account-recovery/complete`, {
+                method: 'POST', headers: { 'content-type': 'application/json' },
+                body: JSON.stringify(body),
+            });
+            assert.equal(response.status, 400, JSON.stringify(body));
+        }
+        // Well-formed continuations still reach the service.
         const verified = await fetch(`${baseUrl}/account-recovery/verify`, {
             method: 'POST', headers: { 'content-type': 'application/json' },
             body: JSON.stringify({ attemptId: ATTEMPT_ID, secret: 'recovery-secret', code: 'saved-code', otp: '123456' }),

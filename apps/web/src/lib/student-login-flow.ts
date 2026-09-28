@@ -458,7 +458,7 @@ export function clearSsoHandoff(storage: Storage | null | undefined): void {
     clearRecord(storage, SSO_HANDOFF_KEY);
 }
 
-export const LOGIN_ERROR_CODES = ['session_expired', 'sso_not_completed', 'sso_expired', 'sso_unavailable'] as const;
+export const LOGIN_ERROR_CODES = ['session_expired', 'sso_not_completed', 'sso_expired', 'sso_unavailable', 'unlinked_signed_out'] as const;
 
 export type LoginErrorCode = (typeof LOGIN_ERROR_CODES)[number];
 
@@ -483,6 +483,8 @@ export function loginErrorMessage(code: LoginErrorCode): string {
             return 'Your school sign-in attempt expired. Start again, or use your password.';
         case 'sso_unavailable':
             return 'School sign-in is temporarily unavailable. Use your password; your account is unchanged.';
+        case 'unlinked_signed_out':
+            return 'The removed sign-in had issued this session, so you were signed out. That school sign-in can no longer access this account.';
     }
 }
 
