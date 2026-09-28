@@ -182,6 +182,16 @@ test('grant schema encodes the enforced secret ceiling', () => {
     assert.equal(secret.maxLength, 1024);
 });
 
+test('user schema publishes the recovery re-enrollment marker', () => {
+    type JsonSchema = { type?: string; description?: string };
+    const spec = swaggerSpec as { components: { schemas: Record<string, { properties: Record<string, JsonSchema>; required?: string[] }> } };
+    // Login and /auth/me surface recoveryReenrollmentRequired until a
+    // replacement code activates; generated clients must discover it.
+    const marker = spec.components.schemas.User.properties.recoveryReenrollmentRequired;
+    assert.equal(marker.type, 'boolean');
+    assert.ok(!(spec.components.schemas.User.required ?? []).includes('recoveryReenrollmentRequired'), 'absent unless re-enrollment is outstanding');
+});
+
 test('recovery password schema encodes the enforced complexity rules', () => {
     type JsonSchema = { type?: string; minLength?: number; maxLength?: number; pattern?: string; description?: string };
     const spec = swaggerSpec as { components: { schemas: Record<string, { properties: Record<string, JsonSchema> }> } };

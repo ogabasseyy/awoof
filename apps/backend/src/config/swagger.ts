@@ -175,6 +175,11 @@ Access tokens expire in 15 minutes. Use the refresh token endpoint to get a new 
                             nullable: true,
                             description: 'Present for student accounts only. Null means the status read is temporarily unavailable; retry without assuming a positive state.',
                         },
+                        recoveryReenrollmentRequired: {
+                            type: 'boolean',
+                            example: true,
+                            description: 'Present and true for student accounts only while account recovery consumed the only active recovery code and no replacement has activated. Absent otherwise.',
+                        },
                     },
                 },
                 StudentAssurance: {

@@ -255,8 +255,42 @@ test('a session switch while passwordless completion is in flight cannot replace
     await page.evaluate(({ key, handoffId, expiry }) => sessionStorage.setItem(key, JSON.stringify({ handoffId, handoffSecret: 'handoff-secret', expiresAt: expiry, returnPath: '/marketplace' })), { key: HANDOFF_KEY, handoffId: HANDOFF_ID, expiry: expiresAt() });
     await page.goto('/auth/student/sso/onboarding?mode=signup'); await page.getByRole('button', { name: 'Send confirmation code' }).click(); await page.getByLabel('Email confirmation code').fill('123456'); await page.getByRole('button', { name: 'Confirm email' }).click(); await page.getByLabel('Full name').fill('Synthetic Student'); await page.getByLabel('I am at least 18 years old').check(); await page.getByLabel('I accept the current Terms').check(); await page.getByLabel('I consent to the processing notice').check(); await page.getByRole('button', { name: 'Create passwordless account' }).click();
     await begun; await replaceSession(page, 'vendor'); release();
-    await expect(page.getByText('We could not finish setup.')).toBeVisible();
+    // The 201 committed the account, so the newer session is preserved
+    // and the created outcome shows instead of a retryable form; the
+    // spent handoff is cleared.
+    await expect(page.getByText('Setup may have finished but the confirmation was lost.')).toBeVisible();
     expect(await page.evaluate(() => localStorage.getItem('awoof.session.v1'))).toContain('vendor-access');
     expect(await page.evaluate(() => localStorage.getItem('awoof.session.v1'))).not.toContain('old-access');
+    expect(await page.evaluate((key) => sessionStorage.getItem(key), HANDOFF_KEY)).toBeNull();
+    api.assertNoUnexpectedRequests();
+});
+
+test('unavailable token storage after account creation reports the created outcome', async ({ page }) => {
+    const api = await installSyntheticApi(page);
+    await page.route(`${apiOrigin}/api/auth/student/sso/signup/**`, async (route) => {
+        const path = new URL(route.request().url()).pathname;
+        if (path.endsWith('/context')) return route.fulfill({ json: { success: true, data: { email: 'student@school.example', universityId: '72000000-0000-4000-8000-000000000001', termsVersion: '2026-01', noticeVersion: '2026-01', noticeText: 'Synthetic verification processing notice.', expiresAt: expiresAt() } }, headers });
+        if (path.endsWith('/send-code')) return route.fulfill({ status: 201, json: { success: true, data: { challengeId: '73000000-0000-4000-8000-000000000001', expiresAt: expiresAt() } }, headers });
+        if (path.endsWith('/verify-code')) return route.fulfill({ json: { success: true, data: { verified: true, expiresAt: expiresAt() } }, headers });
+        return route.fulfill({ status: 201, json: { success: true, data: { user: { id: 'u1', email: 'student@school.example', role: 'student' }, tokens: { accessToken: 'new-access', refreshToken: 'new-refresh' } } }, headers });
+    });
+    await page.goto('/auth/student/login');
+    await page.evaluate(({ key, handoffId }) => sessionStorage.setItem(key, JSON.stringify({ handoffId, handoffSecret: 'handoff-secret', expiresAt: new Date(Date.now() + 600_000).toISOString(), returnPath: '/marketplace' })), { key: HANDOFF_KEY, handoffId: HANDOFF_ID });
+    await page.goto('/auth/student/sso/onboarding?mode=signup');
+    await page.getByRole('button', { name: 'Send confirmation code' }).click();
+    await page.getByLabel('Email confirmation code').fill('123456');
+    await page.getByRole('button', { name: 'Confirm email' }).click();
+    await page.getByLabel('Full name').fill('Synthetic Student');
+    await page.getByLabel('I am at least 18 years old').check();
+    await page.getByLabel('I accept the current Terms').check();
+    await page.getByLabel('I consent to the processing notice').check();
+    // Storage breaks after the form is ready: the 201 still commits the
+    // account, so the page must report creation (not non-acceptance),
+    // clear the spent handoff, and offer Microsoft sign-in.
+    await page.evaluate(() => { Storage.prototype.setItem = () => { throw new Error('storage denied'); }; });
+    await page.getByRole('button', { name: 'Create passwordless account' }).click();
+    await expect(page.getByText('Setup may have finished but the confirmation was lost.')).toBeVisible();
+    await expect(page.getByRole('link', { name: 'Sign in with Microsoft' })).toBeVisible();
+    expect(await page.evaluate((key) => sessionStorage.getItem(key), HANDOFF_KEY)).toBeNull();
     api.assertNoUnexpectedRequests();
 });

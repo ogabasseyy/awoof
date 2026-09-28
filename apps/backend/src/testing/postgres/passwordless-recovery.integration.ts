@@ -161,6 +161,72 @@ test('unknown-mailbox recovery handles expire exactly like committed ones', asyn
     }
 });
 
+test('a lost start response retries onto a rebound handle without a second OTP', async () => {
+    const pool = createTestPool();
+    const client = await pool.connect();
+    try {
+        const account = await seedRecoverableStudent(client);
+        const deliveries: string[] = [];
+        const service = new StudentAccountRecoveryService({
+            pool, recoveryCodeKey: 'test-recovery-code-key',
+            deliverOtp: async (_email, delivered) => { deliveries.push(delivered); return { success: true }; },
+            validatePassword: () => ({ valid: true, errors: [] }), hashPassword: async () => 'rebound-password-hash',
+        });
+        const first = await service.start({ email: account.email, purpose: 'lost_access' });
+        // The 202 never arrived, so the browser retries immediately: the
+        // cooldown path rebounds onto the live attempt instead of
+        // stranding the delivered OTP behind a decoy.
+        const second = await service.start({ email: account.email, purpose: 'lost_access' });
+        assert.notEqual(second.attemptId, first.attemptId);
+        assert.equal(deliveries.length, 1, 'the original OTP is reused, never re-sent');
+        await service.verify({ attemptId: second.attemptId, secret: second.secret, code: account.code, otp: deliveries[0]! });
+        const rows = await client.query<{ id: string; status: string }>(
+            'SELECT id, status FROM student_auth_recovery_attempts WHERE user_id = $1 ORDER BY created_at', [account.userId],
+        );
+        assert.deepEqual(rows.rows.map((row) => row.status), ['failed', 'verified']);
+        await service.complete({ attemptId: second.attemptId, secret: second.secret, password: 'ValidNew1!' });
+    } finally {
+        client.release();
+        await pool.end();
+    }
+});
+
+test('cooldown retries without a live attempt keep returning decoys that persist nothing', async () => {
+    const pool = createTestPool();
+    const client = await pool.connect();
+    try {
+        const account = await seedRecoverableStudent(client);
+        const service = new StudentAccountRecoveryService({
+            pool, recoveryCodeKey: 'test-recovery-code-key',
+            deliverOtp: async () => ({ success: true }),
+        });
+        const before = await client.query<{ budgets: string; challenges: string }>(
+            'SELECT (SELECT count(*)::text FROM verification_challenge_budgets) AS budgets, (SELECT count(*)::text FROM verification_challenges) AS challenges',
+        );
+        // Unknown addresses run the decoy database shapes without
+        // persisting budget or challenge rows for the unknown subject.
+        const decoy = await service.start({ email: `unknown-${randomUUID().slice(0, 8)}@example.invalid`, purpose: 'lost_access' });
+        await assert.rejects(() => service.verify({ attemptId: decoy.attemptId, secret: decoy.secret, code: 'code', otp: '123456' }));
+        const after = await client.query<{ budgets: string; challenges: string }>(
+            'SELECT (SELECT count(*)::text FROM verification_challenge_budgets) AS budgets, (SELECT count(*)::text FROM verification_challenges) AS challenges',
+        );
+        assert.deepEqual(after.rows[0], before.rows[0]);
+        // A failed attempt is not resumable: the cooldown retry finds no
+        // live attempt and returns a decoy.
+        const first = await service.start({ email: account.email, purpose: 'lost_access' });
+        await client.query(`UPDATE student_auth_recovery_attempts SET status = 'failed', secret_hash = NULL WHERE id = $1`, [first.attemptId]);
+        const retry = await service.start({ email: account.email, purpose: 'lost_access' });
+        await assert.rejects(() => service.verify({ attemptId: retry.attemptId, secret: retry.secret, code: account.code, otp: '123456' }));
+        const rows = await client.query<{ count: string }>(
+            'SELECT count(*)::text AS count FROM student_auth_recovery_attempts WHERE user_id = $1', [account.userId],
+        );
+        assert.equal(rows.rows[0]!.count, '1');
+    } finally {
+        client.release();
+        await pool.end();
+    }
+});
+
 test('recovery completion sends a post-commit notice without credentials', async () => {
     const pool = createTestPool();
     const client = await pool.connect();

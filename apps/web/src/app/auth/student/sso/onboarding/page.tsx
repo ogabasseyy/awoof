@@ -147,15 +147,9 @@ function SignupOnboarding() {
         if (!handoff.current || challengeId !== 'verified' || !age || !terms || !consent || name.trim().length < 2 || busy) return;
         if (initialSession.current !== getSessionSnapshot().generation || getSessionSnapshot().accessToken) { setError('This tab changed accounts. Restart Microsoft sign-in.'); return; }
         setBusy(true); setError(null);
+        let response: { data: unknown };
         try {
-            const r = await studentSsoApiClient.post('/auth/student/sso/signup/complete', { handoffId: handoff.current.handoffId, handoffSecret: handoff.current.handoffSecret, fullName: name.trim(), ageAttested: true, termsAccepted: true, termsVersion: context!.termsVersion, verificationConsent: true, noticeVersion: context!.noticeVersion });
-            const data = (r.data as { data?: { tokens?: { accessToken?: unknown; refreshToken?: unknown } } }).data;
-            if (!data || typeof data.tokens?.accessToken !== 'string' || typeof data.tokens.refreshToken !== 'string' || initialSession.current !== getSessionSnapshot().generation) throw new Error('stale');
-            // Preserve the validated continuation the handoff carried for
-            // this sign-in; resolve it before the handoff is forgotten.
-            // Recovery setup stays available from account security.
-            const destination = resolveStudentReturn(handoff.current?.returnPath ?? null, window.location.origin);
-            storeTokens({ accessToken: data.tokens.accessToken, refreshToken: data.tokens.refreshToken }); forgetHandoff(); window.location.href = destination;
+            response = await studentSsoApiClient.post('/auth/student/sso/signup/complete', { handoffId: handoff.current.handoffId, handoffSecret: handoff.current.handoffSecret, fullName: name.trim(), ageAttested: true, termsAccepted: true, termsVersion: context!.termsVersion, verificationConsent: true, noticeVersion: context!.noticeVersion });
         } catch (cause: unknown) {
             // A 400 here means the Terms or notice version moved mid-window
             // (a rolling deploy serving context and complete from different
@@ -184,6 +178,26 @@ function SignupOnboarding() {
             } else {
                 setError('We could not finish setup. Your confirmed details were not silently accepted; retry or restart Microsoft sign-in.');
             }
+            setBusy(false);
+            return;
+        }
+        // The 201 committed the account and consumed the handoff: every
+        // failure below is client-side (unparseable shape, a session
+        // switch that must not clobber the newer session, unavailable
+        // storage). Report the created outcome and clear the spent
+        // handoff — never a retryable "not accepted" form, since no
+        // retry of the consumed handoff can succeed.
+        try {
+            const data = (response.data as { data?: { tokens?: { accessToken?: unknown; refreshToken?: unknown } } }).data;
+            if (!data || typeof data.tokens?.accessToken !== 'string' || typeof data.tokens.refreshToken !== 'string' || initialSession.current !== getSessionSnapshot().generation) throw new Error('unusable');
+            // Preserve the validated continuation the handoff carried for
+            // this sign-in; resolve it before the handoff is forgotten.
+            // Recovery setup stays available from account security.
+            const destination = resolveStudentReturn(handoff.current?.returnPath ?? null, window.location.origin);
+            storeTokens({ accessToken: data.tokens.accessToken, refreshToken: data.tokens.refreshToken }); forgetHandoff(); window.location.href = destination;
+        } catch {
+            forgetHandoff(); setAmbiguousComplete(true);
+        } finally {
             setBusy(false);
         }
     };

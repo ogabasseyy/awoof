@@ -4,7 +4,7 @@ import { ConflictError } from '../../common/errors/AppError.js';
 import { appLogger } from '../../common/logger.js';
 import { passwordService } from './password.service.js';
 import { sendAccountRecoveryCompletionNotice } from '../email/email.service.js';
-import { challengeTtlMs, consumeChallenge, databaseNow, requestChallenge } from '../verification/challenge.service.js';
+import { challengeSubjectDigest, challengeTtlMs, consumeChallenge, databaseNow, requestChallenge } from '../verification/challenge.service.js';
 import { revokeSsoSchoolAssertions } from './student-sso-onboarding.service.js';
 import { verifyRecoveryCodeDigest } from './student-recovery-code.service.js';
 
@@ -82,6 +82,9 @@ export class StudentAccountRecoveryService {
         if (typeof input.email !== 'string' || input.email.trim().length === 0 || input.email.length > 255) {
             throw new TypeError('Recovery email is invalid');
         }
+        // Narrowed once: the transaction closure would otherwise reset
+        // property narrowing on the mutable input binding.
+        const purpose = input.purpose;
         const email = input.email.trim().toLowerCase();
         const attemptId = randomUUID();
         const secret = randomBytes(32).toString('base64url');
@@ -97,21 +100,61 @@ export class StudentAccountRecoveryService {
             const serverNow = await databaseNow(tx);
             const serverExpiry = new Date(serverNow.getTime() + ttlMs);
             const account = await this.findRecoverableAccount(tx, email);
-            if (!account) return { expiresAt: serverExpiry.toISOString(), serverNow: serverNow.toISOString() };
-            const active = await this.lockActiveCode(tx, account.id);
-            if (!active) return { expiresAt: serverExpiry.toISOString(), serverNow: serverNow.toISOString() };
+            // Anti-enumeration decoy path: unknown, deleted, suspended, and
+            // code-less addresses run the same database shapes as the
+            // committed path (code lookup, budget lock probe, live-attempt
+            // probe) instead of returning after one lookup, so only small
+            // constant persistence deltas remain. Nothing persists here by
+            // design: issuing budget/challenge rows for unknown subjects
+            // would hand unauthenticated callers unbounded writable
+            // storage, and no pruning job covers it.
+            const active = account ? await this.lockActiveCode(tx, account.id) : await this.lockActiveCode(tx, randomUUID());
+            if (!account || !active) {
+                await this.probeStartDecoys(tx, email);
+                return { expiresAt: serverExpiry.toISOString(), serverNow: serverNow.toISOString() };
+            }
+            // Locked before challenge issuance so concurrent starts and
+            // verifications serialize on the attempt row in one order
+            // (attempt before budget/challenge, matching verify) instead
+            // of deadlocking budget-against-attempt.
+            const live = await this.lockLiveAttempt(tx, account.id, purpose);
             const challenge = await requestChallenge(tx, {
                 purpose: 'student_account_recovery', subjectKey: account.email,
                 bindings: { recoveryAttemptId: attemptId, recoveryPurpose: input.purpose },
                 expiresAt: serverExpiry,
             });
-            if (challenge.status !== 'issued') return { expiresAt: serverExpiry.toISOString(), serverNow: serverNow.toISOString() };
-            await tx.query(
-                `UPDATE student_auth_recovery_attempts
-                 SET status = 'failed', secret_hash = NULL
-                 WHERE user_id = $1 AND status IN ('pending', 'verified')`,
-                [account.id],
-            );
+            if (challenge.status !== 'issued') {
+                // Cooldown with a live pending attempt: the first start
+                // committed but its 202 was lost. Supersede onto a rebound
+                // handle against the same unconsumed challenge instead of
+                // stranding the delivered OTP behind a decoy. The expiry
+                // stays bounded by the original challenge, so retries can
+                // never stretch the OTP window, and no OTP is re-sent.
+                if (!live) return { expiresAt: serverExpiry.toISOString(), serverNow: serverNow.toISOString() };
+                await this.failPriorAttempts(tx, account.id);
+                // Rebind the shared challenge to the rebound handle: verify
+                // pins consumption to exactly one live attempt, and the
+                // failed predecessor must not keep the binding. Same
+                // transaction, same row lock — exactly one live attempt can
+                // ever present this challenge.
+                const reboundBinding = await tx.query(
+                    `UPDATE verification_challenges
+                     SET bindings = jsonb_set(bindings, '{recoveryAttemptId}', to_jsonb($2::text))
+                     WHERE id = $1 AND consumed_at IS NULL AND superseded_at IS NULL`,
+                    [live.mailbox_challenge_id, attemptId],
+                );
+                if (reboundBinding.rowCount !== 1) throw unavailable();
+                const rebound = await tx.query<{ expires_at: Date }>(
+                    `INSERT INTO student_auth_recovery_attempts
+                         (id, user_id, credential_generation, purpose, secret_hash, recovery_code_generation,
+                          mailbox_challenge_id, expires_at)
+                     VALUES ($1, $2, $3, $4, $5, $6, $7, LEAST(clock_timestamp() + interval '10 minutes', $8::timestamptz))
+                     RETURNING expires_at`,
+                    [attemptId, account.id, Number(account.credential_generation), input.purpose, this.secretDigest(secret), Number(active.generation), live.mailbox_challenge_id, live.challenge_expires_at],
+                );
+                return { expiresAt: rebound.rows[0]!.expires_at.toISOString(), serverNow: serverNow.toISOString() };
+            }
+            await this.failPriorAttempts(tx, account.id);
             const inserted = await tx.query<{ expires_at: Date }>(
                 `INSERT INTO student_auth_recovery_attempts
                      (id, user_id, credential_generation, purpose, secret_hash, recovery_code_generation,
@@ -320,6 +363,49 @@ export class StudentAccountRecoveryService {
             'SELECT status FROM students WHERE user_id = $1 FOR UPDATE', [userId],
         );
         return student.rows[0]?.status ?? null;
+    }
+
+    /**
+     * Non-persistent decoy reads mirroring the committed start path's
+     * remaining shapes (budget lock, live-attempt lookup) for addresses
+     * that will receive a decoy handle.
+     */
+    private async probeStartDecoys(tx: PoolClient, email: string): Promise<void> {
+        const subject = challengeSubjectDigest('student_account_recovery', email);
+        await tx.query(
+            `SELECT purpose FROM verification_challenge_budgets
+             WHERE purpose = 'student_account_recovery' AND subject_digest = $1 FOR UPDATE`,
+            [subject],
+        );
+        await this.lockLiveAttempt(tx, randomUUID(), 'lost_access');
+    }
+
+    /**
+     * Newest pending same-purpose attempt whose mailbox challenge is still
+     * consumable, locked for a rebound handle. Verified rows never
+     * resume: their holder already proved the OTP and keeps working.
+     */
+    private async lockLiveAttempt(tx: PoolClient, userId: string, purpose: RecoveryPurpose): Promise<{ id: string; mailbox_challenge_id: string; challenge_expires_at: Date } | null> {
+        const result = await tx.query<{ id: string; mailbox_challenge_id: string; challenge_expires_at: Date }>(
+            `SELECT attempt.id, attempt.mailbox_challenge_id, challenge.expires_at AS challenge_expires_at
+             FROM student_auth_recovery_attempts attempt
+             JOIN verification_challenges challenge ON challenge.id = attempt.mailbox_challenge_id
+             WHERE attempt.user_id = $1 AND attempt.purpose = $2 AND attempt.status = 'pending'
+               AND attempt.expires_at > clock_timestamp()
+               AND challenge.consumed_at IS NULL AND challenge.superseded_at IS NULL AND challenge.expires_at > clock_timestamp()
+             ORDER BY attempt.created_at DESC LIMIT 1 FOR UPDATE`,
+            [userId, purpose],
+        );
+        return result.rows[0] ?? null;
+    }
+
+    private async failPriorAttempts(tx: PoolClient, userId: string): Promise<void> {
+        await tx.query(
+            `UPDATE student_auth_recovery_attempts
+             SET status = 'failed', secret_hash = NULL
+             WHERE user_id = $1 AND status IN ('pending', 'verified')`,
+            [userId],
+        );
     }
 
     private async lockActiveCode(tx: PoolClient, userId: string): Promise<RecoveryCode | null> {
