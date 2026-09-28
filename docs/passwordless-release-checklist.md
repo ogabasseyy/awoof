@@ -9,6 +9,7 @@ Status: **not approved for activation**. This checklist describes the release ga
 - [ ] Exercise an old web client against the new backend before enabling signup. It must continue normal supported sign-in without interpreting passwordless payloads as eligibility.
 - [ ] If rolling back the web client, keep the new backend credential protections and migrations in place. Once passwordless accounts exist, do not restore a legacy email-only recovery binary or path.
 - [ ] Confirm the production cleanup job invokes `sso:cleanup:prod` at least every 15 minutes and that its runtime has the credential keys and database access it needs.
+- [ ] Configure the production mailer (`BREVO_API_KEY`) before advertising mailbox account recovery. Without it `/account-recovery/*` returns 503 by design; recovery-code management (key-gated only) is unaffected.
 
 ## Owner-operated evidence required before activation
 

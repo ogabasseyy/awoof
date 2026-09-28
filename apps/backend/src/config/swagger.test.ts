@@ -172,6 +172,16 @@ test('recovery schemas encode the enforced handle-secret ceiling', () => {
     }
 });
 
+test('grant schema encodes the enforced secret ceiling', () => {
+    type JsonSchema = { type?: string; minLength?: number; maxLength?: number };
+    const spec = swaggerSpec as { components: { schemas: Record<string, { properties: Record<string, JsonSchema> }> } };
+    // grantBody() rejects secrets over 1024 chars on every consumer.
+    const secret = spec.components.schemas.ReauthGrant.properties.grantSecret;
+    assert.equal(secret.type, 'string');
+    assert.equal(secret.minLength, 1);
+    assert.equal(secret.maxLength, 1024);
+});
+
 test('recovery password schema encodes the enforced complexity rules', () => {
     type JsonSchema = { type?: string; minLength?: number; maxLength?: number; pattern?: string; description?: string };
     const spec = swaggerSpec as { components: { schemas: Record<string, { properties: Record<string, JsonSchema> }> } };

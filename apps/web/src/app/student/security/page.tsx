@@ -109,19 +109,19 @@ export default function StudentSecurityPage() {
     const begin = async () => {
         if (busy) return; const session = getSessionSnapshot(); if (!session.accessToken) { setStatus('unavailable'); return; }
         setBusy(true); setSchoolError(null);
-        try { const r = await studentSsoApiClient.post('/auth/student/sso/reauth/microsoft/start', { purpose: 'recovery_code_generate' }, { headers: { Authorization: `Bearer ${session.accessToken}` } }); const url = (r.data as { data?: { authorizationUrl?: unknown } }).data?.authorizationUrl; if (typeof url !== 'string' || !url.startsWith('https:')) throw new Error('invalid'); window.location.assign(url); } catch { setBusy(false); setSchoolError(schoolUnavailable); }
+        try { const r = await studentSsoSessionApiClient.post('/auth/student/sso/reauth/microsoft/start', { purpose: 'recovery_code_generate' }); const url = (r.data as { data?: { authorizationUrl?: unknown } }).data?.authorizationUrl; if (typeof url !== 'string' || !url.startsWith('https:')) throw new Error('invalid'); window.location.assign(url); } catch { setBusy(false); setSchoolError(schoolUnavailable); }
     };
     const beginRemove = async () => {
         if (busy) return; const session = getSessionSnapshot(); if (!session.accessToken) { setStatus('unavailable'); return; }
-        setBusy(true); setSchoolError(null); try { const r = await studentSsoApiClient.post('/auth/student/sso/reauth/microsoft/start', { purpose: 'recovery_code_remove' }, { headers: { Authorization: `Bearer ${session.accessToken}` } }); const url = (r.data as { data?: { authorizationUrl?: unknown } }).data?.authorizationUrl; if (typeof url !== 'string' || !url.startsWith('https:')) throw new Error(); window.location.assign(url); } catch { setBusy(false); setSchoolError(schoolUnavailable); }
+        setBusy(true); setSchoolError(null); try { const r = await studentSsoSessionApiClient.post('/auth/student/sso/reauth/microsoft/start', { purpose: 'recovery_code_remove' }); const url = (r.data as { data?: { authorizationUrl?: unknown } }).data?.authorizationUrl; if (typeof url !== 'string' || !url.startsWith('https:')) throw new Error(); window.location.assign(url); } catch { setBusy(false); setSchoolError(schoolUnavailable); }
     };
     const beginActivation = async () => {
         const pendingId = pendingCodeId ?? pendingIntent(); const session = getSessionSnapshot(); if (!pendingId || !session.accessToken || busy) { setStatus('unavailable'); return; }
-        setBusy(true); setSchoolError(null); try { const r = await studentSsoApiClient.post('/auth/student/sso/reauth/microsoft/start', { purpose: 'recovery_code_activate', pendingCodeId: pendingId }, { headers: { Authorization: `Bearer ${session.accessToken}` } }); const url = (r.data as { data?: { authorizationUrl?: unknown } }).data?.authorizationUrl; if (typeof url !== 'string' || !url.startsWith('https:')) throw new Error('invalid'); window.location.assign(url); } catch { setBusy(false); setSchoolError(schoolUnavailable); }
+        setBusy(true); setSchoolError(null); try { const r = await studentSsoSessionApiClient.post('/auth/student/sso/reauth/microsoft/start', { purpose: 'recovery_code_activate', pendingCodeId: pendingId }); const url = (r.data as { data?: { authorizationUrl?: unknown } }).data?.authorizationUrl; if (typeof url !== 'string' || !url.startsWith('https:')) throw new Error('invalid'); window.location.assign(url); } catch { setBusy(false); setSchoolError(schoolUnavailable); }
     };
     const cancelPending = async () => {
         const session = getSessionSnapshot(); if (!pendingCodeId || !session.accessToken || busy) return;
-        setBusy(true); try { await studentSsoApiClient.post('/auth/student/sso/recovery-code/cancel', { pendingCodeId }, { headers: { Authorization: `Bearer ${session.accessToken}` } }); setPendingCodeId(null); await loadStatus(); } catch { setStatus('unavailable'); } finally { setBusy(false); }
+        setBusy(true); try { await studentSsoSessionApiClient.post('/auth/student/sso/recovery-code/cancel', { pendingCodeId }); setPendingCodeId(null); await loadStatus(); } catch { setStatus('unavailable'); } finally { setBusy(false); }
     };
     const startPassword = (mode: 'generate' | 'activate' | 'remove') => {
         const session = getSessionSnapshot(); if (!session.accessToken) { setStatus('unavailable'); return; }
@@ -141,7 +141,7 @@ export default function StudentSecurityPage() {
             if (!g || typeof g.grantId !== 'string' || typeof g.grantSecret !== 'string') throw new Error('invalid grant');
             const reauthGrant = { grantId: g.grantId, grantSecret: g.grantSecret };
             if (pwMode === 'generate') {
-                const generated = await studentSsoApiClient.post('/auth/student/sso/recovery-code/generate', { reauthGrant, ...(pwOld ? { oldCode: pwOld } : {}) }, { headers });
+                const generated = await studentSsoSessionApiClient.post('/auth/student/sso/recovery-code/generate', { reauthGrant, ...(pwOld ? { oldCode: pwOld } : {}) });
                 const data = (generated.data as { data?: { pendingCodeId?: unknown; code?: unknown; expiresAt?: unknown; serverNow?: unknown } }).data;
                 if (!data || typeof data.pendingCodeId !== 'string' || typeof data.code !== 'string') throw new Error('invalid code');
                 setPwPendingId(data.pendingCodeId); setPwCode(data.code); setPassword('');
@@ -150,9 +150,9 @@ export default function StudentSecurityPage() {
                 setPwMode('display'); return;
             }
             if (pwMode === 'activate' && pwPendingId) {
-                await studentSsoApiClient.post('/auth/student/sso/recovery-code/activate', { reauthGrant, pendingCodeId: pwPendingId, code: pwCode, ...(pwOld ? { oldCode: pwOld } : {}) }, { headers });
+                await studentSsoSessionApiClient.post('/auth/student/sso/recovery-code/activate', { reauthGrant, pendingCodeId: pwPendingId, code: pwCode, ...(pwOld ? { oldCode: pwOld } : {}) });
             } else if (pwMode === 'remove') {
-                await studentSsoApiClient.post('/auth/student/sso/recovery-code/remove', { reauthGrant, oldCode: pwOld }, { headers });
+                await studentSsoSessionApiClient.post('/auth/student/sso/recovery-code/remove', { reauthGrant, oldCode: pwOld });
             } else { throw new Error('invalid state'); }
             setPwMode(null); setPassword(''); setPwOld(''); setPwCode(''); setPwPendingId(null); setPwExpiresAt(null); await loadStatus();
             // Activation clears the server re-enrollment marker; refresh the
@@ -172,7 +172,7 @@ export default function StudentSecurityPage() {
         if (linkBusy) return; const session = getSessionSnapshot(); if (!session.accessToken) { setStatus('unavailable'); return; }
         setLinkBusy(true); setLinkError(null);
         try {
-            const r = await studentSsoApiClient.post('/auth/student/sso/reauth/microsoft/start', { purpose: 'link' }, { headers: { Authorization: `Bearer ${session.accessToken}` } });
+            const r = await studentSsoSessionApiClient.post('/auth/student/sso/reauth/microsoft/start', { purpose: 'link' });
             const url = (r.data as { data?: { authorizationUrl?: unknown } }).data?.authorizationUrl;
             if (typeof url !== 'string' || !url.startsWith('https:')) throw new Error('invalid');
             window.location.assign(url);
@@ -182,7 +182,7 @@ export default function StudentSecurityPage() {
         if (unlinkBusy) return; const session = getSessionSnapshot(); if (!session.accessToken) { setStatus('unavailable'); return; }
         setUnlinkBusy(true); setUnlinkError(null);
         try {
-            const r = await studentSsoApiClient.post('/auth/student/sso/reauth/microsoft/start', { purpose: 'unlink', targetIdentityId: target.id }, { headers: { Authorization: `Bearer ${session.accessToken}` } });
+            const r = await studentSsoSessionApiClient.post('/auth/student/sso/reauth/microsoft/start', { purpose: 'unlink', targetIdentityId: target.id });
             const url = (r.data as { data?: { authorizationUrl?: unknown } }).data?.authorizationUrl;
             if (typeof url !== 'string' || !url.startsWith('https:')) throw new Error('invalid');
             window.location.assign(url);
@@ -197,7 +197,7 @@ export default function StudentSecurityPage() {
             const reauth = await studentSsoApiClient.post('/auth/student/sso/reauth', { password: unlinkPassword, purpose: 'unlink', targetIdentityId: targetId }, { headers });
             const g = (reauth.data as { data?: { grantId?: unknown; grantSecret?: unknown } }).data;
             if (!g || typeof g.grantId !== 'string' || typeof g.grantSecret !== 'string') throw new Error('invalid grant');
-            const response = await studentSsoApiClient.post(`/auth/student/sso/identities/${targetId}/unlink`, { reauthGrant: { grantId: g.grantId, grantSecret: g.grantSecret } }, { headers });
+            const response = await studentSsoSessionApiClient.post(`/auth/student/sso/identities/${targetId}/unlink`, { reauthGrant: { grantId: g.grantId, grantSecret: g.grantSecret } });
             const data = (response.data as { success?: unknown; data?: unknown })?.success === true ? (response.data as { data?: unknown }).data as { unlinked?: unknown; sessionRevoked?: unknown } : null;
             if (!data || data.unlinked !== true || typeof data.sessionRevoked !== 'boolean') throw new Error('invalid unlink');
             // The server clears the session only when the removed identity
