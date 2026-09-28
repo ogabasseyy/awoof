@@ -37,7 +37,6 @@ on:
 
 permissions:
   contents: read
-  pull-requests: write
 
 concurrency:
   group: muse-code-review-${{ github.event.pull_request.number }}
@@ -46,6 +45,11 @@ concurrency:
 jobs:
   muse-review:
     name: Muse review
+    # pull-requests: write posts the advisory review; contents: read checks out
+    # the PR head. Scoped to this job so later jobs start least-privilege.
+    permissions:
+      contents: read
+      pull-requests: write
     if: >-
       github.event.pull_request.draft == false &&
       github.event.pull_request.head.repo.full_name == github.repository
@@ -86,13 +90,23 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GITHUB_REPOSITORY: ${{ github.repository }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
+          HEAD_SHA_EVENT: ${{ github.event.pull_request.head.sha }}
         run: |
           set -euo pipefail
 
           pr_file="${RUNNER_TEMP}/muse-pr.json"
           gh api "repos/${GITHUB_REPOSITORY}/pulls/${PR_NUMBER}" > "${pr_file}"
 
-          head_sha="$(jq -r '.head.sha' "${pr_file}")"
+          # Use the event SHA everywhere so checkout, diff, commit_id, and the
+          # review marker always agree. If the PR moved since this run started
+          # (re-run of an older run), skip: a newer run owns the new head.
+          api_head_sha="$(jq -r '.head.sha' "${pr_file}")"
+          if [[ "${api_head_sha}" != "${HEAD_SHA_EVENT}" ]]; then
+            echo "should_review=false" >> "${GITHUB_OUTPUT}"
+            echo "::notice::PR head moved (${HEAD_SHA_EVENT} -> ${api_head_sha}); skipping stale run."
+            exit 0
+          fi
+          head_sha="${HEAD_SHA_EVENT}"
           base_ref="$(jq -r '.base.ref' "${pr_file}")"
           head_ref="$(jq -r '.head.ref' "${pr_file}")"
           pr_state="$(jq -r '.state' "${pr_file}")"
@@ -160,9 +174,9 @@ jobs:
             printf 'Base branch: %s\nHead branch: %s\nHead SHA: %s\n\n' \
               "${base_ref}" "${head_ref}" "${head_sha}"
             printf '<pr_title>\n%s\n</pr_title>\n\n' \
-              "$(printf '%s' "${pr_title}" | perl -pe 's{<\\s*/\\s*(file|diff|pr_title|pr_description)}{<\\/$1}gi')"
+              "$(printf '%s' "${pr_title}" | perl -pe 's{<\s*/\s*(file|diff|pr_title|pr_description)}{<\\/$1}gi')"
             printf '<pr_description>\n%s\n</pr_description>\n\n' \
-              "$(if [[ -n "${pr_body}" ]]; then printf '%s' "${pr_body}" | perl -pe 's{<\\s*/\\s*(file|diff|pr_title|pr_description)}{<\\/$1}gi'; else printf '(empty)'; fi)"
+              "$(if [[ -n "${pr_body}" ]]; then printf '%s' "${pr_body}" | perl -pe 's{<\s*/\s*(file|diff|pr_title|pr_description)}{<\\/$1}gi'; else printf '(empty)'; fi)"
 
             cat <<'CONTRACT'
           You are reviewing GitHub pull request changes. You are running inside
@@ -215,7 +229,7 @@ jobs:
             printf '\n## Changed files\n%s\n' "${files_summary}"
             printf '\n## Unified diff%s\n\n<diff>\n' "${diff_note}"
             iconv -c -f UTF-8 -t UTF-8 "${diff_file}" 2>/dev/null \
-              | perl -pe 's{<\\s*/\\s*(file|diff)}{<\\/$1}gi' || true
+              | perl -pe 's{<\s*/\s*(file|diff)}{<\\/$1}gi' || true
             printf '\n</diff>\n'
             printf '\n## Repo guidance\n'
             cat "${guidance_file}"
@@ -224,7 +238,11 @@ jobs:
           echo "prompt_file=${prompt_file}" >> "${GITHUB_OUTPUT}"
 
       - name: Install Muse Code
+        id: install
         if: steps.prereq.outputs.should_run == 'true' && steps.diff.outputs.should_review == 'true'
+        # Advisory: an installer outage must not fail the build; the Post step
+        # still runs and leaves the fallback note.
+        continue-on-error: true
         run: |
           set -euo pipefail
           curl -fsSL https://dev.meta.ai/install.sh | bash
@@ -233,7 +251,10 @@ jobs:
 
       - name: Run Muse review
         id: muse
-        if: steps.prereq.outputs.should_run == 'true' && steps.diff.outputs.should_review == 'true'
+        if: >-
+          steps.prereq.outputs.should_run == 'true' &&
+          steps.diff.outputs.should_review == 'true' &&
+          steps.install.outcome == 'success'
         # Advisory: a failed/quota-exhausted run posts a fallback note instead
         # of failing the build, so subscription limits can never block merges.
         continue-on-error: true
@@ -249,6 +270,7 @@ jobs:
             model_args+=(--model "${MUSE_MODEL_RESOLVED}")
           fi
 
+          set +e
           "${HOME}/.local/bin/muse" exec \
             --prompt-file "${{ steps.diff.outputs.prompt_file }}" \
             --workspace "${GITHUB_WORKSPACE}" \
@@ -258,9 +280,19 @@ jobs:
             --disable-write \
             --disable-shell \
             --no-session-log \
-            "${model_args[@]}" </dev/null > "${review_file}" 2>"${RUNNER_TEMP}/muse-stderr.log" || true
+            "${model_args[@]}" </dev/null > "${review_file}" 2>"${RUNNER_TEMP}/muse-stderr.log"
+          muse_rc=$?
+          set -e
 
           echo "review_file=${review_file}" >> "${GITHUB_OUTPUT}"
+
+          # Fail the step (not the job: continue-on-error) so MUSE_OUTCOME is
+          # truthful and stderr is visible in the log.
+          if (( muse_rc != 0 )); then
+            echo "::warning::muse exec exited ${muse_rc}; stderr tail follows"
+            tail -c 4000 "${RUNNER_TEMP}/muse-stderr.log" || true
+            exit "${muse_rc}"
+          fi
 
       - name: Post Muse review
         if: >-
@@ -290,8 +322,8 @@ jobs:
 
           ## Findings
 
-          - low: No review content was produced. This is often a quota or auth
-            issue with the subscription credential — check the workflow logs.
+          - low: No review content was produced. This is often a quota, auth,
+            or install issue — check the workflow logs.
 
           ## Suggested next steps
 
@@ -315,9 +347,11 @@ jobs:
 
           # Skip posting if we already left a review carrying this commit's
           # marker (avoids duplicates when the same SHA is re-evaluated).
-          if gh api --paginate "repos/${GITHUB_REPOSITORY}/pulls/${PR_NUMBER}/reviews" \
-            --jq '.[] | select(.user.login == "github-actions[bot]") | .body' 2>/dev/null \
-            | grep -qF "${marker}"; then
+          # Capture first, match second: no pipe, so no SIGPIPE race under
+          # pipefail when grep exits early.
+          existing_reviews="$(gh api --paginate "repos/${GITHUB_REPOSITORY}/pulls/${PR_NUMBER}/reviews" \
+            --jq '.[] | select(.user.login == "github-actions[bot]") | .body' 2>/dev/null || true)"
+          if grep -qF "${marker}" <<< "${existing_reviews}"; then
             echo "::notice::Muse review for ${HEAD_SHA} already posted; skipping duplicate."
             exit 0
           fi
