@@ -13,7 +13,7 @@ const sid = '22222222-2222-4222-8222-222222222222';
 const identityId = '33333333-3333-4333-8333-333333333333';
 const policyId = '44444444-4444-4444-8444-444444444444';
 const attemptKey = Buffer.alloc(32, 7).toString('base64url');
-const issuer = 'https://login.microsoftonline.com/55555555-5555-4555-8555-555555555555/v2.0';
+const issuer = 'https://issuer.example.invalid/tenant/v2.0';
 
 function pendingAttempt(overrides: Record<string, unknown> = {}) {
     const id = randomUUID();

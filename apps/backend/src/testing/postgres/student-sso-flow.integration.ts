@@ -1214,6 +1214,50 @@ test('expired attempts restart on a tombstone the retention scrub clears', async
     });
 });
 
+test('SSO cleanup scrubs terminal bindings in bounded repeatable batches', async () => {
+    await withSsoPool(async (pool) => {
+        const fixture = await approvedGoogleFixture(pool);
+        const setup = await pool.connect();
+        try {
+            await setup.query(
+                `INSERT INTO student_auth_attempts
+                     (policy_id, policy_version, provider, requested_email, state_hash,
+                      callback_cookie_hash, finish_secret_hash, status, expires_at)
+                 SELECT $1, 1, 'google', 'cleanup-' || n || '@students.example.invalid',
+                        'cleanup-state-' || n, 'cleanup-browser-' || n, 'cleanup-finish-' || n,
+                        'consumed', clock_timestamp() - interval '2 hours'
+                 FROM generate_series(1, 501) AS n`,
+                [fixture.policyId],
+            );
+        } finally {
+            setup.release();
+        }
+
+        const worker = await pool.connect();
+        try {
+            const first = await cleanupStudentSsoTransients(worker);
+            assert.equal(first.terminalSecretsScrubbed, 500);
+            const remaining = await worker.query<{ count: string }>(
+                `SELECT count(*)::text AS count FROM student_auth_attempts
+                 WHERE expires_at <= clock_timestamp() - interval '1 hour'
+                   AND callback_cookie_hash IS NOT NULL`,
+            );
+            assert.equal(Number(remaining.rows[0]!.count), 1);
+
+            const second = await cleanupStudentSsoTransients(worker);
+            assert.equal(second.terminalSecretsScrubbed, 1);
+            const cleared = await worker.query<{ count: string }>(
+                `SELECT count(*)::text AS count FROM student_auth_attempts
+                 WHERE expires_at <= clock_timestamp() - interval '1 hour'
+                   AND callback_cookie_hash IS NOT NULL`,
+            );
+            assert.equal(Number(cleared.rows[0]!.count), 0);
+        } finally {
+            worker.release();
+        }
+    });
+});
+
 test('finish before callback is invalid and changes nothing', async () => {
     await withSsoPool(async (pool) => {
         const fixture = await approvedGoogleFixture(pool);

@@ -290,7 +290,7 @@ test('recovery code lifecycle permits one active code and rejects terminal repla
             client.query(
                 `INSERT INTO student_auth_recovery_codes
                      (user_id, generation, code_digest, status, activated_at)
-                 VALUES ($1, 1, $2, 'active', clock_timestamp())`,
+                 VALUES ($1, 2, $2, 'active', clock_timestamp())`,
                 [first.userId, `second-active-${label()}`],
             ),
             /unique/i,

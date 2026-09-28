@@ -875,6 +875,11 @@ export type StudentSsoCleanupResult = {
     overdueTerminalSecrets: number;
 };
 
+// One cleanup invocation visits at most this many rows per transient class.
+// Backlogs drain over later 15-minute runs rather than holding a single
+// transaction open while rewriting an unbounded table.
+const SSO_CLEANUP_BATCH_SIZE = 500;
+
 /**
  * Scheduled retention for SSO transients (B1 contract): expired attempt and
  * handoff ciphertext is scrubbed at expiry (the 15-minute schedule keeps the
@@ -931,29 +936,49 @@ export async function cleanupStudentSsoTransients(client: PoolClient): Promise<S
         )::text AS count`,
     );
     const failed = await client.query(
-        `UPDATE student_auth_attempts
+        `WITH batch AS (
+           SELECT id FROM student_auth_attempts
+           WHERE expires_at <= clock_timestamp() AND status IN ('pending', 'processing', 'ready')
+           ORDER BY expires_at, id LIMIT ${SSO_CLEANUP_BATCH_SIZE} FOR UPDATE SKIP LOCKED
+         )
+         UPDATE student_auth_attempts AS attempt
          SET status = 'failed', state_hash = NULL, callback_cookie_hash = NULL, finish_secret_hash = NULL,
              encrypted_verifier = NULL, nonce = NULL, encrypted_observation = NULL
-         WHERE expires_at <= clock_timestamp() AND status IN ('pending', 'processing', 'ready')`,
+         FROM batch WHERE attempt.id = batch.id`,
     );
     // Terminalize each passwordless attempt before deleting its tombstone.
     // These tables retain immutable binding/outcome columns so deletion cannot
     // turn an expired or consumed artifact back into a usable credential.
     const signupTerminalized = await client.query(
-        `UPDATE student_auth_signup_challenges
+        `WITH batch AS (
+           SELECT id FROM student_auth_signup_challenges
+           WHERE expires_at <= clock_timestamp() AND status IN ('pending', 'mailbox_verified')
+           ORDER BY expires_at, id LIMIT ${SSO_CLEANUP_BATCH_SIZE} FOR UPDATE SKIP LOCKED
+         )
+         UPDATE student_auth_signup_challenges AS signup
          SET status = 'expired', terminal_at = clock_timestamp(), secret_hash = NULL, browser_binding_hash = NULL
-         WHERE expires_at <= clock_timestamp() AND status IN ('pending', 'mailbox_verified')`,
+         FROM batch WHERE signup.id = batch.id`,
     );
     const reauthTerminalized = await client.query(
-        `UPDATE student_auth_reauth_attempts
+        `WITH batch AS (
+           SELECT id FROM student_auth_reauth_attempts
+           WHERE expires_at <= clock_timestamp() AND status IN ('pending', 'processing', 'ready')
+           ORDER BY expires_at, id LIMIT ${SSO_CLEANUP_BATCH_SIZE} FOR UPDATE SKIP LOCKED
+         )
+         UPDATE student_auth_reauth_attempts AS reauth
          SET status = 'failed', consumed_at = clock_timestamp(), state_hash = NULL, callback_cookie_hash = NULL,
              encrypted_verifier = NULL, nonce = NULL
-         WHERE expires_at <= clock_timestamp() AND status IN ('pending', 'processing', 'ready')`,
+         FROM batch WHERE reauth.id = batch.id`,
     );
     const recoveryTerminalized = await client.query(
-        `UPDATE student_auth_recovery_attempts
+        `WITH batch AS (
+           SELECT id FROM student_auth_recovery_attempts
+           WHERE expires_at <= clock_timestamp() AND status IN ('pending', 'verified')
+           ORDER BY expires_at, id LIMIT ${SSO_CLEANUP_BATCH_SIZE} FOR UPDATE SKIP LOCKED
+         )
+         UPDATE student_auth_recovery_attempts AS recovery
          SET status = 'expired', secret_hash = NULL
-         WHERE expires_at <= clock_timestamp() AND status IN ('pending', 'verified')`,
+         FROM batch WHERE recovery.id = batch.id`,
     );
     // Catch up terminal tombstones written by older failure paths. This is
     // deliberately status- and timestamp-preserving: immutable bindings and
@@ -962,25 +987,39 @@ export async function cleanupStudentSsoTransients(client: PoolClient): Promise<S
     // after a lost finish response restarts any time before then, and
     // the one-hour overdue predicate above still proves scheduler lag.
     const terminalAttemptSecrets = await client.query(
-        `UPDATE student_auth_attempts
+        `WITH batch AS (
+           SELECT id FROM student_auth_attempts
+           WHERE status IN ('consumed', 'failed') AND expires_at <= clock_timestamp()
+             AND (state_hash IS NOT NULL OR callback_cookie_hash IS NOT NULL OR finish_secret_hash IS NOT NULL
+                  OR encrypted_verifier IS NOT NULL OR nonce IS NOT NULL OR encrypted_observation IS NOT NULL)
+           ORDER BY expires_at, id LIMIT ${SSO_CLEANUP_BATCH_SIZE} FOR UPDATE SKIP LOCKED
+         )
+         UPDATE student_auth_attempts AS attempt
          SET state_hash = NULL, callback_cookie_hash = NULL, finish_secret_hash = NULL,
              encrypted_verifier = NULL, nonce = NULL, encrypted_observation = NULL
-         WHERE status IN ('consumed', 'failed')
-           AND expires_at <= clock_timestamp()
-           AND (state_hash IS NOT NULL OR callback_cookie_hash IS NOT NULL OR finish_secret_hash IS NOT NULL
-                OR encrypted_verifier IS NOT NULL OR nonce IS NOT NULL OR encrypted_observation IS NOT NULL)`,
+         FROM batch WHERE attempt.id = batch.id`,
     );
     const terminalReauthSecrets = await client.query(
-        `UPDATE student_auth_reauth_attempts
+        `WITH batch AS (
+           SELECT id FROM student_auth_reauth_attempts
+           WHERE status IN ('consumed', 'failed')
+             AND (state_hash IS NOT NULL OR callback_cookie_hash IS NOT NULL
+                  OR encrypted_verifier IS NOT NULL OR nonce IS NOT NULL)
+           ORDER BY expires_at, id LIMIT ${SSO_CLEANUP_BATCH_SIZE} FOR UPDATE SKIP LOCKED
+         )
+         UPDATE student_auth_reauth_attempts AS reauth
          SET state_hash = NULL, callback_cookie_hash = NULL, encrypted_verifier = NULL, nonce = NULL
-         WHERE status IN ('consumed', 'failed')
-           AND (state_hash IS NOT NULL OR callback_cookie_hash IS NOT NULL
-                OR encrypted_verifier IS NOT NULL OR nonce IS NOT NULL)`,
+         FROM batch WHERE reauth.id = batch.id`,
     );
     const terminalRecoverySecrets = await client.query(
-        `UPDATE student_auth_recovery_attempts
+        `WITH batch AS (
+           SELECT id FROM student_auth_recovery_attempts
+           WHERE status IN ('consumed', 'failed', 'expired') AND secret_hash IS NOT NULL
+           ORDER BY COALESCE(consumed_at, expires_at), id LIMIT ${SSO_CLEANUP_BATCH_SIZE} FOR UPDATE SKIP LOCKED
+         )
+         UPDATE student_auth_recovery_attempts AS recovery
          SET secret_hash = NULL
-         WHERE status IN ('consumed', 'failed', 'expired') AND secret_hash IS NOT NULL`,
+         FROM batch WHERE recovery.id = batch.id`,
     );
     // Handoff ciphertext and one-use/browser secrets all become inert at
     // expiry; migration 074 permits this only after expiry or consumption.
@@ -990,87 +1029,135 @@ export async function cleanupStudentSsoTransients(client: PoolClient): Promise<S
     // mirrors the overdue predicate below and keeps fresh in-flight rows
     // (which the consume path already scrubs) out of this catch-up.
     const scrubbed = await client.query(
-        `UPDATE student_auth_link_handoffs
+        `WITH batch AS (
+           SELECT id FROM student_auth_link_handoffs
+           WHERE ((expires_at <= clock_timestamp() AND consumed_at IS NULL)
+                  OR (consumed_at IS NOT NULL AND consumed_at <= clock_timestamp() - interval '1 hour'))
+             AND (secret_hash IS NOT NULL OR browser_binding_hash IS NOT NULL OR encrypted_observation IS NOT NULL)
+           ORDER BY expires_at, id LIMIT ${SSO_CLEANUP_BATCH_SIZE} FOR UPDATE SKIP LOCKED
+         )
+         UPDATE student_auth_link_handoffs AS handoff
          SET secret_hash = NULL, browser_binding_hash = NULL, encrypted_observation = NULL
-         WHERE ((expires_at <= clock_timestamp() AND consumed_at IS NULL)
-                OR (consumed_at IS NOT NULL AND consumed_at <= clock_timestamp() - interval '1 hour'))
-           AND (secret_hash IS NOT NULL OR browser_binding_hash IS NOT NULL OR encrypted_observation IS NOT NULL)`,
+         FROM batch WHERE handoff.id = batch.id`,
     );
     // The signup FK intentionally does not cascade: retain completed
     // tombstones for seven days, then delete them before their handoffs.
     const signupChallenges = await client.query(
-        `DELETE FROM student_auth_signup_challenges
-         WHERE status IN ('consumed', 'cancelled', 'expired')
-           AND COALESCE(terminal_at, consumed_at, expires_at) <= clock_timestamp() - interval '7 days'`,
+        `WITH batch AS (
+           SELECT id FROM student_auth_signup_challenges
+           WHERE status IN ('consumed', 'cancelled', 'expired')
+             AND COALESCE(terminal_at, consumed_at, expires_at) <= clock_timestamp() - interval '7 days'
+           ORDER BY COALESCE(terminal_at, consumed_at, expires_at), id LIMIT ${SSO_CLEANUP_BATCH_SIZE} FOR UPDATE SKIP LOCKED
+         )
+         DELETE FROM student_auth_signup_challenges AS signup USING batch WHERE signup.id = batch.id`,
     );
     const reauthAttempts = await client.query(
-        `DELETE FROM student_auth_reauth_attempts
-         WHERE status IN ('consumed', 'failed')
-           AND COALESCE(consumed_at, expires_at) <= clock_timestamp() - interval '7 days'`,
+        `WITH batch AS (
+           SELECT id FROM student_auth_reauth_attempts
+           WHERE status IN ('consumed', 'failed')
+             AND COALESCE(consumed_at, expires_at) <= clock_timestamp() - interval '7 days'
+           ORDER BY COALESCE(consumed_at, expires_at), id LIMIT ${SSO_CLEANUP_BATCH_SIZE} FOR UPDATE SKIP LOCKED
+         )
+         DELETE FROM student_auth_reauth_attempts AS reauth USING batch WHERE reauth.id = batch.id`,
     );
     const recoveryAttempts = await client.query(
-        `DELETE FROM student_auth_recovery_attempts
-         WHERE status IN ('consumed', 'failed', 'expired')
-           AND COALESCE(consumed_at, expires_at) <= clock_timestamp() - interval '7 days'`,
+        `WITH batch AS (
+           SELECT id FROM student_auth_recovery_attempts
+           WHERE status IN ('consumed', 'failed', 'expired')
+             AND COALESCE(consumed_at, expires_at) <= clock_timestamp() - interval '7 days'
+           ORDER BY COALESCE(consumed_at, expires_at), id LIMIT ${SSO_CLEANUP_BATCH_SIZE} FOR UPDATE SKIP LOCKED
+         )
+         DELETE FROM student_auth_recovery_attempts AS recovery USING batch WHERE recovery.id = batch.id`,
     );
     const handoffs = await client.query(
-        `DELETE FROM student_auth_link_handoffs handoff
-         WHERE handoff.expires_at <= clock_timestamp() - interval '7 days'
-           AND NOT EXISTS (SELECT 1 FROM student_auth_signup_challenges signup WHERE signup.handoff_id = handoff.id)`,
+        `WITH batch AS (
+           SELECT handoff.id FROM student_auth_link_handoffs handoff
+           WHERE handoff.expires_at <= clock_timestamp() - interval '7 days'
+             AND NOT EXISTS (SELECT 1 FROM student_auth_signup_challenges signup WHERE signup.handoff_id = handoff.id)
+           ORDER BY handoff.expires_at, handoff.id LIMIT ${SSO_CLEANUP_BATCH_SIZE} FOR UPDATE SKIP LOCKED
+         )
+         DELETE FROM student_auth_link_handoffs handoff USING batch WHERE handoff.id = batch.id`,
     );
     const grants = await client.query(
-        `DELETE FROM student_auth_reauth_grants WHERE expires_at <= clock_timestamp() - interval '7 days'`,
+        `WITH batch AS (
+           SELECT id FROM student_auth_reauth_grants
+           WHERE expires_at <= clock_timestamp() - interval '7 days'
+           ORDER BY expires_at, id LIMIT ${SSO_CLEANUP_BATCH_SIZE} FOR UPDATE SKIP LOCKED
+         )
+         DELETE FROM student_auth_reauth_grants AS grant_row USING batch WHERE grant_row.id = batch.id`,
     );
     // Credential records deliberately retain active recovery-code digests.
     // Only expired pending rows are terminalized; consumed/revoked tombstones
     // are removed after seven days, so deleting a row cannot revive its use.
     const actionGrants = await client.query(
-        `UPDATE student_auth_action_grants
+        `WITH batch AS (
+           SELECT id FROM student_auth_action_grants
+           WHERE expires_at <= clock_timestamp() AND consumed_at IS NULL AND revoked_at IS NULL
+           ORDER BY expires_at, id LIMIT ${SSO_CLEANUP_BATCH_SIZE} FOR UPDATE SKIP LOCKED
+         )
+         UPDATE student_auth_action_grants AS action_grant
          SET revoked_at = clock_timestamp(), secret_hash = 'scrubbed'
-         WHERE expires_at <= clock_timestamp()
-           AND consumed_at IS NULL AND revoked_at IS NULL`,
+         FROM batch WHERE action_grant.id = batch.id`,
     );
     const recoveryCodes = await client.query(
-        `UPDATE student_auth_recovery_codes
+        `WITH batch AS (
+           SELECT id FROM student_auth_recovery_codes
+           WHERE status = 'pending' AND expires_at <= clock_timestamp()
+           ORDER BY expires_at, id LIMIT ${SSO_CLEANUP_BATCH_SIZE} FOR UPDATE SKIP LOCKED
+         )
+         UPDATE student_auth_recovery_codes AS recovery_code
          SET status = 'revoked', code_digest = NULL, expires_at = NULL,
              revoked_at = clock_timestamp(), terminal_at = clock_timestamp(),
              pending_sid = NULL, pending_credential_generation = NULL, pending_proof_identity_id = NULL
-         WHERE status = 'pending' AND expires_at <= clock_timestamp()`,
+         FROM batch WHERE recovery_code.id = batch.id`,
     );
     await client.query(
-        `DELETE FROM student_auth_action_grants
-         WHERE COALESCE(consumed_at, revoked_at, expires_at) <= clock_timestamp() - interval '7 days'`,
+        `WITH batch AS (
+           SELECT id FROM student_auth_action_grants
+           WHERE COALESCE(consumed_at, revoked_at, expires_at) <= clock_timestamp() - interval '7 days'
+           ORDER BY COALESCE(consumed_at, revoked_at, expires_at), id LIMIT ${SSO_CLEANUP_BATCH_SIZE} FOR UPDATE SKIP LOCKED
+         )
+         DELETE FROM student_auth_action_grants AS action_grant USING batch WHERE action_grant.id = batch.id`,
     );
     // Referencing attempts and grants retire on their own later clocks; a
     // tombstone delete must wait for them or the foreign keys roll back the
     // whole cleanup transaction and leave unrelated secrets unswept.
     await client.query(
-        `DELETE FROM student_auth_recovery_codes
-         WHERE status IN ('consumed', 'revoked')
-           AND COALESCE(terminal_at, consumed_at, revoked_at, created_at) <= clock_timestamp() - interval '7 days'
-           AND NOT EXISTS (
+        `WITH batch AS (
+           SELECT id FROM student_auth_recovery_codes
+           WHERE status IN ('consumed', 'revoked')
+             AND COALESCE(terminal_at, consumed_at, revoked_at, created_at) <= clock_timestamp() - interval '7 days'
+             AND NOT EXISTS (
                SELECT 1 FROM student_auth_recovery_attempts attempt
                WHERE attempt.user_id = student_auth_recovery_codes.user_id
                  AND attempt.recovery_code_generation = student_auth_recovery_codes.generation
-           )
-           AND NOT EXISTS (
+             )
+             AND NOT EXISTS (
                SELECT 1 FROM student_auth_action_grants action_grant
                WHERE action_grant.user_id = student_auth_recovery_codes.user_id
                  AND (action_grant.active_code_generation = student_auth_recovery_codes.generation
                       OR action_grant.pending_code_id = student_auth_recovery_codes.id)
-           )
-           AND NOT EXISTS (
+             )
+             AND NOT EXISTS (
                SELECT 1 FROM student_auth_reauth_attempts reauth
                WHERE reauth.user_id = student_auth_recovery_codes.user_id
                  AND (reauth.active_code_generation = student_auth_recovery_codes.generation
                       OR reauth.pending_code_id = student_auth_recovery_codes.id)
-           )`,
+             )
+           ORDER BY COALESCE(terminal_at, consumed_at, revoked_at, created_at), id
+           LIMIT ${SSO_CLEANUP_BATCH_SIZE} FOR UPDATE SKIP LOCKED
+         )
+         DELETE FROM student_auth_recovery_codes AS recovery_code USING batch WHERE recovery_code.id = batch.id`,
     );
     const attempts = await client.query(
-        `DELETE FROM student_auth_attempts
-         WHERE status IN ('consumed', 'failed')
-           AND expires_at <= clock_timestamp() - interval '7 days'
-           AND NOT EXISTS (SELECT 1 FROM student_auth_link_handoffs WHERE attempt_id = student_auth_attempts.id)`,
+        `WITH batch AS (
+           SELECT attempt.id FROM student_auth_attempts attempt
+           WHERE attempt.status IN ('consumed', 'failed')
+             AND attempt.expires_at <= clock_timestamp() - interval '7 days'
+             AND NOT EXISTS (SELECT 1 FROM student_auth_link_handoffs WHERE attempt_id = attempt.id)
+           ORDER BY attempt.expires_at, attempt.id LIMIT ${SSO_CLEANUP_BATCH_SIZE} FOR UPDATE SKIP LOCKED
+         )
+         DELETE FROM student_auth_attempts AS attempt USING batch WHERE attempt.id = batch.id`,
     );
     const result = {
         attemptsFailed: failed.rowCount ?? 0,
