@@ -1605,6 +1605,27 @@ test('link-confirmation endpoints are independently rate limited', async () => {
     });
 });
 
+test('passwordless signup stages are independently rate limited', async () => {
+    const signup = { context: async () => ({}), sendCode: async () => ({}), verifyCode: async () => ({}), complete: async () => ({}) };
+    await withServer(routerWith(stubFlow(), { linkLimiterMax: 1, signupService: () => signup as never }), async (baseUrl) => {
+        const post = (path: string, body: unknown) => fetch(`${baseUrl}${path}`, {
+            method: 'POST', headers: { 'content-type': 'application/json', origin: COMPLETION_ORIGIN }, body: JSON.stringify(body),
+        });
+        const handoff = { handoffId: ATTEMPT_ID, handoffSecret: 'secret' };
+        // One signup spends a request per stage, so each stage owns its
+        // bucket: exhausting context must not 429 the later stages.
+        assert.equal((await post('/signup/context', handoff)).status, 200);
+        assert.equal((await post('/signup/context', handoff)).status, 429);
+        assert.equal((await post('/signup/send-code', handoff)).status, 201);
+        assert.equal((await post('/signup/send-code', handoff)).status, 429);
+        assert.equal((await post('/signup/verify-code', { ...handoff, challengeId: ATTEMPT_ID, code: '123456' })).status, 200);
+        assert.equal((await post('/signup/verify-code', { ...handoff, challengeId: ATTEMPT_ID, code: '123456' })).status, 429);
+        const complete = { ...handoff, fullName: 'Stu Dent', ageAttested: true, termsAccepted: true, termsVersion: '2026-01', verificationConsent: true, noticeVersion: '2026-01' };
+        assert.equal((await post('/signup/complete', complete)).status, 201);
+        assert.equal((await post('/signup/complete', complete)).status, 429);
+    });
+});
+
 test('OpenAPI documents the SSO linking contract', () => {
     const spec = swaggerSpec as { paths: Record<string, unknown>; components: { schemas: Record<string, Record<string, unknown>> } };
     assert.ok(spec.paths['/api/auth/student/sso/reauth']);

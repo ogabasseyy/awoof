@@ -564,11 +564,19 @@ export class StudentAccountRecoveryService {
         return result.rows[0] ?? null;
     }
 
+    /**
+     * Supersede prior pending attempts when a new handle starts. Verified
+     * attempts are never touched here: their proofs already succeeded, so
+     * failing them would let any anonymous caller who knows the email
+     * cancel a victim's recovery during password choice, repeatedly, by
+     * starting over past the resend cooldown. Verified rows survive until
+     * completion (which fails its competitors) or expiry.
+     */
     private async failPriorAttempts(tx: PoolClient, userId: string): Promise<void> {
         await tx.query(
             `UPDATE student_auth_recovery_attempts
              SET status = 'failed', secret_hash = NULL
-             WHERE user_id = $1 AND status IN ('pending', 'verified')`,
+             WHERE user_id = $1 AND status = 'pending'`,
             [userId],
         );
     }

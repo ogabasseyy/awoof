@@ -394,7 +394,14 @@ export function createStudentSsoRouter(factory: FlowFactory = defaultFlow, optio
     const linkLimiter = studentSsoLinkLimiter(linkLimiterMax);
     const unlinkLimiter = studentSsoLinkLimiter(linkLimiterMax);
     const reauthMicrosoftLimiter = studentSsoLinkLimiter(linkLimiterMax);
-    const signupLimiter = studentSsoLinkLimiter(linkLimiterMax);
+    // One successful signup spends a request at each of the four stages,
+    // so the stages get separate IP buckets: a shared bucket would 429
+    // the third student behind a campus or carrier NAT before they can
+    // verify, past the point where waiting out the window still helps.
+    const signupContextLimiter = studentSsoLinkLimiter(linkLimiterMax);
+    const signupSendCodeLimiter = studentSsoLinkLimiter(linkLimiterMax);
+    const signupVerifyCodeLimiter = studentSsoLinkLimiter(linkLimiterMax);
+    const signupCompleteLimiter = studentSsoLinkLimiter(linkLimiterMax);
     const recoveryCodeGenerateLimiter = studentSsoLinkLimiter(linkLimiterMax);
     const recoveryCodeActivateLimiter = studentSsoLinkLimiter(linkLimiterMax);
     const recoveryCodeRemoveLimiter = studentSsoLinkLimiter(linkLimiterMax);
@@ -723,23 +730,23 @@ export function createStudentSsoRouter(factory: FlowFactory = defaultFlow, optio
         res.json({ success: true, data: result });
     }));
 
-    router.post('/signup/context', signupLimiter, exactOrigin, exactJson, asyncHandler(async (req, res) => {
+    router.post('/signup/context', signupContextLimiter, exactOrigin, exactJson, asyncHandler(async (req, res) => {
         if (!signupEnabled()) throw new ConflictError('Passwordless signup is unavailable');
         if (!req.body || typeof req.body !== 'object' || Array.isArray(req.body) || Object.keys(req.body).length !== 2) throw new BadRequestError('Passwordless signup request is invalid');
         const body = signupHandoffBody(req); const result = await signupFactory().context(await signupBinding(req, body)); responseHeaders(res); res.json({ success: true, data: result });
     }));
-    router.post('/signup/send-code', signupLimiter, exactOrigin, exactJson, asyncHandler(async (req, res) => {
+    router.post('/signup/send-code', signupSendCodeLimiter, exactOrigin, exactJson, asyncHandler(async (req, res) => {
         if (!signupEnabled()) throw new ConflictError('Passwordless signup is unavailable');
         if (!req.body || typeof req.body !== 'object' || Array.isArray(req.body) || Object.keys(req.body).length !== 2) throw new BadRequestError('Passwordless signup request is invalid');
         const body = signupHandoffBody(req); const result = await signupFactory().sendCode(await signupBinding(req, body)); responseHeaders(res); res.status(201).json({ success: true, data: result });
     }));
-    router.post('/signup/verify-code', signupLimiter, exactOrigin, exactJson, asyncHandler(async (req, res) => {
+    router.post('/signup/verify-code', signupVerifyCodeLimiter, exactOrigin, exactJson, asyncHandler(async (req, res) => {
         if (!signupEnabled()) throw new ConflictError('Passwordless signup is unavailable');
         const body = req.body as Record<string, unknown>; const handoff = signupHandoffBody(req);
         if (Object.keys(body).length !== 4 || typeof body.challengeId !== 'string' || typeof body.code !== 'string') throw new BadRequestError('Passwordless signup request is invalid');
         const result = await signupFactory().verifyCode({ ...await signupBinding(req, handoff), challengeId: body.challengeId, code: body.code }); responseHeaders(res); res.json({ success: true, data: result });
     }));
-    router.post('/signup/complete', signupLimiter, exactOrigin, exactJson, asyncHandler(async (req, res) => {
+    router.post('/signup/complete', signupCompleteLimiter, exactOrigin, exactJson, asyncHandler(async (req, res) => {
         if (!signupEnabled()) throw new ConflictError('Passwordless signup is unavailable');
         const body = req.body as Record<string, unknown>; const handoff = signupHandoffBody(req);
         const allowed = new Set(['handoffId', 'handoffSecret', 'fullName', 'ageAttested', 'termsAccepted', 'termsVersion', 'verificationConsent', 'noticeVersion']);

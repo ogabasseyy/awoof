@@ -515,6 +515,43 @@ test('recovery attempts verify across a stage-two key rotation in either directi
     }
 });
 
+test('anonymous restarts cannot cancel a verified recovery during password choice', async () => {
+    const pool = createTestPool();
+    const client = await pool.connect();
+    try {
+        const account = await seedRecoverableStudent(client);
+        let otp = '';
+        const service = new StudentAccountRecoveryService({
+            pool, recoveryCodeKey: 'test-recovery-code-key',
+            deliverOtp: async (_email, delivered) => { otp = delivered; return { success: true }; },
+            validatePassword: () => ({ valid: true, errors: [] }), hashPassword: async () => 'verified-survives-hash',
+        });
+        const victim = await service.start({ email: account.email, purpose: 'lost_access' });
+        await service.verify({ attemptId: victim.attemptId, secret: victim.secret, code: account.code, otp });
+        // Past the resend cooldown, an unauthenticated restart for the
+        // same email issues a fresh challenge — but the verified attempt
+        // whose proofs already succeeded must survive it.
+        await client.query(
+            `UPDATE verification_challenge_budgets
+             SET send_count = 0, resend_available_at = clock_timestamp() - interval '1 second'
+             WHERE purpose = 'student_account_recovery' AND subject_digest = $1`,
+            [challengeSubjectDigest('student_account_recovery', account.email)],
+        );
+        const restart = await service.start({ email: account.email, purpose: 'lost_access' });
+        assert.notEqual(restart.attemptId, victim.attemptId);
+        const status = await client.query<{ status: string }>(
+            'SELECT status FROM student_auth_recovery_attempts WHERE id = $1', [victim.attemptId],
+        );
+        assert.equal(status.rows[0]!.status, 'verified', 'verified attempts survive anonymous restarts until completion or expiry');
+        await service.complete({ attemptId: victim.attemptId, secret: victim.secret, password: 'ValidNew1!' });
+        const after = await client.query<{ password_hash: string }>('SELECT password_hash FROM users WHERE id = $1', [account.userId]);
+        assert.equal(after.rows[0]!.password_hash, 'verified-survives-hash');
+    } finally {
+        client.release();
+        await pool.end();
+    }
+});
+
 test('recovery completion invalidates pending SSO attempts despite a messy stored email', async () => {
     const pool = createTestPool();
     const client = await pool.connect();
