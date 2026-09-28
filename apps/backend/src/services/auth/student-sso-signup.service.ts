@@ -65,7 +65,7 @@ export class StudentSsoSignupService {
         if (!policy) throw invalid();
         await tx.query('SELECT id FROM universities WHERE id = $1 FOR UPDATE', [policy.university_id]);
     }
-    private async load(tx: PoolClient, raw: { handoffId: unknown; handoffSecret: unknown; browserBinding: unknown }): Promise<{ input: ReturnType<typeof checked>; handoff: Handoff; signup: Signup; observation: ReturnType<typeof decodeProviderObservation>; email: string; universityId: string }> {
+    private async load(tx: PoolClient, raw: { handoffId: unknown; handoffSecret: unknown; browserBinding: unknown }): Promise<{ input: ReturnType<typeof checked>; handoff: Handoff; signup: Signup; observation: ReturnType<typeof decodeProviderObservation>; email: string; universityId: string; rememberMe: boolean }> {
         this.enabled(); const input = checked(raw);
         // The ten-minute authorization boundary is enforced against the
         // database clock under lock: a lagging application host must not
@@ -76,7 +76,7 @@ export class StudentSsoSignupService {
         if (!handoff || handoff.consumed_at || handoff.secret_hash !== hashMicrosoftAttemptSecret(input.handoffSecret) || handoff.browser_binding_hash !== hashMicrosoftAttemptSecret(input.browserBinding)) throw invalid();
         let observation; try { observation = decodeProviderObservation(decryptMicrosoftAttemptVerifier(handoff.encrypted_observation, this.deps.attemptKey!, handoff.id)); } catch { throw invalid(); }
         if (observation.provider !== 'microsoft' || this.deps.isProviderEnabled?.('microsoft') === false || !observation.email) throw invalid();
-        const attempt = (await tx.query<{ requested_email: string }>('SELECT requested_email FROM student_auth_attempts WHERE id = $1 FOR UPDATE', [handoff.attempt_id])).rows[0];
+        const attempt = (await tx.query<{ requested_email: string; remember_me: boolean }>('SELECT requested_email, remember_me FROM student_auth_attempts WHERE id = $1 FOR UPDATE', [handoff.attempt_id])).rows[0];
         if (!attempt) throw invalid();
         let policy; try { policy = await assertCurrentLoginPolicy(tx, handoff.policy_id, handoff.policy_version, attempt.requested_email); } catch (error) { if (error instanceof StudentSsoAuthorityInvalidatedError) throw invalid(); throw error; }
         if (policy.provider !== observation.provider || policy.issuer !== observation.issuer || normalizeMailbox(observation.email) !== normalizeMailbox(attempt.requested_email)) throw invalid();
@@ -87,7 +87,7 @@ export class StudentSsoSignupService {
             VALUES ($1, $2, $3, $4) ON CONFLICT (handoff_id) DO NOTHING`, [input.handoffId, secret, hashMicrosoftAttemptSecret(input.browserBinding), handoff.expires_at]);
         const signup = (await tx.query<Signup>('SELECT * FROM student_auth_signup_challenges WHERE handoff_id = $1 AND expires_at > clock_timestamp() FOR UPDATE', [input.handoffId])).rows[0];
         if (!signup || signup.secret_hash !== secret || signup.browser_binding_hash !== hashMicrosoftAttemptSecret(input.browserBinding) || signup.status === 'consumed') throw invalid();
-        return { input, handoff, signup, observation, email: normalizeMailbox(observation.email), universityId: policy.universityId };
+        return { input, handoff, signup, observation, email: normalizeMailbox(observation.email), universityId: policy.universityId, rememberMe: attempt.remember_me === true };
     }
     async context(input: { handoffId: unknown; handoffSecret: unknown; browserBinding: unknown }): Promise<{ email: string; universityId: string; termsVersion: string; noticeVersion: string; noticeText: string; expiresAt: string }> {
         this.enabled();
@@ -193,7 +193,7 @@ export class StudentSsoSignupService {
             await tx.query(`INSERT INTO verification_consents (user_id, kind, university_id, notice_version, accepted) VALUES ($1, 'processing', $2, $3, true)`, [user.id, state.universityId, VERIFICATION_NOTICE_VERSION]);
             await recordPasswordlessSignupMailboxProof(tx, user.id, state.signup.mailbox_challenge_id!);
             const identity = (await tx.query<{ id: string }>(`INSERT INTO student_auth_identities (user_id, university_id, provider, issuer, subject, observed_email) VALUES ($1, $2, $3, $4, $5, $6) RETURNING id`, [user.id, state.universityId, state.observation.provider, state.observation.issuer, state.observation.subject, state.observation.email])).rows[0]; if (!identity) throw invalid();
-            const tokens = await issueSessionInTransaction(tx, { userId: user.id, email: user.email, role: 'student' }); await tx.query('UPDATE users SET active_session_auth_identity_id = $2 WHERE id = $1', [user.id, identity.id]);
+            const tokens = await issueSessionInTransaction(tx, { userId: user.id, email: user.email, role: 'student' }, state.rememberMe); await tx.query('UPDATE users SET active_session_auth_identity_id = $2 WHERE id = $1', [user.id, identity.id]);
             const consumed = await tx.query(`UPDATE student_auth_link_handoffs
                 SET consumed_at = clock_timestamp(), secret_hash = NULL, browser_binding_hash = NULL, encrypted_observation = NULL
                 WHERE id = $1 AND consumed_at IS NULL`, [state.handoff.id]); if (consumed.rowCount !== 1) throw invalid(); await tx.query(`UPDATE student_auth_signup_challenges

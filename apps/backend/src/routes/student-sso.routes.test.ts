@@ -207,12 +207,16 @@ test('Microsoft fresh-reauth routes preserve the browser binding and never use t
         },
     };
     const flow = stubFlow({ callback: async () => { throw new Error('ordinary login callback must not run'); } });
-    await withServer(routerWith(flow, { reauthService: () => reauth as never }), async (baseUrl) => {
+    await withServer(routerWith(flow, { reauthService: () => reauth as never, linkLimiterMax: 1 }), async (baseUrl) => {
         const start = await fetch(`${baseUrl}/reauth/microsoft/start`, {
             method: 'POST', headers: authHeaders(studentToken(true)), body: JSON.stringify({ purpose: 'link' }),
         });
         assert.equal(start.status, 201);
         assert.deepEqual(await start.json(), { success: true, data: { attemptId: reauthAttemptId, authorizationUrl: 'https://provider.example.invalid/fresh' } });
+        const exhaustedStart = await fetch(`${baseUrl}/reauth/microsoft/start`, {
+            method: 'POST', headers: authHeaders(studentToken(true)), body: JSON.stringify({ purpose: 'link' }),
+        });
+        assert.equal(exhaustedStart.status, 429);
         const [reauthCookie] = parseSetCookies(start);
         assert.ok(reauthCookie);
         assert.match(reauthCookie, new RegExp(`^awoof_reauth_${reauthAttemptId}=reauth-browser;`));
@@ -232,6 +236,8 @@ test('Microsoft fresh-reauth routes preserve the browser binding and never use t
             headers: { ...authHeaders(studentToken(true)), Cookie: `awoof_reauth_${reauthAttemptId}=reauth-browser` },
             body: JSON.stringify({ attemptId: reauthAttemptId }),
         });
+        // Exhausting the start-stage IP budget must not strand a proof that
+        // has already returned from the provider.
         assert.equal(finish.status, 201);
         assert.equal((await finish.json()).data.grantId, 'grant-id');
         assert.match(parseSetCookies(finish)[0]!, new RegExp(`awoof_reauth_${reauthAttemptId}=;`));

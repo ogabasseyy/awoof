@@ -393,7 +393,12 @@ export function createStudentSsoRouter(factory: FlowFactory = defaultFlow, optio
     const reauthLimiter = studentSsoLinkLimiter(linkLimiterMax);
     const linkLimiter = studentSsoLinkLimiter(linkLimiterMax);
     const unlinkLimiter = studentSsoLinkLimiter(linkLimiterMax);
-    const reauthMicrosoftLimiter = studentSsoLinkLimiter(linkLimiterMax);
+    // Provider start traffic can be exhausted while a student is in the
+    // browser redirect. Keep the authenticated finish budget independent so
+    // an already-completed proof cannot be stranded by other starts on the
+    // same campus or carrier IP.
+    const reauthMicrosoftStartLimiter = studentSsoLinkLimiter(linkLimiterMax);
+    const reauthMicrosoftFinishLimiter = studentSsoLinkLimiter(linkLimiterMax);
     // One successful signup spends a request at each of the four stages,
     // so the stages get separate IP buckets: a shared bucket would 429
     // the third student behind a campus or carrier NAT before they can
@@ -798,7 +803,7 @@ export function createStudentSsoRouter(factory: FlowFactory = defaultFlow, optio
         res.status(201).json({ success: true, data: result });
     }));
 
-    router.post('/reauth/microsoft/start', authenticate, requireRole('student'), reauthMicrosoftLimiter, exactOrigin, exactJson, asyncHandler(async (req, res) => {
+    router.post('/reauth/microsoft/start', authenticate, requireRole('student'), reauthMicrosoftStartLimiter, exactOrigin, exactJson, asyncHandler(async (req, res) => {
         const body = req.body as { purpose?: unknown; targetIdentityId?: unknown; pendingCodeId?: unknown };
         if (!body || typeof body !== 'object' || Array.isArray(body)
             || Object.keys(body).some((key) => key !== 'purpose' && key !== 'targetIdentityId' && key !== 'pendingCodeId')
@@ -816,7 +821,7 @@ export function createStudentSsoRouter(factory: FlowFactory = defaultFlow, optio
         res.status(201).json({ success: true, data: { attemptId: result.attemptId, authorizationUrl: result.authorizationUrl } });
     }));
 
-    router.post('/reauth/finish', authenticate, requireRole('student'), reauthMicrosoftLimiter, exactOrigin, exactJson, asyncHandler(async (req, res) => {
+    router.post('/reauth/finish', authenticate, requireRole('student'), reauthMicrosoftFinishLimiter, exactOrigin, exactJson, asyncHandler(async (req, res) => {
         const body = req.body as { attemptId?: unknown };
         if (!body || typeof body !== 'object' || Array.isArray(body) || Object.keys(body).length !== 1 || typeof body.attemptId !== 'string' || !UUID.test(body.attemptId)) throw new BadRequestError('Student SSO reauthentication request is invalid');
         const attemptId = body.attemptId;

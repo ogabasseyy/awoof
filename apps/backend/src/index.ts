@@ -151,8 +151,19 @@ export class App {
         },
         credentials: true,
       });
+    // Student SSO may finish on a dedicated frontend origin distinct from
+    // FRONTEND_URL. Keep the extra CORS origin scoped to this namespace;
+    // route handlers still enforce the exact configured origin.
+    const studentSsoCors = cors({
+      origin: (origin, callback) => callback(null, origin === config.studentSso.completionUrl?.origin),
+      credentials: true,
+    });
     this.app.use((req, res, next) => {
       if (isMicrosoftRoute(req.path)) return next();
+      const completionOrigin = config.studentSso.completionUrl?.origin;
+      if (isStudentSsoRoute(req.path) && completionOrigin && req.header('origin') === completionOrigin) {
+        return studentSsoCors(req, res, next);
+      }
       merchantCors(req, res, next);
     });
 

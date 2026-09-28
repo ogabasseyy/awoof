@@ -22,7 +22,7 @@ const secret = () => randomBytes(32).toString('hex');
 
 async function withPool<T>(work: (pool: Pool) => Promise<T>): Promise<T> { const pool = createTestPool(); const c = await pool.connect(); try { await assertFixtureDatabase(c); } finally { c.release(); } try { return await work(pool); } finally { await pool.end(); } }
 
-async function seed(client: PoolClient, key: string, options: { expired?: boolean; handoffLifetimeMs?: number; provider?: 'google' | 'microsoft' } = {}) {
+async function seed(client: PoolClient, key: string, options: { expired?: boolean; handoffLifetimeMs?: number; provider?: 'google' | 'microsoft'; rememberMe?: boolean } = {}) {
     const suffix = label(), domain = `signup-${suffix}.school.example`, email = `ada-${suffix}@${domain}`;
     const provider = options.provider ?? 'microsoft';
     const admin = (await client.query<{ id: string }>(`INSERT INTO users (email, role) VALUES ($1, 'admin') RETURNING id`, [`admin-${suffix}@example.invalid`])).rows[0]!.id;
@@ -33,7 +33,7 @@ async function seed(client: PoolClient, key: string, options: { expired?: boolea
     await client.query(`INSERT INTO institution_login_domains (domain, university_id, is_active) VALUES ($1, $2, true)`, [domain, university]);
     await client.query(`INSERT INTO institution_login_domain_providers (domain, university_id, provider, policy_id) VALUES ($1, $2, $3, $4)`, [domain, university, provider, policy.id]);
     const expiry = options.expired ? new Date(Date.now() - 1_000) : new Date(Date.now() + (options.handoffLifetimeMs ?? 9 * 60_000));
-    const attempt = (await client.query<{ id: string }>(`INSERT INTO student_auth_attempts (policy_id, policy_version, provider, requested_email, state_hash, callback_cookie_hash, finish_secret_hash, encrypted_verifier, nonce, encrypted_observation, status, expires_at, remember_me) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,NULL,'pending',$10,false) RETURNING id`, [policy.id, policy.version, provider, email, secret(), secret(), secret(), secret(), secret(), expiry])).rows[0]!.id;
+    const attempt = (await client.query<{ id: string }>(`INSERT INTO student_auth_attempts (policy_id, policy_version, provider, requested_email, state_hash, callback_cookie_hash, finish_secret_hash, encrypted_verifier, nonce, encrypted_observation, status, expires_at, remember_me) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,NULL,'pending',$10,$11) RETURNING id`, [policy.id, policy.version, provider, email, secret(), secret(), secret(), secret(), secret(), expiry, options.rememberMe ?? false])).rows[0]!.id;
     const handoffId = randomUUID(), handoffSecret = secret(), browser = secret(); const obs = { provider, issuer, subject: `subject-${suffix}`, email, mailboxVerified: true, realm, schoolMembershipAttested: false, objectId: null };
     await client.query(`INSERT INTO student_auth_link_handoffs (id, attempt_id, secret_hash, encrypted_observation, policy_id, policy_version, browser_binding_hash, expires_at) VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`, [handoffId, attempt, hashMicrosoftAttemptSecret(handoffSecret), encryptMicrosoftAttemptVerifier(JSON.stringify(obs), key, handoffId), policy.id, policy.version, hashMicrosoftAttemptSecret(browser), expiry]);
     return { email, university, attemptId: attempt, handoffId, handoffSecret, browser, subject: obs.subject, expiresAt: expiry, issuer, tenant };
@@ -73,11 +73,11 @@ async function seedVerifiedLinkOwner(client: PoolClient, input: { email: string;
     return { userId, sid };
 }
 
-test('passwordless signup creates one passwordless account, mailbox proof, identity and session but no enrollment evidence', async () => {
+test('passwordless signup preserves remember-me for its session but creates no enrollment evidence', async () => {
     await withPool(async pool => {
         const key = randomBytes(32).toString('base64url'); let code = '';
         const service = new StudentSsoSignupService({ pool, attemptKey: key, isEnabled: () => true, isProviderEnabled: () => true, deliverOtp: async (_email, sent) => { code = sent; return { success: true }; } });
-        const c = await pool.connect(); let state; try { state = await seed(c, key); } finally { c.release(); }
+        const c = await pool.connect(); let state; try { state = await seed(c, key, { rememberMe: true }); } finally { c.release(); }
         const ctx = await service.context({ handoffId: state.handoffId, handoffSecret: state.handoffSecret, browserBinding: state.browser });
         assert.equal(ctx.noticeText, VERIFICATION_NOTICE_TEXT, 'signup must present the processing notice text before recording consent');
         await assert.rejects(service.complete({ handoffId: state.handoffId, handoffSecret: state.handoffSecret, browserBinding: state.browser, fullName: 'Ada Student', ageAttested: true, termsAccepted: true, termsVersion: STUDENT_TERMS_VERSION, verificationConsent: true, noticeVersion: VERIFICATION_NOTICE_VERSION }), /not available/i);
@@ -113,6 +113,8 @@ test('passwordless signup creates one passwordless account, mailbox proof, ident
         }, 'successful passwordless signup immediately scrubs its handoff, signup, and OTP digests');
         const rows = await pool.query<{ users: string; identities: string; sessions: string; enrollment: string; proofs: string }>(`SELECT (SELECT count(*)::text FROM users WHERE id=$1) users, (SELECT count(*)::text FROM student_auth_identities WHERE user_id=$1) identities, (SELECT count(*)::text FROM users WHERE id=$1 AND active_session_id IS NOT NULL) sessions, (SELECT count(*)::text FROM eligibility_evidence e JOIN students s ON s.id=e.student_id WHERE s.user_id=$1) enrollment, (SELECT count(*)::text FROM user_email_proofs WHERE user_id=$1) proofs`, [completed.user.id]);
         assert.deepEqual(rows.rows[0], { users: '1', identities: '1', sessions: '1', enrollment: '0', proofs: '1' });
+        const sessionDuration = await pool.query<{ issued_at: Date; expires_at: Date }>('SELECT active_session_issued_at AS issued_at, refresh_token_expires_at AS expires_at FROM users WHERE id = $1', [completed.user.id]);
+        assert.ok(sessionDuration.rows[0]!.expires_at.getTime() - sessionDuration.rows[0]!.issued_at.getTime() >= 29 * 24 * 60 * 60 * 1000, 'the original remember-me choice gives passwordless signup the 30-day refresh lifetime');
         // Models a commit-success/response-loss retry: the consumed handoff
         // cannot issue a second account/session; ordinary SSO can now locate
         // the durable provider identity on a fresh provider attempt.

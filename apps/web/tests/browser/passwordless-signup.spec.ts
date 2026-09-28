@@ -191,7 +191,7 @@ test('ambiguous signup completion sends a fresh sign-in restart instead of an un
     api.assertNoUnexpectedRequests();
 });
 
-test('a signup conflict routes to password sign-in with a return to linking instead of a retry loop', async ({ page }) => {
+test('a signup conflict routes to linked sign-in or recovery before security-page linking', async ({ page }) => {
     const api = await installSyntheticApi(page);
     await page.route(`${apiOrigin}/api/auth/student/sso/signup/**`, async (route) => {
         const path = new URL(route.request().url()).pathname;
@@ -199,8 +199,7 @@ test('a signup conflict routes to password sign-in with a return to linking inst
         if (path.endsWith('/send-code')) return route.fulfill({ status: 201, json: { success: true, data: { challengeId: '73000000-0000-4000-8000-000000000001', expiresAt: expiresAt() } }, headers });
         if (path.endsWith('/verify-code')) return route.fulfill({ json: { success: true, data: { verified: true, expiresAt: expiresAt() } }, headers });
         // The school email already belongs to an Awoof account: signup can
-        // never succeed for this handoff, so the page routes to password
-        // sign-in with a return to the linking flow that consumes it.
+        // never succeed and this proof cannot authorize linking it.
         return route.fulfill({ status: 409, json: { success: false, error: { message: 'Use existing-account sign-in or recovery.', code: 'SSO_SIGNUP_EXISTING_ACCOUNT', statusCode: 409 } }, headers });
     });
     await page.goto('/auth/student/login');
@@ -215,10 +214,15 @@ test('a signup conflict routes to password sign-in with a return to linking inst
     await page.getByLabel('I consent to the processing notice').check();
     await page.getByRole('button', { name: 'Create passwordless account' }).click();
     await expect(page.getByText('An Awoof account already uses this school email')).toBeVisible();
-    await expect(page.getByRole('link', { name: 'Sign in to link instead' })).toHaveAttribute('href', '/auth/student/login?redirect=%2Fauth%2Fstudent%2Fsso%2Fonboarding');
+    await expect(page.getByText(/Sign in using a method already linked to that account/)).toBeVisible();
+    await expect(page.getByText(/this email alone does not authorize it/)).toBeVisible();
+    await expect(page.getByRole('link', { name: 'Sign in to account security' })).toHaveAttribute('href', '/auth/student/login?redirect=%2Fstudent%2Fsecurity');
+    await expect(page.getByRole('link', { name: 'Recover account access' })).toHaveAttribute('href', '/auth/student/recovery');
     expect(await page.getByRole('button', { name: 'Create passwordless account' }).count()).toBe(0);
-    // The handoff stays live for the linking flow to consume.
-    expect(await page.evaluate((key) => sessionStorage.getItem(key), HANDOFF_KEY)).not.toBeNull();
+    // Signup proof cannot authorize linking an existing account; the next
+    // step is an already-linked login/recovery and the independent fresh-proof
+    // flow from Account security.
+    expect(await page.evaluate((key) => sessionStorage.getItem(key), HANDOFF_KEY)).toBeNull();
     api.assertNoUnexpectedRequests();
 });
 

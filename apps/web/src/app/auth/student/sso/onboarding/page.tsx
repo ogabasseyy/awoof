@@ -169,13 +169,17 @@ function SignupOnboarding() {
                 setError('The Terms or processing notice changed while you were signing up. Review the new text and accept again.');
             } else if (statusOf(cause) === 409 && (bodyOf(cause) as { error?: { code?: unknown } } | undefined)?.error?.code === 'SSO_SIGNUP_EXISTING_ACCOUNT') {
                 // Only the distinct existing-account conflict routes to
-                // linking: the school email already belongs to an Awoof
-                // account (or the subject is linked elsewhere), this
-                // signup can never succeed, but the handoff stays live.
+                // linked sign-in/recovery guidance: the signup proof is not
+                // authority over an existing account.
                 // Every other 409 (expired handoff, withdrawn policy)
                 // keeps the generic retry instead of misdirecting an
-                // unusable handoff into password linking.
-                setExistingAccount(true);
+                // unusable handoff into existing-account guidance.
+                // This handoff cannot authorize access to an existing
+                // account. The safe continuation is its already-linked
+                // sign-in/recovery path, followed by the normal fresh-proof
+                // link flow from account security; discard this signup
+                // handoff so it cannot be mistaken for link authority.
+                forgetHandoff(); setExistingAccount(true);
             } else if (axios.isAxiosError(cause) && (!cause.response || cause.response.status >= 500)) {
                 // Response-loss/5xx after account creation is ambiguous:
                 // the handoff was consumed with the account, so no retry of
@@ -222,7 +226,7 @@ function SignupOnboarding() {
     if (createdDestination !== null) return <AuthShell role="student" title="Account created" subtitle="Your passwordless account is ready." footer={null}><p role="status" className="text-left text-sm">Recovery is not configured, and losing your school sign-in may prevent account access. Save a recovery code so you can recover with your school mailbox.</p><div className="mt-5 space-y-2"><Button className="w-full rounded-full" asChild><Link href="/student/security">Save your recovery code</Link></Button><Button variant="outline" className="w-full rounded-full" onClick={() => { window.location.href = createdDestination; }}>Continue</Button></div></AuthShell>;
     if (!context) return <AuthShell role="student" title="Finish setting up Awoof" subtitle="Checking your school sign-in." footer={null}><p role="status">{error ?? 'Checking the pending sign-in…'}</p>{error ? <Button className="mt-5 w-full rounded-full" asChild><Link href="/auth/student/login">Restart Microsoft sign-in</Link></Button> : null}</AuthShell>;
     if (ambiguousComplete) return <AuthShell role="student" title="Finish setting up Awoof" subtitle="Setup may have completed." footer={null}><p role="alert">Setup may have finished but the confirmation was lost. Sign in with Microsoft again: if your account was created, you will be signed straight in.</p><Button className="mt-5 w-full rounded-full" asChild><Link href="/auth/student/login">Sign in with Microsoft</Link></Button></AuthShell>;
-    if (existingAccount) return <AuthShell role="student" title="Finish setting up Awoof" subtitle="An account already uses this email." footer={null}><p role="alert">An Awoof account already uses this school email, so a new account cannot be created. Sign in to that account with your password — you will return here to link Microsoft school sign-in instead.</p><Button className="mt-5 w-full rounded-full" asChild><Link href={`/auth/student/login?redirect=${encodeURIComponent(ONBOARDING_PATH)}`}>Sign in to link instead</Link></Button></AuthShell>;
+    if (existingAccount) return <AuthShell role="student" title="Finish setting up Awoof" subtitle="An account already uses this email." footer={null}><p role="alert">An Awoof account already uses this school email, so this setup cannot create another. Sign in using a method already linked to that account, or recover it. Once signed in, use Account security to add Microsoft; linking requires fresh proof and this email alone does not authorize it.</p><Button className="mt-5 w-full rounded-full" asChild><Link href="/auth/student/login?redirect=%2Fstudent%2Fsecurity">Sign in to account security</Link></Button><Link className="mt-4 block text-center text-sm text-primary underline" href="/auth/student/recovery">Recover account access</Link></AuthShell>;
     if (linkExpired) return <AuthShell role="student" title="Finish setting up Awoof" subtitle="This setup link expired." footer={null}><p role="alert">This setup link expired before setup finished. Start Microsoft sign-in again for a fresh link.</p><Button className="mt-5 w-full rounded-full" asChild><Link href="/auth/student/login">Restart Microsoft sign-in</Link></Button></AuthShell>;
     return <AuthShell role="student" title="Finish setting up Awoof" subtitle="Create an account without a password." footer={null}>
         <p className="text-left text-sm text-slate-600">Microsoft sign-in succeeded. Confirm <strong>{context.email}</strong> for your Awoof account and recovery. Enrollment is pending; confirming this email does not verify current enrollment or independently verify age.</p>

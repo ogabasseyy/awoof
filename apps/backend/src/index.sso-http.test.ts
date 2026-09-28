@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import http from 'node:http';
 import test from 'node:test';
 import { db } from './config/database.js';
+import { config } from './config/env.js';
 import { createApp, type AppOptions } from './index.js';
 
 async function mountedServer(options?: AppOptions): Promise<{ baseUrl: string; close: () => Promise<void> }> {
@@ -88,5 +89,41 @@ test('mounted SSO callback skips the shared quota and reaches its redirect', asy
         await pastQuota.text();
     } finally {
         await fixture.close();
+    }
+});
+
+test('student SSO CORS permits its configured completion origin without opening other origins', async () => {
+    const originalQuery = db.query.bind(db);
+    const originalCompletionUrl = config.studentSso.completionUrl;
+    (db as unknown as { query: typeof db.query }).query = (async () => ({ rows: [], rowCount: 0 })) as never;
+    config.studentSso.completionUrl = new URL('https://sso-completion.example.invalid/auth/student/sso/complete');
+    const fixture = await mountedServer();
+    try {
+        const allowed = await fetch(`${fixture.baseUrl}/api/auth/student/sso/reauth/finish`, {
+            method: 'OPTIONS',
+            headers: {
+                Origin: 'https://sso-completion.example.invalid',
+                'Access-Control-Request-Method': 'POST',
+                'Access-Control-Request-Headers': 'authorization,content-type',
+            },
+        });
+        assert.equal(allowed.status, 204);
+        assert.equal(allowed.headers.get('access-control-allow-origin'), 'https://sso-completion.example.invalid');
+        assert.equal(allowed.headers.get('access-control-allow-credentials'), 'true');
+
+        const rejected = await fetch(`${fixture.baseUrl}/api/auth/student/sso/reauth/finish`, {
+            method: 'OPTIONS',
+            headers: {
+                Origin: 'https://untrusted.example.invalid',
+                'Access-Control-Request-Method': 'POST',
+                'Access-Control-Request-Headers': 'authorization,content-type',
+            },
+        });
+        assert.notEqual(rejected.headers.get('access-control-allow-origin'), 'https://untrusted.example.invalid');
+        await rejected.text();
+    } finally {
+        await fixture.close();
+        config.studentSso.completionUrl = originalCompletionUrl;
+        (db as unknown as { query: typeof db.query }).query = originalQuery;
     }
 });
