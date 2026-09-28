@@ -11,6 +11,17 @@ test('preserves a same-origin student return path and its query context', () => 
   );
 });
 
+test('permits the onboarding continuation as the only auth-route return', () => {
+  assert.equal(
+    resolveStudentReturn('/auth/student/sso/onboarding', origin),
+    '/auth/student/sso/onboarding',
+  );
+  assert.equal(
+    resolveStudentReturn('/auth/student/sso/onboarding?mode=signup', origin),
+    '/auth/student/sso/onboarding?mode=signup',
+  );
+});
+
 test('rejects foreign, credentialed, malformed, and authentication-loop returns', () => {
   for (const candidate of [
     'https://evil.test',
@@ -21,6 +32,7 @@ test('rejects foreign, credentialed, malformed, and authentication-loop returns'
     'https://awoof.test/%',
     '/auth/student/login',
     '/auth/login?redirect=%2Fmarketplace',
+    '/auth/student/sso/onboarding/extra',
   ]) {
     assert.equal(resolveStudentReturn(candidate, origin), '/marketplace');
   }

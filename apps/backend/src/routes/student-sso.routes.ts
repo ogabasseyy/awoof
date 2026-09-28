@@ -1004,7 +1004,7 @@ export default createStudentSsoRouter();
  *             properties:
  *               email: { type: string, format: email, maxLength: 254 }
  *               rememberMe: { type: boolean }
- *               returnPath: { type: string, description: Same-origin relative path, never an auth route }
+ *               returnPath: { type: string, description: Same-origin relative path; the SSO onboarding continuation is the only permitted auth route }
  *     responses:
  *       201:
  *         description: Pending SSO attempt with browser binding

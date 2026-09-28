@@ -29,7 +29,7 @@ test('an unlinked Microsoft handoff creates a passwordless pending-enrollment ac
     await page.getByRole('button', { name: 'Confirm email' }).click();
     await page.getByLabel('Full name').fill('Synthetic Student');
     await expect(page.getByText('Synthetic verification processing notice.')).toBeVisible();
-    await expect(page.getByRole('link', { name: 'Terms of Service' })).toHaveAttribute('href', '/terms');
+    await expect(page.getByRole('link', { name: 'Terms of Service', exact: true })).toHaveAttribute('href', '/terms');
     await expect(page.getByRole('button', { name: 'Create passwordless account' })).toBeDisabled();
     await page.getByLabel('I am at least 18 years old').check();
     await page.getByLabel('I accept the current Terms').check();

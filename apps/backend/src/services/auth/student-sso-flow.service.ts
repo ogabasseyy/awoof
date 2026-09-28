@@ -192,9 +192,14 @@ export function resolveStudentSsoReturnPath(candidate: unknown, origin: string):
     } catch {
         throw new BadRequestError('Student SSO return path is invalid');
     }
+    // The SSO onboarding continuation is the one permitted auth route: it
+    // is a terminal link/signup page, not a login page, so returning to
+    // it cannot loop back into authentication on its own. The match is
+    // the exact pathname; deeper paths stay rejected.
+    const isAuthRoute = resolved.pathname === '/auth' || resolved.pathname.startsWith('/auth/');
     if ((resolved.protocol !== 'http:' && resolved.protocol !== 'https:')
         || resolved.origin !== origin || resolved.username || resolved.password
-        || resolved.pathname === '/auth' || resolved.pathname.startsWith('/auth/')) {
+        || (isAuthRoute && resolved.pathname !== '/auth/student/sso/onboarding')) {
         throw new BadRequestError('Student SSO return path is invalid');
     }
     return `${resolved.pathname}${resolved.search}${resolved.hash}`;

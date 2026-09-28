@@ -17,7 +17,7 @@ import { Button } from '@/components/ui/button';
 import { useAuth } from '@/contexts/AuthContext';
 import { publicApiClient, studentSsoApiClient, studentSsoSessionApiClient } from '@/lib/api-client';
 import { clearTokens, getSessionSnapshot } from '@/lib/auth';
-import { resolveStudentReturn } from '@/lib/student-return';
+import { STUDENT_SSO_ONBOARDING_RETURN_PATH, resolveStudentReturn } from '@/lib/student-return';
 import {
     clearSsoAttempt,
     clearSsoHandoff,
@@ -53,16 +53,7 @@ function isRetryableFinishConflict(cause: unknown): boolean {
     return typeof details === 'object' && details !== null && (details as { retryable?: unknown }).retryable === true;
 }
 
-type RecoveryIntent = { purpose: 'recovery_code_generate' | 'recovery_code_activate'; pendingCodeId?: string };
 const RECOVERY_INTENT_KEY = 'awoof.recovery.intent.v1.tab';
-function readRecoveryIntent(): RecoveryIntent | null {
-    try {
-        const raw = sessionStorage.getItem(RECOVERY_INTENT_KEY); if (!raw) return null;
-        const value = JSON.parse(raw) as Partial<RecoveryIntent>;
-        return (value.purpose === 'recovery_code_generate' || value.purpose === 'recovery_code_activate')
-            && (value.pendingCodeId === undefined || typeof value.pendingCodeId === 'string') ? value as RecoveryIntent : null;
-    } catch { return null; }
-}
 function clearRecoveryIntent(): void { try { sessionStorage.removeItem(RECOVERY_INTENT_KEY); } catch { /* no browser persistence available */ } }
 
 function formatPendingRemaining(deadlineMs: number, nowMs: number): string {
@@ -462,8 +453,8 @@ function StudentSsoCompleteInner() {
             // waiting link handoff must survive this authenticated
             // completion, unlike a stale handoff after an ordinary login.
             // The continuation consumes it; the server stays authoritative.
-            const onboardingReturn = record.returnPath === '/auth/student/sso/onboarding'
-                || record.returnPath.startsWith('/auth/student/sso/onboarding?');
+            const onboardingReturn = record.returnPath === STUDENT_SSO_ONBOARDING_RETURN_PATH
+                || record.returnPath.startsWith(`${STUDENT_SSO_ONBOARDING_RETURN_PATH}?`);
             if (!onboardingReturn) clearSsoHandoff(storage);
             if (!committed.committed) {
                 setView({ kind: 'discarded' });

@@ -42,10 +42,6 @@ function formatPendingRemaining(deadlineMs: number, nowMs: number): string {
 
 const IDENTITIES_UNAVAILABLE = 'School sign-ins could not be loaded. Sign in again and retry.';
 
-/** Only opaque server ids and operation names survive a provider redirect. No grant, code, or password is persisted. */
-function saveIntent(intent: { purpose: 'recovery_code_generate' | 'recovery_code_activate'; pendingCodeId?: string }): boolean {
-    try { sessionStorage.setItem(intentKey, JSON.stringify(intent)); return true; } catch { return false; }
-}
 function pendingIntent(): string | null { try { const value = JSON.parse(sessionStorage.getItem(intentKey) ?? '') as { purpose?: unknown; pendingCodeId?: unknown }; return value.purpose === 'recovery_code_activate' && typeof value.pendingCodeId === 'string' ? value.pendingCodeId : null; } catch { return null; } }
 
 export default function StudentSecurityPage() {

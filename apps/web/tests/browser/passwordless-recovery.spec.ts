@@ -747,7 +747,9 @@ test('marketplace hides the signup recovery offer once a code exists', async ({ 
     await page.evaluate(() => sessionStorage.setItem('awoof.passwordless-signup-fresh', '1'));
     await page.goto('/marketplace');
     await expect(page.getByText('losing your school sign-in may prevent account access.')).toHaveCount(0);
-    expect(await page.evaluate(() => sessionStorage.getItem('awoof.passwordless-signup-fresh'))).toBeNull();
+    // The marker clears in the status response handler, which can land
+    // after the hidden-offer assertion, so poll instead of reading once.
+    await expect.poll(() => page.evaluate(() => sessionStorage.getItem('awoof.passwordless-signup-fresh'))).toBeNull();
     api.assertNoUnexpectedRequests();
 });
 
