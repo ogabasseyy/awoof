@@ -462,6 +462,17 @@ export function createStudentSsoRouter(factory: FlowFactory = defaultFlow, optio
         }
         next();
     };
+    // The Microsoft proof ceremony is initiated by Account security on the
+    // trusted application origin, while its callback returns to the separate
+    // completion origin. Allow both only for the initiation request; finish
+    // remains pinned to the completion origin above.
+    const exactReauthStartOrigin = (req: Request, _res: Response, next: NextFunction): void => {
+        const origin = req.header('origin');
+        if (origin !== completionOrigin && origin !== recoveryAllowedOrigin) {
+            return next(new BadRequestError('Student SSO origin is invalid'));
+        }
+        next();
+    };
 
     // Provider-independent recovery actions (password reauth, recovery-code
     // mutations, and the unlink continuation) stay available when SSO
@@ -803,7 +814,7 @@ export function createStudentSsoRouter(factory: FlowFactory = defaultFlow, optio
         res.status(201).json({ success: true, data: result });
     }));
 
-    router.post('/reauth/microsoft/start', authenticate, requireRole('student'), reauthMicrosoftStartLimiter, exactOrigin, exactJson, asyncHandler(async (req, res) => {
+    router.post('/reauth/microsoft/start', authenticate, requireRole('student'), reauthMicrosoftStartLimiter, exactReauthStartOrigin, exactJson, asyncHandler(async (req, res) => {
         const body = req.body as { purpose?: unknown; targetIdentityId?: unknown; pendingCodeId?: unknown };
         if (!body || typeof body !== 'object' || Array.isArray(body)
             || Object.keys(body).some((key) => key !== 'purpose' && key !== 'targetIdentityId' && key !== 'pendingCodeId')

@@ -1145,6 +1145,48 @@ test('finish clears the cookie on authentication and restart but retains it for 
     });
 });
 
+test('Microsoft fresh-reauth start accepts the trusted frontend origin but finish stays completion-origin-only', async () => {
+    const frontendOrigin = 'https://web.example.invalid';
+    let starts = 0;
+    const reauth = {
+        start: async () => {
+            starts += 1;
+            return {
+                attemptId: '66666666-6666-4666-8666-666666666666',
+                authorizationUrl: 'https://provider.example.invalid/fresh',
+                callbackCookie: 'reauth-browser',
+            };
+        },
+    };
+    await withServer(routerWith(stubFlow(), { recoveryOrigin: frontendOrigin, reauthService: () => reauth as never }), async (baseUrl) => {
+        const allowed = await fetch(`${baseUrl}/reauth/microsoft/start`, {
+            method: 'POST',
+            headers: { ...authHeaders(studentToken(true)), origin: frontendOrigin },
+            body: JSON.stringify({ purpose: 'link' }),
+        });
+        assert.equal(allowed.status, 201);
+        await allowed.text();
+        assert.equal(starts, 1);
+
+        const untrusted = await fetch(`${baseUrl}/reauth/microsoft/start`, {
+            method: 'POST',
+            headers: { ...authHeaders(studentToken(true)), origin: 'https://evil.example.invalid' },
+            body: JSON.stringify({ purpose: 'link' }),
+        });
+        assert.equal(untrusted.status, 400);
+        await untrusted.text();
+        assert.equal(starts, 1);
+
+        const finishFromFrontend = await fetch(`${baseUrl}/reauth/finish`, {
+            method: 'POST',
+            headers: { ...authHeaders(studentToken(true)), origin: frontendOrigin },
+            body: JSON.stringify({ attemptId: '66666666-6666-4666-8666-666666666666' }),
+        });
+        assert.equal(finishFromFrontend.status, 400);
+        await finishFromFrontend.text();
+    });
+});
+
 test('finish enforces strict JSON, exact origin, and no-store headers', async () => {
     await withServer(routerWith(stubFlow()), async (baseUrl) => {
         for (const body of [
