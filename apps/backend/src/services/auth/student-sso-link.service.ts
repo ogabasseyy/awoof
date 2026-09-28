@@ -529,6 +529,9 @@ export class StudentSsoLinkService {
             }
             const sibling = await tx.query<{ provider: LoginProvider }>(
                 `SELECT identity.provider FROM student_auth_identities identity
+                 JOIN students student ON student.user_id = identity.user_id
+                     AND student.status = 'active'
+                     AND student.university_id = identity.university_id
                  JOIN institution_login_policies policy ON policy.university_id = identity.university_id
                      AND policy.provider = identity.provider AND policy.issuer = identity.issuer
                      AND policy.enabled AND policy.approved_until > clock_timestamp()
@@ -541,19 +544,22 @@ export class StudentSsoLinkService {
                    ON domain.domain = mapping.domain
                   AND domain.university_id = mapping.university_id
                   AND domain.is_active
-                 WHERE identity.user_id = $1 AND identity.id <> $2 AND identity.revoked_at IS NULL
-                 LIMIT 1`,
+                 WHERE identity.user_id = $1 AND identity.id <> $2 AND identity.revoked_at IS NULL`,
                 [userId, identityId],
             );
             // Another usable login method must remain: a usable password or a
             // second identity that can still authenticate. That mirrors the
-            // login authority chain (live institution policy for its exact
-            // issuer, active university, a live domain mapping, enabled
-            // provider): a sibling from a replaced tenant, a deactivated
-            // university, or a withdrawn domain cannot log in, so it cannot
-            // satisfy this. Nothing is consumed on this path.
-            const siblingUsable = sibling.rows[0] !== undefined
-                && this.deps.isProviderEnabled?.(sibling.rows[0].provider) === true;
+            // login authority chain (canonical university, live institution
+            // policy for its exact issuer, active university, a live domain
+            // mapping, enabled provider): a sibling from a replaced tenant,
+            // a deactivated university, a withdrawn domain, or a previous
+            // institution cannot log in, so it cannot satisfy this. Every
+            // candidate provider is evaluated: with siblings across
+            // providers, an unordered LIMIT 1 could sample a disabled one
+            // and wrongly report last_method. Nothing is consumed here.
+            const siblingUsable = sibling.rows.some(
+                (candidate) => this.deps.isProviderEnabled?.(candidate.provider) === true,
+            );
             if (account.rows[0]?.password_hash == null && !siblingUsable) {
                 return { outcome: 'last_method' };
             }

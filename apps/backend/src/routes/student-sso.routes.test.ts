@@ -9,6 +9,7 @@ import type { StudentSsoFlowService } from '../services/auth/student-sso-flow.se
 import { StudentOidcOperationalError } from '../services/auth/student-google-oidc.js';
 import { jwtService } from '../services/auth/jwt.service.js';
 import { swaggerSpec } from '../config/swagger.js';
+import { config } from '../config/env.js';
 import { db } from '../config/database.js';
 
 type Flow = Pick<StudentSsoFlowService, 'start' | 'callback' | 'finish' | 'callbackCookieNameForState'>;
@@ -525,6 +526,28 @@ test('independent account recovery exposes the same start shape without an accou
         assert.equal(completed.status, 204);
     });
     assert.deepEqual(calls, ['start:student@example.invalid:compromise', 'verify', 'complete']);
+});
+
+test('account recovery start fails closed when the mailer is unconfigured', async () => {
+    const previousKey = config.studentAccountRecovery.codeKey;
+    const previousBrevo = process.env.BREVO_API_KEY;
+    config.studentAccountRecovery.codeKey = 'test-recovery-code-key-unconfigured-mailer';
+    delete process.env.BREVO_API_KEY;
+    try {
+        // The default factory gates on the global email configuration: a
+        // recovery key alone must not 202 when no OTP can be delivered.
+        await withServer(routerWith(stubFlow()), async (baseUrl) => {
+            const started = await fetch(`${baseUrl}/account-recovery/start`, {
+                method: 'POST', headers: { 'content-type': 'application/json' },
+                body: JSON.stringify({ email: 'student@example.invalid', purpose: 'lost_access' }),
+            });
+            assert.equal(started.status, 503);
+        });
+    } finally {
+        config.studentAccountRecovery.codeKey = previousKey;
+        if (previousBrevo === undefined) delete process.env.BREVO_API_KEY;
+        else process.env.BREVO_API_KEY = previousBrevo;
+    }
 });
 
 test('start rejects unknown providers, malformed bodies, non-JSON, and inexact origins', async () => {

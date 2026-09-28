@@ -46,16 +46,21 @@ export class StudentSsoSignupService {
     private async lockUniversityFirst(tx: PoolClient, raw: { handoffId: unknown; handoffSecret: unknown; browserBinding: unknown }): Promise<void> {
         this.enabled(); const input = checked(raw);
         const handoff = (await tx.query<{ policy_id: string; secret_hash: string | null; browser_binding_hash: string | null; consumed_at: Date | null; expires_at: Date }>(
-            'SELECT policy_id, secret_hash, browser_binding_hash, consumed_at, expires_at FROM student_auth_link_handoffs WHERE id = $1', [input.handoffId])).rows[0];
-        if (!handoff || handoff.consumed_at || handoff.expires_at <= new Date() || handoff.secret_hash !== hashMicrosoftAttemptSecret(input.handoffSecret) || handoff.browser_binding_hash !== hashMicrosoftAttemptSecret(input.browserBinding)) throw invalid();
+            'SELECT policy_id, secret_hash, browser_binding_hash, consumed_at, expires_at FROM student_auth_link_handoffs WHERE id = $1 AND expires_at > clock_timestamp()', [input.handoffId])).rows[0];
+        if (!handoff || handoff.consumed_at || handoff.secret_hash !== hashMicrosoftAttemptSecret(input.handoffSecret) || handoff.browser_binding_hash !== hashMicrosoftAttemptSecret(input.browserBinding)) throw invalid();
         const policy = (await tx.query<{ university_id: string }>('SELECT university_id FROM institution_login_policies WHERE id = $1', [handoff.policy_id])).rows[0];
         if (!policy) throw invalid();
         await tx.query('SELECT id FROM universities WHERE id = $1 FOR UPDATE', [policy.university_id]);
     }
     private async load(tx: PoolClient, raw: { handoffId: unknown; handoffSecret: unknown; browserBinding: unknown }): Promise<{ input: ReturnType<typeof checked>; handoff: Handoff; signup: Signup; observation: ReturnType<typeof decodeProviderObservation>; email: string; universityId: string }> {
         this.enabled(); const input = checked(raw);
-        const handoff = (await tx.query<Handoff>('SELECT * FROM student_auth_link_handoffs WHERE id = $1 FOR UPDATE', [input.handoffId])).rows[0];
-        if (!handoff || handoff.consumed_at || handoff.expires_at <= new Date() || handoff.secret_hash !== hashMicrosoftAttemptSecret(input.handoffSecret) || handoff.browser_binding_hash !== hashMicrosoftAttemptSecret(input.browserBinding)) throw invalid();
+        // The ten-minute authorization boundary is enforced against the
+        // database clock under lock: a lagging application host must not
+        // extend a database-issued expiry, and a fast one must not kill a
+        // live handoff. An expired handoff reads as absent, identically
+        // invalid.
+        const handoff = (await tx.query<Handoff>('SELECT * FROM student_auth_link_handoffs WHERE id = $1 AND expires_at > clock_timestamp() FOR UPDATE', [input.handoffId])).rows[0];
+        if (!handoff || handoff.consumed_at || handoff.secret_hash !== hashMicrosoftAttemptSecret(input.handoffSecret) || handoff.browser_binding_hash !== hashMicrosoftAttemptSecret(input.browserBinding)) throw invalid();
         let observation; try { observation = decodeProviderObservation(decryptMicrosoftAttemptVerifier(handoff.encrypted_observation, this.deps.attemptKey!, handoff.id)); } catch { throw invalid(); }
         if (observation.provider !== 'microsoft' || this.deps.isProviderEnabled?.('microsoft') === false || !observation.email) throw invalid();
         const attempt = (await tx.query<{ requested_email: string }>('SELECT requested_email FROM student_auth_attempts WHERE id = $1 FOR UPDATE', [handoff.attempt_id])).rows[0];
@@ -67,8 +72,8 @@ export class StudentSsoSignupService {
         const secret = signupSecretHash(input.handoffId, input.handoffSecret);
         await tx.query(`INSERT INTO student_auth_signup_challenges (handoff_id, secret_hash, browser_binding_hash, expires_at)
             VALUES ($1, $2, $3, $4) ON CONFLICT (handoff_id) DO NOTHING`, [input.handoffId, secret, hashMicrosoftAttemptSecret(input.browserBinding), handoff.expires_at]);
-        const signup = (await tx.query<Signup>('SELECT * FROM student_auth_signup_challenges WHERE handoff_id = $1 FOR UPDATE', [input.handoffId])).rows[0];
-        if (!signup || signup.secret_hash !== secret || signup.browser_binding_hash !== hashMicrosoftAttemptSecret(input.browserBinding) || signup.status === 'consumed' || signup.expires_at <= new Date()) throw invalid();
+        const signup = (await tx.query<Signup>('SELECT * FROM student_auth_signup_challenges WHERE handoff_id = $1 AND expires_at > clock_timestamp() FOR UPDATE', [input.handoffId])).rows[0];
+        if (!signup || signup.secret_hash !== secret || signup.browser_binding_hash !== hashMicrosoftAttemptSecret(input.browserBinding) || signup.status === 'consumed') throw invalid();
         return { input, handoff, signup, observation, email: normalizeMailbox(observation.email), universityId: policy.universityId };
     }
     async context(input: { handoffId: unknown; handoffSecret: unknown; browserBinding: unknown }): Promise<{ email: string; universityId: string; termsVersion: string; noticeVersion: string; noticeText: string; expiresAt: string }> {

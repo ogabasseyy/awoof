@@ -4,7 +4,7 @@ Status: **not approved for activation**. This checklist describes the release ga
 
 ## Backend-first rollout and rollback
 
-- [ ] Apply migrations 069--076 and deploy the backend before any web client that invokes the passwordless routes. Migration 075 replaces 072's immutable-binding trigger so activation can scrub pending-only bindings; without it every recovery-code activation fails. Migration 076 extends that scrub to revoked rows (cancel, supersede, remove, recovery consumption, expiry cleanup); without it those terminalizations fail.
+- [ ] Apply migrations 069--077 and deploy the backend before any web client that invokes the passwordless routes. Migration 075 replaces 072's immutable-binding trigger so activation can scrub pending-only bindings; without it every recovery-code activation fails. Migration 076 extends that scrub to revoked rows (cancel, supersede, remove, recovery consumption, expiry cleanup); without it those terminalizations fail. Migration 077 drops the legacy reauth-grant digest uniqueness so recovery can scrub multiple retained rows; without it a second retained row aborts the recovery transaction.
 - [ ] Keep student SSO signup disabled until every gate below is evidenced. Disabled signup must return the documented bounded response; existing account sign-in and owner recovery remain separately controlled.
 - [ ] Exercise an old web client against the new backend before enabling signup. It must continue normal supported sign-in without interpreting passwordless payloads as eligibility.
 - [ ] If rolling back the web client, keep the new backend credential protections and migrations in place. Once passwordless accounts exist, do not restore a legacy email-only recovery binary or path.
@@ -22,6 +22,6 @@ Status: **not approved for activation**. This checklist describes the release ga
 
 1. Affected pages: `/help`, `/trust`, `/privacy`, `/developers`, partner integration copy, OpenAPI, and this internal trust inventory.
 2. Public wording must distinguish source/tests from deployed/enabled behavior; it must not claim a university partnership, current-enrollment proof from login, MFA, or universal recovery.
-3. Evidence is source migrations 069--076, cleanup command output/tests, route/OpenAPI contracts, and this gate list. Deployment, provider, merchant, and alert-delivery evidence remain pending.
+3. Evidence is source migrations 069--077, cleanup command output/tests, route/OpenAPI contracts, and this gate list. Deployment, provider, merchant, and alert-delivery evidence remain pending.
 4. Before release, check rendered links/contact destinations, headings, keyboard navigation, labels, and mobile layout.
 5. No new legal commitment is made here. Any new data-sharing, retention-policy, vulnerability-disclosure, or response-time commitment needs owner/legal/operations approval.

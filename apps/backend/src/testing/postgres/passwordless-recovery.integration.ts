@@ -295,6 +295,43 @@ test('recovery completion immediately scrubs invalidated sibling SSO, recovery, 
     }
 });
 
+test('recovery completion scrubs multiple retained legacy reauth grants without a uniqueness rollback', async () => {
+    const pool = createTestPool();
+    const client = await pool.connect();
+    try {
+        const account = await seedRecoverableStudent(client);
+        // Upgrade-retained rows share nothing but the owner; the shared
+        // 'scrubbed' sentinel must terminalize all of them instead of
+        // aborting the recovery on the second row.
+        await client.query(
+            `INSERT INTO student_auth_reauth_grants (user_id, sid, purpose, secret_hash, expires_at)
+             VALUES ($1, $2, 'link', 'legacy-digest-a', clock_timestamp() + interval '4 minutes'),
+                    ($1, $2, 'unlink', 'legacy-digest-b', clock_timestamp() + interval '4 minutes')`,
+            [account.userId, randomUUID()],
+        );
+        let otp = '';
+        const service = new StudentAccountRecoveryService({
+            pool, recoveryCodeKey: 'test-recovery-code-key',
+            deliverOtp: async (_email, delivered) => { otp = delivered; return { success: true }; },
+            validatePassword: () => ({ valid: true, errors: [] }), hashPassword: async () => 'legacy-scrub-hash',
+        });
+        const started = await service.start({ email: account.email, purpose: 'lost_access' });
+        await service.verify({ attemptId: started.attemptId, secret: started.secret, code: account.code, otp });
+        await service.complete({ attemptId: started.attemptId, secret: started.secret, password: 'ValidNew1!' });
+        const scrubbed = await client.query<{ secret_hash: string; consumed_at: Date | null }>(
+            'SELECT secret_hash, consumed_at FROM student_auth_reauth_grants WHERE user_id = $1', [account.userId],
+        );
+        assert.equal(scrubbed.rows.length, 2);
+        for (const row of scrubbed.rows) {
+            assert.equal(row.secret_hash, 'scrubbed');
+            assert.ok(row.consumed_at instanceof Date);
+        }
+    } finally {
+        client.release();
+        await pool.end();
+    }
+});
+
 test('compromise recovery revokes only linked-derived assertions while preserving independent enrollment when the provider policy is disabled', async () => {
     const pool = createTestPool();
     const client = await pool.connect();

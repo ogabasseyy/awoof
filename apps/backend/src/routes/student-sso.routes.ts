@@ -20,7 +20,7 @@ import { StudentMicrosoftOidc } from '../services/auth/student-microsoft-oidc.js
 import type { ApprovedLoginPolicy, StudentSsoOidcResolver } from '../services/auth/student-sso-flow.service.js';
 import { StudentSsoLinkService } from '../services/auth/student-sso-link.service.js';
 import { StudentSsoSignupService } from '../services/auth/student-sso-signup.service.js';
-import { sendEmail, sendEmailVerificationOTP } from '../services/email/email.service.js';
+import { isEmailConfigured, sendEmail, sendEmailVerificationOTP } from '../services/email/email.service.js';
 import { StudentReauthService, studentReauthCookieName } from '../services/auth/student-reauth.service.js';
 import { StudentRecoveryCodeService } from '../services/auth/student-recovery-code.service.js';
 import { StudentAccountRecoveryService } from '../services/auth/student-account-recovery.service.js';
@@ -354,7 +354,11 @@ function defaultRecoveryCode(): StudentRecoveryCodeService {
 }
 function defaultAccountRecovery(): StudentAccountRecoveryService {
     const key = config.studentAccountRecovery.codeKey;
-    if (!key) throw new ServiceUnavailableError('Account recovery is unavailable');
+    // Recovery start deliberately swallows delivery failures, so an
+    // unconfigured mailer would 202 and burn challenge allowance for an
+    // OTP that can never arrive. Fail the deployment-wide outage as a
+    // non-enumerating 503 before any account lookup instead.
+    if (!key || !isEmailConfigured()) throw new ServiceUnavailableError('Account recovery is unavailable');
     const previous = config.studentAccountRecovery.previousCodeKey;
     return new StudentAccountRecoveryService({
         pool: getPool(), recoveryCodeKey: key, ...(previous === null ? {} : { previousRecoveryCodeKey: previous }),
