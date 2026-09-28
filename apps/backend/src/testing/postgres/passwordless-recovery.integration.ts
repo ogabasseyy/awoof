@@ -534,7 +534,7 @@ test('five wrong recovery OTPs persist their shared failure budget despite gener
     }
 });
 
-async function seedProviderProof(client: PoolClient, userId: string, options: { policy?: boolean; linkedAt?: string } = {}): Promise<string> {
+async function seedProviderProof(client: PoolClient, userId: string, options: { policy?: boolean; linkedAt?: string; canonical?: boolean } = {}): Promise<string> {
     const suffix = randomUUID().slice(0, 8);
     const university = await client.query<{ id: string }>(
         'INSERT INTO universities (name, is_active) VALUES ($1, true) RETURNING id',
@@ -546,20 +546,35 @@ async function seedProviderProof(client: PoolClient, userId: string, options: { 
          VALUES ($1, $2, 'microsoft', $3, $4, $5, COALESCE($6::timestamptz, clock_timestamp())) RETURNING id`,
         [userId, university.rows[0]!.id, `https://issuer.example.invalid/${suffix}`, `subject-${suffix}`, `recovery-${suffix}@example.invalid`, options.linkedAt ?? null],
     );
-    // Proof consumption revalidates the identity's currently live policy,
-    // so proof-consumption tests opt into one; other callers seed their
-    // own policy or none at all.
+    // Proof consumption revalidates the identity's full login authority
+    // chain, so proof-consumption tests opt into a live policy, a live
+    // domain mapping, and canonical placement at the student's
+    // university; other callers seed their own policy or none at all.
+    // Multi-identity tests pass canonical: false for decoys so the
+    // student's canonical university stays on the intended identity.
     if (options.policy === true) {
         const admin = await client.query<{ id: string }>(
             'INSERT INTO users (email, role) VALUES ($1, $2) RETURNING id',
             [`recovery-proof-admin-${suffix}@example.invalid`, 'admin'],
         );
-        await client.query(
+        const policy = await client.query<{ id: string }>(
             `INSERT INTO institution_login_policies
                  (university_id, provider, issuer, provider_realm, version, enabled, approved_until, approved_by, school_assertion_days)
-             VALUES ($1, 'microsoft', $2, $3, 1, true, clock_timestamp() + interval '30 days', $4, 90)`,
+             VALUES ($1, 'microsoft', $2, $3, 1, true, clock_timestamp() + interval '30 days', $4, 90) RETURNING id`,
             [university.rows[0]!.id, `https://issuer.example.invalid/${suffix}`, suffix, admin.rows[0]!.id],
         );
+        const domain = `recovery-proof-${suffix}.example.invalid`;
+        await client.query(
+            'INSERT INTO institution_login_domains (domain, university_id, is_active) VALUES ($1, $2, true)',
+            [domain, university.rows[0]!.id],
+        );
+        await client.query(
+            'INSERT INTO institution_login_domain_providers (domain, university_id, provider, policy_id) VALUES ($1, $2, $3, $4)',
+            [domain, university.rows[0]!.id, 'microsoft', policy.rows[0]!.id],
+        );
+        if (options.canonical !== false) {
+            await client.query('UPDATE students SET university_id = $2 WHERE user_id = $1', [userId, university.rows[0]!.id]);
+        }
     }
     return identity.rows[0]!.id;
 }
@@ -1003,7 +1018,7 @@ test('fresh reauthentication skips a newer Microsoft identity without an observe
         const email = (await client.query<{ observed_email: string }>(
             'SELECT observed_email FROM student_auth_identities WHERE id = $1', [emailIdentityId],
         )).rows[0]!.observed_email;
-        const bareIdentityId = await seedProviderProof(client, userId, { policy: true });
+        const bareIdentityId = await seedProviderProof(client, userId, { policy: true, canonical: false });
         await client.query('UPDATE student_auth_identities SET observed_email = NULL WHERE id = $1', [bareIdentityId]);
         let loginHint: string | null = null;
         const reauth = new StudentReauthService({
@@ -1020,6 +1035,52 @@ test('fresh reauthentication skips a newer Microsoft identity without an observe
             'SELECT proof_identity_id FROM student_auth_reauth_attempts WHERE id = $1', [started.attemptId],
         );
         assert.equal(proof.rows[0]!.proof_identity_id, emailIdentityId);
+    } finally {
+        client.release();
+        await pool.end();
+    }
+});
+
+test('terminalizeFailedAttempt marks the dead reauth attempt failed and scrubs its material', async () => {
+    const pool = createTestPool();
+    const client = await pool.connect();
+    try {
+        const userId = await seedStudent(client);
+        const reauth = new StudentReauthService({
+            pool,
+            attemptKey: Buffer.alloc(32, 7).toString('base64url'),
+            completionUrl: new URL('https://app.example.invalid/auth/student/sso/complete'),
+            isProviderEnabled: () => true,
+            oidcForPolicy: () => { throw new Error('must not run'); },
+        });
+        const pending = (await client.query<{ id: string }>(
+            `INSERT INTO student_auth_reauth_attempts (user_id, sid, credential_generation, purpose, state_hash, callback_cookie_hash, encrypted_verifier, nonce, status, expires_at)
+             VALUES ($1, $2::uuid, 0, 'link', 'state', 'cookie', 'verifier', 'nonce', 'pending', clock_timestamp() + interval '5 minutes') RETURNING id`,
+            [userId, SID],
+        )).rows[0]!.id;
+        // Ready rows carry a validated proof identity; the terminalize
+        // guard must leave them finishable.
+        const readyProof = await seedProviderProof(client, userId);
+        const ready = (await client.query<{ id: string }>(
+            `INSERT INTO student_auth_reauth_attempts (user_id, sid, credential_generation, purpose, state_hash, callback_cookie_hash, encrypted_verifier, nonce, proof_identity_id, status, expires_at)
+             VALUES ($1, $2::uuid, 0, 'link', 'ready-state', 'ready-cookie', 'ready-verifier', 'ready-nonce', $3, 'ready', clock_timestamp() + interval '5 minutes') RETURNING id`,
+            [userId, SID, readyProof],
+        )).rows[0]!.id;
+        await reauth.terminalizeFailedAttempt(pending);
+        await reauth.terminalizeFailedAttempt(ready);
+        const rows = await client.query<{ id: string; status: string; consumed_at: Date | null; state_hash: string | null; callback_cookie_hash: string | null; encrypted_verifier: string | null; nonce: string | null }>(
+            'SELECT id, status, consumed_at, state_hash, callback_cookie_hash, encrypted_verifier, nonce FROM student_auth_reauth_attempts WHERE id = ANY($1::uuid[])',
+            [[pending, ready]],
+        );
+        const dead = rows.rows.find(row => row.id === pending)!;
+        assert.deepEqual(
+            { status: dead.status, state: dead.state_hash, cookie: dead.callback_cookie_hash, verifier: dead.encrypted_verifier, nonce: dead.nonce },
+            { status: 'failed', state: null, cookie: null, verifier: null, nonce: null },
+        );
+        assert.ok(dead.consumed_at instanceof Date);
+        // Ready rows are never touched: a callback that already validated
+        // keeps its finishable state.
+        assert.equal(rows.rows.find(row => row.id === ready)!.status, 'ready');
     } finally {
         client.release();
         await pool.end();
@@ -1086,6 +1147,33 @@ test('only the owner current session can cancel its pending code and active code
             { sid: null, generation: null, proof: null },
             'cancelled pending codes lose their activation bindings with the digest',
         );
+    } finally { client.release(); await pool.end(); }
+});
+
+test('status hides pending codes whose session binding no longer matches', async () => {
+    const pool = createTestPool();
+    const client = await pool.connect();
+    try {
+        const service = new StudentRecoveryCodeService({ pool, codeKey: 'test-recovery-code-key' });
+        // A pending code with no active fallback: session replacement
+        // stops advertising it instead of sending the user through a
+        // fresh proof that must deterministically fail.
+        const bare = await seedStudent(client);
+        const bareGrant = await grant(client, { userId: bare, purpose: 'recovery_code_generate' });
+        await service.generate({ userId: bare, sid: SID, grantId: bareGrant.grantId, secret: bareGrant.grantSecret });
+        await client.query('UPDATE users SET active_session_id = $2::uuid, credential_generation = credential_generation + 1 WHERE id = $1', [bare, randomUUID()]);
+        assertRecoveryStatus(await service.status({ userId: bare }), { status: 'unconfigured', generation: 1, pendingCodeId: null, pendingExpiresAt: null });
+        // A stale pending replacement must not shadow the still-valid
+        // older active code either.
+        const userId = await seedStudent(client);
+        const firstGrant = await grant(client, { userId, purpose: 'recovery_code_generate' });
+        const first = await service.generate({ userId, sid: SID, grantId: firstGrant.grantId, secret: firstGrant.grantSecret });
+        const firstActivation = await grant(client, { userId, purpose: 'recovery_code_activate', pendingCodeId: first.pendingCodeId });
+        await service.activate({ userId, sid: SID, grantId: firstActivation.grantId, secret: firstActivation.grantSecret, pendingCodeId: first.pendingCodeId, code: first.code });
+        const replacementGrant = await grant(client, { userId, purpose: 'recovery_code_generate', activeCodeGeneration: 1 });
+        await service.generate({ userId, sid: SID, grantId: replacementGrant.grantId, secret: replacementGrant.grantSecret, oldCode: first.code });
+        await client.query('UPDATE users SET active_session_id = $2::uuid, credential_generation = credential_generation + 1 WHERE id = $1', [userId, randomUUID()]);
+        assertRecoveryStatus(await service.status({ userId }), { status: 'active', generation: 1, pendingCodeId: null, pendingExpiresAt: null });
     } finally { client.release(); await pool.end(); }
 });
 

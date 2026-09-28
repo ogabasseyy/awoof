@@ -34,6 +34,24 @@ export class StudentSsoSignupService {
     constructor(private readonly deps: StudentSsoSignupDependencies) {}
     private async transaction<T>(work: (tx: PoolClient) => Promise<T>): Promise<T> { const tx = await this.deps.pool.connect(); try { await tx.query('BEGIN'); const result = await work(tx); await tx.query('COMMIT'); return result; } catch (error) { await tx.query('ROLLBACK').catch(() => undefined); throw error; } finally { tx.release(); } }
     private enabled(): void { if (!this.deps.isEnabled() || !this.deps.attemptKey) throw invalid(); }
+    /**
+     * Canonical lock order (user → student → university → policy → …):
+     * pre-read the handoff/policy binding without locks, validate the
+     * caller proofs, then lock the university before load() locks the
+     * policy. Locking the policy first here deadlocks against a
+     * concurrent linked login finish holding the university for the
+     * same institution. Everything pre-read is revalidated under lock
+     * by load(), so the unlocked reads cannot race authority.
+     */
+    private async lockUniversityFirst(tx: PoolClient, raw: { handoffId: unknown; handoffSecret: unknown; browserBinding: unknown }): Promise<void> {
+        this.enabled(); const input = checked(raw);
+        const handoff = (await tx.query<{ policy_id: string; secret_hash: string | null; browser_binding_hash: string | null; consumed_at: Date | null; expires_at: Date }>(
+            'SELECT policy_id, secret_hash, browser_binding_hash, consumed_at, expires_at FROM student_auth_link_handoffs WHERE id = $1', [input.handoffId])).rows[0];
+        if (!handoff || handoff.consumed_at || handoff.expires_at <= new Date() || handoff.secret_hash !== hashMicrosoftAttemptSecret(input.handoffSecret) || handoff.browser_binding_hash !== hashMicrosoftAttemptSecret(input.browserBinding)) throw invalid();
+        const policy = (await tx.query<{ university_id: string }>('SELECT university_id FROM institution_login_policies WHERE id = $1', [handoff.policy_id])).rows[0];
+        if (!policy) throw invalid();
+        await tx.query('SELECT id FROM universities WHERE id = $1 FOR UPDATE', [policy.university_id]);
+    }
     private async load(tx: PoolClient, raw: { handoffId: unknown; handoffSecret: unknown; browserBinding: unknown }): Promise<{ input: ReturnType<typeof checked>; handoff: Handoff; signup: Signup; observation: ReturnType<typeof decodeProviderObservation>; email: string; universityId: string }> {
         this.enabled(); const input = checked(raw);
         const handoff = (await tx.query<Handoff>('SELECT * FROM student_auth_link_handoffs WHERE id = $1 FOR UPDATE', [input.handoffId])).rows[0];
@@ -98,7 +116,7 @@ export class StudentSsoSignupService {
     async complete(input: { handoffId: unknown; handoffSecret: unknown; browserBinding: unknown; fullName: unknown; ageAttested: unknown; termsAccepted: unknown; termsVersion: unknown; verificationConsent: unknown; noticeVersion: unknown }): Promise<{ user: { id: string; email: string; role: 'student' }; tokens: TokenPair }> {
         if (typeof input.fullName !== 'string' || input.fullName.trim().length < 2 || input.fullName.trim().length > 255 || input.ageAttested !== true || input.termsAccepted !== true || input.termsVersion !== STUDENT_TERMS_VERSION || input.verificationConsent !== true || input.noticeVersion !== VERIFICATION_NOTICE_VERSION) throw new BadRequestError('Current age, Terms, and verification processing assent are required');
         const fullName = input.fullName.trim();
-        try { return await this.transaction(async tx => { const state = await this.load(tx, input); if (state.signup.status !== 'mailbox_verified') throw invalid(); const university = (await tx.query<{ name: string; is_active: boolean }>('SELECT name, is_active FROM universities WHERE id = $1 FOR UPDATE', [state.universityId])).rows[0]; if (!university || university.is_active !== true) throw invalid();
+        try { return await this.transaction(async tx => { await this.lockUniversityFirst(tx, input); const state = await this.load(tx, input); if (state.signup.status !== 'mailbox_verified') throw invalid(); const university = (await tx.query<{ name: string; is_active: boolean }>('SELECT name, is_active FROM universities WHERE id = $1 FOR UPDATE', [state.universityId])).rows[0]; if (!university || university.is_active !== true) throw invalid();
             // This durable marker survives optional password establishment;
             // legacy mailbox-only reset/setup must never become an ownership
             // transfer path for a recycled institution address.

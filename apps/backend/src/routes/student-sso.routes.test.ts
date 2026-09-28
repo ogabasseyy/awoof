@@ -186,6 +186,7 @@ test('Microsoft fresh-reauth routes preserve the browser binding and never use t
     const reauthAttemptId = '66666666-6666-4666-8666-666666666666';
     const seen: string[] = [];
     const reauth = {
+        terminalizeFailedAttempt: async () => undefined,
         callbackCookieNameForState: async (state: string | null) => state === 'reauth-state' ? `awoof_reauth_${reauthAttemptId}` : null,
         callback: async () => {
             seen.push('callback');
@@ -228,6 +229,7 @@ test('Microsoft fresh-reauth routes preserve the browser binding and never use t
 test('failed Microsoft fresh-reauth callbacks redirect to the bounded completion page', async () => {
     const reauthAttemptId = '67666666-6666-4666-8666-666666666666';
     const reauth = {
+        terminalizeFailedAttempt: async () => undefined,
         callbackCookieNameForState: async (state: string | null) => state === 'failed-reauth-state' ? `awoof_reauth_${reauthAttemptId}` : null,
         attemptIdForState: async (state: string | null) => state === 'failed-reauth-state' ? reauthAttemptId : null,
         callback: async () => { throw new ConflictError('Student SSO reauthentication is no longer valid'); },
@@ -247,6 +249,7 @@ test('cancelled and invalid provider reauth callbacks redirect to the bounded co
     for (const category of ['cancelled_or_permission', 'invalid_identity'] as const) {
         const reauthAttemptId = '69666666-6666-4666-8666-666666666666';
         const reauth = {
+            terminalizeFailedAttempt: async () => undefined,
             callbackCookieNameForState: async (state: string | null) => state === 'cancelled-reauth-state' ? `awoof_reauth_${reauthAttemptId}` : null,
             attemptIdForState: async (state: string | null) => state === 'cancelled-reauth-state' ? reauthAttemptId : null,
             callback: async () => { throw new StudentOidcOperationalError(category); },
@@ -266,6 +269,7 @@ test('cancelled and invalid provider reauth callbacks redirect to the bounded co
 test('unavailable provider reauth callbacks still surface as JSON errors', async () => {
     const reauthAttemptId = '6a666666-6666-4666-8666-666666666666';
     const reauth = {
+        terminalizeFailedAttempt: async () => undefined,
         callbackCookieNameForState: async (state: string | null) => state === 'outage-reauth-state' ? `awoof_reauth_${reauthAttemptId}` : null,
         attemptIdForState: async (state: string | null) => state === 'outage-reauth-state' ? reauthAttemptId : null,
         callback: async () => { throw new StudentOidcOperationalError('upstream_unavailable'); },
@@ -279,6 +283,27 @@ test('unavailable provider reauth callbacks still surface as JSON errors', async
     });
 });
 
+test('failed reauth callbacks terminalize the dead attempt before redirecting', async () => {
+    const reauthAttemptId = '6c666666-6666-4666-8666-666666666666';
+    const terminalized: string[] = [];
+    const reauth = {
+        terminalizeFailedAttempt: async (attemptId: string) => { terminalized.push(attemptId); },
+        callbackCookieNameForState: async (state: string | null) => state === 'failed-terminalize-state' ? `awoof_reauth_${reauthAttemptId}` : null,
+        attemptIdForState: async (state: string | null) => state === 'failed-terminalize-state' ? reauthAttemptId : null,
+        callback: async () => { throw new ConflictError('Student SSO reauthentication is no longer valid'); },
+    };
+    const flow = stubFlow({ callback: async () => { throw new Error('ordinary login callback must not run'); } });
+    await withServer(routerWith(flow, { reauthService: () => reauth as never }), async (baseUrl) => {
+        const callback = await fetch(`${baseUrl}/microsoft/callback?state=failed-terminalize-state&code=code`, {
+            redirect: 'manual', headers: { Cookie: `awoof_reauth_${reauthAttemptId}=reauth-browser` },
+        });
+        assert.equal(callback.status, 303);
+        // The redirect deletes the only browser binding that could finish
+        // the attempt, so the dead row is terminalized first.
+        assert.deepEqual(terminalized, [reauthAttemptId]);
+    });
+});
+
 test('failed reauth callbacks never pollute the shared completion URL', async () => {
     const { config } = await import('../config/env.js');
     const previous = config.studentSso.completionUrl;
@@ -287,6 +312,7 @@ test('failed reauth callbacks never pollute the shared completion URL', async ()
     try {
         const reauthAttemptId = '68666666-6666-4666-8666-666666666666';
         const reauth = {
+            terminalizeFailedAttempt: async () => undefined,
             callbackCookieNameForState: async (state: string | null) => state === 'polluting-state' ? `awoof_reauth_${reauthAttemptId}` : null,
             attemptIdForState: async (state: string | null) => state === 'polluting-state' ? reauthAttemptId : null,
             callback: async () => { throw new ConflictError('Student SSO reauthentication is no longer valid'); },
@@ -849,6 +875,7 @@ test('failed callbacks consume the dedicated limit while completions are excused
 test('failed reauth redirects consume the dedicated callback limit', async () => {
     const reauthAttemptId = '6b666666-6666-4666-8666-666666666666';
     const reauth = {
+        terminalizeFailedAttempt: async () => undefined,
         callbackCookieNameForState: async (state: string | null) => state === 'counted-failure-state' ? `awoof_reauth_${reauthAttemptId}` : null,
         attemptIdForState: async (state: string | null) => state === 'counted-failure-state' ? reauthAttemptId : null,
         callback: async () => { throw new ConflictError('Student SSO reauthentication is no longer valid'); },

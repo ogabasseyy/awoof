@@ -436,6 +436,32 @@ test('ambiguous activation reconciles against status and renders success', async
     api.assertNoUnexpectedRequests();
 });
 
+test('ambiguous activation rejects a stale active generation after replacement expiry', async ({ page }) => {
+    const api = await installSyntheticApi(page);
+    const pendingId = 'a5000000-0000-4000-8000-000000000001';
+    await page.route(`${apiOrigin}/api/auth/student/sso/reauth/finish`, route => route.fulfill({ status: 201, headers, json: { success: true, data: { grantId: 'a6000000-0000-4000-8000-000000000001', grantSecret: 'grant', expiresAt: new Date(Date.now() + 60_000).toISOString(), purpose: 'recovery_code_activate', pendingCodeId: pendingId, targetIdentityId: null, activeCodeGeneration: 1 } } }));
+    let statusCalls = 0;
+    await page.route(`${apiOrigin}/api/auth/student/sso/recovery-code`, route => {
+        statusCalls++;
+        return statusCalls === 1
+            ? route.fulfill({ headers, json: { success: true, data: { status: 'pending', generation: 2, pendingCodeId: pendingId, pendingExpiresAt: new Date(Date.now() + 600_000).toISOString(), serverNow: new Date().toISOString() } } })
+            : route.fulfill({ headers, json: { success: true, data: { status: 'active', generation: 1, pendingCodeId: null, pendingExpiresAt: null, serverNow: new Date().toISOString() } } });
+    });
+    await page.route(`${apiOrigin}/api/auth/student/sso/recovery-code/activate`, route => route.fulfill({ status: 500, headers, json: { success: false, error: { message: 'unavailable' } } }));
+    await page.goto('/auth/student/login'); await seedSession(page, 'student');
+    await page.goto('/auth/student/sso/complete?reauth=a7000000-0000-4000-8000-000000000001');
+    await page.getByLabel('Re-enter saved recovery code').fill('saved-code');
+    await page.getByLabel('Current recovery code').fill('old-code');
+    await page.getByRole('button', { name: 'Activate recovery code' }).click();
+    // The pending replacement never committed and the old generation is
+    // still authoritative: an unrelated active code must not read as the
+    // newly saved code's success.
+    await expect(page.getByText('This confirmation could not be completed.')).toBeVisible();
+    await expect(page.getByRole('button', { name: 'Activate recovery code' })).toBeVisible();
+    await expect(page.getByRole('heading', { name: 'Recovery code active' })).toHaveCount(0);
+    api.assertNoUnexpectedRequests();
+});
+
 test('ambiguous activation keeps the form when status shows the code still pending', async ({ page }) => {
     const api = await installSyntheticApi(page);
     const pendingId = 'a2000000-0000-4000-8000-000000000001';

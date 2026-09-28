@@ -40,6 +40,39 @@ export class StudentSsoAuthorityInvalidatedError extends ConflictError {
     }
 }
 
+/**
+ * A proof identity authorizes sensitive actions only while it remains a
+ * usable login method: live and unrevoked, at the student's canonical
+ * university, with a live institution policy for its exact issuer and at
+ * least one live domain mapping. Mirrors the login authority chain so a
+ * stale identity (transferred student, withdrawn domain) can authorize
+ * neither reauthentication nor proof-bound grant consumption. Returns
+ * the authority row or null; callers throw their own invalid error.
+ */
+export async function selectCurrentProofAuthority(
+    tx: PoolClient, userId: string, proofIdentityId: string,
+): Promise<{ provider: string; universityId: string } | null> {
+    const row = (await tx.query<{ provider: string; universityId: string }>(
+        `SELECT identity.provider, identity.university_id AS "universityId"
+         FROM student_auth_identities identity
+         JOIN students student ON student.user_id = identity.user_id
+             AND student.status = 'active'
+             AND student.university_id = identity.university_id
+         JOIN universities university ON university.id = identity.university_id AND university.is_active
+         JOIN institution_login_policies policy ON policy.university_id = identity.university_id
+             AND policy.provider = identity.provider AND policy.issuer = identity.issuer
+             AND policy.enabled AND policy.approved_until > clock_timestamp()
+         JOIN institution_login_domain_providers mapping ON mapping.policy_id = policy.id
+             AND mapping.university_id = policy.university_id AND mapping.provider = policy.provider
+         JOIN institution_login_domains domain ON domain.domain = mapping.domain
+             AND domain.university_id = mapping.university_id AND domain.is_active
+         WHERE identity.id = $1 AND identity.user_id = $2 AND identity.revoked_at IS NULL
+         LIMIT 1`,
+        [proofIdentityId, userId],
+    )).rows[0];
+    return row ?? null;
+}
+
 /** Fail closed on misconfigured policy trust data before any provider call. */
 export function assertAdapterPolicy(policy: ApprovedLoginPolicy): void {
     if (policy.provider === 'google') {

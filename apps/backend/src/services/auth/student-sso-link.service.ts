@@ -22,6 +22,7 @@ import {
     hasCurrentMicrosoftMembership,
     readProvenSchoolMailbox,
     revokeSsoSchoolAssertions,
+    selectCurrentProofAuthority,
     writeSsoSchoolAssertion,
 } from './student-sso-onboarding.service.js';
 import type { LoginProvider } from './student-sso.types.js';
@@ -606,11 +607,12 @@ export class StudentSsoLinkService {
 
     /**
      * Consume a link/unlink grant only while its provider proof is still
-     * live. A five-minute grant outlives revocation, policy expiry, and
-     * provider rollback, so the proof identity and its exact current
-     * policy/provider gate are rechecked under lock first, mirroring
-     * recovery-code consumers. Password-backed grants carry no provider
-     * proof and skip the recheck, keeping owner unlink available.
+     * a usable login method. A five-minute grant outlives revocation,
+     * transfer, policy expiry, and provider rollback, so the proof
+     * identity is locked and its full login authority chain is rechecked
+     * first, mirroring recovery-code consumers. Password-backed grants
+     * carry no provider proof and skip the recheck, keeping owner unlink
+     * available.
      */
     private async consumeProofGrant(
         tx: PoolClient,
@@ -623,20 +625,17 @@ export class StudentSsoLinkService {
         );
         const proofIdentityId = grant.rows[0]?.proof_identity_id ?? null;
         if (proofIdentityId) {
-            const identity = await tx.query<{ revoked_at: Date | null; provider: string; university_id: string; issuer: string }>(
-                'SELECT revoked_at, provider, university_id, issuer FROM student_auth_identities WHERE id = $1 AND user_id = $2 FOR UPDATE',
+            // Lock the proof identity under the grant so a concurrent
+            // revocation cannot interleave the authority recheck.
+            const locked = await tx.query<{ provider: string }>(
+                'SELECT provider FROM student_auth_identities WHERE id = $1 AND user_id = $2 FOR UPDATE',
                 [proofIdentityId, input.userId],
             );
-            const row = identity.rows[0];
-            if (!row || row.revoked_at !== null || (row.provider !== 'google' && row.provider !== 'microsoft')) throw invalid();
-            if (this.deps.isProviderEnabled?.(row.provider as LoginProvider) !== true) throw invalid();
-            const policy = await tx.query<{ id: string }>(
-                `SELECT id FROM institution_login_policies
-                 WHERE university_id = $1 AND provider = $2 AND issuer = $3 AND enabled AND approved_until > clock_timestamp()
-                 LIMIT 1`,
-                [row.university_id, row.provider, row.issuer],
-            );
-            if (!policy.rows[0]) throw invalid();
+            const provider = locked.rows[0]?.provider;
+            if (provider !== 'google' && provider !== 'microsoft') throw invalid();
+            if (this.deps.isProviderEnabled?.(provider) !== true) throw invalid();
+            const authority = await selectCurrentProofAuthority(tx, input.userId, proofIdentityId);
+            if (!authority || authority.provider !== provider) throw invalid();
         }
         try {
             await consumeActionGrant(tx, {

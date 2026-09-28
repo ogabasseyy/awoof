@@ -33,7 +33,7 @@ test('status exposes recovery state and generation without a recovery digest', a
         serverNow: '2026-09-27T22:00:00.000Z',
     });
     assert.equal(queries.length, 1);
-    assert.ok(queries[0]!.includes("status = 'pending' AND expires_at > clock_timestamp()"),
+    assert.ok(queries[0]!.includes("code.status = 'pending' AND code.expires_at > clock_timestamp()"),
         'expired pending candidates must not shadow the active recovery code');
 });
 

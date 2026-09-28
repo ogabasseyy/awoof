@@ -4,6 +4,7 @@ import { ConflictError } from '../../common/errors/AppError.js';
 import { appLogger } from '../../common/logger.js';
 import { sendRecoveryCodeSecurityNotice } from '../email/email.service.js';
 import { consumeActionGrant } from './student-action-grant.service.js';
+import { selectCurrentProofAuthority } from './student-sso-onboarding.service.js';
 import type { LoginProvider } from './student-sso.types.js';
 
 type RecoveryCodeStatus = 'unconfigured' | 'pending' | 'active';
@@ -222,10 +223,16 @@ export class StudentRecoveryCodeService {
         const result = await this.dependencies.pool.connect();
         try {
             const current = await result.query<RecoveryCodeRow & { now: Date }>(
-                `SELECT id, generation, code_digest, status, expires_at, pending_sid,
-                        pending_credential_generation, pending_proof_identity_id, clock_timestamp() AS now
-                 FROM student_auth_recovery_codes
-                 WHERE user_id = $1 AND (status = 'active' OR (status = 'pending' AND expires_at > clock_timestamp()))
+                `SELECT code.id, code.generation, code.code_digest, code.status, code.expires_at, code.pending_sid,
+                        code.pending_credential_generation, code.pending_proof_identity_id, clock_timestamp() AS now
+                 FROM student_auth_recovery_codes code
+                 JOIN users account ON account.id = code.user_id
+                 WHERE code.user_id = $1
+                   AND (code.status = 'active'
+                        OR (code.status = 'pending' AND code.expires_at > clock_timestamp()
+                            AND (code.pending_sid IS NULL OR code.pending_sid = account.active_session_id)
+                            AND (code.pending_credential_generation IS NULL
+                                 OR code.pending_credential_generation = account.credential_generation)))
                  ORDER BY generation DESC LIMIT 1`,
                 [input.userId],
             );
@@ -235,7 +242,11 @@ export class StudentRecoveryCodeService {
                 // reload: clients display it and restart on expiry instead of
                 // failing a stale activation generically. The server clock
                 // travels with it so skewed devices correct their countdown
-                // instead of expiring a live deadline early.
+                // instead of expiring a live deadline early. Pending
+                // candidates whose session binding no longer matches the
+                // account are filtered above: activate() would reject them,
+                // so status must not advertise them as actionable (which
+                // would also shadow a still-valid older active code).
                 return {
                     status: code.status, generation: Number(code.generation), pendingCodeId: code.status === 'pending' ? code.id : null,
                     pendingExpiresAt: code.status === 'pending' && code.expires_at ? code.expires_at.toISOString() : null,
@@ -363,6 +374,12 @@ export class StudentRecoveryCodeService {
             [row.university_id, row.provider, row.issuer],
         );
         if (!policy.rows[0]) throw unavailable();
+        // Close the transfer/withdrawal gap: the proof must still sit at
+        // the student's canonical university behind a live domain mapping,
+        // or the stale identity could authorize code actions it can no
+        // longer log in with.
+        const authority = await selectCurrentProofAuthority(tx, userId, identityId);
+        if (!authority || authority.provider !== row.provider) throw unavailable();
     }
 
     private async sendSecurityNotice(email: string, event: 'activated' | 'replaced' | 'removed'): Promise<void> {

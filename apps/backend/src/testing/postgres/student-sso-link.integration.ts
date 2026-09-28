@@ -1824,7 +1824,7 @@ test('unlink keeps the last method when the sibling university is deactivated', 
         // The reverse direction still succeeds: the live sibling satisfies
         // the guard, so the dead identity can be removed.
         const removed = await service.unlink({ userId: owner.userId, sid: owner.sid, identityId: second, grantId: grantB.grantId, grantSecret: grantB.grantSecret });
-        assert.equal(removed.unlinked, true);
+        assert.ok(!('outcome' in removed) && removed.unlinked === true);
         const check = await pool.connect();
         try {
             const active = await check.query('SELECT id FROM student_auth_identities WHERE user_id = $1 AND revoked_at IS NULL', [owner.userId]);

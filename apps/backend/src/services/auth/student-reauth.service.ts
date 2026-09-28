@@ -49,9 +49,17 @@ export class StudentReauthService {
                     policy.provider_realm AS realm, policy.university_id, users.credential_generation
              FROM users
              JOIN student_auth_identities identity ON identity.user_id = users.id AND identity.revoked_at IS NULL
+             JOIN students student ON student.user_id = users.id
+                 AND student.status = 'active'
+                 AND student.university_id = identity.university_id
+             JOIN universities university ON university.id = identity.university_id AND university.is_active
              JOIN institution_login_policies policy ON policy.university_id = identity.university_id
                  AND policy.provider = identity.provider AND policy.issuer = identity.issuer
                  AND policy.enabled AND policy.approved_until > clock_timestamp()
+             JOIN institution_login_domain_providers mapping ON mapping.policy_id = policy.id
+                 AND mapping.university_id = policy.university_id AND mapping.provider = policy.provider
+             JOIN institution_login_domains domain ON domain.domain = mapping.domain
+                 AND domain.university_id = mapping.university_id AND domain.is_active
              WHERE users.id = $1 AND users.role = 'student' AND users.deleted_at IS NULL AND users.active_session_id = $2::uuid
                  AND identity.provider = 'microsoft'
                  AND identity.observed_email IS NOT NULL AND identity.observed_email <> ''
@@ -174,6 +182,26 @@ export class StudentReauthService {
             completionUrl.searchParams.set('reauth', current.id);
             return { attemptId: current.id, completionUrl };
         });
+    }
+
+    /**
+     * Terminalize a dead authorization attempt: terminal callback failures
+     * (provider cancellation, invalid identity, expired binding) redirect
+     * to the bounded completion page and clear the browser cookie, after
+     * which the pending row can never finish. Mark it failed and scrub
+     * the state hash, callback binding, verifier, and nonce instead of
+     * retaining them until expiry cleanup. Mirrors the finish-consumed
+     * scrub; ready rows are never touched.
+     */
+    async terminalizeFailedAttempt(attemptId: string): Promise<void> {
+        if (!UUID.test(attemptId)) throw invalidReauth();
+        await this.deps.pool.query(
+            `UPDATE student_auth_reauth_attempts
+             SET status = 'failed', consumed_at = clock_timestamp(), state_hash = NULL, callback_cookie_hash = NULL,
+                 encrypted_verifier = NULL, nonce = NULL
+             WHERE id = $1 AND status = 'pending'`,
+            [attemptId],
+        );
     }
 
     async finish(input: { userId: string; sid: string; attemptId: string; callbackCookie: string | undefined }): Promise<ActionGrantResult & { purpose: ActionPurpose; pendingCodeId: string | null; targetIdentityId: string | null; activeCodeGeneration: number | null }> {

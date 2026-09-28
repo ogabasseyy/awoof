@@ -65,7 +65,7 @@ function formatPendingRemaining(deadlineMs: number, nowMs: number): string {
 function RecoveryReauthComplete({ attemptId }: { attemptId: string }) {
     const { refreshUser } = useAuth();
     const [status, setStatus] = useState<'checking' | 'generate' | 'display' | 'activate' | 'remove' | 'failed' | 'active' | 'removed' | 'link_unavailable' | 'unlinked' | 'unlinked_signed_out' | 'last_method'>('checking');
-    const [code, setCode] = useState(''); const [oldCode, setOldCode] = useState(''); const [needsOldCode, setNeedsOldCode] = useState(false); const [pendingCodeId, setPendingCodeId] = useState<string | null>(null); const [pendingExpiresAt, setPendingExpiresAt] = useState<string | null>(null); const [grant, setGrant] = useState<{ grantId: string; grantSecret: string } | null>(null); const [error, setError] = useState<string | null>(null);
+    const [code, setCode] = useState(''); const [oldCode, setOldCode] = useState(''); const [needsOldCode, setNeedsOldCode] = useState(false); const [pendingCodeId, setPendingCodeId] = useState<string | null>(null); const [pendingExpiresAt, setPendingExpiresAt] = useState<string | null>(null); const [expectedGeneration, setExpectedGeneration] = useState<number | null>(null); const [grant, setGrant] = useState<{ grantId: string; grantSecret: string } | null>(null); const [error, setError] = useState<string | null>(null);
     const [busy, setBusy] = useState(false); const started = useRef(false); const actionBusy = useRef(false);
     const [now, setNow] = useState(() => Date.now());
     useEffect(() => {
@@ -108,8 +108,17 @@ function RecoveryReauthComplete({ attemptId }: { attemptId: string }) {
             setNeedsOldCode(grant.activeCodeGeneration !== null);
             try {
                 const current = await studentSsoApiClient.get('/auth/student/sso/recovery-code', { headers: { Authorization: `Bearer ${accessToken}` } });
-                const live = (current.data as { data?: { pendingCodeId?: unknown; pendingExpiresAt?: unknown; serverNow?: unknown } }).data;
-                if (live?.pendingCodeId === grant.pendingCodeId && typeof live.pendingExpiresAt === 'string') { setPendingExpiresAt(live.pendingExpiresAt); setSkewMs(serverSkewSince(typeof live.serverNow === 'string' && !Number.isNaN(Date.parse(live.serverNow)) ? live.serverNow : null)); }
+                const live = (current.data as { data?: { status?: unknown; generation?: unknown; pendingCodeId?: unknown; pendingExpiresAt?: unknown; serverNow?: unknown } }).data;
+                // The expected generation binds ambiguous-activation
+                // reconciliation: success requires the active generation to
+                // match the pending one we are activating, not merely any
+                // active code (an expired replacement falls back to the old
+                // generation, which must not read as our success).
+                if (live?.status === 'pending' && live.pendingCodeId === grant.pendingCodeId && typeof live.pendingExpiresAt === 'string') {
+                    setPendingExpiresAt(live.pendingExpiresAt);
+                    setSkewMs(serverSkewSince(typeof live.serverNow === 'string' && !Number.isNaN(Date.parse(live.serverNow)) ? live.serverNow : null));
+                    setExpectedGeneration(typeof live.generation === 'number' ? live.generation : null);
+                }
             } catch { /* deadline display is best-effort; activation still enforces expiry server-side */ }
             setStatus('activate');
         }).catch(() => { clearRecoveryIntent(); setStatus('failed'); });
@@ -155,12 +164,14 @@ function RecoveryReauthComplete({ attemptId }: { attemptId: string }) {
         const reconcile = async (): Promise<boolean> => {
             try {
                 const current = await studentSsoApiClient.get('/auth/student/sso/recovery-code', { headers: { Authorization: `Bearer ${session.accessToken}` } });
-                const live = (current.data as { data?: { status?: unknown; pendingCodeId?: unknown; pendingExpiresAt?: unknown; serverNow?: unknown } }).data;
+                const live = (current.data as { data?: { status?: unknown; generation?: unknown; pendingCodeId?: unknown; pendingExpiresAt?: unknown; serverNow?: unknown } }).data;
                 // An ambiguous transport failure may have committed: the
-                // grant is then consumed and retrying cannot succeed. An
-                // active code means ours activated — a still-pending
-                // candidate would outrank it — so render success instead.
-                if (live?.status === 'active') { setGrant(null); setCode(''); setOldCode(''); setStatus('active'); await refreshUser().catch(() => undefined); return true; }
+                // grant is then consumed and retrying cannot succeed. Only
+                // the expected pending generation reading back as active
+                // proves ours activated; any other active generation (an
+                // expired replacement falling back to the old code, a
+                // concurrent flow) keeps the form with its error.
+                if (live?.status === 'active' && expectedGeneration !== null && live.generation === expectedGeneration) { setGrant(null); setCode(''); setOldCode(''); setStatus('active'); await refreshUser().catch(() => undefined); return true; }
                 if (live?.status === 'pending' && live.pendingCodeId === pendingId && typeof live.pendingExpiresAt === 'string') {
                     setPendingExpiresAt(live.pendingExpiresAt);
                     setSkewMs(serverSkewSince(typeof live.serverNow === 'string' && !Number.isNaN(Date.parse(live.serverNow)) ? live.serverNow : null));

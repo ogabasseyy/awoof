@@ -300,6 +300,50 @@ test('signup completion refuses an institution deactivated after verification', 
     });
 });
 
+test('concurrent signup completions cannot deadlock a login-ordered locker', async () => {
+    await withPool(async pool => {
+        const key = randomBytes(32).toString('base64url'); const codes = new Map<string, string>();
+        const service = new StudentSsoSignupService({ pool, attemptKey: key, isEnabled: () => true, isProviderEnabled: () => true, deliverOtp: async (email, sent) => { codes.set(email, sent); return { success: true }; } });
+        const c = await pool.connect();
+        let first; let second;
+        try {
+            first = await seed(c, key);
+            // A second verified signup sharing the first's university and
+            // policy: same domain mapping, distinct mailbox and subject.
+            const domain = first.email.split('@')[1]!;
+            const emailB = `bob-${label()}@${domain}`;
+            const policy = (await c.query<{ policy_id: string }>('SELECT policy_id FROM student_auth_link_handoffs WHERE id = $1', [first.handoffId])).rows[0]!.policy_id;
+            const attemptB = (await c.query<{ id: string }>(`INSERT INTO student_auth_attempts (policy_id, policy_version, provider, requested_email, state_hash, callback_cookie_hash, finish_secret_hash, encrypted_verifier, nonce, encrypted_observation, status, expires_at, remember_me) VALUES ($1,1,'microsoft',$2,$3,$4,$5,$6,$7,NULL,'pending',$8,false) RETURNING id`, [policy, emailB, secret(), secret(), secret(), secret(), secret(), first.expiresAt])).rows[0]!.id;
+            const handoffId = randomUUID(), handoffSecret = secret(), browser = secret();
+            const obs = { provider: 'microsoft', issuer: first.issuer, subject: `subject-${label()}`, email: emailB, mailboxVerified: true, realm: first.tenant, schoolMembershipAttested: false, objectId: null };
+            await c.query(`INSERT INTO student_auth_link_handoffs (id, attempt_id, secret_hash, encrypted_observation, policy_id, policy_version, browser_binding_hash, expires_at) VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`, [handoffId, attemptB, hashMicrosoftAttemptSecret(handoffSecret), encryptMicrosoftAttemptVerifier(JSON.stringify(obs), key, handoffId), policy, 1, hashMicrosoftAttemptSecret(browser), first.expiresAt]);
+            second = { email: emailB, handoffId, handoffSecret, browser };
+        } finally { c.release(); }
+        for (const state of [first, second]) {
+            const sent = await service.sendCode({ handoffId: state.handoffId, handoffSecret: state.handoffSecret, browserBinding: state.browser });
+            await service.verifyCode({ handoffId: state.handoffId, handoffSecret: state.handoffSecret, browserBinding: state.browser, challengeId: sent.challengeId, code: codes.get(state.email)! });
+        }
+        // A concurrent login-ordered locker (university, then policy, with
+        // a hold between): completion locks in the same canonical order,
+        // so all three serialize instead of deadlocking (no 40P01).
+        const policyId = (await pool.query<{ policy_id: string }>('SELECT policy_id FROM student_auth_link_handoffs WHERE id = $1', [first.handoffId])).rows[0]!.policy_id;
+        const locker = (async () => {
+            const held = await pool.connect();
+            try {
+                await held.query('BEGIN');
+                await held.query('SELECT id FROM universities WHERE id = $1 FOR UPDATE', [first.university]);
+                await new Promise(resolve => setTimeout(resolve, 150));
+                await held.query('SELECT id FROM institution_login_policies WHERE id = $1 FOR UPDATE', [policyId]);
+                await held.query('COMMIT');
+            } catch (error) { await held.query('ROLLBACK').catch(() => undefined); throw error; } finally { held.release(); }
+        })();
+        const finishing = [first, second].map(state => service.complete({ handoffId: state.handoffId, handoffSecret: state.handoffSecret, browserBinding: state.browser, fullName: 'Ada Student', ageAttested: true, termsAccepted: true, termsVersion: STUDENT_TERMS_VERSION, verificationConsent: true, noticeVersion: VERIFICATION_NOTICE_VERSION }));
+        const [userA, userB] = await Promise.all([...finishing, locker]);
+        assert.ok(userA && userB);
+        assert.equal((await pool.query<{ count: string }>('SELECT count(*)::text AS count FROM users WHERE email = ANY($1)', [[first.email, second.email]])).rows[0]!.count, '2');
+    });
+});
+
 test('signup rechecks a policy disabled after its handoff was created', async () => {
     await withPool(async pool => {
         const key = randomBytes(32).toString('base64url'); const service = new StudentSsoSignupService({ pool, attemptKey: key, isEnabled: () => true, isProviderEnabled: () => true, deliverOtp: async () => ({ success: true }) });
