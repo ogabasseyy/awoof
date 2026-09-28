@@ -218,15 +218,28 @@ test('passwordless signup fails closed for a wrong browser and expired handoff',
     });
 });
 
-test('signup send budgets survive rejected transactions and refuse a fourth send', async () => {
+test('signup send budgets survive rejected transactions and cap delivery at three sends', async () => {
     await withPool(async pool => {
         const key = randomBytes(32).toString('base64url'); let sends = 0;
         const service = new StudentSsoSignupService({ pool, attemptKey: key, isEnabled: () => true, isProviderEnabled: () => true, deliverOtp: async () => { sends++; return { success: true }; } });
         const c = await pool.connect(); let state; try { state = await seed(c, key); } finally { c.release(); }
+        const seen = new Set<string>();
         for (let count = 0; count < 3; count++) {
-            await service.sendCode({ handoffId: state.handoffId, handoffSecret: state.handoffSecret, browserBinding: state.browser });
+            const sent = await service.sendCode({ handoffId: state.handoffId, handoffSecret: state.handoffSecret, browserBinding: state.browser });
+            seen.add(sent.challengeId);
             await pool.query(`UPDATE verification_challenge_budgets SET resend_available_at = clock_timestamp() - interval '1 second'`);
         }
+        assert.equal(seen.size, 3);
+        // Locked with a live bound challenge: the pending retry resumes it
+        // instead of a 409, and delivers nothing new.
+        const resumed = await service.sendCode({ handoffId: state.handoffId, handoffSecret: state.handoffSecret, browserBinding: state.browser });
+        assert.ok(seen.has(resumed.challengeId));
+        assert.equal(sends, 3);
+        // Locked with no live bound challenge: still a bounded refusal.
+        // created_at moves with expires_at to satisfy the table's
+        // expires_at > created_at check; the subject scope spares other
+        // tests' challenges in the shared database.
+        await pool.query(`UPDATE verification_challenges SET created_at = clock_timestamp() - interval '1 hour', expires_at = clock_timestamp() - interval '1 second' WHERE purpose = 'student_sso_signup' AND subject_digest = $1`, [challengeSubjectDigest('student_sso_signup', state.email)]);
         await assert.rejects(service.sendCode({ handoffId: state.handoffId, handoffSecret: state.handoffSecret, browserBinding: state.browser }), /wait before/i);
         assert.equal(sends, 3);
         const budget = await pool.query<{ send_count: number }>(`SELECT send_count FROM verification_challenge_budgets WHERE purpose='student_sso_signup' AND subject_digest=$1`, [challengeSubjectDigest('student_sso_signup', state.email)]);
@@ -234,14 +247,19 @@ test('signup send budgets survive rejected transactions and refuse a fourth send
     });
 });
 
-test('signup refuses an immediate resend and expiry after verified OTP creates no account', async () => {
+test('signup resumes a pending send after response loss and expiry after verified OTP creates no account', async () => {
     await withPool(async pool => {
-        const key = randomBytes(32).toString('base64url'); let code = '';
-        const service = new StudentSsoSignupService({ pool, attemptKey: key, isEnabled: () => true, isProviderEnabled: () => true, deliverOtp: async (_email, value) => { code = value; return { success: true }; } });
+        const key = randomBytes(32).toString('base64url'); let code = ''; let sends = 0;
+        const service = new StudentSsoSignupService({ pool, attemptKey: key, isEnabled: () => true, isProviderEnabled: () => true, deliverOtp: async (_email, value) => { code = value; sends++; return { success: true }; } });
         const c = await pool.connect(); let state; try { state = await seed(c, key, { handoffLifetimeMs: 2_000 }); } finally { c.release(); }
         const sent = await service.sendCode({ handoffId: state.handoffId, handoffSecret: state.handoffSecret, browserBinding: state.browser });
-        await assert.rejects(service.sendCode({ handoffId: state.handoffId, handoffSecret: state.handoffSecret, browserBinding: state.browser }), /wait before/i);
-        await service.verifyCode({ handoffId: state.handoffId, handoffSecret: state.handoffSecret, browserBinding: state.browser, challengeId: sent.challengeId, code });
+        // The 201 was lost: the immediate retry hits the cooldown but the
+        // bound challenge and its OTP are still live, so the send resumes
+        // with the same id instead of stranding the emailed code.
+        const resumed = await service.sendCode({ handoffId: state.handoffId, handoffSecret: state.handoffSecret, browserBinding: state.browser });
+        assert.equal(resumed.challengeId, sent.challengeId);
+        assert.equal(sends, 1);
+        await service.verifyCode({ handoffId: state.handoffId, handoffSecret: state.handoffSecret, browserBinding: state.browser, challengeId: resumed.challengeId, code });
         await new Promise(resolve => setTimeout(resolve, Math.max(0, state.expiresAt.getTime() - Date.now()) + 50));
         await assert.rejects(service.complete({ handoffId: state.handoffId, handoffSecret: state.handoffSecret, browserBinding: state.browser, fullName: 'Ada Student', ageAttested: true, termsAccepted: true, termsVersion: STUDENT_TERMS_VERSION, verificationConsent: true, noticeVersion: VERIFICATION_NOTICE_VERSION }), /not available/i);
         assert.equal((await pool.query<{ count: string }>(`SELECT count(*)::text AS count FROM users WHERE email=$1`, [state.email])).rows[0]!.count, '0');

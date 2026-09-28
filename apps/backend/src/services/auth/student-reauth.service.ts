@@ -60,6 +60,9 @@ export class StudentReauthService {
 
     async start(input: { userId: string; sid: string; purpose: ActionPurpose; targetIdentityId?: string; pendingCodeId?: string }): Promise<{ attemptId: string; authorizationUrl: string; callbackCookie: string }> {
         if (!UUID.test(input.userId) || !UUID.test(input.sid)) throw new UnauthorizedError('Student SSO session is not available');
+        // Proof selection mirrors selectCurrentProofAuthority, including the
+        // observed-email domain match: selecting an identity whose domain
+        // was withdrawn would start a ceremony every consumption rejects.
         const row = await this.deps.pool.query<{
             identity_id: string; provider: LoginProvider; observed_email: string | null; policy_id: string; policy_version: number;
             issuer: string; realm: string; university_id: string; credential_generation: string | number;
@@ -80,6 +83,7 @@ export class StudentReauthService {
                  AND mapping.university_id = policy.university_id AND mapping.provider = policy.provider
              JOIN institution_login_domains domain ON domain.domain = mapping.domain
                  AND domain.university_id = mapping.university_id AND domain.is_active
+                 AND domain.domain = split_part(lower(btrim(identity.observed_email)), '@', 2)
              WHERE users.id = $1 AND users.role = 'student' AND users.deleted_at IS NULL AND users.active_session_id = $2::uuid
                  AND identity.provider = 'microsoft'
                  AND identity.observed_email IS NOT NULL AND identity.observed_email <> ''

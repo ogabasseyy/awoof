@@ -232,6 +232,23 @@ export default function StudentSecurityPage() {
             setUnlinkTarget(null); setUnlinkPassword(''); await loadIdentities();
         } catch (cause: unknown) {
             const failed = axios.isAxiosError(cause) ? cause.response : undefined;
+            // Ambiguous transport failures (network loss, 5xx) may have
+            // committed: the grant is then consumed and retrying cannot
+            // confirm the outcome. Reload before reporting failure — a
+            // missing target means the removal landed. The 200 also proves
+            // the session survived; a server-cleared session 401s through
+            // the session client's global expired-session handling instead.
+            if (!failed || failed.status >= 500) {
+                try {
+                    const current = await studentSsoSessionApiClient.get('/auth/student/sso/identities');
+                    const live = parseIdentities((current.data as { data?: unknown }).data);
+                    if (live && !live.some((identity) => identity.id === targetId)) {
+                        setIdentities(live); setIdentitiesError(null);
+                        setUnlinkTarget(null); setUnlinkPassword('');
+                        return;
+                    }
+                } catch { /* fall through to the failure mapping below */ }
+            }
             const code = (failed?.data as { error?: { code?: unknown } } | undefined)?.error?.code;
             setUnlinkError(failed?.status === 409 && code === 'SSO_LAST_LOGIN_METHOD' ? 'This is the last sign-in method. Link another school sign-in first.' : failed?.status === 409 && code === 'SSO_LAST_PROOF_METHOD' ? 'This Microsoft sign-in is needed for security confirmations. Link another Microsoft sign-in first.' : failed?.status === 401 ? 'Current password is incorrect.' : failed?.status === 403 ? 'This account has no password. Use school sign-in instead.' : 'Removal failed. Try again.');
         } finally { setUnlinkBusy(false); }

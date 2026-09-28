@@ -863,6 +863,10 @@ test('five wrong recovery OTPs persist their shared failure budget despite gener
 
 async function seedProviderProof(client: PoolClient, userId: string, options: { policy?: boolean; linkedAt?: string; canonical?: boolean } = {}): Promise<string> {
     const suffix = randomUUID().slice(0, 8);
+    // The observed mailbox sits inside the mapped institution domain, like
+    // production link observations: proof authority matches the mapping to
+    // the identity's own mailbox domain, not any domain on the policy.
+    const domain = `recovery-proof-${suffix}.example.invalid`;
     const university = await client.query<{ id: string }>(
         'INSERT INTO universities (name, is_active) VALUES ($1, true) RETURNING id',
         [`Recovery proof ${suffix}`],
@@ -871,7 +875,7 @@ async function seedProviderProof(client: PoolClient, userId: string, options: { 
         `INSERT INTO student_auth_identities
              (user_id, university_id, provider, issuer, subject, observed_email, linked_at)
          VALUES ($1, $2, 'microsoft', $3, $4, $5, COALESCE($6::timestamptz, clock_timestamp())) RETURNING id`,
-        [userId, university.rows[0]!.id, `https://issuer.example.invalid/${suffix}`, `subject-${suffix}`, `recovery-${suffix}@example.invalid`, options.linkedAt ?? null],
+        [userId, university.rows[0]!.id, `https://issuer.example.invalid/${suffix}`, `subject-${suffix}`, `recovery-${suffix}@${domain}`, options.linkedAt ?? null],
     );
     // Proof consumption revalidates the identity's full login authority
     // chain, so proof-consumption tests opt into a live policy, a live
@@ -890,7 +894,6 @@ async function seedProviderProof(client: PoolClient, userId: string, options: { 
              VALUES ($1, 'microsoft', $2, $3, 1, true, clock_timestamp() + interval '30 days', $4, 90) RETURNING id`,
             [university.rows[0]!.id, `https://issuer.example.invalid/${suffix}`, suffix, admin.rows[0]!.id],
         );
-        const domain = `recovery-proof-${suffix}.example.invalid`;
         await client.query(
             'INSERT INTO institution_login_domains (domain, university_id, is_active) VALUES ($1, $2, true)',
             [domain, university.rows[0]!.id],
@@ -1359,6 +1362,63 @@ test('proof-backed recovery operations reject proofs after institutional approva
             () => live.generate({ userId, sid: SID, grantId: proof.grantId, secret: proof.grantSecret }),
             (error: unknown) => (error as { code?: string }).code === 'CONFLICT',
         );
+    } finally {
+        client.release();
+        await pool.end();
+    }
+});
+
+test('proof authority ends when only the identity mailbox domain is withdrawn', async () => {
+    const pool = createTestPool();
+    const client = await pool.connect();
+    try {
+        const userId = await seedStudent(client);
+        const proofIdentityId = await seedProviderProof(client, userId, { policy: true });
+        const live = new StudentRecoveryCodeService({ pool, codeKey: 'test-recovery-code-key', isProviderEnabled: () => true });
+        const conflict = (error: unknown) => (error as { code?: string }).code === 'CONFLICT';
+        const proof = await client.query<{ observed_email: string; university_id: string }>(
+            'SELECT observed_email, university_id FROM student_auth_identities WHERE id = $1', [proofIdentityId],
+        );
+        const mailbox = proof.rows[0]!.observed_email;
+        const mailboxDomain = mailbox.slice(mailbox.lastIndexOf('@') + 1);
+        const universityId = proof.rows[0]!.university_id;
+        const policyId = (await client.query<{ id: string }>(
+            `SELECT policy.id FROM institution_login_policies policy
+             JOIN student_auth_identities identity ON identity.university_id = policy.university_id
+             WHERE identity.id = $1 AND policy.provider = 'microsoft'`, [proofIdentityId],
+        )).rows[0]!.id;
+        // A second live domain on the same policy: withdrawing it alone
+        // must not disturb this identity's proof authority.
+        const spare = `spare-${randomUUID().slice(0, 8)}.example.invalid`;
+        await client.query('INSERT INTO institution_login_domains (domain, university_id, is_active) VALUES ($1, $2, true)', [spare, universityId]);
+        await client.query(
+            'INSERT INTO institution_login_domain_providers (domain, university_id, provider, policy_id) VALUES ($1, $2, $3, $4)',
+            [spare, universityId, 'microsoft', policyId],
+        );
+        const baseline = await grant(client, { userId, purpose: 'recovery_code_generate', proofIdentityId });
+        await live.generate({ userId, sid: SID, grantId: baseline.grantId, secret: baseline.grantSecret });
+        await client.query('UPDATE institution_login_domains SET is_active = false WHERE domain = $1 AND university_id = $2', [spare, universityId]);
+        const spareGone = await grant(client, { userId, purpose: 'recovery_code_generate', proofIdentityId });
+        await live.generate({ userId, sid: SID, grantId: spareGone.grantId, secret: spareGone.grantSecret });
+        // Withdrawing the identity's own mailbox domain ends its proof
+        // authority even though the policy still serves the spare domain:
+        // a normal login for the stored mailbox would fail the same check.
+        await client.query('UPDATE institution_login_domains SET is_active = true WHERE domain = $1 AND university_id = $2', [spare, universityId]);
+        await client.query('UPDATE institution_login_domains SET is_active = false WHERE domain = $1 AND university_id = $2', [mailboxDomain, universityId]);
+        const dead = await grant(client, { userId, purpose: 'recovery_code_generate', proofIdentityId });
+        await assert.rejects(
+            () => live.generate({ userId, sid: SID, grantId: dead.grantId, secret: dead.grantSecret }),
+            conflict,
+        );
+        // ...and no fresh proof may start for it either.
+        const reauth = new StudentReauthService({
+            pool,
+            attemptKey: Buffer.alloc(32, 7).toString('base64url'),
+            completionUrl: new URL('https://app.example.invalid/auth/student/sso/complete'),
+            isProviderEnabled: () => true,
+            oidcForPolicy: () => { throw new Error('must not run'); },
+        });
+        await assert.rejects(() => reauth.start({ userId, sid: SID, purpose: 'link' }), /no longer valid/);
     } finally {
         client.release();
         await pool.end();

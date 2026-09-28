@@ -42,12 +42,15 @@ export class StudentSsoAuthorityInvalidatedError extends ConflictError {
 
 /**
  * A proof identity authorizes sensitive actions only while it remains a
- * usable login method: live and unrevoked, at the student's canonical
- * university, with a currently approved institution policy for its exact
- * issuer and at least one live domain mapping. Mirrors the login
+ * usable login method for its own stored mailbox: live and unrevoked, at
+ * the student's canonical university, with a currently approved
+ * institution policy for its exact issuer and a live mapping for the
+ * identity's normalized observed-email domain. Mirrors the login
  * authority chain (including the approved_by predicate, so a withdrawn
- * approval cannot linger) so a stale identity can authorize neither
- * reauthentication nor proof-bound grant consumption. Returns
+ * approval cannot linger, and the mailbox-domain match, so withdrawing
+ * just this identity's domain revokes its proof authority even when the
+ * policy still serves other domains) so a stale identity can authorize
+ * neither reauthentication nor proof-bound grant consumption. Returns
  * the authority row or null; callers throw their own invalid error.
  */
 export async function selectCurrentProofAuthority(
@@ -67,6 +70,7 @@ export async function selectCurrentProofAuthority(
              AND mapping.university_id = policy.university_id AND mapping.provider = policy.provider
          JOIN institution_login_domains domain ON domain.domain = mapping.domain
              AND domain.university_id = mapping.university_id AND domain.is_active
+             AND domain.domain = split_part(lower(btrim(identity.observed_email)), '@', 2)
          WHERE identity.id = $1 AND identity.user_id = $2 AND identity.revoked_at IS NULL
          LIMIT 1`,
         [proofIdentityId, userId],

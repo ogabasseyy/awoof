@@ -1391,6 +1391,29 @@ test('unlink reports the last login method honestly and revokes otherwise', asyn
     });
 });
 
+test('unlink accepts the recovery origin when the SSO completion URL is unconfigured', async () => {
+    const { config } = await import('../config/env.js');
+    const previous = config.studentSso.completionUrl;
+    config.studentSso.completionUrl = undefined;
+    try {
+        // Full provider rollback: no completion origin exists, but the
+        // password-proven unlink continuation still validates against the
+        // trusted frontend origin instead of stranding after its reauth.
+        const link = stubLink();
+        await withServer(linkRouter(link, { completionOrigin: undefined }), async (baseUrl) => {
+            const response = await fetch(`${baseUrl}/identities/${LINK_IDENTITY_ID}/unlink`, {
+                method: 'POST',
+                headers: authHeaders(studentToken(true)),
+                body: JSON.stringify({ reauthGrant: { grantId: LINK_GRANT_ID, grantSecret: 'grant-secret' } }),
+            });
+            assert.equal(response.status, 200);
+            assert.deepEqual(await response.json(), { success: true, data: { unlinked: true, sessionRevoked: false } });
+        });
+    } finally {
+        config.studentSso.completionUrl = previous;
+    }
+});
+
 test('identities lists owner identities with no-store and no subject material', async () => {
     const link = stubLink({
         listIdentities: async (userId) => {

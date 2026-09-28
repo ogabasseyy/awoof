@@ -351,6 +351,28 @@ test('account security lists school sign-ins and removes one with password confi
     api.assertNoUnexpectedRequests();
 });
 
+test('ambiguous unlink failure reconciles against the reloaded identity list', async ({ page }) => {
+    const api = await installSyntheticApi(page);
+    const targetId = '98000000-0000-4000-8000-000000000001';
+    const grantId = '99000000-0000-4000-8000-000000000001';
+    let identitiesCalls = 0;
+    await page.route(`${apiOrigin}/api/auth/student/sso/recovery-code`, route => route.fulfill({ headers, json: { success: true, data: { status: 'unconfigured', generation: null, pendingCodeId: null } } }));
+    await page.route(`${apiOrigin}/api/auth/student/sso/identities`, route => { identitiesCalls++; return route.fulfill({ headers, json: { success: true, data: { identities: identitiesCalls === 1 ? [{ id: targetId, provider: 'microsoft', universityName: 'Fixture University', linkedAt: new Date().toISOString() }] : [] } } }); });
+    await page.route(`${apiOrigin}/api/auth/student/sso/reauth`, route => route.fulfill({ status: 201, headers, json: { success: true, data: { grantId, grantSecret: 'unlink-pw-grant', expiresAt: new Date(Date.now() + 60_000).toISOString() } } }));
+    // The revocation commits but its response is lost: the reconcile
+    // reload finds the target gone and renders success, not failure.
+    await page.route(`${apiOrigin}/api/auth/student/sso/identities/${targetId}/unlink`, route => route.fulfill({ status: 500, headers, json: { success: false, error: { message: 'boom', statusCode: 500 } } }));
+    await page.goto('/auth/student/login'); await seedSession(page, 'student');
+    await page.goto('/student/security');
+    await expect(page.getByText('Microsoft · Fixture University')).toBeVisible();
+    await page.getByRole('button', { name: 'Remove', exact: true }).click();
+    await page.getByLabel('Current password').fill('Correct!horse-9-battery');
+    await page.getByRole('button', { name: 'Remove with password' }).click();
+    await expect(page.getByText('No school sign-ins are linked.')).toBeVisible();
+    await expect(page.getByText('Removal failed. Try again.')).toHaveCount(0);
+    api.assertNoUnexpectedRequests();
+});
+
 test('account security surfaces the last-method guard instead of removing', async ({ page }) => {
     const api = await installSyntheticApi(page);
     const targetId = '8f000000-0000-4000-8000-000000000001';

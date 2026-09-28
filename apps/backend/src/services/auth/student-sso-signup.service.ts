@@ -109,7 +109,22 @@ export class StudentSsoSignupService {
                 if (!state.signup.mailbox_challenge_id) throw invalid();
                 return { email: null as string | null, code: null as string | null, challengeId: state.signup.mailbox_challenge_id, expiresAt: state.signup.expires_at };
             }
-            const issued = await requestChallenge(tx, { purpose: 'student_sso_signup', subjectKey: state.email, bindings: { email: state.email, name: '', universityId: state.universityId, matricNumber: null, policyVersion: state.handoff.policy_version, noticeVersion: VERIFICATION_NOTICE_VERSION }, expiresAt: state.handoff.expires_at }); if (issued.status !== 'issued') throw new ConflictError('Please wait before requesting another signup code.'); await tx.query('UPDATE student_auth_signup_challenges SET mailbox_challenge_id = $2 WHERE id = $1', [state.signup.id, issued.challengeId]); return { email: state.email, code: issued.code, challengeId: issued.challengeId, expiresAt: issued.expiresAt };
+            const issued = await requestChallenge(tx, { purpose: 'student_sso_signup', subjectKey: state.email, bindings: { email: state.email, name: '', universityId: state.universityId, matricNumber: null, policyVersion: state.handoff.policy_version, noticeVersion: VERIFICATION_NOTICE_VERSION }, expiresAt: state.handoff.expires_at });
+            if (issued.status !== 'issued') {
+                // Lost-201 resume: the first send committed and bound a
+                // live challenge but the browser never received its id.
+                // The emailed OTP is still usable, so return the bound
+                // challenge instead of a cooldown 409, mirroring the
+                // verified-state resume above. Nothing is delivered.
+                if (!state.signup.mailbox_challenge_id) throw new ConflictError('Please wait before requesting another signup code.');
+                const bound = (await tx.query<{ expires_at: Date }>(
+                    `SELECT expires_at FROM verification_challenges
+                     WHERE id = $1 AND consumed_at IS NULL AND superseded_at IS NULL AND expires_at > clock_timestamp()`,
+                    [state.signup.mailbox_challenge_id])).rows[0];
+                if (!bound) throw new ConflictError('Please wait before requesting another signup code.');
+                return { email: null as string | null, code: null as string | null, challengeId: state.signup.mailbox_challenge_id, expiresAt: bound.expires_at };
+            }
+            await tx.query('UPDATE student_auth_signup_challenges SET mailbox_challenge_id = $2 WHERE id = $1', [state.signup.id, issued.challengeId]); return { email: state.email, code: issued.code, challengeId: issued.challengeId, expiresAt: issued.expiresAt };
         });
         if (sent.email === null || sent.code === null) return { challengeId: sent.challengeId, expiresAt: sent.expiresAt.toISOString() };
         try { const result = await this.deps.deliverOtp(sent.email, sent.code, '', sent.expiresAt); if (!result.success) throw new Error('rejected'); } catch { throw new ServiceUnavailableError('We could not deliver a signup code. Please wait before trying again.'); }

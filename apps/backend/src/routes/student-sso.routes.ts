@@ -453,9 +453,10 @@ export function createStudentSsoRouter(factory: FlowFactory = defaultFlow, optio
     };
 
     // Provider-independent recovery actions (password reauth, recovery-code
-    // mutations) stay available when SSO issuance is disabled and no SSO
-    // completion URL is configured, so they validate against the trusted
-    // frontend origin instead of the optional SSO completion origin.
+    // mutations, and the unlink continuation) stay available when SSO
+    // issuance is disabled and no SSO completion URL is configured, so they
+    // validate against the trusted frontend origin instead of the optional
+    // SSO completion origin.
     const exactRecoveryOrigin = (req: Request, _res: Response, next: NextFunction): void => {
         if (req.header('origin') !== recoveryAllowedOrigin) {
             return next(new BadRequestError('Student SSO origin is invalid'));
@@ -872,7 +873,11 @@ export function createStudentSsoRouter(factory: FlowFactory = defaultFlow, optio
         res.json({ success: true, data: { identities } });
     }));
 
-    router.post('/identities/:id/unlink', authenticate, requireRole('student'), unlinkLimiter, exactOrigin, exactJson, asyncHandler(async (req, res) => {
+    // The unlink continuation accepts the recovery/frontend origin: it
+    // consumes a reauth grant, and password grants are
+    // provider-independent, so a rollback that omits the SSO completion
+    // URL must not strand a proven unlink after its reauth succeeded.
+    router.post('/identities/:id/unlink', authenticate, requireRole('student'), unlinkLimiter, exactRecoveryOrigin, exactJson, asyncHandler(async (req, res) => {
         if (typeof req.params.id !== 'string' || !UUID.test(req.params.id)) {
             throw new BadRequestError('Student SSO unlink request is invalid');
         }

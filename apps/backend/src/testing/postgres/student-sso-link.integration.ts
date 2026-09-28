@@ -1091,15 +1091,17 @@ test('link revalidates a revoked provider proof at grant consumption', async () 
                 provider: 'microsoft',
                 realm: MICROSOFT_TENANT,
             });
+            // Proof authority matches the mapping to the identity's own
+            // mailbox domain, so the proofs observe the mapped mailbox.
             const proofA = (await client.query<{ id: string }>(
-                `INSERT INTO student_auth_identities (user_id, university_id, provider, issuer, subject)
-                 VALUES ($1, $2, 'microsoft', $3, $4) RETURNING id`,
-                [owner.userId, owner.universityId, policy.issuer, `proof-a-${uniqueLabel()}`],
+                `INSERT INTO student_auth_identities (user_id, university_id, provider, issuer, subject, observed_email)
+                 VALUES ($1, $2, 'microsoft', $3, $4, $5) RETURNING id`,
+                [owner.userId, owner.universityId, policy.issuer, `proof-a-${uniqueLabel()}`, owner.email],
             )).rows[0]!.id;
             const proofB = (await client.query<{ id: string }>(
-                `INSERT INTO student_auth_identities (user_id, university_id, provider, issuer, subject)
-                 VALUES ($1, $2, 'microsoft', $3, $4) RETURNING id`,
-                [owner.userId, owner.universityId, policy.issuer, `proof-b-${uniqueLabel()}`],
+                `INSERT INTO student_auth_identities (user_id, university_id, provider, issuer, subject, observed_email)
+                 VALUES ($1, $2, 'microsoft', $3, $4, $5) RETURNING id`,
+                [owner.userId, owner.universityId, policy.issuer, `proof-b-${uniqueLabel()}`, owner.email],
             )).rows[0]!.id;
             handoff = await seedHandoff(client, attemptKey, policy, {
                 provider: 'microsoft',

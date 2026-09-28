@@ -558,7 +558,11 @@ export class StudentSsoLinkService {
             // cannot log in, so it cannot satisfy this. Every candidate
             // provider is evaluated: with siblings across providers, an
             // unordered LIMIT 1 could sample a disabled one and wrongly
-            // report last_method. Nothing is consumed here.
+            // report last_method. Unlike proof authority, this is
+            // deliberately any-domain: login is mailbox-initiated, so a
+            // sibling stays usable for login via any still-mapped domain
+            // mailbox even after its own observed domain is withdrawn.
+            // Nothing is consumed here.
             const usable = candidates.rows.filter(
                 (candidate) => this.deps.isProviderEnabled?.(candidate.provider) === true,
             );
