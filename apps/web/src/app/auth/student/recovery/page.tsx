@@ -13,6 +13,29 @@ function formatRecoveryRemaining(deadlineMs: number, nowMs: number): string {
     return `${Math.floor(total / 60)}:${String(total % 60).padStart(2, '0')}`;
 }
 
+// Lost-response retries must present the original start's idempotency
+// key: a cooldown retry only replaces the live attempt when bound, so an
+// anonymous caller knowing the email cannot silently fail the victim's
+// handle. The binding survives restarts within the tab (a re-submit is a
+// retry of the same logical start) and clears on completion.
+const RECOVERY_IDEMPOTENCY_KEY = 'awoof.recovery.idempotency.v1.tab';
+function readRetryBinding(): { email: string; purpose: string; key: string } | null {
+    try {
+        const raw = sessionStorage.getItem(RECOVERY_IDEMPOTENCY_KEY); if (!raw) return null;
+        const value = JSON.parse(raw) as { email?: unknown; purpose?: unknown; key?: unknown };
+        return typeof value.email === 'string' && typeof value.purpose === 'string' && typeof value.key === 'string' && value.key.length > 0 ? { email: value.email, purpose: value.purpose, key: value.key } : null;
+    } catch { return null; }
+}
+function retryBindingFor(email: string, purpose: string): string {
+    const normalized = email.trim().toLowerCase();
+    const stored = readRetryBinding();
+    if (stored && stored.email === normalized && stored.purpose === purpose) return stored.key;
+    const key = typeof globalThis.crypto?.randomUUID === 'function' ? globalThis.crypto.randomUUID() : `retry-${Date.now().toString(36)}-${Math.floor(Math.random() * 1e12).toString(36)}`;
+    try { sessionStorage.setItem(RECOVERY_IDEMPOTENCY_KEY, JSON.stringify({ email: normalized, purpose, key })); } catch { /* a lost binding only forfeits rebound, never blocks start */ }
+    return key;
+}
+function clearRetryBinding(): void { try { sessionStorage.removeItem(RECOVERY_IDEMPOTENCY_KEY); } catch { /* nothing persisted */ } }
+
 export default function StudentAccountRecoveryPage() {
     const [email, setEmail] = useState(''); const [compromise, setCompromise] = useState(false); const [sent, setSent] = useState(false); const [error, setError] = useState<string | null>(null); const [attempt, setAttempt] = useState<{ id: string; secret: string; expiresAt: string; skewMs: number } | null>(null); const [recoveryCode, setRecoveryCode] = useState(''); const [otp, setOtp] = useState(''); const [verified, setVerified] = useState(false); const [password, setPassword] = useState(''); const [completeSuccess, setCompleteSuccess] = useState(false); const [starting, setStarting] = useState(false); const [completeFailed, setCompleteFailed] = useState(false);
     const [now, setNow] = useState(() => Date.now());
@@ -30,12 +53,13 @@ export default function StudentAccountRecoveryPage() {
     const correctedNow = now + (attempt?.skewMs ?? 0);
     const expired = attempt !== null && !Number.isNaN(deadlineMs) && deadlineMs <= correctedNow;
     const restart = () => { setAttempt(null); setSent(false); setVerified(false); setPassword(''); setRecoveryCode(''); setOtp(''); setError(null); setCompleteFailed(false); };
-    const start = async (event: React.FormEvent) => { event.preventDefault(); if (starting) return; setStarting(true); setError(null); try { const r = await publicApiClient.post('/auth/student/sso/account-recovery/start', { email, purpose: compromise ? 'compromise' : 'lost_access' }); const data = (r.data as { data?: { attemptId?: unknown; secret?: unknown; expiresAt?: unknown; serverNow?: unknown } }).data; if (typeof data?.attemptId !== 'string' || typeof data.secret !== 'string' || typeof data.expiresAt !== 'string' || Number.isNaN(Date.parse(data.expiresAt))) throw new Error('invalid'); setAttempt({ id: data.attemptId, secret: data.secret, expiresAt: data.expiresAt, skewMs: serverSkewSince(typeof data.serverNow === 'string' && !Number.isNaN(Date.parse(data.serverNow)) ? data.serverNow : null) }); setSent(true); } catch { setError('Recovery could not be started. Check the details and try again.'); } finally { setStarting(false); } };
+    const start = async (event: React.FormEvent) => { event.preventDefault(); if (starting) return; setStarting(true); setError(null); try { const purpose = compromise ? 'compromise' : 'lost_access'; const r = await publicApiClient.post('/auth/student/sso/account-recovery/start', { email, purpose, idempotencyKey: retryBindingFor(email, purpose) }); const data = (r.data as { data?: { attemptId?: unknown; secret?: unknown; expiresAt?: unknown; serverNow?: unknown } }).data; if (typeof data?.attemptId !== 'string' || typeof data.secret !== 'string' || typeof data.expiresAt !== 'string' || Number.isNaN(Date.parse(data.expiresAt))) throw new Error('invalid'); setAttempt({ id: data.attemptId, secret: data.secret, expiresAt: data.expiresAt, skewMs: serverSkewSince(typeof data.serverNow === 'string' && !Number.isNaN(Date.parse(data.serverNow)) ? data.serverNow : null) }); setSent(true); } catch { setError('Recovery could not be started. Check the details and try again.'); } finally { setStarting(false); } };
     const verify = async (event: React.FormEvent) => { event.preventDefault(); if (!attempt) return; setError(null); try { await publicApiClient.post('/auth/student/sso/account-recovery/verify', { attemptId: attempt.id, secret: attempt.secret, code: recoveryCode, otp }); setRecoveryCode(''); setOtp(''); setVerified(true); } catch { setError('Recovery proof could not be confirmed. Start again if the attempt expired.'); } };
     const complete = async (event: React.FormEvent) => {
         event.preventDefault(); if (!attempt) return; setError(null); setCompleteFailed(false);
         try {
             await publicApiClient.post('/auth/student/sso/account-recovery/complete', { attemptId: attempt.id, secret: attempt.secret, password });
+            clearRetryBinding();
             setAttempt(null); setPassword(''); setVerified(false); setSent(false); setCompleteSuccess(true);
         } catch (cause: unknown) {
             // Deterministic rejections (e.g. password policy) save nothing:

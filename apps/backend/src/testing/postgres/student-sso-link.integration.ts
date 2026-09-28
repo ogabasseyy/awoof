@@ -1527,14 +1527,19 @@ test('unlink keeps the last Microsoft identity on a passwordless account but rel
             owner = await seedOwner(client, {});
             const domain = owner.email.split('@')[1]!;
             const googlePolicy = await seedPolicy(client, owner.universityId, domain);
-            // A second provider needs its own domain mapping row.
-            const microsoftPolicy = await seedPolicy(client, owner.universityId, `ms-${uniqueLabel()}.school.example`, {
+            // A second provider needs its own domain mapping row. The
+            // Microsoft identity carries an observed mailbox on its mapped
+            // domain, which is what makes it a fresh-proof method: reauth
+            // start rejects identities with no observed mailbox or a
+            // withdrawn observed domain.
+            const microsoftDomain = `ms-${uniqueLabel()}.school.example`;
+            const microsoftPolicy = await seedPolicy(client, owner.universityId, microsoftDomain, {
                 provider: 'microsoft', realm: MICROSOFT_TENANT,
             });
             microsoftId = (await client.query<{ id: string }>(
-                `INSERT INTO student_auth_identities (user_id, university_id, provider, issuer, subject)
-                 VALUES ($1, $2, 'microsoft', $3, $4) RETURNING id`,
-                [owner.userId, owner.universityId, microsoftPolicy.issuer, `proof-ms-sub-${uniqueLabel()}`],
+                `INSERT INTO student_auth_identities (user_id, university_id, provider, issuer, subject, observed_email)
+                 VALUES ($1, $2, 'microsoft', $3, $4, $5) RETURNING id`,
+                [owner.userId, owner.universityId, microsoftPolicy.issuer, `proof-ms-sub-${uniqueLabel()}`, `owner@${microsoftDomain}`],
             )).rows[0]!.id;
             googleId = (await client.query<{ id: string }>(
                 `INSERT INTO student_auth_identities (user_id, university_id, provider, issuer, subject)
@@ -1577,6 +1582,58 @@ test('unlink keeps the last Microsoft identity on a passwordless account but rel
             userId: owner.userId, sid: owner.sid, identityId: googleId,
             grantId: googleGrant.grantId, grantSecret: googleGrant.grantSecret,
         }), { unlinked: true, sessionRevoked: false });
+    });
+});
+
+test('unlink requires a proof-capable Microsoft sibling, not just a login-capable one', async () => {
+    await withLinkPool(async (pool) => {
+        const attemptKey = randomBytes(32).toString('base64url');
+        const service = makeService(pool, attemptKey);
+        const client = await pool.connect();
+        let owner;
+        let targetId = '';
+        try {
+            owner = await seedOwner(client, {});
+            const mappedDomain = `proof-${uniqueLabel()}.school.example`;
+            const policy = await seedPolicy(client, owner.universityId, mappedDomain, {
+                provider: 'microsoft', realm: MICROSOFT_TENANT,
+            });
+            targetId = (await client.query<{ id: string }>(
+                `INSERT INTO student_auth_identities (user_id, university_id, provider, issuer, subject, observed_email)
+                 VALUES ($1, $2, 'microsoft', $3, $4, $5) RETURNING id`,
+                [owner.userId, owner.universityId, policy.issuer, `proof-target-sub-${uniqueLabel()}`, `owner@${mappedDomain}`],
+            )).rows[0]!.id;
+            // A sibling with no observed mailbox stays a usable login via
+            // the mapped domain but can never fresh-proof.
+            await client.query(
+                `INSERT INTO student_auth_identities (user_id, university_id, provider, issuer, subject)
+                 VALUES ($1, $2, 'microsoft', $3, $4)`,
+                [owner.userId, owner.universityId, policy.issuer, `proof-null-sub-${uniqueLabel()}`],
+            );
+            // So does a sibling whose own observed domain was withdrawn
+            // while the policy still maps another domain.
+            await client.query(
+                `INSERT INTO student_auth_identities (user_id, university_id, provider, issuer, subject, observed_email)
+                 VALUES ($1, $2, 'microsoft', $3, $4, $5)`,
+                [owner.userId, owner.universityId, policy.issuer, `proof-withdrawn-sub-${uniqueLabel()}`, `owner@withdrawn-${uniqueLabel()}.example`],
+            );
+        } finally {
+            client.release();
+        }
+        const grant = await mintGrant(service, owner.userId, owner.sid, PASSWORD, 'unlink', targetId);
+        const editor = await pool.connect();
+        try {
+            await editor.query('UPDATE users SET password_hash = NULL WHERE id = $1', [owner.userId]);
+        } finally {
+            editor.release();
+        }
+        // Both siblings satisfy the any-domain login guard, so removal
+        // reaches the proof guard — where neither counts, and removing
+        // the only reauth-accepted Microsoft identity must wait.
+        assert.deepEqual(await service.unlink({
+            userId: owner.userId, sid: owner.sid, identityId: targetId,
+            grantId: grant.grantId, grantSecret: grant.grantSecret,
+        }), { outcome: 'last_proof_method' });
     });
 });
 

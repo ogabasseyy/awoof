@@ -466,19 +466,31 @@ export function createStudentSsoRouter(factory: FlowFactory = defaultFlow, optio
 
     // Register before the provider-parametrized /:provider/start route.
     router.post('/account-recovery/start', accountRecoveryStartLimiter, exactJson, asyncHandler(async (req, res) => {
-        const body = req.body as { email?: unknown; purpose?: unknown };
-        if (!body || typeof body !== 'object' || Array.isArray(body) || Object.keys(body).length !== 2 || typeof body.email !== 'string' || body.email.length === 0 || body.email.length > 255 || body.email.trim().length === 0 || (body.purpose !== 'lost_access' && body.purpose !== 'compromise')) throw new BadRequestError('Account recovery request is invalid');
-        const result = await accountRecoveryFactory().start({ email: body.email, purpose: body.purpose });
+        const body = req.body as { email?: unknown; purpose?: unknown; idempotencyKey?: unknown };
+        // Exact key set: the optional idempotency key binds a lost-response
+        // retry to the original start, so a cooldown retry only replaces
+        // the live attempt when it presents the original key. Anything
+        // else is malformed.
+        const keys = body && typeof body === 'object' && !Array.isArray(body) ? Object.keys(body).sort() : null;
+        const shape = keys !== null && ((keys.length === 2 && keys[0] === 'email' && keys[1] === 'purpose') || (keys.length === 3 && keys[0] === 'email' && keys[1] === 'idempotencyKey' && keys[2] === 'purpose'));
+        const key = body?.idempotencyKey;
+        if (!shape || typeof body.email !== 'string' || body.email.length === 0 || body.email.length > 255 || body.email.trim().length === 0 || (body.purpose !== 'lost_access' && body.purpose !== 'compromise') || (key !== undefined && (typeof key !== 'string' || key.length === 0 || key.length > 128))) throw new BadRequestError('Account recovery request is invalid');
+        const result = await accountRecoveryFactory().start({ email: body.email, purpose: body.purpose, ...(key === undefined ? {} : { idempotencyKey: key }) });
         responseHeaders(res); res.status(202).json({ success: true, data: result });
     }));
     router.post('/account-recovery/verify', accountRecoveryVerifyLimiter, exactJson, asyncHandler(async (req, res) => {
         const body = req.body as { attemptId?: unknown; secret?: unknown; code?: unknown; otp?: unknown };
-        if (!body || typeof body !== 'object' || Array.isArray(body) || Object.keys(body).length !== 4) throw new BadRequestError('Account recovery request is invalid');
+        // Exact required key set: a four-key body missing a required field
+        // must 400 here, not reach the service with undefined and return
+        // the 409 the strict OpenAPI schema does not document for it.
+        const verifyKeys = body && typeof body === 'object' && !Array.isArray(body) ? Object.keys(body).sort() : null;
+        if (verifyKeys === null || verifyKeys.length !== 4 || verifyKeys[0] !== 'attemptId' || verifyKeys[1] !== 'code' || verifyKeys[2] !== 'otp' || verifyKeys[3] !== 'secret') throw new BadRequestError('Account recovery request is invalid');
         await accountRecoveryFactory().verify({ attemptId: body.attemptId, secret: body.secret, code: body.code, otp: body.otp }); responseHeaders(res); res.status(204).end();
     }));
     router.post('/account-recovery/complete', accountRecoveryCompleteLimiter, exactJson, asyncHandler(async (req, res) => {
         const body = req.body as { attemptId?: unknown; secret?: unknown; password?: unknown };
-        if (!body || typeof body !== 'object' || Array.isArray(body) || Object.keys(body).length !== 3) throw new BadRequestError('Account recovery request is invalid');
+        const completeKeys = body && typeof body === 'object' && !Array.isArray(body) ? Object.keys(body).sort() : null;
+        if (completeKeys === null || completeKeys.length !== 3 || completeKeys[0] !== 'attemptId' || completeKeys[1] !== 'password' || completeKeys[2] !== 'secret') throw new BadRequestError('Account recovery request is invalid');
         await accountRecoveryFactory().complete({ attemptId: body.attemptId, secret: body.secret, password: body.password }); responseHeaders(res); res.status(204).end();
     }));
 
@@ -1045,6 +1057,7 @@ export default createStudentSsoRouter();
  *       404: { description: Bound target identity or recovery code not found }
  *       409: { description: Link-purpose reauthentication is unavailable while providers are disabled }
  *       429: { description: Too many reauthentication requests }
+ *       503: { description: Student session validation unavailable, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
  * /api/auth/student/sso/reauth/microsoft/start:
  *   post:
  *     summary: Start a fresh Microsoft proof for the current student account
@@ -1080,7 +1093,7 @@ export default createStudentSsoRouter();
  *       404: { description: Bound target identity or recovery code not found }
  *       409: { description: No live Microsoft identity, or Microsoft is unavailable }
  *       429: { description: Too many reauthentication requests }
- *       503: { description: Fresh Microsoft authentication is unavailable }
+ *       503: { description: Fresh Microsoft authentication or student session validation unavailable }
  * /api/auth/student/sso/reauth/finish:
  *   post:
  *     summary: Exchange a completed fresh proof for an action grant
@@ -1112,7 +1125,7 @@ export default createStudentSsoRouter();
  *       401: { description: Authentication failed or session unavailable }
  *       409: { description: Attempt expired, consumed, replayed, or no longer valid }
  *       429: { description: Too many reauthentication requests }
- *       503: { description: Fresh Microsoft authentication is unavailable }
+ *       503: { description: Fresh Microsoft authentication or student session validation unavailable }
  * /api/auth/student/sso/link:
  *   post:
  *     summary: Link an unlinked provider handoff to the proven owner
@@ -1155,6 +1168,7 @@ export default createStudentSsoRouter();
  *       401: { description: Authentication failed or session unavailable }
  *       409: { description: Link invalid, already linked, mismatch (SSO_LINK_MISMATCH), or restart required (SSO_RESTART_REQUIRED) }
  *       429: { description: Too many link requests }
+ *       503: { description: Student session validation unavailable, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
  * /api/auth/student/sso/identities:
  *   get:
  *     summary: List the owner's linked school sign-ins
@@ -1172,6 +1186,7 @@ export default createStudentSsoRouter();
  *           Cache-Control: { schema: { type: string, example: no-store } }
  *         content: { application/json: { schema: { $ref: '#/components/schemas/StudentSsoIdentitiesResponse' } } }
  *       401: { description: Authentication failed }
+ *       503: { description: Student session validation unavailable, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
  * /api/auth/student/sso/identities/{id}/unlink:
  *   post:
  *     summary: Revoke one linked school sign-in
@@ -1214,6 +1229,7 @@ export default createStudentSsoRouter();
  *       404: { description: Login identity not found }
  *       409: { description: Unlink invalid, last login method (SSO_LAST_LOGIN_METHOD), or last fresh-proof method (SSO_LAST_PROOF_METHOD) }
  *       429: { description: Too many unlink requests }
+ *       503: { description: Student session validation unavailable, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
  * /api/auth/student/sso/signup/context:
  *   post:
  *     summary: Read a pending passwordless signup handoff
@@ -1294,7 +1310,7 @@ export default createStudentSsoRouter();
  *     responses:
  *       200: { description: Owner recovery-code status, no-store, content: { application/json: { schema: { $ref: '#/components/schemas/RecoveryCodeStatusResponse' } } } }
  *       401: { description: Missing, invalid, or non-student bearer session }
- *       503: { description: Recovery-code service unavailable (digest key unconfigured) }
+ *       503: { description: Recovery-code service unavailable (digest key unconfigured) or student session validation unavailable }
  * /api/auth/student/sso/recovery-code/generate:
  *   post:
  *     summary: Generate a pending recovery code after fresh reauthentication
@@ -1309,7 +1325,7 @@ export default createStudentSsoRouter();
  *       401: { description: Missing, invalid, or non-student bearer session }
  *       409: { description: Invalid, expired, consumed, revoked, or replayed fresh grant, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
  *       429: { description: Fresh-proof quota exhausted }
- *       503: { description: Recovery-code service unavailable (digest key unconfigured) }
+ *       503: { description: Recovery-code service unavailable (digest key unconfigured) or student session validation unavailable }
  * /api/auth/student/sso/recovery-code/activate:
  *   post:
  *     summary: Activate a pending recovery code after a second fresh proof
@@ -1324,7 +1340,7 @@ export default createStudentSsoRouter();
  *       401: { description: Missing, invalid, or non-student bearer session }
  *       409: { description: Invalid, expired, consumed, revoked, or replayed code/grant, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
  *       429: { description: Fresh-proof quota exhausted }
- *       503: { description: Recovery-code service unavailable (digest key unconfigured) }
+ *       503: { description: Recovery-code service unavailable (digest key unconfigured) or student session validation unavailable }
  * /api/auth/student/sso/recovery-code/remove:
  *   post:
  *     summary: Remove an active recovery code after fresh reauthentication
@@ -1339,7 +1355,7 @@ export default createStudentSsoRouter();
  *       401: { description: Missing, invalid, or non-student bearer session }
  *       409: { description: Invalid, expired, consumed, revoked, or replayed fresh grant }
  *       429: { description: Fresh-proof quota exhausted }
- *       503: { description: Recovery-code service unavailable (digest key unconfigured) }
+ *       503: { description: Recovery-code service unavailable (digest key unconfigured) or student session validation unavailable }
  * /api/auth/student/sso/recovery-code/cancel:
  *   post:
  *     summary: Cancel the owner's pending recovery code
@@ -1361,7 +1377,7 @@ export default createStudentSsoRouter();
  *       400: { description: JSON, exact-origin, or malformed request }
  *       401: { description: Missing, invalid, or non-student bearer session }
  *       409: { description: Code is not pending for this owner session }
- *       503: { description: Recovery-code service unavailable (digest key unconfigured) }
+ *       503: { description: Recovery-code service unavailable (digest key unconfigured) or student session validation unavailable }
  * /api/auth/student/sso/account-recovery/start:
  *   post:
  *     summary: Start independent password recovery

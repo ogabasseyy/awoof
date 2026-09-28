@@ -77,15 +77,19 @@ export class StudentAccountRecoveryService {
         }
     }
 
-    async start(input: { email: unknown; purpose: unknown }): Promise<{ attemptId: string; secret: string; expiresAt: string; serverNow: string }> {
+    async start(input: { email: unknown; purpose: unknown; idempotencyKey?: unknown }): Promise<{ attemptId: string; secret: string; expiresAt: string; serverNow: string }> {
         if (!validPurpose(input.purpose)) throw new TypeError('Recovery purpose is invalid');
         if (typeof input.email !== 'string' || input.email.trim().length === 0 || input.email.length > 255) {
             throw new TypeError('Recovery email is invalid');
         }
         // Narrowed once: the transaction closure would otherwise reset
-        // property narrowing on the mutable input binding.
+        // property narrowing on the mutable input binding. A missing or
+        // malformed key fails safe: the start still proceeds, but a
+        // cooldown retry without the original key can never replace the
+        // live attempt.
         const purpose = input.purpose;
         const email = input.email.trim().toLowerCase();
+        const idempotencyKey = typeof input.idempotencyKey === 'string' && input.idempotencyKey.length >= 1 && input.idempotencyKey.length <= 128 ? input.idempotencyKey : null;
         const attemptId = randomUUID();
         const secret = randomBytes(32).toString('base64url');
         // The fallback and committed handles share one server-clock expiry.
@@ -120,8 +124,15 @@ export class StudentAccountRecoveryService {
                 // handle against the same unconsumed challenge instead of
                 // stranding the delivered OTP behind a decoy. The expiry
                 // stays bounded by the original challenge, so retries can
-                // never stretch the OTP window, and no OTP is re-sent.
-                if (!live) {
+                // never stretch the OTP window, and no OTP is re-sent. The
+                // retry must present the original start's idempotency key:
+                // otherwise any anonymous caller knowing the email could
+                // silently fail the victim's handle and rebind the OTP to
+                // their own, keeping recovery unavailable with repeats.
+                // Without the binding the retry takes the frozen-expiry
+                // path, indistinguishable from a decoy, and the live
+                // attempt is untouched.
+                if (!live || live.idempotency_key === null || idempotencyKey === null || live.idempotency_key !== idempotencyKey) {
                     // No resumable attempt, but the frozen budget-challenge
                     // expiry still applies: a fresh deadline here would mark
                     // committed handles against decoy retries, which return
@@ -145,10 +156,10 @@ export class StudentAccountRecoveryService {
                 const rebound = await tx.query<{ expires_at: Date }>(
                     `INSERT INTO student_auth_recovery_attempts
                          (id, user_id, credential_generation, purpose, secret_hash, recovery_code_generation,
-                          mailbox_challenge_id, expires_at)
-                     VALUES ($1, $2, $3, $4, $5, $6, $7, LEAST(clock_timestamp() + interval '10 minutes', $8::timestamptz))
+                          mailbox_challenge_id, expires_at, idempotency_key)
+                     VALUES ($1, $2, $3, $4, $5, $6, $7, LEAST(clock_timestamp() + interval '10 minutes', $8::timestamptz), $9)
                      RETURNING expires_at`,
-                    [attemptId, account.id, Number(account.credential_generation), input.purpose, this.secretDigest(secret), Number(active.generation), live.mailbox_challenge_id, live.challenge_expires_at],
+                    [attemptId, account.id, Number(account.credential_generation), input.purpose, this.secretDigest(secret), Number(active.generation), live.mailbox_challenge_id, live.challenge_expires_at, idempotencyKey],
                 );
                 return { expiresAt: rebound.rows[0]!.expires_at.toISOString(), serverNow: serverNow.toISOString() };
             }
@@ -156,10 +167,10 @@ export class StudentAccountRecoveryService {
             const inserted = await tx.query<{ expires_at: Date }>(
                 `INSERT INTO student_auth_recovery_attempts
                      (id, user_id, credential_generation, purpose, secret_hash, recovery_code_generation,
-                      mailbox_challenge_id, expires_at)
-                 VALUES ($1, $2, $3, $4, $5, $6, $7, LEAST(clock_timestamp() + interval '10 minutes', $8::timestamptz))
+                      mailbox_challenge_id, expires_at, idempotency_key)
+                 VALUES ($1, $2, $3, $4, $5, $6, $7, LEAST(clock_timestamp() + interval '10 minutes', $8::timestamptz), $9)
                  RETURNING expires_at`,
-                [attemptId, account.id, Number(account.credential_generation), input.purpose, this.secretDigest(secret), Number(active.generation), challenge.challengeId, challenge.expiresAt],
+                [attemptId, account.id, Number(account.credential_generation), input.purpose, this.secretDigest(secret), Number(active.generation), challenge.challengeId, challenge.expiresAt, idempotencyKey],
             );
             return { email: account.email, otp: challenge.code, challengeId: challenge.challengeId, expiresAt: inserted.rows[0]!.expires_at.toISOString(), serverNow: serverNow.toISOString() };
         });
@@ -478,9 +489,9 @@ export class StudentAccountRecoveryService {
      * consumable, locked for a rebound handle. Verified rows never
      * resume: their holder already proved the OTP and keeps working.
      */
-    private async lockLiveAttempt(tx: PoolClient, userId: string, purpose: RecoveryPurpose): Promise<{ id: string; mailbox_challenge_id: string; challenge_expires_at: Date } | null> {
-        const result = await tx.query<{ id: string; mailbox_challenge_id: string; challenge_expires_at: Date }>(
-            `SELECT attempt.id, attempt.mailbox_challenge_id, challenge.expires_at AS challenge_expires_at
+    private async lockLiveAttempt(tx: PoolClient, userId: string, purpose: RecoveryPurpose): Promise<{ id: string; mailbox_challenge_id: string; challenge_expires_at: Date; idempotency_key: string | null } | null> {
+        const result = await tx.query<{ id: string; mailbox_challenge_id: string; challenge_expires_at: Date; idempotency_key: string | null }>(
+            `SELECT attempt.id, attempt.mailbox_challenge_id, challenge.expires_at AS challenge_expires_at, attempt.idempotency_key
              FROM student_auth_recovery_attempts attempt
              JOIN verification_challenges challenge ON challenge.id = attempt.mailbox_challenge_id
              WHERE attempt.user_id = $1 AND attempt.purpose = $2 AND attempt.status = 'pending'

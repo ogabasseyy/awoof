@@ -586,11 +586,42 @@ export class StudentSsoLinkService {
             // cannot fresh-proof today, so removing it strands nothing and
             // stays allowed. Like last_method, this precedes consumption:
             // the target-bound grant stays retryable.
-            const microsoftSiblingUsable = usable.some(
-                (candidate) => !candidate.is_target && candidate.provider === 'microsoft',
+            //
+            // Proof usability is stricter than login usability: reauth
+            // start only accepts a Microsoft identity whose own
+            // observed-email domain is still mapped. A sibling with no
+            // observed mailbox — or one whose domain was withdrawn while
+            // the policy still maps another domain — stays a usable login
+            // but can never fresh-proof, so the proof-method guard
+            // evaluates the exact-domain predicate, not the any-domain
+            // login candidates above.
+            const proof = await tx.query<{ is_target: boolean }>(
+                `SELECT identity.id = $2 AS is_target FROM student_auth_identities identity
+                 JOIN students student ON student.user_id = identity.user_id
+                     AND student.status = 'active'
+                     AND student.university_id = identity.university_id
+                 JOIN institution_login_policies policy ON policy.university_id = identity.university_id
+                     AND policy.provider = identity.provider AND policy.issuer = identity.issuer
+                     AND policy.enabled AND policy.approved_by IS NOT NULL AND policy.approved_until > clock_timestamp()
+                 JOIN universities university ON university.id = identity.university_id AND university.is_active
+                 JOIN institution_login_domain_providers mapping
+                   ON mapping.policy_id = policy.id
+                  AND mapping.university_id = policy.university_id
+                  AND mapping.provider = policy.provider
+                 JOIN institution_login_domains domain
+                   ON domain.domain = mapping.domain
+                  AND domain.university_id = mapping.university_id
+                  AND domain.is_active
+                  AND domain.domain = split_part(lower(btrim(identity.observed_email)), '@', 2)
+                 WHERE identity.user_id = $1 AND identity.revoked_at IS NULL
+                   AND identity.provider = 'microsoft'
+                   AND identity.observed_email IS NOT NULL AND identity.observed_email <> ''`,
+                [userId, identityId],
             );
-            const targetMicrosoftUsable = row.provider === 'microsoft' && usable.some((candidate) => candidate.is_target);
-            if (targetMicrosoftUsable && !hasUsablePassword && !microsoftSiblingUsable) {
+            const microsoftProofEnabled = this.deps.isProviderEnabled?.('microsoft') === true;
+            const microsoftSiblingProofUsable = microsoftProofEnabled && proof.rows.some((candidate) => !candidate.is_target);
+            const targetMicrosoftProofUsable = microsoftProofEnabled && proof.rows.some((candidate) => candidate.is_target);
+            if (targetMicrosoftProofUsable && !hasUsablePassword && !microsoftSiblingProofUsable) {
                 return { outcome: 'last_proof_method' };
             }
             // Consumption follows the guard: a refused last-method removal

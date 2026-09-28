@@ -808,3 +808,25 @@ test('ambiguous first generation routes a committed pending to cancel-and-regene
     await expect(page.getByRole('link', { name: 'Back to account security' })).toHaveAttribute('href', '/student/security');
     api.assertNoUnexpectedRequests();
 });
+
+test('recovery restarts reuse the tab idempotency binding for cooldown retries', async ({ page }) => {
+    const api = await installSyntheticApi(page);
+    const bodies: unknown[] = [];
+    await page.route(`${apiOrigin}/api/auth/student/sso/account-recovery/start`, route => { bodies.push(JSON.parse(route.request().postData() ?? '{}')); return route.fulfill({ status: 202, headers, json: { success: true, data: { attemptId: 'c5000000-0000-4000-8000-000000000001', secret: 'recovery-secret', expiresAt: new Date(Date.now() + 300_000).toISOString() } } }); });
+    await page.goto('/auth/student/recovery');
+    await page.getByLabel('School email').fill('student@school.example');
+    await page.getByRole('button', { name: 'Start recovery' }).click();
+    await page.getByLabel('Saved recovery code').fill('saved-code');
+    await page.getByRole('button', { name: 'Cancel and restart' }).click();
+    await page.getByLabel('School email').fill('student@school.example');
+    await page.getByRole('button', { name: 'Start recovery' }).click();
+    await expect(page.getByLabel('Saved recovery code')).toBeVisible();
+    // Both submits carry the same tab binding, so the second is a bound
+    // cooldown retry instead of an unbound replacement attempt.
+    expect(bodies).toHaveLength(2);
+    const first = bodies[0] as { email?: unknown; purpose?: unknown; idempotencyKey?: unknown };
+    const second = bodies[1] as { email?: unknown; purpose?: unknown; idempotencyKey?: unknown };
+    expect(typeof first.idempotencyKey).toBe('string');
+    expect(second.idempotencyKey).toBe(first.idempotencyKey);
+    api.assertNoUnexpectedRequests();
+});

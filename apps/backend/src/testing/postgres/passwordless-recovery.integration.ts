@@ -173,11 +173,12 @@ test('a lost start response retries onto a rebound handle without a second OTP',
             deliverOtp: async (_email, delivered) => { deliveries.push(delivered); return { success: true }; },
             validatePassword: () => ({ valid: true, errors: [] }), hashPassword: async () => 'rebound-password-hash',
         });
-        const first = await service.start({ email: account.email, purpose: 'lost_access' });
-        // The 202 never arrived, so the browser retries immediately: the
-        // cooldown path rebounds onto the live attempt instead of
-        // stranding the delivered OTP behind a decoy.
-        const second = await service.start({ email: account.email, purpose: 'lost_access' });
+        const key = randomUUID();
+        const first = await service.start({ email: account.email, purpose: 'lost_access', idempotencyKey: key });
+        // The 202 never arrived, so the browser retries immediately with
+        // the original binding: the cooldown path rebounds onto the live
+        // attempt instead of stranding the delivered OTP behind a decoy.
+        const second = await service.start({ email: account.email, purpose: 'lost_access', idempotencyKey: key });
         assert.notEqual(second.attemptId, first.attemptId);
         assert.equal(deliveries.length, 1, 'the original OTP is reused, never re-sent');
         await service.verify({ attemptId: second.attemptId, secret: second.secret, code: account.code, otp: deliveries[0]! });
@@ -186,6 +187,49 @@ test('a lost start response retries onto a rebound handle without a second OTP',
         );
         assert.deepEqual(rows.rows.map((row) => row.status), ['failed', 'verified']);
         await service.complete({ attemptId: second.attemptId, secret: second.secret, password: 'ValidNew1!' });
+    } finally {
+        client.release();
+        await pool.end();
+    }
+});
+
+test('cooldown retries without the original binding leave the live attempt usable', async () => {
+    const pool = createTestPool();
+    const client = await pool.connect();
+    try {
+        const account = await seedRecoverableStudent(client);
+        const deliveries: string[] = [];
+        const service = new StudentAccountRecoveryService({
+            pool, recoveryCodeKey: 'test-recovery-code-key',
+            deliverOtp: async (_email, delivered) => { deliveries.push(delivered); return { success: true }; },
+            validatePassword: () => ({ valid: true, errors: [] }), hashPassword: async () => 'binding-password-hash',
+        });
+        const key = randomUUID();
+        const first = await service.start({ email: account.email, purpose: 'lost_access', idempotencyKey: key });
+        // An anonymous caller repeating the start with no key — or the
+        // wrong one — takes the frozen-expiry path: no new attempt row,
+        // no OTP re-sent, and the victim handle still verifies.
+        for (const retry of [
+            await service.start({ email: account.email, purpose: 'lost_access' }),
+            await service.start({ email: account.email, purpose: 'lost_access', idempotencyKey: randomUUID() }),
+        ]) {
+            assert.equal(retry.expiresAt, first.expiresAt, 'unbound retries must replay the frozen challenge expiry');
+            await assert.rejects(() => service.verify({ attemptId: retry.attemptId, secret: retry.secret, code: account.code, otp: deliveries[0]! }));
+        }
+        assert.equal(deliveries.length, 1);
+        const rows = await client.query<{ count: string }>(
+            'SELECT count(*)::text AS count FROM student_auth_recovery_attempts WHERE user_id = $1', [account.userId],
+        );
+        assert.equal(rows.rows[0]!.count, '1', 'unbound retries must not replace the live attempt');
+        // The bound retry still rebounds afterwards against the same
+        // delivered OTP: the attack attempts disturbed nothing.
+        const rebound = await service.start({ email: account.email, purpose: 'lost_access', idempotencyKey: key });
+        assert.notEqual(rebound.attemptId, first.attemptId);
+        await service.verify({ attemptId: rebound.attemptId, secret: rebound.secret, code: account.code, otp: deliveries[0]! });
+        const after = await client.query<{ status: string }>(
+            'SELECT status FROM student_auth_recovery_attempts WHERE user_id = $1 ORDER BY created_at', [account.userId],
+        );
+        assert.deepEqual(after.rows.map((row) => row.status), ['failed', 'verified']);
     } finally {
         client.release();
         await pool.end();
@@ -302,11 +346,12 @@ test('failed recovery delivery follows challenge rebinding to the live holder', 
             pool, recoveryCodeKey: 'test-recovery-code-key',
             deliverOtp: async () => new Promise<{ success: boolean }>((resolve) => { resolveDelivery = resolve; }),
         });
-        const first = await service.start({ email: account.email, purpose: 'lost_access' });
-        // A cooldown restart rebounds while delivery is still in flight:
-        // the original attempt fails and the live challenge moves to the
-        // new holder without any redelivery.
-        const second = await service.start({ email: account.email, purpose: 'lost_access' });
+        const key = randomUUID();
+        const first = await service.start({ email: account.email, purpose: 'lost_access', idempotencyKey: key });
+        // A bound cooldown restart rebounds while delivery is still in
+        // flight: the original attempt fails and the live challenge moves
+        // to the new holder without any redelivery.
+        const second = await service.start({ email: account.email, purpose: 'lost_access', idempotencyKey: key });
         assert.notEqual(second.attemptId, first.attemptId);
         resolveDelivery!({ success: false });
         // Compensation keys by the challenge, not the superseded attempt:

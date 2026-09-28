@@ -139,6 +139,8 @@
  *                           $ref: '#/components/schemas/User'
  *       401:
  *         $ref: '#/components/responses/Unauthorized'
+ *       503:
+ *         $ref: '#/components/responses/SessionValidationUnavailable'
  */
 
 /**
@@ -294,6 +296,8 @@
  *         $ref: '#/components/responses/BadRequest'
  *       401:
  *         $ref: '#/components/responses/Unauthorized'
+ *       503:
+ *         $ref: '#/components/responses/SessionValidationUnavailable'
  */
 
 /**

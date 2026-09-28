@@ -217,3 +217,50 @@ test('recovery password schema encodes the enforced complexity rules', () => {
         );
     }
 });
+
+test('student-authenticated operations document the session-validation outage', () => {
+    type Endpoint = { responses?: Record<string, { $ref?: string; description?: string }> };
+    const spec = swaggerSpec as {
+        paths: Record<string, Record<string, Endpoint>>;
+        components: { responses: Record<string, { description?: string }> };
+    };
+    // The authenticate middleware raises a controlled 503 when the student
+    // session lookup fails, before any route handler runs. Every
+    // documented operation behind authenticate must model it: operations
+    // with a cause-specific 503 mention both causes, the rest reference
+    // the shared component.
+    assert.equal(spec.components.responses.SessionValidationUnavailable?.description, 'Student session validation is temporarily unavailable');
+    const operations: Array<[string, string]> = [
+        ['/api/auth/student/sso/reauth', 'post'],
+        ['/api/auth/student/sso/reauth/microsoft/start', 'post'],
+        ['/api/auth/student/sso/reauth/finish', 'post'],
+        ['/api/auth/student/sso/link', 'post'],
+        ['/api/auth/student/sso/identities', 'get'],
+        ['/api/auth/student/sso/identities/{id}/unlink', 'post'],
+        ['/api/auth/student/sso/recovery-code', 'get'],
+        ['/api/auth/student/sso/recovery-code/generate', 'post'],
+        ['/api/auth/student/sso/recovery-code/activate', 'post'],
+        ['/api/auth/student/sso/recovery-code/remove', 'post'],
+        ['/api/auth/student/sso/recovery-code/cancel', 'post'],
+        ['/api/auth/me', 'get'],
+        ['/api/auth/update-password', 'post'],
+        ['/api/students/profile', 'get'],
+        ['/api/students/profile', 'put'],
+        ['/api/students/purchases', 'get'],
+        ['/api/students/savings', 'get'],
+        ['/api/verification/registration', 'post'],
+        ['/api/verification/status', 'get'],
+        ['/api/merchant-verification/assertions', 'post'],
+        ['/api/merchant-verification/claim-sessions/{id}', 'get'],
+        ['/api/merchant-verification/product-claims', 'post'],
+        ['/api/admin/students', 'get'],
+    ];
+    // NOTE: /api/vendors/* blocks carry @swagger annotations but never
+    // parse into the compiled spec (pre-existing, unrelated to the 503:
+    // the whole operations are unpublished). They are excluded until
+    // those blocks are fixed, not because the outage cannot occur there.
+    for (const [path, method] of operations) {
+        const response = spec.paths[path]?.[method]?.responses?.['503'];
+        assert.ok(response, `${method.toUpperCase()} ${path} documents the session-validation 503`);
+    }
+});

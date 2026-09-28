@@ -598,8 +598,8 @@ test('signup routes default to the deployment flag when the option is omitted', 
 test('independent account recovery exposes the same start shape without an account lookup and keeps purpose server-bound', async () => {
     const calls: string[] = [];
     const recovery = {
-        start: async (input: { email: string; purpose: string }) => {
-            calls.push(`start:${input.email}:${input.purpose}`);
+        start: async (input: { email: string; purpose: string; idempotencyKey?: string }) => {
+            calls.push(`start:${input.email}:${input.purpose}:${input.idempotencyKey ?? 'none'}`);
             return { attemptId: ATTEMPT_ID, secret: 'recovery-secret', expiresAt: '2026-09-26T12:00:00.000Z' };
         },
         verify: async () => { calls.push('verify'); },
@@ -618,6 +618,23 @@ test('independent account recovery exposes the same start shape without an accou
             body: JSON.stringify({ email: 'student@example.invalid', purpose: 'compromise', injected: true }),
         });
         assert.equal(extra.status, 400);
+        // The optional retry binding passes through; a malformed one is
+        // malformed, and a three-key body with the wrong name is too.
+        const bound = await fetch(`${baseUrl}/account-recovery/start`, {
+            method: 'POST', headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ email: 'student@example.invalid', purpose: 'compromise', idempotencyKey: 'retry-key' }),
+        });
+        assert.equal(bound.status, 202);
+        const badKey = await fetch(`${baseUrl}/account-recovery/start`, {
+            method: 'POST', headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ email: 'student@example.invalid', purpose: 'compromise', idempotencyKey: '' }),
+        });
+        assert.equal(badKey.status, 400);
+        const wrongName = await fetch(`${baseUrl}/account-recovery/start`, {
+            method: 'POST', headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ email: 'student@example.invalid', purpose: 'compromise', idempotencykey: 'retry-key' }),
+        });
+        assert.equal(wrongName.status, 400);
         const blank = await fetch(`${baseUrl}/account-recovery/start`, {
             method: 'POST', headers: { 'content-type': 'application/json' },
             body: JSON.stringify({ email: '', purpose: 'compromise' }),
@@ -641,8 +658,20 @@ test('independent account recovery exposes the same start shape without an accou
             body: JSON.stringify({ attemptId: ATTEMPT_ID, secret: 'recovery-secret', password: 'ValidNew1!' }),
         });
         assert.equal(completed.status, 204);
+        // Right key count but the wrong key set is malformed (400), not a
+        // state conflict: the strict schemas admit no substitutes.
+        const swappedVerify = await fetch(`${baseUrl}/account-recovery/verify`, {
+            method: 'POST', headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ attemptId: ATTEMPT_ID, secret: 'recovery-secret', code: 'saved-code', injected: '123456' }),
+        });
+        assert.equal(swappedVerify.status, 400);
+        const swappedComplete = await fetch(`${baseUrl}/account-recovery/complete`, {
+            method: 'POST', headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ attemptId: ATTEMPT_ID, secret: 'recovery-secret', injected: 'ValidNew1!' }),
+        });
+        assert.equal(swappedComplete.status, 400);
     });
-    assert.deepEqual(calls, ['start:student@example.invalid:compromise', 'verify', 'complete']);
+    assert.deepEqual(calls, ['start:student@example.invalid:compromise:none', 'start:student@example.invalid:compromise:retry-key', 'verify', 'complete']);
 });
 
 test('account recovery start fails closed when the mailer is unconfigured', async () => {
