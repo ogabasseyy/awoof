@@ -123,9 +123,14 @@ jobs:
           fi
           echo "should_review=true" >> "${GITHUB_OUTPUT}"
 
+          # Immutable evidence pinned to the event SHA: the compare API reads
+          # base...head as fixed commits, so a mid-run push cannot mix files
+          # or diff hunks from two commits.
+          base_sha="$(jq -r '.base.sha' "${pr_file}")"
+          compare_file="${RUNNER_TEMP}/muse-compare.json"
+          gh api "repos/${GITHUB_REPOSITORY}/compare/${base_sha}...${HEAD_SHA_EVENT}" > "${compare_file}"
           files_file="${RUNNER_TEMP}/muse-files.json"
-          gh api --paginate "repos/${GITHUB_REPOSITORY}/pulls/${PR_NUMBER}/files?per_page=100" \
-            | jq -s 'add // []' > "${files_file}"
+          jq '.files // []' "${compare_file}" > "${files_file}"
 
           # Changed-file summary with a hard budget. Filenames are untrusted
           # (Git allows newlines); @tsv backslash-escapes them so records stay
@@ -140,8 +145,11 @@ jobs:
             files_summary="- No file-level diff metadata was returned by the GitHub API."
           fi
           files_note=""
+          if (( total_files >= 300 )); then
+            files_note=" (file list may be truncated at 300 by the compare API)"
+          fi
           if (( total_files > 200 )); then
-            files_note=" ($(( total_files - 200 )) more files omitted)"
+            files_note="${files_note} ($(( total_files - 200 )) more files omitted from summary)"
           fi
           if (( $(printf '%s' "${files_summary}" | wc -c) > 8000 )); then
             files_summary="$(printf '%s' "${files_summary}" | head -c 8000)"
@@ -152,7 +160,9 @@ jobs:
           # routed to the explicit fallback (never reviewed blind).
           diff_file="${RUNNER_TEMP}/muse.diff"
           diff_failed=false
-          if ! gh pr diff "${PR_NUMBER}" --repo "${GITHUB_REPOSITORY}" > "${diff_file}" 2>"${RUNNER_TEMP}/muse-ghdiff.err"; then
+          if ! gh api -H 'Accept: application/vnd.github.diff' \
+            "repos/${GITHUB_REPOSITORY}/compare/${base_sha}...${HEAD_SHA_EVENT}" \
+            > "${diff_file}" 2>"${RUNNER_TEMP}/muse-ghdiff.err"; then
             diff_failed=true
           fi
           echo "diff_failed=${diff_failed}" >> "${GITHUB_OUTPUT}"
@@ -309,6 +319,28 @@ jobs:
 
           echo "prompt_file=${prompt_file}" >> "${GITHUB_OUTPUT}"
 
+          # Dedupe BEFORE the agent runs so reruns don't burn quota. Skip only
+          # when a REAL (non-fallback) Muse review already exists for this
+          # commit: the marker must prefix the body (other bot reviews share
+          # the github-actions[bot] login and could quote it).
+          marker="<!-- muse-code-review sha:${head_sha} -->"
+          dup_reviews="${RUNNER_TEMP}/muse-existing-reviews.json"
+          gh api --paginate "repos/${GITHUB_REPOSITORY}/pulls/${PR_NUMBER}/reviews" > "${dup_reviews}" 2>/dev/null \
+            || echo '[]' > "${dup_reviews}"
+          # shellcheck disable=SC2016  # $marker is a jq variable, not shell
+          real_count="$(jq -s --arg marker "${marker}" \
+            '[add // [] | .[] | select(.user.login == "github-actions[bot]"
+              and (.body | startswith($marker))
+              and ((.body | contains("Muse did not return a review")) | not)
+              and ((.body | contains("diff collection failed")) | not))] | length' \
+            "${dup_reviews}" 2>/dev/null || echo 0)"
+          duplicate=false
+          if [[ "${real_count}" =~ [1-9] ]]; then
+            duplicate=true
+            echo "::notice::Muse review for ${head_sha} already posted; skipping duplicate run."
+          fi
+          echo "duplicate=${duplicate}" >> "${GITHUB_OUTPUT}"
+
       - name: Install Muse Code
         id: install
         if: steps.prereq.outputs.should_run == 'true' && steps.diff.outputs.should_review == 'true'
@@ -327,6 +359,7 @@ jobs:
           steps.prereq.outputs.should_run == 'true' &&
           steps.diff.outputs.should_review == 'true' &&
           steps.diff.outputs.diff_failed != 'true' &&
+          steps.diff.outputs.duplicate != 'true' &&
           steps.install.outcome == 'success'
         # Advisory: a failed/quota-exhausted run posts a fallback note instead
         # of failing the build, so subscription limits can never block merges.
@@ -373,7 +406,8 @@ jobs:
       - name: Post Muse review
         if: >-
           steps.prereq.outputs.should_run == 'true' &&
-          steps.diff.outputs.should_review == 'true'
+          steps.diff.outputs.should_review == 'true' &&
+          steps.diff.outputs.duplicate != 'true'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GITHUB_REPOSITORY: ${{ github.repository }}
@@ -400,8 +434,8 @@ jobs:
 
           ## Findings
 
-          - low: No review was attempted because \`gh pr diff\` failed — check
-            the workflow logs.
+          - low: No review was attempted because diff collection failed —
+            check the workflow logs.
 
           ## Suggested next steps
 
@@ -446,25 +480,6 @@ jobs:
           EOF
             printf '\n%s\n' "${review}"
           } > "${body_file}"
-
-          # Skip posting only when a REAL (non-fallback) Muse review already
-          # exists for this commit. The marker must be the body's prefix (other
-          # bot reviews share the github-actions[bot] login and could quote
-          # it), and fallback reviews must not suppress a later real review.
-          # shellcheck disable=SC2016  # $marker is a jq variable, not shell
-          real_reviews="$(gh api --paginate "repos/${GITHUB_REPOSITORY}/pulls/${PR_NUMBER}/reviews" \
-            --jq --arg marker "${marker}" \
-            '[.[] | select(.user.login == "github-actions[bot]"
-              and (.body | startswith($marker))
-              and ((.body | contains("Muse did not return a review")
-                or (.body | contains("diff collection failed"))) | not)) ] | length' \
-            2>/dev/null || echo 0)"
-          # Pagination emits one count per page; any nonzero digit means a
-          # real review exists.
-          if [[ "${real_reviews}" =~ [1-9] ]]; then
-            echo "::notice::Muse review for ${HEAD_SHA} already posted; skipping duplicate."
-            exit 0
-          fi
 
           payload_file="${RUNNER_TEMP}/muse-review-payload.json"
           # shellcheck disable=SC2016  # $body / $sha are jq variables, not shell
