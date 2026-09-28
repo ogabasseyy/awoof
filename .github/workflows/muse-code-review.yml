@@ -152,9 +152,14 @@ jobs:
             files_note="${files_note} ($(( total_files - 200 )) more files omitted from summary)"
           fi
           if (( $(printf '%s' "${files_summary}" | wc -c) > 8000 )); then
-            files_summary="$(printf '%s' "${files_summary}" | head -c 8000)"
+            # Bash substring, not printf|head: head's early exit SIGPIPEs the
+            # writer and pipefail would kill the step on large inputs.
+            files_summary="${files_summary:0:8000}"
             files_note="${files_note} [summary truncated at 8000 bytes]"
           fi
+          # Neutralize block-closing tags smuggled in filenames (@tsv does
+          # not escape angle brackets).
+          files_summary="$(printf '%s' "${files_summary}" | perl -pe 's{<\s*/\s*(file|diff|pr_title|pr_description|changed_files)}{<\\/$1}gi')"
 
           # Unified diff, truncated to a prompt budget. Collection failures are
           # routed to the explicit fallback (never reviewed blind).
@@ -214,7 +219,9 @@ jobs:
             if [[ "${base_available}" == "true" ]] \
               && content="$(git show "FETCH_HEAD:${candidate}" 2>/dev/null)"; then
               source="trusted (base ${base_ref})"
-            elif [[ -f "${candidate}" ]]; then
+            elif [[ -f "${candidate}" && ! -L "${candidate}" ]]; then
+              # Refuse symlinks: a PR-added symlink (e.g. to /proc/self/environ)
+              # would otherwise embed runner secrets into the prompt.
               content="$(cat "${candidate}")"
               source="UNTRUSTED (PR head)"
             else
@@ -222,7 +229,7 @@ jobs:
             fi
             trunc_note=""
             if (( $(printf '%s' "${content}" | wc -c) > guidance_cap )); then
-              content="$(printf '%s' "${content}" | head -c "${guidance_cap}")"
+              content="${content:0:${guidance_cap}}"
               trunc_note=" [TRUNCATED at ${guidance_cap} bytes]"
             fi
             {
@@ -253,9 +260,9 @@ jobs:
             printf 'Base branch: %s\nHead branch: %s\nHead SHA: %s\n\n' \
               "${base_ref}" "${head_ref}" "${head_sha}"
             printf '<pr_title>\n%s\n</pr_title>\n\n' \
-              "$(printf '%s' "${pr_title}" | perl -pe 's{<\s*/\s*(file|diff|pr_title|pr_description)}{<\\/$1}gi')"
+              "$(printf '%s' "${pr_title}" | perl -pe 's{<\s*/\s*(file|diff|pr_title|pr_description|changed_files)}{<\\/$1}gi')"
             printf '<pr_description>\n%s\n</pr_description>\n\n' \
-              "$(if [[ -n "${pr_body}" ]]; then printf '%s' "${pr_body}" | perl -pe 's{<\s*/\s*(file|diff|pr_title|pr_description)}{<\\/$1}gi'; else printf '(empty)'; fi)"
+              "$(if [[ -n "${pr_body}" ]]; then printf '%s' "${pr_body}" | perl -pe 's{<\s*/\s*(file|diff|pr_title|pr_description|changed_files)}{<\\/$1}gi'; else printf '(empty)'; fi)"
 
             cat <<'CONTRACT'
           You are reviewing GitHub pull request changes. You are running inside
@@ -317,7 +324,7 @@ jobs:
             printf '\n## Changed files%s\n\n<changed_files>\n%s\n</changed_files>\n' "${files_note}" "${files_summary}"
             printf '\n## Unified diff%s\n\n<diff>\n' "${diff_note}"
             iconv -c -f UTF-8 -t UTF-8 "${diff_file}" 2>/dev/null \
-              | perl -pe 's{<\s*/\s*(file|diff)}{<\\/$1}gi' || true
+              | perl -pe 's{<\s*/\s*(file|diff|changed_files)}{<\\/$1}gi' || true
             printf '\n</diff>\n'
             printf '\n## Repo guidance\n'
             cat "${guidance_file}"
@@ -461,6 +468,21 @@ jobs:
           ## Suggested next steps
 
           Re-run the workflow, or inspect the logs."
+          elif [[ "${MUSE_OUTCOME}" != "success" ]]; then
+            # Nonzero/skipped runs can leave partial output behind; never
+            # publish it as a successful review (it would also poison dedupe).
+            review="## Verdict
+
+          Muse did not return a review (step outcome: \`${MUSE_OUTCOME}\`).
+
+          ## Findings
+
+          - low: No review content was produced. This is often a quota, auth,
+            or install issue — check the workflow logs.
+
+          ## Suggested next steps
+
+          Re-run the workflow, or inspect the logs."
           elif printf '%s' "${raw_output}" | jq -e 'has("verdict") and has("findings")' >/dev/null 2>&1; then
             # Structured path: summary review plus Codex-style inline threads.
             findings_json="${RUNNER_TEMP}/muse-findings.json"
@@ -506,7 +528,8 @@ jobs:
               f_title="$(printf '%s' "${finding}" | jq -r '.title // ""')"
               f_path="$(printf '%s' "${finding}" | jq -r '.path // ""')"
               f_line="$(printf '%s' "${finding}" | jq -r '(.line|tonumber?) // 0')"
-              f_body="$(printf '%s' "${finding}" | jq -r '.body // ""' | head -c 4000)"
+              f_body="$(printf '%s' "${finding}" | jq -r '.body // ""')"
+              f_body="${f_body:0:4000}"
               thread_body="$(printf '**[%s] %s**\n\n%s\n\n<sub>Useful? React with 👍 / 👎.</sub>' "${f_sev}" "${f_title}" "${f_body}")"
               thread_body="$(redact "${thread_body}")"
               jq -n --arg path "${f_path}" --argjson line "${f_line}" --arg body "${thread_body}" \
@@ -535,7 +558,7 @@ jobs:
           # chars, which would lose the whole review and fail the workflow.
           body_budget=60000
           if (( $(printf '%s' "${review}" | wc -c) > body_budget )); then
-            review="$(printf '%s' "${review}" | head -c "${body_budget}")"
+            review="${review:0:${body_budget}}"
             review="${review}
 
           [... review truncated at ${body_budget} bytes ...]"
