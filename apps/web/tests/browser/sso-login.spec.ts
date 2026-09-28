@@ -489,6 +489,51 @@ test('an unlinked provider identity stays signed out with an explicit link-requi
     api.assertNoUnexpectedRequests();
 });
 
+test('late link handoff retains the same browser cookie through its own deadline', async ({ page, context }) => {
+    const api = await installSyntheticApi(page);
+    const cookieName = `awoof_sso_${ATTEMPT_ID}`;
+    await page.goto('/auth/student/login');
+    await context.addCookies([{
+        name: cookieName, value: 'same-browser-binding', domain: '127.0.0.1', path: '/api/auth/student/sso',
+        expires: Math.floor(Date.now() / 1000) + 8, httpOnly: true, secure: true, sameSite: 'Lax',
+    }]);
+    await page.route(`${apiOrigin}/api/auth/student/sso/finish`, async (route) => {
+        expect(route.request().headers().cookie).toContain(`${cookieName}=same-browser-binding`);
+        // Playwright's intercepted response does not apply Set-Cookie to the
+        // browser context, so mirror the same server renewal before fulfilling
+        // the link-required response. The backend route test asserts the
+        // actual Set-Cookie attributes and exact remaining TTL.
+        await context.addCookies([{
+            name: cookieName, value: 'same-browser-binding', domain: '127.0.0.1', path: '/api/auth/student/sso',
+            expires: Math.floor(Date.now() / 1000) + 600, httpOnly: true, secure: true, sameSite: 'Lax',
+        }]);
+        await route.fulfill({
+            status: 200,
+            headers: {
+                ...ssoHeaders,
+                'set-cookie': `${cookieName}=same-browser-binding; Max-Age=600; Path=/api/auth/student/sso; HttpOnly; Secure; SameSite=Lax`,
+            },
+            json: { success: true, data: { outcome: 'link_required', handoffId: HANDOFF_ID, handoffSecret: 'synthetic-handoff-secret', expiresAt: liveExpiry(), provider: 'microsoft' } },
+        });
+    });
+    await page.route(`${apiOrigin}/api/auth/student/sso/signup/availability*`, route => route.fulfill({ headers: ssoHeaders, json: { success: true, data: { available: true } } }));
+    let contextCookie: string | undefined;
+    await page.route(`${apiOrigin}/api/auth/student/sso/signup/context`, async route => {
+        contextCookie = route.request().headers().cookie;
+        await route.fulfill({ headers: ssoHeaders, json: { success: true, data: { email: 'student@school.example', universityId: '72000000-0000-4000-8000-000000000001', termsVersion: '2026-01', noticeVersion: '2026-01', noticeText: 'Synthetic processing notice.', expiresAt: liveExpiry() } } });
+    });
+    await seedTabAttempt(page, { attemptId: ATTEMPT_ID, finishSecret: 'synthetic-finish-secret', expiresAt: liveExpiry(), generation: 0, returnPath: '/marketplace' });
+    await page.goto(`/auth/student/sso/complete?attempt=${ATTEMPT_ID}`);
+    await expect(page.getByRole('heading', { name: 'Link your school account' })).toBeVisible();
+    // The pre-finish cookie was deliberately near expiry; a handoff remains
+    // valid for ten minutes, so prove the same cookie was renewed for it.
+    await page.waitForTimeout(9_000);
+    await page.getByRole('link', { name: 'Create a passwordless account' }).click();
+    await expect(page.getByRole('heading', { name: 'Finish setting up Awoof' })).toBeVisible();
+    expect(contextCookie).toContain(`${cookieName}=same-browser-binding`);
+    api.assertNoUnexpectedRequests();
+});
+
 test('link-required hides passwordless signup while issuance is disabled', async ({ page }) => {
     const api = await installSyntheticApi(page);
     await page.route(`${apiOrigin}/api/auth/student/sso/finish`, (route) => route.fulfill({

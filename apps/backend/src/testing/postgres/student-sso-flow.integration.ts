@@ -938,6 +938,8 @@ test('unlinked identity receives a handoff and retains the browser binding', asy
         assert.equal(finished.provider, 'google');
         assert.equal(finished.handoffId.length, 36);
         assert.ok(finished.handoffSecret.length > 0);
+        assert.ok((finished.handoffCookieMaxAgeSeconds ?? 0) > 590 && (finished.handoffCookieMaxAgeSeconds ?? 0) <= 600,
+            'same browser binding is renewable only through the DB-issued ten-minute handoff deadline');
 
         const check = await pool.connect();
         try {

@@ -1172,7 +1172,7 @@ test('callbacks for a disabled provider redirect bounded while the other provide
     }
 });
 
-test('finish clears the cookie on authentication and restart but retains it for linking', async () => {
+test('finish clears the cookie on authentication/restart and renews the same binding only through a link handoff', async () => {
     const authenticated = stubFlow({
         finish: async () => ({
             outcome: 'authenticated',
@@ -1196,7 +1196,9 @@ test('finish clears the cookie on authentication and restart but retains it for 
     });
 
     const linking = stubFlow({
-        finish: async () => ({ outcome: 'link_required', handoffId: 'handoff', handoffSecret: 'secret', expiresAt: new Date().toISOString(), provider: 'microsoft' }),
+        // Simulate a late callback: the original cookie is nearly expired,
+        // but the server-issued handoff has its own bounded remaining TTL.
+        finish: async () => ({ outcome: 'link_required', handoffId: 'handoff', handoffSecret: 'secret', expiresAt: new Date(Date.now() + 600_000).toISOString(), provider: 'microsoft', handoffCookieMaxAgeSeconds: 600 }),
     });
     await withServer(routerWith(linking), async (baseUrl) => {
         const response = await fetch(`${baseUrl}/finish`, {
@@ -1205,8 +1207,16 @@ test('finish clears the cookie on authentication and restart but retains it for 
             body: JSON.stringify({ attemptId: ATTEMPT_ID, finishSecret: 'finish-secret' }),
         });
         assert.equal(response.status, 200);
-        assert.equal((await response.json()).data.outcome, 'link_required');
-        assert.equal(response.headers.get('set-cookie'), null);
+        const result = await response.json();
+        assert.equal(result.data.outcome, 'link_required');
+        assert.equal('handoffCookieMaxAgeSeconds' in result.data, false);
+        const [renewed] = parseSetCookies(response);
+        assert.ok(renewed);
+        assert.match(renewed, new RegExp(`^${COOKIE_NAME}=browser-secret;`));
+        assert.match(renewed, /Max-Age=600/);
+        assert.match(renewed, /HttpOnly/);
+        assert.match(renewed, /Secure/);
+        assert.match(renewed, /SameSite=Lax/);
     });
 
     await withServer(routerWith(stubFlow()), async (baseUrl) => {

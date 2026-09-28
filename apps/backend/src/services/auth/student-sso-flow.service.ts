@@ -90,7 +90,7 @@ export type StudentSsoAuthenticatedResult = {
 
 export type StudentSsoFinishResult =
     | StudentSsoAuthenticatedResult
-    | { outcome: 'link_required'; handoffId: string; handoffSecret: string; expiresAt: string; provider: 'google' | 'microsoft' }
+    | { outcome: 'link_required'; handoffId: string; handoffSecret: string; expiresAt: string; provider: 'google' | 'microsoft'; /** Internal cookie renewal; stripped from the public response. */ handoffCookieMaxAgeSeconds?: number }
     | { outcome: 'restart_required' };
 
 export type StudentSsoOidcResolver = {
@@ -838,12 +838,12 @@ export class StudentSsoFlowService {
         const handoffSecret = secret();
         // The handoff inherits the browser binding so linking still proves
         // the same browser; the cookie is retained, never cleared here.
-        const inserted = await tx.query<{ expires_at: Date }>(
+        const inserted = await tx.query<{ expires_at: Date; server_now: Date }>(
             `INSERT INTO student_auth_link_handoffs
                  (id, attempt_id, secret_hash, encrypted_observation, policy_id, policy_version,
                   browser_binding_hash, expires_at)
              VALUES ($1, $2, $3, $4, $5, $6, $7, clock_timestamp() + interval '10 minutes')
-             RETURNING expires_at`,
+             RETURNING expires_at, clock_timestamp() AS server_now`,
             [
                 handoffId, attempt.id, hashSsoSecret(handoffSecret),
                 encryptSsoSecret(encodeProviderObservation(observation), this.deps.attemptKey, handoffId),
@@ -866,6 +866,12 @@ export class StudentSsoFlowService {
             handoffSecret,
             expiresAt: inserted.rows[0]!.expires_at.toISOString(),
             provider: observation.provider,
+            // The original attempt cookie may be close to expiring when the
+            // provider callback arrives. Renew that same browser binding only
+            // until this DB-issued handoff deadline; never extend it farther.
+            handoffCookieMaxAgeSeconds: Math.max(0, Math.floor(
+                (inserted.rows[0]!.expires_at.getTime() - inserted.rows[0]!.server_now.getTime()) / 1000,
+            )),
         };
     }
 }

@@ -789,9 +789,22 @@ export function createStudentSsoRouter(factory: FlowFactory = defaultFlow, optio
         const result = await factory().finish({ attemptId: body.attemptId, finishSecret: body.finishSecret, browserCookie });
         responseHeaders(res);
         if (result.outcome === 'link_required') {
-            // The cookie is retained through the handoff: linking still
-            // proves the same browser, and B4 clears it on successful link.
-            res.json({ success: true, data: result });
+            // Renew only the same attempt-bound cookie through the DB-issued
+            // handoff deadline. A late provider callback can otherwise leave
+            // a live 10-minute handoff whose original cookie expires first.
+            // Keep the renewal metadata private to this route's cookie logic.
+            const { handoffCookieMaxAgeSeconds, ...publicResult } = result;
+            if (browserCookie && Number.isInteger(handoffCookieMaxAgeSeconds)
+                && handoffCookieMaxAgeSeconds! > 0 && handoffCookieMaxAgeSeconds! <= 10 * 60) {
+                res.cookie(studentSsoCookieName(body.attemptId), browserCookie, {
+                    maxAge: handoffCookieMaxAgeSeconds! * 1000,
+                    path: STUDENT_SSO_COOKIE_PATH,
+                    httpOnly: true,
+                    secure: true,
+                    sameSite: 'lax',
+                });
+            }
+            res.json({ success: true, data: publicResult });
             return;
         }
         clearSsoCookie(res, studentSsoCookieName(body.attemptId));
