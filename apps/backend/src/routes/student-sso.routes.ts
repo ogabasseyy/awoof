@@ -854,6 +854,20 @@ export function createStudentSsoRouter(factory: FlowFactory = defaultFlow, optio
                     res.redirect(303, waiting.href);
                     return;
                 }
+                // A settled terminal 4xx (blocked or removed cookie, spent
+                // attempt) still strands the browser on bare JSON unless it
+                // is redirected: land it on the bounded completion page with
+                // the not-completed outcome, which routes to sign-in
+                // recovery. The redirect stays counted against the quota.
+                if (duplicate && waitingBase) {
+                    res.locals.outageRedirect = true;
+                    clearSsoCookie(res, resolvedCookieName);
+                    const failure = new URL(waitingBase.href);
+                    failure.searchParams.set('attempt', duplicate.attemptId);
+                    failure.searchParams.set('outcome', 'connection_not_completed');
+                    res.redirect(303, failure.href);
+                    return;
+                }
                 clearSsoCookie(res, resolvedCookieName);
             }
             throw error;

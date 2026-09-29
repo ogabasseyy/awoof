@@ -1098,6 +1098,43 @@ test('duplicate callbacks retain the binding and wait while the winner redeems',
     }
 });
 
+test('settled terminal callbacks redirect bounded instead of stranding JSON', async () => {
+    const { config } = await import('../config/env.js');
+    const googleEnabled = config.studentSso.google.enabled;
+    Object.assign(config.studentSso.google, { enabled: true });
+    try {
+        const settled = stubFlow({
+            callback: async () => { throw new ConflictError('Student SSO attempt is no longer valid'); },
+            callbackDuplicateState: async () => ({ attemptId: ATTEMPT_ID, inFlight: false }),
+        });
+        await withServer(routerWith(settled, { callbackLimiterMax: 1 }), async (baseUrl) => {
+            const response = await fetch(`${baseUrl}/google/callback?state=opaque-state`, {
+                redirect: 'manual',
+                headers: { Cookie: `${COOKIE_NAME}=browser-secret` },
+            });
+            // The binding is cleared and the browser lands on the bounded
+            // completion page with the not-completed outcome — never bare
+            // JSON — with no secret in the URL.
+            assert.equal(response.status, 303);
+            const location = response.headers.get('location')!;
+            assert.equal(location, `${COMPLETION_ORIGIN}/auth/student/sso/complete?attempt=${ATTEMPT_ID}&outcome=connection_not_completed`);
+            assert.ok(!location.includes('browser-secret'));
+            assert.ok(!location.includes('opaque-state'));
+            const [setCookie] = parseSetCookies(response);
+            assert.ok(setCookie);
+            assert.match(setCookie, new RegExp(`^${COOKIE_NAME}=;`));
+            // The bounded redirect stays counted against the quota.
+            const replay = await fetch(`${baseUrl}/google/callback?state=opaque-state`, {
+                redirect: 'manual',
+                headers: { Cookie: `${COOKIE_NAME}=browser-secret` },
+            });
+            assert.equal(replay.status, 429);
+        });
+    } finally {
+        Object.assign(config.studentSso.google, { enabled: googleEnabled });
+    }
+});
+
 test('callback client errors clear the resolved cookie while outages redirect bounded', async () => {
     const { config } = await import('../config/env.js');
     const googleEnabled = config.studentSso.google.enabled;
