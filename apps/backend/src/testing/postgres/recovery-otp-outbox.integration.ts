@@ -245,3 +245,31 @@ test('expired recovery outbox jobs are scrubbed without delivery', async () => {
         await pool.end();
     }
 });
+
+test('outbox jobs reuse the challenge issue timestamp instead of a fresh clock read', async () => {
+    const pool = createTestPool();
+    const client = await pool.connect();
+    try {
+        const account = await seedRecoverableStudent(client);
+        const service = recoveryService(pool);
+        const started = await service.start({ email: account.email, purpose: 'lost_access', idempotencyKey: 'created-at-carry' });
+        // The enqueue statement can run arbitrarily later than issuance
+        // under contention; stamping a fresh clock_timestamp() would fail
+        // the expires_at > created_at check on a nearly-lapsed deadline.
+        // Carrying the captured issue timestamp satisfies it by
+        // construction, since the challenge insert proved the ordering.
+        const stamps = await client.query<{ job_created: Date; challenge_created: Date }>(
+            `SELECT job.created_at AS job_created, challenge.created_at AS challenge_created
+             FROM student_auth_recovery_attempts attempt
+             JOIN student_email_otp_outbox job ON job.challenge_id = attempt.mailbox_challenge_id
+             JOIN verification_challenges challenge ON challenge.id = attempt.mailbox_challenge_id
+             WHERE attempt.id = $1`, [started.attemptId],
+        );
+        assert.equal(stamps.rows.length, 1);
+        assert.equal(stamps.rows[0]!.job_created.getTime(), stamps.rows[0]!.challenge_created.getTime(),
+            'the delivery job must carry the challenge issue timestamp');
+    } finally {
+        client.release();
+        await pool.end();
+    }
+});

@@ -54,15 +54,26 @@ function decryptOtp(job: OutboxJob, keys: Key[]): string {
     throw new Error('Recovery OTP outbox payload is invalid');
 }
 
-/** Must be called inside the transaction that creates the purpose-bound challenge. */
+/**
+ * Must be called inside the transaction that creates the purpose-bound
+ * challenge, with that challenge's id and expiry. The outbox row reuses
+ * the challenge row's captured created_at instead of clock_timestamp():
+ * under database contention the enqueue statement can run arbitrarily
+ * later than issuance, and a fresh timestamp would fail the
+ * expires_at > created_at check on a nearly-lapsed deadline. Carrying
+ * the issue timestamp satisfies the constraint by construction, since
+ * the challenge insert already proved created_at < expires_at. A
+ * missing challenge row fails loudly on the NOT NULL column.
+ */
 export async function enqueueStudentOtp(tx: Pick<PoolClient, 'query'>, input: { purpose: StudentOtpPurpose; challengeId: string; otp: string; expiresAt: Date; encryptionKey: string }): Promise<void> {
     const key = parseKey(input.encryptionKey);
     if (!key) throw new TypeError('Recovery OTP outbox key is unavailable');
     const envelope = encryptOtp(input.purpose, input.challengeId, input.otp, key);
     await tx.query(
         `INSERT INTO student_email_otp_outbox
-             (challenge_id, purpose, key_id, ciphertext, nonce, auth_tag, expires_at)
-         VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+             (challenge_id, purpose, key_id, ciphertext, nonce, auth_tag, expires_at, created_at)
+         VALUES ($1, $2, $3, $4, $5, $6, $7,
+                 (SELECT created_at FROM verification_challenges WHERE id = $1))`,
         [input.challengeId, input.purpose, envelope.keyId, envelope.ciphertext, envelope.nonce, envelope.authTag, input.expiresAt],
     );
 }
