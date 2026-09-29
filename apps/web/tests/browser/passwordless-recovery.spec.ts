@@ -1235,6 +1235,46 @@ test('purpose switch keeps the recovery binding and stale proof failures cannot 
     api.assertNoUnexpectedRequests();
 });
 
+test('stale successful recovery proof after expiry restart cannot restore the old purpose completion view', async ({ page }) => {
+    const api = await installSyntheticApi(page);
+    const delayedVerify = createGate('old-purpose recovery proof success');
+    let starts = 0;
+    await page.route(`${apiOrigin}/api/auth/student/sso/account-recovery/start`, route => {
+        starts += 1;
+        const first = starts === 1;
+        return route.fulfill({ status: 202, headers, json: { success: true, data: {
+            attemptId: first ? 'c5200000-0000-4000-8000-000000000001' : 'c5200000-0000-4000-8000-000000000002',
+            secret: first ? 'old-purpose-secret' : 'new-purpose-secret',
+            expiresAt: new Date(Date.now() + (first ? 3_000 : 300_000)).toISOString(),
+            otpExpiresAt: new Date(Date.now() + (first ? 3_000 : 300_000)).toISOString(),
+            serverNow: new Date().toISOString(),
+        } } });
+    });
+    await page.route(`${apiOrigin}/api/auth/student/sso/account-recovery/verify`, async route => {
+        await delayedVerify.wait();
+        return route.fulfill({ headers, json: { success: true, data: { expiresAt: new Date(Date.now() + 600_000).toISOString(), serverNow: new Date().toISOString() } } });
+    });
+
+    await page.goto('/auth/student/recovery');
+    await page.getByLabel('School email').fill('student@school.example');
+    await page.getByRole('button', { name: 'Start recovery' }).click();
+    await page.getByLabel('Saved recovery code').fill('saved-code');
+    await page.getByLabel('Email confirmation code').fill('123456');
+    await page.getByRole('button', { name: 'Confirm recovery proofs' }).click();
+    await delayedVerify.waitForArrival();
+    await page.getByRole('button', { name: 'Start again' }).click();
+    await page.getByLabel('I think my sign-in was compromised').check();
+    await page.getByLabel('School email').fill('student@school.example');
+    await page.getByRole('button', { name: 'Start recovery' }).click();
+    await expect(page.getByLabel('Saved recovery code')).toBeVisible();
+    delayedVerify.release();
+    await expect(page.getByLabel('Saved recovery code')).toBeVisible();
+    await expect(page.getByLabel('New password')).toHaveCount(0);
+    await expect(page.getByRole('alert').filter({ hasText: 'Recovery proof could not be confirmed' })).toHaveCount(0);
+    expect(starts).toBe(2);
+    api.assertNoUnexpectedRequests();
+});
+
 test('duplicate reauth callback waits instead of failing the in-flight confirmation', async ({ page }) => {
     const api = await installSyntheticApi(page);
     let finishCalls = 0;
