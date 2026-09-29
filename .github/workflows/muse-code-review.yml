@@ -156,6 +156,25 @@ jobs:
           pr_state="$(jq -r '.state' "${pr_file}")"
           pr_title="$(jq -r '.title' "${pr_file}")"
           pr_body="$(jq -r '.body // ""' "${pr_file}")"
+          # Byte-bound the UNTRUSTED submitter text: without a cap a huge PR
+          # description blows the prompt budget and can starve the diff of
+          # quota or get the request rejected outright. UTF-8-safe truncation
+          # via temp file (head reads a file, never a live pipe) with an
+          # explicit marker so the model knows content was cut.
+          bound_untrusted() {
+            local _in="$1" _cap="$2" _tmp
+            if (( $(printf '%s' "${_in}" | wc -c) > _cap )); then
+              _tmp="$(mktemp)"
+              printf '%s' "${_in}" > "${_tmp}"
+              printf '%s\n[... truncated at %s bytes ...]' \
+                "$(head -c "${_cap}" "${_tmp}" | iconv -c -f UTF-8 -t UTF-8 2>/dev/null || true)" "${_cap}"
+              rm -f "${_tmp}"
+            else
+              printf '%s' "${_in}"
+            fi
+          }
+          pr_title="$(bound_untrusted "${pr_title}" 2000)"
+          pr_body="$(bound_untrusted "${pr_body}" 12000)"
 
           echo "head_sha=${head_sha}" >> "${GITHUB_OUTPUT}"
           echo "base_ref=${base_ref}" >> "${GITHUB_OUTPUT}"
@@ -263,9 +282,12 @@ jobs:
             files_note="${files_note} ($(( total_files - 200 )) more files omitted from summary)"
           fi
           if (( $(printf '%s' "${files_summary}" | wc -c) > 8000 )); then
-            # Bash substring, not printf|head: head's early exit SIGPIPEs the
-            # writer and pipefail would kill the step on large inputs.
-            files_summary="${files_summary:0:8000}"
+            # Byte-bounded via temp file: char-based cut would overshoot on
+            # multibyte text, and printf|head would risk SIGPIPE under pipefail.
+            tmp_sum="$(mktemp)"
+            printf '%s' "${files_summary}" > "${tmp_sum}"
+            files_summary="$(head -c 8000 "${tmp_sum}" | iconv -c -f UTF-8 -t UTF-8 2>/dev/null || true)"
+            rm -f "${tmp_sum}"
             files_note="${files_note} [summary truncated at 8000 bytes]"
           fi
           # Neutralize block-closing tags smuggled in filenames (@tsv does
@@ -348,7 +370,13 @@ jobs:
             fi
             trunc_note=""
             if (( $(printf '%s' "${content}" | wc -c) > guidance_cap )); then
-              content="${content:0:${guidance_cap}}"
+              # Byte-bounded (not char-based): a multibyte file cut by chars
+              # could still exceed the aggregate budget and starve later
+              # guidance. head reads a temp file, never a live pipe.
+              tmp_trunc="$(mktemp)"
+              printf '%s' "${content}" > "${tmp_trunc}"
+              content="$(head -c "${guidance_cap}" "${tmp_trunc}" | iconv -c -f UTF-8 -t UTF-8 2>/dev/null || true)"
+              rm -f "${tmp_trunc}"
               trunc_note=" [TRUNCATED at ${guidance_cap} bytes]"
             fi
             content_len="$(printf '%s' "${content}" | wc -c)"
@@ -572,8 +600,21 @@ jobs:
         timeout-minutes: 10
         env:
           META_API_KEY: ${{ secrets.META_API_KEY }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          HEAD_SHA: ${{ steps.diff.outputs.head_sha }}
         run: |
           set -euo pipefail
+          # Rerun staleness: a manual rerun uses an isolated concurrency
+          # group, so a newer push cannot cancel it — revalidate the live
+          # head before spending a Muse invocation. Stale runs exit quietly
+          # with no post (the Post step revalidates again before posting).
+          live_head="$(gh api "repos/${GITHUB_REPOSITORY}/pulls/${PR_NUMBER}" --jq '.head.sha' 2>/dev/null || true)"
+          if [[ -n "${live_head}" && "${live_head}" != "${HEAD_SHA}" ]]; then
+            echo "::notice::PR head moved (${HEAD_SHA:0:10} -> ${live_head:0:10}); rerun is stale, skipping Muse invocation."
+            exit 0
+          fi
           review_file="${RUNNER_TEMP}/muse-review-body.md"
           : > "${review_file}"
 
@@ -631,6 +672,14 @@ jobs:
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
           set -euo pipefail
+          # Second staleness gate (see the Run step): a push that landed
+          # while Muse was working means this review targets an old head —
+          # posting it would misattribute inline lines, so exit quietly.
+          live_head="$(gh api "repos/${GITHUB_REPOSITORY}/pulls/${PR_NUMBER}" --jq '.head.sha' 2>/dev/null || true)"
+          if [[ -n "${live_head}" && "${live_head}" != "${HEAD_SHA}" ]]; then
+            echo "::notice::PR head moved during review (${HEAD_SHA:0:10} -> ${live_head:0:10}); skipping stale post."
+            exit 0
+          fi
 
           body_file="${RUNNER_TEMP}/muse-review.md"
           marker="<!-- muse-code-review sha:${HEAD_SHA} base:${BASE_SHA:0:10} -->"
@@ -724,7 +773,7 @@ jobs:
             ranges_json="${RUNNER_TEMP}/muse-ranges.json"
             awk '/^\+\+\+ / {file=$0; sub(/^\+\+\+ /,"",file)} /^@@ -[0-9]+(,[0-9]+)? \+/ {s=$3; sub(/^\+/, "", s); n=split(s, a, ","); start=a[1]+0; len=(n>1?a[2]+0:1); if (len>0) print file"\t"start"\t"(start+len-1)}' \
               "${RUNNER_TEMP}/muse.diff" 2>/dev/null \
-              | perl -F'\t' -lane '$F[0] =~ s/^"(.*)"$/$1/; $F[0] =~ s/^b\///; $F[0] =~ s/\\([0-7]{3})/chr(oct($1))/ge; $F[0] =~ s/\\"/"/g; $F[0] =~ s/\\\\/\\/g; print join("\t", @F) unless $F[0] eq "/dev/null"' \
+              | perl -F'\t' -lane '$F[0] =~ s/^"(.*)"$/$1/; $F[0] =~ s/^b\///; $F[0] =~ s/\\([0-7]{3}|[abtnvfr"\\])/length($1)==3?chr(oct($1)):($1 eq "a"?"\a":$1 eq "b"?"\b":$1 eq "t"?"\t":$1 eq "n"?"\n":$1 eq "v"?"\v":$1 eq "f"?"\f":$1 eq "r"?"\r":$1)/ge; print join("\t", @F) unless $F[0] eq "/dev/null"' \
               | jq -R -s '[split("\n")[] | select(length>0) | split("\t") | {path:.[0],start:.[1]|tonumber,end:.[2]|tonumber}]' \
               > "${ranges_json}" 2>/dev/null || echo '[]' > "${ranges_json}"
             validated_json="${RUNNER_TEMP}/muse-validated.json"
