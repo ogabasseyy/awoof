@@ -140,7 +140,7 @@ function RecoveryReauthComplete({ attemptId, duplicate, unavailable }: { attempt
         void studentSsoSessionApiClient.post('/auth/student/sso/reauth/finish', { attemptId }).then(async response => {
             if (stale()) return;
             const grant = parseSsoReauthFinish(response.data); if (!grant) throw new Error('invalid grant');
-            if (grant.purpose === 'link' || grant.purpose === 'unlink') { await continueIdentity({ grantId: grant.grantId, grantSecret: grant.grantSecret, purpose: grant.purpose, targetIdentityId: grant.targetIdentityId }); return; }
+            if (grant.purpose === 'link' || grant.purpose === 'unlink') { await continueIdentity({ grantId: grant.grantId, grantSecret: grant.grantSecret, purpose: grant.purpose, targetIdentityId: grant.targetIdentityId }, generation); return; }
             if (grant.purpose === 'recovery_code_generate') {
                 clearRecoveryIntent(); setGrant({ grantId: grant.grantId, grantSecret: grant.grantSecret });
                 if (grant.activeCodeGeneration !== null) { setStatus('generate'); return; }
@@ -221,16 +221,20 @@ function RecoveryReauthComplete({ attemptId, duplicate, unavailable }: { attempt
         if (duplicate) { setStatus('waiting'); return; }
         runFinish();
     }, [attemptId, unavailable]);
-    const continueIdentity = async (grant: { grantId: string; grantSecret: string; purpose: 'link' | 'unlink'; targetIdentityId: string | null }) => {
+    const continueIdentity = async (grant: { grantId: string; grantSecret: string; purpose: 'link' | 'unlink'; targetIdentityId: string | null }, generation: number): Promise<void> => {
+        const stale = () => generation !== accountGeneration.current;
+        if (stale()) return;
         const auth = { grantId: grant.grantId, grantSecret: grant.grantSecret };
         if (grant.purpose === 'link') {
             const handoff = readSsoHandoff(tabStorage());
             if (!handoff) { setStatus('link_unavailable'); return; }
             try {
                 const response = await studentSsoSessionApiClient.post('/auth/student/sso/link', { handoffId: handoff.handoffId, handoffSecret: handoff.handoffSecret, reauthGrant: auth });
+                if (stale()) return;
                 if (parseSsoLinkResponse(response.status, response.data)?.kind !== 'linked') throw new Error('not linked');
                 clearSsoHandoff(tabStorage()); window.location.assign(handoff.returnPath); return;
             } catch (cause: unknown) {
+                if (stale()) return;
                 const result = parseSsoLinkResponse(statusOf(cause), bodyOf(cause));
                 // Only terminal mismatch/restart outcomes spend the handoff.
                 // Ambiguous failures (network loss, 5xx) keep the tab's copy
@@ -247,6 +251,7 @@ function RecoveryReauthComplete({ attemptId, duplicate, unavailable }: { attempt
         if (!grant.targetIdentityId) { setStatus('failed'); return; }
         try {
             const response = await studentSsoSessionApiClient.post(`/auth/student/sso/identities/${grant.targetIdentityId}/unlink`, { reauthGrant: auth });
+            if (stale()) return;
             const data = (response.data as { success?: unknown; data?: unknown })?.success === true ? (response.data as { data?: unknown }).data as { unlinked?: unknown; sessionRevoked?: unknown } : null;
             if (!data || data.unlinked !== true || typeof data.sessionRevoked !== 'boolean') throw new Error('invalid unlink');
             // The server clears the session only when the removed identity
@@ -254,6 +259,7 @@ function RecoveryReauthComplete({ attemptId, duplicate, unavailable }: { attempt
             if (data.sessionRevoked) clearTokens();
             setStatus(data.sessionRevoked ? 'unlinked_signed_out' : 'unlinked');
         } catch (cause: unknown) {
+            if (stale()) return;
             const body = bodyOf(cause) as { error?: { code?: unknown } } | undefined;
             if (statusOf(cause) === 409 && body?.error?.code === 'SSO_LAST_LOGIN_METHOD') { setStatus('last_method'); return; }
             if (statusOf(cause) === 409 && body?.error?.code === 'SSO_LAST_PROOF_METHOD') { setStatus('last_proof_method'); return; }
@@ -267,11 +273,13 @@ function RecoveryReauthComplete({ attemptId, duplicate, unavailable }: { attempt
             if (failed === undefined || failed >= 500) {
                 try {
                     const current = await studentSsoSessionApiClient.get('/auth/student/sso/identities');
+                    if (stale()) return;
                     const listed = (current.data as { data?: { identities?: unknown } }).data?.identities;
                     if (Array.isArray(listed) && !listed.some((entry) => (entry as { id?: unknown } | null)?.id === grant.targetIdentityId)) {
                         setStatus('unlinked'); return;
                     }
                 } catch (inner: unknown) {
+                    if (stale()) return;
                     // On this /auth/ page the session interceptor clears
                     // tokens without redirecting, so a 401 here is the
                     // committed outcome with the session revoked by the

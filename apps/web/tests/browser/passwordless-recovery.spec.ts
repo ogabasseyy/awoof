@@ -534,6 +534,67 @@ test('unlink that revokes the active session clears local tokens and signs out',
     api.assertNoUnexpectedRequests();
 });
 
+test('late unlink success for the previous browser session cannot clear the replacement session', async ({ page }) => {
+    const api = await installSyntheticApi(page);
+    const unlink = createGate('previous-session identity unlink');
+    const targetId = '8d000000-0000-4000-8000-000000000001';
+    await page.route(`${apiOrigin}/api/auth/student/sso/reauth/finish`, route => route.fulfill({ status: 201, headers, json: { success: true, data: { grantId: '8e000000-0000-4000-8000-000000000001', grantSecret: 'unlink-grant', expiresAt: new Date(Date.now() + 60_000).toISOString(), purpose: 'unlink', pendingCodeId: null, targetIdentityId: targetId, activeCodeGeneration: null } } }));
+    await page.route(`${apiOrigin}/api/auth/student/sso/identities/${targetId}/unlink`, async route => {
+        await unlink.wait();
+        return route.fulfill({ headers, json: { success: true, data: { unlinked: true, sessionRevoked: true } } });
+    });
+
+    await page.goto('/auth/student/login'); await seedSession(page, 'student');
+    await page.goto('/auth/student/sso/complete?reauth=8f000000-0000-4000-8000-000000000001');
+    await unlink.waitForArrival();
+    await page.evaluate(() => {
+        const key = 'awoof.session.v1';
+        const value = JSON.stringify({ v: 1, state: 'active', sessionId: 'replacement-vendor-session', accessToken: 'vendor-access', refreshToken: 'vendor-refresh' });
+        localStorage.setItem(key, value);
+        const event = new Event('storage');
+        Object.defineProperties(event, { key: { value: key }, newValue: { value } });
+        window.dispatchEvent(event);
+    });
+    await expect(page.getByRole('heading', { name: 'Security confirmation unavailable' })).toBeVisible();
+    unlink.release();
+    await expect.poll(() => page.evaluate(() => JSON.parse(localStorage.getItem('awoof.session.v1') ?? 'null')?.accessToken)).toBe('vendor-access');
+    await expect(page.getByText('You have been signed out.')).toHaveCount(0);
+    api.assertNoUnexpectedRequests();
+});
+
+test('late link success for the previous browser session cannot clear handoff or redirect the replacement session', async ({ page }) => {
+    const api = await installSyntheticApi(page);
+    const link = createGate('previous-session provider link');
+    const handoffId = '8f000000-0000-4000-8000-000000000002';
+    await page.route(`${apiOrigin}/api/auth/student/sso/reauth/finish`, route => route.fulfill({ status: 201, headers, json: { success: true, data: { grantId: '8f000000-0000-4000-8000-000000000003', grantSecret: 'link-grant', expiresAt: new Date(Date.now() + 60_000).toISOString(), purpose: 'link', pendingCodeId: null, targetIdentityId: null, activeCodeGeneration: null } } }));
+    await page.route(`${apiOrigin}/api/auth/student/sso/link`, async route => {
+        await link.wait();
+        return route.fulfill({ status: 200, headers, json: { success: true, data: { outcome: 'linked', reactivated: false, schoolAssertion: 'synthetic-assertion' } } });
+    });
+
+    await page.goto('/auth/student/login'); await seedSession(page, 'student');
+    await page.evaluate(({ key, value }) => sessionStorage.setItem(key, JSON.stringify(value)), {
+        key: 'awoof.sso.handoff.v1.tab',
+        value: { handoffId, handoffSecret: 'synthetic-handoff-secret', expiresAt: new Date(Date.now() + 600_000).toISOString(), returnPath: '/marketplace' },
+    });
+    await page.goto('/auth/student/sso/complete?reauth=8f000000-0000-4000-8000-000000000004');
+    await link.waitForArrival();
+    await page.evaluate(() => {
+        const key = 'awoof.session.v1';
+        const value = JSON.stringify({ v: 1, state: 'active', sessionId: 'replacement-vendor-session', accessToken: 'vendor-access', refreshToken: 'vendor-refresh' });
+        localStorage.setItem(key, value);
+        const event = new Event('storage');
+        Object.defineProperties(event, { key: { value: key }, newValue: { value } });
+        window.dispatchEvent(event);
+    });
+    await expect(page.getByRole('heading', { name: 'Security confirmation unavailable' })).toBeVisible();
+    link.release();
+    await expect(page).toHaveURL(/\/auth\/student\/sso\/complete/);
+    expect(await page.evaluate((key) => sessionStorage.getItem(key), 'awoof.sso.handoff.v1.tab')).toContain(handoffId);
+    await expect.poll(() => page.evaluate(() => JSON.parse(localStorage.getItem('awoof.session.v1') ?? 'null')?.accessToken)).toBe('vendor-access');
+    api.assertNoUnexpectedRequests();
+});
+
 test('fresh unlink proof surfaces the last-method guard instead of failing', async ({ page }) => {
     const api = await installSyntheticApi(page);
     const targetId = '87000000-0000-4000-8000-000000000001';
