@@ -77,9 +77,9 @@ jobs:
       github.event.pull_request.head.repo.full_name == github.repository &&
       (github.event.action != 'edited' || github.event.changes.base != null)
     runs-on: ubuntu-latest
-    # Budget: install 5 + run 10 + headroom for collect/post. Step timeouts
-    # must sum below this or a hung step starves the fallback post.
-    timeout-minutes: 20
+    # Budget: collect 5 + install 5 + run 10 + post 2 = 22 < 25. Step
+    # timeouts must sum below this or a hung step starves the fallback post.
+    timeout-minutes: 25
     env:
       MUSE_MODEL_RESOLVED: ${{ vars.MUSE_MODEL != '' && vars.MUSE_MODEL || '' }}
       MUSE_EFFORT_RESOLVED: ${{ vars.MUSE_REASONING_EFFORT != '' && vars.MUSE_REASONING_EFFORT || 'medium' }}
@@ -120,6 +120,9 @@ jobs:
       - name: Collect PR diff and build prompt
         id: diff
         if: steps.prereq.outputs.should_run == 'true'
+        # Bounded so slow API pagination or history-deepening cannot eat the
+        # job budget and starve the fallback post (see budget above).
+        timeout-minutes: 5
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GITHUB_REPOSITORY: ${{ github.repository }}
@@ -165,6 +168,12 @@ jobs:
           # API backs the file list and head guidance is labeled UNTRUSTED.
           base_available=false
           if git fetch --depth 1 origin "${base_sha_full}" >/dev/null 2>&1; then
+            base_available=true
+          # Private repos: the anonymous fetch above fails (persist-credentials
+          # is false), so retry once with the job token scoped to this single
+          # command (-c never persists it). Without trusted base guidance a
+          # submitter could delete or weaken AGENTS.md and hide the real rules.
+          elif git -c http.extraHeader="Authorization: Bearer ${GH_TOKEN}" fetch --depth 1 origin "${base_sha_full}" >/dev/null 2>&1; then
             base_available=true
           fi
           # Merge-base discovery: two-dot diff would include base-only
@@ -733,26 +742,40 @@ jobs:
         timeout-minutes: 10
         env:
           META_API_KEY: ${{ secrets.META_API_KEY }}
+          # Load-bearing for the staleness gate below (and scrubbed before
+          # Muse launches): without it the gate misfires and every run skips.
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GITHUB_REPOSITORY: ${{ github.repository }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
           HEAD_SHA: ${{ steps.diff.outputs.head_sha }}
+          BASE_SHA: ${{ steps.diff.outputs.base_sha }}
         run: |
           set -euo pipefail
           # Rerun staleness: a manual rerun uses an isolated concurrency
           # group, so a newer push cannot cancel it — revalidate the live
-          # head before spending a Muse invocation. Stale runs exit quietly
-          # with no post (the Post step revalidates again before posting).
-          # Fail closed: an unreadable head is a skip, never a proceed.
-          # The token is scoped to this one call and scrubbed before Muse
-          # launches: the agent needs only META_API_KEY, so the write-capable
-          # job token must never reach its environment.
-          if ! live_head="$(GH_TOKEN="${GITHUB_TOKEN}" gh api "repos/${GITHUB_REPOSITORY}/pulls/${PR_NUMBER}" --jq '.head.sha' 2>/dev/null)" \
-            || [[ -z "${live_head}" ]]; then
-            echo "::warning::Head revalidation lookup failed; skipping run to avoid reviewing a stale head."
+          # head AND base before spending a Muse invocation. Stale runs exit
+          # quietly with no post (the Post step revalidates again before
+          # posting). Fail closed: an unreadable ref is a skip, never a
+          # proceed. The token is scoped to this one call and scrubbed before
+          # Muse launches: the agent needs only META_API_KEY, so the
+          # write-capable job token must never reach its environment.
+          if ! live_refs="$(GH_TOKEN="${GITHUB_TOKEN}" gh api "repos/${GITHUB_REPOSITORY}/pulls/${PR_NUMBER}" --jq '.head.sha, .base.sha' 2>/dev/null)" \
+            || [[ -z "${live_refs}" ]]; then
+            echo "::warning::Ref revalidation lookup failed; skipping run to avoid reviewing a stale head."
+            exit 0
+          fi
+          live_head="$(printf '%s' "${live_refs}" | sed -n '1p')"
+          live_base="$(printf '%s' "${live_refs}" | sed -n '2p')"
+          if [[ -z "${live_head}" || -z "${live_base}" ]]; then
+            echo "::warning::Ref revalidation lookup failed; skipping run to avoid reviewing a stale head."
             exit 0
           fi
           if [[ "${live_head}" != "${HEAD_SHA}" ]]; then
             echo "::notice::PR head moved (${HEAD_SHA:0:10} -> ${live_head:0:10}); rerun is stale, skipping Muse invocation."
+            exit 0
+          fi
+          if [[ "${live_base}" != "${BASE_SHA}" ]]; then
+            echo "::notice::PR base moved (${BASE_SHA:0:10} -> ${live_base:0:10}); rerun is stale, skipping Muse invocation."
             exit 0
           fi
           review_file="${RUNNER_TEMP}/muse-review-body.md"
@@ -801,6 +824,8 @@ jobs:
           steps.prereq.outputs.should_run == 'true' &&
           steps.diff.outputs.should_review == 'true' &&
           steps.diff.outputs.duplicate != 'true'
+        # Bounded like the other steps; one read plus one post needs far less.
+        timeout-minutes: 2
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GITHUB_REPOSITORY: ${{ github.repository }}
@@ -812,17 +837,28 @@ jobs:
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
           set -euo pipefail
-          # Second staleness gate (see the Run step): a push that landed
-          # while Muse was working means this review targets an old head —
-          # posting it would misattribute inline lines, so exit quietly.
-          # Fail closed here too: an unreadable head is a skip, never a post.
-          if ! live_head="$(gh api "repos/${GITHUB_REPOSITORY}/pulls/${PR_NUMBER}" --jq '.head.sha' 2>/dev/null)" \
-            || [[ -z "${live_head}" ]]; then
-            echo "::warning::Head revalidation lookup failed; skipping post to avoid publishing a stale review."
+          # Second staleness gate (see the Run step): a push or base retarget
+          # that landed while Muse was working means this review targets old
+          # refs — posting it would misattribute inline lines, so exit
+          # quietly. Fail closed here too: an unreadable ref is a skip, never
+          # a post.
+          if ! live_refs="$(gh api "repos/${GITHUB_REPOSITORY}/pulls/${PR_NUMBER}" --jq '.head.sha, .base.sha' 2>/dev/null)" \
+            || [[ -z "${live_refs}" ]]; then
+            echo "::warning::Ref revalidation lookup failed; skipping post to avoid publishing a stale review."
+            exit 0
+          fi
+          live_head="$(printf '%s' "${live_refs}" | sed -n '1p')"
+          live_base="$(printf '%s' "${live_refs}" | sed -n '2p')"
+          if [[ -z "${live_head}" || -z "${live_base}" ]]; then
+            echo "::warning::Ref revalidation lookup failed; skipping post to avoid publishing a stale review."
             exit 0
           fi
           if [[ "${live_head}" != "${HEAD_SHA}" ]]; then
             echo "::notice::PR head moved during review (${HEAD_SHA:0:10} -> ${live_head:0:10}); skipping stale post."
+            exit 0
+          fi
+          if [[ "${live_base}" != "${BASE_SHA}" ]]; then
+            echo "::notice::PR base moved during review (${BASE_SHA:0:10} -> ${live_base:0:10}); skipping stale post."
             exit 0
           fi
 
