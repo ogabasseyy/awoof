@@ -167,6 +167,7 @@ jobs:
           # Works anonymously on public repos; on failure the paginated files
           # API backs the file list and head guidance is labeled UNTRUSTED.
           base_available=false
+          fetch_needs_auth=false
           if git fetch --depth 1 origin "${base_sha_full}" >/dev/null 2>&1; then
             base_available=true
           # Private repos: the anonymous fetch above fails (persist-credentials
@@ -175,7 +176,18 @@ jobs:
           # submitter could delete or weaken AGENTS.md and hide the real rules.
           elif git -c http.extraHeader="Authorization: Bearer ${GH_TOKEN}" fetch --depth 1 origin "${base_sha_full}" >/dev/null 2>&1; then
             base_available=true
+            fetch_needs_auth=true
           fi
+          # Deepen with whatever access worked above: an unauthenticated
+          # deepen on a private repo fails, losing the merge base (and the
+          # local file inventory with it).
+          git_fetch() {
+            if [[ "${fetch_needs_auth}" == "true" ]]; then
+              git -c http.extraHeader="Authorization: Bearer ${GH_TOKEN}" fetch "$@"
+            else
+              git fetch "$@"
+            fi
+          }
           # Merge-base discovery: two-dot diff would include base-only
           # changes made after divergence, while the reviewed API diff uses
           # three-dot semantics. Deepen until the merge base resolves. A
@@ -189,7 +201,7 @@ jobs:
                 local_diff=true
                 break
               fi
-              git fetch --deepen 100 origin "${base_sha_full}" "${head_sha}" >/dev/null 2>&1 || break
+              git_fetch --deepen 100 origin "${base_sha_full}" "${head_sha}" >/dev/null 2>&1 || break
             done
             if [[ "${local_diff}" != "true" ]]; then
               echo "::warning::merge-base not found; file list falls back to paginated files API."
@@ -465,12 +477,14 @@ jobs:
             content=""
             source=""
             if [[ "${base_available}" == "true" && "${base_trusted}" == "true" ]] \
-              && content="$(git show "FETCH_HEAD:${candidate}" 2>/dev/null)"; then
+              && content="$(git show "${base_sha_full}:${candidate}" 2>/dev/null)"; then
               # SHA, not the branch name: branch names are submitter-controlled
-              # and this label prints outside any untrusted block.
+              # and this label prints outside any untrusted block. The explicit
+              # SHA (not FETCH_HEAD, which deepening rewrites) also pins the
+              # read to the fetched base commit.
               source="trusted (base ${base_sha_full:0:10})"
             elif [[ "${base_available}" == "true" ]] \
-              && content="$(git show "FETCH_HEAD:${candidate}" 2>/dev/null)"; then
+              && content="$(git show "${base_sha_full}:${candidate}" 2>/dev/null)"; then
               # Submitter-selected base (not the default branch): a PR can
               # target an attacker-created branch, so show its guidance only
               # as untrusted — it never passed through the reviewed branch.
@@ -550,7 +564,7 @@ jobs:
           for phase in base head; do
             for candidate in ${guidance_candidates[@]+"${guidance_candidates[@]}"}; do
               if [[ "${base_available}" == "true" ]] \
-                && git show "FETCH_HEAD:${candidate}" >/dev/null 2>&1; then
+                && git show "${base_sha_full}:${candidate}" >/dev/null 2>&1; then
                 is_base=true
               else
                 is_base=false
