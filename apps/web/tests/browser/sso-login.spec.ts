@@ -333,6 +333,40 @@ test('a still-redeeming login waits and completes instead of failing', async ({ 
     api.assertNoUnexpectedRequests();
 });
 
+test('ordinary SSO finish ignores a duplicate retry while a finish request is in flight', async ({ page }) => {
+    let finishCalls = 0;
+    let releaseWinner: (() => void) | undefined;
+    const api = await installSyntheticApi(page);
+    await page.route(`${apiOrigin}/api/auth/student/sso/finish`, async (route) => {
+        finishCalls += 1;
+        if (finishCalls === 1) {
+            await route.fulfill({ status: 409, json: { success: false, error: { message: 'Student SSO login is still completing', code: 'CONFLICT', statusCode: 409, details: { retryable: true } } }, headers: ssoHeaders });
+            return;
+        }
+        if (finishCalls === 2) await new Promise<void>(resolve => { releaseWinner = resolve; });
+        await route.fulfill(finishCalls === 2 ? {
+            json: { success: true, data: { outcome: 'authenticated', user: { id: 'student-1', email: 'student@school.example', role: 'student' }, tokens: { accessToken: 'student-access', refreshToken: 'student-refresh' }, studentAssurance: enrolledAssurance(), assuranceStatus: 'available' } },
+            headers: ssoHeaders,
+        } : { status: 409, json: { success: false, error: { message: 'The sign-in already completed', code: 'CONFLICT', statusCode: 409 } }, headers: ssoHeaders });
+    });
+    await page.goto('/auth/student/login');
+    await seedTabAttempt(page, { attemptId: ATTEMPT_ID, finishSecret: 'synthetic-finish-secret', expiresAt: liveExpiry(), generation: 0, returnPath: '/marketplace?from=sso-test' });
+    await page.goto(`/auth/student/sso/complete?attempt=${ATTEMPT_ID}`);
+    await expect(page.getByRole('button', { name: 'Check again' })).toBeVisible();
+    // Fire two clicks in one browser task to reproduce the gap between the
+    // timer/button event and React's next disabled/unmount render.
+    await page.getByRole('button', { name: 'Check again' }).evaluate(button => {
+        button.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+        button.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    });
+    await expect.poll(() => finishCalls).toBe(2);
+    await page.waitForTimeout(100);
+    expect(finishCalls).toBe(2);
+    releaseWinner?.();
+    await page.waitForURL('**/marketplace?from=sso-test');
+    api.assertNoUnexpectedRequests();
+});
+
 test('an authenticated onboarding return preserves the waiting link handoff', async ({ page }) => {
     const api = await installSyntheticApi(page);
     await page.route(`${apiOrigin}/api/auth/student/sso/finish`, (route) => route.fulfill({

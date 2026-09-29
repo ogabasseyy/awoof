@@ -16,6 +16,33 @@ test('security setup keeps the generated recovery code out of URL and web storag
     api.assertNoUnexpectedRequests();
 });
 
+test('recovery-code activation waits for a confirmed generation after status refresh failure', async ({ page }) => {
+    const api = await installSyntheticApi(page);
+    const pendingId = '74100000-0000-4000-8000-000000000001';
+    let statusReads = 0;
+    let activations = 0;
+    await page.route(`${apiOrigin}/api/auth/student/sso/reauth/finish`, route => route.fulfill({ status: 201, headers, json: { success: true, data: { grantId: '76100000-0000-4000-8000-000000000001', grantSecret: 'activate-grant', expiresAt: new Date(Date.now() + 60_000).toISOString(), purpose: 'recovery_code_activate', pendingCodeId: pendingId, targetIdentityId: null, activeCodeGeneration: null } } }));
+    await page.route(`${apiOrigin}/api/auth/student/sso/recovery-code`, route => {
+        statusReads += 1;
+        return statusReads === 1
+            ? route.fulfill({ status: 503, headers, json: { success: false, error: { message: 'Unavailable', statusCode: 503 } } })
+            : route.fulfill({ headers, json: { success: true, data: { status: 'pending', generation: 3, pendingCodeId: pendingId, pendingExpiresAt: new Date(Date.now() + 600_000).toISOString(), serverNow: new Date().toISOString() } } });
+    });
+    await page.route(`${apiOrigin}/api/auth/student/sso/recovery-code/activate`, route => { activations += 1; return route.fulfill({ headers, json: { success: true, data: { active: true } } }); });
+    await page.goto('/auth/student/login'); await seedSession(page, 'student');
+    await page.goto('/auth/student/sso/complete?reauth=74100000-0000-4000-8000-000000000002');
+    await expect(page.getByRole('button', { name: 'Activate recovery code' })).toBeDisabled();
+    await expect(page.getByText('Activation is disabled until the server confirms which code generation is pending.')).toBeVisible();
+    await page.getByLabel('Re-enter saved recovery code').fill('saved-code');
+    expect(activations).toBe(0);
+    await page.getByRole('button', { name: 'Retry status check' }).click();
+    await expect(page.getByRole('button', { name: 'Activate recovery code' })).toBeEnabled();
+    await page.getByRole('button', { name: 'Activate recovery code' }).click();
+    await expect(page.getByRole('heading', { name: 'Recovery code active' })).toBeVisible();
+    expect(activations).toBe(1);
+    api.assertNoUnexpectedRequests();
+});
+
 test('independent password recovery requires an explicit purpose and does not promise school-login recovery', async ({ page }) => {
     const api = await installSyntheticApi(page);
     await page.goto('/auth/student/recovery');
@@ -30,7 +57,7 @@ test('independent password recovery requires an explicit purpose and does not pr
 test('ambiguous recovery completion keeps the password and points at sign-in before another recovery', async ({ page }) => {
     const api = await installSyntheticApi(page);
     await page.route(`${apiOrigin}/api/auth/student/sso/account-recovery/start`, route => route.fulfill({ status: 202, headers, json: { success: true, data: { attemptId: '90000000-0000-4000-8000-000000000001', secret: 'recovery-secret', expiresAt: new Date(Date.now() + 300_000).toISOString() } } }));
-    await page.route(`${apiOrigin}/api/auth/student/sso/account-recovery/verify`, route => route.fulfill({ headers, json: { success: true, data: { verified: true } } }));
+    await page.route(`${apiOrigin}/api/auth/student/sso/account-recovery/verify`, route => route.fulfill({ headers, json: { success: true, data: { expiresAt: new Date(Date.now() + 600_000).toISOString(), serverNow: new Date().toISOString() } } }));
     await page.route(`${apiOrigin}/api/auth/student/sso/account-recovery/complete`, route => route.fulfill({ status: 500, headers, json: { success: false, error: { message: 'boom', code: 'INTERNAL', statusCode: 500 } } }));
     await page.goto('/auth/student/recovery');
     await page.getByLabel('School email').fill('student@school.example');
@@ -49,7 +76,7 @@ test('ambiguous recovery completion keeps the password and points at sign-in bef
 test('recovery completion surfaces password-policy rejections without sign-in advice', async ({ page }) => {
     const api = await installSyntheticApi(page);
     await page.route(`${apiOrigin}/api/auth/student/sso/account-recovery/start`, route => route.fulfill({ status: 202, headers, json: { success: true, data: { attemptId: '97000000-0000-4000-8000-000000000001', secret: 'recovery-secret', expiresAt: new Date(Date.now() + 300_000).toISOString() } } }));
-    await page.route(`${apiOrigin}/api/auth/student/sso/account-recovery/verify`, route => route.fulfill({ headers, json: { success: true, data: { verified: true } } }));
+    await page.route(`${apiOrigin}/api/auth/student/sso/account-recovery/verify`, route => route.fulfill({ headers, json: { success: true, data: { expiresAt: new Date(Date.now() + 600_000).toISOString(), serverNow: new Date().toISOString() } } }));
     await page.route(`${apiOrigin}/api/auth/student/sso/account-recovery/complete`, route => route.fulfill({ status: 409, headers, json: { success: false, error: { message: 'Password must contain at least one uppercase letter', code: 'CONFLICT', statusCode: 409 } } }));
     await page.goto('/auth/student/recovery');
     await page.getByLabel('School email').fill('student@school.example');
@@ -68,15 +95,20 @@ test('recovery completion surfaces password-policy rejections without sign-in ad
     api.assertNoUnexpectedRequests();
 });
 
-test('recovery shows the OTP deadline while proofs are pending', async ({ page }) => {
+test('recovery hides the completion deadline until proof then shows the rebound attempt deadline', async ({ page }) => {
     const api = await installSyntheticApi(page);
     await page.route(`${apiOrigin}/api/auth/student/sso/account-recovery/start`, route => route.fulfill({ status: 202, headers, json: { success: true, data: { attemptId: '98000000-0000-4000-8000-000000000001', secret: 'recovery-secret', expiresAt: new Date(Date.now() + 600_000).toISOString(), otpExpiresAt: new Date(Date.now() + 300_000).toISOString() } } }));
+    await page.route(`${apiOrigin}/api/auth/student/sso/account-recovery/verify`, route => route.fulfill({ headers, json: { success: true, data: { expiresAt: new Date(Date.now() + 600_000).toISOString(), serverNow: new Date().toISOString() } } }));
     await page.goto('/auth/student/recovery');
     await page.getByLabel('School email').fill('student@school.example');
     await page.getByRole('button', { name: 'Start recovery' }).click();
     // The pre-verification view counts down the five-minute OTP, not the
     // ten-minute attempt window it switches to after verification.
     await expect(page.getByRole('timer')).toContainText(/Confirm both codes within [0-5]:\d\d/);
+    await page.getByLabel('Saved recovery code').fill('saved-code');
+    await page.getByLabel('Email confirmation code').fill('123456');
+    await page.getByRole('button', { name: 'Confirm recovery proofs' }).click();
+    await expect(page.getByRole('timer')).toContainText(/Complete this recovery within 9:\d\d/);
     api.assertNoUnexpectedRequests();
 });
 

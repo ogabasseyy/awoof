@@ -699,7 +699,7 @@ test('independent account recovery exposes the same start shape without an accou
             calls.push(`start:${input.email}:${input.purpose}:${input.idempotencyKey ?? 'none'}`);
             return { attemptId: ATTEMPT_ID, secret: 'recovery-secret', expiresAt: '2026-09-26T12:00:00.000Z' };
         },
-        verify: async () => { calls.push('verify'); },
+        verify: async () => { calls.push('verify'); return { expiresAt: '2026-09-26T12:10:00.000Z', serverNow: '2026-09-26T12:00:00.000Z' }; },
         complete: async () => { calls.push('complete'); },
     };
     await withServer(routerWith(stubFlow(), { accountRecoveryService: () => recovery as never }), async (baseUrl) => {
@@ -749,7 +749,8 @@ test('independent account recovery exposes the same start shape without an accou
             method: 'POST', headers: { 'content-type': 'application/json' },
             body: JSON.stringify({ attemptId: ATTEMPT_ID, secret: 'recovery-secret', code: 'saved-code', otp: '123456' }),
         });
-        assert.equal(verified.status, 204);
+        assert.equal(verified.status, 200);
+        assert.deepEqual((await verified.json()).data, { expiresAt: '2026-09-26T12:10:00.000Z', serverNow: '2026-09-26T12:00:00.000Z' });
         const completed = await fetch(`${baseUrl}/account-recovery/complete`, {
             method: 'POST', headers: { 'content-type': 'application/json' },
             body: JSON.stringify({ attemptId: ATTEMPT_ID, secret: 'recovery-secret', password: 'ValidNew1!' }),
@@ -798,7 +799,7 @@ test('account recovery continuations stay available when the mailer is unconfigu
     const calls: string[] = [];
     const recovery = {
         start: async () => { calls.push('start'); return { attemptId: ATTEMPT_ID, secret: 'recovery-secret', expiresAt: '2026-09-26T12:00:00.000Z' }; },
-        verify: async () => { calls.push('verify'); },
+        verify: async () => { calls.push('verify'); return { expiresAt: '2026-09-26T12:10:00.000Z', serverNow: '2026-09-26T12:00:00.000Z' }; },
         complete: async () => { calls.push('complete'); },
     };
     await withServer(routerWith(stubFlow(), { accountRecoveryService: () => recovery as never, isEmailConfigured: () => false }), async (baseUrl) => {
@@ -816,7 +817,7 @@ test('account recovery continuations stay available when the mailer is unconfigu
             method: 'POST', headers: { 'content-type': 'application/json' },
             body: JSON.stringify({ attemptId: ATTEMPT_ID, secret: 'recovery-secret', code: 'saved-code', otp: '123456' }),
         });
-        assert.equal(verified.status, 204);
+        assert.equal(verified.status, 200);
         const completed = await fetch(`${baseUrl}/account-recovery/complete`, {
             method: 'POST', headers: { 'content-type': 'application/json' },
             body: JSON.stringify({ attemptId: ATTEMPT_ID, secret: 'recovery-secret', password: 'ValidNew1!' }),
@@ -830,7 +831,7 @@ test('account recovery verify and complete reject malformed values at the route 
     const calls: string[] = [];
     const recovery = {
         start: async () => { calls.push('start'); return { attemptId: ATTEMPT_ID, secret: 'recovery-secret', expiresAt: '2026-09-26T12:00:00.000Z' }; },
-        verify: async () => { calls.push('verify'); },
+        verify: async () => { calls.push('verify'); return { expiresAt: '2026-09-26T12:10:00.000Z', serverNow: '2026-09-26T12:00:00.000Z' }; },
         complete: async () => { calls.push('complete'); },
     };
     await withServer(routerWith(stubFlow(), { accountRecoveryService: () => recovery as never }), async (baseUrl) => {
@@ -874,7 +875,7 @@ test('account recovery verify and complete reject malformed values at the route 
             method: 'POST', headers: { 'content-type': 'application/json' },
             body: JSON.stringify({ attemptId: ATTEMPT_ID, secret: 'recovery-secret', code: 'saved-code', otp: '123456' }),
         });
-        assert.equal(verified.status, 204);
+        assert.equal(verified.status, 200);
         const completed = await fetch(`${baseUrl}/account-recovery/complete`, {
             method: 'POST', headers: { 'content-type': 'application/json' },
             body: JSON.stringify({ attemptId: ATTEMPT_ID, secret: 'recovery-secret', password: 'ValidNew1!' }),
@@ -1449,9 +1450,13 @@ test('OpenAPI documents disabled passwordless signup and recovery contracts with
         availability.content['application/json'].schema.$ref,
         '#/components/schemas/PasswordlessSignupAvailabilityResponse',
     );
-    for (const schema of ['PasswordlessSignupHandoffRequest', 'PasswordlessSignupCompleteRequest', 'RecoveryCodeGenerateRequest', 'RecoveryCodeStatusResponse', 'AccountRecoveryVerifyRequest']) {
+    for (const schema of ['PasswordlessSignupHandoffRequest', 'PasswordlessSignupCompleteRequest', 'RecoveryCodeGenerateRequest', 'RecoveryCodeStatusResponse', 'AccountRecoveryVerifyRequest', 'AccountRecoveryVerifiedResponse']) {
         assert.ok(spec.components.schemas[schema], `missing typed OpenAPI schema ${schema}`);
     }
+    const recoveryVerifyResponse = paths['/api/auth/student/sso/account-recovery/verify']?.post?.responses?.['200'] as {
+        content: { ['application/json']: { schema: { $ref: string } } },
+    };
+    assert.equal(recoveryVerifyResponse.content['application/json'].schema.$ref, '#/components/schemas/AccountRecoveryVerifiedResponse');
     // Both OTP fields reject anything but six digits at runtime; the
     // published contract must match so generated forms cannot accept
     // requests the API deterministically rejects.

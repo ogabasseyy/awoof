@@ -255,7 +255,7 @@ export class StudentAccountRecoveryService {
         }
     }
 
-    async verify(input: { attemptId: unknown; secret: unknown; code: unknown; otp: unknown }): Promise<void> {
+    async verify(input: { attemptId: unknown; secret: unknown; code: unknown; otp: unknown }): Promise<{ expiresAt: string; serverNow: string }> {
         if (!validAttemptId(input.attemptId) || !validOpaque(input.secret) || !validOpaque(input.code)
             || typeof input.otp !== 'string' || !/^\d{6}$/.test(input.otp)) throw unavailable();
         const { attemptId, secret, code: recoveryCode, otp: mailboxOtp } = input;
@@ -264,13 +264,14 @@ export class StudentAccountRecoveryService {
             const userId = owner.rows[0]?.user_id;
             if (!userId) {
                 await this.probeVerifyDecoys(tx, attemptId);
-                return false;
+                return null;
             }
             const account = await this.lockAccount(tx, userId);
             const attempt = await this.lockAttempt(tx, attemptId);
-            if (!attempt || attempt.expires_at <= await this.now(tx)
-                || !this.matchesAttemptSecret(attempt.secret_hash, secret)) return false;
-            // Idempotent retry: the verification commit landed but its 204
+            const serverNow = await this.now(tx);
+            if (!attempt || attempt.expires_at <= serverNow
+                || !this.matchesAttemptSecret(attempt.secret_hash, secret)) return null;
+            // Idempotent retry: the verification commit landed but its response
             // was lost. The mailbox OTP was already proven and its
             // challenge consumed, so revalidate the still-checkable proofs
             // (attempt bearer, live recovery code, pinned generations)
@@ -281,10 +282,10 @@ export class StudentAccountRecoveryService {
                 const code = await this.lockActiveCode(tx, userId);
                 if (!account || !code || Number(account.credential_generation) !== Number(attempt.credential_generation)
                     || Number(code.generation) !== Number(attempt.recovery_code_generation)
-                    || !this.matchesRecoveryCode(code.code_digest, recoveryCode)) return false;
-                return true;
+                    || !this.matchesRecoveryCode(code.code_digest, recoveryCode)) return null;
+                return { expiresAt: attempt.expires_at, serverNow };
             }
-            if (attempt.status !== 'pending') return false;
+            if (attempt.status !== 'pending') return null;
             const code = await this.lockActiveCode(tx, userId);
             // Stale account/code state terminalizes the attempt: the pinned
             // generations can never match again. An ordinary code typo
@@ -294,24 +295,25 @@ export class StudentAccountRecoveryService {
             if (!account || !code || Number(account.credential_generation) !== Number(attempt.credential_generation)
                 || Number(code.generation) !== Number(attempt.recovery_code_generation)) {
                 await tx.query("UPDATE student_auth_recovery_attempts SET status = 'failed', secret_hash = NULL, idempotency_key = NULL WHERE id = $1 AND status = 'pending'", [attempt.id]);
-                return false;
+                return null;
             }
-            if (!this.matchesRecoveryCode(code.code_digest, recoveryCode)) return false;
+            if (!this.matchesRecoveryCode(code.code_digest, recoveryCode)) return null;
             const otp = await consumeChallenge(tx, {
                 purpose: 'student_account_recovery', subjectKey: account.email,
                 challengeId: attempt.mailbox_challenge_id, code: mailboxOtp,
             });
             if (otp.status !== 'verified'
                 || otp.bindings.recoveryAttemptId !== attempt.id
-                || otp.bindings.recoveryPurpose !== attempt.purpose) return false;
-            const updated = await tx.query(
+                || otp.bindings.recoveryPurpose !== attempt.purpose) return null;
+            const updated = await tx.query<{ expires_at: Date }>(
                 `UPDATE student_auth_recovery_attempts
                  SET status = 'verified', verified_at = clock_timestamp(), idempotency_key = NULL
-                 WHERE id = $1 AND status = 'pending'`, [attempt.id],
+                 WHERE id = $1 AND status = 'pending' RETURNING expires_at`, [attempt.id],
             );
-            return updated.rowCount === 1;
+            return updated.rows[0] ? { expiresAt: updated.rows[0].expires_at, serverNow } : null;
         });
         if (!verified) throw unavailable();
+        return { expiresAt: verified.expiresAt.toISOString(), serverNow: verified.serverNow.toISOString() };
     }
 
     async complete(input: { attemptId: unknown; secret: unknown; password: unknown }): Promise<void> {

@@ -57,7 +57,16 @@ export default function StudentAccountRecoveryPage() {
     const expired = attempt !== null && !Number.isNaN(activeDeadlineMs) && activeDeadlineMs <= correctedNow;
     const restart = () => { setAttempt(null); setSent(false); setVerified(false); setPassword(''); setRecoveryCode(''); setOtp(''); setError(null); setCompleteFailed(false); };
     const start = async (event: React.FormEvent) => { event.preventDefault(); if (starting) return; setStarting(true); setError(null); try { const purpose = compromise ? 'compromise' : 'lost_access'; const r = await publicApiClient.post('/auth/student/sso/account-recovery/start', { email, purpose, idempotencyKey: retryBindingFor(email, purpose) }); const data = (r.data as { data?: { attemptId?: unknown; secret?: unknown; expiresAt?: unknown; otpExpiresAt?: unknown; serverNow?: unknown } }).data; if (typeof data?.attemptId !== 'string' || typeof data.secret !== 'string' || typeof data.expiresAt !== 'string' || Number.isNaN(Date.parse(data.expiresAt))) throw new Error('invalid'); const otpExpiresAt = typeof data.otpExpiresAt === 'string' && !Number.isNaN(Date.parse(data.otpExpiresAt)) ? data.otpExpiresAt : data.expiresAt; setAttempt({ id: data.attemptId, secret: data.secret, expiresAt: data.expiresAt, otpExpiresAt, skewMs: serverSkewSince(typeof data.serverNow === 'string' && !Number.isNaN(Date.parse(data.serverNow)) ? data.serverNow : null) }); setSent(true); } catch { setError('Recovery could not be started. Check the details and try again.'); } finally { setStarting(false); } };
-    const verify = async (event: React.FormEvent) => { event.preventDefault(); if (!attempt) return; setError(null); try { await publicApiClient.post('/auth/student/sso/account-recovery/verify', { attemptId: attempt.id, secret: attempt.secret, code: recoveryCode, otp }); setRecoveryCode(''); setOtp(''); setVerified(true); } catch { setError('Recovery proof could not be confirmed. Start again if the attempt expired.'); } };
+    const verify = async (event: React.FormEvent) => {
+        event.preventDefault(); if (!attempt) return; setError(null);
+        try {
+            const response = await publicApiClient.post('/auth/student/sso/account-recovery/verify', { attemptId: attempt.id, secret: attempt.secret, code: recoveryCode, otp });
+            const data = (response.data as { data?: { expiresAt?: unknown; serverNow?: unknown } }).data;
+            if (typeof data?.expiresAt !== 'string' || Number.isNaN(Date.parse(data.expiresAt))) throw new Error('invalid completion deadline');
+            setAttempt({ ...attempt, expiresAt: data.expiresAt, skewMs: serverSkewSince(typeof data.serverNow === 'string' && !Number.isNaN(Date.parse(data.serverNow)) ? data.serverNow : null) });
+            setRecoveryCode(''); setOtp(''); setVerified(true);
+        } catch { setError('Recovery proof could not be confirmed. Start again if the attempt expired.'); }
+    };
     const complete = async (event: React.FormEvent) => {
         event.preventDefault(); if (!attempt) return; setError(null); setCompleteFailed(false);
         try {

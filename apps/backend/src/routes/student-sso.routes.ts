@@ -537,7 +537,8 @@ export function createStudentSsoRouter(factory: FlowFactory = defaultFlow, optio
             || typeof body.secret !== 'string' || body.secret.length === 0 || body.secret.length > 1024
             || typeof body.code !== 'string' || body.code.length === 0 || body.code.length > 1024
             || typeof body.otp !== 'string' || !/^\d{6}$/.test(body.otp)) throw new BadRequestError('Account recovery request is invalid');
-        await accountRecoveryFactory().verify({ attemptId: body.attemptId, secret: body.secret, code: body.code, otp: body.otp }); responseHeaders(res); res.status(204).end();
+        const result = await accountRecoveryFactory().verify({ attemptId: body.attemptId, secret: body.secret, code: body.code, otp: body.otp });
+        responseHeaders(res); res.json({ success: true, data: result });
     }));
     router.post('/account-recovery/complete', accountRecoveryCompleteLimiter, exactJson, asyncHandler(async (req, res) => {
         const body = req.body as { attemptId?: unknown; secret?: unknown; password?: unknown };
@@ -1530,7 +1531,9 @@ export default createStudentSsoRouter();
  *       required: true
  *       content: { application/json: { schema: { $ref: '#/components/schemas/AccountRecoveryVerifyRequest' } } }
  *     responses:
- *       204: { description: Recovery proofs accepted }
+ *       200:
+ *         description: Recovery proofs accepted; only after successful proof, returns the completion deadline hidden during the non-enumerating start response.
+ *         content: { application/json: { schema: { $ref: '#/components/schemas/AccountRecoveryVerifiedResponse' } } }
  *       400: { description: JSON or malformed proof request }
  *       409: { description: Expired, invalid, consumed, or replayed recovery proof }
  *       429: { description: Recovery quota exhausted }

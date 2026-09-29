@@ -78,6 +78,21 @@ function RecoveryReauthComplete({ attemptId, duplicate, unavailable }: { attempt
     // code early.
     const [skewMs, setSkewMs] = useState(0);
     const pendingDeadlineMs = pendingExpiresAt ? Date.parse(pendingExpiresAt) : NaN;
+
+    const refreshPendingCodeStatus = async (expectedPendingId: string | null = pendingCodeId): Promise<boolean> => {
+        if (!expectedPendingId) return false;
+        const current = await studentSsoSessionApiClient.get('/auth/student/sso/recovery-code');
+        const live = (current.data as { data?: { status?: unknown; generation?: unknown; pendingCodeId?: unknown; pendingExpiresAt?: unknown; serverNow?: unknown } }).data;
+        if (live?.status !== 'pending' || live.pendingCodeId !== expectedPendingId || !Number.isSafeInteger(live.generation)
+            || typeof live.pendingExpiresAt !== 'string' || Number.isNaN(Date.parse(live.pendingExpiresAt))) {
+            setExpectedGeneration(null);
+            return false;
+        }
+        setPendingExpiresAt(live.pendingExpiresAt);
+        setSkewMs(serverSkewSince(typeof live.serverNow === 'string' && !Number.isNaN(Date.parse(live.serverNow)) ? live.serverNow : null));
+        setExpectedGeneration(live.generation as number);
+        return true;
+    };
     const pendingExpired = (status === 'display' || status === 'activate') && pendingExpiresAt !== null && !Number.isNaN(pendingDeadlineMs) && pendingDeadlineMs <= now + skewMs;
     // The session client carries the reauth cookie and refreshes a
     // token that expired during the provider prompt instead of
@@ -128,19 +143,14 @@ function RecoveryReauthComplete({ attemptId, duplicate, unavailable }: { attempt
             setPendingCodeId(grant.pendingCodeId); setGrant({ grantId: grant.grantId, grantSecret: grant.grantSecret });
             setNeedsOldCode(grant.activeCodeGeneration !== null);
             try {
-                const current = await studentSsoSessionApiClient.get('/auth/student/sso/recovery-code');
-                const live = (current.data as { data?: { status?: unknown; generation?: unknown; pendingCodeId?: unknown; pendingExpiresAt?: unknown; serverNow?: unknown } }).data;
-                // The expected generation binds ambiguous-activation
-                // reconciliation: success requires the active generation to
-                // match the pending one we are activating, not merely any
-                // active code (an expired replacement falls back to the old
-                // generation, which must not read as our success).
-                if (live?.status === 'pending' && live.pendingCodeId === grant.pendingCodeId && typeof live.pendingExpiresAt === 'string') {
-                    setPendingExpiresAt(live.pendingExpiresAt);
-                    setSkewMs(serverSkewSince(typeof live.serverNow === 'string' && !Number.isNaN(Date.parse(live.serverNow)) ? live.serverNow : null));
-                    setExpectedGeneration(typeof live.generation === 'number' ? live.generation : null);
-                }
-            } catch { /* deadline display is best-effort; activation still enforces expiry server-side */ }
+                // The expected generation is required for safe reconciliation
+                // after an ambiguous activation response. Fail closed until
+                // we can establish it from the server.
+                if (!await refreshPendingCodeStatus(grant.pendingCodeId)) setError('The pending recovery code could not be confirmed yet. Retry the status check before activating it.');
+            } catch {
+                setExpectedGeneration(null);
+                setError('The pending recovery code could not be confirmed yet. Retry the status check before activating it.');
+            }
             setStatus('activate');
         }).catch((cause: unknown) => {
             // A still-redeeming attempt stays retryable: converting it to
@@ -237,7 +247,7 @@ function RecoveryReauthComplete({ attemptId, duplicate, unavailable }: { attempt
         }
     };
     const activate = async () => {
-        const session = getSessionSnapshot(); if (actionBusy.current || !grant || !pendingCodeId || !session.accessToken || !code || (needsOldCode && !oldCode)) return; actionBusy.current = true; setBusy(true);
+        const session = getSessionSnapshot(); if (actionBusy.current || expectedGeneration === null || !grant || !pendingCodeId || !session.accessToken || !code || (needsOldCode && !oldCode)) return; actionBusy.current = true; setBusy(true);
         const pendingId = pendingCodeId;
         const reconcile = async (): Promise<boolean> => {
             try {
@@ -306,7 +316,7 @@ function RecoveryReauthComplete({ attemptId, duplicate, unavailable }: { attempt
     if (status === 'generate') return <AuthShell role="student" title="Replace recovery code" subtitle="Confirm your current code." footer={null}><label htmlFor="old-recovery-code">Current recovery code<input id="old-recovery-code" value={code} onChange={e => setCode(e.target.value)} className="mt-1 w-full rounded-2xl border px-4 h-11" /></label>{error ? <p role="alert">{error}</p> : null}<Button disabled={busy} className="mt-5 w-full rounded-full" onClick={generateReplacement}>Generate replacement code</Button></AuthShell>;
     if (pendingExpired) return <AuthShell role="student" title="Pending code expired" subtitle="The activation deadline passed." footer={null}><p role="alert">This pending code expired before activation and cannot recover your account. Start setup again for a fresh code.</p><Button className="mt-5 w-full rounded-full" asChild><Link href="/student/security">Back to account security</Link></Button></AuthShell>;
     if (status === 'display') return <AuthShell role="student" title="Save your recovery code" subtitle="It will not be shown again." footer={null}><p role="alert" className="rounded-xl bg-amber-50 p-3 break-all font-mono text-left">{code}</p>{Number.isNaN(pendingDeadlineMs) ? null : <p role="timer" className="mt-3 text-left text-sm">Activate this code within {formatPendingRemaining(pendingDeadlineMs, now + skewMs)}.</p>}<p className="mt-3 text-left text-sm">Save this code somewhere secure. It is not stored in this browser, sent by email, or added to a URL. Then return to Account security and confirm your identity again to activate it.</p><Button className="mt-5 w-full rounded-full" onClick={() => { if (pendingCodeId) try { sessionStorage.setItem(RECOVERY_INTENT_KEY, JSON.stringify({ purpose: 'recovery_code_activate', pendingCodeId })); } catch { /* security page reports unavailable */ } setCode(''); window.location.href = '/student/security'; }}>I saved my code</Button></AuthShell>;
-    if (status === 'activate') return <AuthShell role="student" title="Confirm your recovery code" subtitle="Fresh identity confirmation completed." footer={null}>{Number.isNaN(pendingDeadlineMs) ? null : <p role="timer" className="mb-3 text-left text-sm">Activate this code within {formatPendingRemaining(pendingDeadlineMs, now + skewMs)}.</p>}<label className="block text-left text-sm" htmlFor="recovery-code-confirm">Re-enter saved recovery code<input id="recovery-code-confirm" value={code} onChange={e => setCode(e.target.value)} className="mt-1 w-full rounded-2xl border px-4 h-11" /></label>{needsOldCode ? <label className="mt-3 block text-left text-sm" htmlFor="recovery-code-current">Current recovery code<input id="recovery-code-current" value={oldCode} onChange={e => setOldCode(e.target.value)} className="mt-1 w-full rounded-2xl border px-4 h-11" /></label> : null}{error ? <p role="alert" className="mt-3 text-sm text-red-600">{error}</p> : null}<Button disabled={busy} className="mt-5 w-full rounded-full" onClick={activate}>Activate recovery code</Button></AuthShell>;
+    if (status === 'activate') return <AuthShell role="student" title="Confirm your recovery code" subtitle="Fresh identity confirmation completed." footer={null}>{Number.isNaN(pendingDeadlineMs) ? null : <p role="timer" className="mb-3 text-left text-sm">Activate this code within {formatPendingRemaining(pendingDeadlineMs, now + skewMs)}.</p>}{expectedGeneration === null ? <div className="mb-3 space-y-2"><p role="status" className="text-sm">The pending recovery code status has not been confirmed. Activation is disabled until the server confirms which code generation is pending.</p><Button type="button" variant="outline" disabled={busy} className="w-full rounded-full" onClick={async () => { setBusy(true); setError(null); try { if (!await refreshPendingCodeStatus()) setError('The pending recovery code is not available for activation. Return to account security and start again.'); } catch { setError('The status check failed. Retry while the confirmation is still open.'); } finally { setBusy(false); } }}>Retry status check</Button></div> : null}<label className="block text-left text-sm" htmlFor="recovery-code-confirm">Re-enter saved recovery code<input id="recovery-code-confirm" value={code} onChange={e => setCode(e.target.value)} className="mt-1 w-full rounded-2xl border px-4 h-11" /></label>{needsOldCode ? <label className="mt-3 block text-left text-sm" htmlFor="recovery-code-current">Current recovery code<input id="recovery-code-current" value={oldCode} onChange={e => setOldCode(e.target.value)} className="mt-1 w-full rounded-2xl border px-4 h-11" /></label> : null}{error ? <p role="alert" className="mt-3 text-sm text-red-600">{error}</p> : null}<Button disabled={busy || expectedGeneration === null} className="mt-5 w-full rounded-full" onClick={activate}>Activate recovery code</Button></AuthShell>;
     if (status === 'remove') return <AuthShell role="student" title="Remove recovery code" subtitle="Confirm your current code." footer={null}><label htmlFor="remove-recovery-code">Current recovery code<input id="remove-recovery-code" value={code} onChange={e => setCode(e.target.value)} className="mt-1 w-full rounded-2xl border px-4 h-11" /></label>{error ? <p role="alert">{error}</p> : null}<Button disabled={busy} className="mt-5 w-full rounded-full" onClick={remove}>Remove recovery code</Button></AuthShell>;
     if (status === 'active') return <AuthShell role="student" title="Recovery code active" subtitle="Your optional recovery setup is complete." footer={null}><p role="status">Keep your saved code secure. It is required with your school mailbox for independent password recovery.</p><Button className="mt-5 w-full rounded-full" asChild><Link href="/marketplace">Continue</Link></Button></AuthShell>;
     if (status === 'removed') return <AuthShell role="student" title="Recovery code removed" subtitle="Recovery is now unconfigured." footer={null}><p role="status">The saved code was revoked and can no longer recover this account. Set up a new code from Account security if you still want recovery.</p><Button className="mt-5 w-full rounded-full" asChild><Link href="/student/security">Back to account security</Link></Button></AuthShell>;
@@ -348,11 +358,13 @@ function StudentSsoCompleteInner() {
     const [view, setView] = useState<CompleteView>({ kind: 'checking' });
     const [signupOffer, setSignupOffer] = useState<'checking' | 'available' | 'hidden'>('checking');
     const started = useRef(false);
+    const finishInFlight = useRef(false);
     const waitingAutoTries = useRef(0);
 
     const reauthAttempt = search.get('reauth');
 
     const runLoginFinish = useCallback(async (): Promise<void> => {
+        if (finishInFlight.current) return;
         const attemptId = search.get('attempt');
         const outcome = search.get('outcome');
         const storage = tabStorage();
@@ -393,6 +405,9 @@ function StudentSsoCompleteInner() {
 
         const startedGeneration = snapshot.generation;
         const finish = async (): Promise<void> => {
+            if (finishInFlight.current) return;
+            finishInFlight.current = true;
+            try {
             let response;
             try {
                 response = await studentSsoApiClient.post('/auth/student/sso/finish', {
@@ -473,6 +488,9 @@ function StudentSsoCompleteInner() {
                 returnPath: record.returnPath,
                 origin: window.location.origin,
             });
+            } finally {
+                finishInFlight.current = false;
+            }
         };
         void finish();
     }, [search, completeSsoLogin]);

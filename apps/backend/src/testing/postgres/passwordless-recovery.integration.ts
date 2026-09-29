@@ -203,8 +203,11 @@ test('a lost start response retries onto a rebound handle without a second OTP',
         // attempt instead of stranding the delivered OTP behind a decoy.
         const second = await service.start({ email: account.email, purpose: 'lost_access', idempotencyKey: key });
         assert.notEqual(second.attemptId, first.attemptId);
+        assert.equal(second.expiresAt, second.otpExpiresAt, 'pre-proof response preserves the non-enumerating frozen deadline');
         assert.equal(deliveries.length, 1, 'the original OTP is reused, never re-sent');
-        await service.verify({ attemptId: second.attemptId, secret: second.secret, code: account.code, otp: deliveries[0]! });
+        const verified = await service.verify({ attemptId: second.attemptId, secret: second.secret, code: account.code, otp: deliveries[0]! });
+        assert.ok(Date.parse(verified.expiresAt) - Date.parse(second.expiresAt) > 4 * 60_000,
+            'after both proofs succeed, disclose the rebound attempt deadline so password completion is usable');
         const rows = await client.query<{ id: string; status: string; idempotency_key: string | null }>(
             'SELECT id, status, idempotency_key FROM student_auth_recovery_attempts WHERE user_id = $1 ORDER BY created_at', [account.userId],
         );
@@ -1013,7 +1016,7 @@ test('recovery-code replacement and account recovery race through the same accou
     }
 });
 
-test('recovery verification is idempotent across a lost 204 without failing the attempt', async () => {
+test('recovery verification is idempotent across a lost response without failing the attempt', async () => {
     const pool = createTestPool();
     const client = await pool.connect();
     try {
