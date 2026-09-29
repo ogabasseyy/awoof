@@ -48,7 +48,10 @@ on:
   pull_request_target:
     # edited: only base retargets run (see job if below); title/body edits
     # would otherwise burn quota for an unchanged diff.
-    types: [opened, synchronize, reopened, ready_for_review, edited]
+    # converted_to_draft: its job skips via draft == false below, but the
+    # run still takes the PR concurrency group and cancels an in-flight
+    # review — without it a de-drafted PR would still be reviewed.
+    types: [opened, synchronize, reopened, ready_for_review, edited, converted_to_draft]
 
 permissions:
   contents: read
@@ -223,6 +226,33 @@ jobs:
           if [[ -n "${default_branch}" && "${base_ref}" == "${default_branch}" ]]; then
             base_trusted=true
           fi
+          # Trusted guidance source: the PR base when it IS the default
+          # branch, else a pinned default-branch tip fetched separately —
+          # otherwise authoritative rules (weakened or absent on the
+          # submitter-selected base) never reach the prompt. Skipped when
+          # the base is already trusted; any failure degrades to showing
+          # base guidance as UNTRUSTED, never to trusting it.
+          trusted_sha=""
+          trusted_kind=""
+          if [[ "${base_available}" == "true" && "${base_trusted}" == "true" ]]; then
+            trusted_sha="${base_sha_full}"
+            trusted_kind="base"
+          elif [[ -n "${default_branch}" ]]; then
+            # Branch names can contain slashes, so percent-encode before
+            # interpolating into the API path.
+            default_branch_enc="$(jq -rn --arg b "${default_branch}" '$b|@uri')"
+            default_sha="$(gh api "repos/${GITHUB_REPOSITORY}/branches/${default_branch_enc}" --jq '.commit.sha' 2>/dev/null || true)"
+            if [[ "${default_sha}" =~ ^[0-9a-f]{40}$ ]] \
+              && { git fetch --depth 1 origin "${default_sha}" >/dev/null 2>&1 \
+                || git -c http.extraHeader="Authorization: Bearer ${GH_TOKEN}" fetch --depth 1 origin "${default_sha}" >/dev/null 2>&1; }; then
+              trusted_sha="${default_sha}"
+              trusted_kind="default"
+            else
+              echo "::warning::Default-branch guidance unavailable; base guidance stays UNTRUSTED."
+            fi
+          fi
+          trusted_available=false
+          if [[ -n "${trusted_sha}" ]]; then trusted_available=true; fi
           pr_state="$(jq -r '.state' "${pr_file}")"
           pr_title="$(jq -r '.title' "${pr_file}")"
           pr_body="$(jq -r '.body // ""' "${pr_file}")"
@@ -465,8 +495,9 @@ jobs:
           fi
 
           # Repo guidance: root candidates plus scoped AGENTS.md/CLAUDE.md from
-          # each changed file's ancestor dirs (capped). Base versions are
-          # trusted; head fallbacks are labeled UNTRUSTED in the prompt.
+          # each changed file's ancestor dirs (capped). Default-branch
+          # versions are trusted; base/head fallbacks are labeled UNTRUSTED
+          # in the prompt.
           guidance_file="${RUNNER_TEMP}/muse-guidance.md"
           : > "${guidance_file}"
           # Assoc-array dedup, not a line-delimited file: a changed dir
@@ -482,14 +513,15 @@ jobs:
             if [[ "${guidance_capped}" == "true" ]]; then return 0; fi
             content=""
             source=""
-            if [[ "${base_available}" == "true" && "${base_trusted}" == "true" ]] \
-              && content="$(git show "${base_sha_full}:${candidate}" 2>/dev/null)"; then
+            if [[ "${trusted_available}" == "true" ]] \
+              && content="$(git show "${trusted_sha}:${candidate}" 2>/dev/null)"; then
               # SHA, not the branch name: branch names are submitter-controlled
               # and this label prints outside any untrusted block. The explicit
               # SHA (not FETCH_HEAD, which deepening rewrites) also pins the
-              # read to the fetched base commit.
-              source="trusted (base ${base_sha_full:0:10})"
-            elif [[ "${base_available}" == "true" ]] \
+              # read to the fetched commit. For non-default targets this is
+              # the pinned DEFAULT tip, not the submitter-selected base.
+              source="trusted (${trusted_kind} ${trusted_sha:0:10})"
+            elif [[ "${base_trusted}" != "true" && "${base_available}" == "true" ]] \
               && content="$(git show "${base_sha_full}:${candidate}" 2>/dev/null)"; then
               # Submitter-selected base (not the default branch): a PR can
               # target an attacker-created branch, so show its guidance only
@@ -582,22 +614,22 @@ jobs:
               dir="${dir%$'\n'}"
             done
           done < <(jq -j '[.[] | .filename, (.previous_filename // empty)] | map(select(length > 0))[] + "\u0000"' "${files_file}" 2>/dev/null)
-          # Two phases: trusted base-backed guidance first, head-only files
-          # second — so PR-authored content can never exhaust the byte budget
+          # Two phases: trusted guidance first, everything else second —
+          # so PR-authored content can never exhaust the byte budget
           # before applicable trusted rules are collected.
-          for phase in base head; do
+          for phase in trusted rest; do
             for candidate in ${guidance_candidates[@]+"${guidance_candidates[@]}"}; do
               # Capped: later emits are no-ops, so stop stat-ing candidates
               # instead of probing every remaining path.
               if [[ "${guidance_capped}" == "true" ]]; then break 2; fi
-              if [[ "${base_available}" == "true" ]] \
-                && git show "${base_sha_full}:${candidate}" >/dev/null 2>&1; then
-                is_base=true
+              if [[ "${trusted_available}" == "true" ]] \
+                && git show "${trusted_sha}:${candidate}" >/dev/null 2>&1; then
+                is_trusted=true
               else
-                is_base=false
+                is_trusted=false
               fi
-              if [[ "${phase}" == "base" && "${is_base}" != "true" ]]; then continue; fi
-              if [[ "${phase}" == "head" && "${is_base}" == "true" ]]; then continue; fi
+              if [[ "${phase}" == "trusted" && "${is_trusted}" != "true" ]]; then continue; fi
+              if [[ "${phase}" == "rest" && "${is_trusted}" == "true" ]]; then continue; fi
               emit_guidance "${candidate}"
             done
           done
@@ -722,8 +754,14 @@ jobs:
             while IFS= read -r run_id; do
               [[ -n "${run_id}" ]] || continue
               # shellcheck disable=SC2016  # $want is a jq variable, not shell
-              if [[ "$(gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${run_id}/artifacts" \
-                --jq --arg want "${record_name}" 'any(.artifacts[]?; .name == $want)' 2>/dev/null)" == "true" ]]; then
+              # gh api takes no --arg (its --jq accepts one expression only),
+              # so filter through jq: snapshot the body first, never gh|jq,
+              # or an early jq exit SIGPIPEs gh under pipefail and fakes a
+              # miss. jq -e is true only on a real name match; anything
+              # else fails open to a possible duplicate (see above).
+              if artifacts_json="$(gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${run_id}/artifacts" 2>/dev/null)" \
+                && printf '%s' "${artifacts_json}" \
+                | jq -e --arg want "${record_name}" 'any(.artifacts[]?; .name == $want)' >/dev/null 2>&1; then
                 duplicate=true
                 echo "::notice::Muse review for ${head_sha} already posted; skipping duplicate run."
                 break
@@ -797,20 +835,21 @@ jobs:
           set -euo pipefail
           # Rerun staleness: a manual rerun uses an isolated concurrency
           # group, so a newer push cannot cancel it — revalidate the live
-          # head AND base before spending a Muse invocation. Stale runs exit
-          # quietly with no post (the Post step revalidates again before
-          # posting). Fail closed: an unreadable ref is a skip, never a
-          # proceed. The token is scoped to this one call and scrubbed before
-          # Muse launches: the agent needs only META_API_KEY, so the
-          # write-capable job token must never reach its environment.
-          if ! live_refs="$(GH_TOKEN="${GITHUB_TOKEN}" gh api "repos/${GITHUB_REPOSITORY}/pulls/${PR_NUMBER}" --jq '.head.sha, .base.sha' 2>/dev/null)" \
+          # head, base, AND draft state before spending a Muse invocation.
+          # Stale runs exit quietly with no post (the Post step revalidates
+          # again before posting). Fail closed: an unreadable ref is a skip,
+          # never a proceed. The token is scoped to this one call and
+          # scrubbed before Muse launches: the agent needs only META_API_KEY,
+          # so the write-capable job token must never reach its environment.
+          if ! live_refs="$(GH_TOKEN="${GITHUB_TOKEN}" gh api "repos/${GITHUB_REPOSITORY}/pulls/${PR_NUMBER}" --jq '.head.sha, .base.sha, .draft' 2>/dev/null)" \
             || [[ -z "${live_refs}" ]]; then
             echo "::warning::Ref revalidation lookup failed; skipping run to avoid reviewing a stale head."
             exit 0
           fi
           live_head="$(printf '%s' "${live_refs}" | sed -n '1p')"
           live_base="$(printf '%s' "${live_refs}" | sed -n '2p')"
-          if [[ -z "${live_head}" || -z "${live_base}" ]]; then
+          live_draft="$(printf '%s' "${live_refs}" | sed -n '3p')"
+          if [[ -z "${live_head}" || -z "${live_base}" || -z "${live_draft}" ]]; then
             echo "::warning::Ref revalidation lookup failed; skipping run to avoid reviewing a stale head."
             exit 0
           fi
@@ -820,6 +859,13 @@ jobs:
           fi
           if [[ "${live_base}" != "${BASE_SHA}" ]]; then
             echo "::notice::PR base moved (${BASE_SHA:0:10} -> ${live_base:0:10}); rerun is stale, skipping Muse invocation."
+            exit 0
+          fi
+          # Draft transitions change no SHA, so the converted_to_draft run
+          # (see trigger types) cannot always cancel an isolated rerun —
+          # recheck eligibility here before spending the invocation.
+          if [[ "${live_draft}" != "false" ]]; then
+            echo "::notice::PR returned to draft; skipping Muse invocation."
             exit 0
           fi
           # Symlink-escape gate: a PR can add symlinks resolving outside the
@@ -932,14 +978,15 @@ jobs:
           # refs — posting it would misattribute inline lines, so exit
           # quietly. Fail closed here too: an unreadable ref is a skip, never
           # a post.
-          if ! live_refs="$(gh api "repos/${GITHUB_REPOSITORY}/pulls/${PR_NUMBER}" --jq '.head.sha, .base.sha' 2>/dev/null)" \
+          if ! live_refs="$(gh api "repos/${GITHUB_REPOSITORY}/pulls/${PR_NUMBER}" --jq '.head.sha, .base.sha, .draft' 2>/dev/null)" \
             || [[ -z "${live_refs}" ]]; then
             echo "::warning::Ref revalidation lookup failed; skipping post to avoid publishing a stale review."
             exit 0
           fi
           live_head="$(printf '%s' "${live_refs}" | sed -n '1p')"
           live_base="$(printf '%s' "${live_refs}" | sed -n '2p')"
-          if [[ -z "${live_head}" || -z "${live_base}" ]]; then
+          live_draft="$(printf '%s' "${live_refs}" | sed -n '3p')"
+          if [[ -z "${live_head}" || -z "${live_base}" || -z "${live_draft}" ]]; then
             echo "::warning::Ref revalidation lookup failed; skipping post to avoid publishing a stale review."
             exit 0
           fi
@@ -949,6 +996,12 @@ jobs:
           fi
           if [[ "${live_base}" != "${BASE_SHA}" ]]; then
             echo "::notice::PR base moved during review (${BASE_SHA:0:10} -> ${live_base:0:10}); skipping stale post."
+            exit 0
+          fi
+          # Draft transitions change no SHA (see the Run step): a PR
+          # de-drafted mid-review is no longer eligible, so skip the post.
+          if [[ "${live_draft}" != "false" ]]; then
+            echo "::notice::PR returned to draft during review; skipping stale post."
             exit 0
           fi
           # Dedupe re-lookup (see the Collect step): a concurrent same-head
@@ -963,8 +1016,12 @@ jobs:
             while IFS= read -r run_id; do
               [[ -n "${run_id}" ]] || continue
               # shellcheck disable=SC2016  # $want is a jq variable, not shell
-              if [[ "$(gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${run_id}/artifacts" \
-                --jq --arg want "${post_record}" 'any(.artifacts[]?; .name == $want)' 2>/dev/null)" == "true" ]]; then
+              # gh api takes no --arg: snapshot the body, then filter
+              # through jq (see the Collect step) so a lookup error fails
+              # open to a possible duplicate instead of faking a miss.
+              if post_artifacts="$(gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${run_id}/artifacts" 2>/dev/null)" \
+                && printf '%s' "${post_artifacts}" \
+                | jq -e --arg want "${post_record}" 'any(.artifacts[]?; .name == $want)' >/dev/null 2>&1; then
                 echo "::notice::A review for ${HEAD_SHA} posted while this run was working; skipping duplicate post."
                 exit 0
               fi
@@ -1047,12 +1104,18 @@ jobs:
             printf '%s' "${raw_output}" > "${findings_json}"
             # Normalize: keep only well-formed finding objects. If the model
             # returned findings but none are usable, fall back explicitly
-            # instead of posting a false "no issues" review.
+            # instead of posting a false "no issues" review. Rendered
+            # fields must be strings too: a {"body":{}} finding would
+            # otherwise survive here and then crash the summary renderer's
+            # gsub, silently dropping the finding from a recorded review.
             raw_finding_count="$(jq -r '(.findings // []) | length' "${findings_json}")"
             jq '.findings |= (map(select(type == "object"
               and (.path | type) == "string"
               and ((.line | tostring) | test("^[0-9]+$"))
-              and ((.line | tonumber?) // -1) >= 0)) | map(.line |= tonumber))' \
+              and ((.line | tonumber?) // -1) >= 0
+              and ((.severity // "low") | type) == "string"
+              and ((.title // "") | type) == "string"
+              and ((.body // "") | type) == "string")) | map(.line |= tonumber))' \
               "${findings_json}" > "${findings_json}.clean" \
               && mv "${findings_json}.clean" "${findings_json}"
             clean_finding_count="$(jq -r '(.findings // []) | length' "${findings_json}")"
