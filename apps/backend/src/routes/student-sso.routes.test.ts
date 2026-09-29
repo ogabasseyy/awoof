@@ -1450,6 +1450,15 @@ test('OpenAPI documents disabled passwordless signup and recovery contracts with
         availability.content['application/json'].schema.$ref,
         '#/components/schemas/PasswordlessSignupAvailabilityResponse',
     );
+    const signupCompleteConflict = paths['/api/auth/student/sso/signup/complete']?.post?.responses?.['409'] as {
+        description: string;
+        content: { ['application/json']: { examples: Record<string, { value: unknown }> } },
+    };
+    assert.match(signupCompleteConflict.description, /SSO_SIGNUP_EXISTING_ACCOUNT/);
+    assert.deepEqual(signupCompleteConflict.content['application/json'].examples.existingAccount.value, {
+        success: false,
+        error: { code: 'SSO_SIGNUP_EXISTING_ACCOUNT', statusCode: 409 },
+    });
     for (const schema of ['PasswordlessSignupHandoffRequest', 'PasswordlessSignupCompleteRequest', 'RecoveryCodeGenerateRequest', 'RecoveryCodeStatusResponse', 'AccountRecoveryVerifyRequest', 'AccountRecoveryVerifiedResponse']) {
         assert.ok(spec.components.schemas[schema], `missing typed OpenAPI schema ${schema}`);
     }

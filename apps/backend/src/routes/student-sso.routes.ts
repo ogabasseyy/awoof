@@ -1459,7 +1459,22 @@ export default createStudentSsoRouter();
  *     responses:
  *       201: { description: Account and session created, no-store, content: { application/json: { schema: { $ref: '#/components/schemas/PasswordlessSignupCompleteResponse' } } } }
  *       400: { description: JSON, exact-origin, required assent, or malformed request }
- *       409: { description: Disabled, consumed, expired, replayed, or invalid signup state, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+ *       409:
+ *         description: >-
+ *           Disabled, consumed, expired, replayed, or invalid signup state. If the
+ *           email belongs to an existing Awoof account, error.code is
+ *           SSO_SIGNUP_EXISTING_ACCOUNT; direct the user to sign in with a
+ *           method already linked to that account or recover access. Email
+ *           matching alone never authorizes account linking.
+ *         content:
+ *           application/json:
+ *             schema: { $ref: '#/components/schemas/Error' }
+ *             examples:
+ *               existingAccount:
+ *                 summary: Existing account requires its own sign-in or recovery
+ *                 value:
+ *                   success: false
+ *                   error: { code: SSO_SIGNUP_EXISTING_ACCOUNT, statusCode: 409 }
  *       429: { description: Signup quota exhausted }
  * /api/auth/student/sso/signup/availability:
  *   get:
