@@ -77,6 +77,10 @@ function StudentLoginInner() {
     // services. Hide recovery only after a successful discovery response
     // explicitly reports it disabled; a failed lookup must not strand a
     // passwordless student who still has a valid recovery path.
+    // Fail closed: the recovery link renders only after discovery
+    // positively confirms it. Unknown (initial, email reset, parse
+    // failure, request failure) hides the link instead of advertising
+    // a flow whose start may deterministically 503.
     const [recoveryAvailable, setRecoveryAvailable] = useState<boolean | null>(null);
     const [flow, setFlow] = useState<LoginState>(initialLoginState);
     const flowRef = useRef(flow);
@@ -124,7 +128,7 @@ function StudentLoginInner() {
             const response = await publicApiClient.post('/auth/student/login-options', { email: next.email });
             const options = parseLoginOptions(response.data);
             if (!options) {
-                setRecoveryAvailable(true);
+                setRecoveryAvailable(null);
                 setFlow((previous) => methodsFailed(previous, next.requestId, DISCOVERY_UNAVAILABLE));
                 return;
             }
@@ -132,7 +136,7 @@ function StudentLoginInner() {
             setRecoveryAvailable(data?.recovery === true);
             setFlow((previous) => methodsResolved(previous, next.requestId, options.providers));
         } catch (cause: unknown) {
-            setRecoveryAvailable(true);
+            setRecoveryAvailable(null);
             const status = axios.isAxiosError(cause) ? cause.response?.status : undefined;
             setFlow((previous) => methodsFailed(
                 previous,
@@ -222,7 +226,7 @@ function StudentLoginInner() {
                             Vendor login
                         </Link>
                     </p>
-                    {recoveryAvailable !== false && <p className="mt-2 text-center text-sm text-slate-600">
+                    {recoveryAvailable === true && <p className="mt-2 text-center text-sm text-slate-600">
                         Lost access to school sign-in?{' '}
                         <Link href="/auth/student/recovery" className="text-slate-500 hover:text-[#1D4ED8] hover:underline font-medium">
                             Recover your account

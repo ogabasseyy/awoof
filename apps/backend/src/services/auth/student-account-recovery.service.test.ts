@@ -230,6 +230,51 @@ test('compromise recovery complete locks handoffs before identities', async () =
         'compromise recovery must lock stale handoffs before revoking identities');
 });
 
+test('recovery verify mirrors decoy work before rejecting an altered handle secret', async () => {
+    const queries: string[] = [];
+    const stored = createHmac('sha256', 'test-recovery-code-key').update(`attempt\0${'returned-secret'}`).digest('base64url');
+    const attemptId = '22222222-2222-4222-8222-222222222222';
+    const client = {
+        query: async (text: string) => {
+            queries.push(text);
+            if (text.includes('SELECT user_id FROM student_auth_recovery_attempts')) return { rows: [{ user_id: 'u1' }], rowCount: 1 };
+            if (text.includes('SELECT * FROM student_auth_recovery_attempts')) {
+                return {
+                    rows: [{
+                        id: attemptId, user_id: 'u1', credential_generation: 0, purpose: 'lost_access',
+                        secret_hash: stored, recovery_code_generation: 7, mailbox_challenge_id: 'm1',
+                        status: 'pending', expires_at: new Date(Date.now() + 600_000),
+                    }], rowCount: 1,
+                };
+            }
+            if (text.includes('FROM users u LEFT JOIN students s')) {
+                return { rows: [{ id: 'u1', email: 's@x.invalid', credential_generation: 0, deleted_at: null }], rowCount: 1 };
+            }
+            if (text.includes('SELECT status FROM students WHERE user_id')) return { rows: [{ status: 'active' }], rowCount: 1 };
+            if (text.includes('SELECT clock_timestamp() AS now')) return { rows: [{ now: new Date() }], rowCount: 1 };
+            return { rows: [], rowCount: 0 };
+        },
+        release: () => undefined,
+    };
+    const service = new StudentAccountRecoveryService({
+        pool: { connect: async () => client } as never,
+        recoveryCodeKey: 'test-recovery-code-key',
+    });
+
+    await assert.rejects(
+        () => service.verify({ attemptId, secret: 'altered-secret', code: 'code', otp: '123456' }),
+        /not available/i,
+    );
+    // The rowless decoy runs a second student-row probe and the
+    // active-code probe before its identical 409; the altered-secret
+    // rejection must pay the same reads or alternating the two secrets
+    // times account existence without burning OTP budget.
+    const studentProbes = queries.filter((text) => text.includes('SELECT status FROM students WHERE user_id')).length;
+    assert.equal(studentProbes, 2, 'altered-secret rejection must run the mirrored student-row probe');
+    assert.ok(queries.some((text) => text.includes('FROM student_auth_recovery_codes WHERE user_id')),
+        'altered-secret rejection must run the mirrored active-code probe');
+});
+
 test('recovery complete does not hash passwords for unknown attempts', async () => {
     let hashes = 0;
     const client = { query: async () => ({ rows: [], rowCount: 0 }), release: () => undefined };

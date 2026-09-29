@@ -207,7 +207,7 @@ test('student login hides account recovery when the server reports it unavailabl
   await assertCleanFixture(api, faults);
 });
 
-test('student login keeps account recovery reachable when login discovery fails', async ({ page }) => {
+test('student login hides account recovery when login discovery fails', async ({ page }) => {
   const api = await installSyntheticApi(page);
   const faults = collectBrowserFaults(page, api);
   await page.route(`${apiOrigin}/api/auth/student/login-options`, (route) => route.fulfill({
@@ -220,8 +220,9 @@ test('student login keeps account recovery reachable when login discovery fails'
   await page.getByLabel('Email', { exact: true }).fill(email);
   await page.getByRole('button', { name: 'Continue', exact: true }).click();
   await expect(page.getByText(/school sign-in options are temporarily unavailable/i)).toBeVisible();
-  await expect(page.getByRole('link', { name: 'Recover your account' }))
-    .toHaveAttribute('href', '/auth/student/recovery');
+  // Discovery failure leaves readiness unknown, which must not advertise
+  // a recovery flow whose start may deterministically 503.
+  await expect(page.getByRole('link', { name: 'Recover your account' })).toHaveCount(0);
   expect(faults).toHaveLength(1);
   expect(faults[0]).toContain('503 (Service Unavailable)');
   api.assertNoUnexpectedRequests();

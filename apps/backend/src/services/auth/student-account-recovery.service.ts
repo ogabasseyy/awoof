@@ -305,7 +305,10 @@ export class StudentAccountRecoveryService {
             const attempt = await this.lockAttempt(tx, attemptId);
             const serverNow = await this.now(tx);
             if (!attempt || attempt.expires_at <= serverNow
-                || !this.matchesAttemptSecret(attempt.secret_hash, secret)) return null;
+                || !this.matchesAttemptSecret(attempt.secret_hash, secret)) {
+                await this.mirrorVerifyRejection(tx, attempt != null && attempt.expires_at > serverNow);
+                return null;
+            }
             // Idempotent retry: the verification commit landed but its response
             // was lost. The mailbox OTP was already proven and its
             // challenge consumed, so revalidate the still-checkable proofs
@@ -717,6 +720,24 @@ export class StudentAccountRecoveryService {
     private async lockAttempt(tx: PoolClient, id: string): Promise<Attempt | null> {
         const result = await tx.query<Attempt>('SELECT * FROM student_auth_recovery_attempts WHERE id = $1 FOR UPDATE', [id]);
         return result.rows[0] ?? null;
+    }
+
+    /**
+     * Timing mirror for verify rejections after the owner, account,
+     * attempt, and clock lookups: the rowless decoy runs two more probe
+     * reads (a second student-row probe and the active-code probe) plus
+     * a digest round before its identical 409. Without this, alternating
+     * the returned handle secret with an altered one takes a shorter
+     * path on recoverable accounts than on unknown addresses — a
+     * repeatable timing oracle that burns no OTP budget. Random ids miss
+     * every lock and nothing is written. The digest runs here only when
+     * the rejection short-circuited before the real comparison; a secret
+     * mismatch already paid the same rounds on committed material.
+     */
+    private async mirrorVerifyRejection(tx: PoolClient, digestPaid: boolean): Promise<void> {
+        await this.lockedStudentStatus(tx, randomUUID());
+        await this.lockActiveCode(tx, randomUUID());
+        if (!digestPaid) this.matchesAttemptSecret('decoy-expected-digest', 'decoy-verify-probe');
     }
 
     private async sendCompletionNotice(email: string, purpose: RecoveryPurpose): Promise<void> {

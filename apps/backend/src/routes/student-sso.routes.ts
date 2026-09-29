@@ -1637,7 +1637,7 @@ export default createStudentSsoRouter();
  *       400: { description: JSON or malformed explicit-purpose request }
  *       409: { description: Expired, unavailable, or conflict recovery state }
  *       429: { description: Recovery quota exhausted }
- *       503: { description: Recovery service unavailable (recovery-code key or mailer unconfigured) }
+ *       503: { description: Recovery service unavailable (recovery-code key, mailer, or OTP outbox key unconfigured) }
  * /api/auth/student/sso/account-recovery/verify:
  *   post:
  *     summary: Verify both recovery-code and mailbox proofs
