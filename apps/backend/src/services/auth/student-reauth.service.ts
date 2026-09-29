@@ -59,11 +59,16 @@ export type StudentReauthDependencies = {
 export class StudentReauthService {
     constructor(private readonly deps: StudentReauthDependencies) {}
 
-    async start(input: { userId: string; sid: string; purpose: ActionPurpose; targetIdentityId?: string; pendingCodeId?: string }): Promise<{ attemptId: string; authorizationUrl: string; callbackCookie: string }> {
+    async start(input: { userId: string; sid: string; purpose: ActionPurpose; proofIdentityId?: string; targetIdentityId?: string; pendingCodeId?: string }): Promise<{ attemptId: string; authorizationUrl: string; callbackCookie: string }> {
         if (!UUID.test(input.userId) || !UUID.test(input.sid)) throw new UnauthorizedError('Student SSO session is not available');
+        if (input.proofIdentityId !== undefined && !UUID.test(input.proofIdentityId)) throw invalidReauth();
         // Proof selection mirrors selectCurrentProofAuthority, including the
         // observed-email domain match: selecting an identity whose domain
         // was withdrawn would start a ceremony every consumption rejects.
+        // An explicit proof identity only narrows this same eligible set,
+        // so callers can pin an older accessible mailbox when the default
+        // pick is no longer reachable; a foreign or ineligible id resolves
+        // to no row and takes the no-live-identity 409 below.
         const row = await this.deps.pool.query<{
             identity_id: string; provider: LoginProvider; observed_email: string | null; policy_id: string; policy_version: number;
             issuer: string; realm: string; university_id: string; credential_generation: string | number;
@@ -88,6 +93,7 @@ export class StudentReauthService {
              WHERE users.id = $1 AND users.role = 'student' AND users.deleted_at IS NULL AND users.active_session_id = $2::uuid
                  AND identity.provider = 'microsoft'
                  AND identity.observed_email IS NOT NULL AND identity.observed_email <> ''
+                 AND ($3::uuid IS NULL OR identity.id = $3::uuid)
              -- Prefer the identity that issued the current session: the
              -- newest-linked Microsoft identity may no longer be
              -- accessible to the user, while the session proves the older
@@ -98,7 +104,7 @@ export class StudentReauthService {
              -- newest-first; the NULL comparison sorts last either way.
              ORDER BY (identity.id = users.active_session_auth_identity_id) DESC NULLS LAST,
                       identity.linked_at DESC LIMIT 1`,
-            [input.userId, input.sid],
+            [input.userId, input.sid, input.proofIdentityId ?? null],
         );
         const identity = row.rows[0];
         if (!identity || identity.provider !== 'microsoft' || !identity.observed_email || !this.deps.isProviderEnabled(identity.provider)) throw invalidReauth();

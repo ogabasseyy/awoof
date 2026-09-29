@@ -289,6 +289,32 @@ test('Microsoft fresh-reauth routes preserve the browser binding and never use t
     assert.deepEqual(seen, ['start', 'callback', 'finish:reauth-browser']);
 });
 
+test('Microsoft fresh-reauth start pins the proof to a selected live identity', async () => {
+    const reauthAttemptId = '60666666-6666-4666-8666-666666666666';
+    const proofIdentityId = '61666666-6666-4666-8666-666666666666';
+    const seen: unknown[] = [];
+    const reauth = {
+        start: async (input: unknown) => {
+            seen.push(input);
+            return { attemptId: reauthAttemptId, authorizationUrl: 'https://provider.example.invalid/fresh', callbackCookie: 'reauth-browser' };
+        },
+    };
+    await withServer(routerWith(stubFlow(), { reauthService: () => reauth as never }), async (baseUrl) => {
+        const start = await fetch(`${baseUrl}/reauth/microsoft/start`, {
+            method: 'POST', headers: authHeaders(studentToken(true)),
+            body: JSON.stringify({ purpose: 'recovery_code_generate', proofIdentityId }),
+        });
+        assert.equal(start.status, 201);
+        assert.equal((seen[0] as { proofIdentityId?: string }).proofIdentityId, proofIdentityId);
+        const invalid = await fetch(`${baseUrl}/reauth/microsoft/start`, {
+            method: 'POST', headers: authHeaders(studentToken(true)),
+            body: JSON.stringify({ purpose: 'recovery_code_generate', proofIdentityId: 'not-a-uuid' }),
+        });
+        assert.equal(invalid.status, 400);
+        assert.equal(seen.length, 1);
+    });
+});
+
 test('failed Microsoft fresh-reauth callbacks redirect to the bounded completion page', async () => {
     const reauthAttemptId = '67666666-6666-4666-8666-666666666666';
     const reauth = {
@@ -372,6 +398,58 @@ test('failed reauth callbacks terminalize the dead attempt before redirecting', 
         // The redirect deletes the only browser binding that could finish
         // the attempt, so the dead row is terminalized first.
         assert.deepEqual(terminalized, [reauthAttemptId]);
+    });
+});
+
+test('a reauth failure after redemption terminalization still redirects via the state suffix', async () => {
+    const reauthAttemptId = '6e666666-6666-4666-8666-666666666666';
+    const state = `redeemed-secret.${reauthAttemptId}`;
+    const terminalized: string[] = [];
+    const reauth = {
+        // The READY commit failed after provider redemption, so callback()
+        // terminalized the row and scrubbed its state hash: the live lookup
+        // misses even though dispatch resolved the same state moments ago.
+        terminalizeFailedAttempt: async (attemptId: string) => { terminalized.push(attemptId); },
+        isDeadAttempt: async () => false,
+        isInFlightAttempt: async () => false,
+        callbackCookieNameForState: async (value: string | null) => value === state ? `awoof_reauth_${reauthAttemptId}` : null,
+        attemptIdForState: async () => null,
+        callback: async () => { throw new ConflictError('Student SSO reauthentication is no longer valid'); },
+    };
+    const flow = stubFlow({ callback: async () => { throw new Error('ordinary login callback must not run'); } });
+    await withServer(routerWith(flow, { reauthService: () => reauth as never }), async (baseUrl) => {
+        const callback = await fetch(`${baseUrl}/microsoft/callback?state=${encodeURIComponent(state)}&code=code`, {
+            redirect: 'manual', headers: { Cookie: `awoof_reauth_${reauthAttemptId}=reauth-browser` },
+        });
+        assert.equal(callback.status, 303);
+        assert.equal(callback.headers.get('location'), `${COMPLETION_ORIGIN}/auth/student/sso/complete?reauth=${reauthAttemptId}`);
+        assert.deepEqual(terminalized, [reauthAttemptId]);
+        assert.match(parseSetCookies(callback)[0]!, new RegExp(`awoof_reauth_${reauthAttemptId}=;`));
+    });
+});
+
+test('a reauth state suffix naming another attempt never hijacks the failure redirect', async () => {
+    const reauthAttemptId = '62666666-6666-4666-8666-666666666666';
+    const otherAttemptId = '63666666-6666-4666-8666-666666666666';
+    const state = `redeemed-secret.${otherAttemptId}`;
+    let terminalized = false;
+    const reauth = {
+        terminalizeFailedAttempt: async () => { terminalized = true; },
+        isDeadAttempt: async () => false,
+        isInFlightAttempt: async () => false,
+        callbackCookieNameForState: async (value: string | null) => value === state ? `awoof_reauth_${reauthAttemptId}` : null,
+        attemptIdForState: async () => null,
+        callback: async () => { throw new ConflictError('Student SSO reauthentication is no longer valid'); },
+    };
+    const flow = stubFlow({ callback: async () => { throw new Error('ordinary login callback must not run'); } });
+    await withServer(routerWith(flow, { reauthService: () => reauth as never }), async (baseUrl) => {
+        const callback = await fetch(`${baseUrl}/microsoft/callback?state=${encodeURIComponent(state)}&code=code`, {
+            redirect: 'manual', headers: { Cookie: `awoof_reauth_${reauthAttemptId}=reauth-browser` },
+        });
+        // The suffix does not reproduce the resolved binding, so the
+        // fallback refuses it and the terminal error surfaces as JSON.
+        assert.equal(callback.status, 409);
+        assert.equal(terminalized, false);
     });
 });
 

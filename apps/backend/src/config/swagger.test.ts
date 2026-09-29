@@ -207,6 +207,11 @@ test('recovery password schema encodes the enforced complexity rules', () => {
     const password = spec.components.schemas.AccountRecoveryCompleteRequest.properties.password;
     assert.equal(password.type, 'string');
     assert.equal(password.minLength, 8);
+    // The complete endpoint rejects anything over 72 UTF-8 bytes (bcrypt
+    // incorporates only the first 72), so the schema must publish that
+    // physical ceiling — not the 1024-char transport guard.
+    assert.equal(password.maxLength, 72, 'password schema must publish the enforced 72-byte ceiling');
+    assert.match(password.description ?? '', /72 bytes of UTF-8/, 'password schema must disclose the byte-based limit');
     assert.ok(password.pattern, 'password schema must encode the complexity rules, not just the length floor');
     const documented = new RegExp(password.pattern);
     for (const candidate of ['ValidNew1!', 'all-lowercase-1!', 'ALL-UPPER-1!', 'NoDigits!!', 'NoSpecial11', 'Sh0rt!A', 'Br@cket[1]Aa', 'Back`tick1Aa']) {

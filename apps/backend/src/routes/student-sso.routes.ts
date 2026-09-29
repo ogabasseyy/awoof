@@ -718,7 +718,18 @@ export function createStudentSsoRouter(factory: FlowFactory = defaultFlow, optio
                     // terminal failures. Outages (5xx) still surface as JSON.
                     const terminalOidc = error instanceof StudentOidcOperationalError && error.category !== 'upstream_unavailable';
                     if (!terminalOidc && (!(error instanceof AppError) || error.statusCode < 400 || error.statusCode >= 500)) throw error;
-                    const attemptId = await reauth.attemptIdForState(callbackUrl.searchParams.get('state'));
+                    // callback() terminalizes — and scrubs the state hash
+                    // of — a redemption whose READY commit failed, so the
+                    // live lookup misses for exactly the attempt being
+                    // handled. The state's nonsecret suffix still names it;
+                    // accept the suffix only when it reproduces the cookie
+                    // resolved before redemption, binding the fallback to
+                    // the validated live dispatch instead of a forged state.
+                    let attemptId = await reauth.attemptIdForState(callbackUrl.searchParams.get('state'));
+                    if (!attemptId) {
+                        const suffixId = reauthAttemptIdFromState(callbackUrl.searchParams.get('state'));
+                        if (suffixId && studentReauthCookieName(suffixId) === reauthCookie) attemptId = suffixId;
+                    }
                     const failureBase = config.studentSso.completionUrl
                         ?? (completionOrigin ? new URL(STUDENT_SSO_COMPLETION_PATH, completionOrigin) : undefined);
                     if (!attemptId || !failureBase) throw error;
@@ -983,14 +994,15 @@ export function createStudentSsoRouter(factory: FlowFactory = defaultFlow, optio
     }));
 
     router.post('/reauth/microsoft/start', authenticate, requireRole('student'), reauthMicrosoftStartLimiter, exactStartOrigin, exactJson, asyncHandler(async (req, res) => {
-        const body = req.body as { purpose?: unknown; targetIdentityId?: unknown; pendingCodeId?: unknown };
+        const body = req.body as { purpose?: unknown; proofIdentityId?: unknown; targetIdentityId?: unknown; pendingCodeId?: unknown };
         if (!body || typeof body !== 'object' || Array.isArray(body)
-            || Object.keys(body).some((key) => key !== 'purpose' && key !== 'targetIdentityId' && key !== 'pendingCodeId')
+            || Object.keys(body).some((key) => key !== 'purpose' && key !== 'proofIdentityId' && key !== 'targetIdentityId' && key !== 'pendingCodeId')
             || (body.purpose !== 'link' && body.purpose !== 'unlink' && body.purpose !== 'recovery_code_generate' && body.purpose !== 'recovery_code_activate' && body.purpose !== 'recovery_code_remove')
+            || (body.proofIdentityId !== undefined && (typeof body.proofIdentityId !== 'string' || !UUID.test(body.proofIdentityId)))
             || (body.targetIdentityId !== undefined && (typeof body.targetIdentityId !== 'string' || !UUID.test(body.targetIdentityId)))
             || (body.pendingCodeId !== undefined && (typeof body.pendingCodeId !== 'string' || !UUID.test(body.pendingCodeId)))) throw new BadRequestError('Student SSO reauthentication request is invalid');
         const actor = ssoActor(req);
-        const result = await reauthFactory().start({ userId: actor.userId, sid: actor.sid, purpose: body.purpose, ...(typeof body.targetIdentityId === 'string' ? { targetIdentityId: body.targetIdentityId } : {}), ...(typeof body.pendingCodeId === 'string' ? { pendingCodeId: body.pendingCodeId } : {}) });
+        const result = await reauthFactory().start({ userId: actor.userId, sid: actor.sid, purpose: body.purpose, ...(typeof body.proofIdentityId === 'string' ? { proofIdentityId: body.proofIdentityId } : {}), ...(typeof body.targetIdentityId === 'string' ? { targetIdentityId: body.targetIdentityId } : {}), ...(typeof body.pendingCodeId === 'string' ? { pendingCodeId: body.pendingCodeId } : {}) });
         responseHeaders(res);
         // This 256-bit, five-minute bearer value must round-trip through the
         // initiating browser to bind the OAuth callback. It is HttpOnly,
@@ -1315,6 +1327,7 @@ export default createStudentSsoRouter();
  *             required: [purpose]
  *             properties:
  *               purpose: { type: string, enum: [link, unlink, recovery_code_generate, recovery_code_activate, recovery_code_remove] }
+ *               proofIdentityId: { type: string, format: uuid, description: Pins the fresh proof to one of the caller's live Microsoft identities instead of the default pick }
  *               targetIdentityId: { type: string, format: uuid, description: Binds the grant to one identity for unlink consumption }
  *               pendingCodeId: { type: string, format: uuid, description: Binds the grant to one pending code }
  *     responses:
