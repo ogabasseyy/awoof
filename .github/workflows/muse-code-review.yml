@@ -242,8 +242,8 @@ jobs:
           # three-dot semantics as the reviewed API diff. The paginated
           # PR-files API is the fallback when local history is unavailable
           # (e.g. private repos, where anonymous fetch has no credentials);
-          # pagination (unlike the compare API's 300-file metadata cap)
-          # returns every changed file.
+          # pagination returns every changed file up to the endpoint's
+          # documented 3,000-entry maximum, which fails closed below.
           if [[ "${local_diff}" == "true" ]]; then
             ns_file="${RUNNER_TEMP}/muse-namestat.txt"
             num_file="${RUNNER_TEMP}/muse-numstat.txt"
@@ -308,6 +308,17 @@ jobs:
             elif ! jq -s 'add // []' "${files_pages_file}" > "${files_file}" 2>/dev/null; then
               echo '[]' > "${files_file}"
               echo "::warning::PR file-list merge failed; routing to fallback."
+              diff_failed=true
+            fi
+            # Endpoint cap: list-files returns at most 3,000 entries, so a
+            # full house may hide further paths — fail closed to the explicit
+            # fallback rather than reviewing a silently partial scope. (An
+            # exactly-3,000-file PR takes the same path; the local-history
+            # inventory above never hits this branch.)
+            if [[ "${diff_failed}" != "true" ]] \
+              && (( $(jq -r 'length' "${files_file}") >= 3000 )); then
+              echo '[]' > "${files_file}"
+              echo "::warning::PR file list hit the 3,000-entry API cap; routing to fallback."
               diff_failed=true
             fi
           fi
