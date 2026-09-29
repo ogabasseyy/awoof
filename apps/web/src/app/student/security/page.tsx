@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import Link from 'next/link';
 import axios from 'axios';
 import { AuthShell } from '@/components/auth/AuthShell';
@@ -46,6 +46,11 @@ function pendingIntent(): string | null { try { const value = JSON.parse(session
 
 export default function StudentSecurityPage() {
     const { refreshUser, user } = useAuth();
+    const currentUserId = user?.role === 'student' ? user.id : null;
+    const currentSessionId = getSessionSnapshot().browserSessionId;
+    const currentAccountKey = currentUserId && currentSessionId ? `${currentUserId}:${currentSessionId}` : null;
+    const currentAccountKeyRef = useRef(currentAccountKey);
+    useLayoutEffect(() => { currentAccountKeyRef.current = currentAccountKey; }, [currentAccountKey]);
     // Post-recovery re-enrollment must use the password: generate()
     // rejects provider-backed grants while the marker stands, so the
     // enrollment views require the password path instead of offering a
@@ -55,8 +60,18 @@ export default function StudentSecurityPage() {
     const [status, setStatus] = useState<RecoveryStatus>('loading'); const [pendingCodeId, setPendingCodeId] = useState<string | null>(null);
     const [pendingExpiresAt, setPendingExpiresAt] = useState<string | null>(null);
     const [generation, setGeneration] = useState<number | null>(null);
-    const [busy, setBusy] = useState(false); const loadedUserId = useRef<string | null | undefined>(undefined);
+    const [busy, setBusy] = useState(false); const loadedAccountKey = useRef<string | null | undefined>(undefined);
     const accountLoadGeneration = useRef(0);
+    const isCurrentAccountRequest = (accountKey: string | null, sessionId: string | null, generation: number) =>
+        accountKey !== null && accountKey === currentAccountKeyRef.current
+        && generation === accountLoadGeneration.current
+        && sessionId !== null && getSessionSnapshot().browserSessionId === sessionId;
+    const captureAccountRequest = () => {
+        const accountKey = currentAccountKey;
+        const sessionId = getSessionSnapshot().browserSessionId;
+        const generation = accountLoadGeneration.current;
+        return { accountKey, sessionId, generation, isCurrent: () => isCurrentAccountRequest(accountKey, sessionId, generation) };
+    };
     const [now, setNow] = useState(() => Date.now());
     useEffect(() => {
         const timer = window.setInterval(() => setNow(Date.now()), 1000);
@@ -80,37 +95,43 @@ export default function StudentSecurityPage() {
     const [schoolError, setSchoolError] = useState<string | null>(null);
     const [pwPreferred, setPwPreferred] = useState(false);
     const [pwMode, setPwMode] = useState<'generate' | 'activate' | 'remove' | 'display' | null>(null);
+    const [pwModeAccountKey, setPwModeAccountKey] = useState<string | null>(null);
     const [password, setPassword] = useState(''); const [pwOld, setPwOld] = useState(''); const [pwCode, setPwCode] = useState('');
     const [pwPendingId, setPwPendingId] = useState<string | null>(null); const [pwExpiresAt, setPwExpiresAt] = useState<string | null>(null); const [formError, setFormError] = useState<string | null>(null);
     const [pwExpectedGeneration, setPwExpectedGeneration] = useState<number | null>(null);
     const pwDeadlineMs = pwExpiresAt ? Date.parse(pwExpiresAt) : NaN;
     const pwExpired = (pwMode === 'display' || pwMode === 'activate') && pwExpiresAt !== null && !Number.isNaN(pwDeadlineMs) && pwDeadlineMs <= now + pwSkewMs;
+    const visiblePwMode = pwModeAccountKey === currentAccountKey ? pwMode : null;
     // The session client refreshes a token that expired before this page
     // loaded instead of permanently rendering recovery and identity
     // management as unavailable after one 401.
-    const loadStatus = async (generation = accountLoadGeneration.current) => {
-        try { const r = await studentSsoSessionApiClient.get('/auth/student/sso/recovery-code'); if (generation !== accountLoadGeneration.current) return; const data = (r.data as { data?: { status?: unknown; generation?: unknown; pendingCodeId?: unknown; pendingExpiresAt?: unknown; serverNow?: unknown } }).data; const value = data?.status; setPendingCodeId(typeof data?.pendingCodeId === 'string' ? data.pendingCodeId : null); setPendingExpiresAt(typeof data?.pendingExpiresAt === 'string' ? data.pendingExpiresAt : null); setGeneration(typeof data?.generation === 'number' ? data.generation : null); setSkewMs(serverSkewSince(typeof data?.serverNow === 'string' && !Number.isNaN(Date.parse(data.serverNow)) ? data.serverNow : null)); setStatus(value === 'active' || value === 'pending' || value === 'unconfigured' ? value : 'unavailable'); } catch { if (generation === accountLoadGeneration.current) setStatus('unavailable'); }
+    const loadStatus = async (generation = accountLoadGeneration.current, accountKey = currentAccountKey, sessionId = currentSessionId) => {
+        try { const r = await studentSsoSessionApiClient.get('/auth/student/sso/recovery-code'); if (!isCurrentAccountRequest(accountKey, sessionId, generation)) return; const data = (r.data as { data?: { status?: unknown; generation?: unknown; pendingCodeId?: unknown; pendingExpiresAt?: unknown; serverNow?: unknown } }).data; const value = data?.status; setPendingCodeId(typeof data?.pendingCodeId === 'string' ? data.pendingCodeId : null); setPendingExpiresAt(typeof data?.pendingExpiresAt === 'string' ? data.pendingExpiresAt : null); setGeneration(typeof data?.generation === 'number' ? data.generation : null); setSkewMs(serverSkewSince(typeof data?.serverNow === 'string' && !Number.isNaN(Date.parse(data.serverNow)) ? data.serverNow : null)); setStatus(value === 'active' || value === 'pending' || value === 'unconfigured' ? value : 'unavailable'); } catch { if (isCurrentAccountRequest(accountKey, sessionId, generation)) setStatus('unavailable'); }
     };
-    const loadIdentities = async (generation = accountLoadGeneration.current) => {
+    const loadIdentities = async (generation = accountLoadGeneration.current, accountKey = currentAccountKey, sessionId = currentSessionId) => {
         try {
             const r = await studentSsoSessionApiClient.get('/auth/student/sso/identities');
-            if (generation !== accountLoadGeneration.current) return;
+            if (!isCurrentAccountRequest(accountKey, sessionId, generation)) return;
             const parsed = parseIdentities((r.data as { data?: unknown }).data);
             if (!parsed) throw new Error('invalid');
             setIdentities(parsed); setIdentitiesError(null);
-        } catch { if (generation === accountLoadGeneration.current) setIdentitiesError(IDENTITIES_UNAVAILABLE); }
+        } catch { if (isCurrentAccountRequest(accountKey, sessionId, generation)) setIdentitiesError(IDENTITIES_UNAVAILABLE); }
     };
-    const currentUserId = user?.id ?? null;
     useEffect(() => {
-        if (loadedUserId.current === currentUserId) return;
+        if (loadedAccountKey.current === currentAccountKey) return;
         const generation = ++accountLoadGeneration.current;
-        loadedUserId.current = currentUserId;
+        loadedAccountKey.current = currentAccountKey;
         // Another tab can replace the session while this page stays open:
         // never keep the previous account's recovery status, identities,
         // or pending unlink target on screen. Reset to loading and refetch
         // for whoever is signed in now.
         setStatus('loading'); setPendingCodeId(null); setPendingExpiresAt(null); setGeneration(null); setSkewMs(0);
         setIdentities(null); setIdentitiesError(null); setUnlinkTarget(null);
+        setBusy(false); setSchoolError(null); setLinkBusy(false); setLinkError(null);
+        setUnlinkBusy(false); setUnlinkPassword(''); setUnlinkError(null); setSignedOut(false);
+        setPwPreferred(false); setPwMode(null); setPwModeAccountKey(null);
+        setPassword(''); setPwOld(''); setPwCode(''); setPwPendingId(null);
+        setPwExpiresAt(null); setPwExpectedGeneration(null); setPwSkewMs(0); setFormError(null);
         const session = getSessionSnapshot();
         if (!session.accessToken) { setStatus('unavailable'); setIdentitiesError(IDENTITIES_UNAVAILABLE); return; }
         // AuthContext may still be resolving /auth/me on the first render.
@@ -120,41 +141,46 @@ export default function StudentSecurityPage() {
         if (currentUserId === null) return;
         void loadStatus(generation);
         void loadIdentities(generation);
-    }, [currentUserId]);
+    }, [currentAccountKey]);
     // A failed school-sign-in start must not strand password users: the
     // provider-independent password flow stays usable, so these report an
     // inline error and keep the password toggle instead of marking the
     // whole page unavailable.
     const schoolUnavailable = 'School sign-in confirmation is unavailable right now. Use your password instead or try again.';
     const begin = async () => {
-        if (busy) return; const session = getSessionSnapshot(); if (!session.accessToken) { setStatus('unavailable'); return; }
+        if (busy) return; const request = captureAccountRequest(); const session = getSessionSnapshot(); if (!session.accessToken || !request.accountKey) { setStatus('unavailable'); return; }
         setBusy(true); setSchoolError(null);
-        try { const r = await studentSsoSessionApiClient.post('/auth/student/sso/reauth/microsoft/start', { purpose: 'recovery_code_generate' }); const url = (r.data as { data?: { authorizationUrl?: unknown } }).data?.authorizationUrl; if (typeof url !== 'string' || !url.startsWith('https:')) throw new Error('invalid'); window.location.assign(url); } catch { setBusy(false); setSchoolError(schoolUnavailable); }
+        try { const r = await studentSsoSessionApiClient.post('/auth/student/sso/reauth/microsoft/start', { purpose: 'recovery_code_generate' }); if (!request.isCurrent()) return; const url = (r.data as { data?: { authorizationUrl?: unknown } }).data?.authorizationUrl; if (typeof url !== 'string' || !url.startsWith('https:')) throw new Error('invalid'); window.location.assign(url); } catch { if (request.isCurrent()) { setBusy(false); setSchoolError(schoolUnavailable); } }
     };
     const beginRemove = async () => {
-        if (busy) return; const session = getSessionSnapshot(); if (!session.accessToken) { setStatus('unavailable'); return; }
-        setBusy(true); setSchoolError(null); try { const r = await studentSsoSessionApiClient.post('/auth/student/sso/reauth/microsoft/start', { purpose: 'recovery_code_remove' }); const url = (r.data as { data?: { authorizationUrl?: unknown } }).data?.authorizationUrl; if (typeof url !== 'string' || !url.startsWith('https:')) throw new Error(); window.location.assign(url); } catch { setBusy(false); setSchoolError(schoolUnavailable); }
+        if (busy) return; const request = captureAccountRequest(); const session = getSessionSnapshot(); if (!session.accessToken || !request.accountKey) { setStatus('unavailable'); return; }
+        setBusy(true); setSchoolError(null); try { const r = await studentSsoSessionApiClient.post('/auth/student/sso/reauth/microsoft/start', { purpose: 'recovery_code_remove' }); if (!request.isCurrent()) return; const url = (r.data as { data?: { authorizationUrl?: unknown } }).data?.authorizationUrl; if (typeof url !== 'string' || !url.startsWith('https:')) throw new Error(); window.location.assign(url); } catch { if (request.isCurrent()) { setBusy(false); setSchoolError(schoolUnavailable); } }
     };
     const beginActivation = async () => {
         if (busy) return;
-        const pendingId = pendingCodeId ?? pendingIntent(); const session = getSessionSnapshot(); if (!pendingId || !session.accessToken) { setStatus('unavailable'); return; }
-        setBusy(true); setSchoolError(null); try { const r = await studentSsoSessionApiClient.post('/auth/student/sso/reauth/microsoft/start', { purpose: 'recovery_code_activate', pendingCodeId: pendingId }); const url = (r.data as { data?: { authorizationUrl?: unknown } }).data?.authorizationUrl; if (typeof url !== 'string' || !url.startsWith('https:')) throw new Error('invalid'); window.location.assign(url); } catch { setBusy(false); setSchoolError(schoolUnavailable); }
+        const request = captureAccountRequest(); const pendingId = pendingCodeId ?? pendingIntent(); const session = getSessionSnapshot(); if (!pendingId || !session.accessToken || !request.accountKey) { setStatus('unavailable'); return; }
+        setBusy(true); setSchoolError(null); try { const r = await studentSsoSessionApiClient.post('/auth/student/sso/reauth/microsoft/start', { purpose: 'recovery_code_activate', pendingCodeId: pendingId }); if (!request.isCurrent()) return; const url = (r.data as { data?: { authorizationUrl?: unknown } }).data?.authorizationUrl; if (typeof url !== 'string' || !url.startsWith('https:')) throw new Error('invalid'); window.location.assign(url); } catch { if (request.isCurrent()) { setBusy(false); setSchoolError(schoolUnavailable); } }
     };
     const cancelPending = async () => {
-        const session = getSessionSnapshot(); if (!pendingCodeId || !session.accessToken || busy) return;
-        setBusy(true); try { await studentSsoSessionApiClient.post('/auth/student/sso/recovery-code/cancel', { pendingCodeId }); setPendingCodeId(null); await loadStatus(); } catch { setStatus('unavailable'); } finally { setBusy(false); }
+        const request = captureAccountRequest(); const session = getSessionSnapshot(); if (!pendingCodeId || !session.accessToken || busy || !request.accountKey) return;
+        setBusy(true); try { await studentSsoSessionApiClient.post('/auth/student/sso/recovery-code/cancel', { pendingCodeId }); if (!request.isCurrent()) return; setPendingCodeId(null); await loadStatus(request.generation, request.accountKey, request.sessionId); } catch { if (request.isCurrent()) setStatus('unavailable'); } finally { if (request.isCurrent()) setBusy(false); }
     };
     const startPassword = (mode: 'generate' | 'activate' | 'remove') => {
         const session = getSessionSnapshot(); if (!session.accessToken) { setStatus('unavailable'); return; }
+        if (!currentAccountKey) return;
         // The expected generation binds ambiguous-activation
         // reconciliation, mirroring the provider-backed path: success
         // requires the reloaded active generation to match the pending one
         // being activated, not merely any active code.
         if (mode === 'activate') { const id = pendingCodeId ?? pendingIntent(); if (!id) { setStatus('unavailable'); return; } setPwPendingId(id); setPwExpiresAt(id === pendingCodeId ? pendingExpiresAt : null); setPwExpectedGeneration(id === pendingCodeId ? generation : null); }
-        setPassword(''); setPwOld(''); setPwCode(''); setFormError(null); setPwMode(mode);
+        setPassword(''); setPwOld(''); setPwCode(''); setFormError(null); setPwModeAccountKey(currentAccountKey); setPwMode(mode);
     };
     const submitPassword = async () => {
-        const session = getSessionSnapshot(); if (!session.accessToken || busy || !pwMode || !password) return;
+        const session = getSessionSnapshot(); if (!session.accessToken || busy || !pwMode || !password || !currentAccountKey) return;
+        const requestAccountKey = currentAccountKey;
+        const requestSessionId = session.browserSessionId;
+        const requestGeneration = accountLoadGeneration.current;
+        const isCurrent = () => isCurrentAccountRequest(requestAccountKey, requestSessionId, requestGeneration);
         if (pwMode === 'remove' && !pwOld) { setFormError('Enter the current recovery code.'); return; }
         if (pwMode === 'activate' && !pwCode) { setFormError('Re-enter the saved recovery code.'); return; }
         // Reconcile baseline: ambiguous failures compare the reloaded
@@ -171,18 +197,22 @@ export default function StudentSecurityPage() {
         try {
             headers = { Authorization: `Bearer ${await refreshSessionAccessToken()}` };
         } catch {
+            if (!isCurrent()) return;
             setBusy(false);
             setFormError('Your session expired. Sign in again and retry.');
             return;
         }
+        if (!isCurrent()) return;
         try {
             const purpose = pwMode === 'generate' ? 'recovery_code_generate' : pwMode === 'activate' ? 'recovery_code_activate' : 'recovery_code_remove';
             const reauth = await studentSsoApiClient.post('/auth/student/sso/reauth', pwMode === 'activate' && pwPendingId ? { password, purpose, pendingCodeId: pwPendingId } : { password, purpose }, { headers });
+            if (!isCurrent()) return;
             const g = (reauth.data as { data?: { grantId?: unknown; grantSecret?: unknown } }).data;
             if (!g || typeof g.grantId !== 'string' || typeof g.grantSecret !== 'string') throw new Error('invalid grant');
             const reauthGrant = { grantId: g.grantId, grantSecret: g.grantSecret };
             if (pwMode === 'generate') {
                 const generated = await studentSsoSessionApiClient.post('/auth/student/sso/recovery-code/generate', { reauthGrant, ...(pwOld ? { oldCode: pwOld } : {}) });
+                if (!isCurrent()) return;
                 const data = (generated.data as { data?: { pendingCodeId?: unknown; code?: unknown; generation?: unknown; expiresAt?: unknown; serverNow?: unknown } }).data;
                 if (!data || typeof data.pendingCodeId !== 'string' || typeof data.code !== 'string') throw new Error('invalid code');
                 setPwPendingId(data.pendingCodeId); setPwCode(data.code); setPassword('');
@@ -196,11 +226,14 @@ export default function StudentSecurityPage() {
             } else if (pwMode === 'remove') {
                 await studentSsoSessionApiClient.post('/auth/student/sso/recovery-code/remove', { reauthGrant, oldCode: pwOld });
             } else { throw new Error('invalid state'); }
-            setPwMode(null); setPassword(''); setPwOld(''); setPwCode(''); setPwPendingId(null); setPwExpiresAt(null); await loadStatus();
+            if (!isCurrent()) return;
+            setPwMode(null); setPwModeAccountKey(null); setPassword(''); setPwOld(''); setPwCode(''); setPwPendingId(null); setPwExpiresAt(null); await loadStatus(requestGeneration, requestAccountKey, requestSessionId);
+            if (!isCurrent()) return;
             // Activation clears the server re-enrollment marker; refresh the
             // account so post-recovery notices disappear without a reload.
             await refreshUser().catch(() => undefined);
         } catch (cause: unknown) {
+            if (!isCurrent()) return;
             const failed = axios.isAxiosError(cause) ? cause.response?.status : undefined;
             // Ambiguous transport failures (network loss, 5xx) may have
             // committed and consumed the one-use grant; retrying then
@@ -211,16 +244,19 @@ export default function StudentSecurityPage() {
             if (failed === undefined || failed >= 500) {
                 try {
                     const current = await studentSsoSessionApiClient.get('/auth/student/sso/recovery-code');
+                    if (!isCurrent()) return;
                     const live = (current.data as { data?: { status?: unknown; generation?: unknown; pendingCodeId?: unknown } }).data;
                     if (submittedMode === 'activate' && live?.status === 'active' && expectedGeneration !== null && live.generation === expectedGeneration) {
                         setPwMode(null); setPassword(''); setPwOld(''); setPwCode(''); setPwPendingId(null); setPwExpiresAt(null);
-                        await loadStatus();
+                        await loadStatus(requestGeneration, requestAccountKey, requestSessionId);
+                        if (!isCurrent()) return;
                         await refreshUser().catch(() => undefined);
                         return;
                     }
                     if (submittedMode === 'remove' && live?.status === 'unconfigured') {
                         setPwMode(null); setPassword(''); setPwOld(''); setPwCode(''); setPwPendingId(null); setPwExpiresAt(null);
-                        await loadStatus();
+                        await loadStatus(requestGeneration, requestAccountKey, requestSessionId);
+                        if (!isCurrent()) return;
                         await refreshUser().catch(() => undefined);
                         return;
                     }
@@ -229,14 +265,15 @@ export default function StudentSecurityPage() {
                         // lost with the response: sync the pending view
                         // underneath and guide back to cancel-and-regenerate
                         // instead of a dead activate.
-                        await loadStatus();
+                        await loadStatus(requestGeneration, requestAccountKey, requestSessionId);
+                        if (!isCurrent()) return;
                         setFormError('A new code was created but its response was lost, so the code cannot be shown again. Go back, cancel the pending code, and generate a new one.');
                         return;
                     }
                 } catch { /* fall through to the failure mapping below */ }
             }
             setFormError(failed === 401 ? 'Current password is incorrect.' : failed === 403 ? 'This account has no password. Use school sign-in instead.' : 'Password confirmation failed. Check the entries and try again.');
-        } finally { setBusy(false); }
+        } finally { if (isCurrent()) setBusy(false); }
     };
     // Linking confirms the new school sign-in against this signed-in
     // account, so passwordless owners use the same Microsoft fresh proof as
@@ -244,27 +281,30 @@ export default function StudentSecurityPage() {
     // continues the link against the waiting tab handoff, so this must run
     // in the tab showing the link prompt: session storage is per-tab.
     const beginLink = async () => {
-        if (linkBusy) return; const session = getSessionSnapshot(); if (!session.accessToken) { setStatus('unavailable'); return; }
+        if (linkBusy) return; const request = captureAccountRequest(); const session = getSessionSnapshot(); if (!session.accessToken || !request.accountKey) { setStatus('unavailable'); return; }
         setLinkBusy(true); setLinkError(null);
         try {
             const r = await studentSsoSessionApiClient.post('/auth/student/sso/reauth/microsoft/start', { purpose: 'link' });
+            if (!request.isCurrent()) return;
             const url = (r.data as { data?: { authorizationUrl?: unknown } }).data?.authorizationUrl;
             if (typeof url !== 'string' || !url.startsWith('https:')) throw new Error('invalid');
             window.location.assign(url);
-        } catch { setLinkBusy(false); setLinkError('School sign-in confirmation could not start. Make sure a school sign-in is waiting on the link prompt in this tab; accounts without a linked Microsoft sign-in can link by following the sign-in prompts instead.'); }
+        } catch { if (request.isCurrent()) { setLinkBusy(false); setLinkError('School sign-in confirmation could not start. Make sure a school sign-in is waiting on the link prompt in this tab; accounts without a linked Microsoft sign-in can link by following the sign-in prompts instead.'); } }
     };
     const beginUnlink = async (target: LinkedIdentity) => {
-        if (unlinkBusy) return; const session = getSessionSnapshot(); if (!session.accessToken) { setStatus('unavailable'); return; }
+        if (unlinkBusy) return; const request = captureAccountRequest(); const session = getSessionSnapshot(); if (!session.accessToken || !request.accountKey) { setStatus('unavailable'); return; }
         setUnlinkBusy(true); setUnlinkError(null);
         try {
             const r = await studentSsoSessionApiClient.post('/auth/student/sso/reauth/microsoft/start', { purpose: 'unlink', targetIdentityId: target.id });
+            if (!request.isCurrent()) return;
             const url = (r.data as { data?: { authorizationUrl?: unknown } }).data?.authorizationUrl;
             if (typeof url !== 'string' || !url.startsWith('https:')) throw new Error('invalid');
             window.location.assign(url);
-        } catch { setUnlinkBusy(false); setUnlinkError('School sign-in confirmation could not start. Try again or use your password.'); }
+        } catch { if (request.isCurrent()) { setUnlinkBusy(false); setUnlinkError('School sign-in confirmation could not start. Try again or use your password.'); } }
     };
     const submitUnlinkPassword = async () => {
-        const session = getSessionSnapshot(); if (!session.accessToken || unlinkBusy || !unlinkTarget || !unlinkPassword) return;
+        const session = getSessionSnapshot(); if (!session.accessToken || unlinkBusy || !unlinkTarget || !unlinkPassword || !currentAccountKey) return;
+        const request = captureAccountRequest();
         setUnlinkBusy(true); setUnlinkError(null);
         // Same pre-refresh as recovery-code password proofs: the unlink
         // proof uses the non-refreshing client, so a stale token would 401
@@ -273,16 +313,21 @@ export default function StudentSecurityPage() {
         try {
             headers = { Authorization: `Bearer ${await refreshSessionAccessToken()}` };
         } catch {
-            setUnlinkBusy(false);
-            setUnlinkError('Your session expired. Sign in again and retry.');
+            if (request.isCurrent()) {
+                setUnlinkBusy(false);
+                setUnlinkError('Your session expired. Sign in again and retry.');
+            }
             return;
         }
+        if (!request.isCurrent()) return;
         const targetId = unlinkTarget.id;
         try {
             const reauth = await studentSsoApiClient.post('/auth/student/sso/reauth', { password: unlinkPassword, purpose: 'unlink', targetIdentityId: targetId }, { headers });
+            if (!request.isCurrent()) return;
             const g = (reauth.data as { data?: { grantId?: unknown; grantSecret?: unknown } }).data;
             if (!g || typeof g.grantId !== 'string' || typeof g.grantSecret !== 'string') throw new Error('invalid grant');
             const response = await studentSsoSessionApiClient.post(`/auth/student/sso/identities/${targetId}/unlink`, { reauthGrant: { grantId: g.grantId, grantSecret: g.grantSecret } });
+            if (!request.isCurrent()) return;
             const data = (response.data as { success?: unknown; data?: unknown })?.success === true ? (response.data as { data?: unknown }).data as { unlinked?: unknown; sessionRevoked?: unknown } : null;
             if (!data || data.unlinked !== true || typeof data.sessionRevoked !== 'boolean') throw new Error('invalid unlink');
             // The server clears the session only when the removed identity
@@ -290,6 +335,7 @@ export default function StudentSecurityPage() {
             if (data.sessionRevoked) { clearTokens(); setSignedOut(true); return; }
             setUnlinkTarget(null); setUnlinkPassword(''); await loadIdentities();
         } catch (cause: unknown) {
+            if (!request.isCurrent()) return;
             const failed = axios.isAxiosError(cause) ? cause.response : undefined;
             // Ambiguous transport failures (network loss, 5xx) may have
             // committed: the grant is then consumed and retrying cannot
@@ -300,6 +346,7 @@ export default function StudentSecurityPage() {
             if (!failed || failed.status >= 500) {
                 try {
                     const current = await studentSsoSessionApiClient.get('/auth/student/sso/identities');
+                    if (!request.isCurrent()) return;
                     const live = parseIdentities((current.data as { data?: unknown }).data);
                     if (live && !live.some((identity) => identity.id === targetId)) {
                         setIdentities(live); setIdentitiesError(null);
@@ -325,23 +372,23 @@ export default function StudentSecurityPage() {
             }
             const code = (failed?.data as { error?: { code?: unknown } } | undefined)?.error?.code;
             setUnlinkError(failed?.status === 409 && code === 'SSO_LAST_LOGIN_METHOD' ? 'This is the last sign-in method. Link another school sign-in first.' : failed?.status === 409 && code === 'SSO_LAST_PROOF_METHOD' ? 'This Microsoft sign-in is needed for security confirmations. Link another Microsoft sign-in first.' : failed?.status === 401 ? 'Current password is incorrect.' : failed?.status === 403 ? 'This account has no password. Use school sign-in instead.' : 'Removal failed. Try again.');
-        } finally { setUnlinkBusy(false); }
+        } finally { if (request.isCurrent()) setUnlinkBusy(false); }
     };
     // No early return on recovery-status failure: identity listing,
     // password reauthentication, and unlinking stay available without the
     // recovery service, so the recovery section reports its own outage
     // inline while school sign-in controls render independently below.
-    if (pwMode === 'display') return pwExpired
+    if (visiblePwMode === 'display') return pwExpired
         ? <AuthShell role="student" title="Pending code expired" subtitle="The activation deadline passed." footer={null}><p role="alert">This pending code expired before activation and cannot recover your account. Start setup again for a fresh code.</p><Button type="button" onClick={() => { setPwMode(null); setPwCode(''); setPwPendingId(null); setPwExpiresAt(null); }} className="mt-5 w-full rounded-full">Back to account security</Button></AuthShell>
         : <AuthShell role="student" title="Save your recovery code" subtitle="Shown once. It will not be displayed again." footer={null}><p role="status" className="break-all rounded-2xl border px-4 py-3 text-left font-mono text-sm">{pwCode}</p>{Number.isNaN(pwDeadlineMs) ? null : <p role="timer" className="mt-3 text-left text-sm">Activate this code within {formatPendingRemaining(pwDeadlineMs, now + pwSkewMs)}.</p>}<Button type="button" onClick={() => { setPwCode(''); setPwMode('activate'); }} className="mt-5 w-full rounded-full">I saved my code</Button></AuthShell>;
-    if (pwMode) return <AuthShell role="student" title="Confirm with your password" subtitle={pwMode === 'generate' ? 'Password confirmation for a new code.' : pwMode === 'activate' ? 'Password confirmation to activate the saved code.' : 'Password confirmation to remove the code.'} footer={null}>
-        {pwMode === 'activate' && !Number.isNaN(pwDeadlineMs) ? <p role="timer" className="mb-3 text-left text-sm">Activate this code within {formatPendingRemaining(pwDeadlineMs, now + pwSkewMs)}.</p> : null}
-        {pwMode === 'activate' && pwExpired ? <p role="alert" className="mb-3 text-sm text-red-600">This pending code expired before activation. Go back and start setup again for a fresh code.</p> : null}
+    if (visiblePwMode) return <AuthShell role="student" title="Confirm with your password" subtitle={visiblePwMode === 'generate' ? 'Password confirmation for a new code.' : visiblePwMode === 'activate' ? 'Password confirmation to activate the saved code.' : 'Password confirmation to remove the code.'} footer={null}>
+        {visiblePwMode === 'activate' && !Number.isNaN(pwDeadlineMs) ? <p role="timer" className="mb-3 text-left text-sm">Activate this code within {formatPendingRemaining(pwDeadlineMs, now + pwSkewMs)}.</p> : null}
+        {visiblePwMode === 'activate' && pwExpired ? <p role="alert" className="mb-3 text-sm text-red-600">This pending code expired before activation. Go back and start setup again for a fresh code.</p> : null}
         <div className="space-y-3"><label className="block text-left text-sm" htmlFor="recovery-password">Current password<input id="recovery-password" type="password" autoComplete="current-password" value={password} onChange={e => setPassword(e.target.value)} className="mt-1 w-full rounded-2xl border px-4 h-11" /></label>
-        {pwMode === 'activate' ? <label className="block text-left text-sm" htmlFor="recovery-code-confirm">Re-enter saved recovery code<input id="recovery-code-confirm" value={pwCode} onChange={e => setPwCode(e.target.value)} className="mt-1 w-full rounded-2xl border px-4 h-11" /></label> : null}
-        <label className="block text-left text-sm" htmlFor="recovery-code-current">{pwMode === 'remove' ? 'Current recovery code' : 'Current recovery code (required when replacing)'}<input id="recovery-code-current" value={pwOld} onChange={e => setPwOld(e.target.value)} className="mt-1 w-full rounded-2xl border px-4 h-11" /></label></div>
+        {visiblePwMode === 'activate' ? <label className="block text-left text-sm" htmlFor="recovery-code-confirm">Re-enter saved recovery code<input id="recovery-code-confirm" value={pwCode} onChange={e => setPwCode(e.target.value)} className="mt-1 w-full rounded-2xl border px-4 h-11" /></label> : null}
+        <label className="block text-left text-sm" htmlFor="recovery-code-current">{visiblePwMode === 'remove' ? 'Current recovery code' : 'Current recovery code (required when replacing)'}<input id="recovery-code-current" value={pwOld} onChange={e => setPwOld(e.target.value)} className="mt-1 w-full rounded-2xl border px-4 h-11" /></label></div>
         {formError ? <p role="alert" className="mt-3 text-sm text-red-600">{formError}</p> : null}
-        {pwMode === 'activate' && pwExpired ? null : <Button type="button" onClick={submitPassword} disabled={busy} className="mt-5 w-full rounded-full">{pwMode === 'generate' ? 'Generate code' : pwMode === 'activate' ? 'Activate code' : 'Remove code'}</Button>}
+        {visiblePwMode === 'activate' && pwExpired ? null : <Button type="button" onClick={submitPassword} disabled={busy} className="mt-5 w-full rounded-full">{visiblePwMode === 'generate' ? 'Generate code' : visiblePwMode === 'activate' ? 'Activate code' : 'Remove code'}</Button>}
         <Button type="button" variant="outline" onClick={() => { setPwMode(null); setFormError(null); }} disabled={busy} className="mt-2 w-full rounded-full">Back</Button>
     </AuthShell>;
     const methodToggle = <Button type="button" variant="ghost" onClick={() => setPwPreferred(!pwPreferred)} disabled={busy} className="w-full rounded-full">{pwPreferred ? 'Use school sign-in instead' : 'Use your password instead'}</Button>;

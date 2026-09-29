@@ -73,6 +73,70 @@ test('late security reads from a previous account cannot overwrite the current a
     api.assertNoUnexpectedRequests();
 });
 
+test('account switch hides displayed recovery secrets and discards late generation responses', async ({ page }) => {
+    const api = await installSyntheticApi(page);
+    const delayedGeneration = createGate('previous account recovery-code generation');
+    let generateCalls = 0;
+    await page.route(`${apiOrigin}/api/auth/me`, route => {
+        const authorization = route.request().headers().authorization ?? '';
+        const account = authorization.includes('student-b-access')
+            ? { id: 'student-account-b', email: 'b@approved.test' }
+            : authorization.includes('student-c-access')
+                ? { id: 'student-account-c', email: 'c@approved.test' }
+                : { id: 'student-account-a', email: 'a@approved.test' };
+        return route.fulfill({ headers, json: { success: true, data: { ...account, role: 'student', verificationStatus: 'verified' } } });
+    });
+    await page.route(`${apiOrigin}/api/auth/student/sso/recovery-code`, route => route.fulfill({ headers, json: { success: true, data: { status: 'unconfigured', generation: null, pendingCodeId: null } } }));
+    await page.route(`${apiOrigin}/api/auth/student/sso/identities`, route => route.fulfill({ headers, json: { success: true, data: { identities: [] } } }));
+    await page.route(`${apiOrigin}/api/auth/student/sso/reauth`, route => route.fulfill({ headers, status: 201, json: { success: true, data: { grantId: 'reauth-grant', grantSecret: 'reauth-secret' } } }));
+    await page.route(`${apiOrigin}/api/auth/student/sso/recovery-code/generate`, async route => {
+        generateCalls += 1;
+        if (generateCalls === 2) await delayedGeneration.wait();
+        const isDelayed = generateCalls === 2;
+        return route.fulfill({ headers, status: 201, json: { success: true, data: {
+            pendingCodeId: isDelayed ? 'pending-b' : 'pending-a',
+            code: isDelayed ? 'account-b-one-time-secret' : 'account-a-one-time-secret',
+            generation: 1,
+            expiresAt: new Date(Date.now() + 60_000).toISOString(),
+            serverNow: new Date().toISOString(),
+        } } });
+    });
+
+    const switchAccount = async (account: 'b' | 'c') => page.evaluate((which) => {
+        const value = JSON.stringify({ v: 1, state: 'active', sessionId: `student-${which}-session`, accessToken: `student-${which}-access`, refreshToken: `student-${which}-refresh` });
+        localStorage.setItem('awoof.session.v1', value);
+        const event = new Event('storage');
+        Object.defineProperties(event, { key: { value: 'awoof.session.v1' }, newValue: { value } });
+        window.dispatchEvent(event);
+    }, account);
+
+    await page.goto('/auth/student/login');
+    await seedSession(page, 'student');
+    await page.goto('/student/security');
+    await page.getByRole('button', { name: 'Use your password instead' }).click();
+    await page.getByRole('button', { name: 'Confirm identity to generate a code' }).click();
+    await page.getByLabel('Current password').fill('Synthetic!Pass9');
+    await page.getByRole('button', { name: 'Generate code' }).click();
+    await expect(page.getByText('account-a-one-time-secret')).toBeVisible();
+
+    await switchAccount('b');
+    await expect(page.getByRole('button', { name: 'Confirm identity to generate a code' })).toBeVisible();
+    await expect(page.getByText('account-a-one-time-secret')).toHaveCount(0);
+    await expect(page.getByRole('heading', { name: 'Save your recovery code' })).toHaveCount(0);
+
+    await page.getByRole('button', { name: 'Use your password instead' }).click();
+    await page.getByRole('button', { name: 'Confirm identity to generate a code' }).click();
+    await page.getByLabel('Current password').fill('Synthetic!Pass9');
+    await page.getByRole('button', { name: 'Generate code' }).click();
+    await delayedGeneration.waitForArrival();
+    await switchAccount('c');
+    await expect(page.getByRole('button', { name: 'Confirm identity to generate a code' })).toBeVisible();
+    delayedGeneration.release();
+    await expect(page.getByText('account-b-one-time-secret')).toHaveCount(0);
+    await expect(page.getByRole('heading', { name: 'Save your recovery code' })).toHaveCount(0);
+    api.assertNoUnexpectedRequests();
+});
+
 test('security setup keeps the generated recovery code out of URL and web storage and requires a second fresh proof', async ({ page }) => {
     const api = await installSyntheticApi(page);
     await page.route(`${apiOrigin}/api/auth/student/sso/recovery-code`, route => route.fulfill({ json: { success: true, data: { status: 'unconfigured', generation: null } }, headers }));
