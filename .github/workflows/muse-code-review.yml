@@ -760,7 +760,14 @@ jobs:
           record_name="muse-review-${head_sha}-${base_sha_full}"
           runs_file="${RUNNER_TEMP}/muse-workflow-runs.json"
           duplicate=false
-          if gh api --paginate "repos/${GITHUB_REPOSITORY}/actions/workflows/muse-code-review.yml/runs?head_sha=${head_sha}" \
+          # No head_sha filter: pull_request_target runs execute against the
+          # default-branch tip rather than the PR head, so filtering by the PR
+          # head SHA matches nothing and dedupe silently dies. Scan this
+          # workflow's newest pull_request_target runs instead and match the
+          # exact SHA-bearing artifact name; newest-first plus a 30-run cap
+          # keeps the lookup bounded (a same-head prior review is always
+          # recent, and the Post staleness gate covers ancient reruns).
+          if gh api "repos/${GITHUB_REPOSITORY}/actions/workflows/muse-code-review.yml/runs?event=pull_request_target&per_page=100" \
             > "${runs_file}" 2>/dev/null; then
             while IFS= read -r run_id; do
               [[ -n "${run_id}" ]] || continue
@@ -777,7 +784,7 @@ jobs:
                 echo "::notice::Muse review for ${head_sha} already posted; skipping duplicate run."
                 break
               fi
-            done < <(jq -r '.workflow_runs[]? | .id' "${runs_file}" 2>/dev/null)
+            done < <(jq -r '.workflow_runs[0:30][]? | .id' "${runs_file}" 2>/dev/null)
           else
             echo "::warning::Dedupe lookup failed; proceeding (a duplicate review is possible)."
           fi
@@ -1042,7 +1049,9 @@ jobs:
           # through, duplicating one advisory review.
           post_record="muse-review-${HEAD_SHA}-${BASE_SHA}"
           post_runs="${RUNNER_TEMP}/muse-post-runs.json"
-          if gh api --paginate "repos/${GITHUB_REPOSITORY}/actions/workflows/muse-code-review.yml/runs?head_sha=${HEAD_SHA}" \
+          # Same event-scoped scan as the Collect step: a head_sha filter
+          # would miss this workflow's pull_request_target runs (see above).
+          if gh api "repos/${GITHUB_REPOSITORY}/actions/workflows/muse-code-review.yml/runs?event=pull_request_target&per_page=100" \
             > "${post_runs}" 2>/dev/null; then
             while IFS= read -r run_id; do
               [[ -n "${run_id}" ]] || continue
@@ -1056,7 +1065,7 @@ jobs:
                 echo "::notice::A review for ${HEAD_SHA} posted while this run was working; skipping duplicate post."
                 exit 0
               fi
-            done < <(jq -r '.workflow_runs[]? | .id' "${post_runs}" 2>/dev/null)
+            done < <(jq -r '.workflow_runs[0:30][]? | .id' "${post_runs}" 2>/dev/null)
           fi
 
           body_file="${RUNNER_TEMP}/muse-review.md"
