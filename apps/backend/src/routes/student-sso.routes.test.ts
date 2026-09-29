@@ -1941,7 +1941,7 @@ test('identities lists owner identities with no-store and no subject material', 
     const link = stubLink({
         listIdentities: async (userId) => {
             assert.equal(userId, LINK_ACTOR_ID);
-            return [{ id: LINK_IDENTITY_ID, provider: 'google', universityName: 'Fixture University', linkedAt: new Date().toISOString() }];
+            return [{ id: LINK_IDENTITY_ID, provider: 'google', universityName: 'Fixture University', linkedAt: new Date().toISOString(), mailboxMasked: 's***@school.example' }];
         },
     });
     await withServer(linkRouter(link), async (baseUrl) => {
@@ -1952,7 +1952,8 @@ test('identities lists owner identities with no-store and no subject material', 
         assert.equal(response.headers.get('cache-control'), 'no-store');
         const body = await response.json();
         assert.equal(body.data.identities.length, 1);
-        assert.deepEqual(Object.keys(body.data.identities[0]).sort(), ['id', 'linkedAt', 'provider', 'universityName']);
+        assert.deepEqual(Object.keys(body.data.identities[0]).sort(), ['id', 'linkedAt', 'mailboxMasked', 'provider', 'universityName']);
+        assert.equal(body.data.identities[0].mailboxMasked, 's***@school.example');
     });
 });
 

@@ -189,10 +189,15 @@ function SignupOnboarding() {
             return true;
         } catch { return false; }
     };
+    // Signup completion consumes the one-use handoff: two submits before
+    // the busy render takes effect would both pass the guard, and the
+    // loser reports a generic retryable 409 although every retry is now
+    // impossible. Serialize synchronously like the OTP actions above.
+    const completeInFlight = useRef(false);
     const complete = async () => {
-        if (!handoff.current || challengeId !== 'verified' || !age || !terms || !consent || name.trim().length < 2 || busy) return;
+        if (!handoff.current || challengeId !== 'verified' || !age || !terms || !consent || name.trim().length < 2 || busy || completeInFlight.current) return;
         if (initialSession.current !== getSessionSnapshot().generation || getSessionSnapshot().accessToken) { setError('This tab changed accounts. Restart Microsoft sign-in.'); return; }
-        setBusy(true); setError(null);
+        completeInFlight.current = true; setBusy(true); setError(null);
         let response: { data: unknown };
         try {
             response = await studentSsoApiClient.post('/auth/student/sso/signup/complete', { handoffId: handoff.current.handoffId, handoffSecret: handoff.current.handoffSecret, fullName: name.trim(), ageAttested: true, termsAccepted: true, termsVersion: context!.termsVersion, verificationConsent: true, noticeVersion: context!.noticeVersion });
@@ -228,7 +233,7 @@ function SignupOnboarding() {
             } else {
                 setError('We could not finish setup. Your confirmed details were not silently accepted; retry or restart Microsoft sign-in.');
             }
-            setBusy(false);
+            completeInFlight.current = false; setBusy(false);
             return;
         }
         // The 201 committed the account and consumed the handoff: every
@@ -262,7 +267,7 @@ function SignupOnboarding() {
         } catch {
             forgetHandoff(); setAmbiguousComplete(true);
         } finally {
-            setBusy(false);
+            completeInFlight.current = false; setBusy(false);
         }
     };
     if (createdDestination !== null) return <AuthShell role="student" title="Account created" subtitle="Your passwordless account is ready." footer={null}><p role="status" className="text-left text-sm">Recovery is not configured, and losing your school sign-in may prevent account access. Save a recovery code so you can recover with your school mailbox.</p><div className="mt-5 space-y-2"><Button className="w-full rounded-full" asChild><Link href="/student/security">Save your recovery code</Link></Button><Button variant="outline" className="w-full rounded-full" onClick={() => { window.location.href = createdDestination; }}>Continue</Button></div></AuthShell>;
@@ -287,6 +292,10 @@ function StudentSsoOnboardingInner() {
     const [password, setPassword] = useState('');
     const startedRef = useRef(false);
     const reauthFailures = useRef(0);
+    // Linking consumes the one-use handoff: two submits before the busy
+    // render takes effect would both pass the guard and race the same
+    // handoff. Serialize synchronously like the signup actions.
+    const submitInFlight = useRef(false);
 
     useEffect(() => {
         if (signupMode) return;
@@ -305,7 +314,7 @@ function StudentSsoOnboardingInner() {
 
     const submit = async (event: React.FormEvent): Promise<void> => {
         event.preventDefault();
-        if (view.kind !== 'ready' || view.busy || password.length === 0) return;
+        if (view.kind !== 'ready' || view.busy || password.length === 0 || submitInFlight.current) return;
         // Both endpoints require the password session: without a local
         // access token no request is sent and the user signs in first.
         // The token is attached explicitly — never via the refreshing
@@ -317,6 +326,7 @@ function StudentSsoOnboardingInner() {
             return;
         }
         const authHeaders = { Authorization: `Bearer ${session.accessToken}` };
+        submitInFlight.current = true;
         setView({ ...view, busy: true, error: null });
         let grant;
         try {
@@ -336,6 +346,10 @@ function StudentSsoOnboardingInner() {
                     return;
                 }
                 setPassword('');
+                // The only exit that stays on the re-submittable form:
+                // every other path leaves 'ready' (or navigates away), so
+                // the flag must release here and only here.
+                submitInFlight.current = false;
                 setView({ ...view, busy: false, error: 'Current password is incorrect.' });
                 return;
             }

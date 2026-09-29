@@ -5,6 +5,7 @@ import { challengeSubjectDigest } from '../verification/challenge.service.js';
 const AAD_PREFIX = 'awoof:student-email-otp:v1:';
 const LEGACY_RECOVERY_AAD_PREFIX = 'awoof:student-account-recovery-otp:v1:';
 const LEASE_SECONDS = 90;
+const DELIVERY_TIMEOUT_MS = 30_000;
 const MAX_ATTEMPTS = 8;
 const RETENTION_HOURS = 24;
 const BATCH_SIZE = 20;
@@ -260,6 +261,7 @@ export async function dispatchRecoveryOtpOutboxBatch(
     deliver: Delivery,
     previousEncryptionKey?: string | null,
     challengeIds?: string[],
+    deliverTimeoutMs: number = DELIVERY_TIMEOUT_MS,
 ): Promise<DispatchResult> {
     const current = parseKey(encryptionKey);
     if (!current) throw new TypeError('Recovery OTP outbox key is unavailable');
@@ -299,7 +301,7 @@ export async function dispatchRecoveryOtpOutboxBatch(
             continue;
         }
         try {
-            const sent = await deliver(email, otp, job.purpose);
+            const sent = await deliverWithTimeout(deliver, email, otp, job.purpose, deliverTimeoutMs);
             if (sent.success) { await settle(pool, job, 'sent'); result.sent++; }
             else {
                 await settle(pool, job, 'retry');
@@ -316,6 +318,31 @@ export async function dispatchRecoveryOtpOutboxBatch(
     }
     result.scrubbed += await purgeRecoveryOtpOutbox(pool);
     return result;
+}
+
+/**
+ * Bound one provider delivery well inside the 90s claim lease: a mail
+ * promise that never settles must time out into the ordinary retry path
+ * instead of wedging the batch — and the dispatcher's running flag —
+ * forever. A late provider success after the timeout can double-send on
+ * retry, the same ambiguity ordinary redelivery already accepts.
+ */
+async function deliverWithTimeout(deliver: Delivery, email: string, otp: string, purpose: StudentOtpPurpose, timeoutMs: number): Promise<{ success: boolean }> {
+    const pending = deliver(email, otp, purpose);
+    // A timeout leaves the provider promise dangling: a late failure
+    // must not surface as an unhandled rejection once nobody awaits it.
+    pending.catch(() => undefined);
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+        return await Promise.race([
+            pending,
+            new Promise<never>((_resolve, reject) => {
+                timer = setTimeout(() => reject(new Error('Recovery OTP delivery timed out')), timeoutMs);
+            }),
+        ]);
+    } finally {
+        if (timer !== undefined) clearTimeout(timer);
+    }
 }
 
 /** Expiry and tombstone pruning also run from the retention dispatcher. */
@@ -342,7 +369,7 @@ export async function purgeRecoveryOtpOutbox(pool: Pick<Pool, 'connect'>): Promi
     finally { tx.release(); }
 }
 
-export function startRecoveryOtpOutboxDispatcher(input: { pool: Pick<Pool, 'connect'>; key: string; previousKey?: string | null; deliver: Delivery; intervalMs?: number }): void {
+export function startRecoveryOtpOutboxDispatcher(input: { pool: Pick<Pool, 'connect'>; key: string; previousKey?: string | null; deliver: Delivery; intervalMs?: number; deliverTimeoutMs?: number }): void {
     if (!hasRecoveryOtpOutboxKey(input.key)) throw new TypeError('Recovery OTP outbox key is unavailable');
     if (input.previousKey) parseKey(input.previousKey);
     let running = false;
@@ -356,8 +383,8 @@ export function startRecoveryOtpOutboxDispatcher(input: { pool: Pick<Pool, 'conn
     setInterval(() => void run(), input.intervalMs ?? 5_000).unref();
 }
 
-export async function runRecoveryOtpOutboxDispatcherTick(input: { pool: Pick<Pool, 'connect'>; key: string; previousKey?: string | null; deliver: Delivery }): Promise<void> {
-    try { await dispatchRecoveryOtpOutboxBatch(input.pool, input.key, input.deliver, input.previousKey); }
+export async function runRecoveryOtpOutboxDispatcherTick(input: { pool: Pick<Pool, 'connect'>; key: string; previousKey?: string | null; deliver: Delivery; deliverTimeoutMs?: number }): Promise<void> {
+    try { await dispatchRecoveryOtpOutboxBatch(input.pool, input.key, input.deliver, input.previousKey, undefined, input.deliverTimeoutMs ?? DELIVERY_TIMEOUT_MS); }
     catch {
         // Provider/database errors can contain message payloads or OTPs; emit only a fixed operational signal.
         console.error('Recovery OTP outbox dispatch failed');

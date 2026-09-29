@@ -269,3 +269,25 @@ test('student-authenticated operations document the session-validation outage', 
         assert.ok(response, `${method.toUpperCase()} ${path} documents the session-validation 503`);
     }
 });
+
+test('linked identity schemas publish the optional masked mailbox label', () => {
+    type IdentitySchema = { required?: string[]; properties: Record<string, { type?: string }> };
+    const spec = swaggerSpec as {
+        components: {
+            schemas: Record<string, {
+                properties: Record<string, {
+                    properties?: Record<string, unknown>;
+                    items?: IdentitySchema;
+                } & IdentitySchema>;
+            }>;
+        };
+    };
+    // listIdentities() and link() expose mailboxMasked so owners can tell
+    // same-university identities apart; generated clients must discover it.
+    const listed = spec.components.schemas.StudentSsoIdentitiesResponse.properties.data.properties?.identities as { items: IdentitySchema };
+    assert.equal(listed.items.properties.mailboxMasked?.type, 'string');
+    assert.ok(!listed.items.required?.includes('mailboxMasked'), 'masked mailbox is absent when the provider supplied none');
+    const linked = spec.components.schemas.StudentSsoLinkResponse.properties.data.properties?.identity as IdentitySchema;
+    assert.equal(linked.properties.mailboxMasked?.type, 'string');
+    assert.ok(!linked.required?.includes('mailboxMasked'), 'masked mailbox is absent when the provider supplied none');
+});

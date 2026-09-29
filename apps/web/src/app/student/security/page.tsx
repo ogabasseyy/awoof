@@ -13,10 +13,10 @@ import { serverSkewSince } from '@/lib/student-login-flow';
 type RecoveryStatus = 'loading' | 'unconfigured' | 'pending' | 'active' | 'unavailable';
 const intentKey = 'awoof.recovery.intent.v1.tab';
 
-type LinkedIdentity = { id: string; provider: 'google' | 'microsoft'; universityName: string; linkedAt: string };
+type LinkedIdentity = { id: string; provider: 'google' | 'microsoft'; universityName: string; linkedAt: string; mailboxMasked?: string };
 const IDENTITY_PROVIDER_LABELS = { google: 'Google', microsoft: 'Microsoft' } as const;
 
-/** The server exposes only opaque ids, provider, university, and link time — never subject material. */
+/** The server exposes only opaque ids, provider, university, link time, and a masked mailbox — never subject material. */
 function parseIdentities(value: unknown): LinkedIdentity[] | null {
     const list = (value as { identities?: unknown })?.identities;
     if (!Array.isArray(list)) return null;
@@ -24,10 +24,18 @@ function parseIdentities(value: unknown): LinkedIdentity[] | null {
     for (const item of list) {
         const v = item as Record<string, unknown>;
         if (typeof v.id !== 'string' || (v.provider !== 'google' && v.provider !== 'microsoft')
-            || typeof v.universityName !== 'string' || typeof v.linkedAt !== 'string') return null;
-        parsed.push({ id: v.id, provider: v.provider, universityName: v.universityName, linkedAt: v.linkedAt });
+            || typeof v.universityName !== 'string' || typeof v.linkedAt !== 'string'
+            || (v.mailboxMasked !== undefined && typeof v.mailboxMasked !== 'string')) return null;
+        parsed.push({ id: v.id, provider: v.provider, universityName: v.universityName, linkedAt: v.linkedAt,
+            ...(typeof v.mailboxMasked === 'string' ? { mailboxMasked: v.mailboxMasked } : {}) });
     }
     return parsed;
+}
+
+/** Owner-visible identity label; the masked mailbox tells same-university sign-ins apart. */
+function identityLabel(identity: LinkedIdentity): string {
+    const mailbox = identity.mailboxMasked ? ` · ${identity.mailboxMasked}` : '';
+    return `${IDENTITY_PROVIDER_LABELS[identity.provider]} · ${identity.universityName}${mailbox}`;
 }
 
 function linkedDate(value: string): string | null {
@@ -432,7 +440,7 @@ export default function StudentSecurityPage() {
                 <label className="block text-sm" htmlFor="proof-identity">Confirm with school sign-in
                     <select id="proof-identity" value={proofSelection ?? ''} onChange={e => setProofIdentityId(e.target.value === '' ? null : e.target.value)} className="mt-1 w-full rounded-2xl border px-4 h-11">
                         <option value="">Default (recommended)</option>
-                        {microsoftIdentities.map(identity => { const date = linkedDate(identity.linkedAt); return <option key={identity.id} value={identity.id}>{`Microsoft · ${identity.universityName}${date ? ` · linked ${date}` : ''}`}</option>; })}
+                        {microsoftIdentities.map(identity => { const date = linkedDate(identity.linkedAt); return <option key={identity.id} value={identity.id}>{`${identityLabel(identity)}${date ? ` · linked ${date}` : ''}`}</option>; })}
                     </select>
                 </label>
                 <p className="mt-1 text-sm text-slate-600">School-sign-in confirmations use the default sign-in. If that mailbox is unreachable, choose another linked Microsoft sign-in instead.</p>
@@ -442,7 +450,7 @@ export default function StudentSecurityPage() {
             : identitiesError ? <p role="alert" className="mt-3 text-sm text-red-600">{identitiesError}</p>
             : identities!.length === 0 ? <p role="status" className="mt-3 text-sm">No school sign-ins are linked.</p>
             : <ul className="mt-3 space-y-3">{identities!.map(identity => <li key={identity.id} className="rounded-2xl border px-4 py-3">
-                <p className="text-sm font-medium">{IDENTITY_PROVIDER_LABELS[identity.provider]} · {identity.universityName}</p>
+                <p className="text-sm font-medium">{identityLabel(identity)}</p>
                 {linkedDate(identity.linkedAt) ? <p className="text-sm text-slate-600">Linked {linkedDate(identity.linkedAt)}</p> : null}
                 {unlinkTarget?.id === identity.id ? <div className="mt-3 space-y-2">
                     <p className="text-sm">Remove this school sign-in? It will no longer access this account.</p>

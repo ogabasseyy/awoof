@@ -62,7 +62,22 @@ export type StudentSsoLinkedIdentity = {
     provider: LoginProvider;
     universityName: string;
     linkedAt: string;
+    /** Masked sign-in mailbox for telling same-university identities apart; absent when the provider supplied none. */
+    mailboxMasked?: string;
 };
+
+/**
+ * Owner-visible mailbox label for distinguishing linked identities: the
+ * first local-part character plus the full domain (j***@univ.edu). Raw
+ * mailboxes, subjects, and issuers never leave the server; malformed or
+ * missing values omit the label instead of leaking a partial address.
+ */
+export function maskObservedMailbox(email: string | null | undefined): string | undefined {
+    if (typeof email !== 'string') return undefined;
+    const at = email.indexOf('@');
+    if (at <= 0 || at === email.length - 1 || email.indexOf('@', at + 1) !== -1) return undefined;
+    return `${email.slice(0, 1)}***@${email.slice(at + 1).toLowerCase()}`;
+}
 
 export type StudentSsoLinkResult =
     | {
@@ -464,6 +479,7 @@ export class StudentSsoLinkService {
                     'SELECT name FROM universities WHERE id = $1',
                     [context.universityId],
                 );
+                const mailboxMasked = maskObservedMailbox(observation.email);
                 return {
                     outcome: 'linked',
                     identity: {
@@ -471,6 +487,7 @@ export class StudentSsoLinkService {
                         provider: observation.provider,
                         universityName: university.rows[0]?.name ?? '',
                         linkedAt: linkedAt.toISOString(),
+                        ...(mailboxMasked === undefined ? {} : { mailboxMasked }),
                     },
                     schoolAssertion,
                     reactivated,
@@ -653,8 +670,8 @@ export class StudentSsoLinkService {
     /** Owner listing for self-service recovery. Subject and issuer material never leaves this boundary. */
     async listIdentities(userId: unknown): Promise<StudentSsoLinkedIdentity[]> {
         if (!validUuid(userId)) throw unavailableAccount();
-        const rows = await this.deps.pool.query<{ id: string; provider: string; university_name: string; linked_at: Date }>(
-            `SELECT identity.id, identity.provider, university.name AS university_name, identity.linked_at
+        const rows = await this.deps.pool.query<{ id: string; provider: string; university_name: string; linked_at: Date; observed_email: string | null }>(
+            `SELECT identity.id, identity.provider, university.name AS university_name, identity.linked_at, identity.observed_email
              FROM student_auth_identities identity
              JOIN universities university ON university.id = identity.university_id
              WHERE identity.user_id = $1 AND identity.revoked_at IS NULL
@@ -663,12 +680,16 @@ export class StudentSsoLinkService {
         );
         return rows.rows
             .filter((row): row is typeof row & { provider: LoginProvider } => row.provider === 'google' || row.provider === 'microsoft')
-            .map((row) => ({
-                id: row.id,
-                provider: row.provider,
-                universityName: row.university_name,
-                linkedAt: row.linked_at.toISOString(),
-            }));
+            .map((row) => {
+                const mailboxMasked = maskObservedMailbox(row.observed_email);
+                return {
+                    id: row.id,
+                    provider: row.provider,
+                    universityName: row.university_name,
+                    linkedAt: row.linked_at.toISOString(),
+                    ...(mailboxMasked === undefined ? {} : { mailboxMasked }),
+                };
+            });
     }
 
 

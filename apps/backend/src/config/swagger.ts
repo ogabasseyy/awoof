@@ -391,6 +391,7 @@ Access tokens expire in 15 minutes. Use the refresh token endpoint to get a new 
                                         provider: { type: 'string', enum: ['google', 'microsoft'] },
                                         universityName: { type: 'string' },
                                         linkedAt: { type: 'string', format: 'date-time' },
+                                        mailboxMasked: { type: 'string', description: 'Masked sign-in mailbox (first character plus domain) for telling same-university identities apart; absent when the provider supplied none.' },
                                     },
                                 },
                                 schoolAssertion: {
@@ -437,6 +438,7 @@ Access tokens expire in 15 minutes. Use the refresh token endpoint to get a new 
                                             provider: { type: 'string', enum: ['google', 'microsoft'] },
                                             universityName: { type: 'string' },
                                             linkedAt: { type: 'string', format: 'date-time' },
+                                            mailboxMasked: { type: 'string', description: 'Masked sign-in mailbox (first character plus domain) for telling same-university identities apart; absent when the provider supplied none.' },
                                         },
                                     },
                                 },

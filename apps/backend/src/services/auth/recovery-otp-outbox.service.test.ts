@@ -1,5 +1,7 @@
 import assert from 'node:assert/strict';
+import { createCipheriv, createHash, randomBytes } from 'node:crypto';
 import test from 'node:test';
+import { challengeSubjectDigest } from '../verification/challenge.service.js';
 import { dispatchRecoveryOtpOutboxBatch, hasRecoveryOtpOutboxKey, runRecoveryOtpOutboxDispatcherTick, startRecoveryOtpOutboxDispatcher } from './recovery-otp-outbox.service.js';
 
 const validKey = Buffer.alloc(32, 0x51).toString('base64');
@@ -83,4 +85,53 @@ test('exhausted outbox settle terminalizes while it still holds the lease', asyn
         'the lease holder must fail the exhausted attempt');
     assert.ok(queries.some((text) => text.includes('SET superseded_at = clock_timestamp()')),
         'the lease holder must supersede the exhausted challenge');
+});
+
+test('a hung provider delivery times out into retry instead of wedging the batch', async () => {
+    // A real envelope so the job reaches the provider call: the timeout
+    // under test wraps deliver(), not decryption.
+    const key = Buffer.from(validKey, 'base64');
+    const keyId = `k-${createHash('sha256').update(key).digest('hex').slice(0, 12)}`;
+    const nonce = randomBytes(12);
+    const cipher = createCipheriv('aes-256-gcm', key, nonce, { authTagLength: 16 });
+    cipher.setAAD(Buffer.from('awoof:student-email-otp:v1:student_account_recovery:c1', 'utf8'));
+    const job = {
+        id: 'j1', challenge_id: 'c1', purpose: 'student_account_recovery', key_id: keyId,
+        ciphertext: Buffer.concat([cipher.update('123456', 'utf8'), cipher.final()]),
+        nonce, auth_tag: cipher.getAuthTag(), attempts: 0,
+    };
+    const email = 'student@school.example';
+    const queries: string[] = [];
+    const client = {
+        query: async (text: string) => {
+            queries.push(text);
+            if (text.includes('FOR UPDATE SKIP LOCKED LIMIT $1')) return { rows: [job], rowCount: 1 };
+            if (text.includes("SET status = 'processing', claim_token")) return { rows: [{ attempts: 1 }], rowCount: 1 };
+            if (text.includes('JOIN student_auth_recovery_codes r ON')) {
+                return { rows: [{ email, otp_subject_digest: challengeSubjectDigest('student_account_recovery', email) }], rowCount: 1 };
+            }
+            return { rows: [], rowCount: 1 };
+        },
+        release: () => undefined,
+    };
+    const started = Date.now();
+    const result = await dispatchRecoveryOtpOutboxBatch(
+        { connect: async () => client } as never,
+        validKey,
+        // The provider hangs past the timeout, then fails late: the batch
+        // must already have moved on, and the late rejection must not
+        // surface as an unhandled rejection (which fails this run).
+        async () => {
+            await new Promise((_resolve, reject) => setTimeout(() => reject(new Error('late provider failure')), 100));
+            return { success: true };
+        },
+        undefined,
+        undefined,
+        25,
+    );
+    assert.ok(Date.now() - started < 5000, 'the batch must bound a hung delivery instead of awaiting it');
+    assert.equal(result.sent, 0);
+    assert.equal(result.retried, 1);
+    assert.ok(queries.some((text) => text.includes("SET status = 'pending', next_attempt_at")),
+        'a timed-out delivery must release the job for retry');
 });
