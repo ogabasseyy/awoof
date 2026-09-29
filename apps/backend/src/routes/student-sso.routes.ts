@@ -261,6 +261,27 @@ function studentSsoLinkLimiter(max: number) {
     });
 }
 
+// Recovery-code continuations spend a five-minute action grant issued by
+// fresh proof. Isolate them by that grant, not by the shared campus/carrier
+// IP, so one student's continuation never consumes another's budget while
+// both grants are live. Keep a separate coarse IP ceiling for abuse control;
+// malformed grants fall back to an IP-scoped bucket.
+function studentSsoGrantLimiter(max: number) {
+    return rateLimit({
+        windowMs: 10 * 60 * 1000,
+        max,
+        standardHeaders: true,
+        legacyHeaders: false,
+        keyGenerator: (req) => {
+            const grant = (req.body as { reauthGrant?: unknown } | undefined)?.reauthGrant;
+            const grantId = (grant as { grantId?: unknown } | null | undefined)?.grantId;
+            return typeof grantId === 'string' && UUID.test(grantId)
+                ? `grant:${grantId.toLowerCase()}`
+                : `ip:${req.ip ?? 'unknown'}`;
+        },
+    });
+}
+
 // Recovery continuations should be isolated by their opaque attempt handle,
 // not by the shared campus/carrier IP that happens to originate them. Keep a
 // separate coarse IP ceiling for abuse control, then enforce the normal
@@ -426,9 +447,12 @@ export function createStudentSsoRouter(factory: FlowFactory = defaultFlow, optio
     const signupSendCodeLimiter = studentSsoLinkLimiter(linkLimiterMax);
     const signupVerifyCodeLimiter = studentSsoLinkLimiter(linkLimiterMax);
     const signupCompleteLimiter = studentSsoLinkLimiter(linkLimiterMax);
-    const recoveryCodeGenerateLimiter = studentSsoLinkLimiter(linkLimiterMax);
-    const recoveryCodeActivateLimiter = studentSsoLinkLimiter(linkLimiterMax);
-    const recoveryCodeRemoveLimiter = studentSsoLinkLimiter(linkLimiterMax);
+    const recoveryCodeGenerateLimiter = studentSsoGrantLimiter(linkLimiterMax);
+    const recoveryCodeActivateLimiter = studentSsoGrantLimiter(linkLimiterMax);
+    const recoveryCodeRemoveLimiter = studentSsoGrantLimiter(linkLimiterMax);
+    const recoveryCodeGenerateIpLimiter = studentSsoLinkLimiter(Math.max(linkLimiterMax * 10, 100));
+    const recoveryCodeActivateIpLimiter = studentSsoLinkLimiter(Math.max(linkLimiterMax * 10, 100));
+    const recoveryCodeRemoveIpLimiter = studentSsoLinkLimiter(Math.max(linkLimiterMax * 10, 100));
     // Unauthenticated recovery issues budget-bounded challenges even for
     // unknown addresses (indistinguishable retry deadlines), so each
     // recovery route gets its own per-IP bucket like the link routes.
@@ -932,7 +956,7 @@ export function createStudentSsoRouter(factory: FlowFactory = defaultFlow, optio
         res.json({ success: true, data: result });
     }));
 
-    router.post('/recovery-code/generate', authenticate, requireRole('student'), recoveryCodeGenerateLimiter, exactContinuationOrigin, exactJson, asyncHandler(async (req, res) => {
+    router.post('/recovery-code/generate', authenticate, requireRole('student'), recoveryCodeGenerateIpLimiter, recoveryCodeGenerateLimiter, exactContinuationOrigin, exactJson, asyncHandler(async (req, res) => {
         const body = recoveryCodeBody(req, 'generate');
         const actor = ssoActor(req);
         const result = await recoveryCodeFactory().generate({
@@ -943,7 +967,7 @@ export function createStudentSsoRouter(factory: FlowFactory = defaultFlow, optio
         res.status(201).json({ success: true, data: result });
     }));
 
-    router.post('/recovery-code/activate', authenticate, requireRole('student'), recoveryCodeActivateLimiter, exactContinuationOrigin, exactJson, asyncHandler(async (req, res) => {
+    router.post('/recovery-code/activate', authenticate, requireRole('student'), recoveryCodeActivateIpLimiter, recoveryCodeActivateLimiter, exactContinuationOrigin, exactJson, asyncHandler(async (req, res) => {
         const body = recoveryCodeBody(req, 'activate');
         if (!body.pendingCodeId || !body.code) throw new BadRequestError('Recovery-code request is invalid');
         const actor = ssoActor(req);
@@ -956,7 +980,7 @@ export function createStudentSsoRouter(factory: FlowFactory = defaultFlow, optio
         res.json({ success: true, data: result });
     }));
 
-    router.post('/recovery-code/remove', authenticate, requireRole('student'), recoveryCodeRemoveLimiter, exactContinuationOrigin, exactJson, asyncHandler(async (req, res) => {
+    router.post('/recovery-code/remove', authenticate, requireRole('student'), recoveryCodeRemoveIpLimiter, recoveryCodeRemoveLimiter, exactContinuationOrigin, exactJson, asyncHandler(async (req, res) => {
         const body = recoveryCodeBody(req, 'remove');
         if (!body.oldCode) throw new BadRequestError('Recovery-code request is invalid');
         const actor = ssoActor(req);

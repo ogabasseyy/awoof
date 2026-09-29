@@ -1824,6 +1824,29 @@ test('link-confirmation endpoints are independently rate limited', async () => {
     });
 });
 
+test('recovery-code continuations are isolated by action grant', async () => {
+    const recovery = {
+        generate: async () => ({ pendingCodeId: ATTEMPT_ID, code: 'code', expiresAt: new Date(Date.now() + 60_000).toISOString() }),
+        activate: async () => ({ active: true as const }),
+        remove: async () => undefined,
+    };
+    const firstGrant = { grantId: '33333333-3333-4333-8333-333333333333', grantSecret: 'grant-secret' };
+    const secondGrant = { grantId: '44444444-4444-4444-8444-444444444444', grantSecret: 'grant-secret' };
+    await withServer(linkRouter(stubLink(), { linkLimiterMax: 1, recoveryCodeService: () => recovery as never }), async (baseUrl) => {
+        const post = (path: string, body: unknown) => fetch(`${baseUrl}${path}`, {
+            method: 'POST', headers: authHeaders(studentToken(true)), body: JSON.stringify(body),
+        });
+        // Exhausting one grant's budget never blocks another live grant from
+        // the same shared campus/carrier IP.
+        assert.equal((await post('/recovery-code/generate', { reauthGrant: firstGrant })).status, 201);
+        assert.equal((await post('/recovery-code/generate', { reauthGrant: firstGrant })).status, 429);
+        assert.equal((await post('/recovery-code/generate', { reauthGrant: secondGrant })).status, 201);
+        // Malformed grants fall back to the shared IP bucket instead of
+        // minting unbounded limiter keys; the request still fails closed.
+        assert.equal((await post('/recovery-code/generate', { reauthGrant: { grantId: 'not-a-uuid', grantSecret: 'x' } })).status, 400);
+    });
+});
+
 test('passwordless signup stages are independently rate limited', async () => {
     const signup = { context: async () => ({}), sendCode: async () => ({}), verifyCode: async () => ({}), complete: async () => ({}) };
     await withServer(routerWith(stubFlow(), { linkLimiterMax: 1, signupService: () => signup as never }), async (baseUrl) => {
