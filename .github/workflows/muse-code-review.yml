@@ -374,6 +374,21 @@ jobs:
             > "${diff_file}" 2>"${RUNNER_TEMP}/muse-ghdiff.err"; then
             diff_failed=true
           fi
+          # Source-cap detection: the compare response omits files past
+          # GitHub's 300-file cap even under our own byte budget, which would
+          # silently hollow out the diff, the removed-lines sidecar, and the
+          # inline ranges. Every entry (including binary/mode-only ones)
+          # emits a `diff --git` header, so fewer headers than inventoried
+          # files proves truncation — route to the explicit fallback rather
+          # than reviewing blind. (More headers than files means the live-head
+          # inventory raced a push; that fails closed the same way.)
+          if [[ "${diff_failed}" != "true" ]]; then
+            diff_file_count="$(grep -c '^diff --git ' "${diff_file}" 2>/dev/null || true)"
+            if (( diff_file_count != total_files )); then
+              echo "::warning::compare diff covers ${diff_file_count} of ${total_files} files; routing to fallback."
+              diff_failed=true
+            fi
+          fi
           echo "diff_failed=${diff_failed}" >> "${GITHUB_OUTPUT}"
 
           # Removed-lines supplement, extracted from the FULL diff before any
