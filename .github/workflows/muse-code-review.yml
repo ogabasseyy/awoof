@@ -132,6 +132,23 @@ jobs:
           if git fetch --depth 1 origin "${base_sha_full}" >/dev/null 2>&1; then
             base_available=true
           fi
+          # Merge-base discovery: two-dot diff would include base-only
+          # changes made after divergence, while the reviewed API diff uses
+          # three-dot semantics. Deepen until the merge base resolves (or the
+          # cap hits, in which case the compare API backs the file list).
+          merge_base=""
+          if [[ "${base_available}" == "true" ]]; then
+            for _ in 1 2 3 4 5; do
+              if merge_base="$(git merge-base "${base_sha_full}" "${head_sha}" 2>/dev/null)"; then
+                break
+              fi
+              git fetch --deepen 100 origin "${base_sha_full}" "${head_sha}" >/dev/null 2>&1 || break
+            done
+            if [[ -z "${merge_base}" ]]; then
+              echo "::warning::merge-base not found; falling back to compare API."
+              base_available=false
+            fi
+          fi
           head_ref="$(jq -r '.head.ref' "${pr_file}")"
           pr_state="$(jq -r '.state' "${pr_file}")"
           pr_title="$(jq -r '.title' "${pr_file}")"
@@ -153,16 +170,17 @@ jobs:
           base_sha="$(jq -r '.base.sha' "${pr_file}")"
           files_file="${RUNNER_TEMP}/muse-files.json"
           diff_failed=false
-          # Complete path list from local git (no 300-file cap): the base
-          # commit was fetched above, so diff base...head directly. The
-          # compare API is the fallback when the fetch failed (e.g. private
+          # Complete path list from local git (no 300-file cap), diffed from
+          # the merge base so base-only changes are excluded — the same
+          # three-dot semantics as the reviewed API diff. The compare API is
+          # the fallback when local history is unavailable (e.g. private
           # repos, where anonymous fetch has no credentials).
           files_source="local"
           if [[ "${base_available}" == "true" ]]; then
             ns_file="${RUNNER_TEMP}/muse-namestat.txt"
             num_file="${RUNNER_TEMP}/muse-numstat.txt"
-            if git -c core.quotePath=false diff --name-status "${base_sha}" "${head_sha}" > "${ns_file}" 2>/dev/null \
-              && git -c core.quotePath=false diff --numstat "${base_sha}" "${head_sha}" > "${num_file}" 2>/dev/null; then
+            if git -c core.quotePath=false diff --name-status "${merge_base}" "${head_sha}" > "${ns_file}" 2>/dev/null \
+              && git -c core.quotePath=false diff --numstat "${merge_base}" "${head_sha}" > "${num_file}" 2>/dev/null; then
               paste -d'\t' "${ns_file}" <(cut -f1,2 "${num_file}") | awk -F'\t' '{
                 st=$1; if (st ~ /^R/) { path=$3 } else { path=$2 }
                 add=$(NF-1); del=$NF; if (add=="-") add=0; if (del=="-") del=0
@@ -270,8 +288,10 @@ jobs:
               source="trusted (base ${base_ref})"
             elif [[ -f "${candidate}" && ! -L "${candidate}" ]]; then
               # Refuse symlinks: a PR-added symlink (e.g. to /proc/self/environ)
-              # would otherwise embed runner secrets into the prompt.
-              content="$(cat "${candidate}")"
+              # would otherwise embed runner secrets into the prompt. The --
+              # keeps option-like paths (e.g. --help/AGENTS.md) from parsing
+              # as flags and aborting the step under set -e.
+              content="$(cat -- "${candidate}")"
               source="UNTRUSTED (PR head)"
             else
               return 0
@@ -313,7 +333,7 @@ jobs:
           }
           guidance_candidates=()
           add_candidate() {
-            if grep -qxF "$1" "${guidance_seen}" 2>/dev/null; then return 0; fi
+            if grep -qxF -e "$1" "${guidance_seen}" 2>/dev/null; then return 0; fi
             echo "$1" >> "${guidance_seen}"
             guidance_candidates+=("$1")
           }
