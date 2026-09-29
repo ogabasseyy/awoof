@@ -86,7 +86,12 @@ export default function StudentAccountRecoveryPage() {
             if (typeof data?.expiresAt !== 'string' || Number.isNaN(Date.parse(data.expiresAt))) throw new Error('invalid completion deadline');
             setAttempt({ ...attempt, expiresAt: data.expiresAt, skewMs: serverSkewSince(typeof data.serverNow === 'string' && !Number.isNaN(Date.parse(data.serverNow)) ? data.serverNow : null) });
             setRecoveryCode(''); setOtp(''); setVerified(true);
-        } catch { setError('Recovery proof could not be confirmed. Start again if the attempt expired.'); }
+        } catch {
+            // A failed stale request is just as dangerous as a stale
+            // success: after restart it must not overwrite the new form's
+            // state or error message.
+            if (generation === verifyGeneration.current) setError('Recovery proof could not be confirmed. Start again if the attempt expired.');
+        }
         finally { verifyInFlight.current = false; setVerifying(false); }
     };
     const complete = async (event: React.FormEvent) => {

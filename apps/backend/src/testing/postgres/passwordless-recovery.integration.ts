@@ -233,22 +233,39 @@ test('cooldown retries without the original binding leave the live attempt usabl
         });
         const key = randomUUID();
         const first = await service.start({ email: account.email, purpose: 'lost_access', idempotencyKey: key });
+        const unknown = `unknown-${randomUUID().slice(0, 8)}@example.invalid`;
+        const unknownFresh = await service.start({ email: unknown, purpose: 'lost_access' });
+        const unknownRetry = await service.start({ email: unknown, purpose: 'lost_access' });
         const liveChallenge = await client.query<{ expires_at: Date }>(
             `SELECT challenge.expires_at FROM verification_challenges challenge
              JOIN student_auth_recovery_attempts attempt ON attempt.mailbox_challenge_id = challenge.id
              WHERE attempt.id = $1`,
             [first.attemptId],
         );
+        const unknownChallenge = await client.query<{ expires_at: Date }>(
+            `SELECT challenge.expires_at FROM verification_challenge_budgets budget
+             JOIN verification_challenges challenge ON challenge.id = budget.current_challenge_id
+             WHERE budget.purpose = 'student_account_recovery' AND budget.subject_digest = $1`,
+            [challengeSubjectDigest('student_account_recovery', unknown)],
+        );
         // An anonymous caller repeating the start with no key — or the
         // wrong one — takes the frozen-expiry path: no new attempt row,
         // no OTP re-sent, and the victim handle still verifies.
-        for (const retry of [
+        const liveRetries = [
             await service.start({ email: account.email, purpose: 'lost_access' }),
             await service.start({ email: account.email, purpose: 'lost_access', idempotencyKey: randomUUID() }),
-        ]) {
+        ];
+        for (const retry of liveRetries) {
             assert.equal(retry.expiresAt, liveChallenge.rows[0]!.expires_at.toISOString(), 'unbound retries must replay the frozen challenge expiry');
+            assert.equal(retry.otpExpiresAt, retry.expiresAt);
             await assert.rejects(() => service.verify({ attemptId: retry.attemptId, secret: retry.secret, code: account.code, otp: deliveries[0]! }));
         }
+        assert.equal(unknownRetry.expiresAt, unknownChallenge.rows[0]!.expires_at.toISOString(), 'repeated unknown-address starts use the frozen decoy expiry');
+        assert.equal(unknownRetry.otpExpiresAt, unknownRetry.expiresAt);
+        const liveRemainingMs = Date.parse(liveRetries[0]!.expiresAt) - Date.parse(liveRetries[0]!.serverNow);
+        const unknownRemainingMs = Date.parse(unknownRetry.expiresAt) - Date.parse(unknownRetry.serverNow);
+        assert.ok(Math.abs(liveRemainingMs - unknownRemainingMs) < 1_000, 'live mismatch and repeated unknown retries expose the same cooldown deadline class');
+        await assert.rejects(() => service.verify({ attemptId: unknownFresh.attemptId, secret: unknownFresh.secret, code: account.code, otp: deliveries[0]! }));
         assert.equal(deliveries.length, 1);
         const rows = await client.query<{ count: string }>(
             'SELECT count(*)::text AS count FROM student_auth_recovery_attempts WHERE user_id = $1', [account.userId],
@@ -282,25 +299,37 @@ test('fresh starts without the original binding never supersede a live recovery 
         });
         const key = randomUUID();
         const first = await service.start({ email: account.email, purpose: 'lost_access', idempotencyKey: key });
+        const unknown = `unknown-${randomUUID().slice(0, 8)}@example.invalid`;
+        const unknownFresh = await service.start({ email: unknown, purpose: 'lost_access' });
         // Age the resend cooldown past 60 seconds while the attempt and its
-        // OTP stay live: the next start would issue a fresh challenge.
+        // OTP stay live. Do the same for the unknown address so its repeated
+        // decoy and the live-address refusal take the same issueable-budget
+        // branch without either path resending the real challenge.
         await client.query(
             `UPDATE verification_challenge_budgets SET resend_available_at = clock_timestamp() - interval '1 second'
-             WHERE purpose = 'student_account_recovery' AND subject_digest = $1`,
-            [challengeSubjectDigest('student_account_recovery', account.email)],
+             WHERE purpose = 'student_account_recovery' AND subject_digest IN ($1, $2)`,
+            [challengeSubjectDigest('student_account_recovery', account.email), challengeSubjectDigest('student_account_recovery', unknown)],
         );
-        // The unbound caller takes the fresh-decoy deadline shape: no new
-        // attempt row, no OTP re-sent, and the victim handle still verifies
-        // with the originally delivered OTP.
+        // The unbound caller and repeated unknown-address decoy both take
+        // the fresh shape when the shared budget would issue: no new live
+        // attempt is written and the victim handle keeps its original OTP.
         const retry = await service.start({ email: account.email, purpose: 'lost_access' });
+        const unknownRetry = await service.start({ email: unknown, purpose: 'lost_access' });
         assert.equal(Date.parse(retry.expiresAt) - Date.parse(retry.serverNow), 10 * 60 * 1000);
         assert.equal(Date.parse(retry.otpExpiresAt) - Date.parse(retry.serverNow), challengeTtlMs('student_account_recovery'));
+        assert.equal(Date.parse(unknownRetry.expiresAt) - Date.parse(unknownRetry.serverNow), Date.parse(retry.expiresAt) - Date.parse(retry.serverNow));
+        assert.equal(Date.parse(unknownRetry.otpExpiresAt) - Date.parse(unknownRetry.serverNow), Date.parse(retry.otpExpiresAt) - Date.parse(retry.serverNow));
+        assert.notEqual(unknownFresh.attemptId, unknownRetry.attemptId);
         await assert.rejects(() => service.verify({ attemptId: retry.attemptId, secret: retry.secret, code: account.code, otp: deliveries[0]! }));
         assert.equal(deliveries.length, 1);
         const rows = await client.query<{ count: string }>(
             'SELECT count(*)::text AS count FROM student_auth_recovery_attempts WHERE user_id = $1', [account.userId],
         );
         assert.equal(rows.rows[0]!.count, '1', 'unbound fresh starts must not replace the live attempt');
+        const decoys = await client.query<{ count: string }>(
+            'SELECT count(*)::text AS count FROM student_auth_recovery_attempts WHERE id = $1 OR id = $2', [unknownFresh.attemptId, unknownRetry.attemptId],
+        );
+        assert.equal(decoys.rows[0]!.count, '0', 'unknown retries remain rowless');
         await service.verify({ attemptId: first.attemptId, secret: first.secret, code: account.code, otp: deliveries[0]! });
         const after = await client.query<{ status: string }>(
             'SELECT status FROM student_auth_recovery_attempts WHERE user_id = $1', [account.userId],

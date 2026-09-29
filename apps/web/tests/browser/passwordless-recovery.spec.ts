@@ -1183,6 +1183,58 @@ test('recovery restarts reuse the tab idempotency binding for cooldown retries',
     api.assertNoUnexpectedRequests();
 });
 
+test('purpose switch keeps the recovery binding and stale proof failures cannot overwrite a restarted form', async ({ page }) => {
+    const api = await installSyntheticApi(page);
+    const delayedVerify = createGate('old-purpose recovery proof failure');
+    const starts: Array<{ email?: string; purpose?: string; idempotencyKey?: string }> = [];
+    let verifyCalls = 0;
+    await page.route(`${apiOrigin}/api/auth/student/sso/account-recovery/start`, route => {
+        const body = JSON.parse(route.request().postData() ?? '{}') as { email?: string; purpose?: string; idempotencyKey?: string };
+        starts.push(body);
+        const first = starts.length === 1;
+        return route.fulfill({ status: 202, headers, json: { success: true, data: {
+            attemptId: first ? 'c5100000-0000-4000-8000-000000000001' : 'c5100000-0000-4000-8000-000000000002',
+            secret: first ? 'old-purpose-secret' : 'new-purpose-secret',
+            expiresAt: new Date(Date.now() + (first ? 3_000 : 300_000)).toISOString(),
+            otpExpiresAt: new Date(Date.now() + (first ? 3_000 : 300_000)).toISOString(),
+            serverNow: new Date().toISOString(),
+        } } });
+    });
+    await page.route(`${apiOrigin}/api/auth/student/sso/account-recovery/verify`, async route => {
+        verifyCalls += 1;
+        await delayedVerify.wait();
+        return route.fulfill({ status: 400, headers, json: { success: false, error: { message: 'Recovery proof could not be confirmed', code: 'INVALID_PROOF', statusCode: 400 } } });
+    });
+
+    await page.goto('/auth/student/recovery');
+    await page.getByLabel('School email').fill('student@school.example');
+    await page.getByRole('button', { name: 'Start recovery' }).click();
+    await page.getByLabel('Saved recovery code').fill('saved-code');
+    await page.getByLabel('Email confirmation code').fill('123456');
+    await page.getByRole('button', { name: 'Confirm recovery proofs' }).click();
+    await delayedVerify.waitForArrival();
+
+    // Let the OTP deadline expire while verification is pending. Restart
+    // is intentionally available from the expiry view; the old request
+    // must not restore its former purpose or write an error into the new form.
+    await page.getByRole('button', { name: 'Start again' }).click();
+    await page.getByLabel('I think my sign-in was compromised').check();
+    await page.getByLabel('School email').fill('student@school.example');
+    await page.getByRole('button', { name: 'Start recovery' }).click();
+    await expect(page.getByLabel('Saved recovery code')).toBeVisible();
+    delayedVerify.release();
+    await expect(page.getByLabel('Saved recovery code')).toBeVisible();
+    await expect(page.getByRole('alert').filter({ hasText: 'Recovery proof could not be confirmed' })).toHaveCount(0);
+
+    expect(verifyCalls).toBe(1);
+    expect(starts).toHaveLength(2);
+    expect(starts[0]?.purpose).toBe('lost_access');
+    expect(starts[1]?.purpose).toBe('compromise');
+    expect(starts[0]?.idempotencyKey).toBeTruthy();
+    expect(starts[1]?.idempotencyKey).toBe(starts[0]?.idempotencyKey);
+    api.assertNoUnexpectedRequests();
+});
+
 test('duplicate reauth callback waits instead of failing the in-flight confirmation', async ({ page }) => {
     const api = await installSyntheticApi(page);
     let finishCalls = 0;
