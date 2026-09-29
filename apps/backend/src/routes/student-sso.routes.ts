@@ -282,11 +282,13 @@ function studentSsoGrantLimiter(max: number) {
     });
 }
 
-// Recovery continuations should be isolated by their opaque attempt handle,
-// not by the shared campus/carrier IP that happens to originate them. Keep a
-// separate coarse IP ceiling for abuse control, then enforce the normal
-// per-attempt quota; malformed IDs fall back to an IP-scoped attempt bucket.
-function studentSsoRecoveryAttemptLimiter(max: number) {
+// Attempt-bound continuations (recovery verification/completion, provider
+// reauthentication finish) should be isolated by their opaque attempt
+// handle, not by the shared campus/carrier IP that happens to originate
+// them. Keep a separate coarse IP ceiling for abuse control, then enforce
+// the normal per-attempt quota; malformed IDs fall back to an IP-scoped
+// attempt bucket.
+function studentSsoAttemptLimiter(max: number) {
     return rateLimit({
         windowMs: 10 * 60 * 1000,
         max,
@@ -296,6 +298,25 @@ function studentSsoRecoveryAttemptLimiter(max: number) {
             const attemptId = (req.body as { attemptId?: unknown } | undefined)?.attemptId;
             return typeof attemptId === 'string' && UUID.test(attemptId)
                 ? `attempt:${attemptId.toLowerCase()}`
+                : `ip:${req.ip ?? 'unknown'}`;
+        },
+    });
+}
+
+// Signup continuations spend an issued provider handoff or mailbox code.
+// Isolate each stage by that handoff so students behind a shared NAT never
+// burn each other's flow; a coarse IP ceiling still bounds abuse, and
+// malformed handoffs fall back to an IP-scoped bucket.
+function studentSsoHandoffLimiter(max: number) {
+    return rateLimit({
+        windowMs: 10 * 60 * 1000,
+        max,
+        standardHeaders: true,
+        legacyHeaders: false,
+        keyGenerator: (req) => {
+            const handoffId = (req.body as { handoffId?: unknown } | undefined)?.handoffId;
+            return typeof handoffId === 'string' && UUID.test(handoffId)
+                ? `handoff:${handoffId.toLowerCase()}`
                 : `ip:${req.ip ?? 'unknown'}`;
         },
     });
@@ -443,15 +464,20 @@ export function createStudentSsoRouter(factory: FlowFactory = defaultFlow, optio
     // an already-completed proof cannot be stranded by other starts on the
     // same campus or carrier IP.
     const reauthMicrosoftStartLimiter = studentSsoLinkLimiter(linkLimiterMax);
-    const reauthMicrosoftFinishLimiter = studentSsoLinkLimiter(linkLimiterMax);
+    const reauthMicrosoftFinishLimiter = studentSsoAttemptLimiter(linkLimiterMax);
+    const reauthMicrosoftFinishIpLimiter = studentSsoLinkLimiter(Math.max(linkLimiterMax * 10, 100));
     // One successful signup spends a request at each of the four stages,
-    // so the stages get separate IP buckets: a shared bucket would 429
+    // so the stages get separate handoff buckets: a shared bucket would 429
     // the third student behind a campus or carrier NAT before they can
     // verify, past the point where waiting out the window still helps.
-    const signupContextLimiter = studentSsoLinkLimiter(linkLimiterMax);
-    const signupSendCodeLimiter = studentSsoLinkLimiter(linkLimiterMax);
-    const signupVerifyCodeLimiter = studentSsoLinkLimiter(linkLimiterMax);
-    const signupCompleteLimiter = studentSsoLinkLimiter(linkLimiterMax);
+    const signupContextLimiter = studentSsoHandoffLimiter(linkLimiterMax);
+    const signupSendCodeLimiter = studentSsoHandoffLimiter(linkLimiterMax);
+    const signupVerifyCodeLimiter = studentSsoHandoffLimiter(linkLimiterMax);
+    const signupCompleteLimiter = studentSsoHandoffLimiter(linkLimiterMax);
+    const signupContextIpLimiter = studentSsoLinkLimiter(Math.max(linkLimiterMax * 10, 100));
+    const signupSendCodeIpLimiter = studentSsoLinkLimiter(Math.max(linkLimiterMax * 10, 100));
+    const signupVerifyCodeIpLimiter = studentSsoLinkLimiter(Math.max(linkLimiterMax * 10, 100));
+    const signupCompleteIpLimiter = studentSsoLinkLimiter(Math.max(linkLimiterMax * 10, 100));
     const recoveryCodeGenerateLimiter = studentSsoGrantLimiter(linkLimiterMax);
     const recoveryCodeActivateLimiter = studentSsoGrantLimiter(linkLimiterMax);
     const recoveryCodeRemoveLimiter = studentSsoGrantLimiter(linkLimiterMax);
@@ -464,8 +490,8 @@ export function createStudentSsoRouter(factory: FlowFactory = defaultFlow, optio
     const accountRecoveryStartLimiter = studentSsoLinkLimiter(linkLimiterMax);
     const accountRecoveryVerifyIpLimiter = studentSsoLinkLimiter(Math.max(linkLimiterMax * 10, 100));
     const accountRecoveryCompleteIpLimiter = studentSsoLinkLimiter(Math.max(linkLimiterMax * 10, 100));
-    const accountRecoveryVerifyLimiter = studentSsoRecoveryAttemptLimiter(linkLimiterMax);
-    const accountRecoveryCompleteLimiter = studentSsoRecoveryAttemptLimiter(linkLimiterMax);
+    const accountRecoveryVerifyLimiter = studentSsoAttemptLimiter(linkLimiterMax);
+    const accountRecoveryCompleteLimiter = studentSsoAttemptLimiter(linkLimiterMax);
 
     const signupHandoffBody = (req: Request): { handoffId: string; handoffSecret: string } => {
         const value = req.body as Record<string, unknown>;
@@ -874,23 +900,23 @@ export function createStudentSsoRouter(factory: FlowFactory = defaultFlow, optio
         res.json({ success: true, data: result });
     }));
 
-    router.post('/signup/context', signupContextLimiter, exactOrigin, exactJson, asyncHandler(async (req, res) => {
+    router.post('/signup/context', signupContextIpLimiter, signupContextLimiter, exactOrigin, exactJson, asyncHandler(async (req, res) => {
         if (!signupEnabled()) throw new ConflictError('Passwordless signup is unavailable');
         if (!req.body || typeof req.body !== 'object' || Array.isArray(req.body) || Object.keys(req.body).length !== 2) throw new BadRequestError('Passwordless signup request is invalid');
         const body = signupHandoffBody(req); const result = await signupFactory().context(await signupBinding(req, body)); responseHeaders(res); res.json({ success: true, data: result });
     }));
-    router.post('/signup/send-code', signupSendCodeLimiter, exactOrigin, exactJson, asyncHandler(async (req, res) => {
+    router.post('/signup/send-code', signupSendCodeIpLimiter, signupSendCodeLimiter, exactOrigin, exactJson, asyncHandler(async (req, res) => {
         if (!signupEnabled()) throw new ConflictError('Passwordless signup is unavailable');
         if (!req.body || typeof req.body !== 'object' || Array.isArray(req.body) || Object.keys(req.body).length !== 2) throw new BadRequestError('Passwordless signup request is invalid');
         const body = signupHandoffBody(req); const result = await signupFactory().sendCode(await signupBinding(req, body)); responseHeaders(res); res.status(201).json({ success: true, data: result });
     }));
-    router.post('/signup/verify-code', signupVerifyCodeLimiter, exactOrigin, exactJson, asyncHandler(async (req, res) => {
+    router.post('/signup/verify-code', signupVerifyCodeIpLimiter, signupVerifyCodeLimiter, exactOrigin, exactJson, asyncHandler(async (req, res) => {
         if (!signupEnabled()) throw new ConflictError('Passwordless signup is unavailable');
         const body = req.body as Record<string, unknown>; const handoff = signupHandoffBody(req);
         if (Object.keys(body).length !== 4 || typeof body.challengeId !== 'string' || typeof body.code !== 'string') throw new BadRequestError('Passwordless signup request is invalid');
         const result = await signupFactory().verifyCode({ ...await signupBinding(req, handoff), challengeId: body.challengeId, code: body.code }); responseHeaders(res); res.json({ success: true, data: result });
     }));
-    router.post('/signup/complete', signupCompleteLimiter, exactOrigin, exactJson, asyncHandler(async (req, res) => {
+    router.post('/signup/complete', signupCompleteIpLimiter, signupCompleteLimiter, exactOrigin, exactJson, asyncHandler(async (req, res) => {
         if (!signupEnabled()) throw new ConflictError('Passwordless signup is unavailable');
         const body = req.body as Record<string, unknown>; const handoff = signupHandoffBody(req);
         const allowed = new Set(['handoffId', 'handoffSecret', 'fullName', 'ageAttested', 'termsAccepted', 'termsVersion', 'verificationConsent', 'noticeVersion']);
@@ -943,7 +969,7 @@ export function createStudentSsoRouter(factory: FlowFactory = defaultFlow, optio
         res.status(201).json({ success: true, data: { attemptId: result.attemptId, authorizationUrl: result.authorizationUrl } });
     }));
 
-    router.post('/reauth/finish', authenticate, requireRole('student'), reauthMicrosoftFinishLimiter, exactOrigin, exactJson, asyncHandler(async (req, res) => {
+    router.post('/reauth/finish', authenticate, requireRole('student'), reauthMicrosoftFinishIpLimiter, reauthMicrosoftFinishLimiter, exactOrigin, exactJson, asyncHandler(async (req, res) => {
         const body = req.body as { attemptId?: unknown };
         if (!body || typeof body !== 'object' || Array.isArray(body) || Object.keys(body).length !== 1 || typeof body.attemptId !== 'string' || !UUID.test(body.attemptId)) throw new BadRequestError('Student SSO reauthentication request is invalid');
         const attemptId = body.attemptId;

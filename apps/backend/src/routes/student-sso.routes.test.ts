@@ -1895,6 +1895,40 @@ test('passwordless signup stages are independently rate limited', async () => {
     });
 });
 
+test('passwordless signup stages are isolated by handoff', async () => {
+    const signup = { context: async () => ({}), sendCode: async () => ({}), verifyCode: async () => ({}), complete: async () => ({}) };
+    await withServer(routerWith(stubFlow(), { linkLimiterMax: 1, signupService: () => signup as never }), async (baseUrl) => {
+        const post = (path: string, body: unknown) => fetch(`${baseUrl}${path}`, {
+            method: 'POST', headers: { 'content-type': 'application/json', origin: COMPLETION_ORIGIN }, body: JSON.stringify(body),
+        });
+        // Exhausting one handoff's verify budget never blocks another live
+        // handoff from the same shared campus/carrier IP.
+        const first = { handoffId: ATTEMPT_ID, handoffSecret: 'secret', challengeId: ATTEMPT_ID, code: '123456' };
+        const second = { handoffId: '66666666-6666-4666-8666-666666666666', handoffSecret: 'secret', challengeId: ATTEMPT_ID, code: '123456' };
+        assert.equal((await post('/signup/verify-code', first)).status, 200);
+        assert.equal((await post('/signup/verify-code', first)).status, 429);
+        assert.equal((await post('/signup/verify-code', second)).status, 200);
+    });
+});
+
+test('reauth finish continuations are isolated by attempt', async () => {
+    const reauth = {
+        finish: async () => ({ grantId: 'grant-id', grantSecret: 'grant-secret', expiresAt: new Date(Date.now() + 300_000).toISOString() }),
+    };
+    const firstAttempt = '55555555-5555-4555-8555-555555555555';
+    const secondAttempt = '66666666-6666-4666-8666-666666666666';
+    await withServer(routerWith(stubFlow(), { linkLimiterMax: 1, reauthService: () => reauth as never }), async (baseUrl) => {
+        const post = (body: unknown) => fetch(`${baseUrl}/reauth/finish`, {
+            method: 'POST', headers: authHeaders(studentToken(true)), body: JSON.stringify(body),
+        });
+        // Exhausting one attempt's finish budget never strands another
+        // student's completed provider proof from the same shared IP.
+        assert.equal((await post({ attemptId: firstAttempt })).status, 201);
+        assert.equal((await post({ attemptId: firstAttempt })).status, 429);
+        assert.equal((await post({ attemptId: secondAttempt })).status, 201);
+    });
+});
+
 test('recovery verification and completion are limited per opaque attempt across a shared IP', async () => {
     const recovery = {
         start: async () => ({}),
