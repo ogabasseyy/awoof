@@ -3,6 +3,27 @@ import { apiOrigin, appOrigin, createGate, installSyntheticApi, seedSession } fr
 
 const headers = { 'access-control-allow-origin': appOrigin, 'access-control-allow-credentials': 'true' };
 
+test('password method cannot be selected before account recovery status finishes loading', async ({ page }) => {
+    const api = await installSyntheticApi(page);
+    const statusGate = createGate('current account recovery status');
+    await page.route(`${apiOrigin}/api/auth/student/sso/recovery-code`, async route => {
+        await statusGate.wait();
+        return route.fulfill({ headers, json: { success: true, data: { status: 'unconfigured', generation: null } } });
+    });
+    await page.route(`${apiOrigin}/api/auth/student/sso/identities`, route => route.fulfill({ headers, json: { success: true, data: { identities: [] } } }));
+    await page.goto('/auth/student/login');
+    await seedSession(page, 'student');
+    await page.goto('/student/security');
+    await statusGate.waitForArrival();
+    await expect(page.getByRole('button', { name: 'Use your password instead' })).toBeDisabled();
+    statusGate.release();
+    await expect(page.getByRole('button', { name: 'Use your password instead' })).toBeEnabled();
+    await page.getByRole('button', { name: 'Use your password instead' }).click();
+    await page.getByRole('button', { name: 'Confirm identity to generate a code' }).click();
+    await expect(page.getByLabel('Current password')).toBeVisible();
+    api.assertNoUnexpectedRequests();
+});
+
 async function markFreshSignupForCurrentSession(page: Page, sessionId = 'synthetic-student-session'): Promise<void> {
     await page.evaluate((id) => sessionStorage.setItem('awoof.passwordless-signup-fresh', JSON.stringify({ sessionId: id })), sessionId);
 }
@@ -697,7 +718,7 @@ test('ambiguous fresh-proof link failure retains the handoff for retry', async (
     await page.goto('/auth/student/sso/complete?reauth=63000000-0000-4000-8000-000000000001');
     // The transient failure leaves no terminal outcome, so the tab keeps
     // its only copy of the live handoff for a retry with a fresh grant.
-    await expect(page.getByRole('heading', { name: 'Security confirmation unavailable' })).toBeVisible();
+    await expect(page.getByRole('heading', { name: 'School sign-in link unclear' })).toBeVisible();
     expect(await page.evaluate((key) => sessionStorage.getItem(key), 'awoof.sso.handoff.v1.tab')).toContain(handoffId);
     api.assertNoUnexpectedRequests();
 });

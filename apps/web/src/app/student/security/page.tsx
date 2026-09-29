@@ -391,7 +391,7 @@ export default function StudentSecurityPage() {
         {visiblePwMode === 'activate' && pwExpired ? null : <Button type="button" onClick={submitPassword} disabled={busy} className="mt-5 w-full rounded-full">{visiblePwMode === 'generate' ? 'Generate code' : visiblePwMode === 'activate' ? 'Activate code' : 'Remove code'}</Button>}
         <Button type="button" variant="outline" onClick={() => { setPwMode(null); setFormError(null); }} disabled={busy} className="mt-2 w-full rounded-full">Back</Button>
     </AuthShell>;
-    const methodToggle = <Button type="button" variant="ghost" onClick={() => setPwPreferred(!pwPreferred)} disabled={busy} className="w-full rounded-full">{pwPreferred ? 'Use school sign-in instead' : 'Use your password instead'}</Button>;
+    const methodToggle = <Button type="button" variant="ghost" onClick={() => setPwPreferred(!pwPreferred)} disabled={busy || status === 'loading' || !currentAccountKey} className="w-full rounded-full">{pwPreferred ? 'Use school sign-in instead' : 'Use your password instead'}</Button>;
     return <AuthShell role="student" title="Account security" subtitle="Optional recovery-code setup." footer={null}>
         <p className="text-left text-sm text-slate-600">Confirm your identity, save your code, then confirm your identity again to activate it. The code is shown once and is never stored in this browser, emailed, or placed in a URL. Recovery also needs access to your school mailbox; it does not promise permanent access.</p>
         {schoolError ? <p role="alert" className="mt-3 text-left text-sm text-red-600">{schoolError}</p> : null}

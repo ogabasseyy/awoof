@@ -42,6 +42,18 @@ test('an unlinked Microsoft handoff creates a passwordless pending-enrollment ac
     await expect(page.getByText('losing your school sign-in may prevent account access.')).toBeVisible();
     await expect(page.getByRole('link', { name: 'Save your recovery code' })).toHaveAttribute('href', '/student/security');
     expect(await page.evaluate(() => sessionStorage.getItem('awoof.passwordless-signup-fresh'))).toBeNull();
+    // Refreshing a token within this same browser session must not dismiss
+    // the post-signup recovery notice before the student chooses a path.
+    await page.evaluate(() => {
+        const current = JSON.parse(localStorage.getItem('awoof.session.v1') ?? '{}');
+        current.accessToken = 'signup-access-rotated';
+        const value = JSON.stringify(current);
+        localStorage.setItem('awoof.session.v1', value);
+        const event = new Event('storage');
+        Object.defineProperties(event, { key: { value: 'awoof.session.v1' }, newValue: { value } });
+        window.dispatchEvent(event);
+    });
+    await expect(page.getByRole('heading', { name: 'Account created' })).toBeVisible();
     await page.getByRole('button', { name: 'Continue' }).click();
     await page.waitForURL('**/marketplace**');
     expect(requests.map(({ path }) => path)).toEqual([
