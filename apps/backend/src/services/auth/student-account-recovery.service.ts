@@ -127,11 +127,11 @@ export class StudentAccountRecoveryService {
             // Both paths run the same probes in the same order (random ids
             // on the no-account path), normalizing query count/order without
             // claiming equal database latency.
-            const active = account ? await this.lockActiveCode(tx, account.id) : await this.lockActiveCode(tx, randomUUID());
             // Cross-purpose guard probe: failPriorAttempts cancels every
             // purpose, so a same-purpose-only guard would let a caller flip
             // purposes after each cooldown to deny the victim's live OTP.
             const liveAnyPurpose = account ? await this.lockLiveAttemptAnyPurpose(tx, account.id) : await this.lockLiveAttemptAnyPurpose(tx, randomUUID());
+            const active = account ? await this.lockActiveCode(tx, account.id) : await this.lockActiveCode(tx, randomUUID());
             if (!account || !active) {
                 return this.decoyStart(tx, { email, attemptId, purpose, serverExpiry, serverNow, attemptExpiry });
             }
