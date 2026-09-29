@@ -166,6 +166,15 @@ jobs:
             fi
           fi
           head_ref="$(jq -r '.head.ref' "${pr_file}")"
+          # Only the default branch carries reviewed guidance: a same-repo PR
+          # can target an attacker-created base branch, so base guidance is
+          # trusted only when the base IS the default branch. An unknown or
+          # empty default branch fails closed to untrusted.
+          default_branch="$(jq -r '.base.repo.default_branch // ""' "${pr_file}")"
+          base_trusted=false
+          if [[ -n "${default_branch}" && "${base_ref}" == "${default_branch}" ]]; then
+            base_trusted=true
+          fi
           pr_state="$(jq -r '.state' "${pr_file}")"
           pr_title="$(jq -r '.title' "${pr_file}")"
           pr_body="$(jq -r '.body // ""' "${pr_file}")"
@@ -387,11 +396,18 @@ jobs:
             if [[ "${guidance_capped}" == "true" ]]; then return 0; fi
             content=""
             source=""
-            if [[ "${base_available}" == "true" ]] \
+            if [[ "${base_available}" == "true" && "${base_trusted}" == "true" ]] \
               && content="$(git show "FETCH_HEAD:${candidate}" 2>/dev/null)"; then
               # SHA, not the branch name: branch names are submitter-controlled
               # and this label prints outside any untrusted block.
               source="trusted (base ${base_sha_full:0:10})"
+            elif [[ "${base_available}" == "true" ]] \
+              && content="$(git show "FETCH_HEAD:${candidate}" 2>/dev/null)"; then
+              # Submitter-selected base (not the default branch): a PR can
+              # target an attacker-created branch, so show its guidance only
+              # as untrusted — it never passed through the reviewed branch.
+              # (The UNTRUSTED branch below wraps this in an untrusted block.)
+              source="UNTRUSTED (base ${base_sha_full:0:10})"
             elif [[ -f "${candidate}" && ! -L "${candidate}" ]]; then
               # Refuse symlinks: a PR-added symlink (e.g. to /proc/self/environ)
               # would otherwise embed runner secrets into the prompt. The --
@@ -858,7 +874,11 @@ jobs:
               | ([.findings[]? | select(.line == 0 and (.path as $p | $paths | index($p) != null))]) as $filelevel
               | ([.findings[]? | select(.line == 0 and (.path as $p | $paths | index($p) == null))]) as $orphaned
               | ([$lined[] | select(. as $f | any($r[]; .path==$f.path and $f.line >= .start and $f.line <= .end))]) as $ok
-              | {valid: $ok[0:20], summary_only: ($filelevel + ($lined - $ok) + $ok[20:] + ($orphaned | map(. + {orphaned: true})))}' \
+              # Stray positive-line paths (hallucinated or injected, not among
+              # the changed files) get the same unverified marker as line-zero
+              # orphans instead of rendering as normal findings.
+              | (($lined - $ok) | map(if (.path as $p | $paths | index($p) == null) then . + {orphaned: true} else . end)) as $unmatched
+              | {valid: $ok[0:20], summary_only: ($filelevel + $unmatched + $ok[20:] + ($orphaned | map(. + {orphaned: true})))}' \
               "${findings_json}" > "${validated_json}" 2>/dev/null || echo '{"valid":[],"summary_only":[]}' > "${validated_json}"
             {
               printf '## Verdict\n\n%s\n\n## Findings\n\n' "${verdict}"
