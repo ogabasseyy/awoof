@@ -256,11 +256,13 @@ test('cooldown retries without the original binding leave the live attempt usabl
              WHERE budget.purpose = 'student_account_recovery' AND budget.subject_digest = $1`,
             [challengeSubjectDigest('student_account_recovery', recoveryProbeSubjectKey(unknown))],
         );
-        // Mismatched-binding probes take the same fresh-then-frozen
-        // sequence as an unknown address, without minting an attempt or
-        // changing the real email budget.
-        assert.equal(Date.parse(liveProbeFresh.expiresAt) - Date.parse(liveProbeFresh.serverNow), 10 * 60 * 1000);
-        assert.equal(Date.parse(liveProbeFresh.otpExpiresAt) - Date.parse(liveProbeFresh.serverNow), challengeTtlMs('student_account_recovery'));
+        // The committed start already spent the isolated probe budget, so
+        // mismatched-binding probes take the frozen decoy shape
+        // immediately — matching an unknown address's second start —
+        // without minting an attempt or changing the real email budget.
+        // A fresh pair here would be an enumeration oracle.
+        assert.equal(liveProbeFresh.expiresAt, liveProbeFresh.otpExpiresAt, 'probes after a committed start use the frozen decoy shape');
+        assert.equal(liveProbeFresh.expiresAt, liveProbeChallenge.rows[0]!.expires_at.toISOString(), 'first known-address probe uses the isolated frozen decoy expiry');
         assert.equal(liveProbeRetry.expiresAt, liveProbeChallenge.rows[0]!.expires_at.toISOString(), 'repeated known-address probes use their isolated frozen decoy expiry');
         assert.equal(liveProbeRetry.otpExpiresAt, liveProbeRetry.expiresAt);
         await assert.rejects(() => service.verify({ attemptId: liveProbeFresh.attemptId, secret: liveProbeFresh.secret, code: account.code, otp: deliveries[0]! }));
@@ -312,13 +314,14 @@ test('fresh starts without the original binding never supersede a live recovery 
         const first = await service.start({ email: account.email, purpose: 'lost_access', idempotencyKey: key });
         const unknown = `unknown-${randomUUID().slice(0, 8)}@example.invalid`;
         const unknownFresh = await service.start({ email: unknown, purpose: 'lost_access' });
-        // Age the real resend cooldown and unknown probe cooldown past 60
-        // seconds while the victim attempt/OTP stay live. The known-address
-        // probe uses its independent per-email decoy budget.
+        // Age the real resend cooldown and both probe cooldowns past 60
+        // seconds while the victim attempt/OTP stay live. The committed
+        // start spent the known-address probe budget through its
+        // enumeration mirror, so it must age too for the fresh-decoy path.
         await client.query(
             `UPDATE verification_challenge_budgets SET resend_available_at = clock_timestamp() - interval '1 second'
-             WHERE purpose = 'student_account_recovery' AND subject_digest IN ($1, $2)`,
-            [challengeSubjectDigest('student_account_recovery', account.email), challengeSubjectDigest('student_account_recovery', recoveryProbeSubjectKey(unknown))],
+             WHERE purpose = 'student_account_recovery' AND subject_digest IN ($1, $2, $3)`,
+            [challengeSubjectDigest('student_account_recovery', account.email), challengeSubjectDigest('student_account_recovery', recoveryProbeSubjectKey(unknown)), challengeSubjectDigest('student_account_recovery', recoveryProbeSubjectKey(account.email))],
         );
         // The unbound caller and repeated unknown-address decoy both take
         // the fresh shape when their isolated probe budget would issue: no new live
@@ -364,12 +367,14 @@ test('cross-purpose starts without the original binding never cancel a live reco
         });
         const key = randomUUID();
         const first = await service.start({ email: account.email, purpose: 'lost_access', idempotencyKey: key });
-        // Age the resend cooldown past 60 seconds while the attempt and its
-        // OTP stay live: the next start would issue a fresh challenge.
+        // Age the real and probe resend cooldowns past 60 seconds while
+        // the attempt and its OTP stay live: the next start would issue a
+        // fresh challenge. The committed start spent the probe budget
+        // through its enumeration mirror, so it must age too.
         await client.query(
             `UPDATE verification_challenge_budgets SET resend_available_at = clock_timestamp() - interval '1 second'
-             WHERE purpose = 'student_account_recovery' AND subject_digest = $1`,
-            [challengeSubjectDigest('student_account_recovery', account.email)],
+             WHERE purpose = 'student_account_recovery' AND subject_digest IN ($1, $2)`,
+            [challengeSubjectDigest('student_account_recovery', account.email), challengeSubjectDigest('student_account_recovery', recoveryProbeSubjectKey(account.email))],
         );
         // Flipping purposes must not dodge the binding guard: the unbound
         // compromise start takes the fresh-decoy deadline shape and the
@@ -549,13 +554,17 @@ test('no-live-attempt cooldown replies use the isolated decoy deadline sequence'
         assert.equal(decoyAttempts.rows[0]!.count, '0', 'decoy handles write no attempt rows and cannot verify');
         // A failed attempt is not resumable: the cooldown retry finds no
         // live attempt, writes no new attempt row, and uses the same
-        // isolated decoy deadline sequence as an unknown address.
+        // isolated decoy deadline sequence as an unknown address. The
+        // committed start already spent the probe budget through its
+        // enumeration mirror, so the retry takes the frozen decoy shape
+        // — matching an unknown address's second start, not a fresh pair.
         const first = await service.start({ email: account.email, purpose: 'lost_access' });
         await client.query(`UPDATE student_auth_recovery_attempts SET status = 'failed', secret_hash = NULL WHERE id = $1`, [first.attemptId]);
         const retry = await service.start({ email: account.email, purpose: 'lost_access' });
         assert.deepEqual(deliveries, [account.email], 'the initial real attempt is the only delivered OTP');
-        assert.equal(Date.parse(retry.expiresAt) - Date.parse(retry.serverNow), 10 * 60 * 1000, 'no-live-attempt cooldown response uses the decoy attempt window');
-        assert.equal(Date.parse(retry.otpExpiresAt) - Date.parse(retry.serverNow), challengeTtlMs('student_account_recovery'));
+        assert.equal(retry.expiresAt, retry.otpExpiresAt, 'no-live-attempt cooldown response uses the frozen decoy shape');
+        const frozenRemainingMs = Date.parse(retry.expiresAt) - Date.parse(retry.serverNow);
+        assert.ok(frozenRemainingMs > 4 * 60 * 1000 && frozenRemainingMs <= 5 * 60 * 1000, 'frozen decoy deadlines sit on the five-minute challenge window');
         await assert.rejects(() => service.verify({ attemptId: retry.attemptId, secret: retry.secret, code: account.code, otp: '123456' }));
         const rows = await client.query<{ count: string }>(
             'SELECT count(*)::text AS count FROM student_auth_recovery_attempts WHERE user_id = $1', [account.userId],
@@ -615,9 +624,11 @@ test('ambiguous recovery delivery retains the same OTP for a bounded durable ret
         assert.ok(attempt.rows[0]!.secret_hash);
         // An unbound anonymous restart still gets a rowless decoy and cannot
         // mutate the real mailbox challenge budget while delivery retries.
+        // The committed start spent the probe budget through its
+        // enumeration mirror, so the decoy is frozen — matching an
+        // unknown address's second start.
         const retry = await service.start({ email: account.email, purpose: 'lost_access' });
-        assert.equal(Date.parse(retry.expiresAt) - Date.parse(retry.serverNow), 10 * 60 * 1000);
-        assert.equal(Date.parse(retry.otpExpiresAt) - Date.parse(retry.serverNow), challengeTtlMs('student_account_recovery'));
+        assert.equal(retry.expiresAt, retry.otpExpiresAt, 'unbound restart takes the frozen decoy shape');
         const realBudgetAfterProbe = await client.query<{ current_challenge_id: string | null; resend_available_at: Date; send_count: number }>(
             `SELECT current_challenge_id, resend_available_at, send_count FROM verification_challenge_budgets
              WHERE purpose = 'student_account_recovery' AND subject_digest = $1`,

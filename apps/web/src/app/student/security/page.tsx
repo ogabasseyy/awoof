@@ -62,6 +62,11 @@ export default function StudentSecurityPage() {
     const [generation, setGeneration] = useState<number | null>(null);
     const [busy, setBusy] = useState(false); const loadedAccountKey = useRef<string | null | undefined>(undefined);
     const accountLoadGeneration = useRef(0);
+    // State updates render asynchronously: two submits in one task can
+    // both observe `busy === false`, mint separate action grants, and
+    // display the first (server-revoked) code when its response lands
+    // last. Lock synchronously for the whole password-backed action.
+    const submitPasswordInFlight = useRef(false);
     const isCurrentAccountRequest = (accountKey: string | null, sessionId: string | null, generation: number) =>
         accountKey !== null && accountKey === currentAccountKeyRef.current
         && generation === accountLoadGeneration.current
@@ -176,7 +181,7 @@ export default function StudentSecurityPage() {
         setPassword(''); setPwOld(''); setPwCode(''); setFormError(null); setPwModeAccountKey(currentAccountKey); setPwMode(mode);
     };
     const submitPassword = async () => {
-        const session = getSessionSnapshot(); if (!session.accessToken || busy || !pwMode || !password || !currentAccountKey) return;
+        const session = getSessionSnapshot(); if (!session.accessToken || busy || submitPasswordInFlight.current || !pwMode || !password || !currentAccountKey) return;
         const requestAccountKey = currentAccountKey;
         const requestSessionId = session.browserSessionId;
         const requestGeneration = accountLoadGeneration.current;
@@ -189,7 +194,7 @@ export default function StudentSecurityPage() {
         // cancelled or expired pending falls back to reporting the older
         // active code, which must not read as the replacement succeeding.
         const submittedMode = pwMode; const priorPendingId = pendingCodeId; const expectedGeneration = pwExpectedGeneration;
-        setBusy(true); setFormError(null);
+        setBusy(true); submitPasswordInFlight.current = true; setFormError(null);
         // The raw password travels on the non-refreshing client, so the
         // token is renewed first: a stale snapshot would 401 before the
         // password is checked and misreport as "incorrect" with no recovery.
@@ -197,12 +202,13 @@ export default function StudentSecurityPage() {
         try {
             headers = { Authorization: `Bearer ${await refreshSessionAccessToken()}` };
         } catch {
+            submitPasswordInFlight.current = false;
             if (!isCurrent()) return;
             setBusy(false);
             setFormError('Your session expired. Sign in again and retry.');
             return;
         }
-        if (!isCurrent()) return;
+        if (!isCurrent()) { submitPasswordInFlight.current = false; return; }
         try {
             const purpose = pwMode === 'generate' ? 'recovery_code_generate' : pwMode === 'activate' ? 'recovery_code_activate' : 'recovery_code_remove';
             const reauth = await studentSsoApiClient.post('/auth/student/sso/reauth', pwMode === 'activate' && pwPendingId ? { password, purpose, pendingCodeId: pwPendingId } : { password, purpose }, { headers });
@@ -273,7 +279,7 @@ export default function StudentSecurityPage() {
                 } catch { /* fall through to the failure mapping below */ }
             }
             setFormError(failed === 401 ? 'Current password is incorrect.' : failed === 403 ? 'This account has no password. Use school sign-in instead.' : 'Password confirmation failed. Check the entries and try again.');
-        } finally { if (isCurrent()) setBusy(false); }
+        } finally { submitPasswordInFlight.current = false; if (isCurrent()) setBusy(false); }
     };
     // Linking confirms the new school sign-in against this signed-in
     // account, so passwordless owners use the same Microsoft fresh proof as

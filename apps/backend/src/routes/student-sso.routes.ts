@@ -1484,11 +1484,11 @@ export default createStudentSsoRouter();
  *       required: true
  *       content: { application/json: { schema: { $ref: '#/components/schemas/PasswordlessSignupHandoffRequest' } } }
  *     responses:
- *       201: { description: Confirmation challenge created, no-store, content: { application/json: { schema: { $ref: '#/components/schemas/PasswordlessSignupCodeResponse' } } } }
+ *       201: { description: Confirmation challenge created with durable delivery queued, no-store, content: { application/json: { schema: { $ref: '#/components/schemas/PasswordlessSignupCodeResponse' } } } }
  *       400: { description: JSON, exact-origin, or opaque handoff binding failure }
  *       409: { description: Disabled, invalid handoff, replay, or resend limit, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
  *       429: { description: Signup quota exhausted }
- *       503: { description: Signup code delivery failed after the challenge was reserved }
+ *       503: { description: Mailer or signup OTP outbox key unavailable before anything was reserved }
  * /api/auth/student/sso/signup/verify-code:
  *   post:
  *     summary: Verify the pending signup mailbox confirmation code

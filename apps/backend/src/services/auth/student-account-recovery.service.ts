@@ -224,6 +224,24 @@ export class StudentAccountRecoveryService {
                 const reboundOtp = liveAnyPurpose.challenge_expires_at.toISOString();
                 return { expiresAt: reboundOtp, otpExpiresAt: reboundOtp, serverNow: serverNow.toISOString() };
             }
+            // Enumeration mirror: the unknown-address path advances the
+            // isolated probe budget through decoyStart, so a committed
+            // real issuance must advance it too. Without this, a second
+            // immediate start with a fresh idempotency key returns fresh
+            // deadlines for a recoverable account (its probe budget is
+            // still pristine, so the key-mismatch decoy issues) but
+            // frozen decoy deadlines for an unknown address — a
+            // deterministic oracle. The mirror key must be the normalized
+            // input, not the stored account email (which may carry case
+            // or whitespace the decoy path never sees). The result is
+            // intentionally ignored: the response reports the real
+            // challenge, and on a spent probe budget the mirror simply
+            // no-ops while the committed handle stays usable.
+            await requestChallenge(tx, {
+                purpose: 'student_account_recovery', subjectKey: recoveryProbeSubjectKey(email),
+                bindings: { recoveryAttemptId: attemptId, recoveryPurpose: input.purpose },
+                expiresAt: serverExpiry,
+            });
             await this.failPriorAttempts(tx, account.id);
             const inserted = await tx.query<{ expires_at: Date }>(
                 `INSERT INTO student_auth_recovery_attempts

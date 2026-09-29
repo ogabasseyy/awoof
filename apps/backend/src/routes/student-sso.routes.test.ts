@@ -1500,9 +1500,11 @@ test('OpenAPI documents disabled passwordless signup and recovery contracts with
     ]) {
         assert.ok(paths[path]?.post?.responses?.['503'], `${path} documents the deployment-wide recovery outage`);
     }
-    // Delivery can fail after the signup challenge is reserved, and the
-    // recovery-code factory gates its five operations on the digest key:
-    // both controlled 503s belong in the published contract.
+    // Send-code 503s before anything is reserved when the mailer or OTP
+    // outbox key is not ready (provider failures after the durable 201
+    // retry asynchronously), and the recovery-code factory gates its five
+    // operations on the digest key: both controlled 503s belong in the
+    // published contract.
     assert.ok(paths['/api/auth/student/sso/signup/send-code']?.post?.responses?.['503'], 'send-code documents the delivery outage');
     assert.ok(paths['/api/auth/student/sso/recovery-code']?.get?.responses?.['503'], 'recovery-code status documents the key-gated outage');
     for (const path of [
