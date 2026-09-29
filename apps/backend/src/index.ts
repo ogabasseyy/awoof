@@ -10,6 +10,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import cors from 'cors';
 import helmet from 'helmet';
 import rateLimit from 'express-rate-limit';
+import type { Pool } from 'pg';
 import { skipCorsPreflight } from './middleware/cors-preflight.js';
 import { isMicrosoftCallbackPath, isMicrosoftRoute, microsoftCors } from './middleware/microsoft-cors.js';
 import { uploadedFile } from './middleware/uploaded-file.js';
@@ -25,6 +26,7 @@ import { swaggerSpec } from './config/swagger.js';
 import type { MicrosoftFlowService } from './services/verification/microsoft-flow.service.js';
 import { isStudentSsoCallbackPath, isStudentSsoRoute } from './routes/student-sso.routes.js';
 import type { StudentSsoFlowService } from './services/auth/student-sso-flow.service.js';
+import type { StudentSsoSignupService } from './services/auth/student-sso-signup.service.js';
 
 export type AppOptions = {
   microsoftFlowFactory?: () => Pick<MicrosoftFlowService, 'start' | 'callback' | 'finish' | 'callbackCookieNameForState'>;
@@ -33,6 +35,10 @@ export type AppOptions = {
   studentSsoFlowFactory?: () => Pick<StudentSsoFlowService, 'start' | 'callback' | 'finish' | 'callbackCookieNameForState' | 'callbackDuplicateState'>;
   /** Local integration harness only; production keeps server-held config. */
   studentSsoIssuanceEnabled?: () => boolean;
+  /** Local integration harness only; production uses the default signup service. */
+  studentSsoSignupFactory?: () => StudentSsoSignupService;
+  /** Local integration harness only; production uses the application pool. */
+  studentSsoPool?: Pick<Pool, 'query'>;
 };
 
 /**
@@ -225,6 +231,8 @@ export class App {
       const studentSsoRoutes = await import('./routes/student-sso.routes.js');
       this.app.use('/api/auth/student/sso', studentSsoRoutes.createStudentSsoRouter(this.options.studentSsoFlowFactory, {
         ...(this.options.studentSsoIssuanceEnabled ? { isIssuanceEnabled: this.options.studentSsoIssuanceEnabled } : {}),
+        ...(this.options.studentSsoSignupFactory ? { signupService: this.options.studentSsoSignupFactory } : {}),
+        ...(this.options.studentSsoPool ? { pool: this.options.studentSsoPool } : {}),
       }));
       appLogger.info('Student SSO routes registered');
     } catch (error) {
@@ -369,9 +377,11 @@ export class App {
       const status = typeof candidate === 'number' && candidate >= 400 && candidate < 600 ? candidate : 500;
       // Only client-recoverable protocol states are exposed. Keep every other
       // error's message/code generic so provider, SQL, and request details
-      // cannot cross the Microsoft or SSO boundary.
+      // cannot cross the Microsoft or SSO boundary. The existing-account
+      // conflict is recoverable: onboarding routes only this code to
+      // sign-in/recovery guidance, so it must survive redaction.
       const safeCode = ssoRoute
-        ? 'SSO_REQUEST_REJECTED'
+        ? typed.code === 'SSO_SIGNUP_EXISTING_ACCOUNT' ? typed.code : 'SSO_REQUEST_REJECTED'
         : typed.code === 'reauthentication_required' || typed.code === 'consent_notice_changed'
           ? typed.code : 'MICROSOFT_REQUEST_REJECTED';
       res.status(status).json({ success: false, error: { code: safeCode, statusCode: status } });
