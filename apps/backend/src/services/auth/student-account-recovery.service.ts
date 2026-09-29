@@ -141,9 +141,12 @@ export class StudentAccountRecoveryService {
             // A legacy/unbound live attempt is not resumable by a newly
             // supplied key. Treat it like a mismatch: accepting it here
             // would let any anonymous caller supersede that attempt after
-            // the resend cooldown expires.
+            // the resend cooldown expires. Report the fresh-decoy deadline
+            // shape — not the frozen live expiry — so a first probe cannot
+            // distinguish an address with live recovery from an unknown
+            // one; the handle itself is rowless and verifies nothing.
             if (liveAnyPurpose && (liveAnyPurpose.idempotency_key === null || liveAnyPurpose.idempotency_key !== idempotencyKey)) {
-                return this.frozenStartExpiry(tx, account.email, serverExpiry, serverNow);
+                return { expiresAt: attemptExpiry.toISOString(), otpExpiresAt: serverExpiry.toISOString(), serverNow: serverNow.toISOString() };
             }
             const challenge = await requestChallenge(tx, {
                 purpose: 'student_account_recovery', subjectKey: account.email,

@@ -6,7 +6,7 @@ import { issueActionGrant } from '../../services/auth/student-action-grant.servi
 import { StudentReauthService } from '../../services/auth/student-reauth.service.js';
 import { StudentRecoveryCodeService } from '../../services/auth/student-recovery-code.service.js';
 import { StudentAccountRecoveryService } from '../../services/auth/student-account-recovery.service.js';
-import { challengeSubjectDigest } from '../../services/verification/challenge.service.js';
+import { challengeSubjectDigest, challengeTtlMs } from '../../services/verification/challenge.service.js';
 import { createTestPool } from './test-database.js';
 
 const SID = '22222222-2222-4222-8222-222222222222';
@@ -289,10 +289,12 @@ test('fresh starts without the original binding never supersede a live recovery 
              WHERE purpose = 'student_account_recovery' AND subject_digest = $1`,
             [challengeSubjectDigest('student_account_recovery', account.email)],
         );
-        // The unbound caller takes the frozen-expiry shape: no new attempt
-        // row, no OTP re-sent, and the victim handle still verifies with
-        // the originally delivered OTP.
+        // The unbound caller takes the fresh-decoy deadline shape: no new
+        // attempt row, no OTP re-sent, and the victim handle still verifies
+        // with the originally delivered OTP.
         const retry = await service.start({ email: account.email, purpose: 'lost_access' });
+        assert.equal(Date.parse(retry.expiresAt) - Date.parse(retry.serverNow), 10 * 60 * 1000);
+        assert.equal(Date.parse(retry.otpExpiresAt) - Date.parse(retry.serverNow), challengeTtlMs('student_account_recovery'));
         await assert.rejects(() => service.verify({ attemptId: retry.attemptId, secret: retry.secret, code: account.code, otp: deliveries[0]! }));
         assert.equal(deliveries.length, 1);
         const rows = await client.query<{ count: string }>(
@@ -331,9 +333,11 @@ test('cross-purpose starts without the original binding never cancel a live reco
             [challengeSubjectDigest('student_account_recovery', account.email)],
         );
         // Flipping purposes must not dodge the binding guard: the unbound
-        // compromise start takes the frozen shape and the victim's
-        // lost-access handle still verifies with the delivered OTP.
+        // compromise start takes the fresh-decoy deadline shape and the
+        // victim's lost-access handle still verifies with the delivered OTP.
         const retry = await service.start({ email: account.email, purpose: 'compromise' });
+        assert.equal(Date.parse(retry.expiresAt) - Date.parse(retry.serverNow), 10 * 60 * 1000);
+        assert.equal(Date.parse(retry.otpExpiresAt) - Date.parse(retry.serverNow), challengeTtlMs('student_account_recovery'));
         await assert.rejects(() => service.verify({ attemptId: retry.attemptId, secret: retry.secret, code: account.code, otp: deliveries[0]! }));
         assert.equal(deliveries.length, 1);
         const rows = await client.query<{ count: string }>(
