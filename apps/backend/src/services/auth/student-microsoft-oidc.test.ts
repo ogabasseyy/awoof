@@ -124,6 +124,29 @@ test('authorize builds a PKCE S256 code URL with login hint and server-approved 
     assert.equal(url.searchParams.get('login_hint'), 'ada@students.school.example');
 });
 
+test('fresh authorization explicitly requires a new Microsoft authentication', async () => {
+    const keys = () => [{ ...jwk, kid: 'key-1', use: 'sig', alg: 'RS256' }];
+    const url = await adapter(() => token(), keys).authorizeFresh({
+        state: 'state-1', nonce: 'nonce-1', verifier: 'A'.repeat(64), loginHint: 'ada@students.school.example',
+    });
+    assert.equal(url.searchParams.get('max_age'), '0');
+});
+
+test('fresh redemption requires a numeric auth_time and returns it separately from normal login observations', async () => {
+    const keys = () => [{ ...jwk, kid: 'key-1', use: 'sig', alg: 'RS256' }];
+    const oidc = adapter(() => token({ auth_time: 1_700_000_000 }), keys);
+    const observation = await oidc.redeemFresh({
+        callback: new URL(`${callback.href}?code=synthetic&state=state-1`), state: 'state-1', nonce: 'nonce-1', verifier: 'A'.repeat(64),
+    });
+    assert.equal(observation.authTime, 1_700_000_000);
+    await assert.rejects(
+        () => adapter(() => token({ auth_time: undefined }), keys).redeemFresh({
+            callback: new URL(`${callback.href}?code=synthetic&state=state-1`), state: 'state-1', nonce: 'nonce-1', verifier: 'A'.repeat(64),
+        }),
+        payloadFree('invalid_identity'),
+    );
+});
+
 test('the login client asserts audience and issuer on every token', async () => {
     const keys = () => [{ ...jwk, kid: 'key-1', use: 'sig', alg: 'RS256' }];
     const observation = (await redeem(adapter(() => token(), keys))) as { issuer: string };

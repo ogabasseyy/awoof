@@ -56,7 +56,7 @@ function artifactFiles(artifactRoot) {
 
 function requiredArtifactFiles(files) {
     const names = new Set(files.map((entry) => entry.path));
-    for (const path of ['config/openapi.json', 'database/migrations/run.js', 'scripts/cleanup-microsoft-attempts.js']) {
+    for (const path of ['config/openapi.json', 'database/migrations/run.js', 'scripts/cleanup-microsoft-attempts.js', 'scripts/cleanup-student-sso.js']) {
         if (!names.has(path)) throw new Error(`Compiled artifact is missing required file: dist/${path}`);
     }
 }

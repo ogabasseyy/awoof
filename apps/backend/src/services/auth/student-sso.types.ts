@@ -24,11 +24,35 @@ export type ProviderObservation = {
     objectId: string | null;
 };
 
+/** A provider observation usable only for a separately requested sensitive action. */
+export type FreshProviderObservation = ProviderObservation & { authTime: number };
+
 export type LoginOptions = {
     password: true;
     providers: LoginProvider[];
     registration: true;
-    recovery: true;
+    recovery: boolean;
+};
+
+/** Browser-facing contract for the separate, disabled-by-default passwordless signup handoff. */
+export type StudentSsoSignupContext = {
+    email: string;
+    universityId: string;
+    termsVersion: string;
+    noticeVersion: string;
+    noticeText: string;
+    expiresAt: string;
+};
+
+export type StudentSsoSignupCompleteRequest = {
+    handoffId: string;
+    handoffSecret: string;
+    fullName: string;
+    ageAttested: true;
+    termsAccepted: true;
+    termsVersion: string;
+    verificationConsent: true;
+    noticeVersion: string;
 };
 
 /** An approved institution login policy with its pinned trust data (moved from the B3 flow module so link code shares it). */
@@ -45,4 +69,6 @@ export type ApprovedLoginPolicy = {
 export interface StudentOidcAdapter {
     authorize(input: { state: string; nonce: string; verifier: string; loginHint: string }): Promise<URL>;
     redeem(input: { callback: URL; state: string; nonce: string; verifier: string }): Promise<ProviderObservation>;
+    authorizeFresh?(input: { state: string; nonce: string; verifier: string; loginHint: string }): Promise<URL>;
+    redeemFresh?(input: { callback: URL; state: string; nonce: string; verifier: string }): Promise<FreshProviderObservation>;
 }

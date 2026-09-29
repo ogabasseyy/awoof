@@ -2,7 +2,7 @@ import { createHmac, randomInt, randomUUID, timingSafeEqual } from 'node:crypto'
 import type { PoolClient } from 'pg';
 import { config } from '../../config/env.js';
 
-export type ChallengePurpose = 'student_signup' | 'student_email' | 'account_email' | 'whatsapp' | 'password_reset';
+export type ChallengePurpose = 'student_signup' | 'student_sso_signup' | 'student_account_recovery' | 'student_email' | 'account_email' | 'whatsapp' | 'password_reset';
 export type ChallengeBindings = Record<string, unknown>;
 
 type Budget = {
@@ -22,12 +22,34 @@ type Challenge = {
     superseded_at: Date | null;
 };
 
-const PURPOSES = new Set<ChallengePurpose>(['student_signup', 'student_email', 'account_email', 'whatsapp', 'password_reset']);
+const PURPOSES = new Set<ChallengePurpose>(['student_signup', 'student_sso_signup', 'student_account_recovery', 'student_email', 'account_email', 'whatsapp', 'password_reset']);
 const WINDOW_MS = 10 * 60 * 1000;
 const OTP_MS = 10 * 60 * 1000;
 const COOLDOWN_MS = 60 * 1000;
 const MAX_FAILURES = 5;
 const MAX_SENDS = 10;
+// Minimum usable challenge life at issue: the atomic delivery-enqueue
+// insert runs a statement later under the same expires_at >
+// created_at constraint, so a deadline inside this margin would pass
+// here and 500 there. One second dwarfs statement skew and stays far
+// below every real flow lifetime (shortest fixture: two seconds).
+const MIN_USABLE_LIFETIME_MS = 1000;
+
+function limitsFor(purpose: ChallengePurpose): { failures: number; sends: number; ttlMs: number } {
+    // The passwordless handoff is an intentionally narrower mailbox-binding
+    // proof: it cannot extend the original ten-minute provider attempt.
+    return purpose === 'student_sso_signup' || purpose === 'student_account_recovery'
+        ? { failures: 5, sends: 3, ttlMs: 5 * 60 * 1000 }
+        : { failures: MAX_FAILURES, sends: MAX_SENDS, ttlMs: OTP_MS };
+}
+
+/**
+ * Single source of truth for a purpose TTL, so first-start and fallback
+ * expiries derive from the same server clock plus TTL on every path.
+ */
+export function challengeTtlMs(purpose: ChallengePurpose): number {
+    return limitsFor(purpose).ttlMs;
+}
 
 function digest(label: string, value: string): string {
     return createHmac('sha256', config.jwt.secret).update(`${label}\u0000${value}`).digest('hex');
@@ -92,7 +114,7 @@ async function lockedBudget(tx: PoolClient, purpose: ChallengePurpose, subject: 
     return budget;
 }
 
-async function databaseNow(tx: PoolClient): Promise<Date> {
+export async function databaseNow(tx: PoolClient): Promise<Date> {
     const result = await tx.query<{ now: Date }>('SELECT clock_timestamp() AS now');
     const now = result.rows[0]?.now;
     if (!now) throw new Error('Database clock was not returned');
@@ -140,16 +162,33 @@ export async function requestChallenge(tx: PoolClient, input: {
     purpose: ChallengePurpose;
     subjectKey: string;
     bindings: ChallengeBindings;
-}): Promise<{ status: 'issued'; challengeId: string; code: string; expiresAt: Date } | { status: 'cooldown' | 'locked'; retryAt: Date }> {
+    expiresAt?: Date;
+}): Promise<{ status: 'issued'; challengeId: string; code: string; expiresAt: Date } | { status: 'cooldown' | 'locked' | 'expired'; retryAt: Date }> {
     validInput(input.purpose, input.subjectKey);
     const bindings = copiedBindings(input.bindings);
     const subject = challengeSubjectDigest(input.purpose, input.subjectKey);
     let budget = await lockedBudget(tx, input.purpose, subject);
     const now = await databaseNow(tx);
+    const limits = limitsFor(input.purpose);
+    // A caller-supplied deadline (a signup handoff window) can lapse
+    // between the caller's check and this issue. Issuing anyway would
+    // violate the expires_at > created_at constraint and surface a 500;
+    // worse, a barely-future deadline would pass this insert but fail
+    // the atomic outbox insert a statement later. Refuse before burning
+    // budget allowance when the resolved deadline lacks a usable
+    // lifetime. This check must stay after the budget upsert: a fresh
+    // row's resend_available_at is stamped at insert, and reading the
+    // clock first would make every first issuance look like a cooldown.
+    // retryAt is now: nothing is scheduled — the caller maps expired to
+    // its restart flow rather than a cooldown resume.
+    const requestedExpiry = input.expiresAt ?? new Date(now.getTime() + limits.ttlMs);
+    const defaultExpiry = new Date(now.getTime() + limits.ttlMs);
+    const expiresAt = requestedExpiry < defaultExpiry ? requestedExpiry : defaultExpiry;
+    if (expiresAt.getTime() <= now.getTime() + MIN_USABLE_LIFETIME_MS) return { status: 'expired', retryAt: now };
     budget = await resetWindowIfNeeded(tx, input.purpose, subject, budget, now);
     const windowEnd = fixedWindowEnd(budget.window_started_at);
 
-    if (budget.failed_attempts >= MAX_FAILURES || budget.send_count >= MAX_SENDS) {
+    if (budget.failed_attempts >= limits.failures || budget.send_count >= limits.sends) {
         return { status: 'locked', retryAt: windowEnd };
     }
     if (now < budget.resend_available_at) return { status: 'cooldown', retryAt: budget.resend_available_at };
@@ -164,7 +203,6 @@ export async function requestChallenge(tx: PoolClient, input: {
 
     const challengeId = randomUUID();
     const code = String(randomInt(0, 1_000_000)).padStart(6, '0');
-    const expiresAt = new Date(now.getTime() + OTP_MS);
     const bindingsJson = await assertCanonicalBindingsSize(tx, bindings);
     await tx.query(
         `INSERT INTO verification_challenges
@@ -204,7 +242,7 @@ export async function consumeChallenge(tx: PoolClient, input: {
     if (!budget) return { status: 'invalid' };
     const now = await databaseNow(tx);
     budget = await resetWindowIfNeeded(tx, input.purpose, subject, budget, now);
-    if (budget.failed_attempts >= MAX_FAILURES) return { status: 'locked' };
+    if (budget.failed_attempts >= limitsFor(input.purpose).failures) return { status: 'locked' };
 
     let challenge: Challenge | undefined;
     if (budget.current_challenge_id === input.challengeId) {
@@ -225,8 +263,14 @@ export async function consumeChallenge(tx: PoolClient, input: {
         await recordFailure(tx, input.purpose, subject);
         return { status: 'invalid' };
     }
+    // New passwordless flows retain only the consumed challenge binding, not
+    // an OTP digest that can no longer authorize anything. Legacy purposes
+    // keep their established retention contract unchanged.
     const consumed = await tx.query(
-        `UPDATE verification_challenges SET consumed_at = $2
+        `UPDATE verification_challenges
+         SET consumed_at = $2,
+             secret_digest = CASE WHEN purpose IN ('student_sso_signup', 'student_account_recovery')
+                                  THEN repeat('0', 64) ELSE secret_digest END
          WHERE id = $1 AND consumed_at IS NULL AND superseded_at IS NULL`,
         [challenge.id, now],
     );

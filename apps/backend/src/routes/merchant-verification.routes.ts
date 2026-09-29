@@ -84,6 +84,7 @@ import {
  *       '400': { description: Invalid input or merchant origin }
  *       '401': { description: Student authentication required }
  *       '403': { description: Current eligibility or merchant consent unavailable }
+ *       '503': { $ref: '#/components/responses/SessionValidationUnavailable' }
  * /api/merchant-verification/exchange:
  *   post:
  *     summary: Atomically exchange a code for a merchant-scoped eligibility receipt
@@ -161,6 +162,7 @@ import {
  *       '401': { description: Student authentication required. }
  *       '404': { description: Unknown session or claim no longer available. }
  *       '409': { description: Session expired or redeemed, or merchant integration unavailable. }
+ *       '503': { $ref: '#/components/responses/SessionValidationUnavailable' }
  * /api/merchant-verification/product-claims:
  *   post:
  *     summary: Claim a protected product discount for one merchant checkout
@@ -203,6 +205,7 @@ import {
  *       '403': { description: Current enrollment or merchant disclosure unavailable. }
  *       '404': { description: Unknown claim session or disclosure grant. }
  *       '409': { description: Session expired or redeemed, or MERCHANT_INTEGRATION_REQUIRED. }
+ *       '503': { $ref: '#/components/responses/SessionValidationUnavailable' }
  */
 const bounded = z.string().trim().min(1).max(100);
 const issuance = z.object({ vendorId:z.string().uuid(), origin:z.string().max(512),

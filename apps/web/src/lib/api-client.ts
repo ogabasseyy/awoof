@@ -55,6 +55,21 @@ export const studentSsoApiClient: AxiosInstance = axios.create({
     withCredentials: true,
 });
 
+/**
+ * Authenticated student SSO calls (reauth finish and its continuations)
+ * that must both carry the per-attempt callback cookie and survive an
+ * access token that expired during the provider prompt. Standard
+ * session-fenced refresh on the SSO namespace; retries reuse this client
+ * so the cookie is preserved. Never use for password proofing: a 401
+ * there means a wrong password, not a stale token, and must not refresh
+ * or clear the session.
+ */
+export const studentSsoSessionApiClient: AxiosInstance = axios.create({
+    baseURL: API_BASE_URL,
+    headers: { 'Content-Type': 'application/json' },
+    withCredentials: true,
+});
+
 type RequestCredentials = {
     accessToken: string | null;
     refreshToken: string | null;
@@ -121,6 +136,18 @@ function refreshFor(snapshotAtStart: SessionSnapshot): Promise<string> {
     return pending;
 }
 
+/**
+ * Renew the ambient access token before a raw-secret proof. The proof
+ * itself still travels on the non-refreshing client with a snapshot
+ * Bearer [REDACTED] a page left open past the access-token lifetime would
+ * otherwise 401 on the stale token before the password is even checked,
+ * misreporting every attempt as an incorrect password with no recovery.
+ * Resolves to the fresh access token; rejects when the session is gone.
+ */
+export function refreshSessionAccessToken(): Promise<string> {
+    return refreshFor(getSessionSnapshot());
+}
+
 function exactFailedRequest(request: SessionBoundRequest): SessionSnapshot | null {
     const started = request.__awoofSession;
     const credentials = request.__awoofCredentials;
@@ -177,11 +204,14 @@ export function isMicrosoftVerificationRequest(config: Pick<InternalAxiosRequest
     }
 }
 
-function installSessionInterceptors(client: AxiosInstance, microsoftOnly = false): void {
+function installSessionInterceptors(client: AxiosInstance, options: { namespace?: 'microsoft-verification' | 'student-sso' } = {}): void {
 client.interceptors.request.use(
     (config: InternalAxiosRequestConfig) => {
-        if (microsoftOnly && !isMicrosoftVerificationRequest(config)) {
+        if (options.namespace === 'microsoft-verification' && !isMicrosoftVerificationRequest(config)) {
             return Promise.reject(new Error('Microsoft credentialed client only permits Microsoft verification paths.'));
+        }
+        if (options.namespace === 'student-sso' && !isStudentSsoRequest(config)) {
+            return Promise.reject(new Error('Student session client only permits student SSO paths.'));
         }
         const request = config as SessionBoundRequest;
         request.__awoofClient = client;
@@ -253,7 +283,8 @@ export function isStudentSsoRequest(config: Pick<InternalAxiosRequestConfig, 'ur
 }
 
 installSessionInterceptors(apiClient);
-installSessionInterceptors(microsoftVerificationApiClient, true);
+installSessionInterceptors(microsoftVerificationApiClient, { namespace: 'microsoft-verification' });
+installSessionInterceptors(studentSsoSessionApiClient, { namespace: 'student-sso' });
 
 studentSsoApiClient.interceptors.request.use(
     (config: InternalAxiosRequestConfig) => {

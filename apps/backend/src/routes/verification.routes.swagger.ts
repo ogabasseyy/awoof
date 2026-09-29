@@ -249,7 +249,7 @@
  *       400:
  *         $ref: '#/components/responses/BadRequest'
  *       503:
- *         description: No active supported adapter is configured for the student's institution
+ *         description: No active supported adapter is configured for the student's institution, or student session validation is unavailable
  */
 
 /**
@@ -401,7 +401,7 @@
  *       401:
  *         $ref: '#/components/responses/Unauthorized'
  *       503:
- *         description: Status temporarily unavailable; the account stays signed in and the client should retry without assuming a positive state.
+ *         description: Status temporarily unavailable (or student session validation unavailable); the account stays signed in and the client should retry without assuming a positive state.
  */
 
 /**

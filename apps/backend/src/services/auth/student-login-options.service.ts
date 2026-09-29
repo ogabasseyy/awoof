@@ -6,6 +6,15 @@ import {
 } from '../../common/errors/AppError.js';
 import { normalizeMailbox } from '../verification/eligibility-policy.service.js';
 import type { LoginOptions, LoginProvider } from './student-sso.types.js';
+import { hasRecoveryOtpOutboxKey } from './recovery-otp-outbox.service.js';
+
+export function recoveryDiscoveryAvailable(input: {
+    recoveryCodeKey: string | null | undefined;
+    outboxEncryptionKey: string | null | undefined;
+    emailConfigured: boolean;
+}): boolean {
+    return Boolean(input.recoveryCodeKey) && input.emailConfigured && hasRecoveryOtpOutboxKey(input.outboxEncryptionKey);
+}
 
 export const STUDENT_LOGIN_OPTIONS_MAX_EMAIL_LENGTH = 254;
 export const STUDENT_DISCOVERY_QUOTA = { max: 60, windowMs: 10 * 60 * 1000 };
@@ -60,9 +69,10 @@ export function normalizeStudentLoginEmail(input: unknown): string {
 
 export async function resolveStudentLoginOptions(
     query: LoginOptionsQuery,
-    input: { email: unknown; enabledProviders: LoginProvider[] },
+    input: { email: unknown; enabledProviders: LoginProvider[]; recoveryAvailable: boolean },
 ): Promise<LoginOptions> {
-    const passwordOnly: LoginOptions = { password: true, providers: [], registration: true, recovery: true };
+    const recovery = input.recoveryAvailable;
+    const passwordOnly: LoginOptions = { password: true, providers: [], registration: true, recovery };
     const mailbox = normalizeStudentLoginEmail(input.email);
     if (input.enabledProviders.length === 0) return passwordOnly;
     const domain = mailbox.slice(mailbox.lastIndexOf('@') + 1);
@@ -72,7 +82,7 @@ export async function resolveStudentLoginOptions(
         .filter((provider): provider is LoginProvider => provider === 'google' || provider === 'microsoft')
         .filter((provider) => ready.has(provider))
         .sort();
-    return { password: true, providers, registration: true, recovery: true };
+    return { password: true, providers, registration: true, recovery };
 }
 
 export type QuotaStore = {

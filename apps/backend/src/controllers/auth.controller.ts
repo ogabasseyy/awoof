@@ -263,7 +263,7 @@ export class AuthController {
 
         // Find user
         const userResult = await db.query(
-            `SELECT id, email, password_hash, role, verification_status, deleted_at
+            `SELECT id, email, password_hash, role, verification_status, deleted_at, recovery_reenrollment_requires_password
              FROM users
              WHERE lower(btrim(email)) = $1`,
             [normalizedEmail]
@@ -314,6 +314,11 @@ export class AuthController {
                     ...(user.role === 'student'
                         ? { studentAssurance: await this.readAssurance(user.id) }
                         : {}),
+                    // Recovery consumes the only active code; surface the
+                    // persistent re-enrollment action until a new code activates.
+                    ...(user.role === 'student' && user.recovery_reenrollment_requires_password === true
+                        ? { recoveryReenrollmentRequired: true }
+                        : {}),
                 },
                 tokens,
             },
@@ -360,7 +365,7 @@ export class AuthController {
 
         // Get user details
         const userResult = await db.query(
-            `SELECT id, email, role, verification_status, created_at
+            `SELECT id, email, role, verification_status, created_at, recovery_reenrollment_requires_password
              FROM users
              WHERE id = $1 AND deleted_at IS NULL`,
             [req.user.userId]
@@ -398,6 +403,9 @@ export class AuthController {
                 ...(user.role === 'student'
                     ? { studentAssurance: await this.readAssurance(user.id) }
                     : {}),
+                ...(user.role === 'student' && user.recovery_reenrollment_requires_password === true
+                    ? { recoveryReenrollmentRequired: true }
+                    : {}),
                 profile,
             },
         }, 200);
@@ -417,7 +425,8 @@ export class AuthController {
 
         // Find user
         const userResult = await db.query(
-            `SELECT id, email, role FROM users WHERE lower(btrim(email)) = $1 AND deleted_at IS NULL`,
+            `SELECT id, email, role, password_setup_requires_recovery_code
+             FROM users WHERE lower(btrim(email)) = $1 AND deleted_at IS NULL`,
             [normalizedEmail]
         );
 
@@ -431,6 +440,17 @@ export class AuthController {
         }
 
         const user = userResult.rows[0];
+
+        // Passwordless marker accounts retain this restriction even after an
+        // independent recovery establishes a password. School-mailbox control
+        // alone must never reopen legacy reset/setup ownership transfer.
+        if (user.password_setup_requires_recovery_code) {
+            success(res, {
+                message: 'If the email exists, an OTP has been sent',
+                data: {},
+            });
+            return;
+        }
 
         // If role is specified in request, verify user has that role
         if (role && user.role !== role) {
@@ -487,7 +507,8 @@ export class AuthController {
              FROM users 
              WHERE lower(btrim(email)) = $1
                AND password_reset_otp = $2 
-               AND deleted_at IS NULL`,
+               AND deleted_at IS NULL
+               AND password_setup_requires_recovery_code = false`,
             [normalizedEmail, validated.otp]
         );
 
@@ -549,11 +570,12 @@ export class AuthController {
 
         // Find user with valid OTP
         const userResult = await db.query(
-            `SELECT id, email, password_reset_otp, password_reset_otp_expires_at
-             FROM users 
+            `SELECT id, email, password_reset_otp, password_reset_otp_expires_at, credential_generation
+             FROM users
              WHERE lower(btrim(email)) = $1
-               AND password_reset_otp = $2 
-               AND deleted_at IS NULL`,
+               AND password_reset_otp = $2
+               AND deleted_at IS NULL
+               AND password_setup_requires_recovery_code = false`,
             [normalizedEmail, validated.otp]
         );
 
@@ -571,20 +593,26 @@ export class AuthController {
         // Hash new password
         const passwordHash = await passwordService.hashPassword(validated.newPassword);
 
-        // Update password and clear OTP
-        await db.query(
-            `UPDATE users 
-             SET password_hash = $1, 
-                 password_reset_otp = NULL, 
+        // Conditional write: hashing is slow, so an account-recovery commit
+        // or a superseding OTP may land between verification and this
+        // update. The write must fail instead of overwriting the recovered
+        // password with stale OTP authority.
+        const updated = await db.query(
+            `UPDATE users
+             SET password_hash = $1,
+                 password_reset_otp = NULL,
                  password_reset_otp_expires_at = NULL,
                  refresh_token_hash = NULL,
                  refresh_token_expires_at = NULL,
                  active_session_id = NULL,
                  active_session_issued_at = NULL,
+                 credential_generation = credential_generation + 1,
                  updated_at = CURRENT_TIMESTAMP
-             WHERE id = $2`,
-            [passwordHash, user.id]
+             WHERE id = $2 AND password_reset_otp = $3 AND credential_generation = $4
+               AND password_reset_otp_expires_at > CURRENT_TIMESTAMP AND deleted_at IS NULL`,
+            [passwordHash, user.id, validated.otp, user.credential_generation]
         );
+        if ((updated.rowCount ?? 0) !== 1) throw new UnauthorizedError('Invalid OTP');
 
         // Clear the password-reset cache entry; refresh-session authority is durable.
         const redisClient = redis.getClient();
@@ -622,7 +650,7 @@ export class AuthController {
 
         // Get user with password hash
         const userResult = await db.query(
-            `SELECT id, password_hash FROM users WHERE id = $1 AND deleted_at IS NULL`,
+            `SELECT id, password_hash, credential_generation FROM users WHERE id = $1 AND deleted_at IS NULL`,
             [req.user.userId]
         );
 
@@ -645,18 +673,22 @@ export class AuthController {
         // Hash new password
         const passwordHash = await passwordService.hashPassword(validated.newPassword);
 
-        // Update password
-        await db.query(
-            `UPDATE users 
-             SET password_hash = $1, 
+        // Conditional write: hashing is slow, so an account-recovery commit
+        // may land between old-password verification and this update. The
+        // write must fail instead of overwriting the recovered password.
+        const updated = await db.query(
+            `UPDATE users
+             SET password_hash = $1,
                  refresh_token_hash = NULL,
                  refresh_token_expires_at = NULL,
                  active_session_id = NULL,
                  active_session_issued_at = NULL,
+                 credential_generation = credential_generation + 1,
                  updated_at = CURRENT_TIMESTAMP
-             WHERE id = $2`,
-            [passwordHash, user.id]
+             WHERE id = $2 AND password_hash = $3 AND credential_generation = $4 AND deleted_at IS NULL`,
+            [passwordHash, user.id, user.password_hash, user.credential_generation]
         );
+        if ((updated.rowCount ?? 0) !== 1) throw new ConflictError('Password changed during this update. Sign in again if needed.');
 
         success(res, {
             message: 'Password updated successfully',

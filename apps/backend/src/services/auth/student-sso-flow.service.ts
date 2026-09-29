@@ -81,7 +81,7 @@ export type StudentSsoCallbackResult = {
 
 export type StudentSsoAuthenticatedResult = {
     outcome: 'authenticated';
-    user: { id: string; email: string; role: 'student'; verificationStatus: string };
+    user: { id: string; email: string; role: 'student'; verificationStatus: string; recoveryReenrollmentRequired?: boolean };
     tokens: TokenPair;
     /** Null is permitted only with assuranceStatus 'unavailable'; never set student verified on error. */
     studentAssurance: StudentAssurance | null;
@@ -90,7 +90,7 @@ export type StudentSsoAuthenticatedResult = {
 
 export type StudentSsoFinishResult =
     | StudentSsoAuthenticatedResult
-    | { outcome: 'link_required'; handoffId: string; handoffSecret: string; expiresAt: string }
+    | { outcome: 'link_required'; handoffId: string; handoffSecret: string; expiresAt: string; provider: 'google' | 'microsoft'; /** Internal cookie renewal; stripped from the public response. */ handoffCookieMaxAgeSeconds?: number }
     | { outcome: 'restart_required' };
 
 export type StudentSsoOidcResolver = {
@@ -127,9 +127,9 @@ type SsoAttempt = {
     policy_version: number;
     provider: string;
     requested_email: string;
-    state_hash: string;
-    callback_cookie_hash: string;
-    finish_secret_hash: string;
+    state_hash: string | null;
+    callback_cookie_hash: string | null;
+    finish_secret_hash: string | null;
     encrypted_verifier: string | null;
     nonce: string | null;
     encrypted_observation: string | null;
@@ -192,9 +192,14 @@ export function resolveStudentSsoReturnPath(candidate: unknown, origin: string):
     } catch {
         throw new BadRequestError('Student SSO return path is invalid');
     }
+    // The SSO onboarding continuation is the one permitted auth route: it
+    // is a terminal link/signup page, not a login page, so returning to
+    // it cannot loop back into authentication on its own. The match is
+    // the exact pathname; deeper paths stay rejected.
+    const isAuthRoute = resolved.pathname === '/auth' || resolved.pathname.startsWith('/auth/');
     if ((resolved.protocol !== 'http:' && resolved.protocol !== 'https:')
         || resolved.origin !== origin || resolved.username || resolved.password
-        || resolved.pathname === '/auth' || resolved.pathname.startsWith('/auth/')) {
+        || (isAuthRoute && resolved.pathname !== '/auth/student/sso/onboarding')) {
         throw new BadRequestError('Student SSO return path is invalid');
     }
     return `${resolved.pathname}${resolved.search}${resolved.hash}`;
@@ -232,9 +237,14 @@ export class StudentSsoFlowService {
 
     private async failAttempt(attemptId: string): Promise<void> {
         await this.transaction(async (tx) => {
+            // Tombstone: the finish bindings survive so an authenticated
+            // retry proves them and reaches restart_required instead of a
+            // generic invalid; single-use secrets are nulled and the
+            // retention scrub clears the tombstone at attempt expiry.
             await tx.query(
                 `UPDATE student_auth_attempts
-                 SET status = 'failed', encrypted_verifier = NULL, nonce = NULL, encrypted_observation = NULL
+                 SET status = 'failed', state_hash = NULL,
+                     encrypted_verifier = NULL, nonce = NULL, encrypted_observation = NULL
                  WHERE id = $1 AND status IN ('pending', 'processing', 'ready')`,
                 [attemptId],
             );
@@ -294,6 +304,12 @@ export class StudentSsoFlowService {
                 version: row.version,
             };
             assertAdapterPolicy(approved);
+            // Serialize concurrent starts per policy mailbox: without this,
+            // two simultaneous starts each count fewer than the cap and
+            // both insert, exceeding the open-attempt guard. One advisory
+            // lock per transaction (released at commit/rollback), taken in
+            // the same order by every start, so no lock cycle can form.
+            await tx.query(`SELECT pg_advisory_xact_lock(hashtextextended($1, 0))`, [`${approved.id}|${mailbox}`]);
             const open = await tx.query<{ count: string }>(
                 `SELECT count(*) FROM student_auth_attempts
                  WHERE policy_id = $1 AND requested_email = $2
@@ -505,6 +521,26 @@ export class StudentSsoFlowService {
         return result.rows[0] ? studentSsoCookieName(result.rows[0].id) : null;
     }
 
+    /**
+     * Duplicate-callback state behind a provider return: resolves the
+     * attempt the state addresses and reports whether it is still in
+     * flight (processing/ready). Lets the route retain the shared
+     * per-attempt binding for a duplicate instead of clearing the cookie
+     * the winner's finish still needs.
+     */
+    async callbackDuplicateState(callbackUrl: URL, provider: LoginProvider): Promise<{ attemptId: string; inFlight: boolean } | null> {
+        if (!fixedCallback(callbackUrl, this.deps.callbackUrls[provider])) return null;
+        const state = callbackUrl.searchParams.get('state');
+        if (!state) return null;
+        const result = await this.deps.pool.query<{ id: string; status: string }>(
+            'SELECT id, status FROM student_auth_attempts WHERE state_hash = $1 AND provider = $2',
+            [hashSsoSecret(state), provider],
+        );
+        const row = result.rows[0];
+        if (!row) return null;
+        return { attemptId: row.id, inFlight: row.status === 'processing' || row.status === 'ready' };
+    }
+
     async finish(input: { attemptId: unknown; finishSecret: unknown; browserCookie: string | undefined }): Promise<StudentSsoFinishResult> {
         this.assertEnabled();
         if (typeof input.attemptId !== 'string' || !UUID.test(input.attemptId)) throw invalidAttempt();
@@ -526,6 +562,9 @@ export class StudentSsoFlowService {
                     || hashSsoSecret(browserCookie) !== attempt.callback_cookie_hash) {
                     throw invalidAttempt();
                 }
+                // Reachable because terminalization keeps the finish bindings
+                // as a tombstone: only a retry proving both secrets lands
+                // here, and only until the retention scrub clears them.
                 if (attempt.status === 'consumed' || attempt.status === 'failed') {
                     await this.invalidateAbandonedAttempts(tx, attempt);
                     return { restart: true };
@@ -536,6 +575,10 @@ export class StudentSsoFlowService {
                     await this.invalidateAbandonedAttempts(tx, attempt);
                     return { restart: true };
                 }
+                // Both secrets already proved above, so flagging the race
+                // leaks nothing: a concurrent redemption still completing
+                // stays retryable instead of misreporting failure.
+                if (attempt.status === 'processing') throw new ConflictError('Student SSO login is still completing', { retryable: true });
                 if (attempt.status !== 'ready' || !attempt.encrypted_observation) throw invalidAttempt();
                 let observation: ProviderObservation;
                 try {
@@ -610,9 +653,13 @@ export class StudentSsoFlowService {
     }
 
     private async terminalizeAttempt(tx: PoolClient, attemptId: string): Promise<void> {
+        // Tombstone: the finish bindings survive so an authenticated retry
+        // proves them and reaches restart_required instead of a generic
+        // invalid; the retention scrub clears the tombstone at expiry.
         await tx.query(
             `UPDATE student_auth_attempts
-             SET status = 'failed', encrypted_verifier = NULL, nonce = NULL, encrypted_observation = NULL
+             SET status = 'failed', state_hash = NULL,
+                 encrypted_verifier = NULL, nonce = NULL, encrypted_observation = NULL
              WHERE id = $1 AND status IN ('pending', 'processing', 'ready')`,
             [attemptId],
         );
@@ -620,9 +667,12 @@ export class StudentSsoFlowService {
 
     /** A controlled restart invalidates abandoned pre-callback flows for the same policy mailbox. Ready siblings survive. */
     private async invalidateAbandonedAttempts(tx: PoolClient, attempt: SsoAttempt): Promise<void> {
+        // Tombstone, as above: a sibling tab retrying its invalidated
+        // attempt restarts instead of reporting a generic failure.
         await tx.query(
             `UPDATE student_auth_attempts
-             SET status = 'failed', encrypted_verifier = NULL, nonce = NULL, encrypted_observation = NULL
+             SET status = 'failed', state_hash = NULL,
+                 encrypted_verifier = NULL, nonce = NULL, encrypted_observation = NULL
              WHERE policy_id = $1 AND requested_email = $2
                AND status IN ('pending', 'processing') AND id <> $3`,
             [attempt.policy_id, attempt.requested_email, attempt.id],
@@ -670,6 +720,20 @@ export class StudentSsoFlowService {
         }
         if (locked.rows[0].status !== 'ready') throw invalidAttempt();
         if (locked.rows[0].expires_at <= finalClock.rows[0]!.now) throw new StudentSsoAttemptExpiredError(locked.rows[0].id);
+        // This DB-time fence is initialized at migration and advanced by
+        // account recovery. Compare it while holding the user lock so a
+        // provider callback that began before either boundary cannot create
+        // a session afterward, even if readiness races recovery or used an alias.
+        const recoveryFence = await tx.query<{ predates_fence: boolean }>(
+            `SELECT student_sso_attempts_not_before IS NOT NULL
+                    AND (SELECT created_at FROM student_auth_attempts WHERE id = $2) <= student_sso_attempts_not_before AS predates_fence
+             FROM users WHERE id = $1`, [context.userId, attempt.id],
+        );
+        if (recoveryFence.rows[0]?.predates_fence === true) {
+            await this.terminalizeAttempt(tx, attempt.id);
+            await this.invalidateAbandonedAttempts(tx, attempt);
+            return { restart: true };
+        }
         // Another tab may have signed this account in after the attempt
         // started. The browser keeps that concurrent session and discards
         // this finish, so issuing here would destroy a live session while
@@ -695,9 +759,14 @@ export class StudentSsoFlowService {
             locked.rows[0].remember_me,
         );
         await tx.query('UPDATE users SET active_session_auth_identity_id = $2 WHERE id = $1', [context.userId, identity.id]);
+        // Tombstone: the finish bindings survive the commit so a retry
+        // after a lost success response proves them and reaches
+        // restart_required; without this the retry fails the binding
+        // comparison and the committed login reports a generic outage.
         const consumed = await tx.query(
             `UPDATE student_auth_attempts
-             SET status = 'consumed', encrypted_verifier = NULL, nonce = NULL, encrypted_observation = NULL
+             SET status = 'consumed', state_hash = NULL,
+                 encrypted_verifier = NULL, nonce = NULL, encrypted_observation = NULL
              WHERE id = $1 AND status = 'ready'`,
             [attempt.id],
         );
@@ -721,7 +790,10 @@ export class StudentSsoFlowService {
             observation,
             microsoftMembershipAttested,
         });
-        const profile = await tx.query<{ verification_status: string }>('SELECT verification_status FROM users WHERE id = $1', [context.userId]);
+        const profile = await tx.query<{ verification_status: string; recovery_reenrollment_requires_password: boolean }>(
+            'SELECT verification_status, recovery_reenrollment_requires_password FROM users WHERE id = $1',
+            [context.userId],
+        );
         // Commit issuance and consumed state together; tokens and assurance
         // go out only after commit.
         return {
@@ -731,6 +803,12 @@ export class StudentSsoFlowService {
                 email: context.email,
                 role: 'student' as const,
                 verificationStatus: profile.rows[0]?.verification_status ?? 'unverified',
+                // Recovery consumes the only active code; surface the
+                // persistent re-enrollment action until a new code
+                // activates, mirroring password login and /auth/me.
+                ...(profile.rows[0]?.recovery_reenrollment_requires_password === true
+                    ? { recoveryReenrollmentRequired: true as const }
+                    : {}),
             },
             tokens,
             readAssurance: this.deps.readAssurance ?? ((userId: string) => readStudentAssuranceOrNull(this.deps.pool, userId)),
@@ -760,21 +838,24 @@ export class StudentSsoFlowService {
         const handoffSecret = secret();
         // The handoff inherits the browser binding so linking still proves
         // the same browser; the cookie is retained, never cleared here.
-        const inserted = await tx.query<{ expires_at: Date }>(
+        const inserted = await tx.query<{ expires_at: Date; server_now: Date }>(
             `INSERT INTO student_auth_link_handoffs
                  (id, attempt_id, secret_hash, encrypted_observation, policy_id, policy_version,
                   browser_binding_hash, expires_at)
              VALUES ($1, $2, $3, $4, $5, $6, $7, clock_timestamp() + interval '10 minutes')
-             RETURNING expires_at`,
+             RETURNING expires_at, clock_timestamp() AS server_now`,
             [
                 handoffId, attempt.id, hashSsoSecret(handoffSecret),
                 encryptSsoSecret(encodeProviderObservation(observation), this.deps.attemptKey, handoffId),
                 attempt.policy_id, attempt.policy_version, attempt.callback_cookie_hash,
             ],
         );
+        // Tombstone, as in the linked consume: a retry after a lost
+        // link_required response restarts instead of failing generic.
         const consumed = await tx.query(
             `UPDATE student_auth_attempts
-             SET status = 'consumed', encrypted_verifier = NULL, nonce = NULL, encrypted_observation = NULL
+             SET status = 'consumed', state_hash = NULL,
+                 encrypted_verifier = NULL, nonce = NULL, encrypted_observation = NULL
              WHERE id = $1 AND status = 'ready'`,
             [attempt.id],
         );
@@ -784,6 +865,13 @@ export class StudentSsoFlowService {
             handoffId,
             handoffSecret,
             expiresAt: inserted.rows[0]!.expires_at.toISOString(),
+            provider: observation.provider,
+            // The original attempt cookie may be close to expiring when the
+            // provider callback arrives. Renew that same browser binding only
+            // until this DB-issued handoff deadline; never extend it farther.
+            handoffCookieMaxAgeSeconds: Math.max(0, Math.floor(
+                (inserted.rows[0]!.expires_at.getTime() - inserted.rows[0]!.server_now.getTime()) / 1000,
+            )),
         };
     }
 }
@@ -793,46 +881,326 @@ export type StudentSsoCleanupResult = {
     handoffsScrubbed: number;
     attemptsDeleted: number;
     handoffsDeleted: number;
+    signupChallengesTerminalized: number;
+    signupChallengesDeleted: number;
+    reauthAttemptsTerminalized: number;
+    reauthAttemptsDeleted: number;
+    recoveryAttemptsTerminalized: number;
+    recoveryAttemptsDeleted: number;
     grantsDeleted: number;
+    actionGrantsScrubbed: number;
+    recoveryCodesScrubbed: number;
+    terminalSecretsScrubbed: number;
+    overdueExpired: number;
+    overdueTerminalSecrets: number;
 };
+
+// One cleanup invocation visits at most this many rows per transient class.
+// Backlogs drain over later 15-minute runs rather than holding a single
+// transaction open while rewriting an unbounded table.
+const SSO_CLEANUP_BATCH_SIZE = 500;
 
 /**
  * Scheduled retention for SSO transients (B1 contract): expired attempt and
- * handoff ciphertext is scrubbed within one scheduled hour; non-audit
+ * handoff ciphertext is scrubbed at expiry (the 15-minute schedule keeps the
+ * maximum retention below the one-hour bound); non-audit
  * transient records are deleted after seven days. Owner linkage, revocation,
  * and assertion rows are retained under account retention rules and are
  * never deleted here.
  */
 export async function cleanupStudentSsoTransients(client: PoolClient): Promise<StudentSsoCleanupResult> {
-    const failed = await client.query(
-        `UPDATE student_auth_attempts
-         SET status = 'failed', encrypted_verifier = NULL, nonce = NULL, encrypted_observation = NULL
-         WHERE expires_at <= clock_timestamp() AND status IN ('pending', 'processing', 'ready')`,
+    await client.query('BEGIN');
+    try {
+    // Overdue evidence is captured before any mutation. The 15-minute
+    // schedule keeps maximum retention below the one-hour bound, so rows
+    // still unprocessed more than one hour past expiry (or terminal age)
+    // prove scheduler lag even when this pass repairs them; the CLI exits
+    // nonzero on any overdue row. Every transient class terminalized later
+    // in this transaction is counted, mirroring each mutation predicate.
+    const overdue = await client.query<{ count: string }>(
+        `SELECT (
+            (SELECT count(*) FROM student_auth_action_grants
+             WHERE expires_at <= clock_timestamp() - interval '1 hour' AND consumed_at IS NULL AND revoked_at IS NULL)
+            + (SELECT count(*) FROM student_auth_recovery_codes
+               WHERE status = 'pending' AND expires_at <= clock_timestamp() - interval '1 hour')
+            + (SELECT count(*) FROM student_auth_attempts
+               WHERE expires_at <= clock_timestamp() - interval '1 hour' AND status IN ('pending', 'processing', 'ready'))
+            + (SELECT count(*) FROM student_auth_link_handoffs
+               WHERE ((expires_at <= clock_timestamp() - interval '1 hour' AND consumed_at IS NULL)
+                      OR (consumed_at IS NOT NULL AND consumed_at <= clock_timestamp() - interval '1 hour'))
+                 AND (secret_hash IS NOT NULL OR browser_binding_hash IS NOT NULL OR encrypted_observation IS NOT NULL))
+            + (SELECT count(*) FROM student_auth_signup_challenges
+               WHERE expires_at <= clock_timestamp() - interval '1 hour' AND status IN ('pending', 'mailbox_verified'))
+            + (SELECT count(*) FROM student_auth_reauth_attempts
+               WHERE expires_at <= clock_timestamp() - interval '1 hour' AND status IN ('pending', 'processing', 'ready'))
+            + (SELECT count(*) FROM student_auth_recovery_attempts
+               WHERE expires_at <= clock_timestamp() - interval '1 hour' AND status IN ('pending', 'verified'))
+        )::text AS count`,
     );
-    // Handoff ciphertext is NOT NULL by contract, so expiry overwrites it
-    // with an inert marker instead of deleting the row before retention age.
+
+    const overdueTerminalSecrets = await client.query<{ count: string }>(
+        `SELECT (
+            (SELECT count(*) FROM student_auth_attempts
+             WHERE status IN ('consumed', 'failed')
+               AND expires_at <= clock_timestamp() - interval '1 hour'
+               AND (state_hash IS NOT NULL OR callback_cookie_hash IS NOT NULL OR finish_secret_hash IS NOT NULL
+                    OR encrypted_verifier IS NOT NULL OR nonce IS NOT NULL OR encrypted_observation IS NOT NULL))
+            + (SELECT count(*) FROM student_auth_reauth_attempts
+             WHERE status IN ('consumed', 'failed')
+               AND COALESCE(consumed_at, expires_at) <= clock_timestamp() - interval '1 hour'
+               AND (state_hash IS NOT NULL OR callback_cookie_hash IS NOT NULL
+                    OR encrypted_verifier IS NOT NULL OR nonce IS NOT NULL))
+            + (SELECT count(*) FROM student_auth_recovery_attempts
+               WHERE status IN ('consumed', 'failed', 'expired') AND secret_hash IS NOT NULL
+               AND COALESCE(consumed_at, expires_at) <= clock_timestamp() - interval '1 hour')
+        )::text AS count`,
+    );
+    const failed = await client.query(
+        `WITH batch AS (
+           SELECT id FROM student_auth_attempts
+           WHERE expires_at <= clock_timestamp() AND status IN ('pending', 'processing', 'ready')
+           ORDER BY expires_at, id LIMIT ${SSO_CLEANUP_BATCH_SIZE} FOR UPDATE SKIP LOCKED
+         )
+         UPDATE student_auth_attempts AS attempt
+         SET status = 'failed', state_hash = NULL, callback_cookie_hash = NULL, finish_secret_hash = NULL,
+             encrypted_verifier = NULL, nonce = NULL, encrypted_observation = NULL
+         FROM batch WHERE attempt.id = batch.id`,
+    );
+    // Terminalize each passwordless attempt before deleting its tombstone.
+    // These tables retain immutable binding/outcome columns so deletion cannot
+    // turn an expired or consumed artifact back into a usable credential.
+    const signupTerminalized = await client.query(
+        `WITH batch AS (
+           SELECT id FROM student_auth_signup_challenges
+           WHERE expires_at <= clock_timestamp() AND status IN ('pending', 'mailbox_verified')
+           ORDER BY expires_at, id LIMIT ${SSO_CLEANUP_BATCH_SIZE} FOR UPDATE SKIP LOCKED
+         )
+         UPDATE student_auth_signup_challenges AS signup
+         SET status = 'expired', terminal_at = clock_timestamp(), secret_hash = NULL, browser_binding_hash = NULL
+         FROM batch WHERE signup.id = batch.id`,
+    );
+    const reauthTerminalized = await client.query(
+        `WITH batch AS (
+           SELECT id FROM student_auth_reauth_attempts
+           WHERE expires_at <= clock_timestamp() AND status IN ('pending', 'processing', 'ready')
+           ORDER BY expires_at, id LIMIT ${SSO_CLEANUP_BATCH_SIZE} FOR UPDATE SKIP LOCKED
+         )
+         UPDATE student_auth_reauth_attempts AS reauth
+         SET status = 'failed', consumed_at = clock_timestamp(), state_hash = NULL, callback_cookie_hash = NULL,
+             encrypted_verifier = NULL, nonce = NULL
+         FROM batch WHERE reauth.id = batch.id`,
+    );
+    const recoveryTerminalized = await client.query(
+        `WITH batch AS (
+           SELECT id FROM student_auth_recovery_attempts
+           WHERE expires_at <= clock_timestamp() AND status IN ('pending', 'verified')
+           ORDER BY expires_at, id LIMIT ${SSO_CLEANUP_BATCH_SIZE} FOR UPDATE SKIP LOCKED
+         )
+         UPDATE student_auth_recovery_attempts AS recovery
+         SET status = 'expired', secret_hash = NULL, idempotency_key = NULL
+         FROM batch WHERE recovery.id = batch.id`,
+    );
+    // Catch up terminal tombstones written by older failure paths. This is
+    // deliberately status- and timestamp-preserving: immutable bindings and
+    // the seven-day replay tombstone remain available to the retention policy.
+    // The tombstone survives until the attempt's own expiry: a retry
+    // after a lost finish response restarts any time before then, and
+    // the one-hour overdue predicate above still proves scheduler lag.
+    const terminalAttemptSecrets = await client.query(
+        `WITH batch AS (
+           SELECT id FROM student_auth_attempts
+           WHERE status IN ('consumed', 'failed') AND expires_at <= clock_timestamp()
+             AND (state_hash IS NOT NULL OR callback_cookie_hash IS NOT NULL OR finish_secret_hash IS NOT NULL
+                  OR encrypted_verifier IS NOT NULL OR nonce IS NOT NULL OR encrypted_observation IS NOT NULL)
+           ORDER BY expires_at, id LIMIT ${SSO_CLEANUP_BATCH_SIZE} FOR UPDATE SKIP LOCKED
+         )
+         UPDATE student_auth_attempts AS attempt
+         SET state_hash = NULL, callback_cookie_hash = NULL, finish_secret_hash = NULL,
+             encrypted_verifier = NULL, nonce = NULL, encrypted_observation = NULL
+         FROM batch WHERE attempt.id = batch.id`,
+    );
+    const terminalReauthSecrets = await client.query(
+        `WITH batch AS (
+           SELECT id FROM student_auth_reauth_attempts
+           WHERE status IN ('consumed', 'failed')
+             AND (state_hash IS NOT NULL OR callback_cookie_hash IS NOT NULL
+                  OR encrypted_verifier IS NOT NULL OR nonce IS NOT NULL)
+           ORDER BY expires_at, id LIMIT ${SSO_CLEANUP_BATCH_SIZE} FOR UPDATE SKIP LOCKED
+         )
+         UPDATE student_auth_reauth_attempts AS reauth
+         SET state_hash = NULL, callback_cookie_hash = NULL, encrypted_verifier = NULL, nonce = NULL
+         FROM batch WHERE reauth.id = batch.id`,
+    );
+    const terminalRecoverySecrets = await client.query(
+        `WITH batch AS (
+           SELECT id FROM student_auth_recovery_attempts
+           WHERE status IN ('consumed', 'failed', 'expired') AND secret_hash IS NOT NULL
+           ORDER BY COALESCE(consumed_at, expires_at), id LIMIT ${SSO_CLEANUP_BATCH_SIZE} FOR UPDATE SKIP LOCKED
+         )
+         UPDATE student_auth_recovery_attempts AS recovery
+         SET secret_hash = NULL
+         FROM batch WHERE recovery.id = batch.id`,
+    );
+    // Handoff ciphertext and one-use/browser secrets all become inert at
+    // expiry; migration 074 permits this only after expiry or consumption.
+    // Consumed handoffs past the one-hour bound are included: rows consumed
+    // before the consume-time scrub deployed still carry binding digests
+    // that would otherwise wait out the seven-day tombstone. The bound
+    // mirrors the overdue predicate below and keeps fresh in-flight rows
+    // (which the consume path already scrubs) out of this catch-up.
     const scrubbed = await client.query(
-        `UPDATE student_auth_link_handoffs
-         SET encrypted_observation = 'scrubbed'
-         WHERE expires_at <= clock_timestamp() AND consumed_at IS NULL AND encrypted_observation <> 'scrubbed'`,
+        `WITH batch AS (
+           SELECT id FROM student_auth_link_handoffs
+           WHERE ((expires_at <= clock_timestamp() AND consumed_at IS NULL)
+                  OR (consumed_at IS NOT NULL AND consumed_at <= clock_timestamp() - interval '1 hour'))
+             AND (secret_hash IS NOT NULL OR browser_binding_hash IS NOT NULL OR encrypted_observation IS NOT NULL)
+           ORDER BY expires_at, id LIMIT ${SSO_CLEANUP_BATCH_SIZE} FOR UPDATE SKIP LOCKED
+         )
+         UPDATE student_auth_link_handoffs AS handoff
+         SET secret_hash = NULL, browser_binding_hash = NULL, encrypted_observation = NULL
+         FROM batch WHERE handoff.id = batch.id`,
+    );
+    // The signup FK intentionally does not cascade: retain completed
+    // tombstones for seven days, then delete them before their handoffs.
+    const signupChallenges = await client.query(
+        `WITH batch AS (
+           SELECT id FROM student_auth_signup_challenges
+           WHERE status IN ('consumed', 'cancelled', 'expired')
+             AND COALESCE(terminal_at, consumed_at, expires_at) <= clock_timestamp() - interval '7 days'
+           ORDER BY COALESCE(terminal_at, consumed_at, expires_at), id LIMIT ${SSO_CLEANUP_BATCH_SIZE} FOR UPDATE SKIP LOCKED
+         )
+         DELETE FROM student_auth_signup_challenges AS signup USING batch WHERE signup.id = batch.id`,
+    );
+    const reauthAttempts = await client.query(
+        `WITH batch AS (
+           SELECT id FROM student_auth_reauth_attempts
+           WHERE status IN ('consumed', 'failed')
+             AND COALESCE(consumed_at, expires_at) <= clock_timestamp() - interval '7 days'
+           ORDER BY COALESCE(consumed_at, expires_at), id LIMIT ${SSO_CLEANUP_BATCH_SIZE} FOR UPDATE SKIP LOCKED
+         )
+         DELETE FROM student_auth_reauth_attempts AS reauth USING batch WHERE reauth.id = batch.id`,
+    );
+    const recoveryAttempts = await client.query(
+        `WITH batch AS (
+           SELECT id FROM student_auth_recovery_attempts
+           WHERE status IN ('consumed', 'failed', 'expired')
+             AND COALESCE(consumed_at, expires_at) <= clock_timestamp() - interval '7 days'
+           ORDER BY COALESCE(consumed_at, expires_at), id LIMIT ${SSO_CLEANUP_BATCH_SIZE} FOR UPDATE SKIP LOCKED
+         )
+         DELETE FROM student_auth_recovery_attempts AS recovery USING batch WHERE recovery.id = batch.id`,
     );
     const handoffs = await client.query(
-        `DELETE FROM student_auth_link_handoffs WHERE expires_at <= clock_timestamp() - interval '7 days'`,
+        `WITH batch AS (
+           SELECT handoff.id FROM student_auth_link_handoffs handoff
+           WHERE handoff.expires_at <= clock_timestamp() - interval '7 days'
+             AND NOT EXISTS (SELECT 1 FROM student_auth_signup_challenges signup WHERE signup.handoff_id = handoff.id)
+           ORDER BY handoff.expires_at, handoff.id LIMIT ${SSO_CLEANUP_BATCH_SIZE} FOR UPDATE SKIP LOCKED
+         )
+         DELETE FROM student_auth_link_handoffs handoff USING batch WHERE handoff.id = batch.id`,
     );
     const grants = await client.query(
-        `DELETE FROM student_auth_reauth_grants WHERE expires_at <= clock_timestamp() - interval '7 days'`,
+        `WITH batch AS (
+           SELECT id FROM student_auth_reauth_grants
+           WHERE expires_at <= clock_timestamp() - interval '7 days'
+           ORDER BY expires_at, id LIMIT ${SSO_CLEANUP_BATCH_SIZE} FOR UPDATE SKIP LOCKED
+         )
+         DELETE FROM student_auth_reauth_grants AS grant_row USING batch WHERE grant_row.id = batch.id`,
+    );
+    // Credential records deliberately retain active recovery-code digests.
+    // Only expired pending rows are terminalized; consumed/revoked tombstones
+    // are removed after seven days, so deleting a row cannot revive its use.
+    const actionGrants = await client.query(
+        `WITH batch AS (
+           SELECT id FROM student_auth_action_grants
+           WHERE expires_at <= clock_timestamp() AND consumed_at IS NULL AND revoked_at IS NULL
+           ORDER BY expires_at, id LIMIT ${SSO_CLEANUP_BATCH_SIZE} FOR UPDATE SKIP LOCKED
+         )
+         UPDATE student_auth_action_grants AS action_grant
+         SET revoked_at = clock_timestamp(), secret_hash = 'scrubbed'
+         FROM batch WHERE action_grant.id = batch.id`,
+    );
+    const recoveryCodes = await client.query(
+        `WITH batch AS (
+           SELECT id FROM student_auth_recovery_codes
+           WHERE status = 'pending' AND expires_at <= clock_timestamp()
+           ORDER BY expires_at, id LIMIT ${SSO_CLEANUP_BATCH_SIZE} FOR UPDATE SKIP LOCKED
+         )
+         UPDATE student_auth_recovery_codes AS recovery_code
+         SET status = 'revoked', code_digest = NULL, expires_at = NULL,
+             revoked_at = clock_timestamp(), terminal_at = clock_timestamp(),
+             pending_sid = NULL, pending_credential_generation = NULL, pending_proof_identity_id = NULL
+         FROM batch WHERE recovery_code.id = batch.id`,
+    );
+    await client.query(
+        `WITH batch AS (
+           SELECT id FROM student_auth_action_grants
+           WHERE COALESCE(consumed_at, revoked_at, expires_at) <= clock_timestamp() - interval '7 days'
+           ORDER BY COALESCE(consumed_at, revoked_at, expires_at), id LIMIT ${SSO_CLEANUP_BATCH_SIZE} FOR UPDATE SKIP LOCKED
+         )
+         DELETE FROM student_auth_action_grants AS action_grant USING batch WHERE action_grant.id = batch.id`,
+    );
+    // Referencing attempts and grants retire on their own later clocks; a
+    // tombstone delete must wait for them or the foreign keys roll back the
+    // whole cleanup transaction and leave unrelated secrets unswept.
+    await client.query(
+        `WITH batch AS (
+           SELECT id FROM student_auth_recovery_codes
+           WHERE status IN ('consumed', 'revoked')
+             AND COALESCE(terminal_at, consumed_at, revoked_at, created_at) <= clock_timestamp() - interval '7 days'
+             AND NOT EXISTS (
+               SELECT 1 FROM student_auth_recovery_attempts attempt
+               WHERE attempt.user_id = student_auth_recovery_codes.user_id
+                 AND attempt.recovery_code_generation = student_auth_recovery_codes.generation
+             )
+             AND NOT EXISTS (
+               SELECT 1 FROM student_auth_action_grants action_grant
+               WHERE action_grant.user_id = student_auth_recovery_codes.user_id
+                 AND (action_grant.active_code_generation = student_auth_recovery_codes.generation
+                      OR action_grant.pending_code_id = student_auth_recovery_codes.id)
+             )
+             AND NOT EXISTS (
+               SELECT 1 FROM student_auth_reauth_attempts reauth
+               WHERE reauth.user_id = student_auth_recovery_codes.user_id
+                 AND (reauth.active_code_generation = student_auth_recovery_codes.generation
+                      OR reauth.pending_code_id = student_auth_recovery_codes.id)
+             )
+           ORDER BY COALESCE(terminal_at, consumed_at, revoked_at, created_at), id
+           LIMIT ${SSO_CLEANUP_BATCH_SIZE} FOR UPDATE SKIP LOCKED
+         )
+         DELETE FROM student_auth_recovery_codes AS recovery_code USING batch WHERE recovery_code.id = batch.id`,
     );
     const attempts = await client.query(
-        `DELETE FROM student_auth_attempts
-         WHERE status IN ('consumed', 'failed')
-           AND expires_at <= clock_timestamp() - interval '7 days'
-           AND NOT EXISTS (SELECT 1 FROM student_auth_link_handoffs WHERE attempt_id = student_auth_attempts.id)`,
+        `WITH batch AS (
+           SELECT attempt.id FROM student_auth_attempts attempt
+           WHERE attempt.status IN ('consumed', 'failed')
+             AND attempt.expires_at <= clock_timestamp() - interval '7 days'
+             AND NOT EXISTS (SELECT 1 FROM student_auth_link_handoffs WHERE attempt_id = attempt.id)
+           ORDER BY attempt.expires_at, attempt.id LIMIT ${SSO_CLEANUP_BATCH_SIZE} FOR UPDATE SKIP LOCKED
+         )
+         DELETE FROM student_auth_attempts AS attempt USING batch WHERE attempt.id = batch.id`,
     );
-    return {
+    const result = {
         attemptsFailed: failed.rowCount ?? 0,
         handoffsScrubbed: scrubbed.rowCount ?? 0,
         attemptsDeleted: attempts.rowCount ?? 0,
         handoffsDeleted: handoffs.rowCount ?? 0,
+        signupChallengesTerminalized: signupTerminalized.rowCount ?? 0,
+        signupChallengesDeleted: signupChallenges.rowCount ?? 0,
+        reauthAttemptsTerminalized: reauthTerminalized.rowCount ?? 0,
+        reauthAttemptsDeleted: reauthAttempts.rowCount ?? 0,
+        recoveryAttemptsTerminalized: recoveryTerminalized.rowCount ?? 0,
+        recoveryAttemptsDeleted: recoveryAttempts.rowCount ?? 0,
         grantsDeleted: grants.rowCount ?? 0,
+        actionGrantsScrubbed: actionGrants.rowCount ?? 0,
+        recoveryCodesScrubbed: recoveryCodes.rowCount ?? 0,
+        terminalSecretsScrubbed: (terminalAttemptSecrets.rowCount ?? 0) + (terminalReauthSecrets.rowCount ?? 0) + (terminalRecoverySecrets.rowCount ?? 0),
+        overdueExpired: Number(overdue.rows[0]?.count ?? 0),
+        overdueTerminalSecrets: Number(overdueTerminalSecrets.rows[0]?.count ?? 0),
     };
+    await client.query('COMMIT');
+    return result;
+    } catch (error) {
+        await client.query('ROLLBACK').catch(() => undefined);
+        throw error;
+    }
 }

@@ -1,5 +1,15 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import { recoveryDiscoveryAvailable } from './student-login-options.service.js';
+
+test('recovery discovery requires recovery codes, mail delivery, and a valid outbox key', () => {
+    const valid = Buffer.alloc(32, 7).toString('base64');
+    assert.equal(recoveryDiscoveryAvailable({ recoveryCodeKey: 'configured', outboxEncryptionKey: valid, emailConfigured: true }), true);
+    assert.equal(recoveryDiscoveryAvailable({ recoveryCodeKey: 'configured', outboxEncryptionKey: null, emailConfigured: true }), false);
+    assert.equal(recoveryDiscoveryAvailable({ recoveryCodeKey: 'configured', outboxEncryptionKey: 'bad', emailConfigured: true }), false);
+    assert.equal(recoveryDiscoveryAvailable({ recoveryCodeKey: null, outboxEncryptionKey: valid, emailConfigured: true }), false);
+    assert.equal(recoveryDiscoveryAvailable({ recoveryCodeKey: 'configured', outboxEncryptionKey: valid, emailConfigured: false }), false);
+});
 
 import { BadRequestError, RateLimitError, ServiceUnavailableError } from '../../common/errors/AppError.js';
 import type { LoginProvider } from './student-sso.types.js';
@@ -59,6 +69,7 @@ test('overlong input is rejected without a database lookup', async () => {
         resolveStudentLoginOptions(stubQuery([], seen), {
             email: `${'a'.repeat(250)}@x.io`,
             enabledProviders: ['google'],
+            recoveryAvailable: true,
         }),
         BadRequestError,
     );
@@ -69,7 +80,7 @@ for (const email of ['', 'no-at-sign', 'two@@school.example', 'space @school.exa
     test(`malformed input ${JSON.stringify(email)} is a 400 with no lookup`, async () => {
         const seen: Array<{ text: string; params: unknown[] }> = [];
         await assert.rejects(
-            resolveStudentLoginOptions(stubQuery([], seen), { email, enabledProviders: ['google', 'microsoft'] }),
+            resolveStudentLoginOptions(stubQuery([], seen), { email, enabledProviders: ['google', 'microsoft'], recoveryAvailable: true }),
             (error: unknown) => {
                 assert.ok(error instanceof BadRequestError);
                 assert.equal(error.statusCode, 400);
@@ -85,6 +96,7 @@ test('unknown valid domains return password-only without providers', async () =>
     const options = await resolveStudentLoginOptions(stubQuery([], seen), {
         email: 'ada@unknown.example',
         enabledProviders: ['google', 'microsoft'],
+        recoveryAvailable: true,
     });
     assert.deepEqual(options, { password: true, providers: [], registration: true, recovery: true });
     assert.equal(seen.length, 1);
@@ -95,6 +107,7 @@ test('discovery binds the exact normalized domain and enabled providers', async 
     await resolveStudentLoginOptions(stubQuery([{ provider: 'google' }], seen), {
         email: ' Ada.Osei+club@Students.School.Example ',
         enabledProviders: ['google', 'microsoft'],
+        recoveryAvailable: true,
     });
     assert.deepEqual(seen[0]?.params, ['students.school.example', ['google', 'microsoft']]);
 });
@@ -102,7 +115,7 @@ test('discovery binds the exact normalized domain and enabled providers', async 
 test('multiple approved methods resolve in a stable order', async () => {
     const options = await resolveStudentLoginOptions(
         stubQuery([{ provider: 'microsoft' }, { provider: 'google' }]),
-        { email: 'ada@school.example', enabledProviders: ['google', 'microsoft'] },
+        { email: 'ada@school.example', enabledProviders: ['google', 'microsoft'], recoveryAvailable: true },
     );
     assert.deepEqual(options.providers, ['google', 'microsoft']);
 });
@@ -115,7 +128,7 @@ test('rows outside deployment readiness are filtered, deduped, and unknown value
             { provider: 'google' },
             { provider: 'github' },
         ]),
-        { email: 'ada@school.example', enabledProviders: ['google'] },
+        { email: 'ada@school.example', enabledProviders: ['google'], recoveryAvailable: true },
     );
     assert.deepEqual(options.providers, ['google']);
 });
@@ -125,9 +138,19 @@ test('disabled deployments short-circuit with no database lookup', async () => {
     const options = await resolveStudentLoginOptions(stubQuery([{ provider: 'google' }], seen), {
         email: 'ada@school.example',
         enabledProviders: [],
+        recoveryAvailable: true,
     });
     assert.deepEqual(options, { password: true, providers: [], registration: true, recovery: true });
     assert.equal(seen.length, 0);
+});
+
+test('login discovery reports recovery unavailable without affecting login methods', async () => {
+    const options = await resolveStudentLoginOptions(stubQuery([], []), {
+        email: 'ada@unknown.example',
+        enabledProviders: [],
+        recoveryAvailable: false,
+    });
+    assert.deepEqual(options, { password: true, providers: [], registration: true, recovery: false });
 });
 
 test('discovery SQL is a single read-only SELECT statement', () => {

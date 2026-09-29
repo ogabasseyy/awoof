@@ -99,6 +99,7 @@ try {
         NODE_ENV: 'test',
         JWT_SECRET: 'test-jwt-secret-at-least-32-characters',
         JWT_REFRESH_SECRET: 'test-refresh-secret-at-least-32-characters',
+        STUDENT_ACCOUNT_RECOVERY_OTP_ENCRYPTION_KEY: Buffer.alloc(32, 0x5a).toString('base64'),
         DATABASE_URL: databaseUrl,
         AWOOF_TEST_DATABASE_URL: databaseUrl,
         AWOOF_TEST_GUARD: randomBytes(32).toString('hex'),

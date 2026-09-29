@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 // @ts-ignore - upstream package has no TypeScript definitions
 import SibApiV3Sdk from 'sib-api-v3-sdk';
-import { sendEmailVerificationOTP, sendWelcomeEmail } from './email.service.js';
+import { sendAccountRecoveryCompletionNotice, sendEmailVerificationOTP, sendRecoveryCodeSecurityNotice, sendWelcomeEmail } from './email.service.js';
 
 test('registration and welcome mail render supplied names as text, never markup', async (t) => {
     const previous = process.env.BREVO_API_KEY;
@@ -27,4 +27,60 @@ test('registration and welcome mail render supplied names as text, never markup'
         assert.ok(!html.includes(name));
         assert.ok(!html.includes('<a href="https://attacker.invalid">'));
     }
+});
+
+test('verification OTP copy states the caller-supplied expiry, defaulting to ten minutes', async (t) => {
+    const previous = process.env.BREVO_API_KEY;
+    process.env.BREVO_API_KEY = 'synthetic-test-key';
+    t.after(() => {
+        if (previous === undefined) delete process.env.BREVO_API_KEY;
+        else process.env.BREVO_API_KEY = previous;
+    });
+    const messages: string[] = [];
+    t.mock.method(SibApiV3Sdk.ApiClient.instance, 'callApi', async (...args: unknown[]) => {
+        messages.push((args[7] as { htmlContent: string }).htmlContent);
+        return { data: { messageId: 'synthetic-message' } };
+    });
+    assert.equal((await sendEmailVerificationOTP('student@approved.test', '123456', 'Ada', 'student', 5)).success, true);
+    assert.equal((await sendEmailVerificationOTP('student@approved.test', '123456', 'Ada', 'student')).success, true);
+    assert.equal(messages.length, 2);
+    assert.ok(messages[0]!.includes('This code will expire in 5 minutes.'));
+    assert.ok(messages[1]!.includes('This code will expire in 10 minutes.'));
+});
+
+test('recovery-code security notices link the support address for signed-out reports', async (t) => {
+    const previous = process.env.BREVO_API_KEY;
+    process.env.BREVO_API_KEY = 'synthetic-test-key';
+    t.after(() => {
+        if (previous === undefined) delete process.env.BREVO_API_KEY;
+        else process.env.BREVO_API_KEY = previous;
+    });
+    const messages: string[] = [];
+    t.mock.method(SibApiV3Sdk.ApiClient.instance, 'callApi', async (...args: unknown[]) => {
+        messages.push((args[7] as { htmlContent: string }).htmlContent);
+        return { data: { messageId: 'synthetic-message' } };
+    });
+    assert.equal((await sendRecoveryCodeSecurityNotice('student@approved.test', 'replaced')).success, true);
+    assert.equal(messages.length, 1);
+    assert.ok(messages[0]!.includes('mailto:support@awoof.tech'));
+    assert.ok(!messages[0]!.includes('recovery code is <strong>'));
+});
+
+test('account recovery completion notices confirm the change with a support address and no credentials', async (t) => {
+    const previous = process.env.BREVO_API_KEY;
+    process.env.BREVO_API_KEY = 'synthetic-test-key';
+    t.after(() => {
+        if (previous === undefined) delete process.env.BREVO_API_KEY;
+        else process.env.BREVO_API_KEY = previous;
+    });
+    const messages: string[] = [];
+    t.mock.method(SibApiV3Sdk.ApiClient.instance, 'callApi', async (...args: unknown[]) => {
+        messages.push((args[7] as { htmlContent: string }).htmlContent);
+        return { data: { messageId: 'synthetic-message' } };
+    });
+    assert.equal((await sendAccountRecoveryCompletionNotice('student@approved.test', 'compromise')).success, true);
+    assert.equal(messages.length, 1);
+    assert.ok(messages[0]!.includes('disconnected linked external sign-in identities'));
+    assert.ok(messages[0]!.includes('mailto:support@awoof.tech'));
+    assert.ok(!messages[0]!.includes('<strong>'));
 });

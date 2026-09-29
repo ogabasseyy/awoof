@@ -39,8 +39,8 @@ export const helpSections: HelpSection[] = [
   {
     heading: 'Account recovery',
     paragraphs: [
-      'Password-reset codes go to the email address already on your account. If that school mailbox is gone, reset cannot reach you: verify a mailbox you control by registering again with your current school address.',
-      'Receipts on the old account stay there as history. Account-specific help still needs a signed-in session so support can see your real state.',
+      'Account recovery needs the proofs requested by the account-recovery flow. Where passwordless sign-up and this recovery flow are enabled, control of a school mailbox by itself does not transfer the account or prove current enrollment; both mailbox control and the saved recovery code are required. Accounts that created a password at sign-up can still use password reset, and can also enroll a recovery code to use this flow where the deployment has enabled recovery codes. Accounts that started passwordless and set a password through recovery remain unable to use legacy password reset; they must use this recovery flow with the saved code.',
+      'If you cannot complete a recovery step, recovery cannot continue without the requested proofs. Account-specific help may require a signed-in session to inspect the account state. Receipts on an existing account remain its history.',
     ],
   },
 ];

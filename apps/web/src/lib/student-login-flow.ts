@@ -181,7 +181,7 @@ export function parseSsoStart(value: unknown): SsoStart | null {
 
 export type SsoFinishAuthenticated = {
     kind: 'authenticated';
-    user: { id: string; email: string; role: 'student' };
+    user: { id: string; email: string; role: 'student'; recoveryReenrollmentRequired?: boolean };
     tokens: { accessToken: string; refreshToken: string };
     studentAssurance: StudentAssurance | null;
     assuranceStatus: 'available' | 'unavailable';
@@ -192,6 +192,7 @@ export type SsoFinishLinkRequired = {
     handoffId: string;
     handoffSecret: string;
     expiresAt: string;
+    provider: 'google' | 'microsoft';
 };
 
 function isStudentUser(value: unknown): value is SsoFinishAuthenticated['user'] {
@@ -223,9 +224,14 @@ export function parseSsoFinishResponse(value: unknown): SsoFinishAuthenticated |
             assuranceStatus: data.assuranceStatus,
         });
         if (!assurance) return null;
+        const rawUser = data.user as { id: string; email: string; recoveryReenrollmentRequired?: unknown };
         return {
             kind: 'authenticated',
-            user: { id: (data.user as { id: string }).id, email: (data.user as { email: string }).email, role: 'student' },
+            // A recovered student signing in through a retained school
+            // identity must see the re-enrollment warning immediately, not
+            // only after a reload refetches /auth/me. Only the literal
+            // marker survives; anything else stays absent.
+            user: { id: rawUser.id, email: rawUser.email, role: 'student', ...(rawUser.recoveryReenrollmentRequired === true ? { recoveryReenrollmentRequired: true } : {}) },
             tokens: {
                 accessToken: (data.tokens as { accessToken: string }).accessToken,
                 refreshToken: (data.tokens as { refreshToken: string }).refreshToken,
@@ -236,11 +242,13 @@ export function parseSsoFinishResponse(value: unknown): SsoFinishAuthenticated |
     }
     if (data.outcome === 'link_required') {
         if (!isUuid(data.handoffId) || !isOpaqueSecret(data.handoffSecret) || !isInstant(data.expiresAt)) return null;
+        if (data.provider !== 'google' && data.provider !== 'microsoft') return null;
         return {
             kind: 'link_required',
             handoffId: data.handoffId,
             handoffSecret: data.handoffSecret,
             expiresAt: data.expiresAt,
+            provider: data.provider,
         };
     }
     return null;
@@ -264,6 +272,18 @@ export function parseSsoReauthResponse(value: unknown): SsoReauthGrant | null {
     if (!data) return null;
     if (!isUuid(data.grantId) || !isOpaqueSecret(data.grantSecret) || !isInstant(data.expiresAt)) return null;
     return { grantId: data.grantId, grantSecret: data.grantSecret, expiresAt: data.expiresAt };
+}
+
+export type SsoReauthFinish = SsoReauthGrant & { purpose: 'recovery_code_generate' | 'recovery_code_activate' | 'recovery_code_remove' | 'link' | 'unlink'; pendingCodeId: string | null; targetIdentityId: string | null; activeCodeGeneration: number | null };
+/** Callback continuations use purpose and targets returned from the locked server attempt, never tab metadata. */
+export function parseSsoReauthFinish(value: unknown): SsoReauthFinish | null {
+    const grant = parseSsoReauthResponse(value); const data = successData(value); if (!grant || !data) return null;
+    const purpose = data.purpose;
+    if ((purpose !== 'recovery_code_generate' && purpose !== 'recovery_code_activate' && purpose !== 'recovery_code_remove' && purpose !== 'link' && purpose !== 'unlink')
+        || (data.pendingCodeId !== null && !isUuid(data.pendingCodeId))
+        || (data.targetIdentityId !== null && !isUuid(data.targetIdentityId))
+        || (data.activeCodeGeneration !== null && (!Number.isInteger(data.activeCodeGeneration) || (data.activeCodeGeneration as number) < 1))) return null;
+    return { ...grant, purpose, pendingCodeId: data.pendingCodeId as string | null, targetIdentityId: data.targetIdentityId as string | null, activeCodeGeneration: data.activeCodeGeneration as number | null };
 }
 
 export type SsoLinkOutcome =
@@ -443,7 +463,7 @@ export function clearSsoHandoff(storage: Storage | null | undefined): void {
     clearRecord(storage, SSO_HANDOFF_KEY);
 }
 
-export const LOGIN_ERROR_CODES = ['session_expired', 'sso_not_completed', 'sso_expired', 'sso_unavailable'] as const;
+export const LOGIN_ERROR_CODES = ['session_expired', 'sso_not_completed', 'sso_expired', 'sso_unavailable', 'unlinked_signed_out'] as const;
 
 export type LoginErrorCode = (typeof LOGIN_ERROR_CODES)[number];
 
@@ -461,13 +481,15 @@ export function parseLoginErrorCode(value: unknown): LoginErrorCode | null {
 export function loginErrorMessage(code: LoginErrorCode): string {
     switch (code) {
         case 'session_expired':
-            return 'Your session expired. Sign in again with your password to continue.';
+            return 'Your session expired. Sign in again with your school account, or use a password if you set one.';
         case 'sso_not_completed':
-            return 'The school sign-in did not complete. Try again, or use your password — your account is unchanged.';
+            return 'The school sign-in did not complete. Try again with your school account, or use a password if you set one; your account is unchanged.';
         case 'sso_expired':
-            return 'Your school sign-in attempt expired. Start again, or use your password.';
+            return 'Your school sign-in attempt expired. Start again with your school account, or use a password if you set one.';
         case 'sso_unavailable':
-            return 'School sign-in is temporarily unavailable. Use your password; your account is unchanged.';
+            return 'School sign-in is temporarily unavailable. Try again later, or use a password if you set one; your account is unchanged.';
+        case 'unlinked_signed_out':
+            return 'The removed sign-in had issued this session, so you were signed out. That school sign-in can no longer access this account.';
     }
 }
 

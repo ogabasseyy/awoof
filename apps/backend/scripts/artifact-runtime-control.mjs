@@ -140,6 +140,16 @@ function verifyCleanupRedaction(runtimeRoot) {
     assert.equal(result.stdout, '');
     assert.equal(result.stderr, 'microsoft retention cleanup failed\n');
     assert.equal(`${result.stdout}${result.stderr}`.includes(canary), false, 'compiled cleanup probe must redact connection values');
+    const studentResult = spawnSync(process.execPath, ['dist/scripts/cleanup-student-sso.js'], {
+        cwd: runtimeRoot,
+        encoding: 'utf8',
+        timeout: 30_000,
+        env: artifactRuntimeEnvironment({ DATABASE_URL: `postgresql://user:${canary}@127.0.0.1:1/awoof`, DB_HOST: '', DB_NAME: '', DB_USER: '' }),
+    });
+    assert.equal(studentResult.status, 1, 'compiled student SSO cleanup failure probe must fail closed');
+    assert.equal(studentResult.stdout, '');
+    assert.equal(studentResult.stderr, 'student SSO cleanup failed\n');
+    assert.equal(`${studentResult.stdout}${studentResult.stderr}`.includes(canary), false, 'compiled student SSO cleanup probe must redact connection values');
 }
 
 /** Creates a disposable fixture containing no source directory and validates it. */

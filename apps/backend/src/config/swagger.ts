@@ -124,6 +124,26 @@ Access tokens expire in 15 minutes. Use the refresh token endpoint to get a new 
                         },
                     },
                 },
+                PasswordlessSignupHandoffRequest: { type: 'object', additionalProperties: false, required: ['handoffId', 'handoffSecret'], properties: { handoffId: { type: 'string', format: 'uuid' }, handoffSecret: { type: 'string', minLength: 1, maxLength: 1024 } } },
+                PasswordlessSignupVerifyRequest: { type: 'object', additionalProperties: false, required: ['handoffId', 'handoffSecret', 'challengeId', 'code'], properties: { handoffId: { type: 'string', format: 'uuid' }, handoffSecret: { type: 'string', minLength: 1, maxLength: 1024 }, challengeId: { type: 'string', format: 'uuid' }, code: { type: 'string', minLength: 6, maxLength: 6, pattern: '^\\d{6}$', description: 'Six-digit mailbox OTP; anything else is rejected.' } } },
+                PasswordlessSignupCompleteRequest: { type: 'object', additionalProperties: false, required: ['handoffId', 'handoffSecret', 'fullName', 'ageAttested', 'termsAccepted', 'termsVersion', 'verificationConsent', 'noticeVersion'], properties: { handoffId: { type: 'string', format: 'uuid' }, handoffSecret: { type: 'string', minLength: 1, maxLength: 1024 }, fullName: { type: 'string', pattern: '^\\s*\\S[\\s\\S]{0,253}\\S\\s*$', description: 'Display name; 2-255 characters after trimming. Surrounding whitespace is accepted and trimmed by the endpoint, so raw length is unconstrained and the pattern measures the trimmed value.' }, ageAttested: { type: 'boolean', enum: [true] }, termsAccepted: { type: 'boolean', enum: [true] }, termsVersion: { type: 'string', minLength: 1 }, verificationConsent: { type: 'boolean', enum: [true] }, noticeVersion: { type: 'string', minLength: 1 } } },
+                PasswordlessSignupContextResponse: { type: 'object', required: ['success', 'data'], properties: { success: { type: 'boolean', enum: [true] }, data: { type: 'object', required: ['email', 'universityId', 'termsVersion', 'noticeVersion', 'noticeText', 'expiresAt'], properties: { email: { type: 'string', format: 'email' }, universityId: { type: 'string', format: 'uuid' }, termsVersion: { type: 'string', minLength: 1 }, noticeVersion: { type: 'string', minLength: 1 }, noticeText: { type: 'string', minLength: 1 }, expiresAt: { type: 'string', format: 'date-time' } } } } },
+                PasswordlessSignupCodeResponse: { type: 'object', required: ['success', 'data'], properties: { success: { type: 'boolean', enum: [true] }, data: { type: 'object', required: ['challengeId', 'expiresAt'], properties: { challengeId: { type: 'string', format: 'uuid' }, expiresAt: { type: 'string', format: 'date-time' } } } } },
+                PasswordlessSignupVerifiedResponse: { type: 'object', required: ['success', 'data'], properties: { success: { type: 'boolean', enum: [true] }, data: { type: 'object', required: ['verified', 'expiresAt'], properties: { verified: { type: 'boolean', enum: [true] }, expiresAt: { type: 'string', format: 'date-time', description: 'Pending signup expiry; verification does not extend the handoff window.' } } } } },
+                PasswordlessSignupAvailabilityResponse: { type: 'object', required: ['success', 'data'], properties: { success: { type: 'boolean', enum: [true] }, data: { type: 'object', required: ['available'], properties: { available: { type: 'boolean' } } } } },
+                PasswordlessSignupCompleteResponse: { type: 'object', required: ['success', 'data'], properties: { success: { type: 'boolean', enum: [true] }, data: { type: 'object', required: ['user', 'tokens'], properties: { user: { type: 'object', required: ['id', 'email', 'role'], properties: { id: { type: 'string', format: 'uuid' }, email: { type: 'string', format: 'email' }, role: { type: 'string', enum: ['student'] } } }, tokens: { type: 'object', required: ['accessToken', 'refreshToken'], properties: { accessToken: { type: 'string', readOnly: true }, refreshToken: { type: 'string', readOnly: true } } } } } } },
+                ReauthGrant: { type: 'object', additionalProperties: false, required: ['grantId', 'grantSecret'], properties: { grantId: { type: 'string', format: 'uuid' }, grantSecret: { type: 'string', minLength: 1, maxLength: 1024 } } },
+                RecoveryCodeGenerateRequest: { type: 'object', additionalProperties: false, required: ['reauthGrant'], properties: { reauthGrant: { $ref: '#/components/schemas/ReauthGrant' }, oldCode: { type: 'string', minLength: 1, maxLength: 1024 } } },
+                RecoveryCodeActivateRequest: { type: 'object', additionalProperties: false, required: ['reauthGrant', 'pendingCodeId', 'code'], properties: { reauthGrant: { $ref: '#/components/schemas/ReauthGrant' }, pendingCodeId: { type: 'string', format: 'uuid' }, code: { type: 'string', minLength: 1, maxLength: 1024 }, oldCode: { type: 'string', minLength: 1, maxLength: 1024 } } },
+                RecoveryCodeRemoveRequest: { type: 'object', additionalProperties: false, required: ['reauthGrant', 'oldCode'], properties: { reauthGrant: { $ref: '#/components/schemas/ReauthGrant' }, oldCode: { type: 'string', minLength: 1, maxLength: 1024 } } },
+                RecoveryCodeStatusResponse: { type: 'object', required: ['success', 'data'], properties: { success: { type: 'boolean', enum: [true] }, data: { type: 'object', required: ['status', 'generation', 'pendingCodeId', 'pendingExpiresAt', 'serverNow'], properties: { status: { type: 'string', enum: ['unconfigured', 'pending', 'active'] }, generation: { type: 'integer', nullable: true }, pendingCodeId: { type: 'string', format: 'uuid', nullable: true }, pendingExpiresAt: { type: 'string', format: 'date-time', nullable: true, description: 'Pending-code activation deadline; null unless a live candidate exists.' }, serverNow: { type: 'string', format: 'date-time', description: 'Server clock at response time; clients correct countdowns against it.' } } } } },
+                RecoveryCodeGeneratedResponse: { type: 'object', required: ['success', 'data'], properties: { success: { type: 'boolean', enum: [true] }, data: { type: 'object', required: ['pendingCodeId', 'code', 'generation', 'expiresAt', 'serverNow'], properties: { pendingCodeId: { type: 'string', format: 'uuid' }, code: { type: 'string', readOnly: true }, generation: { type: 'integer', minimum: 1, description: 'Pending-code generation; ambiguous activations require the reloaded active generation to match.' }, expiresAt: { type: 'string', format: 'date-time', description: 'Pending-code activation deadline.' }, serverNow: { type: 'string', format: 'date-time', description: 'Server clock at response time; clients correct countdowns against it.' } } } } },
+                RecoveryCodeActivatedResponse: { type: 'object', required: ['success', 'data'], properties: { success: { type: 'boolean', enum: [true] }, data: { type: 'object', required: ['active'], properties: { active: { type: 'boolean', enum: [true] } } } } },
+                AccountRecoveryStartRequest: { type: 'object', additionalProperties: false, required: ['email', 'purpose'], properties: { email: { type: 'string', format: 'email', minLength: 1, maxLength: 255 }, purpose: { type: 'string', enum: ['lost_access', 'compromise'] }, idempotencyKey: { type: 'string', minLength: 1, maxLength: 128, description: 'Optional client retry binding. A cooldown retry only replaces the live attempt when it presents the original start key; without it the retry takes the frozen-expiry path and the live attempt is untouched.' } } },
+                AccountRecoveryStartResponse: { type: 'object', required: ['success', 'data'], properties: { success: { type: 'boolean', enum: [true] }, data: { type: 'object', required: ['attemptId', 'secret', 'expiresAt', 'otpExpiresAt', 'serverNow'], properties: { attemptId: { type: 'string', format: 'uuid' }, secret: { type: 'string', readOnly: true }, expiresAt: { type: 'string', format: 'date-time', description: 'Recovery-handle expiry; identical for decoy and committed handles.' }, otpExpiresAt: { type: 'string', format: 'date-time', description: 'Mailbox-OTP deadline for the pre-verification view; identical for decoy and committed handles.' }, serverNow: { type: 'string', format: 'date-time', description: 'Server clock at response time; identical shape for decoy and committed handles.' } } } } },
+                AccountRecoveryVerifyRequest: { type: 'object', additionalProperties: false, required: ['attemptId', 'secret', 'code', 'otp'], properties: { attemptId: { type: 'string', format: 'uuid' }, secret: { type: 'string', minLength: 1, maxLength: 1024 }, code: { type: 'string', minLength: 1, maxLength: 1024 }, otp: { type: 'string', minLength: 6, maxLength: 6, pattern: '^\\d{6}$', description: 'Six-digit mailbox OTP; anything else is rejected.' } } },
+                AccountRecoveryVerifiedResponse: { type: 'object', required: ['success', 'data'], properties: { success: { type: 'boolean', enum: [true] }, data: { type: 'object', required: ['expiresAt', 'serverNow'], properties: { expiresAt: { type: 'string', format: 'date-time', description: 'Completion deadline disclosed only after both recovery proofs succeed.' }, serverNow: { type: 'string', format: 'date-time', description: 'Server clock at successful verification.' } } } } },
+                AccountRecoveryCompleteRequest: { type: 'object', additionalProperties: false, required: ['attemptId', 'secret', 'password'], properties: { attemptId: { type: 'string', format: 'uuid' }, secret: { type: 'string', minLength: 1, maxLength: 1024 }, password: { type: 'string', minLength: 8, maxLength: 72, writeOnly: true, pattern: '^(?=.*[A-Z])(?=.*[a-z])(?=.*[0-9])(?=.*[!@#$%^&*(),.?":{}|<>\\[\\]\\-_=+~`]).{8,}$', description: 'At least 8 characters with an uppercase letter, a lowercase letter, a number, and a special character. No more than 72 bytes of UTF-8: bcrypt incorporates only the first 72 bytes, so longer values are rejected even when they satisfy the complexity pattern.' } } },
                 User: {
                     type: 'object',
                     properties: {
@@ -155,6 +175,11 @@ Access tokens expire in 15 minutes. Use the refresh token endpoint to get a new 
                             ],
                             nullable: true,
                             description: 'Present for student accounts only. Null means the status read is temporarily unavailable; retry without assuming a positive state.',
+                        },
+                        recoveryReenrollmentRequired: {
+                            type: 'boolean',
+                            example: true,
+                            description: 'Present and true for student accounts only while account recovery consumed the only active recovery code and no replacement has activated. Absent otherwise.',
                         },
                     },
                 },
@@ -284,12 +309,13 @@ Access tokens expire in 15 minutes. Use the refresh token endpoint to get a new 
                                 },
                                 {
                                     type: 'object',
-                                    required: ['outcome', 'handoffId', 'handoffSecret', 'expiresAt'],
+                                    required: ['outcome', 'handoffId', 'handoffSecret', 'expiresAt', 'provider'],
                                     properties: {
                                         outcome: { type: 'string', enum: ['link_required'] },
                                         handoffId: { type: 'string', format: 'uuid' },
                                         handoffSecret: { type: 'string', description: 'Tab-held handoff secret for explicit linking; never placed in a URL.' },
                                         expiresAt: { type: 'string', format: 'date-time' },
+                                        provider: { type: 'string', enum: ['google', 'microsoft'], description: 'Provider that produced the unknown identity; gates the provider-specific signup offer.' },
                                     },
                                 },
                             ],
@@ -312,6 +338,41 @@ Access tokens expire in 15 minutes. Use the refresh token endpoint to get a new 
                         },
                     },
                 },
+                StudentSsoReauthStartResponse: {
+                    type: 'object',
+                    required: ['success', 'data'],
+                    properties: {
+                        success: { type: 'boolean', example: true },
+                        data: {
+                            type: 'object',
+                            required: ['attemptId', 'authorizationUrl'],
+                            properties: {
+                                attemptId: { type: 'string', format: 'uuid' },
+                                authorizationUrl: { type: 'string', format: 'uri', description: 'Microsoft authorization URL for the fresh proof; the browser binding travels as a Secure HttpOnly cookie.' },
+                            },
+                        },
+                    },
+                },
+                StudentSsoReauthFinishResponse: {
+                    type: 'object',
+                    required: ['success', 'data'],
+                    properties: {
+                        success: { type: 'boolean', example: true },
+                        data: {
+                            type: 'object',
+                            required: ['grantId', 'grantSecret', 'expiresAt', 'purpose', 'pendingCodeId', 'targetIdentityId', 'activeCodeGeneration'],
+                            properties: {
+                                grantId: { type: 'string', format: 'uuid' },
+                                grantSecret: { type: 'string', description: 'Single-use grant secret, bound to the current user and session for five minutes.' },
+                                expiresAt: { type: 'string', format: 'date-time' },
+                                purpose: { type: 'string', enum: ['link', 'unlink', 'recovery_code_generate', 'recovery_code_activate', 'recovery_code_remove'] },
+                                pendingCodeId: { type: 'string', format: 'uuid', nullable: true, description: 'Pending code this grant is bound to, if any.' },
+                                targetIdentityId: { type: 'string', format: 'uuid', nullable: true, description: 'Identity this grant is bound to, if any.' },
+                                activeCodeGeneration: { type: 'integer', nullable: true, description: 'Active recovery-code generation pinned at proof time, if any.' },
+                            },
+                        },
+                    },
+                },
                 StudentSsoLinkResponse: {
                     type: 'object',
                     required: ['success', 'data'],
@@ -330,6 +391,7 @@ Access tokens expire in 15 minutes. Use the refresh token endpoint to get a new 
                                         provider: { type: 'string', enum: ['google', 'microsoft'] },
                                         universityName: { type: 'string' },
                                         linkedAt: { type: 'string', format: 'date-time' },
+                                        mailboxMasked: { type: 'string', description: 'Masked sign-in mailbox (first character plus domain) for telling same-university identities apart; absent when the provider supplied none.' },
                                     },
                                 },
                                 schoolAssertion: {
@@ -338,6 +400,21 @@ Access tokens expire in 15 minutes. Use the refresh token endpoint to get a new 
                                     description: 'Whether membership evidence supported a school assertion. Linking never authorizes enrollment benefits.',
                                 },
                                 reactivated: { type: 'boolean', description: 'True when the original owner reactivated a revoked identity.' },
+                            },
+                        },
+                    },
+                },
+                StudentSsoUnlinkResponse: {
+                    type: 'object',
+                    required: ['success', 'data'],
+                    properties: {
+                        success: { type: 'boolean', example: true },
+                        data: {
+                            type: 'object',
+                            required: ['unlinked', 'sessionRevoked'],
+                            properties: {
+                                unlinked: { type: 'boolean', enum: [true] },
+                                sessionRevoked: { type: 'boolean', description: 'True when the removed identity had issued the active session; the client must drop its local tokens.' },
                             },
                         },
                     },
@@ -361,6 +438,7 @@ Access tokens expire in 15 minutes. Use the refresh token endpoint to get a new 
                                             provider: { type: 'string', enum: ['google', 'microsoft'] },
                                             universityName: { type: 'string' },
                                             linkedAt: { type: 'string', format: 'date-time' },
+                                            mailboxMasked: { type: 'string', description: 'Masked sign-in mailbox (first character plus domain) for telling same-university identities apart; absent when the provider supplied none.' },
                                         },
                                     },
                                 },
@@ -611,6 +689,14 @@ Access tokens expire in 15 minutes. Use the refresh token endpoint to get a new 
                     content: {
                         'application/json': {
                             schema: { $ref: '#/components/schemas/MicrosoftRequestError' },
+                        },
+                    },
+                },
+                SessionValidationUnavailable: {
+                    description: 'Student session validation is temporarily unavailable',
+                    content: {
+                        'application/json': {
+                            schema: { $ref: '#/components/schemas/Error' },
                         },
                     },
                 },

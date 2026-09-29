@@ -68,6 +68,7 @@ export function assertCompiledArtifact(backendRoot) {
     requireRegularFile(migrationRunner, 'Compiled migration runner is missing: dist/database/migrations/run.js. Run npm run build:artifact first.');
     requireRegularFile(join(artifactRoot, 'config/openapi.json'), 'Rendered OpenAPI document is missing: dist/config/openapi.json. Run npm run build:artifact first.');
     requireRegularFile(join(artifactRoot, 'scripts/cleanup-microsoft-attempts.js'), 'Compiled Microsoft retention cleanup CLI is missing: dist/scripts/cleanup-microsoft-attempts.js. Run npm run build:artifact first.');
+    requireRegularFile(join(artifactRoot, 'scripts/cleanup-student-sso.js'), 'Compiled student SSO retention cleanup CLI is missing: dist/scripts/cleanup-student-sso.js. Run npm run build:artifact first.');
     assertExactMigrationSql(backendRoot);
 
     const sourceRoot = join(backendRoot, 'src');

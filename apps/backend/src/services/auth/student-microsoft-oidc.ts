@@ -1,6 +1,6 @@
 import * as client from 'openid-client';
 import { normalizeMailbox } from '../verification/eligibility-policy.service.js';
-import type { StudentOidcAdapter } from './student-sso.types.js';
+import type { FreshProviderObservation, StudentOidcAdapter } from './student-sso.types.js';
 import type { ProviderObservation } from './student-sso.types.js';
 import type { StudentSsoProviderConfiguration } from './student-oidc.config.js';
 import { StudentOidcOperationalError, type StudentOidcFailureCategory } from './student-google-oidc.js';
@@ -167,6 +167,14 @@ export class StudentMicrosoftOidc implements StudentOidcAdapter {
     }
 
     async authorize(input: { state: string; nonce: string; verifier: string; loginHint: string }): Promise<URL> {
+        return this.authorizeWithFreshness(input, false);
+    }
+
+    async authorizeFresh(input: { state: string; nonce: string; verifier: string; loginHint: string }): Promise<URL> {
+        return this.authorizeWithFreshness(input, true);
+    }
+
+    private async authorizeWithFreshness(input: { state: string; nonce: string; verifier: string; loginHint: string }, fresh: boolean): Promise<URL> {
         validOpaque(input.state, 'state');
         validOpaque(input.nonce, 'nonce');
         validOpaque(input.verifier, 'verifier');
@@ -188,6 +196,7 @@ export class StudentMicrosoftOidc implements StudentOidcAdapter {
                 code_challenge: challenge,
                 code_challenge_method: 'S256',
                 login_hint: input.loginHint,
+                ...(fresh ? { max_age: '0' } : {}),
             });
         } catch (error) {
             throw new StudentOidcOperationalError(failureCategory(error));
@@ -195,6 +204,19 @@ export class StudentMicrosoftOidc implements StudentOidcAdapter {
     }
 
     async redeem(input: { callback: URL; state: string; nonce: string; verifier: string }): Promise<ProviderObservation> {
+        const { observation } = await this.redeemWithFreshness(input, false);
+        return observation;
+    }
+
+    async redeemFresh(input: { callback: URL; state: string; nonce: string; verifier: string }): Promise<FreshProviderObservation> {
+        const { observation, authTime } = await this.redeemWithFreshness(input, true);
+        return { ...observation, authTime: authTime! };
+    }
+
+    private async redeemWithFreshness(
+        input: { callback: URL; state: string; nonce: string; verifier: string },
+        fresh: boolean,
+    ): Promise<{ observation: ProviderObservation; authTime?: number }> {
         if (input.callback.origin !== this.configuration.callbackUrl.origin
             || input.callback.pathname !== this.configuration.callbackUrl.pathname) {
             throw new StudentOidcOperationalError('invalid_identity');
@@ -216,6 +238,7 @@ export class StudentMicrosoftOidc implements StudentOidcAdapter {
             const subject = typeof claims?.sub === 'string' ? claims.sub : '';
             const tenantId = typeof claims?.tid === 'string' ? claims.tid : '';
             const objectId = typeof claims?.oid === 'string' ? claims.oid : '';
+            const authTime = claims?.auth_time;
             // The login client asserts audience and issuer on every token,
             // then binds the approved tenant, object, and subject. Email and
             // preferred_username never authorize linking; a missing email
@@ -226,11 +249,14 @@ export class StudentMicrosoftOidc implements StudentOidcAdapter {
             if (tenantId !== this.tenantId || !UUID.test(tenantId) || !UUID.test(objectId)) {
                 throw new StudentOidcOperationalError('invalid_identity');
             }
+            if (fresh && (typeof authTime !== 'number' || !Number.isFinite(authTime) || !Number.isInteger(authTime) || authTime < 0)) {
+                throw new StudentOidcOperationalError('invalid_identity');
+            }
             const email = typeof claims?.email === 'string' && claims.email !== '' ? claims.email : null;
             // A login ID token carries no trusted tenant member/guest
             // evidence, so it never attests school membership by itself. An
             // approved-mailbox OTP remains the fallback school proof.
-            return {
+            const observation: ProviderObservation = {
                 provider: 'microsoft',
                 issuer: this.issuer.href,
                 subject,
@@ -240,6 +266,7 @@ export class StudentMicrosoftOidc implements StudentOidcAdapter {
                 schoolMembershipAttested: false,
                 objectId,
             };
+            return fresh ? { observation, authTime: authTime as number } : { observation };
         } catch (error) {
             if (error instanceof StudentOidcOperationalError) throw error;
             throw new StudentOidcOperationalError(failureCategory(error));

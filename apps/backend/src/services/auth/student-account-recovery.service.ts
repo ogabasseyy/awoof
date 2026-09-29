@@ -1,0 +1,820 @@
+import { createHmac, randomBytes, randomUUID, timingSafeEqual } from 'node:crypto';
+import type { Pool, PoolClient } from 'pg';
+import { ConflictError } from '../../common/errors/AppError.js';
+import { appLogger } from '../../common/logger.js';
+import { passwordService } from './password.service.js';
+import { sendAccountRecoveryCompletionNotice } from '../email/email.service.js';
+import { challengeSubjectDigest, challengeTtlMs, consumeChallenge, databaseNow, requestChallenge } from '../verification/challenge.service.js';
+import { revokeSsoSchoolAssertions } from './student-sso-onboarding.service.js';
+import { verifyRecoveryCodeDigest } from './student-recovery-code.service.js';
+import { dispatchRecoveryOtpOutboxBatch, enqueueRecoveryOtp, hasRecoveryOtpOutboxKey } from './recovery-otp-outbox.service.js';
+import { config } from '../../config/env.js';
+
+type RecoveryPurpose = 'lost_access' | 'compromise';
+
+// Decoy state must never share the real mailbox's OTP budget. NUL cannot
+// appear in a valid mailbox address, making this namespace collision-proof
+// while the challenge service stores only its keyed digest.
+export function recoveryProbeSubjectKey(normalizedEmail: string): string {
+    return `\u0000awoof-recovery-probe-v1:${normalizedEmail}`;
+}
+
+type Account = {
+    id: string;
+    email: string;
+    credential_generation: number | string;
+    deleted_at: Date | null;
+    student_status: 'active' | 'suspended' | 'deleted' | null;
+};
+
+type Attempt = {
+    id: string;
+    user_id: string;
+    credential_generation: number | string;
+    purpose: RecoveryPurpose;
+    // Terminal rows (failed, consumed, superseded) scrub the bearer to
+    // NULL: every comparison must null-check first, never Buffer.from it.
+    secret_hash: string | null;
+    recovery_code_generation: number | string;
+    mailbox_challenge_id: string;
+    status: 'pending' | 'verified' | 'consumed' | 'failed' | 'expired';
+    expires_at: Date;
+};
+
+type RecoveryCode = { id: string; generation: number | string; code_digest: string | null; status: string };
+
+export type StudentAccountRecoveryDependencies = {
+    pool: Pick<Pool, 'connect'>;
+    /** Deployment-held HMAC key shared with recovery-code enrollment. */
+    recoveryCodeKey: string;
+    /** Retained previous effective key, verification fallback only. */
+    previousRecoveryCodeKey?: string;
+    outboxEncryptionKey?: string | null;
+    previousOutboxEncryptionKey?: string | null;
+    deliverOtp?: (email: string, otp: string) => Promise<{ success: boolean }>;
+    hashPassword?: (password: string) => Promise<string>;
+    validatePassword?: (password: string) => { valid: boolean; errors: string[] };
+    notify?: (email: string, purpose: RecoveryPurpose) => Promise<{ success: boolean }>;
+    /** Bound for the post-commit completion notice; defaults to NOTICE_TIMEOUT_MS. */
+    noticeTimeoutMs?: number;
+};
+
+const NOTICE_TIMEOUT_MS = 10_000;
+
+async function withNoticeDeadline<T>(work: Promise<T>, timeoutMs: number): Promise<T> {
+    let rejectDeadline: (error: Error) => void = () => undefined;
+    const deadline = new Promise<never>((_, reject) => { rejectDeadline = reject; });
+    const timer = setTimeout(() => rejectDeadline(new Error('Account recovery completion notice timed out')), timeoutMs);
+    try {
+        return await Promise.race([work, deadline]);
+    } finally {
+        clearTimeout(timer);
+    }
+}
+
+function unavailable(): ConflictError {
+    return new ConflictError('Account recovery is not available');
+}
+
+function validPurpose(value: unknown): value is RecoveryPurpose {
+    return value === 'lost_access' || value === 'compromise';
+}
+
+function validOpaque(value: unknown): value is string {
+    return typeof value === 'string' && value.length > 0 && value.length <= 1024;
+}
+
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+
+function validAttemptId(value: unknown): value is string {
+    return typeof value === 'string' && UUID.test(value);
+}
+
+/**
+ * The only password-establishment path for passwordless marker accounts.
+ * It deliberately never issues a session: a successful caller must perform a
+ * normal password login after the transaction commits.
+ */
+export class StudentAccountRecoveryService {
+    private readonly outboxEncryptionKey: string | null;
+    constructor(private readonly deps: StudentAccountRecoveryDependencies) {
+        this.outboxEncryptionKey = Object.prototype.hasOwnProperty.call(deps, 'outboxEncryptionKey')
+            ? deps.outboxEncryptionKey ?? null
+            : config.studentAccountRecovery.otpOutboxEncryptionKey;
+        if (deps.recoveryCodeKey.length < 16) throw new TypeError('Recovery-code digest key is invalid');
+        if (deps.previousRecoveryCodeKey !== undefined && deps.previousRecoveryCodeKey.length < 16) {
+            throw new TypeError('Recovery-code previous digest key is invalid');
+        }
+    }
+
+    async start(input: { email: unknown; purpose: unknown; idempotencyKey?: unknown }): Promise<{ attemptId: string; secret: string; expiresAt: string; otpExpiresAt: string; serverNow: string }> {
+        if (!validPurpose(input.purpose)) throw new TypeError('Recovery purpose is invalid');
+        if (typeof input.email !== 'string' || input.email.trim().length === 0 || input.email.length > 255) {
+            throw new TypeError('Recovery email is invalid');
+        }
+        const outboxEncryptionKey = this.outboxEncryptionKey;
+        if (!hasRecoveryOtpOutboxKey(outboxEncryptionKey)) throw new Error('Recovery OTP outbox encryption key is unavailable');
+        // Narrowed once: the transaction closure would otherwise reset
+        // property narrowing on the mutable input binding. Outbox key
+        // validation happens before database work; no challenge/attempt is
+        // created if it is absent or malformed.
+        const purpose = input.purpose;
+        const email = input.email.trim().toLowerCase();
+        const idempotencyKey = typeof input.idempotencyKey === 'string' && input.idempotencyKey.length >= 1 && input.idempotencyKey.length <= 128 ? input.idempotencyKey : null;
+        const attemptId = randomUUID();
+        const secret = randomBytes(32).toString('base64url');
+        // Two separate deadlines: the recovery attempt owns a ten-minute
+        // window (the design's combined proof/password flow) while the
+        // mailbox OTP uses the shorter signup-style challenge TTL. Verify
+        // checks both (attempt live, challenge consumable); complete checks
+        // only the attempt, so a consumed OTP leaves the remaining window
+        // for password choice. Fresh handles report the attempt expiry on
+        // both paths plus the shorter OTP deadline the pre-verification
+        // view counts down; cooldown retries report the frozen challenge
+        // expiry for both. A generic client-clock expiry would mark real
+        // attempts by clock skew and by the shorter mailbox TTL.
+        const ttlMs = challengeTtlMs('student_account_recovery');
+        const started = await this.transaction(async (tx) => {
+            const serverNow = await databaseNow(tx);
+            const serverExpiry = new Date(serverNow.getTime() + ttlMs);
+            // The attempt expiry derives from the same captured timestamp
+            // on both paths: a later clock_timestamp() here would let
+            // expiresAt - serverNow distinguish committed handles (whose
+            // INSERT runs after the account probes) from decoys (which
+            // report exactly serverNow + 10 minutes).
+            const attemptExpiry = new Date(serverNow.getTime() + 10 * 60 * 1000);
+            const account = await this.findRecoverableAccount(tx, email);
+            // Attempt before code, matching verify and complete: the
+            // attempt row locks before challenge issuance so concurrent
+            // starts and verifications serialize in one order (attempt
+            // before budget/challenge) instead of code-against-attempt.
+            // Both paths run the same probes in the same order (random ids
+            // on the no-account path), normalizing query count/order without
+            // claiming equal database latency.
+            // Cross-purpose guard probe: failPriorAttempts cancels every
+            // purpose, so a same-purpose-only guard would let a caller flip
+            // purposes after each cooldown to deny the victim's live OTP.
+            const liveAnyPurpose = account ? await this.lockLiveAttemptAnyPurpose(tx, account.id) : await this.lockLiveAttemptAnyPurpose(tx, randomUUID());
+            const active = account ? await this.lockActiveCode(tx, account.id) : await this.lockActiveCode(tx, randomUUID());
+            if (!account || !active) {
+                return this.decoyStart(tx, { email, attemptId, purpose, serverExpiry, serverNow, attemptExpiry });
+            }
+            // A live pending attempt owns its OTP until it lapses: superseding
+            // requires the original start's idempotency binding on every path,
+            // not only the cooldown branch, and for either purpose. Without
+            // it an unauthenticated caller knowing the email could fail the
+            // victim's handle after each cooldown — flipping purposes to
+            // dodge a same-purpose guard — and rebind recovery to their own,
+            // repeating until the victim's window closes. The unbound caller
+            // takes the same isolated no-handle decoy path as an unknown
+            // address: a synthetic challenge may be stored for response
+            // parity, but nothing is emailed and the live attempt, OTP, and
+            // real resend budget survive untouched.
+            // A legacy/unbound live attempt is not resumable by a newly
+            // supplied key. Treat it like a mismatch: accepting it here
+            // would let any anonymous caller supersede that attempt after
+            // the resend cooldown expires. Shape the refusal exactly as
+            // the decoy path would for the same per-email probe budget:
+            // fresh-decoy deadlines when issuance is available and frozen
+            // probe deadlines on cooldown/lock. This never reads or changes
+            // the real email budget; the returned handle is rowless and
+            // verifies nothing.
+            if (liveAnyPurpose && (liveAnyPurpose.idempotency_key === null || liveAnyPurpose.idempotency_key !== idempotencyKey)) {
+                return this.decoyStart(tx, { email, attemptId, purpose, serverExpiry, serverNow, attemptExpiry });
+            }
+            const challenge = await requestChallenge(tx, {
+                purpose: 'student_account_recovery', subjectKey: account.email,
+                bindings: { recoveryAttemptId: attemptId, recoveryPurpose: input.purpose },
+                expiresAt: serverExpiry,
+            });
+            if (challenge.status !== 'issued') {
+                // Cooldown with a live pending attempt: the first start
+                // committed but its 202 was lost, or the user switched
+                // recovery purpose while preserving the original tab key.
+                // Supersede onto a rebound handle against the same
+                // unconsumed challenge instead of stranding the delivered
+                // OTP behind a decoy. The reported
+                // deadline stays on the original challenge, so retries can
+                // never stretch the OTP window, and no OTP is re-sent. The
+                // retry must present the original start's idempotency key:
+                // otherwise any anonymous caller knowing the email could
+                // silently fail the victim's handle and rebind the OTP to
+                // their own, keeping recovery unavailable with repeats.
+                // Without the binding the retry takes the frozen-expiry
+                // path, indistinguishable from a decoy, and the live
+                // attempt is untouched.
+                if (!liveAnyPurpose || liveAnyPurpose.idempotency_key === null || idempotencyKey === null || liveAnyPurpose.idempotency_key !== idempotencyKey) {
+                    // No usable attempt handle: match the unknown-address
+                    // decoy sequence without reading or changing the real
+                    // mailbox's challenge budget.
+                    return this.decoyStart(tx, { email, attemptId, purpose, serverExpiry, serverNow, attemptExpiry });
+                }
+                await this.failPriorAttempts(tx, account.id);
+                // Rebind the shared challenge to the rebound handle: verify
+                // pins consumption to exactly one live attempt, and the
+                // failed predecessor must not keep the binding. Same
+                // transaction, same row lock — exactly one live attempt can
+                // ever present this challenge.
+                const reboundBinding = await tx.query(
+                    `UPDATE verification_challenges
+                     SET bindings = jsonb_set(jsonb_set(bindings, '{recoveryAttemptId}', to_jsonb($2::text)), '{recoveryPurpose}', to_jsonb($3::text))
+                     WHERE id = $1 AND consumed_at IS NULL AND superseded_at IS NULL`,
+                    [liveAnyPurpose.mailbox_challenge_id, attemptId, purpose],
+                );
+                if (reboundBinding.rowCount !== 1) throw unavailable();
+                // The rebound attempt owns a fresh ten-minute window, but
+                // the reported deadline stays on the reused challenge: the
+                // decoy path has no rebound (no stored key to match), so a
+                // fresh-looking rebound deadline would mark recoverable
+                // accounts against decoy cooldown retries by expiresAt.
+                // The OTP window itself never stretches — verify still
+                // requires the original challenge to be consumable.
+                await tx.query(
+                    `INSERT INTO student_auth_recovery_attempts
+                         (id, user_id, credential_generation, purpose, secret_hash, recovery_code_generation,
+                          mailbox_challenge_id, expires_at, idempotency_key)
+                     VALUES ($1, $2, $3, $4, $5, $6, $7, $8::timestamptz, $9)`,
+                    [attemptId, account.id, Number(account.credential_generation), purpose, this.secretDigest(secret), Number(active.generation), liveAnyPurpose.mailbox_challenge_id, attemptExpiry, idempotencyKey],
+                );
+                const reboundOtp = liveAnyPurpose.challenge_expires_at.toISOString();
+                return { expiresAt: reboundOtp, otpExpiresAt: reboundOtp, serverNow: serverNow.toISOString() };
+            }
+            // Enumeration mirror: the unknown-address path advances the
+            // isolated probe budget through decoyStart, so a committed
+            // real issuance must advance it too. Without this, a second
+            // immediate start with a fresh idempotency key returns fresh
+            // deadlines for a recoverable account (its probe budget is
+            // still pristine, so the key-mismatch decoy issues) but
+            // frozen decoy deadlines for an unknown address — a
+            // deterministic oracle. The mirror key must be the normalized
+            // input, not the stored account email (which may carry case
+            // or whitespace the decoy path never sees). The result is
+            // intentionally ignored: the response reports the real
+            // challenge, and on a spent probe budget the mirror simply
+            // no-ops while the committed handle stays usable.
+            await requestChallenge(tx, {
+                purpose: 'student_account_recovery', subjectKey: recoveryProbeSubjectKey(email),
+                bindings: { recoveryAttemptId: attemptId, recoveryPurpose: input.purpose },
+                expiresAt: serverExpiry,
+            });
+            await this.failPriorAttempts(tx, account.id);
+            const inserted = await tx.query<{ expires_at: Date }>(
+                `INSERT INTO student_auth_recovery_attempts
+                     (id, user_id, credential_generation, purpose, secret_hash, recovery_code_generation,
+                      mailbox_challenge_id, expires_at, idempotency_key)
+                 VALUES ($1, $2, $3, $4, $5, $6, $7, $8::timestamptz, $9)
+                 RETURNING expires_at`,
+                [attemptId, account.id, Number(account.credential_generation), input.purpose, this.secretDigest(secret), Number(active.generation), challenge.challengeId, attemptExpiry, idempotencyKey],
+            );
+            await enqueueRecoveryOtp(tx, {
+                challengeId: challenge.challengeId,
+                otp: challenge.code,
+                expiresAt: challenge.expiresAt,
+                encryptionKey: outboxEncryptionKey!,
+            });
+            return { email: account.email, otp: challenge.code, challengeId: challenge.challengeId, expiresAt: inserted.rows[0]!.expires_at.toISOString(), otpExpiresAt: challenge.expiresAt.toISOString(), serverNow: serverNow.toISOString() };
+        });
+        // Always provide an indistinguishable browser handle. A non-existent,
+        // suspended, or code-less account receives a handle that cannot verify.
+        // The outbox row committed with the attempt. This asynchronous nudge
+        // is only a latency optimization; the process dispatcher recovers
+        // queued jobs after crashes. Ambiguous provider outcomes retry the
+        // same OTP until bounded attempts/deadline, so duplicate email is
+        // possible but exactly-once delivery is not promised.
+        if ('challengeId' in started && this.deps.deliverOtp && outboxEncryptionKey) {
+            let markDeliveryStarted!: () => void;
+            const deliveryStarted = new Promise<void>((resolve) => { markDeliveryStarted = resolve; });
+            const deliver = (to: string, otp: string) => {
+                markDeliveryStarted();
+                return this.deps.deliverOtp!(to, otp);
+            };
+            const delivery = dispatchRecoveryOtpOutboxBatch(
+                this.deps.pool as Pick<Pool, 'connect'>,
+                outboxEncryptionKey,
+                deliver,
+                this.deps.previousOutboxEncryptionKey,
+                [started.challengeId],
+            );
+            // Integration tests use in-memory provider callbacks as their
+            // capture point. Wait only until the callback is entered, not
+            // until the provider completes; production never waits at all.
+            if (config.isTest) await Promise.race([deliveryStarted, delivery.then(() => undefined, () => undefined)]);
+            else void delivery.catch(() => undefined);
+            if (config.isTest) void delivery.catch(() => undefined);
+        }
+        return { attemptId, secret, expiresAt: started.expiresAt, otpExpiresAt: started.otpExpiresAt, serverNow: started.serverNow };
+    }
+
+    async verify(input: { attemptId: unknown; secret: unknown; code: unknown; otp: unknown }): Promise<{ expiresAt: string; serverNow: string }> {
+        if (!validAttemptId(input.attemptId) || !validOpaque(input.secret) || !validOpaque(input.code)
+            || typeof input.otp !== 'string' || !/^\d{6}$/.test(input.otp)) throw unavailable();
+        const { attemptId, secret, code: recoveryCode, otp: mailboxOtp } = input;
+        const verified = await this.transaction(async (tx) => {
+            const owner = await tx.query<{ user_id: string }>('SELECT user_id FROM student_auth_recovery_attempts WHERE id = $1', [attemptId]);
+            const userId = owner.rows[0]?.user_id;
+            if (!userId) {
+                await this.probeVerifyDecoys(tx, attemptId);
+                return null;
+            }
+            const account = await this.lockAccount(tx, userId);
+            const attempt = await this.lockAttempt(tx, attemptId);
+            const serverNow = await this.now(tx);
+            if (!attempt || attempt.expires_at <= serverNow
+                || !this.matchesAttemptSecret(attempt.secret_hash, secret)) {
+                await this.mirrorVerifyRejection(tx, attempt != null && attempt.expires_at > serverNow);
+                return null;
+            }
+            // Idempotent retry: the verification commit landed but its response
+            // was lost. The mailbox OTP was already proven and its
+            // challenge consumed, so revalidate the still-checkable proofs
+            // (attempt bearer, live recovery code, pinned generations)
+            // instead of consuming the OTP twice. A mismatch returns false
+            // without failing the attempt: a mistyped retry must not
+            // destroy a verified attempt the user already earned.
+            if (attempt.status === 'verified') {
+                const code = await this.lockActiveCode(tx, userId);
+                if (!account || !code || Number(account.credential_generation) !== Number(attempt.credential_generation)
+                    || Number(code.generation) !== Number(attempt.recovery_code_generation)
+                    || !this.matchesRecoveryCode(code.code_digest, recoveryCode)) return null;
+                return { expiresAt: attempt.expires_at, serverNow };
+            }
+            if (attempt.status !== 'pending') return null;
+            const code = await this.lockActiveCode(tx, userId);
+            // Stale account/code state terminalizes the attempt: the pinned
+            // generations can never match again. An ordinary code typo
+            // stays pending so correcting it and resubmitting the
+            // still-valid OTP works, exactly like an incorrect OTP within
+            // its failure budget.
+            if (!account || !code || Number(account.credential_generation) !== Number(attempt.credential_generation)
+                || Number(code.generation) !== Number(attempt.recovery_code_generation)) {
+                await tx.query("UPDATE student_auth_recovery_attempts SET status = 'failed', secret_hash = NULL, idempotency_key = NULL WHERE id = $1 AND status = 'pending'", [attempt.id]);
+                return null;
+            }
+            if (!this.matchesRecoveryCode(code.code_digest, recoveryCode)) return null;
+            const otp = await consumeChallenge(tx, {
+                purpose: 'student_account_recovery', subjectKey: account.email,
+                challengeId: attempt.mailbox_challenge_id, code: mailboxOtp,
+            });
+            if (otp.status !== 'verified'
+                || otp.bindings.recoveryAttemptId !== attempt.id
+                || otp.bindings.recoveryPurpose !== attempt.purpose) return null;
+            const updated = await tx.query<{ expires_at: Date }>(
+                `UPDATE student_auth_recovery_attempts
+                 SET status = 'verified', verified_at = clock_timestamp(), idempotency_key = NULL
+                 WHERE id = $1 AND status = 'pending' RETURNING expires_at`, [attempt.id],
+            );
+            return updated.rows[0] ? { expiresAt: updated.rows[0].expires_at, serverNow } : null;
+        });
+        if (!verified) throw unavailable();
+        return { expiresAt: verified.expiresAt.toISOString(), serverNow: verified.serverNow.toISOString() };
+    }
+
+    async complete(input: { attemptId: unknown; secret: unknown; password: unknown }): Promise<void> {
+        // The published contract caps passwords at 1024 characters;
+        // validatePassword() enforces only the complexity floor, so the
+        // ceiling is enforced here to keep runtime and schema in agreement.
+        if (!validAttemptId(input.attemptId) || !validOpaque(input.secret) || typeof input.password !== 'string' || input.password.length > 1024) throw unavailable();
+        const { attemptId, secret, password } = input;
+        const validation = (this.deps.validatePassword ?? ((candidate: string) => passwordService.validatePassword(candidate)))(password);
+        if (!validation.valid) throw new ConflictError(validation.errors.join(', '));
+        // bcrypt incorporates only the first 72 bytes: a longer value
+        // would later authenticate with a colliding prefix while the UI
+        // presents the whole string as significant. Enforced here rather
+        // than in the injectable policy validator so key rotation and
+        // policy experiments cannot silently drop the physical limit. The
+        // message keeps the policy-rejection prefix the client keys on.
+        if (Buffer.byteLength(password, 'utf8') > 72) throw new ConflictError('Password must be no more than 72 bytes long');
+        // Cheap credential check before the expensive password hash; the
+        // transaction below rechecks everything under lock against the
+        // database clock. Expiry is deliberately not previewed here: an
+        // application clock ahead of PostgreSQL must not reject an
+        // attempt the database still considers live.
+        const candidate = await this.previewAttempt(attemptId);
+        if (!candidate || candidate.status !== 'verified'
+            || !this.matchesAttemptSecret(candidate.secret_hash, secret)) throw unavailable();
+        const hash = await (this.deps.hashPassword ?? ((candidate: string) => passwordService.hashPassword(candidate)))(password);
+        const committed = await this.transaction(async (tx) => {
+            // Read only to establish the owner, then acquire the canonical user
+            // lock before taking mutable attempt/code/identity locks.
+            const owner = await tx.query<{ user_id: string }>('SELECT user_id FROM student_auth_recovery_attempts WHERE id = $1', [attemptId]);
+            const userId = owner.rows[0]?.user_id;
+            if (!userId) throw unavailable();
+            const account = await this.lockAccount(tx, userId);
+            const attempt = await this.lockAttempt(tx, attemptId);
+            const code = await this.lockActiveCode(tx, userId);
+            if (!account || !attempt || !code || attempt.status !== 'verified' || attempt.expires_at <= await this.now(tx)
+                || !this.matchesAttemptSecret(attempt.secret_hash, secret)
+                || Number(account.credential_generation) !== Number(attempt.credential_generation)
+                || Number(code.generation) !== Number(attempt.recovery_code_generation)) throw unavailable();
+
+            // Compromise identity revocation runs after the stale-handoff
+            // block below: link and signup complete flows lock handoff
+            // before identity, so this transaction must take them in the
+            // same order or a racing completion deadlocks the reset.
+            await tx.query(
+                `UPDATE student_auth_recovery_codes
+                 SET status = CASE WHEN status = 'active' THEN 'consumed' ELSE 'revoked' END,
+                     code_digest = NULL, expires_at = NULL,
+                     consumed_at = CASE WHEN status = 'active' THEN clock_timestamp() ELSE NULL END,
+                     revoked_at = CASE WHEN status = 'pending' THEN clock_timestamp() ELSE NULL END,
+                     pending_sid = NULL, pending_credential_generation = NULL, pending_proof_identity_id = NULL
+                 WHERE user_id = $1 AND status IN ('active', 'pending')`, [userId],
+            );
+            await tx.query(
+                `UPDATE users SET password_hash = $2, password_reset_otp = NULL, password_reset_otp_expires_at = NULL,
+                     refresh_token_hash = NULL, refresh_token_expires_at = NULL, active_session_id = NULL,
+                     active_session_issued_at = NULL, active_session_auth_identity_id = NULL,
+                     credential_generation = credential_generation + 1,
+                     student_sso_attempts_not_before = clock_timestamp(),
+                     recovery_reenrollment_requires_password = true, recovery_session_binding_required = true,
+                     updated_at = clock_timestamp()
+                 WHERE id = $1`, [userId, hash],
+            );
+            await tx.query("UPDATE student_auth_action_grants SET revoked_at = clock_timestamp(), secret_hash = 'scrubbed' WHERE user_id = $1 AND consumed_at IS NULL AND revoked_at IS NULL", [userId]);
+            await tx.query("UPDATE student_auth_reauth_grants SET consumed_at = clock_timestamp(), secret_hash = 'scrubbed' WHERE user_id = $1 AND consumed_at IS NULL", [userId]);
+            if (attempt.purpose === 'compromise') {
+                // A handoff can outlive its parent provider attempt and is
+                // authenticated directly by link/signup services. Consume
+                // those handoffs before locking their parent attempts, which
+                // preserves their handoff -> attempt lock order, and before
+                // revoking identities below (handoff -> identity, matching
+                // link/signup completion). Include all historically observed
+                // account aliases, not only users.email.
+                const staleHandoffs = await tx.query<{ id: string; attempt_id: string }>(
+                    `SELECT handoff.id, handoff.attempt_id
+                     FROM student_auth_link_handoffs handoff
+                     JOIN student_auth_attempts provider_attempt ON provider_attempt.id = handoff.attempt_id
+                     WHERE handoff.consumed_at IS NULL
+                       AND lower(btrim(provider_attempt.requested_email)) = ANY (
+                           SELECT lower(btrim(alias_email))
+                           FROM (SELECT $1::text AS alias_email
+                                 UNION
+                                 SELECT observed_email FROM student_auth_identities WHERE user_id = $2) aliases
+                       )
+                     FOR UPDATE OF handoff`, [account.email, userId],
+                );
+                const staleAttemptIds = staleHandoffs.rows.map((row) => row.attempt_id);
+                if (staleAttemptIds.length > 0) {
+                    await tx.query('SELECT id FROM student_auth_attempts WHERE id = ANY($1::uuid[]) ORDER BY id FOR UPDATE', [staleAttemptIds]);
+                    await tx.query(
+                        `UPDATE student_auth_attempts
+                         SET status = 'failed', state_hash = NULL, callback_cookie_hash = NULL, finish_secret_hash = NULL,
+                             encrypted_verifier = NULL, nonce = NULL, encrypted_observation = NULL
+                         WHERE id = ANY($1::uuid[]) AND status IN ('pending', 'processing', 'ready')`, [staleAttemptIds],
+                    );
+                    const signups = await tx.query<{ id: string; mailbox_challenge_id: string | null }>(
+                        `SELECT id, mailbox_challenge_id FROM student_auth_signup_challenges
+                         WHERE handoff_id = ANY($1::uuid[]) AND status IN ('pending', 'mailbox_verified')
+                         FOR UPDATE`, [staleHandoffs.rows.map((row) => row.id)],
+                    );
+                    await tx.query(
+                        `UPDATE student_auth_link_handoffs
+                         SET consumed_at = clock_timestamp(), secret_hash = NULL, browser_binding_hash = NULL,
+                             encrypted_observation = NULL
+                         WHERE id = ANY($1::uuid[]) AND consumed_at IS NULL`, [staleHandoffs.rows.map((row) => row.id)],
+                    );
+                    await tx.query(
+                        `UPDATE student_auth_signup_challenges
+                         SET status = 'cancelled', terminal_at = clock_timestamp(), secret_hash = NULL, browser_binding_hash = NULL
+                         WHERE id = ANY($1::uuid[]) AND status IN ('pending', 'mailbox_verified')`, [signups.rows.map((row) => row.id)],
+                    );
+                    const challengeIds = signups.rows.flatMap((row) => row.mailbox_challenge_id ? [row.mailbox_challenge_id] : []);
+                    if (challengeIds.length > 0) {
+                        await tx.query(
+                            `UPDATE verification_challenges SET superseded_at = clock_timestamp()
+                             WHERE id = ANY($1::uuid[]) AND consumed_at IS NULL AND superseded_at IS NULL`, [challengeIds],
+                        );
+                        await tx.query(
+                            `UPDATE student_email_otp_outbox
+                             SET status = 'cancelled', ciphertext = NULL, nonce = NULL, auth_tag = NULL, key_id = NULL,
+                                 terminal_at = clock_timestamp(), lease_until = NULL, claim_token = NULL
+                             WHERE challenge_id = ANY($1::uuid[]) AND purpose = 'student_sso_signup'
+                               AND status IN ('pending', 'processing')`, [challengeIds],
+                        );
+                    }
+                }
+            }
+            if (attempt.purpose === 'compromise') {
+                const identities = await tx.query<{ id: string }>('SELECT id FROM student_auth_identities WHERE user_id = $1 AND revoked_at IS NULL FOR UPDATE', [userId]);
+                for (const identity of identities.rows) {
+                    await tx.query('UPDATE student_auth_identities SET revoked_at = clock_timestamp() WHERE id = $1 AND revoked_at IS NULL', [identity.id]);
+                    await revokeSsoSchoolAssertions(tx, identity.id);
+                }
+            }
+            await tx.query(
+                `UPDATE student_auth_reauth_attempts
+                 SET status = 'failed', consumed_at = clock_timestamp(), state_hash = NULL, callback_cookie_hash = NULL,
+                     encrypted_verifier = NULL, nonce = NULL
+                 WHERE user_id = $1 AND status IN ('pending', 'processing', 'ready')`,
+                [userId],
+            );
+            // A ready provider callback is not yet a session. Invalidate every
+            // same-mailbox attempt before releasing the account lock so a
+            // pre-recovery callback cannot mint a post-recovery session.
+            // The comparison is normalized: a legacy stored email may carry
+            // case or whitespace the normalized attempt mailboxes do not.
+            // Terminal binding digests are scrubbed immediately, matching
+            // the reauthentication and recovery terminalization above.
+            await tx.query(
+                `UPDATE student_auth_attempts
+                 SET status = 'failed', state_hash = NULL, callback_cookie_hash = NULL, finish_secret_hash = NULL,
+                     encrypted_verifier = NULL, nonce = NULL, encrypted_observation = NULL
+                 WHERE lower(btrim(requested_email)) = lower(btrim($1)) AND status IN ('pending', 'processing', 'ready')`,
+                [account.email],
+            );
+            await tx.query(
+                `UPDATE student_auth_recovery_attempts
+                 SET status = 'failed', secret_hash = NULL, idempotency_key = NULL
+                 WHERE user_id = $1 AND id <> $2 AND status IN ('pending', 'verified')`,
+                [userId, attempt.id],
+            );
+            const consumed = await tx.query(
+                `UPDATE student_auth_recovery_attempts SET status = 'consumed', consumed_at = clock_timestamp(), secret_hash = NULL, idempotency_key = NULL
+                 WHERE id = $1 AND status = 'verified'`, [attempt.id],
+            );
+            if (consumed.rowCount !== 1) throw unavailable();
+            return { email: account.email, purpose: attempt.purpose };
+        });
+        await this.sendCompletionNotice(committed.email, committed.purpose);
+    }
+
+    private async transaction<T>(operation: (tx: PoolClient) => Promise<T>): Promise<T> {
+        const tx = await this.deps.pool.connect();
+        try { await tx.query('BEGIN'); const result = await operation(tx); await tx.query('COMMIT'); return result; }
+        catch (error) { await tx.query('ROLLBACK').catch(() => undefined); throw error; }
+        finally { tx.release(); }
+    }
+
+    // Both lookups lock the user row, then recheck status from a
+    // separately locked student row: the active-status check must serialize
+    // with a concurrent suspension, or recovery could replace the password
+    // for an account suspended for suspected compromise and leave a usable
+    // credential on reactivation. FOR UPDATE cannot target the nullable
+    // side of the outer join, hence the second keyed lock; order follows
+    // users → students.
+    private async findRecoverableAccount(tx: PoolClient, email: string): Promise<Account | null> {
+        const result = await tx.query<Account>(
+            `SELECT u.id, u.email, u.credential_generation, u.deleted_at, s.status AS student_status
+             FROM users u LEFT JOIN students s ON s.user_id = u.id
+             WHERE lower(btrim(u.email)) = $1 AND u.role = 'student' FOR UPDATE OF u`, [email],
+        );
+        const account = result.rows[0];
+        if (!account || account.deleted_at !== null) {
+            // Enumeration mirror: a known account pays a second round
+            // trip for the separately locked student row below, so
+            // unknown and deleted addresses probe the same shape with a
+            // random id (miss, no lock held) instead of returning early.
+            await this.lockedStudentStatus(tx, randomUUID());
+            return null;
+        }
+        return (await this.lockedStudentStatus(tx, account.id)) === 'active' ? account : null;
+    }
+
+    private async lockAccount(tx: PoolClient, userId: string): Promise<Account | null> {
+        const result = await tx.query<Account>(
+            `SELECT u.id, u.email, u.credential_generation, u.deleted_at, s.status AS student_status
+             FROM users u LEFT JOIN students s ON s.user_id = u.id WHERE u.id = $1 FOR UPDATE OF u`, [userId],
+        );
+        const account = result.rows[0];
+        if (!account || account.deleted_at !== null) return null;
+        return (await this.lockedStudentStatus(tx, account.id)) === 'active' ? account : null;
+    }
+
+    private async lockedStudentStatus(tx: PoolClient, userId: string): Promise<string | null> {
+        const student = await tx.query<{ status: string }>(
+            'SELECT status FROM students WHERE user_id = $1 FOR UPDATE', [userId],
+        );
+        return student.rows[0]?.status ?? null;
+    }
+
+    /**
+     * Anti-enumeration decoy start for unknown, deleted, suspended,
+     * code-less, and otherwise unbound requests. The decoy issues an
+     * undelivered challenge under an isolated NUL-prefixed subject derived
+     * from the normalized email, so repeat deadlines are stable without
+     * reading or changing the real mailbox's resend budget. A fresh
+     * `serverNow + TTL` on every decoy retry
+     * would be a deterministic response-field oracle against the frozen
+     * rebound expiry. Fresh handles report the ten-minute attempt expiry
+     * both paths share; cooldown retries report the frozen challenge
+     * expiry both paths share. The challenge can never verify — verify
+     * requires an attempt row, and none is written here — and nothing is
+     * delivered.
+     * Storage is bounded, not unbounded: one synthetic budget row per subject
+     * (upserted), at most three challenges per ten-minute window per
+     * subject (budget-enforced), plus the route's per-IP limiter — the
+     * same issuance signup already performs for unknown addresses. Aged
+     * tombstones and stale budgets are deleted by the retention
+     * dispatcher, so rotating addresses cannot grow the tables. The
+     * synthetic budget never shares the committed email's OTP budget.
+     */
+    private async decoyStart(tx: PoolClient, handle: { email: string; attemptId: string; purpose: RecoveryPurpose; serverExpiry: Date; serverNow: Date; attemptExpiry: Date }): Promise<{ expiresAt: string; otpExpiresAt: string; serverNow: string }> {
+        // Workload mirror for the committed start's post-branch queries,
+        // in the same order (the attempt and code probes already ran
+        // pre-branch on both paths): without this the decoy exits after
+        // challenge issuance while a recoverable address runs
+        // terminalization, handle digest, and insert first — a latency
+        // oracle over repeated probes. Random ids miss every lock and
+        // update zero rows, so no lock is held and no row changes. The
+        // attempt INSERT has no dummy form (the user_id foreign key
+        // rejects synthetic rows), so a lock-miss probe pays its round
+        // trip below and the residual is heap/WAL cost only; the
+        // rebound-only challenge-bindings UPDATE needs no mirror because
+        // rebound requires the original start's idempotency key, which a
+        // prober cannot present.
+        const decoy = await requestChallenge(tx, {
+            purpose: 'student_account_recovery', subjectKey: recoveryProbeSubjectKey(handle.email),
+            bindings: { recoveryAttemptId: handle.attemptId, recoveryPurpose: handle.purpose },
+            expiresAt: handle.serverExpiry,
+        });
+        if (decoy.status === 'issued') {
+            await this.failPriorAttempts(tx, randomUUID());
+            this.matchesDigest('decoy-expected-digest', this.secretDigest('decoy-start-probe'));
+            // Attempt-INSERT round-trip mirror: the committed path writes
+            // the handle row here, which has no dummy form (the user_id
+            // foreign key rejects synthetic rows). A lock-miss probe pays
+            // the same round trip without writing anything; the residual
+            // is heap/WAL cost only, sub-round-trip noise.
+            await this.lockedStudentStatus(tx, randomUUID());
+            // Fresh handles report the shared captured attempt expiry,
+            // identical to the committed path's attempt row, plus the
+            // decoy challenge's shorter OTP deadline underneath.
+            return { expiresAt: handle.attemptExpiry.toISOString(), otpExpiresAt: decoy.expiresAt.toISOString(), serverNow: handle.serverNow.toISOString() };
+        }
+        // Cooldown/locked: this synthetic subject's frozen expiry, mirroring
+        // the same no-handle response sequence on unknown and known emails.
+        const live = await this.liveBudgetChallengeExpiry(tx, challengeSubjectDigest('student_account_recovery', recoveryProbeSubjectKey(handle.email)));
+        const frozen = (live ?? handle.serverExpiry).toISOString();
+        return { expiresAt: frozen, otpExpiresAt: frozen, serverNow: handle.serverNow.toISOString() };
+    }
+
+    /**
+     * Frozen expiry of the budget's current challenge, if any. The
+     * committed no-live-attempt branch and the decoy cooldown/locked branch
+     * share this so retry deadlines are indistinguishable on both paths.
+     * Superseded challenges still anchor the deadline: delivery
+     * compensation supersedes the real account's challenge, and excluding
+     * it here would fall back to a fresh `serverNow + TTL` while the same
+     * retry for an unknown address still reads its untouched decoy's
+     * frozen expiry — an expiresAt oracle. Consumed challenges stay
+     * excluded: consumption proves the OTP reached its mailbox, which a
+     * prober cannot arrange.
+     */
+    private async liveBudgetChallengeExpiry(tx: PoolClient, subject: string): Promise<Date | null> {
+        const result = await tx.query<{ expires_at: Date }>(
+            `SELECT challenge.expires_at
+             FROM verification_challenge_budgets budget
+             JOIN verification_challenges challenge ON challenge.id = budget.current_challenge_id
+             WHERE budget.purpose = 'student_account_recovery' AND budget.subject_digest = $1
+               AND challenge.consumed_at IS NULL
+               AND challenge.expires_at > clock_timestamp()`,
+            [subject],
+        );
+        return result.rows[0]?.expires_at ?? null;
+    }
+
+    /**
+     * Newest pending attempt of either purpose whose mailbox challenge is
+     * still consumable, locked for the supersede guard. Terminalization is
+     * not purpose-scoped, so the guard cannot be either: without this a
+     * caller could flip purposes after each cooldown to deny the live OTP.
+     */
+    private async lockLiveAttemptAnyPurpose(tx: PoolClient, userId: string): Promise<{ mailbox_challenge_id: string; challenge_expires_at: Date; idempotency_key: string | null } | null> {
+        const result = await tx.query<{ mailbox_challenge_id: string; challenge_expires_at: Date; idempotency_key: string | null }>(
+            `SELECT attempt.mailbox_challenge_id,
+                    challenge.expires_at AS challenge_expires_at, attempt.idempotency_key
+             FROM student_auth_recovery_attempts attempt
+             JOIN verification_challenges challenge ON challenge.id = attempt.mailbox_challenge_id
+             WHERE attempt.user_id = $1 AND attempt.status = 'pending'
+               AND attempt.expires_at > clock_timestamp()
+               AND challenge.consumed_at IS NULL AND challenge.superseded_at IS NULL AND challenge.expires_at > clock_timestamp()
+             ORDER BY attempt.created_at DESC LIMIT 1 FOR UPDATE`,
+            [userId],
+        );
+        return result.rows[0] ?? null;
+    }
+
+    /**
+     * Supersede prior pending attempts when a new handle starts. Verified
+     * attempts are never touched here: their proofs already succeeded, so
+     * failing them would let any anonymous caller who knows the email
+     * cancel a victim's recovery during password choice, repeatedly, by
+     * starting over past the resend cooldown. Verified rows survive until
+     * completion (which fails its competitors) or expiry.
+     */
+    private async failPriorAttempts(tx: PoolClient, userId: string): Promise<void> {
+        await tx.query(
+            `UPDATE student_auth_recovery_attempts
+             SET status = 'failed', secret_hash = NULL, idempotency_key = NULL
+             WHERE user_id = $1 AND status = 'pending'`,
+            [userId],
+        );
+    }
+
+    private async lockActiveCode(tx: PoolClient, userId: string): Promise<RecoveryCode | null> {
+        const result = await tx.query<RecoveryCode>(
+            "SELECT id, generation, code_digest, status FROM student_auth_recovery_codes WHERE user_id = $1 AND status = 'active' FOR UPDATE", [userId],
+        );
+        return result.rows[0] ?? null;
+    }
+
+    /**
+     * Anti-enumeration decoy reads mirroring the committed verify path's
+     * shapes (users, students, attempt, clock, code) for handles with no
+     * attempt row. Without this, a decoy verification exits after one
+     * lookup while a recoverable address runs five more queries before
+     * the same 409, a latency oracle over repeated bogus proofs. Random
+     * ids miss every lock in the same order, so no lock is ever held,
+     * and the digest comparison runs over dummy material.
+     */
+    private async probeVerifyDecoys(tx: PoolClient, attemptId: string): Promise<void> {
+        await this.lockAccount(tx, randomUUID());
+        await this.lockedStudentStatus(tx, randomUUID());
+        await this.lockAttempt(tx, attemptId);
+        await this.now(tx);
+        await this.lockActiveCode(tx, randomUUID());
+        // Shape-mirrored through the same fallback helper: dummy material
+        // always mismatches, paying the same one-or-two digest rounds as
+        // a bogus committed proof.
+        this.matchesAttemptSecret('decoy-expected-digest', 'decoy-verify-probe');
+    }
+
+    private async lockAttempt(tx: PoolClient, id: string): Promise<Attempt | null> {
+        const result = await tx.query<Attempt>('SELECT * FROM student_auth_recovery_attempts WHERE id = $1 FOR UPDATE', [id]);
+        return result.rows[0] ?? null;
+    }
+
+    /**
+     * Timing mirror for verify rejections after the owner, account,
+     * attempt, and clock lookups: the rowless decoy runs two more probe
+     * reads (a second student-row probe and the active-code probe) plus
+     * a digest round before its identical 409. Without this, alternating
+     * the returned handle secret with an altered one takes a shorter
+     * path on recoverable accounts than on unknown addresses — a
+     * repeatable timing oracle that burns no OTP budget. Random ids miss
+     * every lock and nothing is written. The digest runs here only when
+     * the rejection short-circuited before the real comparison; a secret
+     * mismatch already paid the same rounds on committed material.
+     */
+    private async mirrorVerifyRejection(tx: PoolClient, digestPaid: boolean): Promise<void> {
+        await this.lockedStudentStatus(tx, randomUUID());
+        await this.lockActiveCode(tx, randomUUID());
+        if (!digestPaid) this.matchesAttemptSecret('decoy-expected-digest', 'decoy-verify-probe');
+    }
+
+    private async sendCompletionNotice(email: string, purpose: RecoveryPurpose): Promise<void> {
+        try {
+            // The notice is post-commit best effort: a hung provider must
+            // time out into the logged failure below instead of holding the
+            // already-decided credential response open indefinitely.
+            const delivery = await withNoticeDeadline(
+                (this.deps.notify ?? sendAccountRecoveryCompletionNotice)(email, purpose),
+                this.deps.noticeTimeoutMs ?? NOTICE_TIMEOUT_MS,
+            );
+            if (!delivery.success) appLogger.error('Account recovery completion notice delivery failed');
+        } catch {
+            // Credential state has already committed. A transport failure must
+            // not reopen or roll back a consumed recovery.
+            appLogger.error('Account recovery completion notice transport failed');
+        }
+    }
+
+    private async previewAttempt(id: string): Promise<{ status: string; secret_hash: string | null; expires_at: Date } | null> {
+        const conn = await this.deps.pool.connect();
+        try {
+            const result = await conn.query<{ status: string; secret_hash: string | null; expires_at: Date }>(
+                'SELECT status, secret_hash, expires_at FROM student_auth_recovery_attempts WHERE id = $1', [id],
+            );
+            return result.rows[0] ?? null;
+        } finally { conn.release(); }
+    }
+
+    private async now(tx: PoolClient): Promise<Date> {
+        const result = await tx.query<{ now: Date }>('SELECT clock_timestamp() AS now');
+        return result.rows[0]!.now;
+    }
+
+    private secretDigest(secret: string): string { return this.attemptDigest(secret, this.deps.recoveryCodeKey); }
+    private attemptDigest(secret: string, key: string): string { return createHmac('sha256', key).update(`attempt\u0000${secret}`).digest('base64url'); }
+    /**
+     * Attempt Bearer [REDACTED] verification with the rotation fallback, mirroring
+     * recovery-code verification: without this, a stage-two rolling deploy
+     * strands in-flight attempts, since an attempt created under K1 fails
+     * on a K2 replica and vice versa. Creation always uses the current
+     * key; only verification accepts the previous one.
+     */
+    private matchesAttemptSecret(expected: string | null, supplied: string): boolean {
+        if (!expected) return false;
+        if (this.matchesDigest(expected, this.attemptDigest(supplied, this.deps.recoveryCodeKey))) return true;
+        const previous = this.deps.previousRecoveryCodeKey;
+        if (!previous || previous === this.deps.recoveryCodeKey) return false;
+        return this.matchesDigest(expected, this.attemptDigest(supplied, previous));
+    }
+    private matchesRecoveryCode(expected: string | null, supplied: string): boolean {
+        return verifyRecoveryCodeDigest(expected, supplied, this.deps.recoveryCodeKey, this.deps.previousRecoveryCodeKey);
+    }
+    private matchesDigest(expected: string, candidate: string): boolean {
+        const actual = Buffer.from(candidate); const wanted = Buffer.from(expected);
+        return actual.length === wanted.length && timingSafeEqual(actual, wanted);
+    }
+}

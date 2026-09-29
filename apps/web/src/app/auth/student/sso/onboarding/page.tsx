@@ -10,13 +10,14 @@
 
 'use client';
 
-import { Suspense, useEffect, useRef, useState } from 'react';
+import { Suspense, useEffect, useRef, useState, useSyncExternalStore } from 'react';
+import { useSearchParams } from 'next/navigation';
 import Link from 'next/link';
 import axios from 'axios';
 import { AuthShell } from '@/components/auth/AuthShell';
 import { Button } from '@/components/ui/button';
 import { studentSsoApiClient } from '@/lib/api-client';
-import { getSessionSnapshot } from '@/lib/auth';
+import { getSessionSnapshot, storeTokens, subscribeSessionChanges } from '@/lib/auth';
 import { resolveStudentReturn } from '@/lib/student-return';
 import {
     clearSsoAttempt,
@@ -69,13 +70,235 @@ function bodyOf(cause: unknown): unknown {
     return axios.isAxiosError(cause) ? cause.response?.data : undefined;
 }
 
+type SignupContext = { email: string; universityId: string; termsVersion: string; noticeVersion: string; noticeText: string; expiresAt: string };
+
+function signupContext(value: unknown): SignupContext | null {
+    const data = (value as { success?: unknown; data?: unknown })?.success === true ? (value as { data?: unknown }).data : null;
+    if (!data || typeof data !== 'object' || Array.isArray(data)) return null;
+    const v = data as Record<string, unknown>;
+    return typeof v.email === 'string' && typeof v.universityId === 'string' && typeof v.termsVersion === 'string'
+        && typeof v.noticeVersion === 'string' && typeof v.noticeText === 'string' && typeof v.expiresAt === 'string'
+        ? { email: v.email, universityId: v.universityId, termsVersion: v.termsVersion, noticeVersion: v.noticeVersion, noticeText: v.noticeText, expiresAt: v.expiresAt }
+        : null;
+}
+
+function formatSignupRemaining(deadlineMs: number, nowMs: number): string {
+    const total = Math.max(0, Math.floor((deadlineMs - nowMs) / 1000));
+    return `${Math.floor(total / 60)}:${String(total % 60).padStart(2, '0')}`;
+}
+
+function SignupOnboarding() {
+    const [context, setContext] = useState<SignupContext | null>(null);
+    const [skewMs, setSkewMs] = useState(0);
+    const [ambiguousComplete, setAmbiguousComplete] = useState(false);
+    const [existingAccount, setExistingAccount] = useState(false);
+    const [now, setNow] = useState(() => Date.now());
+    const [challengeId, setChallengeId] = useState<string | null>(null);
+    const [challengeExpiresAt, setChallengeExpiresAt] = useState<string | null>(null);
+    const [code, setCode] = useState(''); const [name, setName] = useState('');
+    const [age, setAge] = useState(false); const [terms, setTerms] = useState(false); const [consent, setConsent] = useState(false);
+    const [busy, setBusy] = useState(false); const [error, setError] = useState<string | null>(null);
+    const [createdDestination, setCreatedDestination] = useState<string | null>(null);
+    const started = useRef(false); const initialSession = useRef<number | null>(null);
+    const handoff = useRef<SsoHandoffRecord | null>(null);
+    // Another tab can sign in while a signup request is in flight. Every
+    // response handler captures this generation and discards its update
+    // when the browser session appeared or changed, so one handoff's
+    // school email and OTP workflow never continue under another account.
+    const sessionEpoch = useRef(0);
+    const createdSessionId = useRef<string | null>(null);
+    const sessionId = useSyncExternalStore(subscribeSessionChanges, () => getSessionSnapshot().browserSessionId, () => null);
+    const loadedSessionId = useRef<string | null | undefined>(undefined);
+    useEffect(() => {
+        const previous = loadedSessionId.current;
+        if (previous === sessionId) return;
+        loadedSessionId.current = sessionId;
+        if (previous === undefined) return;
+        // Completing signup deliberately creates this session. Preserve the
+        // one-time recovery notice; only a different session invalidates it.
+        if (createdSessionId.current && getSessionSnapshot().browserSessionId === createdSessionId.current) return;
+        sessionEpoch.current += 1;
+        handoff.current = null; forgetHandoff();
+        setContext(null); setChallengeId(null); setChallengeExpiresAt(null);
+        setCode(''); setName(''); setAge(false); setTerms(false); setConsent(false);
+        // A completion with a lost response remains uncertain even if the
+        // browser session changes; the warning contains no account data.
+        setExistingAccount(false); setCreatedDestination(null);
+        setError('This tab changed accounts. Start Microsoft sign-in again.');
+    }, [sessionId]);
+    useEffect(() => {
+        if (started.current) return; started.current = true;
+        const record = readSsoHandoff(tabStorage());
+        if (!record || !isSsoAttemptLive(record, Date.now()) || getSessionSnapshot().accessToken) { forgetHandoff(); setError('This setup link expired or this tab changed accounts. Start Microsoft sign-in again.'); return; }
+        handoff.current = record; setSkewMs(record.serverSkewMs); initialSession.current = getSessionSnapshot().generation;
+        const epoch = sessionEpoch.current;
+        void studentSsoApiClient.post('/auth/student/sso/signup/context', { handoffId: record.handoffId, handoffSecret: record.handoffSecret })
+            .then(response => { if (epoch !== sessionEpoch.current) return; const parsed = signupContext(response.data); if (!parsed) throw new Error('invalid'); setContext(parsed); })
+            .catch(() => { if (epoch !== sessionEpoch.current) return; setError('This setup link is unavailable or expired. Start Microsoft sign-in again.'); });
+    }, []);
+    useEffect(() => {
+        if (!context) return;
+        const timer = window.setInterval(() => setNow(Date.now()), 1000);
+        return () => window.clearInterval(timer);
+    }, [context]);
+    useEffect(() => {
+        // The notice below delivers the post-signup recovery guidance, so
+        // showing it consumes the fresh-signup marker and the marketplace
+        // backstop stays silent.
+        if (createdDestination === null) return;
+        try { sessionStorage.removeItem('awoof.passwordless-signup-fresh'); } catch { /* already consumed */ }
+    }, [createdDestination]);
+    // The ten-minute handoff window can lapse while the student waits for
+    // mail or fills the form. The countdown names the deadline up front and
+    // the page swaps to an explicit restart state at expiry instead of
+    // presenting controls whose next request fails generically. The
+    // server-issued deadline is evaluated on the server clock using the
+    // skew sampled at sign-in start, so a fast device clock cannot expire
+    // a live handoff early.
+    const handoffDeadlineMs = context ? Date.parse(context.expiresAt) : NaN;
+    const linkExpired = context !== null && !Number.isNaN(handoffDeadlineMs) && handoffDeadlineMs <= now + skewMs;
+    const challengeDeadlineMs = challengeExpiresAt ? Date.parse(challengeExpiresAt) : NaN;
+    const challengeExpired = challengeId !== null && challengeId !== 'verified' && challengeExpiresAt !== null
+        && !Number.isNaN(challengeDeadlineMs) && challengeDeadlineMs <= now + skewMs;
+    useEffect(() => { if (linkExpired) forgetHandoff(); }, [linkExpired]);
+    // Synchronous serialization for the OTP-budget requests: two submits
+    // before the busy render takes effect would each burn shared failure
+    // budget, locking a corrected code. The ref admits exactly one.
+    const otpRequestInFlight = useRef(false);
+    const requestCode = async () => {
+        if (!handoff.current || busy || otpRequestInFlight.current) return; otpRequestInFlight.current = true; setBusy(true); setError(null);
+        const epoch = sessionEpoch.current;
+        try { const r = await studentSsoApiClient.post('/auth/student/sso/signup/send-code', { handoffId: handoff.current.handoffId, handoffSecret: handoff.current.handoffSecret }); if (epoch !== sessionEpoch.current) return; const data = (r.data as { data?: { challengeId?: unknown; expiresAt?: unknown } }).data; if (typeof data?.challengeId !== 'string' || typeof data.expiresAt !== 'string' || Number.isNaN(Date.parse(data.expiresAt))) throw new Error('invalid'); setChallengeId(data.challengeId); setChallengeExpiresAt(data.expiresAt); }
+        catch { if (epoch !== sessionEpoch.current) return; setError('We could not send a confirmation code. Restart Microsoft sign-in if this persists.'); } finally { otpRequestInFlight.current = false; setBusy(false); }
+    };
+    const verifyCode = async () => {
+        if (!handoff.current || !challengeId || !/^\d{6}$/.test(code) || busy || otpRequestInFlight.current) return; otpRequestInFlight.current = true; setBusy(true); setError(null);
+        const epoch = sessionEpoch.current;
+        try { await studentSsoApiClient.post('/auth/student/sso/signup/verify-code', { handoffId: handoff.current.handoffId, handoffSecret: handoff.current.handoffSecret, challengeId, code }); if (epoch !== sessionEpoch.current) return; setChallengeId('verified'); setChallengeExpiresAt(null); setCode(''); }
+        catch { if (epoch !== sessionEpoch.current) return; setError('That confirmation code is invalid or expired. Request a new code.'); } finally { otpRequestInFlight.current = false; setBusy(false); }
+    };
+    const refreshContext = async (): Promise<boolean> => {
+        if (!handoff.current) return false;
+        const epoch = sessionEpoch.current;
+        try {
+            const response = await studentSsoApiClient.post('/auth/student/sso/signup/context', { handoffId: handoff.current.handoffId, handoffSecret: handoff.current.handoffSecret });
+            if (epoch !== sessionEpoch.current) return false;
+            const parsed = signupContext(response.data);
+            if (!parsed) return false;
+            setContext(parsed);
+            return true;
+        } catch { return false; }
+    };
+    // Signup completion consumes the one-use handoff: two submits before
+    // the busy render takes effect would both pass the guard, and the
+    // loser reports a generic retryable 409 although every retry is now
+    // impossible. Serialize synchronously like the OTP actions above.
+    const completeInFlight = useRef(false);
+    const complete = async () => {
+        if (!handoff.current || challengeId !== 'verified' || !age || !terms || !consent || name.trim().length < 2 || busy || completeInFlight.current) return;
+        if (initialSession.current !== getSessionSnapshot().generation || getSessionSnapshot().accessToken) { setError('This tab changed accounts. Restart Microsoft sign-in.'); return; }
+        completeInFlight.current = true; setBusy(true); setError(null);
+        let response: { data: unknown };
+        try {
+            response = await studentSsoApiClient.post('/auth/student/sso/signup/complete', { handoffId: handoff.current.handoffId, handoffSecret: handoff.current.handoffSecret, fullName: name.trim(), ageAttested: true, termsAccepted: true, termsVersion: context!.termsVersion, verificationConsent: true, noticeVersion: context!.noticeVersion });
+        } catch (cause: unknown) {
+            // A 400 here means the Terms or notice version moved mid-window
+            // (a rolling deploy serving context and complete from different
+            // releases): this client already guarantees checked boxes and a
+            // bounded name, so refetch the text and reset assent instead of
+            // retrying the same rejected versions forever.
+            if (statusOf(cause) === 400 && await refreshContext()) {
+                setAge(false); setTerms(false); setConsent(false);
+                setError('The Terms or processing notice changed while you were signing up. Review the new text and accept again.');
+            } else if (statusOf(cause) === 409 && (bodyOf(cause) as { error?: { code?: unknown } } | undefined)?.error?.code === 'SSO_SIGNUP_EXISTING_ACCOUNT') {
+                // Only the distinct existing-account conflict routes to
+                // linked sign-in/recovery guidance: the signup proof is not
+                // authority over an existing account.
+                // Every other 409 (expired handoff, withdrawn policy)
+                // keeps the generic retry instead of misdirecting an
+                // unusable handoff into existing-account guidance.
+                // This handoff cannot authorize access to an existing
+                // account. The safe continuation is its already-linked
+                // sign-in/recovery path, followed by the normal fresh-proof
+                // link flow from account security; discard this signup
+                // handoff so it cannot be mistaken for link authority.
+                forgetHandoff(); setExistingAccount(true);
+            } else if (axios.isAxiosError(cause) && (!cause.response || cause.response.status >= 500)) {
+                // Response-loss/5xx after account creation is ambiguous:
+                // the handoff was consumed with the account, so no retry of
+                // this form can succeed. A fresh Microsoft sign-in discovers
+                // the newly linked identity instead. Local validation
+                // failures are not axios errors and keep the generic retry.
+                forgetHandoff(); setAmbiguousComplete(true);
+            } else {
+                setError('We could not finish setup. Your confirmed details were not silently accepted; retry or restart Microsoft sign-in.');
+            }
+            completeInFlight.current = false; setBusy(false);
+            return;
+        }
+        // The 201 committed the account and consumed the handoff: every
+        // failure below is client-side (unparseable shape, a session
+        // switch that must not clobber the newer session, unavailable
+        // storage). Report the created outcome and clear the spent
+        // handoff — never a retryable "not accepted" form, since no
+        // retry of the consumed handoff can succeed.
+        try {
+            const data = (response.data as { data?: { tokens?: { accessToken?: unknown; refreshToken?: unknown } } }).data;
+            if (!data || typeof data.tokens?.accessToken !== 'string' || typeof data.tokens.refreshToken !== 'string' || initialSession.current !== getSessionSnapshot().generation) throw new Error('unusable');
+            // Preserve the validated continuation the handoff carried for
+            // this sign-in; resolve it before the handoff is forgotten.
+            // Mark this tab's fresh passwordless signup so the
+            // post-continuation recovery offer ("Save your recovery code")
+            // can surface outside this journey, per the signup spec,
+            // without blocking the redirect below.
+            const destination = resolveStudentReturn(handoff.current?.returnPath ?? null, window.location.origin);
+            storeTokens({ accessToken: data.tokens.accessToken, refreshToken: data.tokens.refreshToken }); forgetHandoff();
+            const browserSessionId = getSessionSnapshot().browserSessionId;
+            createdSessionId.current = browserSessionId;
+            try {
+                if (browserSessionId) sessionStorage.setItem('awoof.passwordless-signup-fresh', JSON.stringify({ sessionId: browserSessionId }));
+            } catch { /* the offer simply stays hidden */ }
+            // Route through the post-signup notice instead of redirecting
+            // straight to the continuation: the recovery warning must
+            // reach the new account whatever the destination is. The
+            // notice consumes the marker when shown; if the tab is
+            // abandoned first, the marketplace offer stays as backstop.
+            setCreatedDestination(destination);
+        } catch {
+            forgetHandoff(); setAmbiguousComplete(true);
+        } finally {
+            completeInFlight.current = false; setBusy(false);
+        }
+    };
+    if (createdDestination !== null) return <AuthShell role="student" title="Account created" subtitle="Your passwordless account is ready." footer={null}><p role="status" className="text-left text-sm">Recovery is not configured, and losing your school sign-in may prevent account access. Save a recovery code so you can recover with your school mailbox.</p><div className="mt-5 space-y-2"><Button className="w-full rounded-full" asChild><Link href="/student/security">Save your recovery code</Link></Button><Button variant="outline" className="w-full rounded-full" onClick={() => { window.location.href = createdDestination; }}>Continue</Button></div></AuthShell>;
+    if (ambiguousComplete) return <AuthShell role="student" title="Finish setting up Awoof" subtitle="Setup may have completed." footer={null}><p role="alert">Setup may have finished but the confirmation was lost. Sign in with Microsoft again: if your account was created, you will be signed straight in.</p><Button className="mt-5 w-full rounded-full" asChild><Link href="/auth/student/login">Sign in with Microsoft</Link></Button></AuthShell>;
+    if (!context) return <AuthShell role="student" title="Finish setting up Awoof" subtitle="Checking your school sign-in." footer={null}><p role="status">{error ?? 'Checking the pending sign-in…'}</p>{error ? <Button className="mt-5 w-full rounded-full" asChild><Link href="/auth/student/login">Restart Microsoft sign-in</Link></Button> : null}</AuthShell>;
+    if (existingAccount) return <AuthShell role="student" title="Finish setting up Awoof" subtitle="An account already uses this email." footer={null}><p role="alert">An Awoof account already uses this school email, so this setup cannot create another. Sign in using a method already linked to that account, or recover it. Once signed in, use Account security to add Microsoft; linking requires fresh proof and this email alone does not authorize it.</p><Button className="mt-5 w-full rounded-full" asChild><Link href="/auth/student/login?redirect=%2Fstudent%2Fsecurity">Sign in to account security</Link></Button><Link className="mt-4 block text-center text-sm text-primary underline" href="/auth/student/recovery">Recover account access</Link></AuthShell>;
+    if (linkExpired) return <AuthShell role="student" title="Finish setting up Awoof" subtitle="This setup link expired." footer={null}><p role="alert">This setup link expired before setup finished. Start Microsoft sign-in again for a fresh link.</p><Button className="mt-5 w-full rounded-full" asChild><Link href="/auth/student/login">Restart Microsoft sign-in</Link></Button></AuthShell>;
+    return <AuthShell role="student" title="Finish setting up Awoof" subtitle="Create an account without a password." footer={null}>
+        <p className="text-left text-sm text-slate-600">Microsoft sign-in succeeded. Confirm <strong>{context.email}</strong> for your Awoof account and recovery. Enrollment is pending; confirming this email does not verify current enrollment or independently verify age.</p>
+        {challengeId && challengeId !== 'verified' && !Number.isNaN(challengeDeadlineMs)
+            ? <p role="timer" className="mt-3 text-left text-sm text-slate-600">{challengeExpired ? 'This email confirmation code has expired. Request a new code while your setup link is live.' : `This email confirmation code expires in ${formatSignupRemaining(challengeDeadlineMs, now + skewMs)}.`}</p>
+            : !Number.isNaN(handoffDeadlineMs) ? <p role="timer" className="mt-3 text-left text-sm text-slate-600">This setup link expires in {formatSignupRemaining(handoffDeadlineMs, now + skewMs)}. Finish before then or restart Microsoft sign-in.</p> : null}
+        {!challengeId ? <Button type="button" onClick={requestCode} disabled={busy} className="mt-5 w-full rounded-full">{busy ? 'Sending…' : 'Send confirmation code'}</Button> : challengeId !== 'verified' ? <div className="mt-5 space-y-3"><label className="block text-left text-sm font-medium" htmlFor="signup-code">Email confirmation code<input id="signup-code" aria-label="Email confirmation code" inputMode="numeric" value={code} onChange={e => setCode(e.target.value)} className="mt-1 w-full rounded-2xl border px-4 h-11" /></label><Button type="button" onClick={verifyCode} disabled={busy || !/^\d{6}$/.test(code)} className="w-full rounded-full">Confirm email</Button><Button type="button" variant="outline" onClick={requestCode} disabled={busy} className="w-full rounded-full">Request a new code</Button></div> : <div className="mt-5 space-y-3"><label className="block text-left text-sm font-medium" htmlFor="signup-name">Full name<input id="signup-name" aria-label="Full name" value={name} onChange={e => setName(e.target.value)} maxLength={255} className="mt-1 w-full rounded-2xl border px-4 h-11" /></label><label className="flex gap-2 text-left text-sm"><input aria-label="I am at least 18 years old" type="checkbox" checked={age} onChange={e => setAge(e.target.checked)} />I am at least 18 years old</label><p className="text-left text-sm text-slate-600">Creating an account records your acceptance of version {context.termsVersion} of the <Link href="/terms" target="_blank" rel="noreferrer" className="text-primary underline">Terms of Service</Link>.</p><label className="flex gap-2 text-left text-sm"><input aria-label="I accept the current Terms" type="checkbox" checked={terms} onChange={e => setTerms(e.target.checked)} />I accept the current Terms</label><p className="text-left text-sm text-slate-600">Processing notice ({context.noticeVersion}): {context.noticeText}</p><label className="flex gap-2 text-left text-sm"><input aria-label="I consent to the processing notice" type="checkbox" checked={consent} onChange={e => setConsent(e.target.checked)} />I consent to the processing notice</label><Button type="button" onClick={complete} disabled={busy || !age || !terms || !consent || name.trim().length < 2} className="w-full rounded-full">Create passwordless account</Button></div>}
+        {error ? <p role="alert" className="mt-3 text-left text-sm text-red-600">{error}</p> : null}
+    </AuthShell>;
+}
+
 function StudentSsoOnboardingInner() {
+    const search = useSearchParams();
+    const signupMode = search.get('mode') === 'signup';
     const [view, setView] = useState<OnboardingView>({ kind: 'checking' });
     const [password, setPassword] = useState('');
     const startedRef = useRef(false);
     const reauthFailures = useRef(0);
+    // Linking consumes the one-use handoff: two submits before the busy
+    // render takes effect would both pass the guard and race the same
+    // handoff. Serialize synchronously like the signup actions.
+    const submitInFlight = useRef(false);
 
     useEffect(() => {
+        if (signupMode) return;
         if (startedRef.current) return;
         startedRef.current = true;
         const handoff = readSsoHandoff(tabStorage());
@@ -85,11 +308,13 @@ function StudentSsoOnboardingInner() {
             return;
         }
         setView({ kind: 'ready', handoff, error: null, busy: false });
-    }, []);
+    }, [signupMode]);
+
+    if (signupMode) return <SignupOnboarding />;
 
     const submit = async (event: React.FormEvent): Promise<void> => {
         event.preventDefault();
-        if (view.kind !== 'ready' || view.busy || password.length === 0) return;
+        if (view.kind !== 'ready' || view.busy || password.length === 0 || submitInFlight.current) return;
         // Both endpoints require the password session: without a local
         // access token no request is sent and the user signs in first.
         // The token is attached explicitly — never via the refreshing
@@ -101,6 +326,7 @@ function StudentSsoOnboardingInner() {
             return;
         }
         const authHeaders = { Authorization: `Bearer ${session.accessToken}` };
+        submitInFlight.current = true;
         setView({ ...view, busy: true, error: null });
         let grant;
         try {
@@ -120,6 +346,10 @@ function StudentSsoOnboardingInner() {
                     return;
                 }
                 setPassword('');
+                // The only exit that stays on the re-submittable form:
+                // every other path leaves 'ready' (or navigates away), so
+                // the flag must release here and only here.
+                submitInFlight.current = false;
                 setView({ ...view, busy: false, error: 'Current password is incorrect.' });
                 return;
             }

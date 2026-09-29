@@ -156,6 +156,18 @@ test('malformed input stays a 400 even during a quota outage', async () => {
     });
 });
 
+test('login-options returns server-reported recovery availability', async () => {
+    await withServer(dependencies({
+        resolveLoginOptions: async () => ({ password: true, providers: [], registration: true, recovery: false }),
+    }), async (baseUrl) => {
+        const response = await postLoginOptions(baseUrl, { email: 'ada@school.example' });
+        assert.equal(response.status, 200);
+        assert.deepEqual((await response.json() as { data: unknown }).data, {
+            password: true, providers: [], registration: true, recovery: false,
+        });
+    });
+});
+
 test('OpenAPI documents the strict login-options contract', () => {
     const spec = swaggerSpec as {
         paths: Record<string, Record<string, {
