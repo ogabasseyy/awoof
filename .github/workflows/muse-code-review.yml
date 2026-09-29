@@ -41,10 +41,11 @@ permissions:
   contents: read
 
 concurrency:
-  group: muse-code-review-${{ github.event.pull_request.number }}
-  # First attempts cancel superseded runs (quota); manual reruns (attempt>1)
-  # must not cancel a newer head's in-flight review — the rerun's own
-  # head-SHA check skips it cheaply instead.
+  # Attempt-suffixed group: first attempts share the PR group (new pushes
+  # cancel superseded runs, saving quota), while manual reruns land in a
+  # separate group where they can neither cancel nor queue-replace a newer
+  # head's in-flight review — the rerun's own head-SHA check skips it.
+  group: muse-code-review-${{ github.event.pull_request.number }}-attempt-${{ github.run_attempt }}
   cancel-in-progress: ${{ github.run_attempt == 1 && (github.event.action != 'edited' || github.event.changes.base != null) }}
 
 jobs:
@@ -190,9 +191,11 @@ jobs:
               join_ok=true
               while IFS= read -r -d '' st <&3; do
                 IFS= read -r -d '' p1 <&3 || { join_ok=false; break; }
+                prev=""
                 if [[ "${st}" == R* ]]; then
                   IFS= read -r -d '' p2 <&3 || { join_ok=false; break; }
                   path="${p2}"
+                  prev="${p1}"
                 else
                   path="${p1}"
                 fi
@@ -209,8 +212,8 @@ jobs:
                 case "${st}" in
                   A*) s="added";; D*) s="removed";; R*) s="renamed";; *) s="modified";;
                 esac
-                jq -n --arg f "${path}" --arg s "${s}" --argjson a "${add:-0}" --argjson d "${del:-0}" \
-                  '{filename:$f,status:$s,additions:$a,deletions:$d}' >> "${files_file}.jsonl"
+                jq -n --arg f "${path}" --arg s "${s}" --argjson a "${add:-0}" --argjson d "${del:-0}" --arg prev "${prev}" \
+                  '{filename:$f,status:$s,additions:$a,deletions:$d,previous_filename:$prev}' >> "${files_file}.jsonl"
               done
               exec 3<&- 4<&-
               if [[ "${join_ok}" == "true" ]]; then
@@ -330,7 +333,9 @@ jobs:
             source=""
             if [[ "${base_available}" == "true" ]] \
               && content="$(git show "FETCH_HEAD:${candidate}" 2>/dev/null)"; then
-              source="trusted (base ${base_ref})"
+              # SHA, not the branch name: branch names are submitter-controlled
+              # and this label prints outside any untrusted block.
+              source="trusted (base ${base_sha_full:0:10})"
             elif [[ -f "${candidate}" && ! -L "${candidate}" ]]; then
               # Refuse symlinks: a PR-added symlink (e.g. to /proc/self/environ)
               # would otherwise embed runner secrets into the prompt. The --
@@ -392,7 +397,7 @@ jobs:
               add_candidate "${dir}/CLAUDE.md"
               dir="$(dirname -- "${dir}")"
             done
-          done < <(jq -j '.[].filename + "\u0000"' "${files_file}" 2>/dev/null)
+          done < <(jq -j '[.[] | .filename, (.previous_filename // empty)] | map(select(length > 0))[] + "\u0000"' "${files_file}" 2>/dev/null)
           # Two phases: trusted base-backed guidance first, head-only files
           # second — so PR-authored content can never exhaust the byte budget
           # before applicable trusted rules are collected.
@@ -482,7 +487,10 @@ jobs:
            "next_steps": ["<concrete follow-up>", ...]}
           Line numbers MUST be new-side (+) line numbers you can see in the
           <diff> hunks; never cite a line outside the diff — use the closest
-          visible hunk line in the same file and say so in the body. Each
+          visible hunk line in the same file and say so in the body. For
+          whole-file findings with no new-side line (e.g. a pure deletion),
+          use "line": 0 with a path from the changed-path manifest; these
+          appear in the summary instead of as inline threads. Each other
           finding becomes an inline review thread on its file/line, so make
           every body self-contained. If you find no meaningful issues, return
           "findings": [] and say so in "verdict".
@@ -688,10 +696,11 @@ jobs:
             # returned findings but none are usable, fall back explicitly
             # instead of posting a false "no issues" review.
             raw_finding_count="$(jq -r '(.findings // []) | length' "${findings_json}")"
-            jq '.findings |= map(select(type == "object"
+            jq '.findings |= (map(select(type == "object"
               and (.path | type) == "string"
               and ((.line | tostring) | test("^[0-9]+$"))
-              and ((.line | tonumber?) // 0) > 0))' "${findings_json}" > "${findings_json}.clean" \
+              and ((.line | tonumber?) // -1) >= 0)) | map(.line |= tonumber))' \
+              "${findings_json}" > "${findings_json}.clean" \
               && mv "${findings_json}.clean" "${findings_json}"
             clean_finding_count="$(jq -r '(.findings // []) | length' "${findings_json}")"
             if (( raw_finding_count > 0 && clean_finding_count == 0 )); then
@@ -719,10 +728,12 @@ jobs:
               | jq -R -s '[split("\n")[] | select(length>0) | split("\t") | {path:.[0],start:.[1]|tonumber,end:.[2]|tonumber}]' \
               > "${ranges_json}" 2>/dev/null || echo '[]' > "${ranges_json}"
             validated_json="${RUNNER_TEMP}/muse-validated.json"
-            jq --slurpfile ranges "${ranges_json}" '
-              ($ranges[0]) as $r
-              | ([.findings[]? | select(. as $f | any($r[]; .path==$f.path and ($f.line|tonumber?) >= .start and ($f.line|tonumber?) <= .end))]) as $ok
-              | {valid: $ok[0:20], summary_only: (([.findings[]?] - $ok) + $ok[20:])}' \
+            jq --slurpfile ranges "${ranges_json}" --slurpfile files "${RUNNER_TEMP}/muse-files.json" '
+              ($ranges[0]) as $r | ($files[0] | map(.filename)) as $paths
+              | ([.findings[]? | select(.line > 0)]) as $lined
+              | ([.findings[]? | select(.line == 0 and (.path as $p | $paths | index($p) != null))]) as $filelevel
+              | ([$lined[] | select(. as $f | any($r[]; .path==$f.path and $f.line >= .start and $f.line <= .end))]) as $ok
+              | {valid: $ok[0:20], summary_only: ($filelevel + ($lined - $ok) + $ok[20:])}' \
               "${findings_json}" > "${validated_json}" 2>/dev/null || echo '{"valid":[],"summary_only":[]}' > "${validated_json}"
             {
               printf '## Verdict\n\n%s\n\n## Findings\n\n' "${verdict}"
