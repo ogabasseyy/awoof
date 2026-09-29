@@ -83,9 +83,10 @@ jobs:
       github.event.pull_request.head.repo.full_name == github.repository &&
       (github.event.action != 'edited' || github.event.changes.base != null)
     runs-on: ubuntu-latest
-    # Budget: collect 5 + install 5 + run 10 + post 2 + record 2 = 24 < 25.
-    # Step timeouts must sum below this or a hung step starves the fallback.
-    timeout-minutes: 25
+    # Budget: prereq 1 + checkout 2 + collect 5 + install 5 + run 10 + post 2
+    # + record 2 = 27 < 28. Every step is bounded and counted, so even if
+    # each step burns its full timeout the Post step still gets its 2 minutes.
+    timeout-minutes: 28
     env:
       MUSE_MODEL_RESOLVED: ${{ vars.MUSE_MODEL != '' && vars.MUSE_MODEL || '' }}
       MUSE_EFFORT_RESOLVED: ${{ vars.MUSE_REASONING_EFFORT != '' && vars.MUSE_REASONING_EFFORT || 'medium' }}
@@ -93,6 +94,10 @@ jobs:
     steps:
       - name: Check prerequisites
         id: prereq
+        # Advisory + bounded like every step (see budget above): pure shell,
+        # so the timeout is backstop-only; an unset should_run skips the rest.
+        continue-on-error: true
+        timeout-minutes: 1
         env:
           HAS_KEY: ${{ secrets.META_API_KEY != '' }}
         run: |
@@ -116,6 +121,9 @@ jobs:
         # Advisory: a transient checkout failure must skip green, never fail
         # the job — the Collect step below routes it to the skip path.
         continue-on-error: true
+        # Bounded (see budget above): an unbounded stall here would eat the
+        # margin and let the job timeout cancel the run before the fallback.
+        timeout-minutes: 2
         with:
           persist-credentials: false
           # Check out the PR head so the agent reads full files from the
