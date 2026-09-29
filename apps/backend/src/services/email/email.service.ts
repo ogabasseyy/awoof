@@ -203,13 +203,12 @@ export const sendAccountRecoveryCompletionNotice = async (
     const detail = purpose === 'compromise'
         ? 'Account recovery set a new password for your Awoof account, signed out all sessions, and disconnected linked external sign-in identities.'
         : 'Account recovery set a new password for your Awoof account and signed out all sessions. Linked school sign-ins were left connected.';
-    const frontendUrl = process.env.FRONTEND_URL || 'http://localhost:3000';
     return sendEmail(email, 'Awoof account recovery completed', `
         <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
             <h1>Awoof account security</h1>
             <p>${detail}</p>
             <p>No recovery code or password is included in this notice.</p>
-            <p>If you did not make this change, secure your mailbox and <a href="${frontendUrl}/contact">contact support through the verified Awoof support channel</a>.</p>
+            <p>If you did not make this change, secure your mailbox and email <a href="mailto:support@awoof.tech">support@awoof.tech</a> from this address.</p>
         </div>
     `);
 };
@@ -224,13 +223,12 @@ export const sendRecoveryCodeSecurityNotice = async (
         : event === 'replaced'
             ? 'Your Awoof recovery code was replaced.'
             : 'Your Awoof recovery code was removed.';
-    const frontendUrl = process.env.FRONTEND_URL || 'http://localhost:3000';
     return sendEmail(email, 'Awoof account recovery-code security notice', `
         <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
             <h1>Awoof account security</h1>
             <p>${detail}</p>
             <p>No recovery code or password is included in this notice.</p>
-            <p>If you did not make this change, secure your account and <a href="${frontendUrl}/contact">contact support through the verified Awoof support channel</a>.</p>
+            <p>If you did not make this change, secure your account and email <a href="mailto:support@awoof.tech">support@awoof.tech</a> from this address.</p>
         </div>
     `);
 };

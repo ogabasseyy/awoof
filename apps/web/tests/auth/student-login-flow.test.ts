@@ -237,6 +237,37 @@ test('finish responses accept only the authenticated or link-required union', ()
         }),
         null,
     );
+    // The recovery re-enrollment marker survives only as the literal the
+    // server sends; anything else stays absent so the marketplace warning
+    // and the security-page enrollment gate read the same value.
+    const marked = parseSsoFinishResponse({
+        success: true,
+        data: {
+            outcome: 'authenticated',
+            user: { ...user, recoveryReenrollmentRequired: true },
+            tokens,
+            studentAssurance: assurance,
+            assuranceStatus: 'available',
+        },
+    });
+    assert.equal(marked?.kind, 'authenticated');
+    assert.equal(marked?.kind === 'authenticated' ? marked.user.recoveryReenrollmentRequired : undefined, true);
+    const unmarked = parseSsoFinishResponse({
+        success: true,
+        data: { outcome: 'authenticated', user, tokens, studentAssurance: assurance, assuranceStatus: 'available' },
+    });
+    assert.equal(unmarked?.kind === 'authenticated' ? 'recoveryReenrollmentRequired' in unmarked.user : false, false);
+    const spoofed = parseSsoFinishResponse({
+        success: true,
+        data: {
+            outcome: 'authenticated',
+            user: { ...user, recoveryReenrollmentRequired: 'yes' },
+            tokens,
+            studentAssurance: assurance,
+            assuranceStatus: 'available',
+        },
+    });
+    assert.equal(spoofed?.kind === 'authenticated' ? 'recoveryReenrollmentRequired' in spoofed.user : false, false);
     assert.equal(
         parseSsoFinishResponse({
             success: true,

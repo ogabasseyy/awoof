@@ -55,7 +55,7 @@ export default function StudentSecurityPage() {
     const [status, setStatus] = useState<RecoveryStatus>('loading'); const [pendingCodeId, setPendingCodeId] = useState<string | null>(null);
     const [pendingExpiresAt, setPendingExpiresAt] = useState<string | null>(null);
     const [generation, setGeneration] = useState<number | null>(null);
-    const [busy, setBusy] = useState(false); const started = useRef(false);
+    const [busy, setBusy] = useState(false); const loadedUserId = useRef<string | null | undefined>(undefined);
     const [now, setNow] = useState(() => Date.now());
     useEffect(() => {
         const timer = window.setInterval(() => setNow(Date.now()), 1000);
@@ -98,13 +98,20 @@ export default function StudentSecurityPage() {
             setIdentities(parsed); setIdentitiesError(null);
         } catch { setIdentitiesError(IDENTITIES_UNAVAILABLE); }
     };
+    const currentUserId = user?.id ?? null;
     useEffect(() => {
-        if (started.current) return; started.current = true;
+        if (loadedUserId.current === currentUserId) return;
+        loadedUserId.current = currentUserId;
+        // Another tab can replace the session while this page stays open:
+        // never keep the previous account's recovery status, identities,
+        // or pending unlink target on screen. Reset to loading and refetch
+        // for whoever is signed in now.
+        setStatus('loading'); setIdentities(null); setIdentitiesError(null); setUnlinkTarget(null);
         const session = getSessionSnapshot();
         if (!session.accessToken) { setStatus('unavailable'); setIdentitiesError(IDENTITIES_UNAVAILABLE); return; }
         void loadStatus();
         void loadIdentities();
-    }, []);
+    }, [currentUserId]);
     // A failed school-sign-in start must not strand password users: the
     // provider-independent password flow stays usable, so these report an
     // inline error and keep the password toggle instead of marking the
@@ -120,7 +127,8 @@ export default function StudentSecurityPage() {
         setBusy(true); setSchoolError(null); try { const r = await studentSsoSessionApiClient.post('/auth/student/sso/reauth/microsoft/start', { purpose: 'recovery_code_remove' }); const url = (r.data as { data?: { authorizationUrl?: unknown } }).data?.authorizationUrl; if (typeof url !== 'string' || !url.startsWith('https:')) throw new Error(); window.location.assign(url); } catch { setBusy(false); setSchoolError(schoolUnavailable); }
     };
     const beginActivation = async () => {
-        const pendingId = pendingCodeId ?? pendingIntent(); const session = getSessionSnapshot(); if (!pendingId || !session.accessToken || busy) { setStatus('unavailable'); return; }
+        if (busy) return;
+        const pendingId = pendingCodeId ?? pendingIntent(); const session = getSessionSnapshot(); if (!pendingId || !session.accessToken) { setStatus('unavailable'); return; }
         setBusy(true); setSchoolError(null); try { const r = await studentSsoSessionApiClient.post('/auth/student/sso/reauth/microsoft/start', { purpose: 'recovery_code_activate', pendingCodeId: pendingId }); const url = (r.data as { data?: { authorizationUrl?: unknown } }).data?.authorizationUrl; if (typeof url !== 'string' || !url.startsWith('https:')) throw new Error('invalid'); window.location.assign(url); } catch { setBusy(false); setSchoolError(schoolUnavailable); }
     };
     const cancelPending = async () => {

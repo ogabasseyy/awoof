@@ -181,7 +181,7 @@ export function parseSsoStart(value: unknown): SsoStart | null {
 
 export type SsoFinishAuthenticated = {
     kind: 'authenticated';
-    user: { id: string; email: string; role: 'student' };
+    user: { id: string; email: string; role: 'student'; recoveryReenrollmentRequired?: boolean };
     tokens: { accessToken: string; refreshToken: string };
     studentAssurance: StudentAssurance | null;
     assuranceStatus: 'available' | 'unavailable';
@@ -224,9 +224,14 @@ export function parseSsoFinishResponse(value: unknown): SsoFinishAuthenticated |
             assuranceStatus: data.assuranceStatus,
         });
         if (!assurance) return null;
+        const rawUser = data.user as { id: string; email: string; recoveryReenrollmentRequired?: unknown };
         return {
             kind: 'authenticated',
-            user: { id: (data.user as { id: string }).id, email: (data.user as { email: string }).email, role: 'student' },
+            // A recovered student signing in through a retained school
+            // identity must see the re-enrollment warning immediately, not
+            // only after a reload refetches /auth/me. Only the literal
+            // marker survives; anything else stays absent.
+            user: { id: rawUser.id, email: rawUser.email, role: 'student', ...(rawUser.recoveryReenrollmentRequired === true ? { recoveryReenrollmentRequired: true } : {}) },
             tokens: {
                 accessToken: (data.tokens as { accessToken: string }).accessToken,
                 refreshToken: (data.tokens as { refreshToken: string }).refreshToken,

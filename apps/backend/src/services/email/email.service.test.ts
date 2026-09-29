@@ -48,7 +48,7 @@ test('verification OTP copy states the caller-supplied expiry, defaulting to ten
     assert.ok(messages[1]!.includes('This code will expire in 10 minutes.'));
 });
 
-test('recovery-code security notices link the verified support destination', async (t) => {
+test('recovery-code security notices link the support address for signed-out reports', async (t) => {
     const previous = process.env.BREVO_API_KEY;
     process.env.BREVO_API_KEY = 'synthetic-test-key';
     t.after(() => {
@@ -62,11 +62,11 @@ test('recovery-code security notices link the verified support destination', asy
     });
     assert.equal((await sendRecoveryCodeSecurityNotice('student@approved.test', 'replaced')).success, true);
     assert.equal(messages.length, 1);
-    assert.ok(messages[0]!.includes('/contact'));
+    assert.ok(messages[0]!.includes('mailto:support@awoof.tech'));
     assert.ok(!messages[0]!.includes('recovery code is <strong>'));
 });
 
-test('account recovery completion notices confirm the change with a support link and no credentials', async (t) => {
+test('account recovery completion notices confirm the change with a support address and no credentials', async (t) => {
     const previous = process.env.BREVO_API_KEY;
     process.env.BREVO_API_KEY = 'synthetic-test-key';
     t.after(() => {
@@ -81,6 +81,6 @@ test('account recovery completion notices confirm the change with a support link
     assert.equal((await sendAccountRecoveryCompletionNotice('student@approved.test', 'compromise')).success, true);
     assert.equal(messages.length, 1);
     assert.ok(messages[0]!.includes('disconnected linked external sign-in identities'));
-    assert.ok(messages[0]!.includes('/contact'));
+    assert.ok(messages[0]!.includes('mailto:support@awoof.tech'));
     assert.ok(!messages[0]!.includes('<strong>'));
 });
