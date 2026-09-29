@@ -300,6 +300,12 @@ export async function dispatchRecoveryOtpOutboxBatch(
             result.scrubbed++;
             continue;
         }
+        // The batch claims every lease up front but delivers sequentially
+        // with up to 30s per job: renew this job's lease immediately
+        // before its own delivery so a slow batch cannot send on an
+        // expired lease another worker already reclaimed. A lost race
+        // skips the job silently — the new holder owns its outcome.
+        if (!await renewOutboxLease(pool, job)) continue;
         try {
             const sent = await deliverWithTimeout(deliver, email, otp, job.purpose, deliverTimeoutMs);
             if (sent.success) { await settle(pool, job, 'sent'); result.sent++; }
@@ -318,6 +324,25 @@ export async function dispatchRecoveryOtpOutboxBatch(
     }
     result.scrubbed += await purgeRecoveryOtpOutbox(pool);
     return result;
+}
+
+/**
+ * Extend a claimed job's lease just before its delivery. The
+ * claim-token compare-and-swap reports a lost race: another worker
+ * reclaimed the expired lease and owns the job, so the caller skips it
+ * instead of double-sending on a stale claim.
+ */
+async function renewOutboxLease(pool: Pick<Pool, 'connect'>, job: OutboxJob): Promise<boolean> {
+    const tx = await pool.connect();
+    try {
+        const renewed = await tx.query(
+            `UPDATE student_email_otp_outbox
+             SET lease_until = clock_timestamp() + ($3 * interval '1 second')
+             WHERE id = $1 AND status = 'processing' AND claim_token = $2`,
+            [job.id, job.claim_token, LEASE_SECONDS],
+        );
+        return (renewed.rowCount ?? 0) === 1;
+    } finally { tx.release(); }
 }
 
 /**

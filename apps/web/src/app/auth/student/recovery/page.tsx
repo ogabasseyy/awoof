@@ -46,9 +46,13 @@ export default function StudentAccountRecoveryPage() {
     const [now, setNow] = useState(() => Date.now());
     const startInFlight = useRef(false);
     const [completing, setCompleting] = useState(false);
-    const completionInFlight = useRef(false);
+    // Request locks are owned by the submitting verify generation: a
+    // restart steals them for the new attempt instead of blocking until
+    // a stale request settles, while same-generation double submits
+    // still serialize. A stale finally must never clear a newer owner.
+    const completionInFlight = useRef<number | null>(null);
     const [verifying, setVerifying] = useState(false);
-    const verifyInFlight = useRef(false);
+    const verifyInFlight = useRef<number | null>(null);
     const verifyGeneration = useRef(0);
     useEffect(() => {
         if (!attempt) return;
@@ -66,8 +70,8 @@ export default function StudentAccountRecoveryPage() {
     const correctedNow = now + (attempt?.skewMs ?? 0);
     const activeDeadlineMs = verified ? deadlineMs : otpDeadlineMs;
     const expired = attempt !== null && !Number.isNaN(activeDeadlineMs) && activeDeadlineMs <= correctedNow;
-    const restart = () => { verifyGeneration.current += 1; setAttempt(null); setSent(false); setVerified(false); setPassword(''); setRecoveryCode(''); setOtp(''); setError(null); setCompleteFailed(false); };
-    const cancelVerify = () => { verifyGeneration.current += 1; setAttempt(null); setSent(false); setRecoveryCode(''); setOtp(''); };
+    const restart = () => { verifyGeneration.current += 1; setAttempt(null); setSent(false); setVerified(false); setPassword(''); setRecoveryCode(''); setOtp(''); setError(null); setCompleteFailed(false); setVerifying(false); setCompleting(false); };
+    const cancelVerify = () => { verifyGeneration.current += 1; setAttempt(null); setSent(false); setRecoveryCode(''); setOtp(''); setVerifying(false); setCompleting(false); };
     const start = async (event: React.FormEvent) => {
         event.preventDefault();
         // State updates render asynchronously; two submit events in one task
@@ -101,9 +105,10 @@ export default function StudentAccountRecoveryPage() {
         // Each verification consumes shared challenge failure budget, so a
         // double submit on a slow connection could lock a mistyped OTP
         // before the correction is even sent. Serialize submissions.
-        event.preventDefault(); if (!attempt || verifyInFlight.current) return;
-        verifyInFlight.current = true;
+        event.preventDefault(); if (!attempt) return;
+        if (verifyInFlight.current !== null && verifyInFlight.current === verifyGeneration.current) return;
         const generation = verifyGeneration.current;
+        verifyInFlight.current = generation;
         setVerifying(true); setError(null);
         try {
             const response = await publicApiClient.post('/auth/student/sso/account-recovery/verify', { attemptId: attempt.id, secret: attempt.secret, code: recoveryCode, otp });
@@ -121,11 +126,12 @@ export default function StudentAccountRecoveryPage() {
             // state or error message.
             if (generation === verifyGeneration.current) setError('Recovery proof could not be confirmed. Start again if the attempt expired.');
         }
-        finally { verifyInFlight.current = false; setVerifying(false); }
+        finally { if (verifyInFlight.current === generation) verifyInFlight.current = null; if (generation === verifyGeneration.current) setVerifying(false); }
     };
     const complete = async (event: React.FormEvent) => {
-        event.preventDefault(); if (!attempt || completionInFlight.current) return;
-        completionInFlight.current = true;
+        event.preventDefault(); if (!attempt) return;
+        if (completionInFlight.current !== null && completionInFlight.current === verifyGeneration.current) return;
+        completionInFlight.current = verifyGeneration.current;
         // The client-side deadline can expire while completion is in
         // flight, enabling a restart the stale handlers must not
         // clobber: a restarted attempt (possibly with the opposite
@@ -154,8 +160,8 @@ export default function StudentAccountRecoveryPage() {
                 setError('Password setup did not confirm. The password may already be set: try signing in with it before starting recovery again.');
             }
         } finally {
-            completionInFlight.current = false;
-            setCompleting(false);
+            if (completionInFlight.current === generation) completionInFlight.current = null;
+            if (generation === verifyGeneration.current) setCompleting(false);
         }
     };
     return <AuthShell role="student" title="Account recovery" subtitle="Use this only if you cannot use school sign-in." footer={null}>

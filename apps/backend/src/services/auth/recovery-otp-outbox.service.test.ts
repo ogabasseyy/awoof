@@ -87,19 +87,22 @@ test('exhausted outbox settle terminalizes while it still holds the lease', asyn
         'the lease holder must supersede the exhausted challenge');
 });
 
-test('a hung provider delivery times out into retry instead of wedging the batch', async () => {
-    // A real envelope so the job reaches the provider call: the timeout
-    // under test wraps deliver(), not decryption.
+/** A real ciphertext envelope so a job reaches the provider call instead of failing decryption. */
+function sealedTestJob() {
     const key = Buffer.from(validKey, 'base64');
     const keyId = `k-${createHash('sha256').update(key).digest('hex').slice(0, 12)}`;
     const nonce = randomBytes(12);
     const cipher = createCipheriv('aes-256-gcm', key, nonce, { authTagLength: 16 });
     cipher.setAAD(Buffer.from('awoof:student-email-otp:v1:student_account_recovery:c1', 'utf8'));
-    const job = {
+    return {
         id: 'j1', challenge_id: 'c1', purpose: 'student_account_recovery', key_id: keyId,
         ciphertext: Buffer.concat([cipher.update('123456', 'utf8'), cipher.final()]),
         nonce, auth_tag: cipher.getAuthTag(), attempts: 0,
     };
+}
+
+test('a hung provider delivery times out into retry instead of wedging the batch', async () => {
+    const job = sealedTestJob();
     const email = 'student@school.example';
     const queries: string[] = [];
     const client = {
@@ -134,4 +137,35 @@ test('a hung provider delivery times out into retry instead of wedging the batch
     assert.equal(result.retried, 1);
     assert.ok(queries.some((text) => text.includes("SET status = 'pending', next_attempt_at")),
         'a timed-out delivery must release the job for retry');
+});
+
+test('a job whose lease lapsed mid-batch is skipped instead of double-sent', async () => {
+    const job = sealedTestJob();
+    const email = 'student@school.example';
+    const queries: string[] = [];
+    let deliveries = 0;
+    const client = {
+        query: async (text: string) => {
+            queries.push(text);
+            if (text.includes('FOR UPDATE SKIP LOCKED LIMIT $1')) return { rows: [job], rowCount: 1 };
+            if (text.includes("SET status = 'processing', claim_token")) return { rows: [{ attempts: 1 }], rowCount: 1 };
+            if (text.includes('JOIN student_auth_recovery_codes r ON')) {
+                return { rows: [{ email, otp_subject_digest: challengeSubjectDigest('student_account_recovery', email) }], rowCount: 1 };
+            }
+            // Slow earlier jobs let this lease lapse; another worker
+            // reclaimed it, so the renewal compare-and-swap misses.
+            if (text.includes('SET lease_until = clock_timestamp()')) return { rows: [], rowCount: 0 };
+            return { rows: [], rowCount: 1 };
+        },
+        release: () => undefined,
+    };
+    const result = await dispatchRecoveryOtpOutboxBatch(
+        { connect: async () => client } as never,
+        validKey,
+        async () => { deliveries++; return { success: true }; },
+    );
+    assert.equal(deliveries, 0, 'a reclaimed job must never be sent on the stale claim');
+    assert.deepEqual([result.sent, result.retried], [0, 0], 'the new lease holder owns the skipped outcome');
+    assert.ok(!queries.some((text) => text.includes("SET status = 'pending', next_attempt_at")
+        || text.includes('SET status = $3, ciphertext = NULL')), 'a skipped job must not settle another worker claim');
 });
