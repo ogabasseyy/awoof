@@ -52,14 +52,17 @@ operator, and a recorded result before proceeding.
 
 ## 3. Enablement sequence (all NOT RUN)
 
-1. NOT RUN — Apply ALL release migrations (currently through `066`,
-   not just `058`) on a disposable copy first; confirm they apply
-   cleanly and the consume-once triggers reject rewritten handoffs
-   /grants. The release code reads and writes columns introduced
-   after `058` (for example `users.active_session_issued_at` from
-   `064`, benefit snapshots from `065`, claim-session tombstones from
-   `066`), so stopping at an older migration breaks linked finishes
-   and merchant exchanges with missing-column errors.
+1. NOT RUN — Apply ALL release migrations through `083` on a disposable
+   copy first; confirm they apply cleanly and the consume-once triggers
+   reject rewritten handoffs/grants. Before migration `081`, quiesce SSO
+   starts/callbacks and account-recovery completion on old API replicas;
+   keep them blocked until `081` is applied and all serving replicas
+   enforce its attempt fence. Migration `083` adds the encrypted recovery
+   OTP outbox: configure its shared encryption key and drain old replicas
+   before accepting new recovery starts. See the backend-first and key-
+   rotation gates in `docs/passwordless-release-checklist.md`. Stopping
+   at the older `066` boundary leaves passwordless login and recovery
+   reading missing schema and cannot be used for this release.
 2. NOT RUN — Deploy the Release B build to all API instances; confirm
    every instance serves it (mixed-version window stays closed).
 3. NOT RUN — With providers still disabled, prove discovery returns
