@@ -5,7 +5,9 @@ import type { Pool, PoolClient } from 'pg';
 import { StudentAccountRecoveryService } from '../../services/auth/student-account-recovery.service.js';
 import { createTestPool } from './test-database.js';
 
-const RECOVERY_CODE_KEY = 'test-recovery-code-key';
+const configuredRecoveryCodeKey = process.env.AWOOF_TEST_GUARD;
+if (!configuredRecoveryCodeKey) throw new Error('The disposable PostgreSQL runner must provide its synthetic recovery-code test key');
+const RECOVERY_CODE_KEY: string = configuredRecoveryCodeKey;
 const configuredOutboxEncryptionKey = process.env.STUDENT_ACCOUNT_RECOVERY_OTP_ENCRYPTION_KEY;
 if (!configuredOutboxEncryptionKey) throw new Error('The disposable PostgreSQL runner must provide its synthetic outbox test key');
 const OUTBOX_ENCRYPTION_KEY: string = configuredOutboxEncryptionKey;
