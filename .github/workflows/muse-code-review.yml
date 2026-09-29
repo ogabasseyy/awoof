@@ -518,19 +518,25 @@ jobs:
               trunc_note=" [TRUNCATED at ${guidance_cap} bytes]"
             fi
             content_len="$(printf '%s' "${content}" | wc -c)"
-            if (( guidance_bytes + content_len > guidance_budget )); then
-              guidance_capped=true
-              printf '\n(Guidance budget exhausted at %s bytes; %s and any further scoped files omitted.)\n' \
-                "${guidance_budget}" "${candidate}" >> "${guidance_file}"
-              return 0
-            fi
-            guidance_bytes=$(( guidance_bytes + content_len ))
             # Candidate paths from changed files are submitter-controlled:
             # flatten newlines for display and omit the path from the block
-            # attribute (a quote in the path would break out of it).
+            # attribute (a quote in the path would break out of it). Computed
+            # before the budget check so the exhaustion note below names the
+            # neutralized form too — the raw path must never print outside
+            # an untrusted block.
             safe_candidate="$(printf '%s' "${candidate}" | tr '\n' '_' \
               | perl -pe 's{<\s*/\s*(file|diff|pr_title|pr_description|changed_files|removed_lines|head_ref|base_ref|untrusted_guidance)}{<\\/$1}gi')"
             safe_candidate="${safe_candidate:0:300}"
+            # Framing margin: the heading, source label, and untrusted-block
+            # tags add bytes content_len never counts, so many empty guidance
+            # files would otherwise bypass the budget via metadata alone.
+            # 1024 bounds the ~420-byte worst case (300-char name).
+            if (( guidance_bytes + content_len + 1024 > guidance_budget )); then
+              guidance_capped=true
+              printf '\n(Guidance budget exhausted at %s bytes; %s and any further scoped files omitted.)\n' \
+                "${guidance_budget}" "${safe_candidate}" >> "${guidance_file}"
+              return 0
+            fi
             {
               printf '\n### %s (%s)%s\n\n' "${safe_candidate}" "${source}" "${trunc_note}"
               if [[ "${source}" == UNTRUSTED* ]]; then
@@ -546,6 +552,9 @@ jobs:
                 printf '\n'
               fi
             } >> "${guidance_file}"
+            # Exact accounting: the budget tracks real file bytes (content
+            # plus framing), not content alone.
+            guidance_bytes="$(wc -c < "${guidance_file}")"
           }
           guidance_candidates=()
           add_candidate() {
@@ -578,6 +587,9 @@ jobs:
           # before applicable trusted rules are collected.
           for phase in base head; do
             for candidate in ${guidance_candidates[@]+"${guidance_candidates[@]}"}; do
+              # Capped: later emits are no-ops, so stop stat-ing candidates
+              # instead of probing every remaining path.
+              if [[ "${guidance_capped}" == "true" ]]; then break 2; fi
               if [[ "${base_available}" == "true" ]] \
                 && git show "${base_sha_full}:${candidate}" >/dev/null 2>&1; then
                 is_base=true
@@ -810,6 +822,38 @@ jobs:
             echo "::notice::PR base moved (${BASE_SHA:0:10} -> ${live_base:0:10}); rerun is stale, skipping Muse invocation."
             exit 0
           fi
+          # Symlink-escape gate: a PR can add symlinks resolving outside the
+          # checkout (e.g. `leak -> /proc/self/environ`, which carries
+          # META_API_KEY in this step's environment), and the agent reads
+          # changed files from this workspace. Resolve every symlink first:
+          # anything escaping the checkout is always malicious or broken
+          # elsewhere too — legitimate in-repo links resolve inside — so it
+          # becomes a placeholder file, never agent-readable content. find
+          # never descends into linked dirs without -L/-follow; -mindepth 1
+          # keeps the workspace root itself out of scope; NUL-delimited for
+          # newline paths. Any scan failure fails closed (no launch).
+          ws_real="$(realpath -m "${GITHUB_WORKSPACE}" 2>/dev/null)" \
+            || { echo "::warning::Workspace canonicalization failed; skipping run to avoid exposing secrets via PR-authored links."; exit 1; }
+          links_file="$(mktemp)"
+          if ! find "${GITHUB_WORKSPACE}" -mindepth 1 -type l -print0 > "${links_file}" 2>/dev/null; then
+            echo "::warning::Symlink scan failed; skipping run to avoid exposing secrets via PR-authored links."
+            rm -f "${links_file}"
+            exit 1
+          fi
+          while IFS= read -r -d '' link; do
+            # Unresolvable links (loops) fail closed to outside: an empty
+            # target matches no inside prefix below.
+            target="$(realpath -m "${link}" 2>/dev/null || true)"
+            case "${target}" in
+              "${ws_real}/"*) ;;
+              *)
+                rm -f -- "${link}"
+                printf 'REVIEW-SAFETY PLACEHOLDER: this path was a symlink resolving outside the checked-out workspace and was removed before review (link: %s; target: %s). See the diff for the original link.\n' "${link}" "${target}" > "${link}"
+                echo "::warning::Removed workspace-escaping symlink: ${link} -> ${target}"
+                ;;
+            esac
+          done < "${links_file}"
+          rm -f "${links_file}"
           review_file="${RUNNER_TEMP}/muse-review-body.md"
           : > "${review_file}"
 
