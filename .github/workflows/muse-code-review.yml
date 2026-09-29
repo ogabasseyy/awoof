@@ -51,7 +51,9 @@ on:
     # converted_to_draft: its job skips via draft == false below, but the
     # run still takes the PR concurrency group and cancels an in-flight
     # review — without it a de-drafted PR would still be reviewed.
-    types: [opened, synchronize, reopened, ready_for_review, edited, converted_to_draft]
+    # closed: same shape via state == 'open' below — without it a merged
+    # PR would still be reviewed.
+    types: [opened, synchronize, reopened, ready_for_review, edited, converted_to_draft, closed]
 
 permissions:
   contents: read
@@ -80,6 +82,7 @@ jobs:
       actions: read
     if: >-
       github.event.pull_request.draft == false &&
+      github.event.pull_request.state == 'open' &&
       github.event.pull_request.head.repo.full_name == github.repository &&
       (github.event.action != 'edited' || github.event.changes.base != null)
     runs-on: ubuntu-latest
@@ -843,13 +846,14 @@ jobs:
           set -euo pipefail
           # Rerun staleness: a manual rerun uses an isolated concurrency
           # group, so a newer push cannot cancel it — revalidate the live
-          # head, base, AND draft state before spending a Muse invocation.
-          # Stale runs exit quietly with no post (the Post step revalidates
-          # again before posting). Fail closed: an unreadable ref is a skip,
-          # never a proceed. The token is scoped to this one call and
-          # scrubbed before Muse launches: the agent needs only META_API_KEY,
-          # so the write-capable job token must never reach its environment.
-          if ! live_refs="$(GH_TOKEN="${GITHUB_TOKEN}" gh api "repos/${GITHUB_REPOSITORY}/pulls/${PR_NUMBER}" --jq '.head.sha, .base.sha, .draft' 2>/dev/null)" \
+          # head, base, draft, AND open state before spending a Muse
+          # invocation. Stale runs exit quietly with no post (the Post step
+          # revalidates again before posting). Fail closed: an unreadable
+          # ref is a skip, never a proceed. The token is scoped to this one
+          # call and scrubbed before Muse launches: the agent needs only
+          # META_API_KEY, so the write-capable job token must never reach
+          # its environment.
+          if ! live_refs="$(GH_TOKEN="${GITHUB_TOKEN}" gh api "repos/${GITHUB_REPOSITORY}/pulls/${PR_NUMBER}" --jq '.head.sha, .base.sha, .draft, .state' 2>/dev/null)" \
             || [[ -z "${live_refs}" ]]; then
             echo "::warning::Ref revalidation lookup failed; skipping run to avoid reviewing a stale head."
             exit 0
@@ -857,7 +861,8 @@ jobs:
           live_head="$(printf '%s' "${live_refs}" | sed -n '1p')"
           live_base="$(printf '%s' "${live_refs}" | sed -n '2p')"
           live_draft="$(printf '%s' "${live_refs}" | sed -n '3p')"
-          if [[ -z "${live_head}" || -z "${live_base}" || -z "${live_draft}" ]]; then
+          live_state="$(printf '%s' "${live_refs}" | sed -n '4p')"
+          if [[ -z "${live_head}" || -z "${live_base}" || -z "${live_draft}" || -z "${live_state}" ]]; then
             echo "::warning::Ref revalidation lookup failed; skipping run to avoid reviewing a stale head."
             exit 0
           fi
@@ -874,6 +879,13 @@ jobs:
           # recheck eligibility here before spending the invocation.
           if [[ "${live_draft}" != "false" ]]; then
             echo "::notice::PR returned to draft; skipping Muse invocation."
+            exit 0
+          fi
+          # Closure changes no SHA either, so the closed run (see trigger
+          # types) cannot always cancel an isolated rerun — a merged PR
+          # must not spend quota or post a stale review.
+          if [[ "${live_state}" != "open" ]]; then
+            echo "::notice::PR is no longer open; skipping Muse invocation."
             exit 0
           fi
           # Symlink-escape gate: a PR can add symlinks resolving outside the
@@ -990,7 +1002,7 @@ jobs:
           # refs — posting it would misattribute inline lines, so exit
           # quietly. Fail closed here too: an unreadable ref is a skip, never
           # a post.
-          if ! live_refs="$(gh api "repos/${GITHUB_REPOSITORY}/pulls/${PR_NUMBER}" --jq '.head.sha, .base.sha, .draft' 2>/dev/null)" \
+          if ! live_refs="$(gh api "repos/${GITHUB_REPOSITORY}/pulls/${PR_NUMBER}" --jq '.head.sha, .base.sha, .draft, .state' 2>/dev/null)" \
             || [[ -z "${live_refs}" ]]; then
             echo "::warning::Ref revalidation lookup failed; skipping post to avoid publishing a stale review."
             exit 0
@@ -998,7 +1010,8 @@ jobs:
           live_head="$(printf '%s' "${live_refs}" | sed -n '1p')"
           live_base="$(printf '%s' "${live_refs}" | sed -n '2p')"
           live_draft="$(printf '%s' "${live_refs}" | sed -n '3p')"
-          if [[ -z "${live_head}" || -z "${live_base}" || -z "${live_draft}" ]]; then
+          live_state="$(printf '%s' "${live_refs}" | sed -n '4p')"
+          if [[ -z "${live_head}" || -z "${live_base}" || -z "${live_draft}" || -z "${live_state}" ]]; then
             echo "::warning::Ref revalidation lookup failed; skipping post to avoid publishing a stale review."
             exit 0
           fi
@@ -1014,6 +1027,12 @@ jobs:
           # de-drafted mid-review is no longer eligible, so skip the post.
           if [[ "${live_draft}" != "false" ]]; then
             echo "::notice::PR returned to draft during review; skipping stale post."
+            exit 0
+          fi
+          # Closure changes no SHA either (see the Run step): never post a
+          # review to a merged or closed PR.
+          if [[ "${live_state}" != "open" ]]; then
+            echo "::notice::PR closed during review; skipping stale post."
             exit 0
           fi
           # Dedupe re-lookup (see the Collect step): a concurrent same-head
