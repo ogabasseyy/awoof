@@ -4,11 +4,18 @@ import { ConflictError } from '../../common/errors/AppError.js';
 import { appLogger } from '../../common/logger.js';
 import { passwordService } from './password.service.js';
 import { sendAccountRecoveryCompletionNotice } from '../email/email.service.js';
-import { challengeBudgetWouldIssue, challengeSubjectDigest, challengeTtlMs, consumeChallenge, databaseNow, persistDecoyCooldown, requestChallenge } from '../verification/challenge.service.js';
+import { challengeSubjectDigest, challengeTtlMs, consumeChallenge, databaseNow, requestChallenge } from '../verification/challenge.service.js';
 import { revokeSsoSchoolAssertions } from './student-sso-onboarding.service.js';
 import { verifyRecoveryCodeDigest } from './student-recovery-code.service.js';
 
 type RecoveryPurpose = 'lost_access' | 'compromise';
+
+// Decoy state must never share the real mailbox's OTP budget. NUL cannot
+// appear in a valid mailbox address, making this namespace collision-proof
+// while the challenge service stores only its keyed digest.
+export function recoveryProbeSubjectKey(normalizedEmail: string): string {
+    return `\u0000awoof-recovery-probe-v1:${normalizedEmail}`;
+}
 
 type Account = {
     id: string;
@@ -117,9 +124,9 @@ export class StudentAccountRecoveryService {
             // attempt row locks before challenge issuance so concurrent
             // starts and verifications serialize in one order (attempt
             // before budget/challenge) instead of code-against-attempt.
-            // Both probes run on both paths (random ids on the decoy
-            // path) so the branch itself adds no timing signal.
-            const live = account ? await this.lockLiveAttempt(tx, account.id, purpose) : await this.lockLiveAttempt(tx, randomUUID(), purpose);
+            // Both paths run the same probes in the same order (random ids
+            // on the no-account path), normalizing query count/order without
+            // claiming equal database latency.
             const active = account ? await this.lockActiveCode(tx, account.id) : await this.lockActiveCode(tx, randomUUID());
             // Cross-purpose guard probe: failPriorAttempts cancels every
             // purpose, so a same-purpose-only guard would let a caller flip
@@ -135,31 +142,21 @@ export class StudentAccountRecoveryService {
             // victim's handle after each cooldown — flipping purposes to
             // dodge a same-purpose guard — and rebind recovery to their own,
             // repeating until the victim's window closes. The unbound caller
-            // takes the same frozen-expiry shape as a keyless cooldown retry
-            // — no new challenge is issued, nothing is emailed, and the live
-            // attempt and its OTP survive untouched.
+            // takes the same isolated no-handle decoy path as an unknown
+            // address: a synthetic challenge may be stored for response
+            // parity, but nothing is emailed and the live attempt, OTP, and
+            // real resend budget survive untouched.
             // A legacy/unbound live attempt is not resumable by a newly
             // supplied key. Treat it like a mismatch: accepting it here
             // would let any anonymous caller supersede that attempt after
             // the resend cooldown expires. Shape the refusal exactly as
-            // the decoy path would for this budget state — fresh-decoy
-            // deadlines when issuance is available, the frozen live expiry
-            // otherwise — so probes cannot distinguish an address with
-            // live recovery from an unknown one; the handle itself is
-            // rowless and verifies nothing. The budget is only previewed,
-            // never issued: issuing would supersede the live challenge
-            // and burn send budget on attacker probes.
+            // the decoy path would for the same per-email probe budget:
+            // fresh-decoy deadlines when issuance is available and frozen
+            // probe deadlines on cooldown/lock. This never reads or changes
+            // the real email budget; the returned handle is rowless and
+            // verifies nothing.
             if (liveAnyPurpose && (liveAnyPurpose.idempotency_key === null || liveAnyPurpose.idempotency_key !== idempotencyKey)) {
-                if (await challengeBudgetWouldIssue(tx, 'student_account_recovery', account.email)) {
-                    // Mirror the decoy's state transition so a repeat probe
-                    // observes the same cooldown the unknown path would have
-                    // created; the live challenge and send budget are never
-                    // touched, so the victim's OTP and future issues stay
-                    // intact while the probe sequence stays indistinguishable.
-                    await persistDecoyCooldown(tx, 'student_account_recovery', account.email);
-                    return { expiresAt: attemptExpiry.toISOString(), otpExpiresAt: serverExpiry.toISOString(), serverNow: serverNow.toISOString() };
-                }
-                return this.frozenStartExpiry(tx, account.email, serverExpiry, serverNow);
+                return this.decoyStart(tx, { email, attemptId, purpose, serverExpiry, serverNow, attemptExpiry });
             }
             const challenge = await requestChallenge(tx, {
                 purpose: 'student_account_recovery', subjectKey: account.email,
@@ -168,9 +165,11 @@ export class StudentAccountRecoveryService {
             });
             if (challenge.status !== 'issued') {
                 // Cooldown with a live pending attempt: the first start
-                // committed but its 202 was lost. Supersede onto a rebound
-                // handle against the same unconsumed challenge instead of
-                // stranding the delivered OTP behind a decoy. The reported
+                // committed but its 202 was lost, or the user switched
+                // recovery purpose while preserving the original tab key.
+                // Supersede onto a rebound handle against the same
+                // unconsumed challenge instead of stranding the delivered
+                // OTP behind a decoy. The reported
                 // deadline stays on the original challenge, so retries can
                 // never stretch the OTP window, and no OTP is re-sent. The
                 // retry must present the original start's idempotency key:
@@ -180,12 +179,11 @@ export class StudentAccountRecoveryService {
                 // Without the binding the retry takes the frozen-expiry
                 // path, indistinguishable from a decoy, and the live
                 // attempt is untouched.
-                if (!live || live.idempotency_key === null || idempotencyKey === null || live.idempotency_key !== idempotencyKey) {
-                    // No resumable attempt, but the frozen budget-challenge
-                    // expiry still applies: a fresh deadline here would mark
-                    // committed handles against decoy retries, which return
-                    // the same frozen value. Fresh only when none is live.
-                    return this.frozenStartExpiry(tx, account.email, serverExpiry, serverNow);
+                if (!liveAnyPurpose || liveAnyPurpose.idempotency_key === null || idempotencyKey === null || liveAnyPurpose.idempotency_key !== idempotencyKey) {
+                    // No usable attempt handle: match the unknown-address
+                    // decoy sequence without reading or changing the real
+                    // mailbox's challenge budget.
+                    return this.decoyStart(tx, { email, attemptId, purpose, serverExpiry, serverNow, attemptExpiry });
                 }
                 await this.failPriorAttempts(tx, account.id);
                 // Rebind the shared challenge to the rebound handle: verify
@@ -195,9 +193,9 @@ export class StudentAccountRecoveryService {
                 // ever present this challenge.
                 const reboundBinding = await tx.query(
                     `UPDATE verification_challenges
-                     SET bindings = jsonb_set(bindings, '{recoveryAttemptId}', to_jsonb($2::text))
+                     SET bindings = jsonb_set(jsonb_set(bindings, '{recoveryAttemptId}', to_jsonb($2::text)), '{recoveryPurpose}', to_jsonb($3::text))
                      WHERE id = $1 AND consumed_at IS NULL AND superseded_at IS NULL`,
-                    [live.mailbox_challenge_id, attemptId],
+                    [liveAnyPurpose.mailbox_challenge_id, attemptId, purpose],
                 );
                 if (reboundBinding.rowCount !== 1) throw unavailable();
                 // The rebound attempt owns a fresh ten-minute window, but
@@ -212,9 +210,9 @@ export class StudentAccountRecoveryService {
                          (id, user_id, credential_generation, purpose, secret_hash, recovery_code_generation,
                           mailbox_challenge_id, expires_at, idempotency_key)
                      VALUES ($1, $2, $3, $4, $5, $6, $7, $8::timestamptz, $9)`,
-                    [attemptId, account.id, Number(account.credential_generation), input.purpose, this.secretDigest(secret), Number(active.generation), live.mailbox_challenge_id, attemptExpiry, idempotencyKey],
+                    [attemptId, account.id, Number(account.credential_generation), purpose, this.secretDigest(secret), Number(active.generation), liveAnyPurpose.mailbox_challenge_id, attemptExpiry, idempotencyKey],
                 );
-                const reboundOtp = live.challenge_expires_at.toISOString();
+                const reboundOtp = liveAnyPurpose.challenge_expires_at.toISOString();
                 return { expiresAt: reboundOtp, otpExpiresAt: reboundOtp, serverNow: serverNow.toISOString() };
             }
             await this.failPriorAttempts(tx, account.id);
@@ -497,26 +495,25 @@ export class StudentAccountRecoveryService {
     }
 
     /**
-     * Anti-enumeration decoy start for unknown, deleted, suspended, and
-     * code-less addresses. The decoy issues a real mailbox challenge keyed
-     * by the normalized email so retry deadlines are stable exactly like
-     * committed handles: a fresh `serverNow + TTL` on every decoy retry
+     * Anti-enumeration decoy start for unknown, deleted, suspended,
+     * code-less, and otherwise unbound requests. The decoy issues an
+     * undelivered challenge under an isolated NUL-prefixed subject derived
+     * from the normalized email, so repeat deadlines are stable without
+     * reading or changing the real mailbox's resend budget. A fresh
+     * `serverNow + TTL` on every decoy retry
      * would be a deterministic response-field oracle against the frozen
      * rebound expiry. Fresh handles report the ten-minute attempt expiry
      * both paths share; cooldown retries report the frozen challenge
      * expiry both paths share. The challenge can never verify — verify
      * requires an attempt row, and none is written here — and nothing is
      * delivered.
-     * Storage is bounded, not unbounded: one budget row per subject
+     * Storage is bounded, not unbounded: one synthetic budget row per subject
      * (upserted), at most three challenges per ten-minute window per
      * subject (budget-enforced), plus the route's per-IP limiter — the
      * same issuance signup already performs for unknown addresses. Aged
      * tombstones and stale budgets are deleted by the retention
      * dispatcher, so rotating addresses cannot grow the tables. The
-     * budget is shared with the committed path (one subject, one cap):
-     * a state transition inside the cooldown — reactivation, code
-     * enrollment — simply delays the first committed attempt row until
-     * the caller's retry past the cooldown.
+     * synthetic budget never shares the committed email's OTP budget.
      */
     private async decoyStart(tx: PoolClient, handle: { email: string; attemptId: string; purpose: RecoveryPurpose; serverExpiry: Date; serverNow: Date; attemptExpiry: Date }): Promise<{ expiresAt: string; otpExpiresAt: string; serverNow: string }> {
         // Workload mirror for the committed start's post-branch queries,
@@ -533,7 +530,7 @@ export class StudentAccountRecoveryService {
         // rebound requires the original start's idempotency key, which a
         // prober cannot present.
         const decoy = await requestChallenge(tx, {
-            purpose: 'student_account_recovery', subjectKey: handle.email,
+            purpose: 'student_account_recovery', subjectKey: recoveryProbeSubjectKey(handle.email),
             bindings: { recoveryAttemptId: handle.attemptId, recoveryPurpose: handle.purpose },
             expiresAt: handle.serverExpiry,
         });
@@ -551,9 +548,9 @@ export class StudentAccountRecoveryService {
             // decoy challenge's shorter OTP deadline underneath.
             return { expiresAt: handle.attemptExpiry.toISOString(), otpExpiresAt: decoy.expiresAt.toISOString(), serverNow: handle.serverNow.toISOString() };
         }
-        // Cooldown/locked: the live current challenge's frozen expiry,
-        // mirroring the committed rebound; fresh only when none is live.
-        const live = await this.liveBudgetChallengeExpiry(tx, challengeSubjectDigest('student_account_recovery', handle.email));
+        // Cooldown/locked: this synthetic subject's frozen expiry, mirroring
+        // the same no-handle response sequence on unknown and known emails.
+        const live = await this.liveBudgetChallengeExpiry(tx, challengeSubjectDigest('student_account_recovery', recoveryProbeSubjectKey(handle.email)));
         const frozen = (live ?? handle.serverExpiry).toISOString();
         return { expiresAt: frozen, otpExpiresAt: frozen, serverNow: handle.serverNow.toISOString() };
     }
@@ -584,43 +581,15 @@ export class StudentAccountRecoveryService {
     }
 
     /**
-     * Frozen-expiry start shape shared by decoys, keyless cooldown retries,
-     * and unbound supersede attempts: no challenge handle, so no delivery.
-     */
-    private async frozenStartExpiry(tx: PoolClient, email: string, serverExpiry: Date, serverNow: Date): Promise<{ expiresAt: string; otpExpiresAt: string; serverNow: string }> {
-        const current = await this.liveBudgetChallengeExpiry(tx, challengeSubjectDigest('student_account_recovery', email));
-        const frozen = (current ?? serverExpiry).toISOString();
-        return { expiresAt: frozen, otpExpiresAt: frozen, serverNow: serverNow.toISOString() };
-    }
-
-    /**
-     * Newest pending same-purpose attempt whose mailbox challenge is still
-     * consumable, locked for a rebound handle. Verified rows never
-     * resume: their holder already proved the OTP and keeps working.
-     */
-    private async lockLiveAttempt(tx: PoolClient, userId: string, purpose: RecoveryPurpose): Promise<{ id: string; mailbox_challenge_id: string; challenge_expires_at: Date; idempotency_key: string | null } | null> {
-        const result = await tx.query<{ id: string; mailbox_challenge_id: string; challenge_expires_at: Date; idempotency_key: string | null }>(
-            `SELECT attempt.id, attempt.mailbox_challenge_id, challenge.expires_at AS challenge_expires_at, attempt.idempotency_key
-             FROM student_auth_recovery_attempts attempt
-             JOIN verification_challenges challenge ON challenge.id = attempt.mailbox_challenge_id
-             WHERE attempt.user_id = $1 AND attempt.purpose = $2 AND attempt.status = 'pending'
-               AND attempt.expires_at > clock_timestamp()
-               AND challenge.consumed_at IS NULL AND challenge.superseded_at IS NULL AND challenge.expires_at > clock_timestamp()
-             ORDER BY attempt.created_at DESC LIMIT 1 FOR UPDATE`,
-            [userId, purpose],
-        );
-        return result.rows[0] ?? null;
-    }
-
-    /**
      * Newest pending attempt of either purpose whose mailbox challenge is
      * still consumable, locked for the supersede guard. Terminalization is
      * not purpose-scoped, so the guard cannot be either: without this a
      * caller could flip purposes after each cooldown to deny the live OTP.
      */
-    private async lockLiveAttemptAnyPurpose(tx: PoolClient, userId: string): Promise<{ id: string; idempotency_key: string | null } | null> {
-        const result = await tx.query<{ id: string; idempotency_key: string | null }>(
-            `SELECT attempt.id, attempt.idempotency_key
+    private async lockLiveAttemptAnyPurpose(tx: PoolClient, userId: string): Promise<{ mailbox_challenge_id: string; challenge_expires_at: Date; idempotency_key: string | null } | null> {
+        const result = await tx.query<{ mailbox_challenge_id: string; challenge_expires_at: Date; idempotency_key: string | null }>(
+            `SELECT attempt.mailbox_challenge_id,
+                    challenge.expires_at AS challenge_expires_at, attempt.idempotency_key
              FROM student_auth_recovery_attempts attempt
              JOIN verification_challenges challenge ON challenge.id = attempt.mailbox_challenge_id
              WHERE attempt.user_id = $1 AND attempt.status = 'pending'
