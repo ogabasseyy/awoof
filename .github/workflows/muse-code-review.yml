@@ -5,10 +5,13 @@
 # a PR review comment.
 #
 # Trigger is pull_request_target, so this definition always comes from the
-# BASE revision: under pull_request a same-repo contributor could rewrite this
-# file in their PR to exfiltrate META_API_KEY without merging anything. The
-# PR head is still checked out explicitly below for READING (never executed),
-# which is the precondition that keeps pull_request_target safe here.
+# base repository's DEFAULT branch — not the PR, and not the PR's target
+# branch: under pull_request a same-repo contributor could rewrite this file
+# in their PR to exfiltrate META_API_KEY without merging anything. The PR
+# head is still checked out explicitly below for READING (never executed),
+# which is the precondition that keeps pull_request_target safe here — per
+# GitHub's secure-use guide, "the checkout step alone does not execute
+# untrusted code".
 #
 # Billing: whatever credential is stored in the META_API_KEY secret. That can
 # be the subscription-linked key from `muse login` onboarding (flat monthly
@@ -41,7 +44,7 @@ name: Muse Code Review
 
 on:
   # pull_request_target (see header): the secret-bearing job must run the
-  # trusted base definition, never the PR's own workflow file.
+  # trusted default-branch definition, never the PR's own workflow file.
   pull_request_target:
     # edited: only base retargets run (see job if below); title/body edits
     # would otherwise burn quota for an unchanged diff.
@@ -95,7 +98,12 @@ jobs:
           fi
           echo "should_run=true" >> "${GITHUB_OUTPUT}"
 
-      - name: Checkout repository
+      # Audited pull_request_target + PR-head checkout: checked-out code is only
+      # READ into the review prompt — no build, test, install, or exec step
+      # ever runs workspace code, and the agent runs --disable-shell /
+      # --disable-write. Same-repo-only further excludes the classic fork
+      # pwn-request shape this rule targets.
+      - name: Checkout repository  # nosemgrep: yaml.github-actions.security.pull-request-target-code-checkout.pull-request-target-code-checkout
         id: checkout
         if: steps.prereq.outputs.should_run == 'true'
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
