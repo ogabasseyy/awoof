@@ -431,8 +431,13 @@ export function createStudentSsoRouter(factory: FlowFactory = defaultFlow, optio
     const accountRecoveryFactory = options.accountRecoveryService ?? defaultAccountRecovery;
     const linkLimiterMax = options.linkLimiterMax ?? 10;
     const reauthLimiter = studentSsoLinkLimiter(linkLimiterMax);
-    const linkLimiter = studentSsoLinkLimiter(linkLimiterMax);
-    const unlinkLimiter = studentSsoLinkLimiter(linkLimiterMax);
+    // Link and unlink spend the same five-minute action grants as the
+    // recovery-code continuations: isolate them by grant so students behind
+    // a shared NAT never burn each other's proof, with a coarse IP ceiling.
+    const linkLimiter = studentSsoGrantLimiter(linkLimiterMax);
+    const unlinkLimiter = studentSsoGrantLimiter(linkLimiterMax);
+    const linkIpLimiter = studentSsoLinkLimiter(Math.max(linkLimiterMax * 10, 100));
+    const unlinkIpLimiter = studentSsoLinkLimiter(Math.max(linkLimiterMax * 10, 100));
     // Provider start traffic can be exhausted while a student is in the
     // browser redirect. Keep the authenticated finish budget independent so
     // an already-completed proof cannot be stranded by other starts on the
@@ -999,7 +1004,7 @@ export function createStudentSsoRouter(factory: FlowFactory = defaultFlow, optio
         responseHeaders(res); res.status(204).end();
     }));
 
-    router.post('/link', authenticate, requireRole('student'), linkLimiter, exactOrigin, exactJson, asyncHandler(async (req, res) => {
+    router.post('/link', authenticate, requireRole('student'), linkIpLimiter, linkLimiter, exactOrigin, exactJson, asyncHandler(async (req, res) => {
         const body = linkBody(req);
         const actor = ssoActor(req);
         const browserCookies = parseBrowserCookies(req);
@@ -1063,7 +1068,7 @@ export function createStudentSsoRouter(factory: FlowFactory = defaultFlow, optio
     // Continuation routes accept the completion origin for provider proofs
     // and the recovery/frontend origin for password proofs. The helper
     // permits either configured exact origin, never an arbitrary caller.
-    router.post('/identities/:id/unlink', authenticate, requireRole('student'), unlinkLimiter, exactContinuationOrigin, exactJson, asyncHandler(async (req, res) => {
+    router.post('/identities/:id/unlink', authenticate, requireRole('student'), unlinkIpLimiter, unlinkLimiter, exactContinuationOrigin, exactJson, asyncHandler(async (req, res) => {
         if (typeof req.params.id !== 'string' || !UUID.test(req.params.id)) {
             throw new BadRequestError('Student SSO unlink request is invalid');
         }

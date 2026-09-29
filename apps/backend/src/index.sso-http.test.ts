@@ -181,3 +181,33 @@ test('mounted SSO errors preserve the existing-account code and redact everythin
         (db as unknown as { query: typeof db.query }).query = originalQuery;
     }
 });
+
+test('mounted SSO finish preserves the retryable signal and nothing else', async () => {
+    const { ConflictError } = await import('./common/errors/AppError.js');
+    const originalCompletionUrl = config.studentSso.completionUrl;
+    config.studentSso.completionUrl = new URL('https://sso-completion.example.invalid/auth/student/sso/complete');
+    const fixture = await mountedServer({
+        studentSsoIssuanceEnabled: () => true,
+        studentSsoFlowFactory: () => ({
+            start: async () => { throw new Error('not used'); },
+            callback: async () => { throw new Error('not used'); },
+            callbackCookieNameForState: async () => null,
+            callbackDuplicateState: async () => 'none' as never,
+            finish: async () => { throw new ConflictError('still completing', { retryable: true, attemptId: 'SECRET_CANARY_MUST_NOT_LEAK' }); },
+        }),
+    });
+    try {
+        const response = await fetch(`${fixture.baseUrl}/api/auth/student/sso/finish`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', Origin: 'https://sso-completion.example.invalid' },
+            body: JSON.stringify({ attemptId: '55555555-5555-4555-8555-555555555555', finishSecret: 'finish-secret' }),
+        });
+        const text = await response.text();
+        assert.equal(response.status, 409);
+        assert.deepEqual(JSON.parse(text), { success: false, error: { code: 'SSO_REQUEST_REJECTED', statusCode: 409, details: { retryable: true } } });
+        assert.equal(text.includes('SECRET_CANARY_MUST_NOT_LEAK'), false);
+    } finally {
+        await fixture.close();
+        config.studentSso.completionUrl = originalCompletionUrl;
+    }
+});

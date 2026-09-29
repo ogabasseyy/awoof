@@ -1856,6 +1856,24 @@ test('recovery-code continuations are isolated by action grant', async () => {
     });
 });
 
+test('link and unlink continuations are isolated by action grant', async () => {
+    const firstGrant = { grantId: '33333333-3333-4333-8333-333333333333', grantSecret: 'grant-secret' };
+    const secondGrant = { grantId: '44444444-4444-4444-8444-444444444444', grantSecret: 'grant-secret' };
+    await withServer(linkRouter(stubLink(), { linkLimiterMax: 1 }), async (baseUrl) => {
+        const post = (path: string, body: unknown) => fetch(`${baseUrl}${path}`, {
+            method: 'POST', headers: authHeaders(studentToken(true)), body: JSON.stringify(body),
+        });
+        const linkBody = (grant: unknown) => ({ handoffId: LINK_HANDOFF_ID, handoffSecret: 'handoff-secret', reauthGrant: grant });
+        assert.equal((await post('/link', linkBody(firstGrant))).status, 201);
+        assert.equal((await post('/link', linkBody(firstGrant))).status, 429);
+        assert.equal((await post('/link', linkBody(secondGrant))).status, 201);
+        const unlinkPath = `/identities/${LINK_IDENTITY_ID}/unlink`;
+        assert.equal((await post(unlinkPath, { reauthGrant: firstGrant })).status, 200);
+        assert.equal((await post(unlinkPath, { reauthGrant: firstGrant })).status, 429);
+        assert.equal((await post(unlinkPath, { reauthGrant: secondGrant })).status, 200);
+    });
+});
+
 test('passwordless signup stages are independently rate limited', async () => {
     const signup = { context: async () => ({}), sendCode: async () => ({}), verifyCode: async () => ({}), complete: async () => ({}) };
     await withServer(routerWith(stubFlow(), { linkLimiterMax: 1, signupService: () => signup as never }), async (baseUrl) => {

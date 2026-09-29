@@ -379,12 +379,18 @@ export class App {
       // error's message/code generic so provider, SQL, and request details
       // cannot cross the Microsoft or SSO boundary. The existing-account
       // conflict is recoverable: onboarding routes only this code to
-      // sign-in/recovery guidance, so it must survive redaction.
+      // sign-in/recovery guidance, so it must survive redaction. The
+      // still-completing 409 carries one non-sensitive boolean the
+      // completion page needs to wait instead of failing; only that
+      // literal survives, never the underlying details object.
       const safeCode = ssoRoute
         ? typed.code === 'SSO_SIGNUP_EXISTING_ACCOUNT' ? typed.code : 'SSO_REQUEST_REJECTED'
         : typed.code === 'reauthentication_required' || typed.code === 'consent_notice_changed'
           ? typed.code : 'MICROSOFT_REQUEST_REJECTED';
-      res.status(status).json({ success: false, error: { code: safeCode, statusCode: status } });
+      const thrownDetails = (typed as { details?: unknown }).details;
+      const retryableFinish = ssoRoute && status === 409 && typeof thrownDetails === 'object' && thrownDetails !== null
+        && (thrownDetails as { retryable?: unknown }).retryable === true;
+      res.status(status).json({ success: false, error: { code: safeCode, statusCode: status, ...(retryableFinish ? { details: { retryable: true } } : {}) } });
     });
     // 404 handler
     this.app.use((_req, res) => {

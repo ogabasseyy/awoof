@@ -27,6 +27,6 @@ Status: **not approved for activation**. This checklist describes the release ga
 
 1. Affected pages: `/help`, `/trust`, `/privacy`, `/developers`, partner integration copy, OpenAPI, and this internal trust inventory.
 2. Public wording must distinguish source/tests from deployed/enabled behavior; it must not claim a university partnership, current-enrollment proof from login, MFA, or universal recovery.
-3. Evidence is source migrations 069--080, cleanup command output/tests, route/OpenAPI contracts, and this gate list. Deployment, provider, merchant, and alert-delivery evidence remain pending.
+3. Evidence is source migrations 069--082, cleanup command output/tests, route/OpenAPI contracts, and this gate list. Deployment, provider, merchant, and alert-delivery evidence remain pending.
 4. Before release, check rendered links/contact destinations, headings, keyboard navigation, labels, and mobile layout.
 5. No new legal commitment is made here. Any new data-sharing, retention-policy, vulnerability-disclosure, or response-time commitment needs owner/legal/operations approval.

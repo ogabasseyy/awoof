@@ -269,6 +269,47 @@ test('cooldown retries without the original binding leave the live attempt usabl
     }
 });
 
+test('fresh starts without the original binding never supersede a live recovery attempt', async () => {
+    const pool = createTestPool();
+    const client = await pool.connect();
+    try {
+        const account = await seedRecoverableStudent(client);
+        const deliveries: string[] = [];
+        const service = new StudentAccountRecoveryService({
+            pool, recoveryCodeKey: 'test-recovery-code-key',
+            deliverOtp: async (_email, delivered) => { deliveries.push(delivered); return { success: true }; },
+            validatePassword: () => ({ valid: true, errors: [] }), hashPassword: async () => 'binding-password-hash',
+        });
+        const key = randomUUID();
+        const first = await service.start({ email: account.email, purpose: 'lost_access', idempotencyKey: key });
+        // Age the resend cooldown past 60 seconds while the attempt and its
+        // OTP stay live: the next start would issue a fresh challenge.
+        await client.query(
+            `UPDATE verification_challenge_budgets SET resend_available_at = clock_timestamp() - interval '1 second'
+             WHERE purpose = 'student_account_recovery' AND subject_digest = $1`,
+            [challengeSubjectDigest('student_account_recovery', account.email)],
+        );
+        // The unbound caller takes the frozen-expiry shape: no new attempt
+        // row, no OTP re-sent, and the victim handle still verifies with
+        // the originally delivered OTP.
+        const retry = await service.start({ email: account.email, purpose: 'lost_access' });
+        await assert.rejects(() => service.verify({ attemptId: retry.attemptId, secret: retry.secret, code: account.code, otp: deliveries[0]! }));
+        assert.equal(deliveries.length, 1);
+        const rows = await client.query<{ count: string }>(
+            'SELECT count(*)::text AS count FROM student_auth_recovery_attempts WHERE user_id = $1', [account.userId],
+        );
+        assert.equal(rows.rows[0]!.count, '1', 'unbound fresh starts must not replace the live attempt');
+        await service.verify({ attemptId: first.attemptId, secret: first.secret, code: account.code, otp: deliveries[0]! });
+        const after = await client.query<{ status: string }>(
+            'SELECT status FROM student_auth_recovery_attempts WHERE user_id = $1', [account.userId],
+        );
+        assert.deepEqual(after.rows.map((row) => row.status), ['verified']);
+    } finally {
+        client.release();
+        await pool.end();
+    }
+});
+
 test('cooldown retries without a live attempt return frozen expiries on both paths', async () => {
     const pool = createTestPool();
     const client = await pool.connect();

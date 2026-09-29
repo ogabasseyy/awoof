@@ -124,6 +124,18 @@ export class StudentAccountRecoveryService {
             if (!account || !active) {
                 return this.decoyStart(tx, { email, attemptId, purpose, serverExpiry, serverNow, attemptExpiry });
             }
+            // A live pending attempt owns its OTP until it lapses: superseding
+            // requires the original start's idempotency binding on every path,
+            // not only the cooldown branch. Without it an unauthenticated
+            // caller knowing the email could fail the victim's handle after
+            // each cooldown and rebind recovery to their own, repeating until
+            // the victim's window closes. The unbound caller takes the same
+            // frozen-expiry shape as a keyless cooldown retry — no new
+            // challenge is issued, nothing is emailed, and the live attempt
+            // and its OTP survive untouched.
+            if (live && live.idempotency_key !== null && live.idempotency_key !== idempotencyKey) {
+                return this.frozenStartExpiry(tx, account.email, serverExpiry, serverNow);
+            }
             const challenge = await requestChallenge(tx, {
                 purpose: 'student_account_recovery', subjectKey: account.email,
                 bindings: { recoveryAttemptId: attemptId, recoveryPurpose: input.purpose },
@@ -148,9 +160,7 @@ export class StudentAccountRecoveryService {
                     // expiry still applies: a fresh deadline here would mark
                     // committed handles against decoy retries, which return
                     // the same frozen value. Fresh only when none is live.
-                    const current = await this.liveBudgetChallengeExpiry(tx, challengeSubjectDigest('student_account_recovery', account.email));
-                    const frozen = (current ?? serverExpiry).toISOString();
-                    return { expiresAt: frozen, otpExpiresAt: frozen, serverNow: serverNow.toISOString() };
+                    return this.frozenStartExpiry(tx, account.email, serverExpiry, serverNow);
                 }
                 await this.failPriorAttempts(tx, account.id);
                 // Rebind the shared challenge to the rebound handle: verify
@@ -546,6 +556,16 @@ export class StudentAccountRecoveryService {
             [subject],
         );
         return result.rows[0]?.expires_at ?? null;
+    }
+
+    /**
+     * Frozen-expiry start shape shared by decoys, keyless cooldown retries,
+     * and unbound supersede attempts: no challenge handle, so no delivery.
+     */
+    private async frozenStartExpiry(tx: PoolClient, email: string, serverExpiry: Date, serverNow: Date): Promise<{ expiresAt: string; otpExpiresAt: string; serverNow: string }> {
+        const current = await this.liveBudgetChallengeExpiry(tx, challengeSubjectDigest('student_account_recovery', email));
+        const frozen = (current ?? serverExpiry).toISOString();
+        return { expiresAt: frozen, otpExpiresAt: frozen, serverNow: serverNow.toISOString() };
     }
 
     /**
