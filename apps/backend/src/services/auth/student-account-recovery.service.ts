@@ -4,7 +4,7 @@ import { ConflictError } from '../../common/errors/AppError.js';
 import { appLogger } from '../../common/logger.js';
 import { passwordService } from './password.service.js';
 import { sendAccountRecoveryCompletionNotice } from '../email/email.service.js';
-import { challengeBudgetWouldIssue, challengeSubjectDigest, challengeTtlMs, consumeChallenge, databaseNow, requestChallenge } from '../verification/challenge.service.js';
+import { challengeBudgetWouldIssue, challengeSubjectDigest, challengeTtlMs, consumeChallenge, databaseNow, persistDecoyCooldown, requestChallenge } from '../verification/challenge.service.js';
 import { revokeSsoSchoolAssertions } from './student-sso-onboarding.service.js';
 import { verifyRecoveryCodeDigest } from './student-recovery-code.service.js';
 
@@ -151,6 +151,12 @@ export class StudentAccountRecoveryService {
             // and burn send budget on attacker probes.
             if (liveAnyPurpose && (liveAnyPurpose.idempotency_key === null || liveAnyPurpose.idempotency_key !== idempotencyKey)) {
                 if (await challengeBudgetWouldIssue(tx, 'student_account_recovery', account.email)) {
+                    // Mirror the decoy's state transition so a repeat probe
+                    // observes the same cooldown the unknown path would have
+                    // created; the live challenge and send budget are never
+                    // touched, so the victim's OTP and future issues stay
+                    // intact while the probe sequence stays indistinguishable.
+                    await persistDecoyCooldown(tx, 'student_account_recovery', account.email);
                     return { expiresAt: attemptExpiry.toISOString(), otpExpiresAt: serverExpiry.toISOString(), serverNow: serverNow.toISOString() };
                 }
                 return this.frozenStartExpiry(tx, account.email, serverExpiry, serverNow);

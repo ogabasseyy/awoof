@@ -179,6 +179,28 @@ export async function challengeBudgetWouldIssue(tx: PoolClient, purpose: Challen
     return true;
 }
 
+/**
+ * Persists the resend cooldown a decoy issue would have created, without
+ * issuing: no challenge row, no send-count burn, and the current
+ * challenge is never superseded. Callers use it after a read-only
+ * would-issue preview so repeat probes observe the same cooldown
+ * transition an unknown address would, while the live OTP and the
+ * victim's send budget stay untouched. Only ever extends the cooldown.
+ */
+export async function persistDecoyCooldown(tx: PoolClient, purpose: ChallengePurpose, subjectKey: string): Promise<void> {
+    validInput(purpose, subjectKey);
+    const subject = challengeSubjectDigest(purpose, subjectKey);
+    const now = await databaseNow(tx);
+    const resendAt = new Date(now.getTime() + COOLDOWN_MS);
+    await tx.query(
+        `INSERT INTO verification_challenge_budgets (purpose, subject_digest, window_started_at, resend_available_at)
+         VALUES ($1, $2, $3, $4)
+         ON CONFLICT (purpose, subject_digest) DO UPDATE SET resend_available_at = EXCLUDED.resend_available_at
+         WHERE verification_challenge_budgets.resend_available_at < EXCLUDED.resend_available_at`,
+        [purpose, subject, now, resendAt],
+    );
+}
+
 export async function requestChallenge(tx: PoolClient, input: {
     purpose: ChallengePurpose;
     subjectKey: string;

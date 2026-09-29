@@ -367,6 +367,12 @@ test('cross-purpose starts without the original binding never cancel a live reco
         const retry = await service.start({ email: account.email, purpose: 'compromise' });
         assert.equal(Date.parse(retry.expiresAt) - Date.parse(retry.serverNow), 10 * 60 * 1000);
         assert.equal(Date.parse(retry.otpExpiresAt) - Date.parse(retry.serverNow), challengeTtlMs('student_account_recovery'));
+        // A repeat probe observes the same cooldown transition an unknown
+        // address would have created — coupled frozen deadlines strictly
+        // earlier than the fresh shape — without disturbing the victim.
+        const repeat = await service.start({ email: account.email, purpose: 'compromise' });
+        assert.equal(repeat.expiresAt, repeat.otpExpiresAt);
+        assert.ok(Date.parse(repeat.expiresAt) < Date.parse(retry.expiresAt));
         await assert.rejects(() => service.verify({ attemptId: retry.attemptId, secret: retry.secret, code: account.code, otp: deliveries[0]! }));
         assert.equal(deliveries.length, 1);
         const rows = await client.query<{ count: string }>(
