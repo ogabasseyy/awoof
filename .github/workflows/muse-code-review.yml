@@ -83,8 +83,12 @@ jobs:
           echo "should_run=true" >> "${GITHUB_OUTPUT}"
 
       - name: Checkout repository
+        id: checkout
         if: steps.prereq.outputs.should_run == 'true'
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        # Advisory: a transient checkout failure must skip green, never fail
+        # the job — the Collect step below routes it to the skip path.
+        continue-on-error: true
         with:
           persist-credentials: false
           # Check out the PR head so the agent reads full files from the
@@ -100,8 +104,17 @@ jobs:
           GITHUB_REPOSITORY: ${{ github.repository }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
           HEAD_SHA_EVENT: ${{ github.event.pull_request.head.sha }}
+          CHECKOUT_OUTCOME: ${{ steps.checkout.outcome }}
         run: |
           set -euo pipefail
+
+          # Advisory path for checkout failures: without a workspace there is
+          # nothing to review, so skip green (the next PR event re-triggers).
+          if [[ "${CHECKOUT_OUTCOME}" != "success" ]]; then
+            echo "should_review=false" >> "${GITHUB_OUTPUT}"
+            echo "::notice::Checkout did not succeed (${CHECKOUT_OUTCOME}); skipping Muse review."
+            exit 0
+          fi
 
           pr_file="${RUNNER_TEMP}/muse-pr.json"
           if ! gh api "repos/${GITHUB_REPOSITORY}/pulls/${PR_NUMBER}" > "${pr_file}" 2>/dev/null; then
@@ -361,8 +374,10 @@ jobs:
           # trusted; head fallbacks are labeled UNTRUSTED in the prompt.
           guidance_file="${RUNNER_TEMP}/muse-guidance.md"
           : > "${guidance_file}"
-          guidance_seen="${RUNNER_TEMP}/muse-guidance-seen.txt"
-          : > "${guidance_seen}"
+          # Assoc-array dedup, not a line-delimited file: a changed dir
+          # containing a newline would otherwise inject phantom entries and
+          # suppress real scoped guidance for other dirs.
+          declare -A guidance_seen=()
           guidance_bytes=0
           guidance_budget=96000
           guidance_cap=32000
@@ -430,8 +445,8 @@ jobs:
           }
           guidance_candidates=()
           add_candidate() {
-            if grep -qxF -e "$1" "${guidance_seen}" 2>/dev/null; then return 0; fi
-            echo "$1" >> "${guidance_seen}"
+            if [[ -n "${guidance_seen[$1]+_}" ]]; then return 0; fi
+            guidance_seen[$1]=1
             guidance_candidates+=("$1")
           }
           for candidate in AGENTS.md CLAUDE.md CONTRIBUTING.md .github/copilot-instructions.md; do
