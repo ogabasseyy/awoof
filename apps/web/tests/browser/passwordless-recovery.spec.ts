@@ -145,6 +145,8 @@ test('recovery without both proofs points at guidance instead of an unusable sup
     const guidance = page.getByRole('link', { name: 'how account recovery works' });
     await expect(guidance).toBeVisible();
     await expect(guidance).toHaveAttribute('href', '/help');
+    await guidance.click();
+    await expect(page.getByText('If you cannot complete a recovery step, recovery cannot continue without the requested proofs. Account-specific help may require a signed-in session to inspect the account state. Receipts on an existing account remain its history.')).toBeVisible();
     api.assertNoUnexpectedRequests();
 });
 
