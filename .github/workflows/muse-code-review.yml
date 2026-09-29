@@ -4,6 +4,12 @@
 # runs `muse exec` headless with the repo checked out, and posts the result as
 # a PR review comment.
 #
+# Trigger is pull_request_target, so this definition always comes from the
+# BASE revision: under pull_request a same-repo contributor could rewrite this
+# file in their PR to exfiltrate META_API_KEY without merging anything. The
+# PR head is still checked out explicitly below for READING (never executed),
+# which is the precondition that keeps pull_request_target safe here.
+#
 # Billing: whatever credential is stored in the META_API_KEY secret. That can
 # be the subscription-linked key from `muse login` onboarding (flat monthly
 # rate, subject to plan prompt limits) or a pay-as-you-go Meta Model API key.
@@ -23,8 +29,10 @@
 #   - --max-model-steps cap + job timeout
 #   - never fails the build and never posts a commit status gate
 #
-# Forked PRs are skipped: the pull_request event withholds secrets from forks,
-# so there is no credential to review with.
+# Forked PRs are skipped by the job-level same-repo predicate. That predicate
+# is a SECURITY boundary, not an optimization: unlike pull_request,
+# pull_request_target serves secrets to fork runs too, so removing or
+# loosening it would expose META_API_KEY to fork authors. Never loosen it.
 #
 # Prerequisites per repo:
 #   - Secret META_API_KEY (repo Settings -> Secrets and variables -> Actions)
@@ -32,7 +40,9 @@
 name: Muse Code Review
 
 on:
-  pull_request:
+  # pull_request_target (see header): the secret-bearing job must run the
+  # trusted base definition, never the PR's own workflow file.
+  pull_request_target:
     # edited: only base retargets run (see job if below); title/body edits
     # would otherwise burn quota for an unchanged diff.
     types: [opened, synchronize, reopened, ready_for_review, edited]
@@ -53,6 +63,9 @@ jobs:
     name: Muse review
     # pull-requests: write posts the advisory review; contents: read checks out
     # the PR head. Scoped to this job so later jobs start least-privilege.
+    # The same-repo predicate in `if` below is load-bearing (see header):
+    # pull_request_target serves secrets to fork runs, so this job must never
+    # run when head.repo != base repo.
     permissions:
       contents: read
       pull-requests: write
