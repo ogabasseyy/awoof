@@ -402,7 +402,10 @@ test('failure redirects carry a safe error taxonomy only', () => {
     assert.equal(parseLoginErrorCode('sso_expired&attempt=1'), null);
     assert.equal(parseLoginErrorCode(null), null);
     assert.match(loginErrorMessage('sso_expired'), /expired/);
-    assert.match(loginErrorMessage('session_expired'), /password/);
+    assert.match(loginErrorMessage('session_expired'), /school account.*password if you set one/);
+    assert.match(loginErrorMessage('sso_not_completed'), /try again with your school account.*password if you set one/i);
+    assert.match(loginErrorMessage('sso_unavailable'), /try again later.*password if you set one/i);
+    assert.doesNotMatch(loginErrorMessage('sso_expired'), /use your password\./i);
     assert.doesNotMatch(loginErrorMessage('sso_not_completed'), /attempt|secret|token/i);
     const path = ssoFailureLoginPath('sso_expired', '/marketplace?claimSession=x', ORIGIN);
     assert.ok(path.startsWith('/auth/student/login?'));

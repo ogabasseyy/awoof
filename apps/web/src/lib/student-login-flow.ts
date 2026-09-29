@@ -476,13 +476,13 @@ export function parseLoginErrorCode(value: unknown): LoginErrorCode | null {
 export function loginErrorMessage(code: LoginErrorCode): string {
     switch (code) {
         case 'session_expired':
-            return 'Your session expired. Sign in again with your password to continue.';
+            return 'Your session expired. Sign in again with your school account, or use a password if you set one.';
         case 'sso_not_completed':
-            return 'The school sign-in did not complete. Try again, or use your password — your account is unchanged.';
+            return 'The school sign-in did not complete. Try again with your school account, or use a password if you set one; your account is unchanged.';
         case 'sso_expired':
-            return 'Your school sign-in attempt expired. Start again, or use your password.';
+            return 'Your school sign-in attempt expired. Start again with your school account, or use a password if you set one.';
         case 'sso_unavailable':
-            return 'School sign-in is temporarily unavailable. Use your password; your account is unchanged.';
+            return 'School sign-in is temporarily unavailable. Try again later, or use a password if you set one; your account is unchanged.';
         case 'unlinked_signed_out':
             return 'The removed sign-in had issued this session, so you were signed out. That school sign-in can no longer access this account.';
     }

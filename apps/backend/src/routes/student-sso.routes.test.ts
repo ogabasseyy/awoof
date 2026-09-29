@@ -1845,6 +1845,27 @@ test('passwordless signup stages are independently rate limited', async () => {
     });
 });
 
+test('recovery verification and completion are limited per opaque attempt across a shared IP', async () => {
+    const recovery = {
+        start: async () => ({}),
+        verify: async () => ({ expiresAt: '2026-09-26T12:10:00.000Z', serverNow: '2026-09-26T12:00:00.000Z' }),
+        complete: async () => undefined,
+    };
+    await withServer(routerWith(stubFlow(), { linkLimiterMax: 1, accountRecoveryService: () => recovery as never }), async (baseUrl) => {
+        const post = (path: string, body: unknown) => fetch(`${baseUrl}${path}`, {
+            method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body),
+        });
+        const verify = (attemptId: string) => post('/account-recovery/verify', { attemptId, secret: 'secret', code: 'saved-code', otp: '123456' });
+        const complete = (attemptId: string) => post('/account-recovery/complete', { attemptId, secret: 'secret', password: 'ValidNew1!' });
+        assert.equal((await verify(ATTEMPT_ID)).status, 200);
+        assert.equal((await verify(ATTEMPT_ID)).status, 429, 'one handle cannot exceed its verification quota');
+        assert.equal((await verify(LINK_HANDOFF_ID)).status, 200, 'another student behind the same test IP retains an independent handle quota');
+        assert.equal((await complete(ATTEMPT_ID)).status, 204);
+        assert.equal((await complete(ATTEMPT_ID)).status, 429);
+        assert.equal((await complete(LINK_HANDOFF_ID)).status, 204);
+    });
+});
+
 test('OpenAPI documents the SSO linking contract', () => {
     const spec = swaggerSpec as { paths: Record<string, unknown>; components: { schemas: Record<string, Record<string, unknown>> } };
     assert.ok(spec.paths['/api/auth/student/sso/reauth']);

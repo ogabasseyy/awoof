@@ -620,6 +620,8 @@ test('a denied provider returns to login with a safe error only', async ({ page 
     const notice = page.locator('#student-login-notice');
     await expect(notice).toBeVisible();
     await expect(notice).toContainText('did not complete');
+    await expect(notice).toContainText('Try again with your school account');
+    await expect(notice).toContainText('password if you set one');
     await expect(notice).toBeFocused();
     expect(await readTabAttempt(page)).toBeNull();
 });
@@ -631,7 +633,7 @@ test('unknown login error codes are ignored rather than echoed', async ({ page }
     await expect(page.getByText('evil')).toHaveCount(0);
 });
 
-test('an expired attempt recovers through a password sign-in', async ({ page }) => {
+test('an expired attempt allows a password fallback only when login options offer it', async ({ page }) => {
     const api = await installSyntheticApi(page);
     await page.goto('/auth/student/login');
     await seedTabAttempt(page, {
@@ -644,6 +646,8 @@ test('an expired attempt recovers through a password sign-in', async ({ page }) 
     await page.goto(`/auth/student/sso/complete?attempt=${ATTEMPT_ID}`);
     await page.waitForURL('**/auth/student/login?error=sso_expired**');
     await expect(page.locator('#student-login-notice')).toContainText('expired');
+    await expect(page.locator('#student-login-notice')).toContainText('school account');
+    await expect(page.locator('#student-login-notice')).toContainText('password if you set one');
 
     await revealPassword(page, 'student@approved.test');
     await page.getByLabel('Password', { exact: true }).fill('Synthetic-Password1!');
@@ -700,7 +704,7 @@ test('an expired student session recovers through the current password login', a
 
     await page.goto('/marketplace');
     await page.waitForURL('**/auth/student/login?error=session_expired**');
-    await expect(page.locator('#student-login-notice')).toContainText('Sign in again with your password');
+    await expect(page.locator('#student-login-notice')).toContainText('school account, or use a password if you set one');
 
     await revealPassword(page, 'student@approved.test');
     await page.getByLabel('Password', { exact: true }).fill('Synthetic-Password1!');

@@ -261,6 +261,25 @@ function studentSsoLinkLimiter(max: number) {
     });
 }
 
+// Recovery continuations should be isolated by their opaque attempt handle,
+// not by the shared campus/carrier IP that happens to originate them. Keep a
+// separate coarse IP ceiling for abuse control, then enforce the normal
+// per-attempt quota; malformed IDs fall back to an IP-scoped attempt bucket.
+function studentSsoRecoveryAttemptLimiter(max: number) {
+    return rateLimit({
+        windowMs: 10 * 60 * 1000,
+        max,
+        standardHeaders: true,
+        legacyHeaders: false,
+        keyGenerator: (req) => {
+            const attemptId = (req.body as { attemptId?: unknown } | undefined)?.attemptId;
+            return typeof attemptId === 'string' && UUID.test(attemptId)
+                ? `attempt:${attemptId.toLowerCase()}`
+                : `ip:${req.ip ?? 'unknown'}`;
+        },
+    });
+}
+
 /**
  * Completion redirect for an in-flight browser return that arrives while new
  * issuance is unavailable. Resolving the attempt by its state hash needs no
@@ -414,8 +433,10 @@ export function createStudentSsoRouter(factory: FlowFactory = defaultFlow, optio
     // unknown addresses (indistinguishable retry deadlines), so each
     // recovery route gets its own per-IP bucket like the link routes.
     const accountRecoveryStartLimiter = studentSsoLinkLimiter(linkLimiterMax);
-    const accountRecoveryVerifyLimiter = studentSsoLinkLimiter(linkLimiterMax);
-    const accountRecoveryCompleteLimiter = studentSsoLinkLimiter(linkLimiterMax);
+    const accountRecoveryVerifyIpLimiter = studentSsoLinkLimiter(Math.max(linkLimiterMax * 10, 100));
+    const accountRecoveryCompleteIpLimiter = studentSsoLinkLimiter(Math.max(linkLimiterMax * 10, 100));
+    const accountRecoveryVerifyLimiter = studentSsoRecoveryAttemptLimiter(linkLimiterMax);
+    const accountRecoveryCompleteLimiter = studentSsoRecoveryAttemptLimiter(linkLimiterMax);
 
     const signupHandoffBody = (req: Request): { handoffId: string; handoffSecret: string } => {
         const value = req.body as Record<string, unknown>;
@@ -525,7 +546,7 @@ export function createStudentSsoRouter(factory: FlowFactory = defaultFlow, optio
         const result = await accountRecoveryFactory().start({ email: body.email, purpose: body.purpose, ...(key === undefined ? {} : { idempotencyKey: key }) });
         responseHeaders(res); res.status(202).json({ success: true, data: result });
     }));
-    router.post('/account-recovery/verify', accountRecoveryVerifyLimiter, exactJson, asyncHandler(async (req, res) => {
+    router.post('/account-recovery/verify', accountRecoveryVerifyIpLimiter, accountRecoveryVerifyLimiter, exactJson, asyncHandler(async (req, res) => {
         const body = req.body as { attemptId?: unknown; secret?: unknown; code?: unknown; otp?: unknown };
         // Exact required key set plus per-field values: a four-key body
         // missing a required field — or carrying a mistyped one — must
@@ -540,7 +561,7 @@ export function createStudentSsoRouter(factory: FlowFactory = defaultFlow, optio
         const result = await accountRecoveryFactory().verify({ attemptId: body.attemptId, secret: body.secret, code: body.code, otp: body.otp });
         responseHeaders(res); res.json({ success: true, data: result });
     }));
-    router.post('/account-recovery/complete', accountRecoveryCompleteLimiter, exactJson, asyncHandler(async (req, res) => {
+    router.post('/account-recovery/complete', accountRecoveryCompleteIpLimiter, accountRecoveryCompleteLimiter, exactJson, asyncHandler(async (req, res) => {
         const body = req.body as { attemptId?: unknown; secret?: unknown; password?: unknown };
         const completeKeys = body && typeof body === 'object' && !Array.isArray(body) ? Object.keys(body).sort() : null;
         if (completeKeys === null || completeKeys.length !== 3 || completeKeys[0] !== 'attemptId' || completeKeys[1] !== 'password' || completeKeys[2] !== 'secret'
