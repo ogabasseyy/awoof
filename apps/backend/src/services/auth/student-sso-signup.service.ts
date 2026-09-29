@@ -118,6 +118,10 @@ export class StudentSsoSignupService {
                 return { challengeId: state.signup.mailbox_challenge_id, expiresAt: state.signup.expires_at, enqueue: false };
             }
             const issued = await requestChallenge(tx, { purpose: 'student_sso_signup', subjectKey: state.email, bindings: { email: state.email, name: '', universityId: state.universityId, matricNumber: null, policyVersion: state.handoff.policy_version, noticeVersion: VERIFICATION_NOTICE_VERSION }, expiresAt: state.handoff.expires_at });
+            // The handoff window can lapse between the load-time expiry
+            // check and this issue. The bounded response is a restart,
+            // not a cooldown resume against a dead handoff.
+            if (issued.status === 'expired') throw invalid();
             if (issued.status !== 'issued') {
                 // Lost-201 resume: the first send committed and bound a
                 // live challenge but the browser never received its id.

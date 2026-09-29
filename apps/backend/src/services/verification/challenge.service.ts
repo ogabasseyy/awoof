@@ -28,6 +28,12 @@ const OTP_MS = 10 * 60 * 1000;
 const COOLDOWN_MS = 60 * 1000;
 const MAX_FAILURES = 5;
 const MAX_SENDS = 10;
+// Minimum usable challenge life at issue: the atomic delivery-enqueue
+// insert runs a statement later under the same expires_at >
+// created_at constraint, so a deadline inside this margin would pass
+// here and 500 there. One second dwarfs statement skew and stays far
+// below every real flow lifetime (shortest fixture: two seconds).
+const MIN_USABLE_LIFETIME_MS = 1000;
 
 function limitsFor(purpose: ChallengePurpose): { failures: number; sends: number; ttlMs: number } {
     // The passwordless handoff is an intentionally narrower mailbox-binding
@@ -157,16 +163,31 @@ export async function requestChallenge(tx: PoolClient, input: {
     subjectKey: string;
     bindings: ChallengeBindings;
     expiresAt?: Date;
-}): Promise<{ status: 'issued'; challengeId: string; code: string; expiresAt: Date } | { status: 'cooldown' | 'locked'; retryAt: Date }> {
+}): Promise<{ status: 'issued'; challengeId: string; code: string; expiresAt: Date } | { status: 'cooldown' | 'locked' | 'expired'; retryAt: Date }> {
     validInput(input.purpose, input.subjectKey);
     const bindings = copiedBindings(input.bindings);
     const subject = challengeSubjectDigest(input.purpose, input.subjectKey);
     let budget = await lockedBudget(tx, input.purpose, subject);
     const now = await databaseNow(tx);
+    const limits = limitsFor(input.purpose);
+    // A caller-supplied deadline (a signup handoff window) can lapse
+    // between the caller's check and this issue. Issuing anyway would
+    // violate the expires_at > created_at constraint and surface a 500;
+    // worse, a barely-future deadline would pass this insert but fail
+    // the atomic outbox insert a statement later. Refuse before burning
+    // budget allowance when the resolved deadline lacks a usable
+    // lifetime. This check must stay after the budget upsert: a fresh
+    // row's resend_available_at is stamped at insert, and reading the
+    // clock first would make every first issuance look like a cooldown.
+    // retryAt is now: nothing is scheduled — the caller maps expired to
+    // its restart flow rather than a cooldown resume.
+    const requestedExpiry = input.expiresAt ?? new Date(now.getTime() + limits.ttlMs);
+    const defaultExpiry = new Date(now.getTime() + limits.ttlMs);
+    const expiresAt = requestedExpiry < defaultExpiry ? requestedExpiry : defaultExpiry;
+    if (expiresAt.getTime() <= now.getTime() + MIN_USABLE_LIFETIME_MS) return { status: 'expired', retryAt: now };
     budget = await resetWindowIfNeeded(tx, input.purpose, subject, budget, now);
     const windowEnd = fixedWindowEnd(budget.window_started_at);
 
-    const limits = limitsFor(input.purpose);
     if (budget.failed_attempts >= limits.failures || budget.send_count >= limits.sends) {
         return { status: 'locked', retryAt: windowEnd };
     }
@@ -182,8 +203,6 @@ export async function requestChallenge(tx: PoolClient, input: {
 
     const challengeId = randomUUID();
     const code = String(randomInt(0, 1_000_000)).padStart(6, '0');
-    const defaultExpiry = new Date(now.getTime() + limits.ttlMs);
-    const expiresAt = input.expiresAt && input.expiresAt < defaultExpiry ? input.expiresAt : defaultExpiry;
     const bindingsJson = await assertCanonicalBindingsSize(tx, bindings);
     await tx.query(
         `INSERT INTO verification_challenges

@@ -201,14 +201,20 @@ async function settle(pool: Pick<Pool, 'connect'>, job: OutboxJob, state: 'sent'
                     `SELECT id FROM verification_challenges WHERE id = $1 FOR UPDATE`, [job.challenge_id],
                 );
             }
-            await tx.query(
+            const settled = await tx.query(
                 `UPDATE student_email_otp_outbox
                  SET status = $3, ciphertext = NULL, nonce = NULL, auth_tag = NULL, key_id = NULL,
                      sent_at = CASE WHEN $3 = 'sent' THEN clock_timestamp() ELSE NULL END,
                      terminal_at = clock_timestamp(), lease_until = NULL, claim_token = NULL
                  WHERE id = $1 AND status = 'processing' AND claim_token = $2`, [job.id, job.claim_token, terminal],
             );
-            if (terminal === 'failed' && job.purpose === 'student_account_recovery') {
+            // Only the lease holder terminalizes: a zero-row update means
+            // the lease lapsed and another worker reclaimed the job, and
+            // that claimant owns its retry and terminalization. Settling
+            // the attempt and challenge here would burn the replacement
+            // delivery the new holder is about to make.
+            const holdsLease = (settled.rowCount ?? 0) === 1;
+            if (holdsLease && terminal === 'failed' && job.purpose === 'student_account_recovery') {
                 // Exhausted ambiguous delivery leaves no usable cooldown
                 // handle. Terminalize the active owner and challenge after
                 // the ordered locks taken above.
@@ -220,7 +226,7 @@ async function settle(pool: Pick<Pool, 'connect'>, job: OutboxJob, state: 'sent'
                     `UPDATE verification_challenges SET superseded_at = clock_timestamp()
                      WHERE id = $1 AND consumed_at IS NULL AND superseded_at IS NULL`, [job.challenge_id],
                 );
-            } else if (terminal === 'failed' && job.purpose === 'student_sso_signup') {
+            } else if (holdsLease && terminal === 'failed' && job.purpose === 'student_sso_signup') {
                 await tx.query(
                     `UPDATE student_auth_signup_challenges
                      SET status = 'cancelled', terminal_at = clock_timestamp(), secret_hash = NULL, browser_binding_hash = NULL

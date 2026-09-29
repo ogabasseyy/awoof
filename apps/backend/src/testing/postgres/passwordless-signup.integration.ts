@@ -525,3 +525,24 @@ test('passwordless signup rejects non-Microsoft handoffs before creating signup 
         assert.equal(signup.rows[0]!.count, '0');
     });
 });
+
+test('signup send refuses a handoff inside the unusable margin without issuing', async () => {
+    await withPool(async pool => {
+        const key = randomBytes(32).toString('base64url'); let sends = 0;
+        const service = new StudentSsoSignupService({ pool, attemptKey: key, isEnabled: () => true, isProviderEnabled: () => true, deliverOtp: async () => { sends++; return { success: true }; } });
+        const c = await pool.connect(); let state; try { state = await seed(c, key, { handoffLifetimeMs: 500 }); } finally { c.release(); }
+        // The handoff window sits under the usable-lifetime margin: the
+        // load-time check may still pass, but issuance must refuse with
+        // the bounded restart response instead of 500ing on the expiry
+        // constraint (or 500ing one statement later at enqueue). If the
+        // machine stalls past the window, the load check rejects with
+        // the same restart error — either path is the bounded outcome.
+        await assert.rejects(service.sendCode({ handoffId: state.handoffId, handoffSecret: state.handoffSecret, browserBinding: state.browser }), /not available/i);
+        assert.equal(sends, 0, 'no OTP may be delivered for an unusable handoff window');
+        const subject = challengeSubjectDigest('student_sso_signup', state.email);
+        const challenges = await pool.query<{ count: string }>(`SELECT count(*)::text AS count FROM verification_challenges WHERE purpose = 'student_sso_signup' AND subject_digest = $1`, [subject]);
+        assert.equal(challenges.rows[0]!.count, '0', 'refused issuance must not mint a challenge row');
+        const budgets = await pool.query<{ send_count: string }>(`SELECT send_count::text FROM verification_challenge_budgets WHERE purpose = 'student_sso_signup' AND subject_digest = $1`, [subject]);
+        assert.equal(budgets.rows[0]?.send_count ?? '0', '0', 'refused issuance must not burn budget allowance');
+    });
+});

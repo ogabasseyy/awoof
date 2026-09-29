@@ -99,6 +99,11 @@ export default function StudentSecurityPage() {
     const [unlinkTarget, setUnlinkTarget] = useState<LinkedIdentity | null>(null);
     const [unlinkPassword, setUnlinkPassword] = useState(''); const [unlinkError, setUnlinkError] = useState<string | null>(null);
     const [unlinkBusy, setUnlinkBusy] = useState(false); const [signedOut, setSignedOut] = useState(false);
+    // Removing the session-issuing identity signs out locally on
+    // purpose: the account-change reset below must preserve that
+    // terminal notice across the session transition instead of
+    // clearing it as if the session had merely lapsed.
+    const unlinkSignedOut = useRef(false);
     const [linkError, setLinkError] = useState<string | null>(null); const [linkBusy, setLinkBusy] = useState(false);
     const [schoolError, setSchoolError] = useState<string | null>(null);
     const [pwPreferred, setPwPreferred] = useState(false);
@@ -136,7 +141,10 @@ export default function StudentSecurityPage() {
         setStatus('loading'); setPendingCodeId(null); setPendingExpiresAt(null); setGeneration(null); setSkewMs(0);
         setIdentities(null); setIdentitiesError(null); setUnlinkTarget(null);
         setBusy(false); submitPasswordInFlight.current = null; setSchoolError(null); setLinkBusy(false); setLinkError(null);
-        setUnlinkBusy(false); setUnlinkPassword(''); setUnlinkError(null); setSignedOut(false);
+        setUnlinkBusy(false); setUnlinkPassword(''); setUnlinkError(null);
+        // One-shot: an intentional unlink sign-out keeps its notice;
+        // every later transition (including signing back in) resets.
+        setSignedOut(unlinkSignedOut.current); unlinkSignedOut.current = false;
         setPwPreferred(false); setPwMode(null); setPwModeAccountKey(null);
         setPassword(''); setPwOld(''); setPwCode(''); setPwPendingId(null);
         setPwExpiresAt(null); setPwExpectedGeneration(null); setPwSkewMs(0); setFormError(null);
@@ -342,7 +350,7 @@ export default function StudentSecurityPage() {
             if (!data || data.unlinked !== true || typeof data.sessionRevoked !== 'boolean') throw new Error('invalid unlink');
             // The server clears the session only when the removed identity
             // issued it; drop local tokens exactly then, before rendering.
-            if (data.sessionRevoked) { clearTokens(); setSignedOut(true); return; }
+            if (data.sessionRevoked) { unlinkSignedOut.current = true; clearTokens(); setSignedOut(true); return; }
             setUnlinkTarget(null); setUnlinkPassword(''); await loadIdentities();
         } catch (cause: unknown) {
             if (!request.isCurrent()) return;

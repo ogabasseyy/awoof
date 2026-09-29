@@ -1654,7 +1654,7 @@ export default createStudentSsoRouter();
  *       content: { application/json: { schema: { $ref: '#/components/schemas/AccountRecoveryVerifyRequest' } } }
  *     responses:
  *       200:
- *         description: Recovery proofs accepted; only after successful proof, returns the completion deadline hidden during the non-enumerating start response.
+ *         description: Recovery proofs accepted; confirms the completion deadline already returned by the start response for the post-proof countdown.
  *         content: { application/json: { schema: { $ref: '#/components/schemas/AccountRecoveryVerifiedResponse' } } }
  *       400: { description: JSON or malformed proof request }
  *       409: { description: Expired, invalid, consumed, or replayed recovery proof }

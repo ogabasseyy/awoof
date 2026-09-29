@@ -963,6 +963,30 @@ test('account security lists school sign-ins and removes one with password confi
     api.assertNoUnexpectedRequests();
 });
 
+test('unlink that revokes the session keeps the signed-out notice across the session reset', async ({ page }) => {
+    const api = await installSyntheticApi(page);
+    const targetId = '97000000-0000-4000-8000-000000000001';
+    const grantId = '97000000-0000-4000-8000-000000000002';
+    await page.route(`${apiOrigin}/api/auth/student/sso/recovery-code`, route => route.fulfill({ headers, json: { success: true, data: { status: 'unconfigured', generation: null, pendingCodeId: null } } }));
+    await page.route(`${apiOrigin}/api/auth/student/sso/identities`, route => route.fulfill({ headers, json: { success: true, data: { identities: [{ id: targetId, provider: 'microsoft', universityName: 'Fixture University', linkedAt: new Date().toISOString() }] } } }));
+    await page.route(`${apiOrigin}/api/auth/student/sso/reauth`, route => route.fulfill({ status: 201, headers, json: { success: true, data: { grantId, grantSecret: 'unlink-pw-grant', expiresAt: new Date(Date.now() + 60_000).toISOString() } } }));
+    await page.route(`${apiOrigin}/api/auth/student/sso/identities/${targetId}/unlink`, route => route.fulfill({ headers, json: { success: true, data: { unlinked: true, sessionRevoked: true } } }));
+    await page.goto('/auth/student/login'); await seedSession(page, 'student');
+    await page.goto('/student/security');
+    await expect(page.getByText('Microsoft · Fixture University')).toBeVisible();
+    await page.getByRole('button', { name: 'Remove', exact: true }).click();
+    await page.getByLabel('Current password').fill('Correct!horse-9-battery');
+    await page.getByRole('button', { name: 'Remove with password' }).click();
+    // Clearing tokens resets the page to its signed-out state; the
+    // intentional-removal notice must survive that reset rather than
+    // flip to the generic unavailable view. The recovery section flips
+    // first, so its outage copy proves the reset already ran.
+    await expect(page.getByText('Recovery-code setup is unavailable. Sign in again and retry. If school sign-in is unavailable, use recovery only if you already saved a recovery code.')).toBeVisible();
+    await expect(page.getByText('The removed sign-in had issued this session, so you were signed out.')).toBeVisible();
+    await expect(page.getByRole('link', { name: 'Back to sign-in' })).toBeVisible();
+    api.assertNoUnexpectedRequests();
+});
+
 test('ambiguous unlink failure reconciles against the reloaded identity list', async ({ page }) => {
     const api = await installSyntheticApi(page);
     const targetId = '98000000-0000-4000-8000-000000000001';
