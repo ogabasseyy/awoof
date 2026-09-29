@@ -382,13 +382,10 @@ export class StudentAccountRecoveryService {
                 || Number(account.credential_generation) !== Number(attempt.credential_generation)
                 || Number(code.generation) !== Number(attempt.recovery_code_generation)) throw unavailable();
 
-            if (attempt.purpose === 'compromise') {
-                const identities = await tx.query<{ id: string }>('SELECT id FROM student_auth_identities WHERE user_id = $1 AND revoked_at IS NULL FOR UPDATE', [userId]);
-                for (const identity of identities.rows) {
-                    await tx.query('UPDATE student_auth_identities SET revoked_at = clock_timestamp() WHERE id = $1 AND revoked_at IS NULL', [identity.id]);
-                    await revokeSsoSchoolAssertions(tx, identity.id);
-                }
-            }
+            // Compromise identity revocation runs after the stale-handoff
+            // block below: link and signup complete flows lock handoff
+            // before identity, so this transaction must take them in the
+            // same order or a racing completion deadlocks the reset.
             await tx.query(
                 `UPDATE student_auth_recovery_codes
                  SET status = CASE WHEN status = 'active' THEN 'consumed' ELSE 'revoked' END,
@@ -414,8 +411,10 @@ export class StudentAccountRecoveryService {
                 // A handoff can outlive its parent provider attempt and is
                 // authenticated directly by link/signup services. Consume
                 // those handoffs before locking their parent attempts, which
-                // preserves their handoff -> attempt lock order. Include all
-                // historically observed account aliases, not only users.email.
+                // preserves their handoff -> attempt lock order, and before
+                // revoking identities below (handoff -> identity, matching
+                // link/signup completion). Include all historically observed
+                // account aliases, not only users.email.
                 const staleHandoffs = await tx.query<{ id: string; attempt_id: string }>(
                     `SELECT handoff.id, handoff.attempt_id
                      FROM student_auth_link_handoffs handoff
@@ -468,6 +467,13 @@ export class StudentAccountRecoveryService {
                                AND status IN ('pending', 'processing')`, [challengeIds],
                         );
                     }
+                }
+            }
+            if (attempt.purpose === 'compromise') {
+                const identities = await tx.query<{ id: string }>('SELECT id FROM student_auth_identities WHERE user_id = $1 AND revoked_at IS NULL FOR UPDATE', [userId]);
+                for (const identity of identities.rows) {
+                    await tx.query('UPDATE student_auth_identities SET revoked_at = clock_timestamp() WHERE id = $1 AND revoked_at IS NULL', [identity.id]);
+                    await revokeSsoSchoolAssertions(tx, identity.id);
                 }
             }
             await tx.query(

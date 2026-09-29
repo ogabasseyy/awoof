@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { createHmac } from 'node:crypto';
 import test from 'node:test';
 import { StudentAccountRecoveryService } from './student-account-recovery.service.js';
 
@@ -176,6 +177,57 @@ test('recovery verify runs decoy reads for handles without an attempt row', asyn
     ]) {
         assert.ok(queries.some((text) => text.includes(shape)), `decoy verify must probe ${shape}`);
     }
+});
+
+test('compromise recovery complete locks handoffs before identities', async () => {
+    const queries: string[] = [];
+    const secret = 'attempt-secret';
+    const digest = createHmac('sha256', 'test-recovery-code-key').update(`attempt\0${secret}`).digest('base64url');
+    const attemptId = '11111111-1111-4111-8111-111111111111';
+    const attempt = {
+        id: attemptId, user_id: 'u1', credential_generation: 0, purpose: 'compromise', secret_hash: digest,
+        recovery_code_generation: 7, mailbox_challenge_id: 'm1', status: 'verified', expires_at: new Date(Date.now() + 600_000),
+    };
+    const client = {
+        query: async (text: string) => {
+            queries.push(text);
+            if (text.includes('SELECT user_id FROM student_auth_recovery_attempts')) return { rows: [{ user_id: 'u1' }], rowCount: 1 };
+            if (text.includes('SELECT * FROM student_auth_recovery_attempts')) return { rows: [attempt], rowCount: 1 };
+            if (text.includes('SELECT status, secret_hash, expires_at FROM student_auth_recovery_attempts')) {
+                return { rows: [{ status: 'verified', secret_hash: digest, expires_at: attempt.expires_at }], rowCount: 1 };
+            }
+            if (text.includes('FROM users u LEFT JOIN students s')) {
+                return { rows: [{ id: 'u1', email: 's@x.invalid', credential_generation: 0, deleted_at: null }], rowCount: 1 };
+            }
+            if (text.includes('SELECT status FROM students WHERE user_id')) return { rows: [{ status: 'active' }], rowCount: 1 };
+            if (text.includes('FROM student_auth_recovery_codes WHERE user_id')) {
+                return { rows: [{ id: 'c1', generation: 7, code_digest: 'x', status: 'active' }], rowCount: 1 };
+            }
+            if (text.includes('SELECT clock_timestamp() AS now')) return { rows: [{ now: new Date() }], rowCount: 1 };
+            if (text.includes("SET status = 'consumed'")) return { rows: [], rowCount: 1 };
+            return { rows: [], rowCount: 0 };
+        },
+        release: () => undefined,
+    };
+    const service = new StudentAccountRecoveryService({
+        pool: { connect: async () => client } as never,
+        recoveryCodeKey: 'test-recovery-code-key',
+        validatePassword: () => ({ valid: true, errors: [] }),
+        hashPassword: async () => 'hashed',
+        notify: async () => ({ success: true }),
+    });
+
+    await service.complete({ attemptId, secret, password: 'ValidNew1!' });
+    assert.ok(queries.some((text) => text.includes("SET status = 'consumed'")), 'the verified attempt must commit as consumed');
+    // Link and signup completion lock handoff before identity; recovery
+    // must take them in the same order or a racing completion deadlocks
+    // the security reset and aborts without revoking anything.
+    const handoffLock = queries.findIndex((text) => text.includes('FROM student_auth_link_handoffs handoff') && text.includes('FOR UPDATE'));
+    // The handoff lookup itself reads identity aliases unlocked; match the
+    // revocation select (SELECT id) so only the lock counts.
+    const identityLock = queries.findIndex((text) => text.includes('SELECT id FROM student_auth_identities WHERE user_id') && text.includes('FOR UPDATE'));
+    assert.ok(handoffLock >= 0 && identityLock > handoffLock,
+        'compromise recovery must lock stale handoffs before revoking identities');
 });
 
 test('recovery complete does not hash passwords for unknown attempts', async () => {
