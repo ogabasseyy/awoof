@@ -73,7 +73,11 @@ function StudentLoginInner() {
     const [isLoading, setIsLoading] = useState(false);
     const [isReady, setIsReady] = useState(false);
     const [rememberMe, setRememberMe] = useState(false);
-    const [recoveryAvailable, setRecoveryAvailable] = useState(false);
+    // Login-method discovery and recovery are independently available
+    // services. Hide recovery only after a successful discovery response
+    // explicitly reports it disabled; a failed lookup must not strand a
+    // passwordless student who still has a valid recovery path.
+    const [recoveryAvailable, setRecoveryAvailable] = useState<boolean | null>(null);
     const [flow, setFlow] = useState<LoginState>(initialLoginState);
     const flowRef = useRef(flow);
     const noticeRef = useRef<HTMLDivElement>(null);
@@ -112,7 +116,7 @@ function StudentLoginInner() {
             return;
         }
         setError(null);
-        setRecoveryAvailable(false);
+        setRecoveryAvailable(null);
         const next = submitEmail(flowRef.current, email);
         flowRef.current = next;
         setFlow(next);
@@ -120,6 +124,7 @@ function StudentLoginInner() {
             const response = await publicApiClient.post('/auth/student/login-options', { email: next.email });
             const options = parseLoginOptions(response.data);
             if (!options) {
+                setRecoveryAvailable(true);
                 setFlow((previous) => methodsFailed(previous, next.requestId, DISCOVERY_UNAVAILABLE));
                 return;
             }
@@ -127,7 +132,7 @@ function StudentLoginInner() {
             setRecoveryAvailable(data?.recovery === true);
             setFlow((previous) => methodsResolved(previous, next.requestId, options.providers));
         } catch (cause: unknown) {
-            setRecoveryAvailable(false);
+            setRecoveryAvailable(true);
             const status = axios.isAxiosError(cause) ? cause.response?.status : undefined;
             setFlow((previous) => methodsFailed(
                 previous,
@@ -176,7 +181,7 @@ function StudentLoginInner() {
     };
 
     const useDifferentEmail = (): void => {
-        setRecoveryAvailable(false);
+        setRecoveryAvailable(null);
         setFlow((previous) => backToEmail(previous));
         document.getElementById('email')?.focus();
     };
@@ -217,7 +222,7 @@ function StudentLoginInner() {
                             Vendor login
                         </Link>
                     </p>
-                    {recoveryAvailable && <p className="mt-2 text-center text-sm text-slate-600">
+                    {recoveryAvailable !== false && <p className="mt-2 text-center text-sm text-slate-600">
                         Lost access to school sign-in?{' '}
                         <Link href="/auth/student/recovery" className="text-slate-500 hover:text-[#1D4ED8] hover:underline font-medium">
                             Recover your account

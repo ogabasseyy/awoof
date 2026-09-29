@@ -56,6 +56,7 @@ export default function StudentSecurityPage() {
     const [pendingExpiresAt, setPendingExpiresAt] = useState<string | null>(null);
     const [generation, setGeneration] = useState<number | null>(null);
     const [busy, setBusy] = useState(false); const loadedUserId = useRef<string | null | undefined>(undefined);
+    const accountLoadGeneration = useRef(0);
     const [now, setNow] = useState(() => Date.now());
     useEffect(() => {
         const timer = window.setInterval(() => setNow(Date.now()), 1000);
@@ -87,30 +88,38 @@ export default function StudentSecurityPage() {
     // The session client refreshes a token that expired before this page
     // loaded instead of permanently rendering recovery and identity
     // management as unavailable after one 401.
-    const loadStatus = async () => {
-        try { const r = await studentSsoSessionApiClient.get('/auth/student/sso/recovery-code'); const data = (r.data as { data?: { status?: unknown; generation?: unknown; pendingCodeId?: unknown; pendingExpiresAt?: unknown; serverNow?: unknown } }).data; const value = data?.status; setPendingCodeId(typeof data?.pendingCodeId === 'string' ? data.pendingCodeId : null); setPendingExpiresAt(typeof data?.pendingExpiresAt === 'string' ? data.pendingExpiresAt : null); setGeneration(typeof data?.generation === 'number' ? data.generation : null); setSkewMs(serverSkewSince(typeof data?.serverNow === 'string' && !Number.isNaN(Date.parse(data.serverNow)) ? data.serverNow : null)); setStatus(value === 'active' || value === 'pending' || value === 'unconfigured' ? value : 'unavailable'); } catch { setStatus('unavailable'); }
+    const loadStatus = async (generation = accountLoadGeneration.current) => {
+        try { const r = await studentSsoSessionApiClient.get('/auth/student/sso/recovery-code'); if (generation !== accountLoadGeneration.current) return; const data = (r.data as { data?: { status?: unknown; generation?: unknown; pendingCodeId?: unknown; pendingExpiresAt?: unknown; serverNow?: unknown } }).data; const value = data?.status; setPendingCodeId(typeof data?.pendingCodeId === 'string' ? data.pendingCodeId : null); setPendingExpiresAt(typeof data?.pendingExpiresAt === 'string' ? data.pendingExpiresAt : null); setGeneration(typeof data?.generation === 'number' ? data.generation : null); setSkewMs(serverSkewSince(typeof data?.serverNow === 'string' && !Number.isNaN(Date.parse(data.serverNow)) ? data.serverNow : null)); setStatus(value === 'active' || value === 'pending' || value === 'unconfigured' ? value : 'unavailable'); } catch { if (generation === accountLoadGeneration.current) setStatus('unavailable'); }
     };
-    const loadIdentities = async () => {
+    const loadIdentities = async (generation = accountLoadGeneration.current) => {
         try {
             const r = await studentSsoSessionApiClient.get('/auth/student/sso/identities');
+            if (generation !== accountLoadGeneration.current) return;
             const parsed = parseIdentities((r.data as { data?: unknown }).data);
             if (!parsed) throw new Error('invalid');
             setIdentities(parsed); setIdentitiesError(null);
-        } catch { setIdentitiesError(IDENTITIES_UNAVAILABLE); }
+        } catch { if (generation === accountLoadGeneration.current) setIdentitiesError(IDENTITIES_UNAVAILABLE); }
     };
     const currentUserId = user?.id ?? null;
     useEffect(() => {
         if (loadedUserId.current === currentUserId) return;
+        const generation = ++accountLoadGeneration.current;
         loadedUserId.current = currentUserId;
         // Another tab can replace the session while this page stays open:
         // never keep the previous account's recovery status, identities,
         // or pending unlink target on screen. Reset to loading and refetch
         // for whoever is signed in now.
-        setStatus('loading'); setIdentities(null); setIdentitiesError(null); setUnlinkTarget(null);
+        setStatus('loading'); setPendingCodeId(null); setPendingExpiresAt(null); setGeneration(null); setSkewMs(0);
+        setIdentities(null); setIdentitiesError(null); setUnlinkTarget(null);
         const session = getSessionSnapshot();
         if (!session.accessToken) { setStatus('unavailable'); setIdentitiesError(IDENTITIES_UNAVAILABLE); return; }
-        void loadStatus();
-        void loadIdentities();
+        // AuthContext may still be resolving /auth/me on the first render.
+        // Do not issue account-scoped reads until its user ID is known: an
+        // early null-user request can consume a later account's response and
+        // briefly expose stale status/identities.
+        if (currentUserId === null) return;
+        void loadStatus(generation);
+        void loadIdentities(generation);
     }, [currentUserId]);
     // A failed school-sign-in start must not strand password users: the
     // provider-independent password flow stays usable, so these report an

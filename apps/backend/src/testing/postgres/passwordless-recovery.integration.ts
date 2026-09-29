@@ -310,6 +310,80 @@ test('fresh starts without the original binding never supersede a live recovery 
     }
 });
 
+test('fresh starts never supersede a legacy live attempt without an idempotency binding', async () => {
+    const pool = createTestPool();
+    const client = await pool.connect();
+    try {
+        const account = await seedRecoverableStudent(client);
+        const deliveries: string[] = [];
+        const service = new StudentAccountRecoveryService({
+            pool, recoveryCodeKey: 'test-recovery-code-key',
+            deliverOtp: async (_email, delivered) => { deliveries.push(delivered); return { success: true }; },
+            validatePassword: () => ({ valid: true, errors: [] }), hashPassword: async () => 'legacy-binding-password-hash',
+        });
+        const first = await service.start({ email: account.email, purpose: 'lost_access' });
+        await client.query(
+            `UPDATE verification_challenge_budgets SET resend_available_at = clock_timestamp() - interval '1 second'
+             WHERE purpose = 'student_account_recovery' AND subject_digest = $1`,
+            [challengeSubjectDigest('student_account_recovery', account.email)],
+        );
+
+        const retry = await service.start({ email: account.email, purpose: 'lost_access', idempotencyKey: randomUUID() });
+        await assert.rejects(() => service.verify({ attemptId: retry.attemptId, secret: retry.secret, code: account.code, otp: deliveries[0]! }));
+        assert.equal(deliveries.length, 1, 'an unbound legacy attempt must not trigger a replacement OTP');
+        const rows = await client.query<{ status: string; idempotency_key: string | null }>(
+            'SELECT status, idempotency_key FROM student_auth_recovery_attempts WHERE user_id = $1', [account.userId],
+        );
+        assert.deepEqual(rows.rows, [{ status: 'pending', idempotency_key: null }], 'fresh issuance cannot supersede an unbound pending attempt');
+
+        await service.verify({ attemptId: first.attemptId, secret: first.secret, code: account.code, otp: deliveries[0]! });
+    } finally {
+        client.release();
+        await pool.end();
+    }
+});
+
+test('an expired unbound recovery attempt no longer blocks a fresh start', async () => {
+    const pool = createTestPool();
+    const client = await pool.connect();
+    try {
+        const account = await seedRecoverableStudent(client);
+        const deliveries: string[] = [];
+        const service = new StudentAccountRecoveryService({
+            pool, recoveryCodeKey: 'test-recovery-code-key',
+            deliverOtp: async (_email, delivered) => { deliveries.push(delivered); return { success: true }; },
+            validatePassword: () => ({ valid: true, errors: [] }), hashPassword: async () => 'expired-binding-password-hash',
+        });
+        const first = await service.start({ email: account.email, purpose: 'lost_access' });
+        await client.query(
+            `UPDATE student_auth_recovery_attempts
+             SET status = 'expired', secret_hash = NULL, idempotency_key = NULL
+             WHERE id = $1`,
+            [first.attemptId],
+        );
+        await client.query(
+            `UPDATE verification_challenge_budgets SET resend_available_at = clock_timestamp() - interval '1 second'
+             WHERE purpose = 'student_account_recovery' AND subject_digest = $1`,
+            [challengeSubjectDigest('student_account_recovery', account.email)],
+        );
+
+        const fresh = await service.start({ email: account.email, purpose: 'lost_access' });
+        assert.notEqual(fresh.attemptId, first.attemptId);
+        assert.equal(deliveries.length, 2, 'a terminally expired attempt permits a new challenge and delivery');
+        const rows = await client.query<{ status: string; idempotency_key: string | null }>(
+            'SELECT status, idempotency_key FROM student_auth_recovery_attempts WHERE user_id = $1 ORDER BY created_at', [account.userId],
+        );
+        assert.deepEqual(rows.rows, [
+            { status: 'expired', idempotency_key: null },
+            { status: 'pending', idempotency_key: null },
+        ]);
+        await service.verify({ attemptId: fresh.attemptId, secret: fresh.secret, code: account.code, otp: deliveries[1]! });
+    } finally {
+        client.release();
+        await pool.end();
+    }
+});
+
 test('cooldown retries without a live attempt return frozen expiries on both paths', async () => {
     const pool = createTestPool();
     const client = await pool.connect();
@@ -684,7 +758,8 @@ test('recovery terminal failure writers scrub superseded and stale-state secrets
             deliverOtp: async (_email, delivered) => { otp = delivered; return { success: true }; },
             validatePassword: () => ({ valid: true, errors: [] }), hashPassword: async () => 'unused',
         });
-        const first = await service.start({ email: account.email, purpose: 'lost_access' });
+        const key = randomUUID();
+        const first = await service.start({ email: account.email, purpose: 'lost_access', idempotencyKey: key });
         await client.query(
             `UPDATE verification_challenge_budgets AS budget
              SET resend_available_at = clock_timestamp() - interval '1 second'
@@ -694,7 +769,7 @@ test('recovery terminal failure writers scrub superseded and stale-state secrets
                AND attempt.id = $1`,
             [first.attemptId],
         );
-        const second = await service.start({ email: account.email, purpose: 'lost_access' });
+        const second = await service.start({ email: account.email, purpose: 'lost_access', idempotencyKey: key });
         const superseded = await client.query<{ status: string; secret_hash: string | null }>(
             'SELECT status, secret_hash FROM student_auth_recovery_attempts WHERE id = $1', [first.attemptId],
         );

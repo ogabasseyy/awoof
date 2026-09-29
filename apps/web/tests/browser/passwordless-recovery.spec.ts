@@ -1,7 +1,66 @@
 import { expect, test } from '@playwright/test';
-import { apiOrigin, appOrigin, installSyntheticApi, seedSession } from './fixtures';
+import { apiOrigin, appOrigin, createGate, installSyntheticApi, seedSession } from './fixtures';
 
 const headers = { 'access-control-allow-origin': appOrigin, 'access-control-allow-credentials': 'true' };
+
+test('late security reads from a previous account cannot overwrite the current account state', async ({ page }) => {
+    const api = await installSyntheticApi(page);
+    const oldStatus = createGate('previous account recovery status');
+    const oldIdentities = createGate('previous account identities');
+    const newStatus = createGate('current account recovery status');
+    const newIdentities = createGate('current account identities');
+    const authMe = `${apiOrigin}/api/auth/me`;
+    const statusUrl = `${apiOrigin}/api/auth/student/sso/recovery-code`;
+    const identitiesUrl = `${apiOrigin}/api/auth/student/sso/identities`;
+
+    await page.route(authMe, route => {
+        const token = route.request().headers()['authorization'] ?? '';
+        const isNew = token.includes('student-b-access');
+        return route.fulfill({ headers, json: { success: true, data: {
+            id: isNew ? 'student-account-b' : 'student-account-a',
+            email: isNew ? 'b@approved.test' : 'a@approved.test', role: 'student', verificationStatus: 'verified',
+        } } });
+    });
+    await page.route(statusUrl, async route => {
+        const isNew = (route.request().headers()['authorization'] ?? '').includes('student-b-access');
+        if (isNew) {
+            await newStatus.wait();
+            return route.fulfill({ headers, json: { success: true, data: { status: 'unconfigured', generation: null } } });
+        }
+        await oldStatus.wait();
+        return route.fulfill({ headers, json: { success: true, data: { status: 'active', generation: 1 } } });
+    });
+    await page.route(identitiesUrl, async route => {
+        const isNew = (route.request().headers()['authorization'] ?? '').includes('student-b-access');
+        if (isNew) {
+            await newIdentities.wait();
+            return route.fulfill({ headers, json: { success: true, data: { identities: [] } } });
+        }
+        await oldIdentities.wait();
+        return route.fulfill({ headers, json: { success: true, data: { identities: [{
+            id: 'identity-a', provider: 'microsoft', universityName: 'Previous Account University', linkedAt: '2026-01-01T00:00:00.000Z',
+        }] } } });
+    });
+
+    await page.goto('/auth/student/login');
+    await seedSession(page, 'student');
+    await page.goto('/student/security');
+    await oldStatus.waitForArrival();
+    await oldIdentities.waitForArrival();
+    await page.evaluate(() => {
+        const session = JSON.stringify({ v: 1, state: 'active', sessionId: 'student-b-session', accessToken: 'student-b-access', refreshToken: 'student-b-refresh' });
+        localStorage.setItem('awoof.session.v1', session);
+        window.dispatchEvent(new StorageEvent('storage', { key: 'awoof.session.v1', newValue: session }));
+    });
+    await newStatus.waitForArrival();
+    await newIdentities.waitForArrival();
+    newStatus.release(); newIdentities.release();
+    await expect(page.getByRole('button', { name: 'Confirm identity to generate a code' })).toBeVisible();
+    oldStatus.release(); oldIdentities.release();
+    await expect(page.getByText('A recovery code is active. Replacing or removing it requires the current code and fresh confirmation.')).toHaveCount(0);
+    await expect(page.getByText(/Previous Account University/)).toHaveCount(0);
+    api.assertNoUnexpectedRequests();
+});
 
 test('security setup keeps the generated recovery code out of URL and web storage and requires a second fresh proof', async ({ page }) => {
     const api = await installSyntheticApi(page);

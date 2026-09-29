@@ -133,7 +133,11 @@ export class StudentAccountRecoveryService {
             // frozen-expiry shape as a keyless cooldown retry — no new
             // challenge is issued, nothing is emailed, and the live attempt
             // and its OTP survive untouched.
-            if (live && live.idempotency_key !== null && live.idempotency_key !== idempotencyKey) {
+            // A legacy/unbound live attempt is not resumable by a newly
+            // supplied key. Treat it like a mismatch: accepting it here
+            // would let any anonymous caller supersede that attempt after
+            // the resend cooldown expires.
+            if (live && (live.idempotency_key === null || live.idempotency_key !== idempotencyKey)) {
                 return this.frozenStartExpiry(tx, account.email, serverExpiry, serverNow);
             }
             const challenge = await requestChallenge(tx, {
