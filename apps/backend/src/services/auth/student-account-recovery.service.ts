@@ -55,7 +55,22 @@ export type StudentAccountRecoveryDependencies = {
     hashPassword?: (password: string) => Promise<string>;
     validatePassword?: (password: string) => { valid: boolean; errors: string[] };
     notify?: (email: string, purpose: RecoveryPurpose) => Promise<{ success: boolean }>;
+    /** Bound for the post-commit completion notice; defaults to NOTICE_TIMEOUT_MS. */
+    noticeTimeoutMs?: number;
 };
+
+const NOTICE_TIMEOUT_MS = 10_000;
+
+async function withNoticeDeadline<T>(work: Promise<T>, timeoutMs: number): Promise<T> {
+    let rejectDeadline: (error: Error) => void = () => undefined;
+    const deadline = new Promise<never>((_, reject) => { rejectDeadline = reject; });
+    const timer = setTimeout(() => rejectDeadline(new Error('Account recovery completion notice timed out')), timeoutMs);
+    try {
+        return await Promise.race([work, deadline]);
+    } finally {
+        clearTimeout(timer);
+    }
+}
 
 function unavailable(): ConflictError {
     return new ConflictError('Account recovery is not available');
@@ -749,7 +764,13 @@ export class StudentAccountRecoveryService {
 
     private async sendCompletionNotice(email: string, purpose: RecoveryPurpose): Promise<void> {
         try {
-            const delivery = await (this.deps.notify ?? sendAccountRecoveryCompletionNotice)(email, purpose);
+            // The notice is post-commit best effort: a hung provider must
+            // time out into the logged failure below instead of holding the
+            // already-decided credential response open indefinitely.
+            const delivery = await withNoticeDeadline(
+                (this.deps.notify ?? sendAccountRecoveryCompletionNotice)(email, purpose),
+                this.deps.noticeTimeoutMs ?? NOTICE_TIMEOUT_MS,
+            );
             if (!delivery.success) appLogger.error('Account recovery completion notice delivery failed');
         } catch {
             // Credential state has already committed. A transport failure must

@@ -42,6 +42,8 @@ export type StudentRecoveryCodeDependencies = {
     previousCodeKey?: string;
     randomCode?: () => string;
     notify?: (email: string, event: 'activated' | 'replaced' | 'removed') => Promise<{ success: boolean }>;
+    /** Bound for the post-commit security notice; defaults to NOTICE_TIMEOUT_MS. */
+    noticeTimeoutMs?: number;
     /**
      * Deployment provider gate. Proof-backed operations fail closed without
      * it; password-backed grants (null proof) never consult it.
@@ -50,6 +52,19 @@ export type StudentRecoveryCodeDependencies = {
 };
 
 const RECOVERY_CODE_DIGEST_VERSION = 'v1';
+
+const NOTICE_TIMEOUT_MS = 10_000;
+
+async function withNoticeDeadline<T>(work: Promise<T>, timeoutMs: number): Promise<T> {
+    let rejectDeadline: (error: Error) => void = () => undefined;
+    const deadline = new Promise<never>((_, reject) => { rejectDeadline = reject; });
+    const timer = setTimeout(() => rejectDeadline(new Error('Recovery-code security notice timed out')), timeoutMs);
+    try {
+        return await Promise.race([work, deadline]);
+    } finally {
+        clearTimeout(timer);
+    }
+}
 
 /** Versioned HMAC digest for stored recovery codes. */
 export function digestRecoveryCode(code: string, key: string): string {
@@ -414,7 +429,13 @@ export class StudentRecoveryCodeService {
 
     private async sendSecurityNotice(email: string, event: 'activated' | 'replaced' | 'removed'): Promise<void> {
         try {
-            const delivery = await (this.dependencies.notify ?? sendRecoveryCodeSecurityNotice)(email, event);
+            // The notice is post-commit best effort: a hung provider must
+            // time out into the logged failure below instead of holding the
+            // already-decided credential response open indefinitely.
+            const delivery = await withNoticeDeadline(
+                (this.dependencies.notify ?? sendRecoveryCodeSecurityNotice)(email, event),
+                this.dependencies.noticeTimeoutMs ?? NOTICE_TIMEOUT_MS,
+            );
             if (!delivery.success) appLogger.error('Recovery-code security notice delivery failed');
         } catch {
             // Credential state has already committed. A transport failure must

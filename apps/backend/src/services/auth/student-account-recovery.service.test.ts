@@ -230,6 +230,51 @@ test('compromise recovery complete locks handoffs before identities', async () =
         'compromise recovery must lock stale handoffs before revoking identities');
 });
 
+test('a hung completion notice times out instead of holding the committed recovery open', async () => {
+    const queries: string[] = [];
+    const secret = 'attempt-secret';
+    const digest = createHmac('sha256', 'test-recovery-code-key').update(`attempt\0${secret}`).digest('base64url');
+    const attemptId = '11111111-1111-4111-8111-111111111111';
+    const attempt = {
+        id: attemptId, user_id: 'u1', credential_generation: 0, purpose: 'compromise', secret_hash: digest,
+        recovery_code_generation: 7, mailbox_challenge_id: 'm1', status: 'verified', expires_at: new Date(Date.now() + 600_000),
+    };
+    const client = {
+        query: async (text: string) => {
+            queries.push(text);
+            if (text.includes('SELECT user_id FROM student_auth_recovery_attempts')) return { rows: [{ user_id: 'u1' }], rowCount: 1 };
+            if (text.includes('SELECT * FROM student_auth_recovery_attempts')) return { rows: [attempt], rowCount: 1 };
+            if (text.includes('SELECT status, secret_hash, expires_at FROM student_auth_recovery_attempts')) {
+                return { rows: [{ status: 'verified', secret_hash: digest, expires_at: attempt.expires_at }], rowCount: 1 };
+            }
+            if (text.includes('FROM users u LEFT JOIN students s')) {
+                return { rows: [{ id: 'u1', email: 's@x.invalid', credential_generation: 0, deleted_at: null }], rowCount: 1 };
+            }
+            if (text.includes('SELECT status FROM students WHERE user_id')) return { rows: [{ status: 'active' }], rowCount: 1 };
+            if (text.includes('FROM student_auth_recovery_codes WHERE user_id')) {
+                return { rows: [{ id: 'c1', generation: 7, code_digest: 'x', status: 'active' }], rowCount: 1 };
+            }
+            if (text.includes('SELECT clock_timestamp() AS now')) return { rows: [{ now: new Date() }], rowCount: 1 };
+            if (text.includes("SET status = 'consumed'")) return { rows: [], rowCount: 1 };
+            return { rows: [], rowCount: 0 };
+        },
+        release: () => undefined,
+    };
+    const service = new StudentAccountRecoveryService({
+        pool: { connect: async () => client } as never,
+        recoveryCodeKey: 'test-recovery-code-key',
+        validatePassword: () => ({ valid: true, errors: [] }),
+        hashPassword: async () => 'hashed',
+        notify: () => new Promise<{ success: boolean }>(() => undefined),
+        noticeTimeoutMs: 25,
+    });
+
+    const started = Date.now();
+    await service.complete({ attemptId, secret, password: 'ValidNew1!' });
+    assert.ok(Date.now() - started < 5000, 'complete must bound a hung notice instead of awaiting it');
+    assert.ok(queries.some((text) => text.includes("SET status = 'consumed'")), 'the verified attempt must commit as consumed');
+});
+
 test('recovery verify mirrors decoy work before rejecting an altered handle secret', async () => {
     const queries: string[] = [];
     const stored = createHmac('sha256', 'test-recovery-code-key').update(`attempt\0${'returned-secret'}`).digest('base64url');
