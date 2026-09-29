@@ -50,7 +50,9 @@ test('late security reads from a previous account cannot overwrite the current a
     await page.evaluate(() => {
         const session = JSON.stringify({ v: 1, state: 'active', sessionId: 'student-b-session', accessToken: 'student-b-access', refreshToken: 'student-b-refresh' });
         localStorage.setItem('awoof.session.v1', session);
-        const event = new StorageEvent('storage');
+        // This is a same-window synthetic storage notification; a generic
+        // Event with the fields consumed by the listener is sufficient.
+        const event = new Event('storage');
         Object.defineProperties(event, {
             key: { value: 'awoof.session.v1' },
             newValue: { value: session },
