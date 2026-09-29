@@ -72,6 +72,10 @@ function RecoveryReauthComplete({ attemptId, duplicate, unavailable }: { attempt
         () => null,
     );
     const accountGeneration = useRef(0);
+    // Set before this component's own session-clearing unlink paths so the
+    // layout effect below can tell an intentional sign-out from a foreign
+    // session replacement.
+    const intentionalSignOut = useRef(false);
     const loadedUserId = useRef<string | null | undefined>(undefined);
     const loadedBrowserSessionId = useRef<string | null | undefined>(undefined);
     const currentUserId = user?.id ?? null;
@@ -80,6 +84,18 @@ function RecoveryReauthComplete({ attemptId, duplicate, unavailable }: { attempt
     const [busy, setBusy] = useState(false); const started = useRef(false); const actionBusy = useRef(false); const finishInFlight = useRef(false); const waitingAutoTries = useRef(0);
     const [now, setNow] = useState(() => Date.now());
     useLayoutEffect(() => {
+        if (intentionalSignOut.current) {
+            // Unlinking the identity that issued this session clears local
+            // tokens on purpose: invalidate stragglers and drop held
+            // secrets, but preserve the terminal signed-out removal state
+            // instead of failing.
+            intentionalSignOut.current = false;
+            loadedUserId.current = currentUserId;
+            loadedBrowserSessionId.current = browserSessionId;
+            accountGeneration.current += 1;
+            setGrant(null); setCode(''); setOldCode('');
+            return;
+        }
         const previousUserId = loadedUserId.current;
         const previousSessionId = loadedBrowserSessionId.current;
         if (previousUserId === currentUserId && previousSessionId === browserSessionId) return;
@@ -96,8 +112,10 @@ function RecoveryReauthComplete({ attemptId, duplicate, unavailable }: { attempt
         setPendingExpiresAt(null); setExpectedGeneration(null);
         setNeedsOldCode(false); setError(null); setBusy(false);
         actionBusy.current = false; finishInFlight.current = false; waitingAutoTries.current = 0;
-        setStatus('failed');
-    }, [browserSessionId, currentUserId]);
+        // A completed signed-out removal keeps its terminal state even if
+        // a later foreign swap races the flag consumption above.
+        if (status !== 'unlinked_signed_out') setStatus('failed');
+    }, [browserSessionId, currentUserId, status]);
     useEffect(() => {
         const timer = window.setInterval(() => setNow(Date.now()), 1000);
         return () => window.clearInterval(timer);
@@ -256,7 +274,7 @@ function RecoveryReauthComplete({ attemptId, duplicate, unavailable }: { attempt
             if (!data || data.unlinked !== true || typeof data.sessionRevoked !== 'boolean') throw new Error('invalid unlink');
             // The server clears the session only when the removed identity
             // issued it; drop local tokens exactly then, before rendering.
-            if (data.sessionRevoked) clearTokens();
+            if (data.sessionRevoked) { intentionalSignOut.current = true; clearTokens(); }
             setStatus(data.sessionRevoked ? 'unlinked_signed_out' : 'unlinked');
         } catch (cause: unknown) {
             if (stale()) return;
@@ -285,7 +303,7 @@ function RecoveryReauthComplete({ attemptId, duplicate, unavailable }: { attempt
                     // committed outcome with the session revoked by the
                     // removed identity: report the signed-out removal
                     // instead of generic failure.
-                    if (statusOf(inner) === 401) { clearTokens(); setStatus('unlinked_signed_out'); return; }
+                    if (statusOf(inner) === 401) { intentionalSignOut.current = true; clearTokens(); setStatus('unlinked_signed_out'); return; }
                     /* other reload failures fall through below */
                 }
             }
