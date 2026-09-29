@@ -134,19 +134,21 @@ jobs:
           fi
           # Merge-base discovery: two-dot diff would include base-only
           # changes made after divergence, while the reviewed API diff uses
-          # three-dot semantics. Deepen until the merge base resolves (or the
-          # cap hits, in which case the compare API backs the file list).
+          # three-dot semantics. Deepen until the merge base resolves. A
+          # failure here only disables the LOCAL file list (compare API
+          # backs it); the fetched base tip still backs trusted guidance.
+          local_diff=false
           merge_base=""
           if [[ "${base_available}" == "true" ]]; then
             for _ in 1 2 3 4 5; do
               if merge_base="$(git merge-base "${base_sha_full}" "${head_sha}" 2>/dev/null)"; then
+                local_diff=true
                 break
               fi
               git fetch --deepen 100 origin "${base_sha_full}" "${head_sha}" >/dev/null 2>&1 || break
             done
-            if [[ -z "${merge_base}" ]]; then
-              echo "::warning::merge-base not found; falling back to compare API."
-              base_available=false
+            if [[ "${local_diff}" != "true" ]]; then
+              echo "::warning::merge-base not found; file list falls back to compare API."
             fi
           fi
           head_ref="$(jq -r '.head.ref' "${pr_file}")"
@@ -176,26 +178,49 @@ jobs:
           # the fallback when local history is unavailable (e.g. private
           # repos, where anonymous fetch has no credentials).
           files_source="local"
-          if [[ "${base_available}" == "true" ]]; then
+          if [[ "${local_diff}" == "true" ]]; then
             ns_file="${RUNNER_TEMP}/muse-namestat.txt"
             num_file="${RUNNER_TEMP}/muse-numstat.txt"
-            if git -c core.quotePath=false diff --name-status "${merge_base}" "${head_sha}" > "${ns_file}" 2>/dev/null \
-              && git -c core.quotePath=false diff --numstat "${merge_base}" "${head_sha}" > "${num_file}" 2>/dev/null; then
-              paste -d'\t' "${ns_file}" <(cut -f1,2 "${num_file}") | awk -F'\t' '{
-                st=$1; if (st ~ /^R/) { path=$3 } else { path=$2 }
-                add=$(NF-1); del=$NF; if (add=="-") add=0; if (del=="-") del=0
-                s=(st=="A"?"added":st=="D"?"removed":(st~/^R/?"renamed":"modified"))
-                printf "%s\t%s\t%s\t%s\n", path, s, add, del
-              }' | jq -R -s '[split("\n")[] | select(length>0) | split("\t")
-                | {filename:.[0],status:.[1],additions:.[2]|tonumber,deletions:.[3]|tonumber}]' \
-                > "${files_file}" 2>/dev/null || echo '[]' > "${files_file}"
+            if git -c core.quotePath=false diff -z --name-status "${merge_base}" "${head_sha}" > "${ns_file}" 2>/dev/null \
+              && git -c core.quotePath=false diff -z --numstat "${merge_base}" "${head_sha}" > "${num_file}" 2>/dev/null; then
+              # NUL-delimited parse: tab/newline paths stay intact (both
+              # streams share record order, so read them in lockstep).
+              : > "${files_file}.jsonl"
+              exec 3<"${ns_file}" 4<"${num_file}"
+              join_ok=true
+              while IFS= read -r -d '' st <&3; do
+                IFS= read -r -d '' p1 <&3 || { join_ok=false; break; }
+                if [[ "${st}" == R* ]]; then
+                  IFS= read -r -d '' p2 <&3 || { join_ok=false; break; }
+                  path="${p2}"
+                else
+                  path="${p1}"
+                fi
+                IFS= read -r -d '' numrec <&4 || { join_ok=false; break; }
+                add="${numrec%%$'\t'*}"; rest="${numrec#*$'\t'}"; del="${rest%%$'\t'*}"
+                if ! [[ "${add}" =~ ^[0-9]+$ ]]; then add=0; fi
+                if ! [[ "${del}" =~ ^[0-9]+$ ]]; then del=0; fi
+                case "${st}" in
+                  A*) s="added";; D*) s="removed";; R*) s="renamed";; *) s="modified";;
+                esac
+                jq -n --arg f "${path}" --arg s "${s}" --argjson a "${add:-0}" --argjson d "${del:-0}" \
+                  '{filename:$f,status:$s,additions:$a,deletions:$d}' >> "${files_file}.jsonl"
+              done
+              exec 3<&- 4<&-
+              if [[ "${join_ok}" == "true" ]]; then
+                jq -s '.' "${files_file}.jsonl" > "${files_file}" 2>/dev/null || echo '[]' > "${files_file}"
+              else
+                echo '[]' > "${files_file}"
+                echo "::warning::local diff join failed; falling back to compare API."
+                local_diff=false
+              fi
             else
               echo '[]' > "${files_file}"
               echo "::warning::local git diff failed; falling back to compare API."
-              base_available=false
+              local_diff=false
             fi
           fi
-          if [[ "${base_available}" != "true" ]]; then
+          if [[ "${local_diff}" != "true" ]]; then
             files_source="compare"
             compare_file="${RUNNER_TEMP}/muse-compare.json"
             if ! gh api "repos/${GITHUB_REPOSITORY}/compare/${base_sha}...${HEAD_SHA_EVENT}" \
@@ -237,6 +262,20 @@ jobs:
           # Neutralize block-closing tags smuggled in filenames (@tsv does
           # not escape angle brackets).
           files_summary="$(printf '%s' "${files_summary}" | perl -pe 's{<\s*/\s*(file|diff|pr_title|pr_description|changed_files|head_ref|untrusted_guidance)}{<\\/$1}gi')"
+
+          # Full path manifest: the detailed summary above is entry-capped,
+          # so list EVERY changed path separately (bounded by bytes). The
+          # agent has no shell — without this, files past the cap and outside
+          # the truncated diff are undiscoverable.
+          manifest_file="${RUNNER_TEMP}/muse-manifest.txt"
+          jq -r '.[].filename | gsub("\n"; "\\n")' "${files_file}" > "${manifest_file}" 2>/dev/null \
+            || : > "${manifest_file}"
+          manifest_note=""
+          if (( $(wc -c < "${manifest_file}") > 65536 )); then
+            head -c 65536 "${manifest_file}" | iconv -c -f UTF-8 -t UTF-8 > "${manifest_file}.trunc" 2>/dev/null || true
+            mv "${manifest_file}.trunc" "${manifest_file}"
+            manifest_note=" [manifest truncated at 65536 bytes — PARTIAL SCOPE]"
+          fi
 
           # Unified diff, truncated to a prompt budget. Collection failures are
           # routed to the explicit fallback (never reviewed blind).
@@ -340,14 +379,14 @@ jobs:
           for candidate in AGENTS.md CLAUDE.md CONTRIBUTING.md .github/copilot-instructions.md; do
             add_candidate "${candidate}"
           done
-          while IFS= read -r changed; do
+          while IFS= read -r -d '' changed; do
             dir="$(dirname -- "${changed}")"
             while [[ "${dir}" != "." && "${dir}" != "/" ]]; do
               add_candidate "${dir}/AGENTS.md"
               add_candidate "${dir}/CLAUDE.md"
               dir="$(dirname -- "${dir}")"
             done
-          done < <(jq -r '.[].filename' "${files_file}" 2>/dev/null)
+          done < <(jq -j '.[].filename + "\u0000"' "${files_file}" 2>/dev/null)
           # Two phases: trusted base-backed guidance first, head-only files
           # second — so PR-authored content can never exhaust the byte budget
           # before applicable trusted rules are collected.
@@ -440,7 +479,11 @@ jobs:
           "findings": [] and say so in "verdict".
           CONTRACT
 
-            printf '\n## Changed files%s\n\n<changed_files>\n%s\n</changed_files>\n' "${files_note}" "${files_summary}"
+            printf '\n## Changed files%s\n\n<changed_files>\n%s\n\n### Full path manifest%s\n' \
+              "${files_note}" "${files_summary}" "${manifest_note}"
+            iconv -c -f UTF-8 -t UTF-8 "${manifest_file}" 2>/dev/null \
+              | perl -pe 's{<\s*/\s*(file|diff|pr_title|pr_description|changed_files|head_ref|untrusted_guidance)}{<\\/$1}gi' || true
+            printf '\n</changed_files>\n'
             printf '\n## Unified diff%s\n\n<diff>\n' "${diff_note}"
             iconv -c -f UTF-8 -t UTF-8 "${diff_file}" 2>/dev/null \
               | perl -pe 's{<\s*/\s*(file|diff|changed_files|head_ref|untrusted_guidance)}{<\\/$1}gi' || true
