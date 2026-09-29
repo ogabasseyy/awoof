@@ -606,7 +606,24 @@ jobs:
         timeout-minutes: 5
         run: |
           set -euo pipefail
-          curl -fsSL https://dev.meta.ai/install.sh | bash
+          # No curl|bash pipe: download first so a truncated stream can never
+          # execute partially, then refuse empty files and syntax-check before
+          # running. No pinned checksum or versioned installer exists upstream
+          # (unversioned URL, no npm package), so TLS to Meta's domain is the
+          # trust anchor; the flags below pin that transport (HTTPS-only,
+          # TLS 1.2+, bounded redirects). MUSE_NO_MODIFY_PATH keeps the
+          # installer from editing runner shell profiles (GITHUB_PATH covers
+          # this job already).
+          installer="$(mktemp "${RUNNER_TEMP}/muse-install.XXXXXX")"
+          trap 'rm -f "${installer}"' EXIT
+          curl --fail --silent --show-error --location --max-redirs 3 \
+            --proto '=https' --proto-redir '=https' --tlsv1.2 \
+            --output "${installer}" https://dev.meta.ai/install.sh
+          [[ -s "${installer}" ]]
+          bash -n "${installer}"
+          MUSE_NO_MODIFY_PATH=1 bash "${installer}"
+          rm -f "${installer}"
+          trap - EXIT
           echo "${HOME}/.local/bin" >> "${GITHUB_PATH}"
           "${HOME}/.local/bin/muse" --version
 
