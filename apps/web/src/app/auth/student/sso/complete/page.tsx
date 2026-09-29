@@ -8,7 +8,7 @@
 
 'use client';
 
-import { Suspense, useCallback, useEffect, useRef, useState } from 'react';
+import { Suspense, useCallback, useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore } from 'react';
 import Link from 'next/link';
 import { useSearchParams } from 'next/navigation';
 import axios from 'axios';
@@ -16,7 +16,7 @@ import { AuthShell } from '@/components/auth/AuthShell';
 import { Button } from '@/components/ui/button';
 import { useAuth } from '@/contexts/AuthContext';
 import { publicApiClient, studentSsoApiClient, studentSsoSessionApiClient } from '@/lib/api-client';
-import { clearTokens, getSessionSnapshot } from '@/lib/auth';
+import { clearTokens, getSessionSnapshot, subscribeSessionChanges } from '@/lib/auth';
 import { STUDENT_SSO_ONBOARDING_RETURN_PATH, resolveStudentReturn } from '@/lib/student-return';
 import {
     clearSsoAttempt,
@@ -64,30 +64,40 @@ function formatPendingRemaining(deadlineMs: number, nowMs: number): string {
 function RecoveryReauthComplete({ attemptId, duplicate, unavailable }: { attemptId: string; duplicate: boolean; unavailable: boolean }) {
     const { refreshUser, user } = useAuth();
     // Another tab can replace the browser session while a grant or code
-    // request is in flight. Every response handler captures this
-    // generation and discards its update when the account changed, so
-    // one account's plaintext code or grant never renders for another.
+    // request is in flight. Fence by the browser-local session ID as well
+    // as user ID: signing back into the same account is still a new session.
+    const browserSessionId = useSyncExternalStore(
+        subscribeSessionChanges,
+        () => getSessionSnapshot().browserSessionId,
+        () => null,
+    );
     const accountGeneration = useRef(0);
     const loadedUserId = useRef<string | null | undefined>(undefined);
+    const loadedBrowserSessionId = useRef<string | null | undefined>(undefined);
     const currentUserId = user?.id ?? null;
-    useEffect(() => {
-        const previous = loadedUserId.current;
-        if (previous === currentUserId) return;
+    const [status, setStatus] = useState<'checking' | 'waiting' | 'generate' | 'generate_ambiguous' | 'display' | 'activate' | 'remove' | 'failed' | 'active' | 'removed' | 'link_unavailable' | 'unlinked' | 'unlinked_signed_out' | 'last_method' | 'last_proof_method' | 'link_ambiguous'>(unavailable ? 'failed' : 'checking');
+    const [code, setCode] = useState(''); const [oldCode, setOldCode] = useState(''); const [needsOldCode, setNeedsOldCode] = useState(false); const [pendingCodeId, setPendingCodeId] = useState<string | null>(null); const [pendingExpiresAt, setPendingExpiresAt] = useState<string | null>(null); const [expectedGeneration, setExpectedGeneration] = useState<number | null>(null); const [grant, setGrant] = useState<{ grantId: string; grantSecret: string } | null>(null); const [error, setError] = useState<string | null>(null);
+    const [busy, setBusy] = useState(false); const started = useRef(false); const actionBusy = useRef(false); const finishInFlight = useRef(false); const waitingAutoTries = useRef(0);
+    const [now, setNow] = useState(() => Date.now());
+    useLayoutEffect(() => {
+        const previousUserId = loadedUserId.current;
+        const previousSessionId = loadedBrowserSessionId.current;
+        if (previousUserId === currentUserId && previousSessionId === browserSessionId) return;
         loadedUserId.current = currentUserId;
-        // Mount and late user populate keep their state; only a real
-        // account change (or sign-out) invalidates captured responses.
-        if (previous === undefined || previous === null) return;
+        loadedBrowserSessionId.current = browserSessionId;
+        // Initial mount and late user populate keep their state. Once a
+        // non-null owner existed, either an account change or replacement
+        // browser session invalidates captured responses and secrets before
+        // the browser paints.
+        const priorOwnerKnown = previousUserId != null || previousSessionId != null;
+        if (!priorOwnerKnown || (previousUserId == null && previousSessionId === browserSessionId)) return;
         accountGeneration.current += 1;
         setGrant(null); setCode(''); setOldCode(''); setPendingCodeId(null);
         setPendingExpiresAt(null); setExpectedGeneration(null);
         setNeedsOldCode(false); setError(null); setBusy(false);
         actionBusy.current = false; finishInFlight.current = false; waitingAutoTries.current = 0;
         setStatus('failed');
-    }, [currentUserId]);
-    const [status, setStatus] = useState<'checking' | 'waiting' | 'generate' | 'generate_ambiguous' | 'display' | 'activate' | 'remove' | 'failed' | 'active' | 'removed' | 'link_unavailable' | 'unlinked' | 'unlinked_signed_out' | 'last_method' | 'last_proof_method' | 'link_ambiguous'>(unavailable ? 'failed' : 'checking');
-    const [code, setCode] = useState(''); const [oldCode, setOldCode] = useState(''); const [needsOldCode, setNeedsOldCode] = useState(false); const [pendingCodeId, setPendingCodeId] = useState<string | null>(null); const [pendingExpiresAt, setPendingExpiresAt] = useState<string | null>(null); const [expectedGeneration, setExpectedGeneration] = useState<number | null>(null); const [grant, setGrant] = useState<{ grantId: string; grantSecret: string } | null>(null); const [error, setError] = useState<string | null>(null);
-    const [busy, setBusy] = useState(false); const started = useRef(false); const actionBusy = useRef(false); const finishInFlight = useRef(false); const waitingAutoTries = useRef(0);
-    const [now, setNow] = useState(() => Date.now());
+    }, [browserSessionId, currentUserId]);
     useEffect(() => {
         const timer = window.setInterval(() => setNow(Date.now()), 1000);
         return () => window.clearInterval(timer);

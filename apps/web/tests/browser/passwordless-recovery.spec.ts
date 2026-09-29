@@ -645,6 +645,56 @@ test('server callback context does not require a tab intent and never persists g
     api.assertNoUnexpectedRequests();
 });
 
+test('same-account browser session replacement hides an already displayed recovery code', async ({ page }) => {
+    const api = await installSyntheticApi(page);
+    await page.route(`${apiOrigin}/api/auth/student/sso/reauth/finish`, route => route.fulfill({ status: 201, headers, json: { success: true, data: { grantId: '7c000000-0000-4000-8000-000000000002', grantSecret: 'grant', expiresAt: new Date(Date.now() + 60_000).toISOString(), purpose: 'recovery_code_generate', pendingCodeId: null, targetIdentityId: null, activeCodeGeneration: null } } }));
+    await page.route(`${apiOrigin}/api/auth/student/sso/recovery-code/generate`, route => route.fulfill({ status: 201, headers, json: { success: true, data: { pendingCodeId: '7b000000-0000-4000-8000-000000000002', code: 'same-account-session-secret' } } }));
+    await page.goto('/auth/student/login'); await seedSession(page, 'student');
+    await page.goto('/auth/student/sso/complete?reauth=7d000000-0000-4000-8000-000000000002');
+    await expect(page.getByText('same-account-session-secret')).toBeVisible();
+    await page.evaluate(() => {
+        const key = 'awoof.session.v1';
+        const value = JSON.parse(localStorage.getItem(key) ?? 'null') as { sessionId: string };
+        value.sessionId = 'same-account-new-browser-session';
+        const serialized = JSON.stringify(value);
+        localStorage.setItem(key, serialized);
+        const event = new Event('storage');
+        Object.defineProperties(event, { key: { value: key }, newValue: { value: serialized } });
+        window.dispatchEvent(event);
+    });
+    await expect(page.getByRole('heading', { name: 'Security confirmation unavailable' })).toBeVisible();
+    await expect(page.getByText('same-account-session-secret')).toHaveCount(0);
+    api.assertNoUnexpectedRequests();
+});
+
+test('same-account browser session replacement discards a late recovery-code response', async ({ page }) => {
+    const api = await installSyntheticApi(page);
+    const delayedGeneration = createGate('same-account recovery-code generation');
+    await page.route(`${apiOrigin}/api/auth/student/sso/reauth/finish`, route => route.fulfill({ status: 201, headers, json: { success: true, data: { grantId: '7c000000-0000-4000-8000-000000000003', grantSecret: 'grant', expiresAt: new Date(Date.now() + 60_000).toISOString(), purpose: 'recovery_code_generate', pendingCodeId: null, targetIdentityId: null, activeCodeGeneration: null } } }));
+    await page.route(`${apiOrigin}/api/auth/student/sso/recovery-code/generate`, async route => {
+        await delayedGeneration.wait();
+        return route.fulfill({ status: 201, headers, json: { success: true, data: { pendingCodeId: '7b000000-0000-4000-8000-000000000003', code: 'late-same-account-secret' } } });
+    });
+    await page.goto('/auth/student/login'); await seedSession(page, 'student');
+    await page.goto('/auth/student/sso/complete?reauth=7d000000-0000-4000-8000-000000000003');
+    await delayedGeneration.waitForArrival();
+    await page.evaluate(() => {
+        const key = 'awoof.session.v1';
+        const value = JSON.parse(localStorage.getItem(key) ?? 'null') as { sessionId: string };
+        value.sessionId = 'same-account-new-browser-session';
+        const serialized = JSON.stringify(value);
+        localStorage.setItem(key, serialized);
+        const event = new Event('storage');
+        Object.defineProperties(event, { key: { value: key }, newValue: { value: serialized } });
+        window.dispatchEvent(event);
+    });
+    await expect(page.getByRole('heading', { name: 'Security confirmation unavailable' })).toBeVisible();
+    delayedGeneration.release();
+    await expect(page.getByText('late-same-account-secret')).toHaveCount(0);
+    await expect(page.getByRole('heading', { name: 'Save your recovery code' })).toHaveCount(0);
+    api.assertNoUnexpectedRequests();
+});
+
 test('lost generation or activation responses recover only through server status and never reveal plaintext', async ({ page }) => {
     const api = await installSyntheticApi(page);
     await page.route(`${apiOrigin}/api/auth/student/sso/recovery-code`, route => route.fulfill({ headers, json: { success: true, data: { status: 'pending', generation: 1, pendingCodeId: '7e000000-0000-4000-8000-000000000001' } } }));
