@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { createHmac, randomUUID } from 'node:crypto';
+import { createCipheriv, createHash, createHmac, randomBytes, randomUUID } from 'node:crypto';
 import test from 'node:test';
 import type { Pool, PoolClient } from 'pg';
 import { StudentAccountRecoveryService } from '../../services/auth/student-account-recovery.service.js';
@@ -59,7 +59,7 @@ test('recovery outbox retries the same encrypted OTP after an ambiguous send and
         const queued = await client.query<{ challenge_id: string; status: string; ciphertext: string | null; nonce: string | null; auth_tag: string | null }>(
             `SELECT job.challenge_id, job.status, job.ciphertext, job.nonce, job.auth_tag
              FROM student_auth_recovery_attempts attempt
-             JOIN student_account_recovery_otp_outbox job ON job.challenge_id = attempt.mailbox_challenge_id
+             JOIN student_email_otp_outbox job ON job.challenge_id = attempt.mailbox_challenge_id
              WHERE attempt.id = $1`, [started.attemptId],
         );
         assert.equal(queued.rows.length, 1, 'the start transaction must atomically persist its delivery job');
@@ -70,7 +70,7 @@ test('recovery outbox retries the same encrypted OTP after an ambiguous send and
         // Model a worker that durably claimed the row and crashed before
         // calling the provider. The expired DB-time lease must be reclaimable.
         await client.query(
-            `UPDATE student_account_recovery_otp_outbox
+            `UPDATE student_email_otp_outbox
              SET status = 'processing', lease_until = clock_timestamp() - interval '1 second', claim_token = $2
              WHERE challenge_id = $1`, [queued.rows[0]!.challenge_id, randomUUID()],
         );
@@ -84,7 +84,7 @@ test('recovery outbox retries the same encrypted OTP after an ambiguous send and
         assert.equal(retry.retried, 1);
         assert.match(attemptedCodes[0] ?? '', /^\d{6}$/);
         const afterFailure = await client.query<{ ciphertext: string | null; status: string }>(
-            `SELECT ciphertext, status FROM student_account_recovery_otp_outbox WHERE challenge_id = $1`,
+            `SELECT ciphertext, status FROM student_email_otp_outbox WHERE challenge_id = $1`,
             [queued.rows[0]!.challenge_id],
         );
         assert.equal(afterFailure.rows[0]!.status, 'pending');
@@ -93,7 +93,7 @@ test('recovery outbox retries the same encrypted OTP after an ambiguous send and
             'the retained retry payload must not contain the plaintext OTP');
 
         await client.query(
-            `UPDATE student_account_recovery_otp_outbox SET next_attempt_at = clock_timestamp() - interval '1 second'
+            `UPDATE student_email_otp_outbox SET next_attempt_at = clock_timestamp() - interval '1 second'
              WHERE challenge_id = $1`, [queued.rows[0]!.challenge_id],
         );
         const delivered = await dispatch(pool, async (_email, otp) => {
@@ -104,13 +104,50 @@ test('recovery outbox retries the same encrypted OTP after an ambiguous send and
         assert.equal(attemptedCodes.length, 2);
         assert.equal(attemptedCodes[1], attemptedCodes[0], 'at-least-once retry must preserve the original OTP');
         const terminal = await client.query<{ ciphertext: string | null; status: string }>(
-            `SELECT ciphertext, status FROM student_account_recovery_otp_outbox WHERE challenge_id = $1`,
+            `SELECT ciphertext, status FROM student_email_otp_outbox WHERE challenge_id = $1`,
             [queued.rows[0]!.challenge_id],
         );
         assert.deepEqual(terminal.rows[0], { ciphertext: null, status: 'sent' },
             'successful send must immediately scrub the encrypted OTP payload');
 
         await service.verify({ attemptId: started.attemptId, secret: started.secret, code: account.code, otp: attemptedCodes[1]! });
+    } finally {
+        client.release();
+        await pool.end();
+    }
+});
+
+test('migration 084 worker still decrypts a queued recovery envelope written with migration 083 AAD', async () => {
+    const pool = createTestPool();
+    const client = await pool.connect();
+    try {
+        const account = await seedRecoverableStudent(client);
+        const service = recoveryService(pool);
+        const started = await service.start({ email: account.email, purpose: 'lost_access', idempotencyKey: 'legacy-083-envelope' });
+        const attempt = await client.query<{ challenge_id: string }>(
+            'SELECT mailbox_challenge_id AS challenge_id FROM student_auth_recovery_attempts WHERE id = $1', [started.attemptId],
+        );
+        const challengeId = attempt.rows[0]?.challenge_id;
+        if (!challengeId) throw new Error('Expected a real recovery challenge');
+        const legacyOtp = '123456';
+        const keyBytes = Buffer.from(OUTBOX_ENCRYPTION_KEY, 'base64');
+        const keyId = `k-${createHash('sha256').update(keyBytes).digest('hex').slice(0, 12)}`;
+        const nonce = randomBytes(12);
+        const cipher = createCipheriv('aes-256-gcm', keyBytes, nonce, { authTagLength: 16 });
+        cipher.setAAD(Buffer.from(`awoof:student-account-recovery-otp:v1:${challengeId}`, 'utf8'));
+        const ciphertext = Buffer.concat([cipher.update(legacyOtp, 'utf8'), cipher.final()]);
+        await client.query(
+            `UPDATE student_email_otp_outbox
+             SET key_id = $2, ciphertext = $3, nonce = $4, auth_tag = $5, status = 'pending',
+                 next_attempt_at = clock_timestamp() - interval '1 second', terminal_at = NULL, sent_at = NULL,
+                 lease_until = NULL, claim_token = NULL
+             WHERE challenge_id = $1`,
+            [challengeId, keyId, ciphertext, nonce, cipher.getAuthTag()],
+        );
+        const delivered: string[] = [];
+        const result = await dispatch(pool, async (_email, otp) => { delivered.push(otp); return { success: true }; }, OUTBOX_ENCRYPTION_KEY, undefined, [challengeId]);
+        assert.equal(result.sent, 1);
+        assert.deepEqual(delivered, [legacyOtp], 'legacy ciphertext is opened only in the recovery purpose context');
     } finally {
         client.release();
         await pool.end();
@@ -135,7 +172,7 @@ test('recovery outbox will not send after its attempt is terminalized', async ()
         assert.equal(result.scrubbed, 1);
         assert.equal(delivered, 0, 'terminal attempt must be checked again immediately before sending');
         const job = await client.query<{ ciphertext: string | null; status: string }>(
-            'SELECT ciphertext, status FROM student_account_recovery_otp_outbox WHERE challenge_id = $1', [challenge.rows[0]!.challenge_id],
+            'SELECT ciphertext, status FROM student_email_otp_outbox WHERE challenge_id = $1', [challenge.rows[0]!.challenge_id],
         );
         assert.deepEqual(job.rows[0], { ciphertext: null, status: 'cancelled' });
     } finally {
@@ -190,7 +227,7 @@ test('expired recovery outbox jobs are scrubbed without delivery', async () => {
             'SELECT mailbox_challenge_id AS challenge_id FROM student_auth_recovery_attempts WHERE id = $1', [started.attemptId],
         );
         await client.query(
-            `UPDATE student_account_recovery_otp_outbox
+            `UPDATE student_email_otp_outbox
              SET created_at = clock_timestamp() - interval '3 seconds', expires_at = clock_timestamp() - interval '1 second'
              WHERE challenge_id = $1`, [challenge.rows[0]!.challenge_id],
         );
@@ -199,7 +236,7 @@ test('expired recovery outbox jobs are scrubbed without delivery', async () => {
         assert.equal(result.scrubbed, 1);
         assert.equal(sends, 0);
         const row = await client.query<{ status: string; ciphertext: Buffer | null }>(
-            'SELECT status, ciphertext FROM student_account_recovery_otp_outbox WHERE challenge_id = $1', [challenge.rows[0]!.challenge_id],
+            'SELECT status, ciphertext FROM student_email_otp_outbox WHERE challenge_id = $1', [challenge.rows[0]!.challenge_id],
         );
         assert.equal(row.rows[0]!.status, 'expired');
         assert.equal(row.rows[0]!.ciphertext, null);

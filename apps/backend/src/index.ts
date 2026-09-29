@@ -437,7 +437,10 @@ export class App {
           pool: db.getPool(),
           key: outboxKey,
           previousKey: config.studentAccountRecovery.previousOtpOutboxEncryptionKey,
-          deliver: async (email, code) => sendEmail(email, 'Awoof email confirmation code', `<p>Your Awoof email confirmation code is <strong>${code}</strong>.</p><p>It expires shortly. If you did not start account recovery, ignore this email.</p>`, 1, { logFailures: false }),
+          deliver: async (email, code, purpose) => {
+            const flow = purpose === 'student_sso_signup' ? 'passwordless student signup' : 'account recovery';
+            return sendEmail(email, 'Awoof email confirmation code', `<p>Your Awoof email confirmation code is <strong>${code}</strong>.</p><p>It expires shortly. If you did not start ${flow}, ignore this email.</p>`, 1, { logFailures: false });
+          },
         });
       }
 

@@ -92,6 +92,7 @@ function routerWith(flow: Flow, overrides: Parameters<typeof createStudentSsoRou
         recoveryOrigin: COMPLETION_ORIGIN,
         isSignupEnabled: () => true,
         isEmailConfigured: () => true,
+        isRecoveryOtpOutboxKeyConfigured: () => true,
         checkStartQuota: async () => undefined,
         pool: { query: async () => ({ rows: [], rowCount: 0 }) } as never,
         ...overrides,
@@ -177,6 +178,25 @@ test('passwordless signup context and send-code reject extra JSON fields before 
         }
     });
     assert.equal(invoked, 0);
+});
+
+test('signup send-code fails closed before database work when mail delivery is unavailable', async () => {
+    let invoked = 0;
+    let reads = 0;
+    const signup = { context: async () => ({}), sendCode: async () => { invoked++; return {}; }, verifyCode: async () => ({}), complete: async () => ({}) };
+    await withServer(routerWith(stubFlow(), {
+        signupService: () => signup as never, isSignupEnabled: () => true,
+        isEmailConfigured: () => false, isRecoveryOtpOutboxKeyConfigured: () => true,
+        pool: { query: async () => { reads++; return { rows: [], rowCount: 0 }; } } as never,
+    }), async (baseUrl) => {
+        const response = await fetch(`${baseUrl}/signup/send-code`, {
+            method: 'POST', headers: { 'content-type': 'application/json', origin: COMPLETION_ORIGIN },
+            body: JSON.stringify({ handoffId: ATTEMPT_ID, handoffSecret: 'secret' }),
+        });
+        assert.equal(response.status, 503);
+    });
+    assert.equal(invoked, 0);
+    assert.equal(reads, 0);
 });
 
 test('signup completion resolves its cookie before committing the account', async () => {
@@ -625,7 +645,7 @@ test('fresh-proof continuation accepts only the exact frontend and SSO completio
 });
 
 test('signup availability reports the deployment flag without authentication', async () => {
-    await withServer(routerWith(stubFlow(), { isSignupEnabled: () => true }), async (baseUrl) => {
+    await withServer(routerWith(stubFlow(), { isSignupEnabled: () => true, isRecoveryOtpOutboxKeyConfigured: () => true }), async (baseUrl) => {
         const response = await fetch(`${baseUrl}/signup/availability`);
         assert.equal(response.status, 200);
         assert.deepEqual(await response.json(), { success: true, data: { available: true } });
@@ -638,7 +658,7 @@ test('signup availability reports the deployment flag without authentication', a
 });
 
 test('signup availability scopes to the handoff provider when requested', async () => {
-    const options = { isSignupEnabled: () => true, enabledProviders: () => ['google' as const, 'microsoft' as const] };
+    const options = { isSignupEnabled: () => true, isRecoveryOtpOutboxKeyConfigured: () => true, enabledProviders: () => ['google' as const, 'microsoft' as const] };
     await withServer(routerWith(stubFlow(), options), async (baseUrl) => {
         const enabled = await fetch(`${baseUrl}/signup/availability?provider=microsoft`);
         assert.equal(enabled.status, 200);
@@ -668,6 +688,13 @@ test('signup availability hides signup when email delivery is unavailable', asyn
     // Without a mailer, send-code can only burn challenge allowance and
     // 503: availability must not advertise the flow.
     await withServer(routerWith(stubFlow(), { isSignupEnabled: () => true, isEmailConfigured: () => false }), async (baseUrl) => {
+        const response = await fetch(`${baseUrl}/signup/availability?provider=microsoft`);
+        assert.equal(response.status, 200);
+        assert.deepEqual(await response.json(), { success: true, data: { available: false } });
+    });
+    await withServer(routerWith(stubFlow(), {
+        isSignupEnabled: () => true, isEmailConfigured: () => true, isRecoveryOtpOutboxKeyConfigured: () => false,
+    }), async (baseUrl) => {
         const response = await fetch(`${baseUrl}/signup/availability?provider=microsoft`);
         assert.equal(response.status, 200);
         assert.deepEqual(await response.json(), { success: true, data: { available: false } });

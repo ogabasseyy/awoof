@@ -6,6 +6,15 @@ import {
 } from '../../common/errors/AppError.js';
 import { normalizeMailbox } from '../verification/eligibility-policy.service.js';
 import type { LoginOptions, LoginProvider } from './student-sso.types.js';
+import { hasRecoveryOtpOutboxKey } from './recovery-otp-outbox.service.js';
+
+export function recoveryDiscoveryAvailable(input: {
+    recoveryCodeKey: string | null | undefined;
+    outboxEncryptionKey: string | null | undefined;
+    emailConfigured: boolean;
+}): boolean {
+    return Boolean(input.recoveryCodeKey) && input.emailConfigured && hasRecoveryOtpOutboxKey(input.outboxEncryptionKey);
+}
 
 export const STUDENT_LOGIN_OPTIONS_MAX_EMAIL_LENGTH = 254;
 export const STUDENT_DISCOVERY_QUOTA = { max: 60, windowMs: 10 * 60 * 1000 };

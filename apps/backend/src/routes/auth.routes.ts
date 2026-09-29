@@ -19,6 +19,7 @@ import {
     checkDiscoveryQuota,
     createRedisQuotaStore,
     normalizeStudentLoginEmail,
+    recoveryDiscoveryAvailable,
     resolveStudentLoginOptions,
 } from '../services/auth/student-login-options.service.js';
 import type { LoginOptions } from '../services/auth/student-sso.types.js';
@@ -36,7 +37,11 @@ function defaultStudentLoginOptions(): StudentLoginOptionsDependencies {
             {
                 email,
                 enabledProviders: enabledStudentSsoProviders(config.studentSso),
-                recoveryAvailable: Boolean(config.studentAccountRecovery.codeKey) && isEmailConfigured(),
+                recoveryAvailable: recoveryDiscoveryAvailable({
+                    recoveryCodeKey: config.studentAccountRecovery.codeKey,
+                    outboxEncryptionKey: config.studentAccountRecovery.otpOutboxEncryptionKey,
+                    emailConfigured: isEmailConfigured(),
+                }),
             },
         ),
         checkQuota: (clientIp) => checkDiscoveryQuota(createRedisQuotaStore(getRedisClient()), clientIp),

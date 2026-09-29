@@ -29,8 +29,9 @@ function pendingAttempt(overrides: Record<string, unknown> = {}) {
     };
 }
 
-function callbackService(observation: { issuer: string; subject: string; authTime: number }, attempt = pendingAttempt()) {
+function callbackService(observation: { issuer: string; subject: string; authTime: number }, attempt = pendingAttempt(), failReadyPersistence = false, failTerminalizeConnect = false) {
     const calls: string[] = [];
+    let connections = 0;
     const query = async (text: string) => {
         calls.push(text);
         if (text.includes('WHERE attempt.state_hash')) return { rows: [attempt], rowCount: 1 };
@@ -38,6 +39,10 @@ function callbackService(observation: { issuer: string; subject: string; authTim
         // The claim transaction observes pending; the post-redemption
         // transaction observes the claimed processing row.
         if (text.includes("SET status = 'processing'")) return { rows: [], rowCount: 1 };
+        if (text.includes("SET status = 'ready'")) {
+            if (failReadyPersistence) throw new Error('simulated persistence failure after provider code redemption');
+            return { rows: [], rowCount: 1 };
+        }
         if (text.includes('WHERE attempt.id = $1 FOR UPDATE')) return { rows: [{ ...attempt, status: 'processing' }], rowCount: 1 };
         if (text.includes('FROM student_auth_reauth_attempts WHERE id = $1 FOR UPDATE')) return { rows: [attempt], rowCount: 1 };
         if (text.includes('clock_timestamp')) return { rows: [{ now: new Date() }], rowCount: 1 };
@@ -45,7 +50,11 @@ function callbackService(observation: { issuer: string; subject: string; authTim
         return { rows: [], rowCount: 1 };
     };
     const service = new StudentReauthService({
-        pool: { query, connect: async () => ({ query, release: () => undefined }) } as never,
+        pool: { query, connect: async () => {
+            connections++;
+            if (failTerminalizeConnect && connections === 3) throw new Error('simulated terminalization connection failure');
+            return { query, release: () => undefined };
+        } } as never,
         attemptKey, completionUrl: new URL('https://app.example.invalid/auth/student/sso/complete'),
         isProviderEnabled: () => true,
         oidcForPolicy: () => ({ authorize: async () => new URL('https://provider.example.invalid'), redeem: async () => { throw new Error('ordinary login must not be used'); }, redeemFresh: async () => ({ provider: 'microsoft', issuer: observation.issuer, subject: observation.subject, email: 'student@example.invalid', mailboxVerified: true, realm: '55555555-5555-4555-8555-555555555555', schoolMembershipAttested: false, objectId: 'object', authTime: observation.authTime }) }),
@@ -56,6 +65,25 @@ function callbackService(observation: { issuer: string; subject: string; authTim
 test('accepts the exact sixty-second freshness-skew boundaries', () => {
     assert.doesNotThrow(() => assertFreshAuthTime(Math.floor(startedAt.getTime() / 1000) - 60, startedAt, now));
     assert.doesNotThrow(() => assertFreshAuthTime(Math.floor(now.getTime() / 1000) + 60, startedAt, now));
+});
+
+test('a consumed provider code is never made retryable when ready-state persistence fails', async () => {
+    const fixture = callbackService({ issuer, subject: 'subject', authTime: Math.floor(Date.now() / 1000) }, pendingAttempt(), true);
+    await assert.rejects(
+        fixture.service.callback({ callbackUrl: new URL('https://api.example.invalid/callback?state=state&code=code'), callbackCookie: 'browser' }),
+        /simulated persistence failure/,
+    );
+    assert.ok(fixture.calls.some((text) => text.includes("SET status = 'failed'")), 'post-redemption persistence failure must terminalize the processing attempt');
+    assert.equal(fixture.calls.filter((text) => text.includes("SET status = 'pending'")).length, 0, 'a redeemed authorization code must not be offered for retry');
+});
+
+test('terminalization connection failure preserves the post-redemption persistence error and never reopens the claim', async () => {
+    const fixture = callbackService({ issuer, subject: 'subject', authTime: Math.floor(Date.now() / 1000) }, pendingAttempt(), true, true);
+    await assert.rejects(
+        fixture.service.callback({ callbackUrl: new URL('https://api.example.invalid/callback?state=state&code=code'), callbackCookie: 'browser' }),
+        /simulated persistence failure/,
+    );
+    assert.equal(fixture.calls.filter((text) => text.includes("SET status = 'pending'")).length, 0);
 });
 
 for (const [name, value] of [

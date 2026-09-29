@@ -407,6 +407,8 @@ function defaultSignup(): StudentSsoSignupService {
         pool: getPool(), attemptKey: sso.attemptKey,
         isEnabled: () => config.passwordlessStudentSignupEnabled,
         isProviderEnabled: (provider) => enabledStudentSsoProviders(sso).includes(provider),
+        outboxEncryptionKey: config.studentAccountRecovery.otpOutboxEncryptionKey,
+        previousOutboxEncryptionKey: config.studentAccountRecovery.previousOtpOutboxEncryptionKey,
         deliverOtp: async (email, code, name, expiresAt) => sendEmailVerificationOTP(email, code, name || 'Student', 'student', Math.max(1, Math.ceil((expiresAt.getTime() - Date.now()) / 60000))),
     });
 }
@@ -929,6 +931,7 @@ export function createStudentSsoRouter(factory: FlowFactory = defaultFlow, optio
     router.post('/signup/send-code', signupSendCodeIpLimiter, signupSendCodeLimiter, exactOrigin, exactJson, asyncHandler(async (req, res) => {
         if (!signupEnabled()) throw new ConflictError('Passwordless signup is unavailable');
         if (!req.body || typeof req.body !== 'object' || Array.isArray(req.body) || Object.keys(req.body).length !== 2) throw new BadRequestError('Passwordless signup request is invalid');
+        if (!emailConfigured() || !recoveryOtpOutboxKeyConfigured()) throw new ServiceUnavailableError('Passwordless signup is unavailable');
         const body = signupHandoffBody(req); const result = await signupFactory().sendCode(await signupBinding(req, body)); responseHeaders(res); res.status(201).json({ success: true, data: result });
     }));
     router.post('/signup/verify-code', signupVerifyCodeIpLimiter, signupVerifyCodeLimiter, exactOrigin, exactJson, asyncHandler(async (req, res) => {
@@ -956,7 +959,8 @@ export function createStudentSsoRouter(factory: FlowFactory = defaultFlow, optio
         // Signup is OTP-gated: without delivery readiness the endpoint
         // would advertise an account creation whose send-code can only
         // burn challenge allowance and 503.
-        const available = signupEnabled() && emailConfigured() && (provider === undefined || (provider === 'microsoft' && providersEnabled().includes(provider)));
+        const available = signupEnabled() && emailConfigured() && recoveryOtpOutboxKeyConfigured()
+            && (provider === undefined || (provider === 'microsoft' && providersEnabled().includes(provider)));
         responseHeaders(res); res.json({ success: true, data: { available } });
     }));
 

@@ -2,7 +2,8 @@ import { createCipheriv, createDecipheriv, createHash, randomBytes, randomUUID }
 import type { Pool, PoolClient } from 'pg';
 import { challengeSubjectDigest } from '../verification/challenge.service.js';
 
-const AAD_PREFIX = 'awoof:student-account-recovery-otp:v1:';
+const AAD_PREFIX = 'awoof:student-email-otp:v1:';
+const LEGACY_RECOVERY_AAD_PREFIX = 'awoof:student-account-recovery-otp:v1:';
 const LEASE_SECONDS = 90;
 const MAX_ATTEMPTS = 8;
 const RETENTION_HOURS = 24;
@@ -10,7 +11,8 @@ const BATCH_SIZE = 20;
 
 type Envelope = { keyId: string; ciphertext: Buffer; nonce: Buffer; authTag: Buffer };
 type Key = { id: string; value: Buffer };
-type OutboxJob = { id: string; challenge_id: string; key_id: string; ciphertext: Buffer; nonce: Buffer; auth_tag: Buffer; claim_token: string; attempts: number };
+export type StudentOtpPurpose = 'student_account_recovery' | 'student_sso_signup';
+type OutboxJob = { id: string; challenge_id: string; purpose: StudentOtpPurpose; key_id: string; ciphertext: Buffer; nonce: Buffer; auth_tag: Buffer; claim_token: string; attempts: number };
 
 function parseKey(value: string | null | undefined): Key | null {
     if (!value) return null;
@@ -24,10 +26,10 @@ export function hasRecoveryOtpOutboxKey(value: string | null | undefined): boole
     try { return parseKey(value) !== null; } catch { return false; }
 }
 
-function encryptOtp(challengeId: string, otp: string, key: Key): Envelope {
+function encryptOtp(purpose: StudentOtpPurpose, challengeId: string, otp: string, key: Key): Envelope {
     const nonce = randomBytes(12);
     const cipher = createCipheriv('aes-256-gcm', key.value, nonce, { authTagLength: 16 });
-    cipher.setAAD(Buffer.from(`${AAD_PREFIX}${challengeId}`, 'utf8'));
+    cipher.setAAD(Buffer.from(`${AAD_PREFIX}${purpose}:${challengeId}`, 'utf8'));
     const ciphertext = Buffer.concat([cipher.update(otp, 'utf8'), cipher.final()]);
     return { keyId: key.id, ciphertext, nonce, authTag: cipher.getAuthTag() };
 }
@@ -35,28 +37,41 @@ function encryptOtp(challengeId: string, otp: string, key: Key): Envelope {
 function decryptOtp(job: OutboxJob, keys: Key[]): string {
     const key = keys.find((candidate) => candidate.id === job.key_id);
     if (!key) throw new Error('Recovery OTP outbox key id is unavailable');
-    const decipher = createDecipheriv('aes-256-gcm', key.value, job.nonce, { authTagLength: 16 });
-    decipher.setAAD(Buffer.from(`${AAD_PREFIX}${job.challenge_id}`, 'utf8'));
-    decipher.setAuthTag(job.auth_tag);
-    const value = Buffer.concat([decipher.update(job.ciphertext), decipher.final()]).toString('utf8');
-    if (!/^\d{6}$/.test(value)) throw new Error('Recovery OTP outbox payload is invalid');
-    return value;
+    const aadValues = [`${AAD_PREFIX}${job.purpose}:${job.challenge_id}`];
+    // Migration 084 renames/generalizes the table without rewriting 083
+    // ciphertext. Continue opening legacy recovery envelopes until their
+    // short challenge TTL and queue retention have drained.
+    if (job.purpose === 'student_account_recovery') aadValues.push(`${LEGACY_RECOVERY_AAD_PREFIX}${job.challenge_id}`);
+    for (const aad of aadValues) {
+        try {
+            const decipher = createDecipheriv('aes-256-gcm', key.value, job.nonce, { authTagLength: 16 });
+            decipher.setAAD(Buffer.from(aad, 'utf8'));
+            decipher.setAuthTag(job.auth_tag);
+            const value = Buffer.concat([decipher.update(job.ciphertext), decipher.final()]).toString('utf8');
+            if (/^\d{6}$/.test(value)) return value;
+        } catch { /* try only the explicitly supported migration-era AAD */ }
+    }
+    throw new Error('Recovery OTP outbox payload is invalid');
 }
 
-/** Must be called inside the transaction that creates the recovery attempt/challenge. */
-export async function enqueueRecoveryOtp(tx: Pick<PoolClient, 'query'>, input: { challengeId: string; otp: string; expiresAt: Date; encryptionKey: string }): Promise<void> {
+/** Must be called inside the transaction that creates the purpose-bound challenge. */
+export async function enqueueStudentOtp(tx: Pick<PoolClient, 'query'>, input: { purpose: StudentOtpPurpose; challengeId: string; otp: string; expiresAt: Date; encryptionKey: string }): Promise<void> {
     const key = parseKey(input.encryptionKey);
     if (!key) throw new TypeError('Recovery OTP outbox key is unavailable');
-    const envelope = encryptOtp(input.challengeId, input.otp, key);
+    const envelope = encryptOtp(input.purpose, input.challengeId, input.otp, key);
     await tx.query(
-        `INSERT INTO student_account_recovery_otp_outbox
-             (challenge_id, key_id, ciphertext, nonce, auth_tag, expires_at)
-         VALUES ($1, $2, $3, $4, $5, $6)`,
-        [input.challengeId, envelope.keyId, envelope.ciphertext, envelope.nonce, envelope.authTag, input.expiresAt],
+        `INSERT INTO student_email_otp_outbox
+             (challenge_id, purpose, key_id, ciphertext, nonce, auth_tag, expires_at)
+         VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+        [input.challengeId, input.purpose, envelope.keyId, envelope.ciphertext, envelope.nonce, envelope.authTag, input.expiresAt],
     );
 }
 
-type Delivery = (email: string, otp: string) => Promise<{ success: boolean }>;
+export async function enqueueRecoveryOtp(tx: Pick<PoolClient, 'query'>, input: Omit<Parameters<typeof enqueueStudentOtp>[1], 'purpose'>): Promise<void> {
+    return enqueueStudentOtp(tx, { ...input, purpose: 'student_account_recovery' });
+}
+
+type Delivery = (email: string, otp: string, purpose: StudentOtpPurpose) => Promise<{ success: boolean }>;
 export type DispatchResult = { sent: number; retried: number; scrubbed: number };
 
 async function claim(pool: Pick<Pool, 'connect'>, challengeIds?: string[]): Promise<OutboxJob[]> {
@@ -64,8 +79,8 @@ async function claim(pool: Pick<Pool, 'connect'>, challengeIds?: string[]): Prom
     try {
         await tx.query('BEGIN');
         const selected = await tx.query<OutboxJob>(
-            `SELECT id, challenge_id, key_id, ciphertext, nonce, auth_tag, attempts
-             FROM student_account_recovery_otp_outbox
+            `SELECT id, challenge_id, purpose, key_id, ciphertext, nonce, auth_tag, attempts
+             FROM student_email_otp_outbox
              WHERE ($2::uuid[] IS NULL OR challenge_id = ANY($2::uuid[]))
                AND expires_at > clock_timestamp()
                AND ((status = 'pending' AND next_attempt_at <= clock_timestamp())
@@ -77,7 +92,7 @@ async function claim(pool: Pick<Pool, 'connect'>, challengeIds?: string[]): Prom
         for (const row of selected.rows) {
             const token = randomUUID();
             const result = await tx.query<{ attempts: number }>(
-                `UPDATE student_account_recovery_otp_outbox
+                `UPDATE student_email_otp_outbox
                  SET status = 'processing', claim_token = $2, lease_until = clock_timestamp() + ($3 * interval '1 second'),
                      attempts = attempts + 1
                  WHERE id = $1 RETURNING attempts`, [row.id, token, LEASE_SECONDS],
@@ -94,6 +109,29 @@ async function resolveRecipient(pool: Pick<Pool, 'connect'>, job: OutboxJob): Pr
     const tx = await pool.connect();
     try {
         await tx.query('BEGIN');
+        if (job.purpose === 'student_sso_signup') {
+            // A signup OTP is deliverable only while its purpose-specific
+            // signup, provider handoff, and challenge are all live. This
+            // resolver never consults or authorizes recovery state.
+            const result = await tx.query<{ email: string; otp_subject_digest: string }>(
+                `SELECT lower(btrim(challenge.bindings->>'email')) AS email, challenge.subject_digest AS otp_subject_digest
+                 FROM verification_challenges challenge
+                 JOIN student_auth_signup_challenges signup ON signup.mailbox_challenge_id = challenge.id
+                 JOIN student_auth_link_handoffs handoff ON handoff.id = signup.handoff_id
+                 JOIN student_auth_attempts attempt ON attempt.id = handoff.attempt_id
+                 WHERE challenge.id = $1 AND challenge.purpose = 'student_sso_signup'
+                   AND challenge.consumed_at IS NULL AND challenge.superseded_at IS NULL
+                   AND challenge.purged_at IS NULL AND challenge.expires_at > clock_timestamp()
+                   AND signup.status = 'pending' AND signup.terminal_at IS NULL AND signup.expires_at > clock_timestamp()
+                   AND handoff.consumed_at IS NULL AND handoff.expires_at > clock_timestamp()
+                   AND lower(btrim(challenge.bindings->>'email')) = lower(btrim(attempt.requested_email))`,
+                [job.challenge_id],
+            );
+            const row = result.rows[0];
+            await tx.query('COMMIT');
+            if (!row) return null;
+            return row.otp_subject_digest === challengeSubjectDigest('student_sso_signup', row.email) ? row.email : null;
+        }
         // Match recovery's attempt -> challenge order. The user/account state
         // and current mailbox binding are rechecked immediately before send.
         const result = await tx.query<{ email: string; otp_subject_digest: string }>(
@@ -133,14 +171,14 @@ async function settle(pool: Pick<Pool, 'connect'>, job: OutboxJob, state: 'sent'
         if (state === 'retry' && job.attempts < MAX_ATTEMPTS) {
             const delaySeconds = Math.min(300, 5 * (2 ** Math.min(job.attempts - 1, 6)));
             await tx.query(
-                `UPDATE student_account_recovery_otp_outbox
+                `UPDATE student_email_otp_outbox
                  SET status = 'pending', next_attempt_at = clock_timestamp() + ($3 * interval '1 second'), lease_until = NULL, claim_token = NULL
                  WHERE id = $1 AND status = 'processing' AND claim_token = $2`, [job.id, job.claim_token, delaySeconds],
             );
         } else {
             const terminal = state === 'sent' ? 'sent' : state === 'cancelled' ? 'cancelled'
                 : state === 'failed' || (state === 'retry' && job.attempts >= MAX_ATTEMPTS) ? 'failed' : 'expired';
-            if (terminal === 'failed') {
+            if (terminal === 'failed' && job.purpose === 'student_account_recovery') {
                 // Keep the recovery lock order: attempts, challenge, then
                 // outbox. A concurrent start holds attempts before inserting
                 // a job; reversing this order here could deadlock at exhaustion.
@@ -150,20 +188,42 @@ async function settle(pool: Pick<Pool, 'connect'>, job: OutboxJob, state: 'sent'
                 await tx.query(
                     `SELECT id FROM verification_challenges WHERE id = $1 FOR UPDATE`, [job.challenge_id],
                 );
+            } else if (terminal === 'failed' && job.purpose === 'student_sso_signup') {
+                // Signup issuance locks the signup row, then its OTP
+                // challenge, then inserts the outbox row. Preserve that
+                // order at retry exhaustion so the bound-but-undeliverable
+                // OTP cannot remain advertised as a resumable challenge.
+                await tx.query(
+                    `SELECT id FROM student_auth_signup_challenges
+                     WHERE mailbox_challenge_id = $1 AND status = 'pending' FOR UPDATE`, [job.challenge_id],
+                );
+                await tx.query(
+                    `SELECT id FROM verification_challenges WHERE id = $1 FOR UPDATE`, [job.challenge_id],
+                );
             }
             await tx.query(
-                `UPDATE student_account_recovery_otp_outbox
+                `UPDATE student_email_otp_outbox
                  SET status = $3, ciphertext = NULL, nonce = NULL, auth_tag = NULL, key_id = NULL,
                      sent_at = CASE WHEN $3 = 'sent' THEN clock_timestamp() ELSE NULL END,
                      terminal_at = clock_timestamp(), lease_until = NULL, claim_token = NULL
                  WHERE id = $1 AND status = 'processing' AND claim_token = $2`, [job.id, job.claim_token, terminal],
             );
-            if (terminal === 'failed') {
+            if (terminal === 'failed' && job.purpose === 'student_account_recovery') {
                 // Exhausted ambiguous delivery leaves no usable cooldown
                 // handle. Terminalize the active owner and challenge after
                 // the ordered locks taken above.
                 await tx.query(
                     `UPDATE student_auth_recovery_attempts SET status = 'failed', secret_hash = NULL, idempotency_key = NULL
+                     WHERE mailbox_challenge_id = $1 AND status = 'pending'`, [job.challenge_id],
+                );
+                await tx.query(
+                    `UPDATE verification_challenges SET superseded_at = clock_timestamp()
+                     WHERE id = $1 AND consumed_at IS NULL AND superseded_at IS NULL`, [job.challenge_id],
+                );
+            } else if (terminal === 'failed' && job.purpose === 'student_sso_signup') {
+                await tx.query(
+                    `UPDATE student_auth_signup_challenges
+                     SET status = 'cancelled', terminal_at = clock_timestamp(), secret_hash = NULL, browser_binding_hash = NULL
                      WHERE mailbox_challenge_id = $1 AND status = 'pending'`, [job.challenge_id],
                 );
                 await tx.query(
@@ -204,7 +264,7 @@ export async function dispatchRecoveryOtpOutboxBatch(
             const tx = await pool.connect();
             try {
                 await tx.query(
-                    `UPDATE student_account_recovery_otp_outbox
+                    `UPDATE student_email_otp_outbox
                      SET status = 'pending', attempts = GREATEST(attempts - 1, 0),
                          next_attempt_at = clock_timestamp() + interval '30 seconds',
                          lease_until = NULL, claim_token = NULL
@@ -222,7 +282,7 @@ export async function dispatchRecoveryOtpOutboxBatch(
             continue;
         }
         try {
-            const sent = await deliver(email, otp);
+            const sent = await deliver(email, otp, job.purpose);
             if (sent.success) { await settle(pool, job, 'sent'); result.sent++; }
             else {
                 await settle(pool, job, 'retry');
@@ -247,16 +307,16 @@ export async function purgeRecoveryOtpOutbox(pool: Pick<Pool, 'connect'>): Promi
     try {
         await tx.query('BEGIN');
         const expired = await tx.query(
-            `UPDATE student_account_recovery_otp_outbox
+            `UPDATE student_email_otp_outbox
              SET status = 'expired', ciphertext = NULL, nonce = NULL, auth_tag = NULL, key_id = NULL,
                  terminal_at = clock_timestamp(), lease_until = NULL, claim_token = NULL
-             WHERE id IN (SELECT id FROM student_account_recovery_otp_outbox
+             WHERE id IN (SELECT id FROM student_email_otp_outbox
                           WHERE status IN ('pending', 'processing') AND expires_at <= clock_timestamp()
                           ORDER BY expires_at FOR UPDATE SKIP LOCKED LIMIT 500)`
         );
-        await tx.query(`DELETE FROM student_account_recovery_otp_outbox
+        await tx.query(`DELETE FROM student_email_otp_outbox
                         WHERE terminal_at < clock_timestamp() - ($1 * interval '1 hour')
-                        AND id IN (SELECT id FROM student_account_recovery_otp_outbox
+                        AND id IN (SELECT id FROM student_email_otp_outbox
                                    WHERE terminal_at < clock_timestamp() - ($1 * interval '1 hour')
                                    ORDER BY terminal_at FOR UPDATE SKIP LOCKED LIMIT 500)`, [RETENTION_HOURS]);
         await tx.query('COMMIT');

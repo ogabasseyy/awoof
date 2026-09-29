@@ -1,5 +1,15 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import { recoveryDiscoveryAvailable } from './student-login-options.service.js';
+
+test('recovery discovery requires recovery codes, mail delivery, and a valid outbox key', () => {
+    const valid = Buffer.alloc(32, 7).toString('base64');
+    assert.equal(recoveryDiscoveryAvailable({ recoveryCodeKey: 'configured', outboxEncryptionKey: valid, emailConfigured: true }), true);
+    assert.equal(recoveryDiscoveryAvailable({ recoveryCodeKey: 'configured', outboxEncryptionKey: null, emailConfigured: true }), false);
+    assert.equal(recoveryDiscoveryAvailable({ recoveryCodeKey: 'configured', outboxEncryptionKey: 'bad', emailConfigured: true }), false);
+    assert.equal(recoveryDiscoveryAvailable({ recoveryCodeKey: null, outboxEncryptionKey: valid, emailConfigured: true }), false);
+    assert.equal(recoveryDiscoveryAvailable({ recoveryCodeKey: 'configured', outboxEncryptionKey: valid, emailConfigured: false }), false);
+});
 
 import { BadRequestError, RateLimitError, ServiceUnavailableError } from '../../common/errors/AppError.js';
 import type { LoginProvider } from './student-sso.types.js';

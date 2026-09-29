@@ -52,14 +52,16 @@ operator, and a recorded result before proceeding.
 
 ## 3. Enablement sequence (all NOT RUN)
 
-1. NOT RUN — Apply ALL release migrations through `083` on a disposable
+1. NOT RUN — Apply ALL release migrations through `084` on a disposable
    copy first; confirm they apply cleanly and the consume-once triggers
    reject rewritten handoffs/grants. Before migration `081`, quiesce SSO
    starts/callbacks and account-recovery completion on old API replicas;
    keep them blocked until `081` is applied and all serving replicas
    enforce its attempt fence. Migration `083` adds the encrypted recovery
-   OTP outbox: configure its shared encryption key and drain old replicas
-   before accepting new recovery starts. See the backend-first and key-
+   OTP outbox and `084` extends it to signup OTPs. Configure the shared
+   encryption key and drain old replicas before accepting new recovery
+   or signup starts; `084` renames the outbox table, so old workers must
+   not run across this migration. See the backend-first and key-
    rotation gates in `docs/passwordless-release-checklist.md`. Stopping
    at the older `066` boundary leaves passwordless login and recovery
    reading missing schema and cannot be used for this release.

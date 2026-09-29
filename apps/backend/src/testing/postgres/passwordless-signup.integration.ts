@@ -16,6 +16,7 @@ import { encryptMicrosoftAttemptVerifier, hashMicrosoftAttemptSecret } from '../
 import { assertFixtureDatabase, createTestPool } from './test-database.js';
 import { STUDENT_TERMS_VERSION, VERIFICATION_NOTICE_TEXT, VERIFICATION_NOTICE_VERSION } from '../../services/verification/verification-notices.js';
 import { challengeSubjectDigest } from '../../services/verification/challenge.service.js';
+import { dispatchRecoveryOtpOutboxBatch } from '../../services/auth/recovery-otp-outbox.service.js';
 
 const label = () => randomUUID().replaceAll('-', '').slice(0, 12);
 const secret = () => randomBytes(32).toString('hex');
@@ -128,6 +129,69 @@ test('passwordless signup preserves remember-me for its session but creates no e
         await flow.callback({ provider: 'microsoft', callbackUrl: callback, browserCookies: [{ name: studentSsoCookieName(login.publicResult.attemptId), value: login.callbackCookie.value }] });
         const relogin = await flow.finish({ attemptId: login.publicResult.attemptId, finishSecret: login.publicResult.finishSecret, browserCookie: login.callbackCookie.value });
         assert.equal(relogin.outcome, 'authenticated');
+    });
+});
+
+test('signup OTP and encrypted outbox job are committed before delivery is attempted', async () => {
+    await withPool(async pool => {
+        const key = randomBytes(32).toString('base64url');
+        const outboxKey = process.env.STUDENT_ACCOUNT_RECOVERY_OTP_ENCRYPTION_KEY;
+        assert.ok(outboxKey, 'the disposable runner supplies a synthetic outbox key');
+        let code = '';
+        let observedJob: { purpose: string; status: string; ciphertext: Buffer | null; nonce: Buffer | null; auth_tag: Buffer | null } | undefined;
+        const service = new StudentSsoSignupService({
+            pool, attemptKey: key, outboxEncryptionKey: outboxKey, isEnabled: () => true, isProviderEnabled: () => true,
+            deliverOtp: async (_email, sent) => {
+                code = sent;
+                const queued = await pool.query<{ purpose: string; status: string; ciphertext: Buffer | null; nonce: Buffer | null; auth_tag: Buffer | null }>(
+                    `SELECT purpose, status, ciphertext, nonce, auth_tag FROM student_email_otp_outbox
+                     WHERE purpose = 'student_sso_signup' ORDER BY created_at DESC LIMIT 1`,
+                );
+                observedJob = queued.rows[0];
+                return { success: true };
+            },
+        });
+        const client = await pool.connect(); let state;
+        try { state = await seed(client, key); } finally { client.release(); }
+        const sent = await service.sendCode({ handoffId: state.handoffId, handoffSecret: state.handoffSecret, browserBinding: state.browser });
+        assert.ok(observedJob, 'the encrypted signup outbox row must exist before provider delivery begins');
+        assert.equal(observedJob!.purpose, 'student_sso_signup');
+        assert.equal(observedJob!.status, 'processing');
+        assert.ok(observedJob!.ciphertext && observedJob!.nonce && observedJob!.auth_tag, 'queued OTP is stored as an authenticated-encryption envelope');
+        await service.verifyCode({ handoffId: state.handoffId, handoffSecret: state.handoffSecret, browserBinding: state.browser, challengeId: sent.challengeId, code });
+    });
+});
+
+test('signup outbox retries the same OTP after ambiguous delivery', async () => {
+    await withPool(async pool => {
+        const outboxKey = process.env.STUDENT_ACCOUNT_RECOVERY_OTP_ENCRYPTION_KEY;
+        assert.ok(outboxKey, 'the disposable runner supplies a synthetic outbox key');
+        const attemptKey = randomBytes(32).toString('base64url');
+        let firstCode = '';
+        const service = new StudentSsoSignupService({
+            pool, attemptKey, outboxEncryptionKey: outboxKey, isEnabled: () => true, isProviderEnabled: () => true,
+            deliverOtp: async (_email, code) => { firstCode = code; return { success: false }; },
+        });
+        const client = await pool.connect(); let state;
+        try { state = await seed(client, attemptKey); } finally { client.release(); }
+        const sent = await service.sendCode({ handoffId: state.handoffId, handoffSecret: state.handoffSecret, browserBinding: state.browser });
+        let job: { status: string } | undefined;
+        for (let i = 0; i < 100; i++) {
+            job = (await pool.query<{ status: string }>('SELECT status FROM student_email_otp_outbox WHERE challenge_id = $1', [sent.challengeId])).rows[0];
+            if (job?.status === 'pending') break;
+            await new Promise(resolve => setTimeout(resolve, 10));
+        }
+        assert.equal(job?.status, 'pending', 'ambiguous delivery keeps a durable retry');
+        await pool.query('UPDATE student_email_otp_outbox SET next_attempt_at = clock_timestamp() - interval \'1 second\' WHERE challenge_id = $1', [sent.challengeId]);
+        const retriedCodes: string[] = [];
+        const retry = await dispatchRecoveryOtpOutboxBatch(pool, outboxKey, async (_email, code, purpose) => {
+            assert.equal(purpose, 'student_sso_signup');
+            retriedCodes.push(code);
+            return { success: true };
+        }, undefined, [sent.challengeId]);
+        assert.equal(retry.sent, 1);
+        assert.deepEqual(retriedCodes, [firstCode], 'worker retry decrypts and resends the same OTP');
+        await service.verifyCode({ handoffId: state.handoffId, handoffSecret: state.handoffSecret, browserBinding: state.browser, challengeId: sent.challengeId, code: firstCode });
     });
 });
 
@@ -254,40 +318,78 @@ test('signup send budgets survive rejected transactions and cap delivery at thre
     });
 });
 
-test('failed signup delivery supersedes the bound challenge instead of resuming it', async () => {
+test('ambiguous signup delivery remains durably retryable with the same challenge', async () => {
     await withPool(async pool => {
-        const key = randomBytes(32).toString('base64url'); let code = ''; let sends = 0;
+        const key = randomBytes(32).toString('base64url');
+        const outboxKey = process.env.STUDENT_ACCOUNT_RECOVERY_OTP_ENCRYPTION_KEY;
+        assert.ok(outboxKey, 'the disposable runner supplies a synthetic outbox key');
+        let code = ''; let sends = 0;
         const service = new StudentSsoSignupService({
-            pool, attemptKey: key, isEnabled: () => true, isProviderEnabled: () => true,
-            deliverOtp: async (_email, value) => { sends++; if (sends === 1) return { success: false }; code = value; return { success: true }; },
+            pool, attemptKey: key, outboxEncryptionKey: outboxKey, isEnabled: () => true, isProviderEnabled: () => true,
+            deliverOtp: async (_email, value) => { sends++; code = value; return { success: false }; },
         });
         const c = await pool.connect(); let state; try { state = await seed(c, key); } finally { c.release(); }
-        await assert.rejects(service.sendCode({ handoffId: state.handoffId, handoffSecret: state.handoffSecret, browserBinding: state.browser }), /could not deliver/);
-        // The bound challenge was never emailed: the cooldown retry must
-        // refuse instead of resuming it as success with an unusable OTP.
-        await assert.rejects(service.sendCode({ handoffId: state.handoffId, handoffSecret: state.handoffSecret, browserBinding: state.browser }), /wait before/i);
-        await pool.query(
-            `UPDATE verification_challenge_budgets
-             SET resend_available_at = clock_timestamp() - interval '1 second'
-             WHERE purpose = 'student_sso_signup' AND subject_digest = $1`,
-            [challengeSubjectDigest('student_sso_signup', state.email)],
+        const sent = await service.sendCode({ handoffId: state.handoffId, handoffSecret: state.handoffSecret, browserBinding: state.browser });
+        assert.equal(sends, 1);
+        const pending = await pool.query<{ status: string; attempts: number }>(
+            `SELECT status, attempts FROM student_email_otp_outbox WHERE challenge_id = $1`, [sent.challengeId],
         );
-        const retry = await service.sendCode({ handoffId: state.handoffId, handoffSecret: state.handoffSecret, browserBinding: state.browser });
-        assert.equal(sends, 2);
-        const bound = await pool.query<{ id: string; superseded_at: Date | null }>(
-            `SELECT c.id, c.superseded_at FROM verification_challenges c
-             JOIN student_auth_signup_challenges s ON s.mailbox_challenge_id = c.id
-             WHERE s.handoff_id = $1`, [state.handoffId],
+        assert.equal(pending.rows[0]?.status, 'pending');
+        assert.equal(pending.rows[0]?.attempts, 1);
+        const rebound = await service.sendCode({ handoffId: state.handoffId, handoffSecret: state.handoffSecret, browserBinding: state.browser });
+        assert.equal(rebound.challengeId, sent.challengeId, 'cooldown resumes the existing durable challenge');
+        assert.equal(sends, 1, 'a cooldown rebound does not call the provider again');
+        assert.equal((await pool.query<{ count: string }>(
+            `SELECT count(*)::text AS count FROM student_email_otp_outbox WHERE purpose = 'student_sso_signup' AND challenge_id = $1`, [sent.challengeId],
+        )).rows[0]?.count, '1', 'a cooldown rebound does not create another job');
+        await pool.query(`UPDATE student_email_otp_outbox SET next_attempt_at = clock_timestamp() - interval '1 second' WHERE challenge_id = $1`, [sent.challengeId]);
+        const retried: string[] = [];
+        const result = await dispatchRecoveryOtpOutboxBatch(pool, outboxKey, async (_email, value, purpose) => {
+            assert.equal(purpose, 'student_sso_signup');
+            retried.push(value);
+            return { success: true };
+        }, undefined, [sent.challengeId]);
+        assert.equal(result.sent, 1);
+        assert.deepEqual(retried, [code]);
+        const completed = await pool.query<{ status: string; ciphertext: Buffer | null }>(
+            `SELECT status, ciphertext FROM student_email_otp_outbox WHERE challenge_id = $1`, [sent.challengeId],
         );
-        assert.equal(bound.rows[0]!.id, retry.challengeId);
-        assert.equal(bound.rows[0]!.superseded_at, null);
-        const dead = await pool.query<{ count: string }>(
-            `SELECT count(*)::text AS count FROM verification_challenges
-             WHERE purpose = 'student_sso_signup' AND subject_digest = $1 AND superseded_at IS NOT NULL`,
-            [challengeSubjectDigest('student_sso_signup', state.email)],
+        assert.equal(completed.rows[0]?.status, 'sent');
+        assert.equal(completed.rows[0]?.ciphertext, null);
+        await service.verifyCode({ handoffId: state.handoffId, handoffSecret: state.handoffSecret, browserBinding: state.browser, challengeId: sent.challengeId, code });
+    });
+});
+
+test('signup delivery retry exhaustion cancels and scrubs its live challenge', async () => {
+    await withPool(async pool => {
+        const key = randomBytes(32).toString('base64url');
+        const outboxKey = process.env.STUDENT_ACCOUNT_RECOVERY_OTP_ENCRYPTION_KEY;
+        assert.ok(outboxKey, 'the disposable runner supplies a synthetic outbox key');
+        const service = new StudentSsoSignupService({
+            pool, attemptKey: key, outboxEncryptionKey: outboxKey, isEnabled: () => true, isProviderEnabled: () => true,
+            deliverOtp: async () => ({ success: false }),
+        });
+        const c = await pool.connect(); let state; try { state = await seed(c, key); } finally { c.release(); }
+        const sent = await service.sendCode({ handoffId: state.handoffId, handoffSecret: state.handoffSecret, browserBinding: state.browser });
+        await pool.query(`UPDATE student_email_otp_outbox SET attempts = 7, next_attempt_at = clock_timestamp() - interval '1 second' WHERE challenge_id = $1`, [sent.challengeId]);
+        const exhausted = await dispatchRecoveryOtpOutboxBatch(pool, outboxKey, async () => ({ success: false }), undefined, [sent.challengeId]);
+        assert.equal(exhausted.scrubbed, 1);
+        const signup = await pool.query<{ status: string; secret_hash: string | null; browser_binding_hash: string | null }>(
+            `SELECT status, secret_hash, browser_binding_hash FROM student_auth_signup_challenges WHERE mailbox_challenge_id = $1`, [sent.challengeId],
         );
-        assert.equal(dead.rows[0]!.count, '1', 'the undelivered challenge is superseded exactly once');
-        await service.verifyCode({ handoffId: state.handoffId, handoffSecret: state.handoffSecret, browserBinding: state.browser, challengeId: retry.challengeId, code });
+        assert.equal(signup.rows[0]?.status, 'cancelled');
+        assert.equal(signup.rows[0]?.secret_hash, null);
+        assert.equal(signup.rows[0]?.browser_binding_hash, null);
+        const challenge = await pool.query<{ superseded_at: Date | null; consumed_at: Date | null }>(
+            `SELECT superseded_at, consumed_at FROM verification_challenges WHERE id = $1`, [sent.challengeId],
+        );
+        assert.ok(challenge.rows[0]?.superseded_at);
+        assert.equal(challenge.rows[0]?.consumed_at, null);
+        const job = await pool.query<{ status: string; ciphertext: Buffer | null }>(
+            `SELECT status, ciphertext FROM student_email_otp_outbox WHERE challenge_id = $1`, [sent.challengeId],
+        );
+        assert.equal(job.rows[0]?.status, 'failed');
+        assert.equal(job.rows[0]?.ciphertext, null);
     });
 });
 

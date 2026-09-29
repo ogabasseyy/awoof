@@ -599,7 +599,7 @@ test('ambiguous recovery delivery retains the same OTP for a bounded durable ret
         const deadline = Date.now() + 5000;
         for (;;) {
             const row = await client.query<{ status: string; ciphertext: Buffer | null }>(
-                'SELECT status, ciphertext FROM student_account_recovery_otp_outbox WHERE challenge_id = $1', [challenge.rows[0]!.challenge_id],
+                'SELECT status, ciphertext FROM student_email_otp_outbox WHERE challenge_id = $1', [challenge.rows[0]!.challenge_id],
             );
             if (row.rows[0]?.status === 'pending') {
                 assert.ok(row.rows[0]!.ciphertext);
@@ -628,7 +628,7 @@ test('ambiguous recovery delivery retains the same OTP for a bounded durable ret
         // Force the persisted backoff due using database time, then retry
         // the existing encrypted OTP. No second challenge/code is minted.
         await client.query(
-            `UPDATE student_account_recovery_otp_outbox
+            `UPDATE student_email_otp_outbox
              SET next_attempt_at = clock_timestamp() - interval '1 second'
              WHERE challenge_id = $1`, [challenge.rows[0]!.challenge_id],
         );
@@ -636,7 +636,7 @@ test('ambiguous recovery delivery retains the same OTP for a bounded durable ret
         assert.equal(sends, 2);
         assert.match(otp, /^\d{6}$/);
         const outbox = await client.query<{ status: string; ciphertext: Buffer | null }>(
-            'SELECT status, ciphertext FROM student_account_recovery_otp_outbox WHERE challenge_id = $1', [challenge.rows[0]!.challenge_id],
+            'SELECT status, ciphertext FROM student_email_otp_outbox WHERE challenge_id = $1', [challenge.rows[0]!.challenge_id],
         );
         assert.deepEqual(outbox.rows[0], { status: 'sent', ciphertext: null });
         await service.verify({ attemptId: first.attemptId, secret: first.secret, code: account.code, otp });
@@ -683,7 +683,7 @@ test('ambiguous delivery after challenge rebinding retains the rebound holder fo
                 [second.attemptId],
             );
             const job = await client.query<{ status: string; ciphertext: Buffer | null }>(
-                `SELECT status, ciphertext FROM student_account_recovery_otp_outbox WHERE challenge_id =
+                `SELECT status, ciphertext FROM student_email_otp_outbox WHERE challenge_id =
                  (SELECT mailbox_challenge_id FROM student_auth_recovery_attempts WHERE id = $1)`, [second.attemptId],
             );
             if (byId.get(first.attemptId) === 'failed' && byId.get(second.attemptId) === 'pending' && job.rows[0]?.status === 'pending') {
@@ -1123,6 +1123,71 @@ test('compromise recovery revokes only linked-derived assertions while preservin
         client.release();
         await pool.end();
     }
+});
+
+test('compromise recovery cancels pre-recovery alias handoffs and signup challenges', async () => {
+    const pool = createTestPool();
+    const client = await pool.connect();
+    try {
+        const account = await seedRecoverableStudent(client);
+        const identityId = await seedProviderProof(client, account.userId, { policy: true });
+        const identity = (await client.query<{ university_id: string; observed_email: string; policy_id: string; version: number }>(
+            `SELECT identity.university_id, identity.observed_email, policy.id AS policy_id, policy.version
+             FROM student_auth_identities identity
+             JOIN institution_login_policies policy ON policy.university_id = identity.university_id
+             WHERE identity.id = $1`, [identityId],
+        )).rows[0]!;
+        const attemptId = randomUUID();
+        await client.query(
+            `INSERT INTO student_auth_attempts
+                 (id, policy_id, policy_version, provider, requested_email, state_hash, callback_cookie_hash,
+                  finish_secret_hash, status, expires_at)
+             VALUES ($1, $2, $3, 'microsoft', $4, NULL, NULL, NULL, 'consumed', clock_timestamp() + interval '5 minutes')`,
+            [attemptId, identity.policy_id, identity.version, identity.observed_email],
+        );
+        const handoffId = randomUUID();
+        await client.query(
+            `INSERT INTO student_auth_link_handoffs
+                 (id, attempt_id, secret_hash, encrypted_observation, policy_id, policy_version, browser_binding_hash, expires_at)
+             VALUES ($1, $2, 'handoff-secret-digest', 'encrypted-provider-observation', $3, $4, 'browser-digest', clock_timestamp() + interval '5 minutes')`,
+            [handoffId, attemptId, identity.policy_id, identity.version],
+        );
+        const challengeId = randomUUID();
+        await client.query(
+            `INSERT INTO verification_challenges (id, purpose, subject_digest, secret_digest, bindings, created_at, expires_at)
+             VALUES ($1, 'student_sso_signup', $2, $3, '{}'::jsonb, clock_timestamp(), clock_timestamp() + interval '5 minutes')`,
+            [challengeId, challengeSubjectDigest('student_sso_signup', identity.observed_email), 'c'.repeat(64)],
+        );
+        await client.query(
+            `INSERT INTO student_auth_signup_challenges
+                 (handoff_id, secret_hash, browser_binding_hash, mailbox_challenge_id, expires_at)
+             VALUES ($1, 'signup-secret-digest', 'signup-browser-digest', $2, clock_timestamp() + interval '5 minutes')`,
+            [handoffId, challengeId],
+        );
+        let otp = '';
+        const recovery = new StudentAccountRecoveryService({
+            pool, recoveryCodeKey: 'test-recovery-code-key',
+            deliverOtp: async (_email, delivered) => { otp = delivered; return { success: true }; },
+            validatePassword: () => ({ valid: true, errors: [] }), hashPassword: async () => 'compromise-password-hash',
+        });
+        const started = await recovery.start({ email: account.email, purpose: 'compromise' });
+        await recovery.verify({ attemptId: started.attemptId, secret: started.secret, code: account.code, otp });
+        await recovery.complete({ attemptId: started.attemptId, secret: started.secret, password: 'ValidNew1!' });
+
+        const revoked = await client.query<{ consumed_at: Date | null; secret_hash: string | null; browser_binding_hash: string | null; encrypted_observation: string | null }>(
+            'SELECT consumed_at, secret_hash, browser_binding_hash, encrypted_observation FROM student_auth_link_handoffs WHERE id = $1', [handoffId],
+        );
+        assert.ok(revoked.rows[0]!.consumed_at);
+        assert.deepEqual([revoked.rows[0]!.secret_hash, revoked.rows[0]!.browser_binding_hash, revoked.rows[0]!.encrypted_observation], [null, null, null]);
+        const cancelled = await client.query<{ status: string; terminal_at: Date | null; secret_hash: string | null; browser_binding_hash: string | null }>(
+            'SELECT status, terminal_at, secret_hash, browser_binding_hash FROM student_auth_signup_challenges WHERE handoff_id = $1', [handoffId],
+        );
+        assert.equal(cancelled.rows[0]!.status, 'cancelled');
+        assert.ok(cancelled.rows[0]!.terminal_at);
+        assert.deepEqual([cancelled.rows[0]!.secret_hash, cancelled.rows[0]!.browser_binding_hash], [null, null]);
+        const challenge = await client.query<{ superseded_at: Date | null }>('SELECT superseded_at FROM verification_challenges WHERE id = $1', [challengeId]);
+        assert.ok(challenge.rows[0]!.superseded_at);
+    } finally { client.release(); await pool.end(); }
 });
 
 test('suspended accounts, pending codes, replay, and purpose substitution fail closed', async () => {

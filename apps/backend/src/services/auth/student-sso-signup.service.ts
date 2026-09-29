@@ -9,6 +9,8 @@ import { decryptMicrosoftAttemptVerifier, hashMicrosoftAttemptSecret } from '../
 import { decodeProviderObservation, assertCurrentLoginPolicy, StudentSsoAuthorityInvalidatedError } from './student-sso-onboarding.service.js';
 import { issueSessionInTransaction } from './session.service.js';
 import type { TokenPair } from './jwt.service.js';
+import { dispatchRecoveryOtpOutboxBatch, enqueueStudentOtp, hasRecoveryOtpOutboxKey } from './recovery-otp-outbox.service.js';
+import { config } from '../../config/env.js';
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const signupSecretHash = (handoffId: string, secret: string) => createHash('sha256').update(`awoof-passwordless-signup-v1\0${handoffId}\0${secret}`).digest('hex');
@@ -21,6 +23,8 @@ export type StudentSsoSignupDependencies = {
     attemptKey: string | null;
     isEnabled: () => boolean;
     isProviderEnabled?: (provider: 'google' | 'microsoft') => boolean;
+    outboxEncryptionKey?: string | null;
+    previousOutboxEncryptionKey?: string | null;
     deliverOtp: (email: string, code: string, fullName: string, expiresAt: Date) => Promise<{ success: boolean }>;
 };
 
@@ -94,6 +98,10 @@ export class StudentSsoSignupService {
         return this.transaction(async tx => { const state = await this.load(tx, input); return { email: state.email, universityId: state.universityId, termsVersion: STUDENT_TERMS_VERSION, noticeVersion: VERIFICATION_NOTICE_VERSION, noticeText: VERIFICATION_NOTICE_TEXT, expiresAt: state.handoff.expires_at.toISOString() }; });
     }
     async sendCode(input: { handoffId: unknown; handoffSecret: unknown; browserBinding: unknown }): Promise<{ challengeId: string; expiresAt: string }> {
+        const outboxEncryptionKey = this.deps.outboxEncryptionKey !== undefined
+            ? this.deps.outboxEncryptionKey
+            : config.studentAccountRecovery.otpOutboxEncryptionKey;
+        if (!hasRecoveryOtpOutboxKey(outboxEncryptionKey)) throw new ServiceUnavailableError('Passwordless signup is unavailable');
         const sent = await this.transaction(async tx => {
             const state = await this.load(tx, input);
             // Resumable transition: after a reload the browser lost its
@@ -107,7 +115,7 @@ export class StudentSsoSignupService {
             if (state.signup.status !== 'pending' && state.signup.status !== 'mailbox_verified') throw invalid();
             if (state.signup.status === 'mailbox_verified') {
                 if (!state.signup.mailbox_challenge_id) throw invalid();
-                return { email: null as string | null, code: null as string | null, challengeId: state.signup.mailbox_challenge_id, expiresAt: state.signup.expires_at };
+                return { challengeId: state.signup.mailbox_challenge_id, expiresAt: state.signup.expires_at, enqueue: false };
             }
             const issued = await requestChallenge(tx, { purpose: 'student_sso_signup', subjectKey: state.email, bindings: { email: state.email, name: '', universityId: state.universityId, matricNumber: null, policyVersion: state.handoff.policy_version, noticeVersion: VERIFICATION_NOTICE_VERSION }, expiresAt: state.handoff.expires_at });
             if (issued.status !== 'issued') {
@@ -122,47 +130,31 @@ export class StudentSsoSignupService {
                      WHERE id = $1 AND consumed_at IS NULL AND superseded_at IS NULL AND expires_at > clock_timestamp()`,
                     [state.signup.mailbox_challenge_id])).rows[0];
                 if (!bound) throw new ConflictError('Please wait before requesting another signup code.');
-                return { email: null as string | null, code: null as string | null, challengeId: state.signup.mailbox_challenge_id, expiresAt: bound.expires_at };
+                return { challengeId: state.signup.mailbox_challenge_id, expiresAt: bound.expires_at, enqueue: false };
             }
-            await tx.query('UPDATE student_auth_signup_challenges SET mailbox_challenge_id = $2 WHERE id = $1', [state.signup.id, issued.challengeId]); return { email: state.email, code: issued.code, challengeId: issued.challengeId, expiresAt: issued.expiresAt };
+            await tx.query('UPDATE student_auth_signup_challenges SET mailbox_challenge_id = $2 WHERE id = $1', [state.signup.id, issued.challengeId]);
+            await enqueueStudentOtp(tx, {
+                purpose: 'student_sso_signup', challengeId: issued.challengeId, otp: issued.code,
+                expiresAt: issued.expiresAt, encryptionKey: outboxEncryptionKey!,
+            });
+            return { challengeId: issued.challengeId, expiresAt: issued.expiresAt, enqueue: true };
         });
-        if (sent.email === null || sent.code === null) return { challengeId: sent.challengeId, expiresAt: sent.expiresAt.toISOString() };
-        try {
-            const result = await this.deps.deliverOtp(sent.email, sent.code, '', sent.expiresAt);
-            if (!result.success) throw new Error('rejected');
-        } catch {
-            // The challenge committed before delivery failed. Supersede it
-            // so the pending resume cannot replay an OTP that was never
-            // emailed as success; the retry then waits out the cooldown and
-            // issues a fresh challenge. Consumed challenges are left alone:
-            // consumption proves the OTP reached its mailbox.
-            await this.supersedeUndeliveredChallenge(sent.challengeId);
-            throw new ServiceUnavailableError('We could not deliver a signup code. Please wait before trying again.');
+        if (sent.enqueue) {
+            const delivery = dispatchRecoveryOtpOutboxBatch(
+                this.deps.pool, outboxEncryptionKey!,
+                async (email, code, purpose) => {
+                    if (purpose !== 'student_sso_signup') return { success: false };
+                    return this.deps.deliverOtp(email, code, '', new Date(sent.expiresAt));
+                }, this.deps.previousOutboxEncryptionKey, [sent.challengeId],
+            );
+            // In tests, wait until the dispatcher settles so fixtures
+            // can capture synthetic OTPs. Production acknowledges the
+            // durable queue row; the shared dispatcher retries crashes and
+            // ambiguous provider results with the same code.
+            if (config.isTest) await delivery.catch(() => undefined);
+            else void delivery.catch(() => undefined);
         }
         return { challengeId: sent.challengeId, expiresAt: sent.expiresAt.toISOString() };
-    }
-    /**
-     * Post-commit compensation for a failed OTP delivery: the signup row
-     * already binds the challenge, so supersede it outside the committed
-     * transaction. A consumed challenge is never superseded here —
-     * consumption proves the OTP reached its mailbox. Best-effort: on a
-     * database failure the 503 below is still the correct outcome, and a
-     * replayed challenge can only fail closed at verification.
-     */
-    private async supersedeUndeliveredChallenge(challengeId: string): Promise<void> {
-        let cleanup: PoolClient | null = null;
-        try {
-            cleanup = await this.deps.pool.connect();
-            await cleanup.query(
-                `UPDATE verification_challenges SET superseded_at = clock_timestamp()
-                 WHERE id = $1 AND consumed_at IS NULL AND superseded_at IS NULL`,
-                [challengeId],
-            );
-        } catch {
-            // Best-effort compensation; the delivery 503 stands either way.
-        } finally {
-            cleanup?.release();
-        }
     }
     async verifyCode(input: { handoffId: unknown; handoffSecret: unknown; browserBinding: unknown; challengeId: unknown; code: unknown }): Promise<{ verified: true; expiresAt: string }> {
         if (!UUID.test(String(input.challengeId)) || typeof input.code !== 'string' || !/^\d{6}$/.test(input.code)) throw new BadRequestError('Signup OTP must be six digits');

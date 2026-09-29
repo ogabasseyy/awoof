@@ -392,6 +392,66 @@ export class StudentAccountRecoveryService {
             );
             await tx.query("UPDATE student_auth_action_grants SET revoked_at = clock_timestamp(), secret_hash = 'scrubbed' WHERE user_id = $1 AND consumed_at IS NULL AND revoked_at IS NULL", [userId]);
             await tx.query("UPDATE student_auth_reauth_grants SET consumed_at = clock_timestamp(), secret_hash = 'scrubbed' WHERE user_id = $1 AND consumed_at IS NULL", [userId]);
+            if (attempt.purpose === 'compromise') {
+                // A handoff can outlive its parent provider attempt and is
+                // authenticated directly by link/signup services. Consume
+                // those handoffs before locking their parent attempts, which
+                // preserves their handoff -> attempt lock order. Include all
+                // historically observed account aliases, not only users.email.
+                const staleHandoffs = await tx.query<{ id: string; attempt_id: string }>(
+                    `SELECT handoff.id, handoff.attempt_id
+                     FROM student_auth_link_handoffs handoff
+                     JOIN student_auth_attempts provider_attempt ON provider_attempt.id = handoff.attempt_id
+                     WHERE handoff.consumed_at IS NULL
+                       AND lower(btrim(provider_attempt.requested_email)) = ANY (
+                           SELECT lower(btrim(alias_email))
+                           FROM (SELECT $1::text AS alias_email
+                                 UNION
+                                 SELECT observed_email FROM student_auth_identities WHERE user_id = $2) aliases
+                       )
+                     FOR UPDATE OF handoff`, [account.email, userId],
+                );
+                const staleAttemptIds = staleHandoffs.rows.map((row) => row.attempt_id);
+                if (staleAttemptIds.length > 0) {
+                    await tx.query('SELECT id FROM student_auth_attempts WHERE id = ANY($1::uuid[]) ORDER BY id FOR UPDATE', [staleAttemptIds]);
+                    await tx.query(
+                        `UPDATE student_auth_attempts
+                         SET status = 'failed', state_hash = NULL, callback_cookie_hash = NULL, finish_secret_hash = NULL,
+                             encrypted_verifier = NULL, nonce = NULL, encrypted_observation = NULL
+                         WHERE id = ANY($1::uuid[]) AND status IN ('pending', 'processing', 'ready')`, [staleAttemptIds],
+                    );
+                    const signups = await tx.query<{ id: string; mailbox_challenge_id: string | null }>(
+                        `SELECT id, mailbox_challenge_id FROM student_auth_signup_challenges
+                         WHERE handoff_id = ANY($1::uuid[]) AND status IN ('pending', 'mailbox_verified')
+                         FOR UPDATE`, [staleHandoffs.rows.map((row) => row.id)],
+                    );
+                    await tx.query(
+                        `UPDATE student_auth_link_handoffs
+                         SET consumed_at = clock_timestamp(), secret_hash = NULL, browser_binding_hash = NULL,
+                             encrypted_observation = NULL
+                         WHERE id = ANY($1::uuid[]) AND consumed_at IS NULL`, [staleHandoffs.rows.map((row) => row.id)],
+                    );
+                    await tx.query(
+                        `UPDATE student_auth_signup_challenges
+                         SET status = 'cancelled', terminal_at = clock_timestamp(), secret_hash = NULL, browser_binding_hash = NULL
+                         WHERE id = ANY($1::uuid[]) AND status IN ('pending', 'mailbox_verified')`, [signups.rows.map((row) => row.id)],
+                    );
+                    const challengeIds = signups.rows.flatMap((row) => row.mailbox_challenge_id ? [row.mailbox_challenge_id] : []);
+                    if (challengeIds.length > 0) {
+                        await tx.query(
+                            `UPDATE verification_challenges SET superseded_at = clock_timestamp()
+                             WHERE id = ANY($1::uuid[]) AND consumed_at IS NULL AND superseded_at IS NULL`, [challengeIds],
+                        );
+                        await tx.query(
+                            `UPDATE student_email_otp_outbox
+                             SET status = 'cancelled', ciphertext = NULL, nonce = NULL, auth_tag = NULL, key_id = NULL,
+                                 terminal_at = clock_timestamp(), lease_until = NULL, claim_token = NULL
+                             WHERE challenge_id = ANY($1::uuid[]) AND purpose = 'student_sso_signup'
+                               AND status IN ('pending', 'processing')`, [challengeIds],
+                        );
+                    }
+                }
+            }
             await tx.query(
                 `UPDATE student_auth_reauth_attempts
                  SET status = 'failed', consumed_at = clock_timestamp(), state_hash = NULL, callback_cookie_hash = NULL,

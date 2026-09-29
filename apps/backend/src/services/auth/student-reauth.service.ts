@@ -264,9 +264,31 @@ export class StudentReauthService {
                 return { attemptId: current.id, completionUrl };
             });
         } catch (error) {
-            await this.revertClaim(attempt.id);
+            // Provider redemption succeeded, so the authorization code is
+            // single-use even if the local READY commit failed. Never reopen
+            // this attempt for another callback; terminalize best-effort and
+            // leave it processing if the database is still unavailable.
+            await this.terminalizeRedeemedClaim(attempt.id);
             throw error;
         }
+    }
+
+    private async terminalizeRedeemedClaim(attemptId: string): Promise<void> {
+        let tx: PoolClient | null = null;
+        try {
+            tx = await this.deps.pool.connect();
+            await tx.query('BEGIN');
+            await tx.query(
+                `UPDATE student_auth_reauth_attempts
+                 SET status = 'failed', consumed_at = clock_timestamp(), state_hash = NULL, callback_cookie_hash = NULL,
+                     encrypted_verifier = NULL, nonce = NULL
+                 WHERE id = $1 AND status = 'processing'`,
+                [attemptId],
+            );
+            await tx.query('COMMIT');
+        } catch {
+            await tx?.query('ROLLBACK').catch(() => undefined);
+        } finally { tx?.release(); }
     }
 
     /**
