@@ -97,6 +97,9 @@ export default function StudentSecurityPage() {
     const [identities, setIdentities] = useState<LinkedIdentity[] | null>(null);
     const [identitiesError, setIdentitiesError] = useState<string | null>(null);
     const [unlinkTarget, setUnlinkTarget] = useState<LinkedIdentity | null>(null);
+    // Explicit Microsoft proof for school-sign-in confirmations; null keeps
+    // the server default. Only offered when several are linked.
+    const [proofIdentityId, setProofIdentityId] = useState<string | null>(null);
     const [unlinkPassword, setUnlinkPassword] = useState(''); const [unlinkError, setUnlinkError] = useState<string | null>(null);
     const [unlinkBusy, setUnlinkBusy] = useState(false); const [signedOut, setSignedOut] = useState(false);
     // Removing the session-issuing identity signs out locally on
@@ -139,7 +142,7 @@ export default function StudentSecurityPage() {
         // or pending unlink target on screen. Reset to loading and refetch
         // for whoever is signed in now.
         setStatus('loading'); setPendingCodeId(null); setPendingExpiresAt(null); setGeneration(null); setSkewMs(0);
-        setIdentities(null); setIdentitiesError(null); setUnlinkTarget(null);
+        setIdentities(null); setIdentitiesError(null); setUnlinkTarget(null); setProofIdentityId(null);
         setBusy(false); submitPasswordInFlight.current = null; setSchoolError(null); setLinkBusy(false); setLinkError(null);
         setUnlinkBusy(false); setUnlinkPassword(''); setUnlinkError(null);
         // One-shot: an intentional unlink sign-out keeps its notice;
@@ -163,19 +166,25 @@ export default function StudentSecurityPage() {
     // inline error and keep the password toggle instead of marking the
     // whole page unavailable.
     const schoolUnavailable = 'School sign-in confirmation is unavailable right now. Use your password instead or try again.';
+    const microsoftIdentities = (identities ?? []).filter((identity) => identity.provider === 'microsoft');
+    // A stale selection (identity unlinked since, or another account's id
+    // surviving a transition) must never ride along: only a currently
+    // listed Microsoft identity is sent, otherwise the server default.
+    const proofSelection = proofIdentityId && microsoftIdentities.some((identity) => identity.id === proofIdentityId) ? proofIdentityId : null;
+    const proofField = proofSelection ? { proofIdentityId: proofSelection } : {};
     const begin = async () => {
         if (busy) return; const request = captureAccountRequest(); const session = getSessionSnapshot(); if (!session.accessToken || !request.accountKey) { setStatus('unavailable'); return; }
         setBusy(true); setSchoolError(null);
-        try { const r = await studentSsoSessionApiClient.post('/auth/student/sso/reauth/microsoft/start', { purpose: 'recovery_code_generate' }); if (!request.isCurrent()) return; const url = (r.data as { data?: { authorizationUrl?: unknown } }).data?.authorizationUrl; if (typeof url !== 'string' || !url.startsWith('https:')) throw new Error('invalid'); window.location.assign(url); } catch { if (request.isCurrent()) { setBusy(false); setSchoolError(schoolUnavailable); } }
+        try { const r = await studentSsoSessionApiClient.post('/auth/student/sso/reauth/microsoft/start', { purpose: 'recovery_code_generate', ...proofField }); if (!request.isCurrent()) return; const url = (r.data as { data?: { authorizationUrl?: unknown } }).data?.authorizationUrl; if (typeof url !== 'string' || !url.startsWith('https:')) throw new Error('invalid'); window.location.assign(url); } catch { if (request.isCurrent()) { setBusy(false); setSchoolError(schoolUnavailable); } }
     };
     const beginRemove = async () => {
         if (busy) return; const request = captureAccountRequest(); const session = getSessionSnapshot(); if (!session.accessToken || !request.accountKey) { setStatus('unavailable'); return; }
-        setBusy(true); setSchoolError(null); try { const r = await studentSsoSessionApiClient.post('/auth/student/sso/reauth/microsoft/start', { purpose: 'recovery_code_remove' }); if (!request.isCurrent()) return; const url = (r.data as { data?: { authorizationUrl?: unknown } }).data?.authorizationUrl; if (typeof url !== 'string' || !url.startsWith('https:')) throw new Error(); window.location.assign(url); } catch { if (request.isCurrent()) { setBusy(false); setSchoolError(schoolUnavailable); } }
+        setBusy(true); setSchoolError(null); try { const r = await studentSsoSessionApiClient.post('/auth/student/sso/reauth/microsoft/start', { purpose: 'recovery_code_remove', ...proofField }); if (!request.isCurrent()) return; const url = (r.data as { data?: { authorizationUrl?: unknown } }).data?.authorizationUrl; if (typeof url !== 'string' || !url.startsWith('https:')) throw new Error(); window.location.assign(url); } catch { if (request.isCurrent()) { setBusy(false); setSchoolError(schoolUnavailable); } }
     };
     const beginActivation = async () => {
         if (busy) return;
         const request = captureAccountRequest(); const pendingId = pendingCodeId ?? pendingIntent(); const session = getSessionSnapshot(); if (!pendingId || !session.accessToken || !request.accountKey) { setStatus('unavailable'); return; }
-        setBusy(true); setSchoolError(null); try { const r = await studentSsoSessionApiClient.post('/auth/student/sso/reauth/microsoft/start', { purpose: 'recovery_code_activate', pendingCodeId: pendingId }); if (!request.isCurrent()) return; const url = (r.data as { data?: { authorizationUrl?: unknown } }).data?.authorizationUrl; if (typeof url !== 'string' || !url.startsWith('https:')) throw new Error('invalid'); window.location.assign(url); } catch { if (request.isCurrent()) { setBusy(false); setSchoolError(schoolUnavailable); } }
+        setBusy(true); setSchoolError(null); try { const r = await studentSsoSessionApiClient.post('/auth/student/sso/reauth/microsoft/start', { purpose: 'recovery_code_activate', pendingCodeId: pendingId, ...proofField }); if (!request.isCurrent()) return; const url = (r.data as { data?: { authorizationUrl?: unknown } }).data?.authorizationUrl; if (typeof url !== 'string' || !url.startsWith('https:')) throw new Error('invalid'); window.location.assign(url); } catch { if (request.isCurrent()) { setBusy(false); setSchoolError(schoolUnavailable); } }
     };
     const cancelPending = async () => {
         const request = captureAccountRequest(); const session = getSessionSnapshot(); if (!pendingCodeId || !session.accessToken || busy || !request.accountKey) return;
@@ -302,7 +311,7 @@ export default function StudentSecurityPage() {
         if (linkBusy) return; const request = captureAccountRequest(); const session = getSessionSnapshot(); if (!session.accessToken || !request.accountKey) { setStatus('unavailable'); return; }
         setLinkBusy(true); setLinkError(null);
         try {
-            const r = await studentSsoSessionApiClient.post('/auth/student/sso/reauth/microsoft/start', { purpose: 'link' });
+            const r = await studentSsoSessionApiClient.post('/auth/student/sso/reauth/microsoft/start', { purpose: 'link', ...proofField });
             if (!request.isCurrent()) return;
             const url = (r.data as { data?: { authorizationUrl?: unknown } }).data?.authorizationUrl;
             if (typeof url !== 'string' || !url.startsWith('https:')) throw new Error('invalid');
@@ -313,7 +322,7 @@ export default function StudentSecurityPage() {
         if (unlinkBusy) return; const request = captureAccountRequest(); const session = getSessionSnapshot(); if (!session.accessToken || !request.accountKey) { setStatus('unavailable'); return; }
         setUnlinkBusy(true); setUnlinkError(null);
         try {
-            const r = await studentSsoSessionApiClient.post('/auth/student/sso/reauth/microsoft/start', { purpose: 'unlink', targetIdentityId: target.id });
+            const r = await studentSsoSessionApiClient.post('/auth/student/sso/reauth/microsoft/start', { purpose: 'unlink', targetIdentityId: target.id, ...proofField });
             if (!request.isCurrent()) return;
             const url = (r.data as { data?: { authorizationUrl?: unknown } }).data?.authorizationUrl;
             if (typeof url !== 'string' || !url.startsWith('https:')) throw new Error('invalid');
@@ -419,6 +428,15 @@ export default function StudentSecurityPage() {
         <div className="mt-8 border-t pt-5 text-left">
             <h2 className="text-base font-semibold">School sign-ins</h2>
             <p className="mt-1 text-sm text-slate-600">School accounts linked to this Awoof account. Removing one needs fresh confirmation; the last sign-in method cannot be removed.</p>
+            {microsoftIdentities.length > 1 ? <div className="mt-3">
+                <label className="block text-sm" htmlFor="proof-identity">Confirm with school sign-in
+                    <select id="proof-identity" value={proofSelection ?? ''} onChange={e => setProofIdentityId(e.target.value === '' ? null : e.target.value)} className="mt-1 w-full rounded-2xl border px-4 h-11">
+                        <option value="">Default (recommended)</option>
+                        {microsoftIdentities.map(identity => { const date = linkedDate(identity.linkedAt); return <option key={identity.id} value={identity.id}>{`Microsoft · ${identity.universityName}${date ? ` · linked ${date}` : ''}`}</option>; })}
+                    </select>
+                </label>
+                <p className="mt-1 text-sm text-slate-600">School-sign-in confirmations use the default sign-in. If that mailbox is unreachable, choose another linked Microsoft sign-in instead.</p>
+            </div> : null}
             {signedOut ? <p role="status" className="mt-3 text-sm">The removed sign-in had issued this session, so you were signed out. <Link className="text-primary underline" href="/auth/student/login">Back to sign-in</Link></p>
             : identities === null && !identitiesError ? <p role="status" className="mt-3 text-sm text-slate-600">Loading school sign-ins…</p>
             : identitiesError ? <p role="alert" className="mt-3 text-sm text-red-600">{identitiesError}</p>
