@@ -73,6 +73,7 @@ function StudentLoginInner() {
     const [isLoading, setIsLoading] = useState(false);
     const [isReady, setIsReady] = useState(false);
     const [rememberMe, setRememberMe] = useState(false);
+    const [recoveryAvailable, setRecoveryAvailable] = useState(false);
     const [flow, setFlow] = useState<LoginState>(initialLoginState);
     const flowRef = useRef(flow);
     const noticeRef = useRef<HTMLDivElement>(null);
@@ -111,6 +112,7 @@ function StudentLoginInner() {
             return;
         }
         setError(null);
+        setRecoveryAvailable(false);
         const next = submitEmail(flowRef.current, email);
         flowRef.current = next;
         setFlow(next);
@@ -121,8 +123,11 @@ function StudentLoginInner() {
                 setFlow((previous) => methodsFailed(previous, next.requestId, DISCOVERY_UNAVAILABLE));
                 return;
             }
+            const data = (response.data as { data?: { recovery?: unknown } }).data;
+            setRecoveryAvailable(data?.recovery === true);
             setFlow((previous) => methodsResolved(previous, next.requestId, options.providers));
         } catch (cause: unknown) {
+            setRecoveryAvailable(false);
             const status = axios.isAxiosError(cause) ? cause.response?.status : undefined;
             setFlow((previous) => methodsFailed(
                 previous,
@@ -171,6 +176,7 @@ function StudentLoginInner() {
     };
 
     const useDifferentEmail = (): void => {
+        setRecoveryAvailable(false);
         setFlow((previous) => backToEmail(previous));
         document.getElementById('email')?.focus();
     };
@@ -211,12 +217,12 @@ function StudentLoginInner() {
                             Vendor login
                         </Link>
                     </p>
-                    <p className="mt-2 text-center text-sm text-slate-600">
+                    {recoveryAvailable && <p className="mt-2 text-center text-sm text-slate-600">
                         Lost access to school sign-in?{' '}
                         <Link href="/auth/student/recovery" className="text-slate-500 hover:text-[#1D4ED8] hover:underline font-medium">
                             Recover your account
                         </Link>
-                    </p>
+                    </p>}
                 </>
             }
         >

@@ -183,9 +183,26 @@ test('student login links the passwordless lockout path to account recovery', as
   const faults = collectBrowserFaults(page, api);
 
   await page.goto('/auth/student/login');
+  await revealStudentPassword(page, email);
   await expect(page.getByRole('link', { name: 'Recover your account' }))
     .toHaveAttribute('href', '/auth/student/recovery');
   await page.getByRole('link', { name: 'Recover your account' }).click();
   await expect(page.getByRole('heading', { name: 'Account recovery' })).toBeVisible();
+  await assertCleanFixture(api, faults);
+});
+
+test('student login hides account recovery when the server reports it unavailable', async ({ page }) => {
+  const api = await installSyntheticApi(page);
+  const faults = collectBrowserFaults(page, api);
+  await page.route(`${apiOrigin}/api/auth/student/login-options`, (route) => route.fulfill({
+    headers: { 'access-control-allow-origin': appOrigin },
+    json: { success: true, data: { password: true, providers: [], registration: true, recovery: false } },
+  }));
+
+  await page.goto('/auth/student/login');
+  await page.getByLabel('Email', { exact: true }).fill(email);
+  await page.getByRole('button', { name: 'Continue', exact: true }).click();
+  await expect(page.getByLabel('Password', { exact: true })).toBeVisible();
+  await expect(page.getByRole('link', { name: 'Recover your account' })).toHaveCount(0);
   await assertCleanFixture(api, faults);
 });

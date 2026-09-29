@@ -31,7 +31,7 @@ export type LoginOptions = {
     password: true;
     providers: LoginProvider[];
     registration: true;
-    recovery: true;
+    recovery: boolean;
 };
 
 /** Browser-facing contract for the separate, disabled-by-default passwordless signup handoff. */
@@ -40,6 +40,7 @@ export type StudentSsoSignupContext = {
     universityId: string;
     termsVersion: string;
     noticeVersion: string;
+    noticeText: string;
     expiresAt: string;
 };
 
@@ -48,6 +49,7 @@ export type StudentSsoSignupCompleteRequest = {
     handoffSecret: string;
     fullName: string;
     ageAttested: true;
+    termsAccepted: true;
     termsVersion: string;
     verificationConsent: true;
     noticeVersion: string;

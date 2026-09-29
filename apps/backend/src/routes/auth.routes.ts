@@ -14,6 +14,7 @@ import { getPool } from '../config/database.js';
 import { config } from '../config/env.js';
 import { getRedisClient } from '../config/redis.js';
 import { enabledStudentSsoProviders } from '../services/auth/student-oidc.config.js';
+import { isEmailConfigured } from '../services/email/email.service.js';
 import {
     checkDiscoveryQuota,
     createRedisQuotaStore,
@@ -32,7 +33,11 @@ function defaultStudentLoginOptions(): StudentLoginOptionsDependencies {
     return {
         resolveLoginOptions: (email) => resolveStudentLoginOptions(
             (text, params) => getPool().query(text, params),
-            { email, enabledProviders: enabledStudentSsoProviders(config.studentSso) },
+            {
+                email,
+                enabledProviders: enabledStudentSsoProviders(config.studentSso),
+                recoveryAvailable: Boolean(config.studentAccountRecovery.codeKey) && isEmailConfigured(),
+            },
         ),
         checkQuota: (clientIp) => checkDiscoveryQuota(createRedisQuotaStore(getRedisClient()), clientIp),
     };

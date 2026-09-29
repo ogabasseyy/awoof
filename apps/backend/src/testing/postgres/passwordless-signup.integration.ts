@@ -229,7 +229,12 @@ test('signup send budgets survive rejected transactions and cap delivery at thre
         for (let count = 0; count < 3; count++) {
             const sent = await service.sendCode({ handoffId: state.handoffId, handoffSecret: state.handoffSecret, browserBinding: state.browser });
             seen.add(sent.challengeId);
-            await pool.query(`UPDATE verification_challenge_budgets SET resend_available_at = clock_timestamp() - interval '1 second'`);
+            await pool.query(
+                `UPDATE verification_challenge_budgets
+                 SET resend_available_at = clock_timestamp() - interval '1 second'
+                 WHERE purpose = 'student_sso_signup' AND subject_digest = $1`,
+                [challengeSubjectDigest('student_sso_signup', state.email)],
+            );
         }
         assert.equal(seen.size, 3);
         // Locked with a live bound challenge: the pending retry resumes it
@@ -261,7 +266,12 @@ test('failed signup delivery supersedes the bound challenge instead of resuming 
         // The bound challenge was never emailed: the cooldown retry must
         // refuse instead of resuming it as success with an unusable OTP.
         await assert.rejects(service.sendCode({ handoffId: state.handoffId, handoffSecret: state.handoffSecret, browserBinding: state.browser }), /wait before/i);
-        await pool.query(`UPDATE verification_challenge_budgets SET resend_available_at = clock_timestamp() - interval '1 second'`);
+        await pool.query(
+            `UPDATE verification_challenge_budgets
+             SET resend_available_at = clock_timestamp() - interval '1 second'
+             WHERE purpose = 'student_sso_signup' AND subject_digest = $1`,
+            [challengeSubjectDigest('student_sso_signup', state.email)],
+        );
         const retry = await service.sendCode({ handoffId: state.handoffId, handoffSecret: state.handoffSecret, browserBinding: state.browser });
         assert.equal(sends, 2);
         const bound = await pool.query<{ id: string; superseded_at: Date | null }>(

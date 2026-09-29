@@ -60,9 +60,10 @@ export function normalizeStudentLoginEmail(input: unknown): string {
 
 export async function resolveStudentLoginOptions(
     query: LoginOptionsQuery,
-    input: { email: unknown; enabledProviders: LoginProvider[] },
+    input: { email: unknown; enabledProviders: LoginProvider[]; recoveryAvailable: boolean },
 ): Promise<LoginOptions> {
-    const passwordOnly: LoginOptions = { password: true, providers: [], registration: true, recovery: true };
+    const recovery = input.recoveryAvailable;
+    const passwordOnly: LoginOptions = { password: true, providers: [], registration: true, recovery };
     const mailbox = normalizeStudentLoginEmail(input.email);
     if (input.enabledProviders.length === 0) return passwordOnly;
     const domain = mailbox.slice(mailbox.lastIndexOf('@') + 1);
@@ -72,7 +73,7 @@ export async function resolveStudentLoginOptions(
         .filter((provider): provider is LoginProvider => provider === 'google' || provider === 'microsoft')
         .filter((provider) => ready.has(provider))
         .sort();
-    return { password: true, providers, registration: true, recovery: true };
+    return { password: true, providers, registration: true, recovery };
 }
 
 export type QuotaStore = {
