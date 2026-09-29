@@ -636,6 +636,36 @@ test('provider unlink reconcile treats a cleared session as signed-out removal',
     api.assertNoUnexpectedRequests();
 });
 
+test('late unlink reconciliation 401 cannot clear a replacement browser session', async ({ page }) => {
+    const api = await installSyntheticApi(page);
+    const identities = createGate('previous-session unlink reconciliation');
+    const targetId = '9d000000-0000-4000-8000-000000000002';
+    await page.route(`${apiOrigin}/api/auth/student/sso/reauth/finish`, route => route.fulfill({ status: 201, headers, json: { success: true, data: { grantId: '9e000000-0000-4000-8000-000000000003', grantSecret: 'unlink-grant', expiresAt: new Date(Date.now() + 60_000).toISOString(), purpose: 'unlink', pendingCodeId: null, targetIdentityId: targetId, activeCodeGeneration: null } } }));
+    await page.route(`${apiOrigin}/api/auth/student/sso/identities/${targetId}/unlink`, route => route.fulfill({ status: 500, headers, json: { success: false, error: { message: 'ambiguous', statusCode: 500 } } }));
+    await page.route(`${apiOrigin}/api/auth/student/sso/identities`, async route => {
+        await identities.wait();
+        return route.fulfill({ status: 401, headers, json: { success: false, error: { message: 'gone', statusCode: 401 } } });
+    });
+    await page.route(`${apiOrigin}/api/auth/refresh`, route => route.fulfill({ status: 401, headers, json: { success: false, error: { message: 'gone', statusCode: 401 } } }));
+
+    await page.goto('/auth/student/login'); await seedSession(page, 'student');
+    await page.goto('/auth/student/sso/complete?reauth=9e000000-0000-4000-8000-000000000004');
+    await identities.waitForArrival();
+    await page.evaluate(() => {
+        const key = 'awoof.session.v1';
+        const value = JSON.stringify({ v: 1, state: 'active', sessionId: 'replacement-vendor-session', accessToken: 'vendor-access', refreshToken: 'vendor-refresh' });
+        localStorage.setItem(key, value);
+        const event = new Event('storage');
+        Object.defineProperties(event, { key: { value: key }, newValue: { value } });
+        window.dispatchEvent(event);
+    });
+    await expect(page.getByRole('heading', { name: 'Security confirmation unavailable' })).toBeVisible();
+    identities.release();
+    await expect.poll(() => page.evaluate(() => JSON.parse(localStorage.getItem('awoof.session.v1') ?? 'null')?.accessToken)).toBe('vendor-access');
+    await expect(page.getByText('You have been signed out.')).toHaveCount(0);
+    api.assertNoUnexpectedRequests();
+});
+
 test('ambiguous provider link failure renders a link-specific outcome', async ({ page }) => {
     const api = await installSyntheticApi(page);
     const handoffId = '67000000-0000-4000-8000-000000000001';

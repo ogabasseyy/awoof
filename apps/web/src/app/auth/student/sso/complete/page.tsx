@@ -84,7 +84,7 @@ function RecoveryReauthComplete({ attemptId, duplicate, unavailable }: { attempt
     const [busy, setBusy] = useState(false); const started = useRef(false); const actionBusy = useRef(false); const finishInFlight = useRef(false); const waitingAutoTries = useRef(0);
     const [now, setNow] = useState(() => Date.now());
     useLayoutEffect(() => {
-        if (intentionalSignOut.current) {
+        if (intentionalSignOut.current && browserSessionId === null) {
             // Unlinking the identity that issued this session clears local
             // tokens on purpose: invalidate stragglers and drop held
             // secrets, but preserve the terminal signed-out removal state
@@ -96,6 +96,9 @@ function RecoveryReauthComplete({ attemptId, duplicate, unavailable }: { attempt
             setGrant(null); setCode(''); setOldCode('');
             return;
         }
+        // A non-null session here is a foreign replacement, not the
+        // reconciliation request's expected 401 clear.
+        if (intentionalSignOut.current) intentionalSignOut.current = false;
         const previousUserId = loadedUserId.current;
         const previousSessionId = loadedBrowserSessionId.current;
         if (previousUserId === currentUserId && previousSessionId === browserSessionId) return;
@@ -290,20 +293,30 @@ function RecoveryReauthComplete({ attemptId, duplicate, unavailable }: { attempt
             const failed = statusOf(cause);
             if (failed === undefined || failed >= 500) {
                 try {
+                    // Mark before the GET: its 401 interceptor clears the
+                    // session synchronously, before this catch observes the
+                    // rejection. The layout fence accepts this only if no
+                    // replacement browser session is present.
+                    intentionalSignOut.current = true;
                     const current = await studentSsoSessionApiClient.get('/auth/student/sso/identities');
+                    intentionalSignOut.current = false;
                     if (stale()) return;
                     const listed = (current.data as { data?: { identities?: unknown } }).data?.identities;
                     if (Array.isArray(listed) && !listed.some((entry) => (entry as { id?: unknown } | null)?.id === grant.targetIdentityId)) {
                         setStatus('unlinked'); return;
                     }
                 } catch (inner: unknown) {
-                    if (stale()) return;
                     // On this /auth/ page the session interceptor clears
                     // tokens without redirecting, so a 401 here is the
                     // committed outcome with the session revoked by the
                     // removed identity: report the signed-out removal
                     // instead of generic failure.
-                    if (statusOf(inner) === 401) { intentionalSignOut.current = true; clearTokens(); setStatus('unlinked_signed_out'); return; }
+                    if (statusOf(inner) === 401 && getSessionSnapshot().browserSessionId === null) {
+                        intentionalSignOut.current = false;
+                        setStatus('unlinked_signed_out'); return;
+                    }
+                    intentionalSignOut.current = false;
+                    if (stale()) return;
                     /* other reload failures fall through below */
                 }
             }
