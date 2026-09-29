@@ -26,6 +26,7 @@ import { formatCurrency, formatSavings } from '@/lib/format';
 import { DealSkeletonRail, ExpectancyEmpty, FadeIn } from './_components/ExpectancyUI';
 import { StudentHeaderActions } from '@/components/student/StudentHeaderActions';
 import PublicFooter from '@/components/public/PublicFooter';
+import { getSessionSnapshot } from '@/lib/auth';
 
 interface Product {
     id: string;
@@ -66,6 +67,15 @@ const categoryIconMap: Record<string, { icon: typeof Plane; color: string; textC
     spa: { icon: Sparkles, color: 'bg-rose-100 text-rose-600' },
 };
 
+const FRESH_SIGNUP_MARKER = 'awoof.passwordless-signup-fresh';
+
+function readFreshSignupMarkerSessionId(): string | null {
+    try {
+        const value = JSON.parse(sessionStorage.getItem(FRESH_SIGNUP_MARKER) ?? 'null') as { sessionId?: unknown } | null;
+        return typeof value?.sessionId === 'string' && value.sessionId.length > 0 ? value.sessionId : null;
+    } catch { return null; }
+}
+
 function getFirstName(user: { email?: string; profile?: { name?: string } } | null | undefined): string {
     if (!user) return 'there';
     if (user.profile?.name) return user.profile.name.split(' ')[0];
@@ -93,20 +103,36 @@ export default function MarketplacePage() {
     // marks this tab; the offer surfaces here — after the requested
     // continuation, outside the signup journey — only while recovery
     // is actually unconfigured. Skipping or completing setup clears it.
-    const [freshSignupOffer, setFreshSignupOffer] = useState(false);
-    const freshSignupChecked = useRef(false);
+    const [freshSignupOfferFor, setFreshSignupOfferFor] = useState<string | null>(null);
+    const freshSignupCheckedFor = useRef<string | null>(null);
+    const freshSignupRequestGeneration = useRef(0);
+    const currentSessionId = getSessionSnapshot().browserSessionId;
+    const currentStudentId = user?.role === 'student' ? user.id : null;
+    const freshSignupAccountKey = currentStudentId && currentSessionId ? `${currentStudentId}:${currentSessionId}` : null;
+    const freshSignupOffer = freshSignupAccountKey !== null && freshSignupOfferFor === freshSignupAccountKey;
     useEffect(() => {
-        if (user?.role !== 'student' || freshSignupChecked.current) return;
-        freshSignupChecked.current = true;
+        const requestGeneration = ++freshSignupRequestGeneration.current;
+        if (!currentStudentId || !currentSessionId || !freshSignupAccountKey) {
+            freshSignupCheckedFor.current = null;
+            return;
+        }
+        if (freshSignupCheckedFor.current === freshSignupAccountKey) return;
+        freshSignupCheckedFor.current = freshSignupAccountKey;
         let fresh = false;
-        try { fresh = sessionStorage.getItem('awoof.passwordless-signup-fresh') === '1'; } catch { return; }
+        try {
+            fresh = readFreshSignupMarkerSessionId() === currentSessionId;
+            if (!fresh && sessionStorage.getItem(FRESH_SIGNUP_MARKER) !== null) sessionStorage.removeItem(FRESH_SIGNUP_MARKER);
+        } catch { return; }
         if (!fresh) return;
+        let cancelled = false;
         studentSsoSessionApiClient.get('/auth/student/sso/recovery-code').then((response) => {
+            if (cancelled || freshSignupRequestGeneration.current !== requestGeneration || getSessionSnapshot().browserSessionId !== currentSessionId) return;
             const status = (response.data as { data?: { status?: unknown } }).data?.status;
-            if (status === 'unconfigured') { setFreshSignupOffer(true); return; }
-            try { sessionStorage.removeItem('awoof.passwordless-signup-fresh'); } catch { /* kept for a later visit */ }
+            if (status === 'unconfigured') { setFreshSignupOfferFor(freshSignupAccountKey); return; }
+            try { sessionStorage.removeItem(FRESH_SIGNUP_MARKER); } catch { /* kept for a later visit */ }
         }).catch(() => { /* status unavailable: keep the marker for a later visit */ });
-    }, [user]);
+        return () => { cancelled = true; };
+    }, [currentSessionId, currentStudentId, freshSignupAccountKey]);
 
     useEffect(() => {
         if (user?.role !== 'student') return;
@@ -270,7 +296,7 @@ export default function MarketplacePage() {
                 <div className="bg-amber-50 text-amber-900 px-4 py-2.5 flex items-center justify-center gap-2 text-xs sm:text-sm font-medium border-b border-amber-200">
                     <span role="status">Save your recovery code — recovery is not configured, and losing your school sign-in may prevent account access.</span>
                     <Link href="/student/security" className="underline font-semibold shrink-0">Save your recovery code</Link>
-                    <button type="button" onClick={() => { try { sessionStorage.removeItem('awoof.passwordless-signup-fresh'); } catch { /* hidden for this visit */ } setFreshSignupOffer(false); }} className="underline shrink-0">Skip for now</button>
+                    <button type="button" onClick={() => { try { sessionStorage.removeItem(FRESH_SIGNUP_MARKER); } catch { /* hidden for this visit */ } setFreshSignupOfferFor(null); }} className="underline shrink-0">Skip for now</button>
                 </div>
             ) : null}
 

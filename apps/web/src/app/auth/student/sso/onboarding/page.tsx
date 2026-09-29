@@ -214,7 +214,10 @@ function SignupOnboarding() {
             // without blocking the redirect below.
             const destination = resolveStudentReturn(handoff.current?.returnPath ?? null, window.location.origin);
             storeTokens({ accessToken: data.tokens.accessToken, refreshToken: data.tokens.refreshToken }); forgetHandoff();
-            try { sessionStorage.setItem('awoof.passwordless-signup-fresh', '1'); } catch { /* the offer simply stays hidden */ }
+            const browserSessionId = getSessionSnapshot().browserSessionId;
+            try {
+                if (browserSessionId) sessionStorage.setItem('awoof.passwordless-signup-fresh', JSON.stringify({ sessionId: browserSessionId }));
+            } catch { /* the offer simply stays hidden */ }
             // Route through the post-signup notice instead of redirecting
             // straight to the continuation: the recovery warning must
             // reach the new account whatever the destination is. The

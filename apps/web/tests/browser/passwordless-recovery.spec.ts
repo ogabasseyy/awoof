@@ -1,7 +1,11 @@
-import { expect, test } from '@playwright/test';
+import { expect, test, type Page } from '@playwright/test';
 import { apiOrigin, appOrigin, createGate, installSyntheticApi, seedSession } from './fixtures';
 
 const headers = { 'access-control-allow-origin': appOrigin, 'access-control-allow-credentials': 'true' };
+
+async function markFreshSignupForCurrentSession(page: Page, sessionId = 'synthetic-student-session'): Promise<void> {
+    await page.evaluate((id) => sessionStorage.setItem('awoof.passwordless-signup-fresh', JSON.stringify({ sessionId: id })), sessionId);
+}
 
 test('late security reads from a previous account cannot overwrite the current account state', async ({ page }) => {
     const api = await installSyntheticApi(page);
@@ -124,7 +128,12 @@ test('ambiguous recovery completion keeps the password and points at sign-in bef
     const api = await installSyntheticApi(page);
     await page.route(`${apiOrigin}/api/auth/student/sso/account-recovery/start`, route => route.fulfill({ status: 202, headers, json: { success: true, data: { attemptId: '90000000-0000-4000-8000-000000000001', secret: 'recovery-secret', expiresAt: new Date(Date.now() + 300_000).toISOString() } } }));
     await page.route(`${apiOrigin}/api/auth/student/sso/account-recovery/verify`, route => route.fulfill({ headers, json: { success: true, data: { expiresAt: new Date(Date.now() + 600_000).toISOString(), serverNow: new Date().toISOString() } } }));
-    await page.route(`${apiOrigin}/api/auth/student/sso/account-recovery/complete`, route => route.fulfill({ status: 500, headers, json: { success: false, error: { message: 'boom', code: 'INTERNAL', statusCode: 500 } } }));
+    let completionRequests = 0;
+    await page.route(`${apiOrigin}/api/auth/student/sso/account-recovery/complete`, route => {
+        completionRequests += 1;
+        if (completionRequests === 1) return route.fulfill({ status: 500, headers, json: { success: false, error: { message: 'boom', code: 'INTERNAL', statusCode: 500 } } });
+        return route.fulfill({ status: 409, headers, json: { success: false, error: { message: 'Account recovery is not available', code: 'CONFLICT', statusCode: 409 } } });
+    });
     await page.goto('/auth/student/recovery');
     await page.getByLabel('School email').fill('student@school.example');
     await page.getByRole('button', { name: 'Start recovery' }).click();
@@ -136,6 +145,40 @@ test('ambiguous recovery completion keeps the password and points at sign-in bef
     await expect(page.getByText('did not confirm')).toBeVisible();
     await expect(page.getByRole('link', { name: 'Try signing in with this password' })).toBeVisible();
     await expect(page.getByLabel('New password')).toHaveValue('Brand-New-Password-1');
+    // A retry after a lost response can receive 409 because the first
+    // completion consumed the attempt; retain the ambiguous-success advice.
+    await page.getByRole('button', { name: 'Set password' }).click();
+    await expect(page.getByText('did not confirm')).toBeVisible();
+    await expect(page.getByRole('link', { name: 'Try signing in with this password' })).toBeVisible();
+    expect(completionRequests).toBe(2);
+    api.assertNoUnexpectedRequests();
+});
+
+test('recovery completion ignores duplicate submits while the server response is pending', async ({ page }) => {
+    const api = await installSyntheticApi(page);
+    const completion = createGate('recovery completion response');
+    let completionRequests = 0;
+    await page.route(`${apiOrigin}/api/auth/student/sso/account-recovery/start`, route => route.fulfill({ status: 202, headers, json: { success: true, data: { attemptId: '91000000-0000-4000-8000-000000000001', secret: 'recovery-secret', expiresAt: new Date(Date.now() + 300_000).toISOString() } } }));
+    await page.route(`${apiOrigin}/api/auth/student/sso/account-recovery/verify`, route => route.fulfill({ headers, json: { success: true, data: { expiresAt: new Date(Date.now() + 600_000).toISOString(), serverNow: new Date().toISOString() } } }));
+    await page.route(`${apiOrigin}/api/auth/student/sso/account-recovery/complete`, async route => {
+        completionRequests += 1;
+        await completion.wait();
+        return route.fulfill({ status: 204, headers });
+    });
+    await page.goto('/auth/student/recovery');
+    await page.getByLabel('School email').fill('student@school.example');
+    await page.getByRole('button', { name: 'Start recovery' }).click();
+    await page.getByLabel('Saved recovery code').fill('saved-code');
+    await page.getByLabel('Email confirmation code').fill('123456');
+    await page.getByRole('button', { name: 'Confirm recovery proofs' }).click();
+    await page.getByLabel('New password').fill('Brand-New-Password-1');
+    await page.getByRole('button', { name: 'Set password' }).click();
+    await completion.waitForArrival();
+    await expect(page.getByRole('button', { name: 'Setting password…' })).toBeDisabled();
+    await page.locator('form').evaluate((form: HTMLFormElement) => form.requestSubmit());
+    await expect.poll(() => completionRequests).toBe(1);
+    completion.release();
+    await expect(page.getByText('Password set. Sign in with your password to continue.')).toBeVisible();
     api.assertNoUnexpectedRequests();
 });
 
@@ -850,7 +893,7 @@ test('marketplace offers recovery setup after a fresh passwordless signup', asyn
     const api = await installSyntheticApi(page);
     await page.route(`${apiOrigin}/api/auth/student/sso/recovery-code`, route => route.fulfill({ headers, json: { success: true, data: { status: 'unconfigured', generation: null, pendingCodeId: null } } }));
     await page.goto('/auth/student/login'); await seedSession(page, 'student');
-    await page.evaluate(() => sessionStorage.setItem('awoof.passwordless-signup-fresh', '1'));
+    await markFreshSignupForCurrentSession(page);
     await page.goto('/marketplace');
     // The offer surfaces after the requested continuation, outside the
     // signup journey, and states the stakes before the user can skip it.
@@ -866,11 +909,44 @@ test('marketplace hides the signup recovery offer once a code exists', async ({ 
     const api = await installSyntheticApi(page);
     await page.route(`${apiOrigin}/api/auth/student/sso/recovery-code`, route => route.fulfill({ headers, json: { success: true, data: { status: 'active', generation: 1, pendingCodeId: null } } }));
     await page.goto('/auth/student/login'); await seedSession(page, 'student');
-    await page.evaluate(() => sessionStorage.setItem('awoof.passwordless-signup-fresh', '1'));
+    await markFreshSignupForCurrentSession(page);
     await page.goto('/marketplace');
     await expect(page.getByText('losing your school sign-in may prevent account access.')).toHaveCount(0);
     // The marker clears in the status response handler, which can land
     // after the hidden-offer assertion, so poll instead of reading once.
+    await expect.poll(() => page.evaluate(() => sessionStorage.getItem('awoof.passwordless-signup-fresh'))).toBeNull();
+    api.assertNoUnexpectedRequests();
+});
+
+test('marketplace drops a late signup recovery response after the browser session changes accounts', async ({ page }) => {
+    const api = await installSyntheticApi(page);
+    const previousAccountStatus = createGate('previous account signup recovery status');
+    await page.route(`${apiOrigin}/api/auth/me`, route => {
+        const isCurrentAccount = (route.request().headers().authorization ?? '').includes('student-b-access');
+        return route.fulfill({ headers, json: { success: true, data: {
+            id: isCurrentAccount ? '00000000-0000-4000-8000-000000000009' : '00000000-0000-4000-8000-000000000001',
+            email: isCurrentAccount ? 'student-b@approved.test' : 'student@approved.test',
+            role: 'student', verificationStatus: 'verified',
+        } } });
+    });
+    await page.route(`${apiOrigin}/api/auth/student/sso/recovery-code`, async route => {
+        await previousAccountStatus.wait();
+        return route.fulfill({ headers, json: { success: true, data: { status: 'unconfigured', generation: null, pendingCodeId: null } } });
+    });
+    await page.goto('/auth/student/login'); await seedSession(page, 'student');
+    await markFreshSignupForCurrentSession(page);
+    await page.goto('/marketplace');
+    await previousAccountStatus.waitForArrival();
+    await page.evaluate(() => {
+        const value = JSON.stringify({ v: 1, state: 'active', sessionId: 'student-b-session', accessToken: 'student-b-access', refreshToken: 'student-b-refresh' });
+        localStorage.setItem('awoof.session.v1', value);
+        const event = new Event('storage');
+        Object.defineProperties(event, { key: { value: 'awoof.session.v1' }, newValue: { value } });
+        window.dispatchEvent(event);
+    });
+    await expect(page.getByText('Hey student-b, savings are warming up')).toBeVisible();
+    previousAccountStatus.release();
+    await expect(page.getByText('losing your school sign-in may prevent account access.')).toHaveCount(0);
     await expect.poll(() => page.evaluate(() => sessionStorage.getItem('awoof.passwordless-signup-fresh'))).toBeNull();
     api.assertNoUnexpectedRequests();
 });
