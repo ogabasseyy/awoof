@@ -364,12 +364,14 @@ jobs:
           # Removed-lines supplement, extracted from the FULL diff before any
           # truncation: beyond the diff cap, deleted base-side lines would be
           # invisible — the agent has no shell for `git show`, and checked-out
-          # head files lack them. Per-file `+++` headers attribute each `-`
-          # line; the sidecar has its own byte cap with an explicit marker.
+          # head files lack them. Per-file `---`/`+++` headers attribute each
+          # `-` line (the `---` header is the ONLY path a pure deletion
+          # carries, since its `+++` is /dev/null); the sidecar has its own
+          # byte cap with an explicit marker.
           removed_file="${RUNNER_TEMP}/muse-removed.txt"
           removed_note=""
           if [[ "${diff_failed}" != "true" ]]; then
-            awk '/^diff --git / {print ""} /^\+\+\+ / {print} /^-/ && !/^--- / {print}' \
+            awk '/^diff --git / {print ""} /^(---|\+\+\+) / {print} /^-/ && !/^--- / {print}' \
               "${diff_file}" 2>/dev/null > "${removed_file}" || : > "${removed_file}"
             if (( $(wc -c < "${removed_file}") > 24576 )); then
               head -c 24576 "${removed_file}" | iconv -c -f UTF-8 -t UTF-8 > "${removed_file}.trunc" 2>/dev/null || true
@@ -565,7 +567,7 @@ jobs:
             current authoritative docs — when unsure, lower the severity or
             omit it. Cite the doc source for version-sensitive findings.
           - Reserve "critical"/"high" for issues you have concretely verified.
-          - Deletions live in <removed_lines> (diff `+++` header, then its
+          - Deletions live in <removed_lines> (diff `---`/`+++` headers, then
             removed `-` lines). If a verdict depends on deleted content past
             a PARTIAL cap, say what is missing instead of asserting.
           - Follow the repo guidance below when it names project conventions.
