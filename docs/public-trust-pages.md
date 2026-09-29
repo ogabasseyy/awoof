@@ -1,16 +1,16 @@
 # Public trust and partner pages
 
-Research/repository review: 2026-09-20, inventory refreshed 2026-09-24. Status: first-batch pages shipped; legal release v1.0 remains published. Owner-authorized v1.1 Terms/privacy source updates are pending merge and deployment (see below). This file is internal planning, not public security assurance.
+Research/repository review: 2026-09-20, inventory refreshed 2026-09-29. Status: first-batch pages shipped; repository records legal release v1.0 as published and owner-authorized v1.1 Terms/privacy source updates as merged in PR #47. The current production publication/version could not be verified on 2026-09-29. This file is internal planning, not public security assurance.
 
-## Published release v1.0; owner-authorized source update v1.1 pending rollout
+## Repository release record: v1.0 publication; v1.1 source update merged, rollout unverified
 
-The owner reported lawyer approval of the five-document package and authorized its publication ([authorization record](legal-publication-approval.md)). The live published package remains v1.0 until this branch merges and deploys. This source update prepares v1.1 Terms and privacy text under the owner's 18+ student-account authorization. After rollout, routes remain indexed (`index, follow`), linked from the public footer, auth navigation and sitemap:
+The owner reported lawyer approval of the five-document package and authorized its publication ([authorization record](legal-publication-approval.md)). PR #47 merged the v1.1 Terms and privacy source update under the owner's 18+ student-account authorization; the live published package/version was not independently verified for this inventory refresh. After rollout, routes remain indexed (`index, follow`), linked from the public footer, auth navigation and sitemap:
 
 | Route | Published purpose | Standing condition |
 | --- | --- | --- |
 | `/legal` | Reader-facing legal directory | Version 1.0; no internal review notes |
-| `/privacy` | Privacy notice: purposes, lawful bases, recipients, automated decisions, rights | v1.0 published; proposed v1.1 discloses the self-declared age field and server-recorded acceptance |
-| `/terms` | Student/website terms, checkout responsibilities, IP, restrictions, liability and disputes | v1.0 published; proposed v1.1 requires self-declared age 18+ and acceptance for student signup |
+| `/privacy` | Privacy notice: purposes, lawful bases, recipients, automated decisions, rights | Repository source v1.1 discloses the self-declared age field and server-recorded acceptance; production version unverified |
+| `/terms` | Student/website terms, checkout responsibilities, IP, restrictions, liability and disputes | Repository source v1.1 requires self-declared age 18+ and acceptance for student signup; production version unverified |
 | `/terms/v1-0` | Frozen public archive of the version 1.0 student/website terms | Byte-identical to the v1.0 release; linked from `/terms` and `/legal`, in sitemap |
 | `/privacy/v1-0` | Frozen public archive of the version 1.0 privacy notice | Byte-identical to the v1.0 release; linked from `/privacy` and `/legal`, in sitemap |
 | `/cookies` | Cookies/browser-storage notice | Version 1.0 |
@@ -65,7 +65,7 @@ Use existing Awoof visual tokens, public header/footer and an accessible editori
 - `/privacy` and `/terms`: published as approved release v1.0 (indexed, footer/sitemap/auth-navigation linked) after owner-reported lawyer approval — see `docs/legal-publication-approval.md`. They must not be used as Microsoft consent links. Remaining operating work (retention schedule, provider inventory verification, Azure branding URLs) is tracked in `docs/legal-policy-review.md` and the counsel handoff; future text changes need fresh review and sign-off before becoming effective.
 - `/developers`: add after validating actual public API contracts, authentication, failure modes and merchant examples against source/tests. Link the authenticated integration screen appropriately. Never publish private keys, guessed endpoints or planned interfaces as live.
 - Passwordless student SSO signup: Task 3 adds disabled-by-default internal endpoints under `/api/auth/student/sso/signup/*`. Task 7 owns the deferred `/trust`, `/help`, `/developers`, and OpenAPI inventory/update review. Until a real provider/deployment validation and approvals exist, do not publish a route, claim it is enabled, or imply enrollment authority from mailbox OTP or school login.
-- Passwordless retention/recovery source: migrations 069--082 and the existing 15-minute cleanup job contract are source/test work only until deployed scheduling and alert delivery are demonstrated. Active recovery credentials are not transient cleanup data; expired pending material is scrubbed and terminal tombstones are bounded. This is not a public SLA or a deployed-service claim.
+- Passwordless retention/recovery source: migrations 069--083 and the existing 15-minute cleanup job contract are source/test work only until deployed scheduling and alert delivery are demonstrated. Recovery OTPs are stored in a database outbox only as authenticated ciphertext and scrubbed after send, expiry, or terminal retry; this source behavior is not a public encryption-coverage, delivery, or retention SLA. Active recovery credentials are not transient cleanup data; expired pending material is scrubbed and terminal tombstones are bounded. This is not a deployed-service claim.
 - Security reporting: include a `/trust` section once a monitored reporting channel is confirmed. A separate disclosure policy or security.txt requires approved contact/expiry and policy details; no invented bug bounty or safe-harbor commitments.
 - Accessibility information: add a short help/contact section for reporting access barriers; a formal conformance statement requires an audit.
 

@@ -5,6 +5,7 @@ import type { PoolClient } from 'pg';
 import { issueActionGrant } from '../../services/auth/student-action-grant.service.js';
 import { StudentReauthService } from '../../services/auth/student-reauth.service.js';
 import { StudentRecoveryCodeService } from '../../services/auth/student-recovery-code.service.js';
+import { dispatchRecoveryOtpOutboxBatch } from '../../services/auth/recovery-otp-outbox.service.js';
 import { StudentAccountRecoveryService, recoveryProbeSubjectKey } from '../../services/auth/student-account-recovery.service.js';
 import { challengeSubjectDigest, challengeTtlMs } from '../../services/verification/challenge.service.js';
 import { createTestPool } from './test-database.js';
@@ -566,42 +567,54 @@ test('no-live-attempt cooldown replies use the isolated decoy deadline sequence'
     }
 });
 
-test('failed recovery delivery retires the attempt and challenge without stranding retry', async () => {
+test('ambiguous recovery delivery retains the same OTP for a bounded durable retry', async () => {
     const pool = createTestPool();
     const client = await pool.connect();
     try {
         const account = await seedRecoverableStudent(client);
         let sends = 0; let otp = '';
+        const deliverOtp = async (_email: string, delivered: string): Promise<{ success: boolean }> => {
+            sends++;
+            if (sends === 1) return { success: false };
+            otp = delivered;
+            return { success: true };
+        };
         const service = new StudentAccountRecoveryService({
             pool, recoveryCodeKey: 'test-recovery-code-key',
-            deliverOtp: async (_email, delivered) => { sends++; if (sends === 1) return { success: false }; otp = delivered; return { success: true }; },
+            deliverOtp,
             validatePassword: () => ({ valid: true, errors: [] }), hashPassword: async () => 'delivery-retry-hash',
         });
         const first = await service.start({ email: account.email, purpose: 'lost_access' });
+        const challenge = await client.query<{ challenge_id: string }>(
+            'SELECT mailbox_challenge_id AS challenge_id FROM student_auth_recovery_attempts WHERE id = $1', [first.attemptId],
+        );
         const realBudgetBeforeProbe = await client.query<{ current_challenge_id: string | null; resend_available_at: Date; send_count: number }>(
             `SELECT current_challenge_id, resend_available_at, send_count FROM verification_challenge_budgets
              WHERE purpose = 'student_account_recovery' AND subject_digest = $1`,
             [challengeSubjectDigest('student_account_recovery', account.email)],
         );
-        assert.match(first.attemptId, /^[0-9a-f-]{36}$/i, 'the 202 handle shape is preserved while compensation runs async');
-        // The delivery resolves { success: false } (Brevo retries
-        // exhausted): the pending attempt terminalizes and its challenge
-        // supersedes instead of staying reboundable.
+        assert.match(first.attemptId, /^[0-9a-f-]{36}$/i, 'the 202 handle shape is preserved while outbox delivery runs async');
+        // A false provider result is ambiguous: keep the same challenge and
+        // encrypted code for bounded retry instead of terminalizing now.
         const deadline = Date.now() + 5000;
         for (;;) {
-            const row = await client.query<{ status: string; secret_hash: string | null }>(
-                'SELECT status, secret_hash FROM student_auth_recovery_attempts WHERE id = $1', [first.attemptId],
+            const row = await client.query<{ status: string; ciphertext: Buffer | null }>(
+                'SELECT status, ciphertext FROM student_account_recovery_otp_outbox WHERE challenge_id = $1', [challenge.rows[0]!.challenge_id],
             );
-            if (row.rows[0]?.status === 'failed') {
-                assert.equal(row.rows[0]!.secret_hash, null);
+            if (row.rows[0]?.status === 'pending') {
+                assert.ok(row.rows[0]!.ciphertext);
                 break;
             }
-            assert.ok(Date.now() < deadline, 'async compensation must retire the undelivered attempt');
+            assert.ok(Date.now() < deadline, 'ambiguous delivery must return to pending for retry');
             await new Promise((resolve) => setTimeout(resolve, 25));
         }
-        // A cooldown restart cannot rebound to the undelivered challenge:
-        // no live attempt exists, so it gets an isolated, unverifiable
-        // decoy handle without changing the real resend budget.
+        const attempt = await client.query<{ status: string; secret_hash: string | null }>(
+            'SELECT status, secret_hash FROM student_auth_recovery_attempts WHERE id = $1', [first.attemptId],
+        );
+        assert.equal(attempt.rows[0]!.status, 'pending');
+        assert.ok(attempt.rows[0]!.secret_hash);
+        // An unbound anonymous restart still gets a rowless decoy and cannot
+        // mutate the real mailbox challenge budget while delivery retries.
         const retry = await service.start({ email: account.email, purpose: 'lost_access' });
         assert.equal(Date.parse(retry.expiresAt) - Date.parse(retry.serverNow), 10 * 60 * 1000);
         assert.equal(Date.parse(retry.otpExpiresAt) - Date.parse(retry.serverNow), challengeTtlMs('student_account_recovery'));
@@ -612,17 +625,22 @@ test('failed recovery delivery retires the attempt and challenge without strandi
         );
         assert.deepEqual(realBudgetAfterProbe.rows[0], realBudgetBeforeProbe.rows[0], 'decoy retries must not change the real email cooldown or send budget');
         await assert.rejects(() => service.verify({ attemptId: retry.attemptId, secret: retry.secret, code: account.code, otp: '123456' }));
-        // Past the cooldown, recovery completes end to end on a fresh OTP.
+        // Force the persisted backoff due using database time, then retry
+        // the existing encrypted OTP. No second challenge/code is minted.
         await client.query(
-            `UPDATE verification_challenge_budgets
-             SET send_count = 0, resend_available_at = clock_timestamp() - interval '1 second'
-             WHERE purpose = 'student_account_recovery' AND subject_digest = $1`,
-            [challengeSubjectDigest('student_account_recovery', account.email)],
+            `UPDATE student_account_recovery_otp_outbox
+             SET next_attempt_at = clock_timestamp() - interval '1 second'
+             WHERE challenge_id = $1`, [challenge.rows[0]!.challenge_id],
         );
-        const second = await service.start({ email: account.email, purpose: 'lost_access' });
+        await dispatchRecoveryOtpOutboxBatch(pool, Buffer.alloc(32, 0x5a).toString('base64'), deliverOtp, undefined, [challenge.rows[0]!.challenge_id]);
+        assert.equal(sends, 2);
         assert.match(otp, /^\d{6}$/);
-        await service.verify({ attemptId: second.attemptId, secret: second.secret, code: account.code, otp });
-        await service.complete({ attemptId: second.attemptId, secret: second.secret, password: 'ValidNew1!' });
+        const outbox = await client.query<{ status: string; ciphertext: Buffer | null }>(
+            'SELECT status, ciphertext FROM student_account_recovery_otp_outbox WHERE challenge_id = $1', [challenge.rows[0]!.challenge_id],
+        );
+        assert.deepEqual(outbox.rows[0], { status: 'sent', ciphertext: null });
+        await service.verify({ attemptId: first.attemptId, secret: first.secret, code: account.code, otp });
+        await service.complete({ attemptId: first.attemptId, secret: first.secret, password: 'ValidNew1!' });
         const after = await client.query<{ password_hash: string }>('SELECT password_hash FROM users WHERE id = $1', [account.userId]);
         assert.equal(after.rows[0]!.password_hash, 'delivery-retry-hash');
     } finally {
@@ -631,7 +649,7 @@ test('failed recovery delivery retires the attempt and challenge without strandi
     }
 });
 
-test('failed recovery delivery follows challenge rebinding to the live holder', async () => {
+test('ambiguous delivery after challenge rebinding retains the rebound holder for retry', async () => {
     const pool = createTestPool();
     const client = await pool.connect();
     try {
@@ -649,9 +667,9 @@ test('failed recovery delivery follows challenge rebinding to the live holder', 
         const second = await service.start({ email: account.email, purpose: 'lost_access', idempotencyKey: key });
         assert.notEqual(second.attemptId, first.attemptId);
         resolveDelivery!({ success: false });
-        // Compensation keys by the challenge, not the superseded attempt:
-        // the rebound holder retires with the original, and the
-        // undelivered challenge supersedes so nothing can resume it.
+        // The failed provider result is ambiguous, so the superseded first
+        // holder remains terminal while the rebound holder and encrypted
+        // challenge stay retryable.
         const deadline = Date.now() + 5000;
         for (;;) {
             const rows = await client.query<{ id: string; status: string }>(
@@ -664,8 +682,16 @@ test('failed recovery delivery follows challenge rebinding to the live holder', 
                  JOIN student_auth_recovery_attempts a ON a.mailbox_challenge_id = c.id WHERE a.id = $1`,
                 [second.attemptId],
             );
-            if (byId.get(first.attemptId) === 'failed' && byId.get(second.attemptId) === 'failed' && challenge.rows[0]?.superseded_at !== null) break;
-            assert.ok(Date.now() < deadline, 'compensation must follow the rebound holder');
+            const job = await client.query<{ status: string; ciphertext: Buffer | null }>(
+                `SELECT status, ciphertext FROM student_account_recovery_otp_outbox WHERE challenge_id =
+                 (SELECT mailbox_challenge_id FROM student_auth_recovery_attempts WHERE id = $1)`, [second.attemptId],
+            );
+            if (byId.get(first.attemptId) === 'failed' && byId.get(second.attemptId) === 'pending' && job.rows[0]?.status === 'pending') {
+                assert.ok(job.rows[0]!.ciphertext);
+                assert.equal(challenge.rows[0]?.superseded_at, null);
+                break;
+            }
+            assert.ok(Date.now() < deadline, 'outbox must retain the rebound holder after an ambiguous delivery');
             await new Promise((resolve) => setTimeout(resolve, 25));
         }
     } finally {

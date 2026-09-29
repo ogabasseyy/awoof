@@ -1,6 +1,7 @@
 import type { Pool } from 'pg';
 import { db } from '../../config/database.js';
 import { appLogger } from '../../common/logger.js';
+import { purgeRecoveryOtpOutbox } from '../auth/recovery-otp-outbox.service.js';
 
 /** Expired challenge payloads are scrubbed at most 24 hours after expiry, plus dispatcher lag.
  * Passwordless signup OTPs have the stricter one-hour secret bound; recovery
@@ -87,7 +88,11 @@ export function startChallengeRetentionDispatcher(): void {
     const run = async () => {
         if (running) return;
         running = true;
-        try { await purgeExpiredChallenges(db.getPool()); }
+        try {
+            const pool = db.getPool();
+            await purgeExpiredChallenges(pool);
+            await purgeRecoveryOtpOutbox(pool);
+        }
         catch (error) { appLogger.error('Challenge retention cleanup failed', error); }
         finally { running = false; }
     };

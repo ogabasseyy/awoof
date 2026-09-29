@@ -7,6 +7,8 @@ import { sendAccountRecoveryCompletionNotice } from '../email/email.service.js';
 import { challengeSubjectDigest, challengeTtlMs, consumeChallenge, databaseNow, requestChallenge } from '../verification/challenge.service.js';
 import { revokeSsoSchoolAssertions } from './student-sso-onboarding.service.js';
 import { verifyRecoveryCodeDigest } from './student-recovery-code.service.js';
+import { dispatchRecoveryOtpOutboxBatch, enqueueRecoveryOtp, hasRecoveryOtpOutboxKey } from './recovery-otp-outbox.service.js';
+import { config } from '../../config/env.js';
 
 type RecoveryPurpose = 'lost_access' | 'compromise';
 
@@ -47,6 +49,8 @@ export type StudentAccountRecoveryDependencies = {
     recoveryCodeKey: string;
     /** Retained previous effective key, verification fallback only. */
     previousRecoveryCodeKey?: string;
+    outboxEncryptionKey?: string | null;
+    previousOutboxEncryptionKey?: string | null;
     deliverOtp?: (email: string, otp: string) => Promise<{ success: boolean }>;
     hashPassword?: (password: string) => Promise<string>;
     validatePassword?: (password: string) => { valid: boolean; errors: string[] };
@@ -77,7 +81,11 @@ function validAttemptId(value: unknown): value is string {
  * normal password login after the transaction commits.
  */
 export class StudentAccountRecoveryService {
+    private readonly outboxEncryptionKey: string | null;
     constructor(private readonly deps: StudentAccountRecoveryDependencies) {
+        this.outboxEncryptionKey = Object.prototype.hasOwnProperty.call(deps, 'outboxEncryptionKey')
+            ? deps.outboxEncryptionKey ?? null
+            : config.studentAccountRecovery.otpOutboxEncryptionKey;
         if (deps.recoveryCodeKey.length < 16) throw new TypeError('Recovery-code digest key is invalid');
         if (deps.previousRecoveryCodeKey !== undefined && deps.previousRecoveryCodeKey.length < 16) {
             throw new TypeError('Recovery-code previous digest key is invalid');
@@ -89,11 +97,12 @@ export class StudentAccountRecoveryService {
         if (typeof input.email !== 'string' || input.email.trim().length === 0 || input.email.length > 255) {
             throw new TypeError('Recovery email is invalid');
         }
+        const outboxEncryptionKey = this.outboxEncryptionKey;
+        if (!hasRecoveryOtpOutboxKey(outboxEncryptionKey)) throw new Error('Recovery OTP outbox encryption key is unavailable');
         // Narrowed once: the transaction closure would otherwise reset
-        // property narrowing on the mutable input binding. A missing or
-        // malformed key fails safe: the start still proceeds, but a
-        // cooldown retry without the original key can never replace the
-        // live attempt.
+        // property narrowing on the mutable input binding. Outbox key
+        // validation happens before database work; no challenge/attempt is
+        // created if it is absent or malformed.
         const purpose = input.purpose;
         const email = input.email.trim().toLowerCase();
         const idempotencyKey = typeof input.idempotencyKey === 'string' && input.idempotencyKey.length >= 1 && input.idempotencyKey.length <= 128 ? input.idempotencyKey : null;
@@ -224,68 +233,43 @@ export class StudentAccountRecoveryService {
                  RETURNING expires_at`,
                 [attemptId, account.id, Number(account.credential_generation), input.purpose, this.secretDigest(secret), Number(active.generation), challenge.challengeId, attemptExpiry, idempotencyKey],
             );
+            await enqueueRecoveryOtp(tx, {
+                challengeId: challenge.challengeId,
+                otp: challenge.code,
+                expiresAt: challenge.expiresAt,
+                encryptionKey: outboxEncryptionKey!,
+            });
             return { email: account.email, otp: challenge.code, challengeId: challenge.challengeId, expiresAt: inserted.rows[0]!.expires_at.toISOString(), otpExpiresAt: challenge.expiresAt.toISOString(), serverNow: serverNow.toISOString() };
         });
         // Always provide an indistinguishable browser handle. A non-existent,
         // suspended, or code-less account receives a handle that cannot verify.
-        // Delivery is never awaited: transport latency would otherwise mark
-        // real accounts by response timing. Definitive delivery failures
-        // retire the challenge asynchronously (see deliverAndCompensate) so
-        // cooldown retries cannot rebound to an OTP that was never emailed.
-        if ('challengeId' in started) void this.deliverAndCompensate(started.challengeId, started.email, started.otp);
+        // The outbox row committed with the attempt. This asynchronous nudge
+        // is only a latency optimization; the process dispatcher recovers
+        // queued jobs after crashes. Ambiguous provider outcomes retry the
+        // same OTP until bounded attempts/deadline, so duplicate email is
+        // possible but exactly-once delivery is not promised.
+        if ('challengeId' in started && this.deps.deliverOtp && outboxEncryptionKey) {
+            let markDeliveryStarted!: () => void;
+            const deliveryStarted = new Promise<void>((resolve) => { markDeliveryStarted = resolve; });
+            const deliver = (to: string, otp: string) => {
+                markDeliveryStarted();
+                return this.deps.deliverOtp!(to, otp);
+            };
+            const delivery = dispatchRecoveryOtpOutboxBatch(
+                this.deps.pool as Pick<Pool, 'connect'>,
+                outboxEncryptionKey,
+                deliver,
+                this.deps.previousOutboxEncryptionKey,
+                [started.challengeId],
+            );
+            // Integration tests use in-memory provider callbacks as their
+            // capture point. Wait only until the callback is entered, not
+            // until the provider completes; production never waits at all.
+            if (config.isTest) await Promise.race([deliveryStarted, delivery.then(() => undefined, () => undefined)]);
+            else void delivery.catch(() => undefined);
+            if (config.isTest) void delivery.catch(() => undefined);
+        }
         return { attemptId, secret, expiresAt: started.expiresAt, otpExpiresAt: started.otpExpiresAt, serverNow: started.serverNow };
-    }
-
-    /**
-     * Fire-and-forget OTP delivery with post-commit compensation. A
-     * rejected transport is ambiguous (the mail may still have been
-     * sent), so the challenge stays usable; but a resolved `{ success:
-     * false }` is definitive non-delivery, and the challenge is
-     * superseded while whichever pending attempt currently owns it —
-     * the original or a rebound successor created while delivery was
-     * in flight — is terminalized. Keying by the attempt would miss
-     * the rebound holder and leave it usable against an OTP that was
-     * never emailed. A consumed challenge is left alone: consumption
-     * proves the OTP reached its mailbox. Attempts lock before the
-     * challenge, matching verify, so compensation cannot deadlock a
-     * concurrent proof.
-     */
-    private async deliverAndCompensate(challengeId: string, email: string, otp: string): Promise<void> {
-        const deliver = this.deps.deliverOtp;
-        if (!deliver) return;
-        let result: { success: boolean };
-        try {
-            result = await deliver(email, otp);
-        } catch {
-            return;
-        }
-        if (result.success) return;
-        try {
-            await this.transaction(async (tx) => {
-                await tx.query(
-                    `SELECT id FROM student_auth_recovery_attempts
-                     WHERE mailbox_challenge_id = $1 AND status = 'pending' FOR UPDATE`,
-                    [challengeId],
-                );
-                const challenge = await tx.query<{ id: string }>(
-                    `SELECT id FROM verification_challenges WHERE id = $1 AND consumed_at IS NULL FOR UPDATE`,
-                    [challengeId],
-                );
-                if (!challenge.rows[0]) return;
-                await tx.query(
-                    `UPDATE student_auth_recovery_attempts SET status = 'failed', secret_hash = NULL, idempotency_key = NULL
-                     WHERE mailbox_challenge_id = $1 AND status = 'pending'`,
-                    [challengeId],
-                );
-                await tx.query(
-                    `UPDATE verification_challenges SET superseded_at = clock_timestamp()
-                     WHERE id = $1 AND superseded_at IS NULL`,
-                    [challengeId],
-                );
-            });
-        } catch {
-            // Best-effort compensation; the 202 response stands either way.
-        }
     }
 
     async verify(input: { attemptId: unknown; secret: unknown; code: unknown; otp: unknown }): Promise<{ expiresAt: string; serverNow: string }> {

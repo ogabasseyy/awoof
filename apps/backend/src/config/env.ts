@@ -96,6 +96,11 @@ const envSchema = z.object({
     // Retained previous effective key for dedicated-key rotation. Must be
     // the immediately preceding effective key; see resolveRecoveryCodeKeys.
     STUDENT_ACCOUNT_RECOVERY_PREVIOUS_CODE_KEY: z.string().min(32).optional(),
+    // AES-256-GCM recovery OTP outbox keyring. Keys are canonical base64
+    // encodings of 32 random bytes; previous key is decrypt-only during
+    // rotation and must remain available through the maximum OTP TTL.
+    STUDENT_ACCOUNT_RECOVERY_OTP_ENCRYPTION_KEY: z.string().regex(/^[A-Za-z0-9+/]{43}=$/, 'Recovery OTP outbox key must be canonical base64 for 32 bytes').optional(),
+    STUDENT_ACCOUNT_RECOVERY_OTP_PREVIOUS_ENCRYPTION_KEY: z.string().regex(/^[A-Za-z0-9+/]{43}=$/, 'Recovery OTP previous outbox key must be canonical base64 for 32 bytes').optional(),
     // Separate rollback gate: linked SSO login remains available when signup is off.
     PASSWORDLESS_STUDENT_SIGNUP_ENABLED: z.enum(['true', 'false']).default('false'),
 });
@@ -284,6 +289,8 @@ export const config = {
         // environment value independently of provider enablement instead of
         // the nulled SSO configuration.
         ...recoveryCodeKeys,
+        otpOutboxEncryptionKey: env.STUDENT_ACCOUNT_RECOVERY_OTP_ENCRYPTION_KEY ?? null,
+        previousOtpOutboxEncryptionKey: env.STUDENT_ACCOUNT_RECOVERY_OTP_PREVIOUS_ENCRYPTION_KEY ?? null,
     },
     // This trusted frontend setting is intentionally independent from OIDC
     // credentials so owner/history routes can remain available while issuance

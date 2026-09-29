@@ -21,6 +21,7 @@ import type { ApprovedLoginPolicy, StudentSsoOidcResolver } from '../services/au
 import { StudentSsoLinkService } from '../services/auth/student-sso-link.service.js';
 import { StudentSsoSignupService } from '../services/auth/student-sso-signup.service.js';
 import { isEmailConfigured, sendEmail, sendEmailVerificationOTP } from '../services/email/email.service.js';
+import { hasRecoveryOtpOutboxKey } from '../services/auth/recovery-otp-outbox.service.js';
 import { StudentReauthService, reauthAttemptIdFromState, studentReauthCookieName } from '../services/auth/student-reauth.service.js';
 import { StudentRecoveryCodeService } from '../services/auth/student-recovery-code.service.js';
 import { StudentAccountRecoveryService } from '../services/auth/student-account-recovery.service.js';
@@ -53,6 +54,8 @@ export type StudentSsoRouterOptions = {
     isSignupEnabled?: () => boolean;
     /** Email delivery readiness; signup needs OTP delivery to function. */
     isEmailConfigured?: () => boolean;
+    /** Outbox key readiness; override only in isolated route tests. */
+    isRecoveryOtpOutboxKeyConfigured?: () => boolean;
     /** Origin allowlist for provider-independent recovery actions. Defaults to the trusted frontend origin. */
     recoveryOrigin?: string;
 };
@@ -424,7 +427,9 @@ function defaultAccountRecovery(): StudentAccountRecoveryService {
     const previous = config.studentAccountRecovery.previousCodeKey;
     return new StudentAccountRecoveryService({
         pool: getPool(), recoveryCodeKey: key, ...(previous === null ? {} : { previousRecoveryCodeKey: previous }),
-        deliverOtp: async (email, code) => sendEmail(email, 'Awoof email confirmation code', `<p>Your Awoof email confirmation code is <strong>${code}</strong>.</p><p>It expires shortly. If you did not start account recovery, ignore this email.</p>`),
+        outboxEncryptionKey: config.studentAccountRecovery.otpOutboxEncryptionKey,
+        previousOutboxEncryptionKey: config.studentAccountRecovery.previousOtpOutboxEncryptionKey,
+        deliverOtp: async (email, code) => sendEmail(email, 'Awoof email confirmation code', `<p>Your Awoof email confirmation code is <strong>${code}</strong>.</p><p>It expires shortly. If you did not start account recovery, ignore this email.</p>`, 1, { logFailures: false }),
     });
 }
 
@@ -447,6 +452,8 @@ export function createStudentSsoRouter(factory: FlowFactory = defaultFlow, optio
     const signupFactory = options.signupService ?? defaultSignup;
     const signupEnabled = options.isSignupEnabled ?? (() => config.passwordlessStudentSignupEnabled);
     const emailConfigured = options.isEmailConfigured ?? isEmailConfigured;
+    const recoveryOtpOutboxKeyConfigured = options.isRecoveryOtpOutboxKeyConfigured
+        ?? (() => hasRecoveryOtpOutboxKey(config.studentAccountRecovery.otpOutboxEncryptionKey));
     const reauthFactory = options.reauthService ?? defaultReauth;
     const recoveryCodeFactory = options.recoveryCodeService ?? defaultRecoveryCode;
     const accountRecoveryFactory = options.accountRecoveryService ?? defaultAccountRecovery;
@@ -597,7 +604,7 @@ export function createStudentSsoRouter(factory: FlowFactory = defaultFlow, optio
         // Verify and complete stay ungated: they never deliver (the
         // completion notice fails safe), so a replica that loses mailer
         // configuration mid-flow must not strand a delivered OTP.
-        if (!emailConfigured()) throw new ServiceUnavailableError('Account recovery is unavailable');
+        if (!emailConfigured() || !recoveryOtpOutboxKeyConfigured()) throw new ServiceUnavailableError('Account recovery is unavailable');
         const result = await accountRecoveryFactory().start({ email: body.email, purpose: body.purpose, ...(key === undefined ? {} : { idempotencyKey: key }) });
         responseHeaders(res); res.status(202).json({ success: true, data: result });
     }));

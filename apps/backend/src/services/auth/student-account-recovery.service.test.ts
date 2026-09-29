@@ -14,6 +14,20 @@ test('recovery start accepts only the two server-bound recovery purposes', async
     );
 });
 
+test('recovery start fails closed before database work when the OTP outbox key is unavailable', async () => {
+    let databaseTouched = false;
+    const service = new StudentAccountRecoveryService(Object.assign({
+        pool: { connect: async () => { databaseTouched = true; throw new Error('database should not be reached'); } } as never,
+        recoveryCodeKey: 'test-recovery-code-key',
+    }, { outboxEncryptionKey: null }));
+
+    await assert.rejects(
+        () => service.start({ email: 'student@example.test', purpose: 'lost_access', idempotencyKey: 'retry-key' }),
+        /outbox encryption key is unavailable/i,
+    );
+    assert.equal(databaseTouched, false, 'missing key must not create a recovery attempt or challenge');
+});
+
 test('recovery verify and complete reject malformed attempt ids before touching the database', async () => {
     const service = new StudentAccountRecoveryService({
         pool: { connect: async () => { throw new Error('database must not be used for invalid input'); } } as never,
@@ -69,6 +83,7 @@ test('recovery account lookups lock the student row with the user row', async ()
     const service = new StudentAccountRecoveryService({
         pool: { connect: async () => client } as never,
         recoveryCodeKey: 'test-recovery-code-key',
+        outboxEncryptionKey: Buffer.alloc(32, 0x5a).toString('base64'),
     });
 
     await service.start({ email: 'student@example.test', purpose: 'lost_access' });
@@ -100,6 +115,7 @@ test('recovery start runs workload mirrors for unknown addresses', async () => {
     const service = new StudentAccountRecoveryService({
         pool: { connect: async () => client } as never,
         recoveryCodeKey: 'test-recovery-code-key',
+        outboxEncryptionKey: Buffer.alloc(32, 0x5a).toString('base64'),
     });
 
     await service.start({ email: 'unknown@example.test', purpose: 'lost_access' });

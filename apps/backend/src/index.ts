@@ -22,6 +22,8 @@ import { redis } from './config/redis.js';
 import { errorHandler } from './common/middleware/errorHandler.js';
 import { logger } from './common/middleware/logger.js';
 import { appLogger } from './common/logger.js';
+import { isEmailConfigured, sendEmail } from './services/email/email.service.js';
+import { hasRecoveryOtpOutboxKey, startRecoveryOtpOutboxDispatcher } from './services/auth/recovery-otp-outbox.service.js';
 import { swaggerSpec } from './config/swagger.js';
 import type { MicrosoftFlowService } from './services/verification/microsoft-flow.service.js';
 import { isStudentSsoCallbackPath, isStudentSsoRoute } from './routes/student-sso.routes.js';
@@ -429,6 +431,15 @@ export class App {
       startCommerceNotificationDispatcher();
       const { startChallengeRetentionDispatcher } = await import('./services/verification/challenge-retention.service.js');
       startChallengeRetentionDispatcher();
+      const outboxKey = config.studentAccountRecovery.otpOutboxEncryptionKey;
+      if (outboxKey && hasRecoveryOtpOutboxKey(outboxKey) && isEmailConfigured()) {
+        startRecoveryOtpOutboxDispatcher({
+          pool: db.getPool(),
+          key: outboxKey,
+          previousKey: config.studentAccountRecovery.previousOtpOutboxEncryptionKey,
+          deliver: async (email, code) => sendEmail(email, 'Awoof email confirmation code', `<p>Your Awoof email confirmation code is <strong>${code}</strong>.</p><p>It expires shortly. If you did not start account recovery, ignore this email.</p>`, 1, { logFailures: false }),
+        });
+      }
 
       // Initialize routes (must be after database is ready)
       await this.initializeRoutes();

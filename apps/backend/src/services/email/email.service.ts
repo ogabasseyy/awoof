@@ -51,10 +51,11 @@ export const sendEmail = async (
     to: string,
     subject: string,
     html: string,
-    retries: number = 3
+    retries: number = 3,
+    options: { logFailures?: boolean } = {},
 ): Promise<{ success: boolean; messageId?: string; error?: string }> => {
     if (!process.env.BREVO_API_KEY) {
-        appLogger.error('BREVO_API_KEY is not configured');
+        if (options.logFailures !== false) appLogger.error('BREVO_API_KEY is not configured');
         return { success: false, error: 'Email service not configured' };
     }
 
@@ -74,7 +75,7 @@ export const sendEmail = async (
             return { success: true, messageId: result.messageId };
         } catch (error: unknown) {
             const message = error instanceof Error ? error.message : String(error);
-            appLogger.error(`Email sending failed (attempt ${attempt}/${retries}):`, message);
+            if (options.logFailures !== false) appLogger.error(`Email sending failed (attempt ${attempt}/${retries})`);
 
             if (attempt === retries) {
                 return { success: false, error: message };

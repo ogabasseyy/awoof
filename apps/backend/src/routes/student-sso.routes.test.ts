@@ -702,7 +702,7 @@ test('independent account recovery exposes the same start shape without an accou
         verify: async () => { calls.push('verify'); return { expiresAt: '2026-09-26T12:10:00.000Z', serverNow: '2026-09-26T12:00:00.000Z' }; },
         complete: async () => { calls.push('complete'); },
     };
-    await withServer(routerWith(stubFlow(), { accountRecoveryService: () => recovery as never }), async (baseUrl) => {
+    await withServer(routerWith(stubFlow(), { accountRecoveryService: () => recovery as never, isRecoveryOtpOutboxKeyConfigured: () => true }), async (baseUrl) => {
         const started = await fetch(`${baseUrl}/account-recovery/start`, {
             method: 'POST', headers: { 'content-type': 'application/json' },
             body: JSON.stringify({ email: 'student@example.invalid', purpose: 'compromise' }),
@@ -793,6 +793,23 @@ test('account recovery start fails closed when the mailer is unconfigured', asyn
         if (previousBrevo === undefined) delete process.env.BREVO_API_KEY;
         else process.env.BREVO_API_KEY = previousBrevo;
     }
+});
+
+test('account recovery start fails closed when the OTP outbox key is unavailable', async () => {
+    const calls: string[] = [];
+    const recovery = { start: async () => { calls.push('start'); return {}; } };
+    await withServer(routerWith(stubFlow(), {
+        accountRecoveryService: () => recovery as never,
+        isEmailConfigured: () => true,
+        isRecoveryOtpOutboxKeyConfigured: () => false,
+    }), async (baseUrl) => {
+        const started = await fetch(`${baseUrl}/account-recovery/start`, {
+            method: 'POST', headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ email: 'student@example.invalid', purpose: 'lost_access' }),
+        });
+        assert.equal(started.status, 503);
+        assert.deepEqual(calls, []);
+    });
 });
 
 test('account recovery continuations stay available when the mailer is unconfigured', async () => {
