@@ -161,8 +161,8 @@ jobs:
           # Best-effort base fetch up front: the file list, diff ranges, and
           # trusted guidance all derive from it. Fetches the captured base
           # SHA (not the live branch ref, which could advance mid-run).
-          # Works anonymously on public repos; on failure the compare API
-          # backs the file list and head guidance is labeled UNTRUSTED.
+          # Works anonymously on public repos; on failure the paginated files
+          # API backs the file list and head guidance is labeled UNTRUSTED.
           base_available=false
           if git fetch --depth 1 origin "${base_sha_full}" >/dev/null 2>&1; then
             base_available=true
@@ -170,7 +170,7 @@ jobs:
           # Merge-base discovery: two-dot diff would include base-only
           # changes made after divergence, while the reviewed API diff uses
           # three-dot semantics. Deepen until the merge base resolves. A
-          # failure here only disables the LOCAL file list (compare API
+          # failure here only disables the LOCAL file list (paginated files API
           # backs it); the fetched base tip still backs trusted guidance.
           local_diff=false
           merge_base=""
@@ -183,7 +183,7 @@ jobs:
               git fetch --deepen 100 origin "${base_sha_full}" "${head_sha}" >/dev/null 2>&1 || break
             done
             if [[ "${local_diff}" != "true" ]]; then
-              echo "::warning::merge-base not found; file list falls back to compare API."
+              echo "::warning::merge-base not found; file list falls back to paginated files API."
             fi
           fi
           head_ref="$(jq -r '.head.ref' "${pr_file}")"
@@ -229,18 +229,21 @@ jobs:
           fi
           echo "should_review=true" >> "${GITHUB_OUTPUT}"
 
-          # Immutable evidence pinned to the event SHA: the compare API reads
-          # base...head as fixed commits, so a mid-run push cannot mix files
-          # or diff hunks from two commits.
+          # Evidence pinning: the unified diff below reads base...head as fixed
+          # commits, so a mid-run push cannot mix diff hunks from two commits.
+          # The file inventory prefers local git (same pinned SHAs); its API
+          # fallback reads the live head instead (see below) and relies on the
+          # Run/Post staleness gates to discard reviews raced by a push.
           base_sha="$(jq -r '.base.sha' "${pr_file}")"
           files_file="${RUNNER_TEMP}/muse-files.json"
           diff_failed=false
           # Complete path list from local git (no 300-file cap), diffed from
           # the merge base so base-only changes are excluded — the same
-          # three-dot semantics as the reviewed API diff. The compare API is
-          # the fallback when local history is unavailable (e.g. private
-          # repos, where anonymous fetch has no credentials).
-          files_source="local"
+          # three-dot semantics as the reviewed API diff. The paginated
+          # PR-files API is the fallback when local history is unavailable
+          # (e.g. private repos, where anonymous fetch has no credentials);
+          # pagination (unlike the compare API's 300-file metadata cap)
+          # returns every changed file.
           if [[ "${local_diff}" == "true" ]]; then
             ns_file="${RUNNER_TEMP}/muse-namestat.txt"
             num_file="${RUNNER_TEMP}/muse-numstat.txt"
@@ -282,27 +285,31 @@ jobs:
                 jq -s '.' "${files_file}.jsonl" > "${files_file}" 2>/dev/null || echo '[]' > "${files_file}"
               else
                 echo '[]' > "${files_file}"
-                echo "::warning::local diff join failed; falling back to compare API."
+                echo "::warning::local diff join failed; falling back to paginated files API."
                 local_diff=false
               fi
             else
               echo '[]' > "${files_file}"
-              echo "::warning::local git diff failed; falling back to compare API."
+              echo "::warning::local git diff failed; falling back to paginated files API."
               local_diff=false
             fi
           fi
           if [[ "${local_diff}" != "true" ]]; then
-            files_source="compare"
-            compare_file="${RUNNER_TEMP}/muse-compare.json"
-            if ! gh api "repos/${GITHUB_REPOSITORY}/compare/${base_sha}...${HEAD_SHA_EVENT}" \
-              > "${compare_file}" 2>"${RUNNER_TEMP}/muse-ghcompare.err"; then
-              echo '{"files":[]}' > "${compare_file}"
-              echo "::warning::compare metadata failed: $(head -c 300 "${RUNNER_TEMP}/muse-ghcompare.err" 2>/dev/null || true)"
+            files_pages_file="${RUNNER_TEMP}/muse-files-pages.json"
+            if ! gh api --paginate "repos/${GITHUB_REPOSITORY}/pulls/${PR_NUMBER}/files" \
+              > "${files_pages_file}" 2>"${RUNNER_TEMP}/muse-ghfiles.err"; then
+              echo '[]' > "${files_file}"
+              echo "::warning::PR file-list pagination failed: $(head -c 300 "${RUNNER_TEMP}/muse-ghfiles.err" 2>/dev/null || true)"
               # Missing file list means missing scoped guidance: route to the
               # explicit fallback rather than reviewing blind.
               diff_failed=true
+            # --paginate emits one JSON array per page; merge them. A malformed
+            # page fails the merge and routes to fallback the same way.
+            elif ! jq -s 'add // []' "${files_pages_file}" > "${files_file}" 2>/dev/null; then
+              echo '[]' > "${files_file}"
+              echo "::warning::PR file-list merge failed; routing to fallback."
+              diff_failed=true
             fi
-            jq '.files // []' "${compare_file}" > "${files_file}"
           fi
 
           # Changed-file summary with a hard budget. Filenames are untrusted
@@ -318,9 +325,6 @@ jobs:
             files_summary="- No file-level diff metadata was returned by the GitHub API."
           fi
           files_note=""
-          if [[ "${files_source}" == "compare" ]] && (( total_files >= 300 )); then
-            files_note=" (file list may be truncated at 300 by the compare API)"
-          fi
           if (( total_files > 200 )); then
             files_note="${files_note} ($(( total_files - 200 )) more files omitted from summary)"
           fi
