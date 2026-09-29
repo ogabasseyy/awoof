@@ -152,6 +152,33 @@ function constantTimeDigestEquals(expected: string, actual: string): boolean {
     return timingSafeEqual(Buffer.from(expected, 'hex'), Buffer.from(actual, 'hex'));
 }
 
+/**
+ * Read-only preview of requestChallenge's issue gate: true when a call
+ * would issue (no budget row, or a live window under limits with the
+ * resend cooldown passed). Lets callers shape indistinguishable
+ * responses without issuing — issuing would supersede the live
+ * challenge and burn send budget. No row is locked: concurrent
+ * issuance can flip the answer, which only shapes a point-in-time
+ * response, never authorization.
+ */
+export async function challengeBudgetWouldIssue(tx: PoolClient, purpose: ChallengePurpose, subjectKey: string): Promise<boolean> {
+    validInput(purpose, subjectKey);
+    const subject = challengeSubjectDigest(purpose, subjectKey);
+    const result = await tx.query<{ failed_attempts: number; send_count: number; resend_available_at: Date; window_started_at: Date }>(
+        `SELECT failed_attempts, send_count, resend_available_at, window_started_at
+         FROM verification_challenge_budgets WHERE purpose = $1 AND subject_digest = $2`,
+        [purpose, subject],
+    );
+    const budget = result.rows[0];
+    if (!budget) return true;
+    const now = await databaseNow(tx);
+    const limits = limitsFor(purpose);
+    if (now < fixedWindowEnd(budget.window_started_at)
+        && (budget.failed_attempts >= limits.failures || budget.send_count >= limits.sends)) return false;
+    if (now < budget.resend_available_at) return false;
+    return true;
+}
+
 export async function requestChallenge(tx: PoolClient, input: {
     purpose: ChallengePurpose;
     subjectKey: string;

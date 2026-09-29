@@ -4,7 +4,7 @@ import { ConflictError } from '../../common/errors/AppError.js';
 import { appLogger } from '../../common/logger.js';
 import { passwordService } from './password.service.js';
 import { sendAccountRecoveryCompletionNotice } from '../email/email.service.js';
-import { challengeSubjectDigest, challengeTtlMs, consumeChallenge, databaseNow, requestChallenge } from '../verification/challenge.service.js';
+import { challengeBudgetWouldIssue, challengeSubjectDigest, challengeTtlMs, consumeChallenge, databaseNow, requestChallenge } from '../verification/challenge.service.js';
 import { revokeSsoSchoolAssertions } from './student-sso-onboarding.service.js';
 import { verifyRecoveryCodeDigest } from './student-recovery-code.service.js';
 
@@ -141,12 +141,19 @@ export class StudentAccountRecoveryService {
             // A legacy/unbound live attempt is not resumable by a newly
             // supplied key. Treat it like a mismatch: accepting it here
             // would let any anonymous caller supersede that attempt after
-            // the resend cooldown expires. Report the fresh-decoy deadline
-            // shape — not the frozen live expiry — so a first probe cannot
-            // distinguish an address with live recovery from an unknown
-            // one; the handle itself is rowless and verifies nothing.
+            // the resend cooldown expires. Shape the refusal exactly as
+            // the decoy path would for this budget state — fresh-decoy
+            // deadlines when issuance is available, the frozen live expiry
+            // otherwise — so probes cannot distinguish an address with
+            // live recovery from an unknown one; the handle itself is
+            // rowless and verifies nothing. The budget is only previewed,
+            // never issued: issuing would supersede the live challenge
+            // and burn send budget on attacker probes.
             if (liveAnyPurpose && (liveAnyPurpose.idempotency_key === null || liveAnyPurpose.idempotency_key !== idempotencyKey)) {
-                return { expiresAt: attemptExpiry.toISOString(), otpExpiresAt: serverExpiry.toISOString(), serverNow: serverNow.toISOString() };
+                if (await challengeBudgetWouldIssue(tx, 'student_account_recovery', account.email)) {
+                    return { expiresAt: attemptExpiry.toISOString(), otpExpiresAt: serverExpiry.toISOString(), serverNow: serverNow.toISOString() };
+                }
+                return this.frozenStartExpiry(tx, account.email, serverExpiry, serverNow);
             }
             const challenge = await requestChallenge(tx, {
                 purpose: 'student_account_recovery', subjectKey: account.email,
