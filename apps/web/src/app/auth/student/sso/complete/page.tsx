@@ -62,7 +62,28 @@ function formatPendingRemaining(deadlineMs: number, nowMs: number): string {
 }
 
 function RecoveryReauthComplete({ attemptId, duplicate, unavailable }: { attemptId: string; duplicate: boolean; unavailable: boolean }) {
-    const { refreshUser } = useAuth();
+    const { refreshUser, user } = useAuth();
+    // Another tab can replace the browser session while a grant or code
+    // request is in flight. Every response handler captures this
+    // generation and discards its update when the account changed, so
+    // one account's plaintext code or grant never renders for another.
+    const accountGeneration = useRef(0);
+    const loadedUserId = useRef<string | null | undefined>(undefined);
+    const currentUserId = user?.id ?? null;
+    useEffect(() => {
+        const previous = loadedUserId.current;
+        if (previous === currentUserId) return;
+        loadedUserId.current = currentUserId;
+        // Mount and late user populate keep their state; only a real
+        // account change (or sign-out) invalidates captured responses.
+        if (previous === undefined || previous === null) return;
+        accountGeneration.current += 1;
+        setGrant(null); setCode(''); setOldCode(''); setPendingCodeId(null);
+        setPendingExpiresAt(null); setExpectedGeneration(null);
+        setNeedsOldCode(false); setError(null); setBusy(false);
+        actionBusy.current = false; finishInFlight.current = false; waitingAutoTries.current = 0;
+        setStatus('failed');
+    }, [currentUserId]);
     const [status, setStatus] = useState<'checking' | 'waiting' | 'generate' | 'generate_ambiguous' | 'display' | 'activate' | 'remove' | 'failed' | 'active' | 'removed' | 'link_unavailable' | 'unlinked' | 'unlinked_signed_out' | 'last_method' | 'last_proof_method' | 'link_ambiguous'>(unavailable ? 'failed' : 'checking');
     const [code, setCode] = useState(''); const [oldCode, setOldCode] = useState(''); const [needsOldCode, setNeedsOldCode] = useState(false); const [pendingCodeId, setPendingCodeId] = useState<string | null>(null); const [pendingExpiresAt, setPendingExpiresAt] = useState<string | null>(null); const [expectedGeneration, setExpectedGeneration] = useState<number | null>(null); const [grant, setGrant] = useState<{ grantId: string; grantSecret: string } | null>(null); const [error, setError] = useState<string | null>(null);
     const [busy, setBusy] = useState(false); const started = useRef(false); const actionBusy = useRef(false); const finishInFlight = useRef(false); const waitingAutoTries = useRef(0);
@@ -79,9 +100,10 @@ function RecoveryReauthComplete({ attemptId, duplicate, unavailable }: { attempt
     const [skewMs, setSkewMs] = useState(0);
     const pendingDeadlineMs = pendingExpiresAt ? Date.parse(pendingExpiresAt) : NaN;
 
-    const refreshPendingCodeStatus = async (expectedPendingId: string | null = pendingCodeId): Promise<boolean> => {
+    const refreshPendingCodeStatus = async (expectedPendingId: string | null = pendingCodeId, generation = accountGeneration.current): Promise<boolean> => {
         if (!expectedPendingId) return false;
         const current = await studentSsoSessionApiClient.get('/auth/student/sso/recovery-code');
+        if (generation !== accountGeneration.current) return false;
         const live = (current.data as { data?: { status?: unknown; generation?: unknown; pendingCodeId?: unknown; pendingExpiresAt?: unknown; serverNow?: unknown } }).data;
         if (live?.status !== 'pending' || live.pendingCodeId !== expectedPendingId || !Number.isSafeInteger(live.generation)
             || typeof live.pendingExpiresAt !== 'string' || Number.isNaN(Date.parse(live.pendingExpiresAt))) {
@@ -103,7 +125,10 @@ function RecoveryReauthComplete({ attemptId, duplicate, unavailable }: { attempt
         // duplicate 409 can overwrite the continuation from the winner.
         if (finishInFlight.current) return;
         finishInFlight.current = true;
+        const generation = accountGeneration.current;
+        const stale = () => generation !== accountGeneration.current;
         void studentSsoSessionApiClient.post('/auth/student/sso/reauth/finish', { attemptId }).then(async response => {
+            if (stale()) return;
             const grant = parseSsoReauthFinish(response.data); if (!grant) throw new Error('invalid grant');
             if (grant.purpose === 'link' || grant.purpose === 'unlink') { await continueIdentity({ grantId: grant.grantId, grantSecret: grant.grantSecret, purpose: grant.purpose, targetIdentityId: grant.targetIdentityId }); return; }
             if (grant.purpose === 'recovery_code_generate') {
@@ -111,6 +136,7 @@ function RecoveryReauthComplete({ attemptId, duplicate, unavailable }: { attempt
                 if (grant.activeCodeGeneration !== null) { setStatus('generate'); return; }
                 try {
                     const generated = await studentSsoSessionApiClient.post('/auth/student/sso/recovery-code/generate', { reauthGrant: { grantId: grant.grantId, grantSecret: grant.grantSecret } });
+                    if (stale()) return;
                     const data = (generated.data as { data?: { pendingCodeId?: unknown; code?: unknown; expiresAt?: unknown; serverNow?: unknown } }).data;
                     if (!data || typeof data.pendingCodeId !== 'string' || typeof data.code !== 'string') throw new Error('invalid code');
                     setGrant(null); setPendingCodeId(data.pendingCodeId); setCode(data.code);
@@ -128,6 +154,7 @@ function RecoveryReauthComplete({ attemptId, duplicate, unavailable }: { attempt
                     if (failed === undefined || failed >= 500) {
                         try {
                             const current = await studentSsoSessionApiClient.get('/auth/student/sso/recovery-code');
+                            if (stale()) return;
                             const live = (current.data as { data?: { status?: unknown } }).data;
                             if (live?.status === 'pending') { setGrant(null); setStatus('generate_ambiguous'); return; }
                         } catch { /* reload failed; fall through to failed */ }
@@ -146,7 +173,7 @@ function RecoveryReauthComplete({ attemptId, duplicate, unavailable }: { attempt
                 // The expected generation is required for safe reconciliation
                 // after an ambiguous activation response. Fail closed until
                 // we can establish it from the server.
-                if (!await refreshPendingCodeStatus(grant.pendingCodeId)) setError('The pending recovery code could not be confirmed yet. Retry the status check before activating it.');
+                if (!await refreshPendingCodeStatus(grant.pendingCodeId, generation)) setError('The pending recovery code could not be confirmed yet. Retry the status check before activating it.');
             } catch {
                 setExpectedGeneration(null);
                 setError('The pending recovery code could not be confirmed yet. Retry the status check before activating it.');
@@ -157,6 +184,7 @@ function RecoveryReauthComplete({ attemptId, duplicate, unavailable }: { attempt
             // the permanent failed view would falsely report failure when
             // the user checks before the winner finishes. Anything else
             // is terminal.
+            if (stale()) return;
             if (isRetryableFinishConflict(cause)) { setStatus('waiting'); return; }
             clearRecoveryIntent(); setStatus('failed');
         }).finally(() => { finishInFlight.current = false; });
@@ -248,10 +276,13 @@ function RecoveryReauthComplete({ attemptId, duplicate, unavailable }: { attempt
     };
     const activate = async () => {
         const session = getSessionSnapshot(); if (actionBusy.current || expectedGeneration === null || !grant || !pendingCodeId || !session.accessToken || !code || (needsOldCode && !oldCode)) return; actionBusy.current = true; setBusy(true);
+        const generation = accountGeneration.current;
+        const stale = () => generation !== accountGeneration.current;
         const pendingId = pendingCodeId;
         const reconcile = async (): Promise<boolean> => {
             try {
                 const current = await studentSsoSessionApiClient.get('/auth/student/sso/recovery-code');
+                if (stale()) return false;
                 const live = (current.data as { data?: { status?: unknown; generation?: unknown; pendingCodeId?: unknown; pendingExpiresAt?: unknown; serverNow?: unknown } }).data;
                 // An ambiguous transport failure may have committed: the
                 // grant is then consumed and retrying cannot succeed. Only
@@ -269,6 +300,7 @@ function RecoveryReauthComplete({ attemptId, duplicate, unavailable }: { attempt
         };
         try {
             await studentSsoSessionApiClient.post('/auth/student/sso/recovery-code/activate', { reauthGrant: grant, pendingCodeId: pendingId, code, ...(needsOldCode ? { oldCode } : {}) });
+            if (stale()) return;
             setGrant(null); setCode(''); setOldCode(''); setStatus('active'); await refreshUser().catch(() => undefined);
         } catch (cause: unknown) {
             const response = axios.isAxiosError(cause) ? cause.response : undefined;
@@ -280,7 +312,9 @@ function RecoveryReauthComplete({ attemptId, duplicate, unavailable }: { attempt
     };
     const generateReplacement = async () => {
         const session = getSessionSnapshot(); if (actionBusy.current || !grant || !session.accessToken || !code) return; actionBusy.current = true; setBusy(true);
-        try { const r = await studentSsoSessionApiClient.post('/auth/student/sso/recovery-code/generate', { reauthGrant: grant, oldCode: code }); const data = (r.data as { data?: { pendingCodeId?: unknown; code?: unknown; expiresAt?: unknown; serverNow?: unknown } }).data; if (!data || typeof data.pendingCodeId !== 'string' || typeof data.code !== 'string') throw new Error(); setGrant(null); setPendingCodeId(data.pendingCodeId); setCode(data.code); setPendingExpiresAt(typeof data.expiresAt === 'string' ? data.expiresAt : null); setSkewMs(serverSkewSince(typeof data.serverNow === 'string' && !Number.isNaN(Date.parse(data.serverNow)) ? data.serverNow : null)); setStatus('display'); } catch (cause: unknown) {
+        const generation = accountGeneration.current;
+        const stale = () => generation !== accountGeneration.current;
+        try { const r = await studentSsoSessionApiClient.post('/auth/student/sso/recovery-code/generate', { reauthGrant: grant, oldCode: code }); if (stale()) return; const data = (r.data as { data?: { pendingCodeId?: unknown; code?: unknown; expiresAt?: unknown; serverNow?: unknown } }).data; if (!data || typeof data.pendingCodeId !== 'string' || typeof data.code !== 'string') throw new Error(); setGrant(null); setPendingCodeId(data.pendingCodeId); setCode(data.code); setPendingExpiresAt(typeof data.expiresAt === 'string' ? data.expiresAt : null); setSkewMs(serverSkewSince(typeof data.serverNow === 'string' && !Number.isNaN(Date.parse(data.serverNow)) ? data.serverNow : null)); setStatus('display'); } catch (cause: unknown) {
             // An ambiguous transport failure may have committed: the grant
             // is then consumed and the replacement plaintext is lost with
             // the response. A pending code reading back proves the commit —
@@ -289,6 +323,7 @@ function RecoveryReauthComplete({ attemptId, duplicate, unavailable }: { attempt
             if (failed === undefined || failed >= 500) {
                 try {
                     const current = await studentSsoSessionApiClient.get('/auth/student/sso/recovery-code');
+                    if (stale()) return;
                     const live = (current.data as { data?: { status?: unknown } }).data;
                     if (live?.status === 'pending') { setGrant(null); setCode(''); setStatus('generate_ambiguous'); return; }
                 } catch { /* reload failed; fall through to the generic error */ }
@@ -298,7 +333,9 @@ function RecoveryReauthComplete({ attemptId, duplicate, unavailable }: { attempt
     };
     const remove = async () => {
         const session = getSessionSnapshot(); if (actionBusy.current || !grant || !session.accessToken || !code) return; actionBusy.current = true; setBusy(true);
-        try { await studentSsoSessionApiClient.post('/auth/student/sso/recovery-code/remove', { reauthGrant: grant, oldCode: code }); setGrant(null); setCode(''); setStatus('removed'); } catch (cause: unknown) {
+        const generation = accountGeneration.current;
+        const stale = () => generation !== accountGeneration.current;
+        try { await studentSsoSessionApiClient.post('/auth/student/sso/recovery-code/remove', { reauthGrant: grant, oldCode: code }); if (stale()) return; setGrant(null); setCode(''); setStatus('removed'); } catch (cause: unknown) {
             // An ambiguous transport failure may have committed while
             // consuming the grant. An unconfigured status reading back
             // proves the removal landed: render it instead of failure.
@@ -306,6 +343,7 @@ function RecoveryReauthComplete({ attemptId, duplicate, unavailable }: { attempt
             if (failed === undefined || failed >= 500) {
                 try {
                     const current = await studentSsoSessionApiClient.get('/auth/student/sso/recovery-code');
+                    if (stale()) return;
                     const live = (current.data as { data?: { status?: unknown } }).data;
                     if (live?.status === 'unconfigured') { setGrant(null); setCode(''); setStatus('removed'); return; }
                 } catch { /* reload failed; fall through to the generic error */ }

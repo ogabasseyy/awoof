@@ -310,6 +310,43 @@ test('fresh starts without the original binding never supersede a live recovery 
     }
 });
 
+test('cross-purpose starts without the original binding never cancel a live recovery attempt', async () => {
+    const pool = createTestPool();
+    const client = await pool.connect();
+    try {
+        const account = await seedRecoverableStudent(client);
+        const deliveries: string[] = [];
+        const service = new StudentAccountRecoveryService({
+            pool, recoveryCodeKey: 'test-recovery-code-key',
+            deliverOtp: async (_email, delivered) => { deliveries.push(delivered); return { success: true }; },
+            validatePassword: () => ({ valid: true, errors: [] }), hashPassword: async () => 'binding-password-hash',
+        });
+        const key = randomUUID();
+        const first = await service.start({ email: account.email, purpose: 'lost_access', idempotencyKey: key });
+        // Age the resend cooldown past 60 seconds while the attempt and its
+        // OTP stay live: the next start would issue a fresh challenge.
+        await client.query(
+            `UPDATE verification_challenge_budgets SET resend_available_at = clock_timestamp() - interval '1 second'
+             WHERE purpose = 'student_account_recovery' AND subject_digest = $1`,
+            [challengeSubjectDigest('student_account_recovery', account.email)],
+        );
+        // Flipping purposes must not dodge the binding guard: the unbound
+        // compromise start takes the frozen shape and the victim's
+        // lost-access handle still verifies with the delivered OTP.
+        const retry = await service.start({ email: account.email, purpose: 'compromise' });
+        await assert.rejects(() => service.verify({ attemptId: retry.attemptId, secret: retry.secret, code: account.code, otp: deliveries[0]! }));
+        assert.equal(deliveries.length, 1);
+        const rows = await client.query<{ count: string }>(
+            'SELECT count(*)::text AS count FROM student_auth_recovery_attempts WHERE user_id = $1', [account.userId],
+        );
+        assert.equal(rows.rows[0]!.count, '1', 'unbound cross-purpose starts must not replace the live attempt');
+        await service.verify({ attemptId: first.attemptId, secret: first.secret, code: account.code, otp: deliveries[0]! });
+    } finally {
+        client.release();
+        await pool.end();
+    }
+});
+
 test('fresh starts never supersede a legacy live attempt without an idempotency binding', async () => {
     const pool = createTestPool();
     const client = await pool.connect();

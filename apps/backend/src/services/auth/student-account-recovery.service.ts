@@ -121,23 +121,28 @@ export class StudentAccountRecoveryService {
             // path) so the branch itself adds no timing signal.
             const live = account ? await this.lockLiveAttempt(tx, account.id, purpose) : await this.lockLiveAttempt(tx, randomUUID(), purpose);
             const active = account ? await this.lockActiveCode(tx, account.id) : await this.lockActiveCode(tx, randomUUID());
+            // Cross-purpose guard probe: failPriorAttempts cancels every
+            // purpose, so a same-purpose-only guard would let a caller flip
+            // purposes after each cooldown to deny the victim's live OTP.
+            const liveAnyPurpose = account ? await this.lockLiveAttemptAnyPurpose(tx, account.id) : await this.lockLiveAttemptAnyPurpose(tx, randomUUID());
             if (!account || !active) {
                 return this.decoyStart(tx, { email, attemptId, purpose, serverExpiry, serverNow, attemptExpiry });
             }
             // A live pending attempt owns its OTP until it lapses: superseding
             // requires the original start's idempotency binding on every path,
-            // not only the cooldown branch. Without it an unauthenticated
-            // caller knowing the email could fail the victim's handle after
-            // each cooldown and rebind recovery to their own, repeating until
-            // the victim's window closes. The unbound caller takes the same
-            // frozen-expiry shape as a keyless cooldown retry — no new
-            // challenge is issued, nothing is emailed, and the live attempt
-            // and its OTP survive untouched.
+            // not only the cooldown branch, and for either purpose. Without
+            // it an unauthenticated caller knowing the email could fail the
+            // victim's handle after each cooldown — flipping purposes to
+            // dodge a same-purpose guard — and rebind recovery to their own,
+            // repeating until the victim's window closes. The unbound caller
+            // takes the same frozen-expiry shape as a keyless cooldown retry
+            // — no new challenge is issued, nothing is emailed, and the live
+            // attempt and its OTP survive untouched.
             // A legacy/unbound live attempt is not resumable by a newly
             // supplied key. Treat it like a mismatch: accepting it here
             // would let any anonymous caller supersede that attempt after
             // the resend cooldown expires.
-            if (live && (live.idempotency_key === null || live.idempotency_key !== idempotencyKey)) {
+            if (liveAnyPurpose && (liveAnyPurpose.idempotency_key === null || liveAnyPurpose.idempotency_key !== idempotencyKey)) {
                 return this.frozenStartExpiry(tx, account.email, serverExpiry, serverNow);
             }
             const challenge = await requestChallenge(tx, {
@@ -587,6 +592,26 @@ export class StudentAccountRecoveryService {
                AND challenge.consumed_at IS NULL AND challenge.superseded_at IS NULL AND challenge.expires_at > clock_timestamp()
              ORDER BY attempt.created_at DESC LIMIT 1 FOR UPDATE`,
             [userId, purpose],
+        );
+        return result.rows[0] ?? null;
+    }
+
+    /**
+     * Newest pending attempt of either purpose whose mailbox challenge is
+     * still consumable, locked for the supersede guard. Terminalization is
+     * not purpose-scoped, so the guard cannot be either: without this a
+     * caller could flip purposes after each cooldown to deny the live OTP.
+     */
+    private async lockLiveAttemptAnyPurpose(tx: PoolClient, userId: string): Promise<{ id: string; idempotency_key: string | null } | null> {
+        const result = await tx.query<{ id: string; idempotency_key: string | null }>(
+            `SELECT attempt.id, attempt.idempotency_key
+             FROM student_auth_recovery_attempts attempt
+             JOIN verification_challenges challenge ON challenge.id = attempt.mailbox_challenge_id
+             WHERE attempt.user_id = $1 AND attempt.status = 'pending'
+               AND attempt.expires_at > clock_timestamp()
+               AND challenge.consumed_at IS NULL AND challenge.superseded_at IS NULL AND challenge.expires_at > clock_timestamp()
+             ORDER BY attempt.created_at DESC LIMIT 1 FOR UPDATE`,
+            [userId],
         );
         return result.rows[0] ?? null;
     }
