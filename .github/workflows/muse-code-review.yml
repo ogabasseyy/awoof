@@ -949,6 +949,10 @@ jobs:
           (steps.diff.outputs.should_review == 'true' ||
             steps.diff.outcome == 'failure') &&
           steps.diff.outputs.duplicate != 'true'
+        # Advisory like every other step: a stalled lookup or POST must skip
+        # green, never fail the job (a missing posted_real output simply
+        # skips the Record step below).
+        continue-on-error: true
         # Bounded like the other steps; one read plus one post needs far less.
         timeout-minutes: 2
         env:
