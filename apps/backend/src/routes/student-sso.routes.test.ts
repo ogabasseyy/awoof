@@ -676,6 +676,11 @@ test('signup availability scopes to the handoff provider when requested', async 
         const disabled = await fetch(`${baseUrl}/signup/availability?provider=microsoft`);
         assert.equal(disabled.status, 200);
         assert.deepEqual(await disabled.json(), { success: true, data: { available: false } });
+        // Unscoped callers get the same Microsoft requirement: without it
+        // every advertised signup path would fail at context/complete.
+        const unscoped = await fetch(`${baseUrl}/signup/availability`);
+        assert.equal(unscoped.status, 200);
+        assert.deepEqual(await unscoped.json(), { success: true, data: { available: false } });
     });
     await withServer(routerWith(stubFlow(), { ...options, isSignupEnabled: () => false }), async (baseUrl) => {
         const response = await fetch(`${baseUrl}/signup/availability?provider=microsoft`);
@@ -907,6 +912,9 @@ test('account recovery verify and complete reject malformed values at the route 
             // feedback, not proof conflicts.
             { attemptId: ATTEMPT_ID, secret: 'recovery-secret', password: 'weak' },
             { attemptId: ATTEMPT_ID, secret: 'recovery-secret', password: 'alllowercase1!' },
+            // bcrypt incorporates only 72 bytes: meets complexity but must
+            // still 400 rather than silently truncate.
+            { attemptId: ATTEMPT_ID, secret: 'recovery-secret', password: `Valid1!${'x'.repeat(66)}` },
         ]) {
             const response = await fetch(`${baseUrl}/account-recovery/complete`, {
                 method: 'POST', headers: { 'content-type': 'application/json' },

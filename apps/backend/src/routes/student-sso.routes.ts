@@ -636,6 +636,9 @@ export function createStudentSsoRouter(factory: FlowFactory = defaultFlow, optio
         // with the specific failures, mirroring registration and reset.
         const passwordValidation = passwordService.validatePassword(body.password);
         if (!passwordValidation.valid) throw new BadRequestError(passwordValidation.errors.join(', '));
+        // bcrypt incorporates only the first 72 bytes; reject longer
+        // values here too so the contract names the physical limit.
+        if (Buffer.byteLength(body.password, 'utf8') > 72) throw new BadRequestError('Password must be no more than 72 bytes long');
         await accountRecoveryFactory().complete({ attemptId: body.attemptId, secret: body.secret, password: body.password }); responseHeaders(res); res.status(204).end();
     }));
 
@@ -958,9 +961,12 @@ export function createStudentSsoRouter(factory: FlowFactory = defaultFlow, optio
         if (provider !== undefined && provider !== 'google' && provider !== 'microsoft') throw new BadRequestError('Unknown provider');
         // Signup is OTP-gated: without delivery readiness the endpoint
         // would advertise an account creation whose send-code can only
-        // burn challenge allowance and 503.
+        // burn challenge allowance and 503. Microsoft readiness applies
+        // to unscoped responses too: the signup service accepts Microsoft
+        // handoffs only, so omitting the provider must not advertise a
+        // flow that is disabled or rolled back.
         const available = signupEnabled() && emailConfigured() && recoveryOtpOutboxKeyConfigured()
-            && (provider === undefined || (provider === 'microsoft' && providersEnabled().includes(provider)));
+            && providersEnabled().includes('microsoft') && (provider === undefined || provider === 'microsoft');
         responseHeaders(res); res.json({ success: true, data: { available } });
     }));
 

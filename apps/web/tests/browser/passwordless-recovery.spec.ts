@@ -299,6 +299,45 @@ test('recovery completion ignores duplicate submits while the server response is
     api.assertNoUnexpectedRequests();
 });
 
+test('stale recovery completion cannot overwrite an attempt restarted after expiry', async ({ page }) => {
+    const api = await installSyntheticApi(page);
+    const completion = createGate('stale recovery completion response');
+    let startCalls = 0;
+    await page.route(`${apiOrigin}/api/auth/student/sso/account-recovery/start`, route => {
+        startCalls += 1;
+        const attemptId = startCalls === 1 ? '93000000-0000-4000-8000-000000000001' : '93000000-0000-4000-8000-000000000002';
+        return route.fulfill({ status: 202, headers, json: { success: true, data: { attemptId, secret: 'recovery-secret', expiresAt: new Date(Date.now() + 300_000).toISOString(), otpExpiresAt: new Date(Date.now() + 300_000).toISOString() } } });
+    });
+    await page.route(`${apiOrigin}/api/auth/student/sso/account-recovery/verify`, route => route.fulfill({ headers, json: { success: true, data: { expiresAt: new Date(Date.now() + 2_000).toISOString(), serverNow: new Date().toISOString() } } }));
+    await page.route(`${apiOrigin}/api/auth/student/sso/account-recovery/complete`, async route => {
+        await completion.wait();
+        return route.fulfill({ status: 204, headers });
+    });
+    await page.goto('/auth/student/recovery');
+    await page.getByLabel('School email').fill('student@school.example');
+    await page.getByRole('button', { name: 'Start recovery' }).click();
+    await page.getByLabel('Saved recovery code').fill('saved-code');
+    await page.getByLabel('Email confirmation code').fill('123456');
+    await page.getByRole('button', { name: 'Confirm recovery proofs' }).click();
+    await page.getByLabel('New password').fill('Brand-New-Password-1');
+    await page.getByRole('button', { name: 'Set password' }).click();
+    await completion.waitForArrival();
+    // The short completion window lapses while the request is held, so
+    // the page offers a restart; the new attempt must survive the stale
+    // success instead of flipping to its completion state.
+    await expect(page.getByRole('button', { name: 'Start again' })).toBeVisible();
+    await page.getByRole('button', { name: 'Start again' }).click();
+    await page.getByRole('button', { name: 'Start recovery' }).click();
+    await page.getByLabel('Saved recovery code').fill('saved-code');
+    await page.getByLabel('Email confirmation code').fill('123456');
+    expect(startCalls).toBe(2);
+    completion.release();
+    await expect(page.getByLabel('Saved recovery code')).toBeVisible();
+    await expect(page.getByText('Password set. Sign in with your password to continue.')).toHaveCount(0);
+    await expect(page.getByLabel('New password')).toHaveCount(0);
+    api.assertNoUnexpectedRequests();
+});
+
 test('recovery proof verification serializes duplicate submits while the OTP request is pending', async ({ page }) => {
     const api = await installSyntheticApi(page);
     const verification = createGate('recovery proof verification response');

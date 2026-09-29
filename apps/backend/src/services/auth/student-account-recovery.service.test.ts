@@ -275,6 +275,31 @@ test('recovery verify mirrors decoy work before rejecting an altered handle secr
         'altered-secret rejection must run the mirrored active-code probe');
 });
 
+test('recovery complete rejects passwords beyond the bcrypt byte limit before database work', async () => {
+    const service = new StudentAccountRecoveryService({
+        pool: { connect: async () => { throw new Error('database must not be used for overlong passwords'); } } as never,
+        recoveryCodeKey: 'test-recovery-code-key',
+        validatePassword: () => ({ valid: true, errors: [] }),
+    });
+    const attemptId = '33333333-3333-4333-8333-333333333333';
+    // bcrypt incorporates only the first 72 bytes: longer values would
+    // authenticate with a colliding prefix. The limit counts bytes, and
+    // the message keeps the policy prefix the client retries on.
+    await assert.rejects(
+        () => service.complete({ attemptId, secret: 'secret', password: `Valid1!${'x'.repeat(66)}` }),
+        /Password must be no more than 72 bytes long/,
+    );
+    await assert.rejects(
+        () => service.complete({ attemptId, secret: 'secret', password: 'é'.repeat(37) }),
+        /Password must be no more than 72 bytes long/,
+    );
+    // Exactly 72 bytes passes the cap and reaches the database preview.
+    await assert.rejects(
+        () => service.complete({ attemptId, secret: 'secret', password: 'é'.repeat(36) }),
+        /database must not be used/,
+    );
+});
+
 test('recovery complete does not hash passwords for unknown attempts', async () => {
     let hashes = 0;
     const client = { query: async () => ({ rows: [], rowCount: 0 }), release: () => undefined };

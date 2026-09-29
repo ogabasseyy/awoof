@@ -362,6 +362,13 @@ export class StudentAccountRecoveryService {
         const { attemptId, secret, password } = input;
         const validation = (this.deps.validatePassword ?? ((candidate: string) => passwordService.validatePassword(candidate)))(password);
         if (!validation.valid) throw new ConflictError(validation.errors.join(', '));
+        // bcrypt incorporates only the first 72 bytes: a longer value
+        // would later authenticate with a colliding prefix while the UI
+        // presents the whole string as significant. Enforced here rather
+        // than in the injectable policy validator so key rotation and
+        // policy experiments cannot silently drop the physical limit. The
+        // message keeps the policy-rejection prefix the client keys on.
+        if (Buffer.byteLength(password, 'utf8') > 72) throw new ConflictError('Password must be no more than 72 bytes long');
         // Cheap credential check before the expensive password hash; the
         // transaction below rechecks everything under lock against the
         // database clock. Expiry is deliberately not previewed here: an
