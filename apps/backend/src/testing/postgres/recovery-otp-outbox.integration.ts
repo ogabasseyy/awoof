@@ -6,7 +6,9 @@ import { StudentAccountRecoveryService } from '../../services/auth/student-accou
 import { createTestPool } from './test-database.js';
 
 const RECOVERY_CODE_KEY = 'test-recovery-code-key';
-const OUTBOX_ENCRYPTION_KEY = Buffer.alloc(32, 0x5a).toString('base64');
+const configuredOutboxEncryptionKey = process.env.STUDENT_ACCOUNT_RECOVERY_OTP_ENCRYPTION_KEY;
+if (!configuredOutboxEncryptionKey) throw new Error('The disposable PostgreSQL runner must provide its synthetic outbox test key');
+const OUTBOX_ENCRYPTION_KEY: string = configuredOutboxEncryptionKey;
 
 async function seedRecoverableStudent(client: PoolClient): Promise<{ userId: string; email: string; code: string }> {
     const suffix = randomUUID().slice(0, 8);
@@ -72,7 +74,7 @@ test('recovery outbox retries the same encrypted OTP after an ambiguous send and
         );
 
         const attemptedCodes: string[] = [];
-        const rotatedKey = Buffer.alloc(32, 0x6b).toString('base64');
+        const rotatedKey = Buffer.from(Array.from(Buffer.from(OUTBOX_ENCRYPTION_KEY, 'base64'), (byte) => byte ^ 0x11)).toString('base64');
         const retry = await dispatch(pool, async (_email, otp) => {
             attemptedCodes.push(otp);
             return { success: false }; // ambiguous provider result; retain same code for retry

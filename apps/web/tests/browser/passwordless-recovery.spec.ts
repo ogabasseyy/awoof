@@ -209,6 +209,38 @@ test('independent password recovery requires an explicit purpose and does not pr
     api.assertNoUnexpectedRequests();
 });
 
+test('recovery start freezes its submitted purpose and email while serializing same-tick duplicate submits', async ({ page }) => {
+    const api = await installSyntheticApi(page);
+    const start = createGate('recovery start response');
+    const bodies: Array<{ email?: string; purpose?: string; idempotencyKey?: string }> = [];
+    await page.route(`${apiOrigin}/api/auth/student/sso/account-recovery/start`, async route => {
+        bodies.push(JSON.parse(route.request().postData() ?? '{}') as { email?: string; purpose?: string; idempotencyKey?: string });
+        await start.wait();
+        return route.fulfill({ status: 202, headers, json: { success: true, data: {
+            attemptId: '90500000-0000-4000-8000-000000000001', secret: 'recovery-secret',
+            expiresAt: new Date(Date.now() + 300_000).toISOString(),
+        } } });
+    });
+
+    await page.goto('/auth/student/recovery');
+    await page.getByLabel('School email').fill('snapshot@school.example');
+    await page.getByLabel('I think my sign-in was compromised').check();
+    await page.locator('form').evaluate((form: HTMLFormElement) => {
+        form.requestSubmit();
+        form.requestSubmit();
+    });
+    await start.waitForArrival();
+    await expect(page.getByLabel('School email')).toBeDisabled();
+    await expect(page.getByLabel('I think my sign-in was compromised')).toBeDisabled();
+    expect(bodies).toHaveLength(1);
+    expect(bodies[0]?.email).toBe('snapshot@school.example');
+    expect(bodies[0]?.purpose).toBe('compromise');
+    expect(bodies[0]?.idempotencyKey).toBeTruthy();
+    start.release();
+    await expect(page.getByLabel('Saved recovery code')).toBeVisible();
+    api.assertNoUnexpectedRequests();
+});
+
 test('ambiguous recovery completion keeps the password and points at sign-in before another recovery', async ({ page }) => {
     const api = await installSyntheticApi(page);
     await page.route(`${apiOrigin}/api/auth/student/sso/account-recovery/start`, route => route.fulfill({ status: 202, headers, json: { success: true, data: { attemptId: '90000000-0000-4000-8000-000000000001', secret: 'recovery-secret', expiresAt: new Date(Date.now() + 300_000).toISOString() } } }));

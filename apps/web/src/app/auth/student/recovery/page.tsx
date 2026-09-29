@@ -44,6 +44,7 @@ function clearRetryBinding(): void { try { sessionStorage.removeItem(RECOVERY_ID
 export default function StudentAccountRecoveryPage() {
     const [email, setEmail] = useState(''); const [compromise, setCompromise] = useState(false); const [sent, setSent] = useState(false); const [error, setError] = useState<string | null>(null); const [attempt, setAttempt] = useState<{ id: string; secret: string; expiresAt: string; otpExpiresAt: string; skewMs: number } | null>(null); const [recoveryCode, setRecoveryCode] = useState(''); const [otp, setOtp] = useState(''); const [verified, setVerified] = useState(false); const [password, setPassword] = useState(''); const [completeSuccess, setCompleteSuccess] = useState(false); const [starting, setStarting] = useState(false); const [completeFailed, setCompleteFailed] = useState(false);
     const [now, setNow] = useState(() => Date.now());
+    const startInFlight = useRef(false);
     const [completing, setCompleting] = useState(false);
     const completionInFlight = useRef(false);
     const [verifying, setVerifying] = useState(false);
@@ -67,7 +68,35 @@ export default function StudentAccountRecoveryPage() {
     const expired = attempt !== null && !Number.isNaN(activeDeadlineMs) && activeDeadlineMs <= correctedNow;
     const restart = () => { verifyGeneration.current += 1; setAttempt(null); setSent(false); setVerified(false); setPassword(''); setRecoveryCode(''); setOtp(''); setError(null); setCompleteFailed(false); };
     const cancelVerify = () => { verifyGeneration.current += 1; setAttempt(null); setSent(false); setRecoveryCode(''); setOtp(''); };
-    const start = async (event: React.FormEvent) => { event.preventDefault(); if (starting) return; setStarting(true); setError(null); try { const purpose = compromise ? 'compromise' : 'lost_access'; const r = await publicApiClient.post('/auth/student/sso/account-recovery/start', { email, purpose, idempotencyKey: retryBindingFor(email, purpose) }); const data = (r.data as { data?: { attemptId?: unknown; secret?: unknown; expiresAt?: unknown; otpExpiresAt?: unknown; serverNow?: unknown } }).data; if (typeof data?.attemptId !== 'string' || typeof data.secret !== 'string' || typeof data.expiresAt !== 'string' || Number.isNaN(Date.parse(data.expiresAt))) throw new Error('invalid'); const otpExpiresAt = typeof data.otpExpiresAt === 'string' && !Number.isNaN(Date.parse(data.otpExpiresAt)) ? data.otpExpiresAt : data.expiresAt; setAttempt({ id: data.attemptId, secret: data.secret, expiresAt: data.expiresAt, otpExpiresAt, skewMs: serverSkewSince(typeof data.serverNow === 'string' && !Number.isNaN(Date.parse(data.serverNow)) ? data.serverNow : null) }); setSent(true); } catch { setError('Recovery could not be started. Check the details and try again.'); } finally { setStarting(false); } };
+    const start = async (event: React.FormEvent) => {
+        event.preventDefault();
+        // State updates render asynchronously; two submit events in one task
+        // can both observe `starting === false`. Lock synchronously and keep
+        // this request bound to the values submitted by the first event.
+        if (startInFlight.current) return;
+        startInFlight.current = true;
+        const submittedEmail = email;
+        const submittedPurpose = compromise ? 'compromise' : 'lost_access';
+        setStarting(true);
+        setError(null);
+        try {
+            const response = await publicApiClient.post('/auth/student/sso/account-recovery/start', {
+                email: submittedEmail,
+                purpose: submittedPurpose,
+                idempotencyKey: retryBindingFor(submittedEmail, submittedPurpose),
+            });
+            const data = (response.data as { data?: { attemptId?: unknown; secret?: unknown; expiresAt?: unknown; otpExpiresAt?: unknown; serverNow?: unknown } }).data;
+            if (typeof data?.attemptId !== 'string' || typeof data.secret !== 'string' || typeof data.expiresAt !== 'string' || Number.isNaN(Date.parse(data.expiresAt))) throw new Error('invalid');
+            const otpExpiresAt = typeof data.otpExpiresAt === 'string' && !Number.isNaN(Date.parse(data.otpExpiresAt)) ? data.otpExpiresAt : data.expiresAt;
+            setAttempt({ id: data.attemptId, secret: data.secret, expiresAt: data.expiresAt, otpExpiresAt, skewMs: serverSkewSince(typeof data.serverNow === 'string' && !Number.isNaN(Date.parse(data.serverNow)) ? data.serverNow : null) });
+            setSent(true);
+        } catch {
+            setError('Recovery could not be started. Check the details and try again.');
+        } finally {
+            startInFlight.current = false;
+            setStarting(false);
+        }
+    };
     const verify = async (event: React.FormEvent) => {
         // Each verification consumes shared challenge failure budget, so a
         // double submit on a slow connection could lock a mistyped OTP

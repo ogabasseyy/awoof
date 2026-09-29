@@ -26,7 +26,7 @@ export function hasRecoveryOtpOutboxKey(value: string | null | undefined): boole
 
 function encryptOtp(challengeId: string, otp: string, key: Key): Envelope {
     const nonce = randomBytes(12);
-    const cipher = createCipheriv('aes-256-gcm', key.value, nonce);
+    const cipher = createCipheriv('aes-256-gcm', key.value, nonce, { authTagLength: 16 });
     cipher.setAAD(Buffer.from(`${AAD_PREFIX}${challengeId}`, 'utf8'));
     const ciphertext = Buffer.concat([cipher.update(otp, 'utf8'), cipher.final()]);
     return { keyId: key.id, ciphertext, nonce, authTag: cipher.getAuthTag() };
@@ -35,7 +35,7 @@ function encryptOtp(challengeId: string, otp: string, key: Key): Envelope {
 function decryptOtp(job: OutboxJob, keys: Key[]): string {
     const key = keys.find((candidate) => candidate.id === job.key_id);
     if (!key) throw new Error('Recovery OTP outbox key id is unavailable');
-    const decipher = createDecipheriv('aes-256-gcm', key.value, job.nonce);
+    const decipher = createDecipheriv('aes-256-gcm', key.value, job.nonce, { authTagLength: 16 });
     decipher.setAAD(Buffer.from(`${AAD_PREFIX}${job.challenge_id}`, 'utf8'));
     decipher.setAuthTag(job.auth_tag);
     const value = Buffer.concat([decipher.update(job.ciphertext), decipher.final()]).toString('utf8');
