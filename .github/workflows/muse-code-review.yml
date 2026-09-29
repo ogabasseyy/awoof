@@ -364,6 +364,12 @@ jobs:
             head -c 65536 "${manifest_file}" | iconv -c -f UTF-8 -t UTF-8 > "${manifest_file}.trunc" 2>/dev/null || true
             mv "${manifest_file}.trunc" "${manifest_file}"
             manifest_note=" [manifest truncated at 65536 bytes — PARTIAL SCOPE]"
+            # Files past the manifest cap are undiscoverable to the
+            # shell-disabled reviewer (summary and diff are capped too), so a
+            # truncated manifest routes to the explicit fallback rather than
+            # posting and deduping a review as complete.
+            echo "::warning::changed-path manifest exceeded 65536 bytes; routing to fallback."
+            diff_failed=true
           fi
 
           # Unified diff, truncated to a prompt budget. Collection failures are
@@ -665,8 +671,8 @@ jobs:
           # that quote the tag.
           real_count="$(jq -s --arg marker "${marker}" \
             '[add // [] | .[] | select(.user.login == "github-actions[bot]"
-              and (.body | startswith($marker))
-              and ((.body | split("\n") | .[1] // "") != "<!-- muse-fallback:v1 -->"))] | length' \
+              and ((.body // "") | startswith($marker))
+              and (((.body // "") | split("\n") | .[1] // "") != "<!-- muse-fallback:v1 -->"))] | length' \
             "${dup_reviews}" 2>/dev/null || echo 0)"
           duplicate=false
           if [[ "${real_count}" =~ [1-9] ]]; then
