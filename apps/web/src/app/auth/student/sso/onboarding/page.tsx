@@ -10,14 +10,14 @@
 
 'use client';
 
-import { Suspense, useEffect, useRef, useState } from 'react';
+import { Suspense, useEffect, useRef, useState, useSyncExternalStore } from 'react';
 import { useSearchParams } from 'next/navigation';
 import Link from 'next/link';
 import axios from 'axios';
 import { AuthShell } from '@/components/auth/AuthShell';
 import { Button } from '@/components/ui/button';
 import { studentSsoApiClient } from '@/lib/api-client';
-import { getSessionSnapshot, storeTokens } from '@/lib/auth';
+import { getSessionSnapshot, storeTokens, subscribeSessionChanges } from '@/lib/auth';
 import { resolveStudentReturn } from '@/lib/student-return';
 import {
     clearSsoAttempt,
@@ -101,14 +101,34 @@ function SignupOnboarding() {
     const [createdDestination, setCreatedDestination] = useState<string | null>(null);
     const started = useRef(false); const initialSession = useRef<number | null>(null);
     const handoff = useRef<SsoHandoffRecord | null>(null);
+    // Another tab can sign in while a signup request is in flight. Every
+    // response handler captures this generation and discards its update
+    // when the browser session appeared or changed, so one handoff's
+    // school email and OTP workflow never continue under another account.
+    const sessionEpoch = useRef(0);
+    const sessionToken = useSyncExternalStore(subscribeSessionChanges, () => getSessionSnapshot().accessToken ?? null, () => null);
+    const loadedSessionToken = useRef<string | null | undefined>(undefined);
+    useEffect(() => {
+        const previous = loadedSessionToken.current;
+        if (previous === sessionToken) return;
+        loadedSessionToken.current = sessionToken;
+        if (previous === undefined) return;
+        sessionEpoch.current += 1;
+        handoff.current = null; forgetHandoff();
+        setContext(null); setChallengeId(null); setChallengeExpiresAt(null);
+        setCode(''); setName(''); setAge(false); setTerms(false); setConsent(false);
+        setAmbiguousComplete(false); setExistingAccount(false); setCreatedDestination(null);
+        setError('This tab changed accounts. Start Microsoft sign-in again.');
+    }, [sessionToken]);
     useEffect(() => {
         if (started.current) return; started.current = true;
         const record = readSsoHandoff(tabStorage());
         if (!record || !isSsoAttemptLive(record, Date.now()) || getSessionSnapshot().accessToken) { forgetHandoff(); setError('This setup link expired or this tab changed accounts. Start Microsoft sign-in again.'); return; }
         handoff.current = record; setSkewMs(record.serverSkewMs); initialSession.current = getSessionSnapshot().generation;
+        const epoch = sessionEpoch.current;
         void studentSsoApiClient.post('/auth/student/sso/signup/context', { handoffId: record.handoffId, handoffSecret: record.handoffSecret })
-            .then(response => { const parsed = signupContext(response.data); if (!parsed) throw new Error('invalid'); setContext(parsed); })
-            .catch(() => setError('This setup link is unavailable or expired. Start Microsoft sign-in again.'));
+            .then(response => { if (epoch !== sessionEpoch.current) return; const parsed = signupContext(response.data); if (!parsed) throw new Error('invalid'); setContext(parsed); })
+            .catch(() => { if (epoch !== sessionEpoch.current) return; setError('This setup link is unavailable or expired. Start Microsoft sign-in again.'); });
     }, []);
     useEffect(() => {
         if (!context) return;
@@ -135,20 +155,28 @@ function SignupOnboarding() {
     const challengeExpired = challengeId !== null && challengeId !== 'verified' && challengeExpiresAt !== null
         && !Number.isNaN(challengeDeadlineMs) && challengeDeadlineMs <= now + skewMs;
     useEffect(() => { if (linkExpired) forgetHandoff(); }, [linkExpired]);
+    // Synchronous serialization for the OTP-budget requests: two submits
+    // before the busy render takes effect would each burn shared failure
+    // budget, locking a corrected code. The ref admits exactly one.
+    const otpRequestInFlight = useRef(false);
     const requestCode = async () => {
-        if (!handoff.current || busy) return; setBusy(true); setError(null);
-        try { const r = await studentSsoApiClient.post('/auth/student/sso/signup/send-code', { handoffId: handoff.current.handoffId, handoffSecret: handoff.current.handoffSecret }); const data = (r.data as { data?: { challengeId?: unknown; expiresAt?: unknown } }).data; if (typeof data?.challengeId !== 'string' || typeof data.expiresAt !== 'string' || Number.isNaN(Date.parse(data.expiresAt))) throw new Error('invalid'); setChallengeId(data.challengeId); setChallengeExpiresAt(data.expiresAt); }
-        catch { setError('We could not send a confirmation code. Restart Microsoft sign-in if this persists.'); } finally { setBusy(false); }
+        if (!handoff.current || busy || otpRequestInFlight.current) return; otpRequestInFlight.current = true; setBusy(true); setError(null);
+        const epoch = sessionEpoch.current;
+        try { const r = await studentSsoApiClient.post('/auth/student/sso/signup/send-code', { handoffId: handoff.current.handoffId, handoffSecret: handoff.current.handoffSecret }); if (epoch !== sessionEpoch.current) return; const data = (r.data as { data?: { challengeId?: unknown; expiresAt?: unknown } }).data; if (typeof data?.challengeId !== 'string' || typeof data.expiresAt !== 'string' || Number.isNaN(Date.parse(data.expiresAt))) throw new Error('invalid'); setChallengeId(data.challengeId); setChallengeExpiresAt(data.expiresAt); }
+        catch { if (epoch !== sessionEpoch.current) return; setError('We could not send a confirmation code. Restart Microsoft sign-in if this persists.'); } finally { otpRequestInFlight.current = false; setBusy(false); }
     };
     const verifyCode = async () => {
-        if (!handoff.current || !challengeId || !/^\d{6}$/.test(code) || busy) return; setBusy(true); setError(null);
-        try { await studentSsoApiClient.post('/auth/student/sso/signup/verify-code', { handoffId: handoff.current.handoffId, handoffSecret: handoff.current.handoffSecret, challengeId, code }); setChallengeId('verified'); setChallengeExpiresAt(null); setCode(''); }
-        catch { setError('That confirmation code is invalid or expired. Request a new code.'); } finally { setBusy(false); }
+        if (!handoff.current || !challengeId || !/^\d{6}$/.test(code) || busy || otpRequestInFlight.current) return; otpRequestInFlight.current = true; setBusy(true); setError(null);
+        const epoch = sessionEpoch.current;
+        try { await studentSsoApiClient.post('/auth/student/sso/signup/verify-code', { handoffId: handoff.current.handoffId, handoffSecret: handoff.current.handoffSecret, challengeId, code }); if (epoch !== sessionEpoch.current) return; setChallengeId('verified'); setChallengeExpiresAt(null); setCode(''); }
+        catch { if (epoch !== sessionEpoch.current) return; setError('That confirmation code is invalid or expired. Request a new code.'); } finally { otpRequestInFlight.current = false; setBusy(false); }
     };
     const refreshContext = async (): Promise<boolean> => {
         if (!handoff.current) return false;
+        const epoch = sessionEpoch.current;
         try {
             const response = await studentSsoApiClient.post('/auth/student/sso/signup/context', { handoffId: handoff.current.handoffId, handoffSecret: handoff.current.handoffSecret });
+            if (epoch !== sessionEpoch.current) return false;
             const parsed = signupContext(response.data);
             if (!parsed) return false;
             setContext(parsed);
