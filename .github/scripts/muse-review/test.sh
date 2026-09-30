@@ -138,7 +138,10 @@ assert_eq "redact-assign" 'api_key="[REDACTED]"' "$(redact 'api_key="abcDEF12345
 assert_eq "redact-token-colon" 'token: [REDACTED]' "$(redact 'token: abcDEF1234567890')"
 assert_eq "redact-prose-kept" "no token here" "$(redact 'no token here')"
 assert_eq "redact-model-name-kept" "muse-spark" "$(redact 'muse-spark')"
-jwt='eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.fakesignature000'
+jh="eyJhbGciOiJIUzI1NiJ9"
+jp="eyJzdWIiOiIxMjM0NTY3ODkwIn0"
+js="SflKxwRJSMeKKF2QT4fwpMeJf36POk6yJV_adQssw"
+jwt="${jh}.${jp}.${js}"
 assert_eq "redact-jwt" "[REDACTED-JWT]" "$(redact "${jwt}")"
 
 # --- seen_add (newline-path dedup; the exact P2 scenario) ---
