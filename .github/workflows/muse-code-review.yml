@@ -663,7 +663,7 @@ jobs:
           # to publishing it as a summary-only review.
           schema_file="${RUNNER_TEMP}/muse-review-schema.json"
           cat > "${schema_file}" <<'SCHEMA'
-          {"type":"object","required":["verdict","findings","next_steps"],"properties":{"verdict":{"type":"string"},"findings":{"type":"array"},"next_steps":{"type":"array"}}}
+          {"type":"object","additionalProperties":false,"required":["verdict","findings","next_steps"],"properties":{"verdict":{"type":"string"},"findings":{"type":"array"},"next_steps":{"type":"array"}}}
           SCHEMA
 
           set +e
