@@ -34,6 +34,8 @@ test('return path accepts same-origin relative targets without auth loops', () =
     assert.equal(resolveStudentSsoReturnPath('/marketplace', ORIGIN), '/marketplace');
     assert.equal(resolveStudentSsoReturnPath('/marketplace?deal=1#offer', ORIGIN), '/marketplace?deal=1#offer');
     assert.equal(resolveStudentSsoReturnPath('https://app.example.invalid/student/profile', ORIGIN), '/student/profile');
+    assert.equal(resolveStudentSsoReturnPath('/auth/student/sso/onboarding', ORIGIN), '/auth/student/sso/onboarding');
+    assert.equal(resolveStudentSsoReturnPath('/auth/student/sso/onboarding?mode=signup', ORIGIN), '/auth/student/sso/onboarding?mode=signup');
     assert.equal(resolveStudentSsoReturnPath(null, ORIGIN), null);
     assert.equal(resolveStudentSsoReturnPath(undefined, ORIGIN), null);
 });
@@ -43,6 +45,7 @@ test('return path rejects cross-origin, auth-loop, and malformed targets', () =>
         'https://evil.example.invalid/marketplace',
         'http://app.example.invalid.evil.example.invalid/',
         '/auth/student/login',
+        '/auth/student/sso/onboarding/extra',
         '/auth',
         'https://app.example.invalid/auth/student/login',
         '/marketplace\\evil',

@@ -14,7 +14,8 @@ operator, and a recorded result before proceeding.
   linking refuse (unlink, identity listing, and unlink-purpose reauth
   stay operational).
 - Enabling any provider additionally requires `STUDENT_SSO_COMPLETION_URL`
-  (the fixed completion route, same-site with the provider callbacks),
+  (the fixed completion route, same-origin with `FRONTEND_URL`, and
+  same-site with the provider callbacks),
   per-provider client ID/secret/callback URL, and
   `STUDENT_SSO_ATTEMPT_KEY`. Boot throws when a provider is enabled
   without them; while fully disabled, stale values are ignored.
@@ -37,7 +38,7 @@ operator, and a recorded result before proceeding.
    Microsoft tenant-gated client ID/secret with its callback URL.
 3. NOT RUN — `STUDENT_SSO_ATTEMPT_KEY` generated (exactly 32 random bytes,
    base64url) and stored as a secret; `STUDENT_SSO_COMPLETION_URL`
-   set to the fixed completion route.
+   set to the fixed completion route on the exact `FRONTEND_URL` origin.
 4. NOT RUN — For enrollment testing, Microsoft enrollment Graph
    (`MICROSOFT_OIDC_*`) must be separately operational. Login/link/unlink
    can be tested without it. The current Microsoft-specific school assertion
@@ -51,14 +52,19 @@ operator, and a recorded result before proceeding.
 
 ## 3. Enablement sequence (all NOT RUN)
 
-1. NOT RUN — Apply ALL release migrations (currently through `066`,
-   not just `058`) on a disposable copy first; confirm they apply
-   cleanly and the consume-once triggers reject rewritten handoffs
-   /grants. The release code reads and writes columns introduced
-   after `058` (for example `users.active_session_issued_at` from
-   `064`, benefit snapshots from `065`, claim-session tombstones from
-   `066`), so stopping at an older migration breaks linked finishes
-   and merchant exchanges with missing-column errors.
+1. NOT RUN — Apply ALL release migrations through `084` on a disposable
+   copy first; confirm they apply cleanly and the consume-once triggers
+   reject rewritten handoffs/grants. Before migration `081`, quiesce SSO
+   starts/callbacks and account-recovery completion on old API replicas;
+   keep them blocked until `081` is applied and all serving replicas
+   enforce its attempt fence. Migration `083` adds the encrypted recovery
+   OTP outbox and `084` extends it to signup OTPs. Configure the shared
+   encryption key and drain old replicas before accepting new recovery
+   or signup starts; `084` renames the outbox table, so old workers must
+   not run across this migration. See the backend-first and key-
+   rotation gates in `docs/passwordless-release-checklist.md`. Stopping
+   at the older `066` boundary leaves passwordless login and recovery
+   reading missing schema and cannot be used for this release.
 2. NOT RUN — Deploy the Release B build to all API instances; confirm
    every instance serves it (mixed-version window stays closed).
 3. NOT RUN — With providers still disabled, prove discovery returns

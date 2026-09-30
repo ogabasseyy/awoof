@@ -85,6 +85,7 @@ router.delete('/universities/:id', asyncHandler(adminUniversityController.delete
  *                         properties:
  *                           studentAssurance: { $ref: '#/components/schemas/StudentAssurance' }
  *       '401': { $ref: '#/components/responses/Unauthorized' }
+ *       '503': { $ref: '#/components/responses/SessionValidationUnavailable' }
  */
 router.get('/students', asyncHandler(adminStudentController.getStudents.bind(adminStudentController)));
 router.get('/vendors', asyncHandler(adminVendorController.getVendors.bind(adminVendorController)));

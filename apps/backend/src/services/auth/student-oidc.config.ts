@@ -86,7 +86,7 @@ function lenientCompletionUrl(value: string | undefined): URL | null {
     }
 }
 
-function readAttemptKey(value: string | undefined): string {
+export function readAttemptKey(value: string | undefined): string {
     if (typeof value !== 'string' || !/^[A-Za-z0-9_-]+$/.test(value)) {
         throw new TypeError('Student SSO attempt key must decode from base64url to exactly 32 bytes');
     }
@@ -94,6 +94,21 @@ function readAttemptKey(value: string | undefined): string {
         throw new TypeError('Student SSO attempt key must decode from base64url to exactly 32 bytes');
     }
     return value;
+}
+
+/**
+ * Retained SSO attempt key for recovery-code digests. Provider enablement
+ * nulls the live SSO configuration, but recovery must keep working while
+ * sign-in is unavailable. Absent or malformed values resolve to null so
+ * boot and tests never fail; the recovery factories report unavailable.
+ */
+export function retainedSsoAttemptKey(value: string | undefined): string | null {
+    if (!value) return null;
+    try {
+        return readAttemptKey(value);
+    } catch {
+        return null;
+    }
 }
 
 /**
@@ -128,6 +143,18 @@ export function readStudentSsoConfiguration(raw: RawStudentSsoConfiguration): St
     }
     if (!raw.attemptKey) throw new TypeError('Student SSO attempt key is required when a provider is enabled');
     return { google, microsoft, completionUrl, attemptKey: readAttemptKey(raw.attemptKey) };
+}
+
+/**
+ * The completion page consumes browser auth state created by the frontend,
+ * so an enabled SSO provider must return to that exact origin (not merely
+ * another same-site origin).
+ */
+export function validateStudentSsoFrontendOrigin(frontendUrl: string, configuration: StudentSsoConfiguration): void {
+    if (!configuration.google.enabled && !configuration.microsoft.enabled) return;
+    if (!configuration.completionUrl || new URL(frontendUrl).origin !== configuration.completionUrl.origin) {
+        throw new TypeError('FRONTEND_URL must match the Student SSO completion origin when a provider is enabled');
+    }
 }
 
 /** Deployment readiness: discovery advertises only these providers. */

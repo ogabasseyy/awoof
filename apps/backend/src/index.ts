@@ -10,6 +10,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import cors from 'cors';
 import helmet from 'helmet';
 import rateLimit from 'express-rate-limit';
+import type { Pool } from 'pg';
 import { skipCorsPreflight } from './middleware/cors-preflight.js';
 import { isMicrosoftCallbackPath, isMicrosoftRoute, microsoftCors } from './middleware/microsoft-cors.js';
 import { uploadedFile } from './middleware/uploaded-file.js';
@@ -21,18 +22,25 @@ import { redis } from './config/redis.js';
 import { errorHandler } from './common/middleware/errorHandler.js';
 import { logger } from './common/middleware/logger.js';
 import { appLogger } from './common/logger.js';
+import { isEmailConfigured, sendEmail } from './services/email/email.service.js';
+import { hasRecoveryOtpOutboxKey, startRecoveryOtpOutboxDispatcher } from './services/auth/recovery-otp-outbox.service.js';
 import { swaggerSpec } from './config/swagger.js';
 import type { MicrosoftFlowService } from './services/verification/microsoft-flow.service.js';
 import { isStudentSsoCallbackPath, isStudentSsoRoute } from './routes/student-sso.routes.js';
 import type { StudentSsoFlowService } from './services/auth/student-sso-flow.service.js';
+import type { StudentSsoSignupService } from './services/auth/student-sso-signup.service.js';
 
 export type AppOptions = {
   microsoftFlowFactory?: () => Pick<MicrosoftFlowService, 'start' | 'callback' | 'finish' | 'callbackCookieNameForState'>;
   /** Local integration harness only; production keeps server-held config. */
   microsoftIssuanceEnabled?: () => boolean;
-  studentSsoFlowFactory?: () => Pick<StudentSsoFlowService, 'start' | 'callback' | 'finish' | 'callbackCookieNameForState'>;
+  studentSsoFlowFactory?: () => Pick<StudentSsoFlowService, 'start' | 'callback' | 'finish' | 'callbackCookieNameForState' | 'callbackDuplicateState'>;
   /** Local integration harness only; production keeps server-held config. */
   studentSsoIssuanceEnabled?: () => boolean;
+  /** Local integration harness only; production uses the default signup service. */
+  studentSsoSignupFactory?: () => StudentSsoSignupService;
+  /** Local integration harness only; production uses the application pool. */
+  studentSsoPool?: Pick<Pool, 'query'>;
 };
 
 /**
@@ -151,8 +159,19 @@ export class App {
         },
         credentials: true,
       });
+    // Student SSO may finish on a dedicated frontend origin distinct from
+    // FRONTEND_URL. Keep the extra CORS origin scoped to this namespace;
+    // route handlers still enforce the exact configured origin.
+    const studentSsoCors = cors({
+      origin: (origin, callback) => callback(null, origin === config.studentSso.completionUrl?.origin),
+      credentials: true,
+    });
     this.app.use((req, res, next) => {
       if (isMicrosoftRoute(req.path)) return next();
+      const completionOrigin = config.studentSso.completionUrl?.origin;
+      if (isStudentSsoRoute(req.path) && completionOrigin && req.header('origin') === completionOrigin) {
+        return studentSsoCors(req, res, next);
+      }
       merchantCors(req, res, next);
     });
 
@@ -214,6 +233,8 @@ export class App {
       const studentSsoRoutes = await import('./routes/student-sso.routes.js');
       this.app.use('/api/auth/student/sso', studentSsoRoutes.createStudentSsoRouter(this.options.studentSsoFlowFactory, {
         ...(this.options.studentSsoIssuanceEnabled ? { isIssuanceEnabled: this.options.studentSsoIssuanceEnabled } : {}),
+        ...(this.options.studentSsoSignupFactory ? { signupService: this.options.studentSsoSignupFactory } : {}),
+        ...(this.options.studentSsoPool ? { pool: this.options.studentSsoPool } : {}),
       }));
       appLogger.info('Student SSO routes registered');
     } catch (error) {
@@ -358,12 +379,20 @@ export class App {
       const status = typeof candidate === 'number' && candidate >= 400 && candidate < 600 ? candidate : 500;
       // Only client-recoverable protocol states are exposed. Keep every other
       // error's message/code generic so provider, SQL, and request details
-      // cannot cross the Microsoft or SSO boundary.
+      // cannot cross the Microsoft or SSO boundary. The existing-account
+      // conflict is recoverable: onboarding routes only this code to
+      // sign-in/recovery guidance, so it must survive redaction. The
+      // still-completing 409 carries one non-sensitive boolean the
+      // completion page needs to wait instead of failing; only that
+      // literal survives, never the underlying details object.
       const safeCode = ssoRoute
-        ? 'SSO_REQUEST_REJECTED'
+        ? typed.code === 'SSO_SIGNUP_EXISTING_ACCOUNT' ? typed.code : 'SSO_REQUEST_REJECTED'
         : typed.code === 'reauthentication_required' || typed.code === 'consent_notice_changed'
           ? typed.code : 'MICROSOFT_REQUEST_REJECTED';
-      res.status(status).json({ success: false, error: { code: safeCode, statusCode: status } });
+      const thrownDetails = (typed as { details?: unknown }).details;
+      const retryableFinish = ssoRoute && status === 409 && typeof thrownDetails === 'object' && thrownDetails !== null
+        && (thrownDetails as { retryable?: unknown }).retryable === true;
+      res.status(status).json({ success: false, error: { code: safeCode, statusCode: status, ...(retryableFinish ? { details: { retryable: true } } : {}) } });
     });
     // 404 handler
     this.app.use((_req, res) => {
@@ -402,6 +431,18 @@ export class App {
       startCommerceNotificationDispatcher();
       const { startChallengeRetentionDispatcher } = await import('./services/verification/challenge-retention.service.js');
       startChallengeRetentionDispatcher();
+      const outboxKey = config.studentAccountRecovery.otpOutboxEncryptionKey;
+      if (outboxKey && hasRecoveryOtpOutboxKey(outboxKey) && isEmailConfigured()) {
+        startRecoveryOtpOutboxDispatcher({
+          pool: db.getPool(),
+          key: outboxKey,
+          previousKey: config.studentAccountRecovery.previousOtpOutboxEncryptionKey,
+          deliver: async (email, code, purpose) => {
+            const flow = purpose === 'student_sso_signup' ? 'passwordless student signup' : 'account recovery';
+            return sendEmail(email, 'Awoof email confirmation code', `<p>Your Awoof email confirmation code is <strong>${code}</strong>.</p><p>It expires shortly. If you did not start ${flow}, ignore this email.</p>`, 1, { logFailures: false });
+          },
+        });
+      }
 
       // Initialize routes (must be after database is ready)
       await this.initializeRoutes();

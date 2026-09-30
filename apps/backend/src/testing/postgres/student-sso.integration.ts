@@ -642,8 +642,8 @@ test('attempt payloads match their status', async () => {
         );
         await client.query(
             `UPDATE student_auth_attempts
-             SET status = 'consumed', encrypted_verifier = NULL, nonce = NULL,
-                 encrypted_observation = NULL WHERE id = $1`,
+             SET status = 'consumed', state_hash = NULL, callback_cookie_hash = NULL, finish_secret_hash = NULL,
+                 encrypted_verifier = NULL, nonce = NULL, encrypted_observation = NULL WHERE id = $1`,
             [attemptId],
         );
         const row = (await client.query<{ status: string; encrypted_observation: string | null }>(
@@ -786,11 +786,20 @@ test('reauth grants are single-purpose and single-use', async () => {
         await assertPgError(createReauthGrant(client, userId, { purpose: 'login' }), '23514');
         const secretHash = secretHex();
         const grantId = await createReauthGrant(client, userId, { purpose: 'unlink', secretHash });
-        await assertPgError(createReauthGrant(client, userId, { secretHash }), '23505');
+        // Migration 077 dropped the obsolete global digest uniqueness
+        // (mirroring 070): recovery scrubs every retained row with the
+        // shared sentinel, so duplicate digests insert and terminalize
+        // instead of aborting the transaction.
+        const duplicateId = await createReauthGrant(client, userId, { secretHash });
         await client.query(
-            `UPDATE student_auth_reauth_grants SET consumed_at = clock_timestamp() WHERE id = $1`,
-            [grantId],
+            `UPDATE student_auth_reauth_grants SET consumed_at = clock_timestamp(), secret_hash = 'scrubbed' WHERE id = ANY($1::uuid[])`,
+            [[grantId, duplicateId]],
         );
+        const scrubbed = await client.query<{ count: string }>(
+            `SELECT count(*)::text AS count FROM student_auth_reauth_grants WHERE id = ANY($1::uuid[]) AND secret_hash = 'scrubbed' AND consumed_at IS NOT NULL`,
+            [[grantId, duplicateId]],
+        );
+        assert.equal(scrubbed.rows[0]!.count, '2');
         await assertPgError(
             client.query(
                 `UPDATE student_auth_reauth_grants SET consumed_at = NULL WHERE id = $1`,

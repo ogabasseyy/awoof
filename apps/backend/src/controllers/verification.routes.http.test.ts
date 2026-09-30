@@ -8,6 +8,7 @@ import { errorHandler } from '../common/middleware/errorHandler.js';
 import { jwtService } from '../services/auth/jwt.service.js';
 import type { VerificationFlowService } from '../services/verification/verification-flow.service.js';
 import { MERCHANT_DISCLOSURE_NOTICE_VERSION, VERIFICATION_NOTICE_VERSION } from '../services/verification/verification-notices.js';
+import { db } from '../config/database.js';
 
 const userId = '4f088fa7-79d9-4c64-a48c-9ecbbbc3c4a3';
 const universityId = 'b9c35781-9f75-44b6-98ca-0c928fb993a9';
@@ -77,6 +78,8 @@ test('discovers only authenticated owner consents without requiring eligibility 
 });
 
 async function withServer(controller: VerificationController, operation: (baseUrl: string) => Promise<void>): Promise<void> {
+    const originalGetPool = db.getPool.bind(db);
+    db.getPool = (() => ({ query: async () => ({ rows: [], rowCount: 0 }) })) as typeof db.getPool;
     const app = express();
     app.use(express.json());
     app.use('/verification', createVerificationRouter(controller));
@@ -90,6 +93,7 @@ async function withServer(controller: VerificationController, operation: (baseUr
     } finally {
         server.close();
         await once(server, 'close');
+        db.getPool = originalGetPool;
     }
 }
 

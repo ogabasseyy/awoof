@@ -237,6 +237,57 @@ test('finish responses accept only the authenticated or link-required union', ()
         }),
         null,
     );
+    // The recovery re-enrollment marker survives only as the literal the
+    // server sends; anything else stays absent so the marketplace warning
+    // and the security-page enrollment gate read the same value.
+    const marked = parseSsoFinishResponse({
+        success: true,
+        data: {
+            outcome: 'authenticated',
+            user: { ...user, recoveryReenrollmentRequired: true },
+            tokens,
+            studentAssurance: assurance,
+            assuranceStatus: 'available',
+        },
+    });
+    assert.equal(marked?.kind, 'authenticated');
+    assert.equal(marked?.kind === 'authenticated' ? marked.user.recoveryReenrollmentRequired : undefined, true);
+    const unmarked = parseSsoFinishResponse({
+        success: true,
+        data: { outcome: 'authenticated', user, tokens, studentAssurance: assurance, assuranceStatus: 'available' },
+    });
+    assert.equal(unmarked?.kind === 'authenticated' ? 'recoveryReenrollmentRequired' in unmarked.user : false, false);
+    const spoofed = parseSsoFinishResponse({
+        success: true,
+        data: {
+            outcome: 'authenticated',
+            user: { ...user, recoveryReenrollmentRequired: 'yes' },
+            tokens,
+            studentAssurance: assurance,
+            assuranceStatus: 'available',
+        },
+    });
+    assert.equal(spoofed?.kind === 'authenticated' ? 'recoveryReenrollmentRequired' in spoofed.user : false, false);
+    assert.equal(
+        parseSsoFinishResponse({
+            success: true,
+            data: {
+                outcome: 'link_required',
+                handoffId: HANDOFF_ID,
+                handoffSecret: 'opaque-handoff-secret',
+                expiresAt: new Date(Date.now() + 600_000).toISOString(),
+                provider: 'google',
+            },
+        })?.kind,
+        'link_required',
+    );
+    assert.equal(
+        parseSsoFinishResponse({
+            success: true,
+            data: { outcome: 'link_required', handoffId: 'nope', handoffSecret: 's', expiresAt: new Date().toISOString(), provider: 'google' },
+        }),
+        null,
+    );
     assert.equal(
         parseSsoFinishResponse({
             success: true,
@@ -246,13 +297,6 @@ test('finish responses accept only the authenticated or link-required union', ()
                 handoffSecret: 'opaque-handoff-secret',
                 expiresAt: new Date(Date.now() + 600_000).toISOString(),
             },
-        })?.kind,
-        'link_required',
-    );
-    assert.equal(
-        parseSsoFinishResponse({
-            success: true,
-            data: { outcome: 'link_required', handoffId: 'nope', handoffSecret: 's', expiresAt: new Date().toISOString() },
         }),
         null,
     );
@@ -389,7 +433,10 @@ test('failure redirects carry a safe error taxonomy only', () => {
     assert.equal(parseLoginErrorCode('sso_expired&attempt=1'), null);
     assert.equal(parseLoginErrorCode(null), null);
     assert.match(loginErrorMessage('sso_expired'), /expired/);
-    assert.match(loginErrorMessage('session_expired'), /password/);
+    assert.match(loginErrorMessage('session_expired'), /school account.*password if you set one/);
+    assert.match(loginErrorMessage('sso_not_completed'), /try again with your school account.*password if you set one/i);
+    assert.match(loginErrorMessage('sso_unavailable'), /try again later.*password if you set one/i);
+    assert.doesNotMatch(loginErrorMessage('sso_expired'), /use your password\./i);
     assert.doesNotMatch(loginErrorMessage('sso_not_completed'), /attempt|secret|token/i);
     const path = ssoFailureLoginPath('sso_expired', '/marketplace?claimSession=x', ORIGIN);
     assert.ok(path.startsWith('/auth/student/login?'));

@@ -24,3 +24,28 @@ test('deliberately rejects oversized many-property bindings before SQL formattin
         /exceed the 4 KiB limit/,
     );
 });
+
+test('returns expired without burning budget when the caller deadline elapsed', async () => {
+    const now = new Date('2026-09-29T00:00:00.000Z');
+    const queries: string[] = [];
+    const tx = { query: async (text: string) => { queries.push(text); return { rows: [{ now }] }; } };
+    const outcome = await requestChallenge(tx as never, {
+        purpose: 'student_sso_signup', subjectKey: 'student@example.invalid', bindings: { email: 'student@example.invalid' },
+        expiresAt: new Date(now.getTime() - 1000),
+    });
+    assert.equal(outcome.status, 'expired');
+    assert.ok(!queries.some((text) => text.includes('INSERT INTO verification_challenges')),
+        'an elapsed deadline must not mint a challenge row');
+    assert.ok(!queries.some((text) => text.includes('send_count = send_count + 1')),
+        'an elapsed deadline must not burn send allowance');
+});
+
+test('returns expired when the caller deadline lacks a usable lifetime', async () => {
+    const now = new Date('2026-09-29T00:00:00.000Z');
+    const tx = { query: async () => ({ rows: [{ now }] }) };
+    const outcome = await requestChallenge(tx as never, {
+        purpose: 'student_sso_signup', subjectKey: 'student@example.invalid', bindings: { email: 'student@example.invalid' },
+        expiresAt: new Date(now.getTime() + 500),
+    });
+    assert.equal(outcome.status, 'expired');
+});

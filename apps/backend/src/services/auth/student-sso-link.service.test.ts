@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import type { Pool } from 'pg';
-import { StudentSsoLinkService } from './student-sso-link.service.js';
+import { StudentSsoLinkService, maskObservedMailbox } from './student-sso-link.service.js';
 
 const USER_ID = '11111111-1111-4111-8111-111111111111';
 const SID = '22222222-2222-4222-8222-222222222222';
@@ -127,7 +127,19 @@ test('unlink validates identifiers before touching storage, and stays enabled wh
     );
 });
 
-test('identity listing rejects malformed owners and exposes no subject material', async () => {
+test('mailbox masking keeps only the first character plus the domain', () => {
+    assert.equal(maskObservedMailbox('student@school.example'), 's***@school.example');
+    assert.equal(maskObservedMailbox('A@Upper.Example'), 'A***@upper.example');
+    assert.equal(maskObservedMailbox(null), undefined);
+    assert.equal(maskObservedMailbox(undefined), undefined);
+    assert.equal(maskObservedMailbox(''), undefined);
+    assert.equal(maskObservedMailbox('no-at-sign'), undefined);
+    assert.equal(maskObservedMailbox('@nodomain'), undefined);
+    assert.equal(maskObservedMailbox('nolocal@'), undefined);
+    assert.equal(maskObservedMailbox('two@@signs.example'), undefined);
+});
+
+test('identity listing exposes a masked mailbox but no subject material', async () => {
     const service = new StudentSsoLinkService({ pool: throwingPool(), attemptKey: 'key', isEnabled: () => false });
     await assert.rejects(service.listIdentities('bad'), /not available/);
     const leaking = new StudentSsoLinkService({
@@ -153,6 +165,7 @@ test('identity listing rejects malformed owners and exposes no subject material'
         provider: 'google',
         universityName: 'Fixture University',
         linkedAt: '2026-09-01T00:00:00.000Z',
+        mailboxMasked: 's***@school.example',
     }]);
 });
 

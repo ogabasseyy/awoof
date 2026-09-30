@@ -1,4 +1,3 @@
-import { randomBytes, randomUUID } from 'node:crypto';
 import type { Pool, PoolClient } from 'pg';
 import {
     BadRequestError,
@@ -14,6 +13,7 @@ import {
 } from '../verification/microsoft-attempt-crypto.js';
 import { lockStudentContext } from '../verification/eligibility-context.service.js';
 import { passwordService } from './password.service.js';
+import { consumeActionGrant, issueActionGrant, type ActionPurpose } from './student-action-grant.service.js';
 import { studentSsoCookieName } from './student-sso-flow.service.js';
 import {
     StudentSsoAuthorityInvalidatedError,
@@ -22,6 +22,7 @@ import {
     hasCurrentMicrosoftMembership,
     readProvenSchoolMailbox,
     revokeSsoSchoolAssertions,
+    selectCurrentProofAuthority,
     writeSsoSchoolAssertion,
 } from './student-sso-onboarding.service.js';
 import type { LoginProvider } from './student-sso.types.js';
@@ -48,7 +49,7 @@ export const STUDENT_SSO_REAUTH_LIFETIME_SECONDS = 5 * 60;
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
-export type StudentSsoReauthPurpose = 'link' | 'unlink';
+export type StudentSsoReauthPurpose = ActionPurpose;
 
 export type StudentSsoReauthResult = {
     grantId: string;
@@ -61,7 +62,22 @@ export type StudentSsoLinkedIdentity = {
     provider: LoginProvider;
     universityName: string;
     linkedAt: string;
+    /** Masked sign-in mailbox for telling same-university identities apart; absent when the provider supplied none. */
+    mailboxMasked?: string;
 };
+
+/**
+ * Owner-visible mailbox label for distinguishing linked identities: the
+ * first local-part character plus the full domain (j***@univ.edu). Raw
+ * mailboxes, subjects, and issuers never leave the server; malformed or
+ * missing values omit the label instead of leaking a partial address.
+ */
+export function maskObservedMailbox(email: string | null | undefined): string | undefined {
+    if (typeof email !== 'string') return undefined;
+    const at = email.indexOf('@');
+    if (at <= 0 || at === email.length - 1 || email.indexOf('@', at + 1) !== -1) return undefined;
+    return `${email.slice(0, 1)}***@${email.slice(at + 1).toLowerCase()}`;
+}
 
 export type StudentSsoLinkResult =
     | {
@@ -75,8 +91,9 @@ export type StudentSsoLinkResult =
     | { outcome: 'restart'; attemptId: string | null };
 
 export type StudentSsoUnlinkResult =
-    | { unlinked: true }
-    | { outcome: 'last_method' };
+    | { unlinked: true; sessionRevoked: boolean }
+    | { outcome: 'last_method' }
+    | { outcome: 'last_proof_method' };
 
 export type StudentSsoLinkDependencies = {
     pool: Pool;
@@ -111,21 +128,6 @@ type HandoffRow = {
     expires_at: Date;
     consumed_at: Date | null;
 };
-
-type GrantRow = {
-    id: string;
-    user_id: string;
-    sid: string;
-    purpose: string;
-    secret_hash: string;
-    password_hash: string | null;
-    expires_at: Date;
-    consumed_at: Date | null;
-};
-
-function secret(bytes = 32): string {
-    return randomBytes(bytes).toString('base64url');
-}
 
 function validOpaque(value: unknown): value is string {
     return typeof value === 'string' && value.length > 0 && value.length <= 1024;
@@ -180,8 +182,9 @@ export class StudentSsoLinkService {
      * role, and pins the verified hash into the grant row, so a password
      * reset or session replacement invalidates the grant.
      */
-    async reauth(input: { userId: unknown; sid: unknown; password: unknown; purpose: unknown }): Promise<StudentSsoReauthResult> {
-        if (input.purpose !== 'link' && input.purpose !== 'unlink') {
+    async reauth(input: { userId: unknown; sid: unknown; password: unknown; purpose: unknown; targetIdentityId?: unknown; pendingCodeId?: unknown }): Promise<StudentSsoReauthResult> {
+        if (input.purpose !== 'link' && input.purpose !== 'unlink'
+            && input.purpose !== 'recovery_code_generate' && input.purpose !== 'recovery_code_activate' && input.purpose !== 'recovery_code_remove') {
             throw new BadRequestError('Student SSO reauthentication purpose is invalid');
         }
         if (typeof input.password !== 'string' || input.password.length === 0 || input.password.length > 1024) {
@@ -191,10 +194,18 @@ export class StudentSsoLinkService {
         // Legacy tokens without a session id cannot bind a grant: fail closed.
         if (!validUuid(input.sid)) throw new UnauthorizedError('Student SSO reauthentication is not available for this session');
         if (input.purpose === 'link') this.assertLinkingEnabled();
+        if (input.targetIdentityId !== undefined && !validUuid(input.targetIdentityId)) {
+            throw new BadRequestError('Student SSO reauthentication request is invalid');
+        }
+        if (input.pendingCodeId !== undefined && !validUuid(input.pendingCodeId)) {
+            throw new BadRequestError('Student SSO reauthentication request is invalid');
+        }
         const userId = input.userId;
         const sid = input.sid;
         const password = input.password;
         const purpose: StudentSsoReauthPurpose = input.purpose;
+        const targetIdentityId = typeof input.targetIdentityId === 'string' ? input.targetIdentityId : undefined;
+        const pendingCodeId = typeof input.pendingCodeId === 'string' ? input.pendingCodeId : undefined;
 
         const pre = await this.deps.pool.query<{ password_hash: string | null; role: string; deleted_at: Date | null }>(
             'SELECT password_hash, role, deleted_at FROM users WHERE id = $1',
@@ -224,22 +235,39 @@ export class StudentSsoLinkService {
                 throw error;
             }
             if (!context.active) throw unavailableAccount();
-            const locked = await tx.query<{ password_hash: string | null; active_session_id: string | null }>(
-                'SELECT password_hash, active_session_id FROM users WHERE id = $1',
+            const locked = await tx.query<{ password_hash: string | null; active_session_id: string | null; credential_generation: string | number }>(
+                'SELECT password_hash, active_session_id, credential_generation FROM users WHERE id = $1',
                 [userId],
             );
             if (locked.rows[0]?.password_hash !== verifiedHash || locked.rows[0]?.active_session_id !== sid) {
                 throw new UnauthorizedError('Student SSO reauthentication failed');
             }
-            const grantId = randomUUID();
-            const grantSecret = secret();
-            const inserted = await tx.query<{ expires_at: Date }>(
-                `INSERT INTO student_auth_reauth_grants (id, user_id, sid, purpose, secret_hash, password_hash, expires_at)
-                 VALUES ($1, $2, $3::uuid, $4, $5, $6, clock_timestamp() + interval '5 minutes')
-                 RETURNING expires_at`,
-                [grantId, userId, sid, purpose, hashSsoSecret(grantSecret), verifiedHash],
+            const active = await tx.query<{ generation: string | number }>(
+                "SELECT generation FROM student_auth_recovery_codes WHERE user_id = $1 AND status = 'active' FOR UPDATE", [userId],
             );
-            return { grantId, grantSecret, expiresAt: inserted.rows[0]!.expires_at.toISOString() };
+            // Bound the composite grant foreign keys before issuance: a
+            // missing or foreign target must surface as an operational
+            // error, never a PostgreSQL 23503 surfaced as a 500.
+            if (targetIdentityId !== undefined) {
+                const target = await tx.query<{ id: string }>(
+                    'SELECT id FROM student_auth_identities WHERE id = $1 AND user_id = $2 AND revoked_at IS NULL',
+                    [targetIdentityId, userId],
+                );
+                if (!target.rows[0]) throw new NotFoundError('Student SSO login identity not found');
+            }
+            if (pendingCodeId !== undefined) {
+                const pending = await tx.query<{ id: string }>(
+                    'SELECT id FROM student_auth_recovery_codes WHERE id = $1 AND user_id = $2',
+                    [pendingCodeId, userId],
+                );
+                if (!pending.rows[0]) throw new NotFoundError('Student SSO recovery code not found');
+            }
+            return issueActionGrant(tx, {
+                userId, sid, purpose, credentialGeneration: Number(locked.rows[0]!.credential_generation),
+                ...(targetIdentityId === undefined ? {} : { targetIdentityId }),
+                ...(pendingCodeId === undefined ? {} : { pendingCodeId }),
+                ...(active.rows[0] === undefined ? {} : { activeCodeGeneration: Number(active.rows[0].generation) }),
+            });
         });
     }
 
@@ -359,13 +387,7 @@ export class StudentSsoLinkService {
                     // conflict, no revelation of the match.
                     throw new ConflictError('Student SSO identity is already linked');
                 }
-                const grant = await tx.query<GrantRow>(
-                    'SELECT * FROM student_auth_reauth_grants WHERE id = $1 FOR UPDATE',
-                    [grantId],
-                );
-                if (!this.grantSatisfies(grant.rows[0], userId, sid, 'link', account.rows[0]?.password_hash ?? null, clock.rows[0]!.now, grantSecret)) {
-                    throw invalidLink();
-                }
+                await this.consumeProofGrant(tx, { userId, sid, grantId, secret: grantSecret, purpose: 'link' }, invalidLink);
                 // Mailbox binding: the owner must hold an independently proven
                 // school mailbox whose domain this policy approves, at the
                 // policy's university. Email claim equality alone never links.
@@ -399,7 +421,6 @@ export class StudentSsoLinkService {
                         // A different returned Google account is an explicit
                         // mismatch: the handoff is spent and linking restarts.
                         await this.consumeHandoff(tx, handoff.id, userId, sid);
-                        await this.consumeGrant(tx, grantId);
                         return { outcome: 'mismatch', attemptId: handoff.attempt_id };
                     }
                 }
@@ -454,11 +475,11 @@ export class StudentSsoLinkService {
                     microsoftMembershipAttested,
                 });
                 await this.consumeHandoff(tx, handoff.id, userId, sid);
-                await this.consumeGrant(tx, grantId);
                 const university = await tx.query<{ name: string }>(
                     'SELECT name FROM universities WHERE id = $1',
                     [context.universityId],
                 );
+                const mailboxMasked = maskObservedMailbox(observation.email);
                 return {
                     outcome: 'linked',
                     identity: {
@@ -466,6 +487,7 @@ export class StudentSsoLinkService {
                         provider: observation.provider,
                         universityName: university.rows[0]?.name ?? '',
                         linkedAt: linkedAt.toISOString(),
+                        ...(mailboxMasked === undefined ? {} : { mailboxMasked }),
                     },
                     schoolAssertion,
                     reactivated,
@@ -512,6 +534,11 @@ export class StudentSsoLinkService {
                 'SELECT password_hash, active_session_id FROM users WHERE id = $1',
                 [userId],
             );
+            // Same usable-password test as the reauth gate above: a legacy
+            // empty-string hash cannot authenticate, so it must not count
+            // as a remaining login method either.
+            const storedHash = account.rows[0]?.password_hash;
+            const hasUsablePassword = typeof storedHash === 'string' && storedHash !== '';
             if (account.rows[0]?.active_session_id !== sid) throw invalidUnlink();
             const identity = await tx.query<{ id: string; user_id: string; university_id: string; provider: string; revoked_at: Date | null }>(
                 'SELECT id, user_id, university_id, provider, revoked_at FROM student_auth_identities WHERE id = $1 FOR UPDATE',
@@ -523,29 +550,106 @@ export class StudentSsoLinkService {
             if (!row || row.user_id !== userId || row.revoked_at !== null) {
                 throw new NotFoundError('Student SSO login identity not found');
             }
-            const grant = await tx.query<GrantRow>(
-                'SELECT * FROM student_auth_reauth_grants WHERE id = $1 FOR UPDATE',
-                [grantId],
-            );
-            const clock = await tx.query<{ now: Date }>('SELECT clock_timestamp() AS now');
-            if (!this.grantSatisfies(grant.rows[0], userId, sid, 'unlink', account.rows[0]?.password_hash ?? null, clock.rows[0]!.now, grantSecret)) {
-                throw invalidUnlink();
-            }
-            const sibling = await tx.query(
-                `SELECT 1 FROM student_auth_identities
-                 WHERE user_id = $1 AND id <> $2 AND revoked_at IS NULL
-                 LIMIT 1`,
+            const candidates = await tx.query<{ provider: LoginProvider; is_target: boolean }>(
+                `SELECT identity.provider, identity.id = $2 AS is_target FROM student_auth_identities identity
+                 JOIN students student ON student.user_id = identity.user_id
+                     AND student.status = 'active'
+                     AND student.university_id = identity.university_id
+                 JOIN institution_login_policies policy ON policy.university_id = identity.university_id
+                     AND policy.provider = identity.provider AND policy.issuer = identity.issuer
+                     AND policy.enabled AND policy.approved_by IS NOT NULL AND policy.approved_until > clock_timestamp()
+                 JOIN universities university ON university.id = identity.university_id AND university.is_active
+                 JOIN institution_login_domain_providers mapping
+                   ON mapping.policy_id = policy.id
+                  AND mapping.university_id = policy.university_id
+                  AND mapping.provider = policy.provider
+                 JOIN institution_login_domains domain
+                   ON domain.domain = mapping.domain
+                  AND domain.university_id = mapping.university_id
+                  AND domain.is_active
+                 WHERE identity.user_id = $1 AND identity.revoked_at IS NULL`,
                 [userId, identityId],
             );
             // Another usable login method must remain: a usable password or a
-            // second active identity. Nothing is consumed on this path.
-            if (account.rows[0]?.password_hash == null && (sibling.rowCount ?? 0) === 0) {
+            // second identity that can still authenticate. That mirrors the
+            // login authority chain (canonical university, currently
+            // approved institution policy for its exact issuer, active
+            // university, a live domain mapping, enabled provider): a
+            // sibling from a replaced tenant, a deactivated university, a
+            // withdrawn domain or approval, or a previous institution
+            // cannot log in, so it cannot satisfy this. Every candidate
+            // provider is evaluated: with siblings across providers, an
+            // unordered LIMIT 1 could sample a disabled one and wrongly
+            // report last_method. Unlike proof authority, this is
+            // deliberately any-domain: login is mailbox-initiated, so a
+            // sibling stays usable for login via any still-mapped domain
+            // mailbox even after its own observed domain is withdrawn.
+            // Nothing is consumed here.
+            const usable = candidates.rows.filter(
+                (candidate) => this.deps.isProviderEnabled?.(candidate.provider) === true,
+            );
+            const siblingUsable = usable.some((candidate) => !candidate.is_target);
+            if (!hasUsablePassword && !siblingUsable) {
                 return { outcome: 'last_method' };
             }
-            await this.consumeGrant(tx, grantId);
+            // Fresh-proof preservation: every provider-backed sensitive
+            // action requires a live Microsoft identity, and password
+            // reauthentication rejects a null password. Removing a usable
+            // Microsoft identity from a passwordless account with no
+            // second usable Microsoft identity would leave a Google-only
+            // owner unable to manage recovery codes or link another
+            // identity, so that removal waits. A target that already fails
+            // the authority chain (withdrawn approval, replaced tenant)
+            // cannot fresh-proof today, so removing it strands nothing and
+            // stays allowed. Like last_method, this precedes consumption:
+            // the target-bound grant stays retryable.
+            //
+            // Proof usability is stricter than login usability: reauth
+            // start only accepts a Microsoft identity whose own
+            // observed-email domain is still mapped. A sibling with no
+            // observed mailbox — or one whose domain was withdrawn while
+            // the policy still maps another domain — stays a usable login
+            // but can never fresh-proof, so the proof-method guard
+            // evaluates the exact-domain predicate, not the any-domain
+            // login candidates above.
+            const proof = await tx.query<{ is_target: boolean }>(
+                `SELECT identity.id = $2 AS is_target FROM student_auth_identities identity
+                 JOIN students student ON student.user_id = identity.user_id
+                     AND student.status = 'active'
+                     AND student.university_id = identity.university_id
+                 JOIN institution_login_policies policy ON policy.university_id = identity.university_id
+                     AND policy.provider = identity.provider AND policy.issuer = identity.issuer
+                     AND policy.enabled AND policy.approved_by IS NOT NULL AND policy.approved_until > clock_timestamp()
+                 JOIN universities university ON university.id = identity.university_id AND university.is_active
+                 JOIN institution_login_domain_providers mapping
+                   ON mapping.policy_id = policy.id
+                  AND mapping.university_id = policy.university_id
+                  AND mapping.provider = policy.provider
+                 JOIN institution_login_domains domain
+                   ON domain.domain = mapping.domain
+                  AND domain.university_id = mapping.university_id
+                  AND domain.is_active
+                  AND domain.domain = split_part(lower(btrim(identity.observed_email)), '@', 2)
+                 WHERE identity.user_id = $1 AND identity.revoked_at IS NULL
+                   AND identity.provider = 'microsoft'
+                   AND identity.observed_email IS NOT NULL AND identity.observed_email <> ''`,
+                [userId, identityId],
+            );
+            const microsoftProofEnabled = this.deps.isProviderEnabled?.('microsoft') === true;
+            const microsoftSiblingProofUsable = microsoftProofEnabled && proof.rows.some((candidate) => !candidate.is_target);
+            const targetMicrosoftProofUsable = microsoftProofEnabled && proof.rows.some((candidate) => candidate.is_target);
+            if (targetMicrosoftProofUsable && !hasUsablePassword && !microsoftSiblingProofUsable) {
+                return { outcome: 'last_proof_method' };
+            }
+            // Consumption follows the guard: a refused last-method removal
+            // leaves the still-valid, target-bound grant retryable after the
+            // user adds another method, without fresh reauthentication.
+            await this.consumeProofGrant(tx, { userId, sid, grantId, secret: grantSecret, purpose: 'unlink', targetIdentityId: identityId }, invalidUnlink);
             await tx.query('UPDATE student_auth_identities SET revoked_at = clock_timestamp() WHERE id = $1', [identityId]);
             await revokeSsoSchoolAssertions(tx, identityId);
-            await tx.query(
+            // The row count is the session signal: the client must drop its
+            // local tokens exactly when this update cleared the session.
+            const cleared = await tx.query(
                 `UPDATE users
                  SET active_session_id = NULL,
                      refresh_token_hash = NULL,
@@ -559,15 +663,15 @@ export class StudentSsoLinkService {
                  VALUES ($1, $2, 'student_sso_identity_unlinked', jsonb_build_object('provider', $3::text))`,
                 [userId, row.university_id, row.provider],
             );
-            return { unlinked: true };
+            return { unlinked: true, sessionRevoked: (cleared.rowCount ?? 0) > 0 };
         });
     }
 
     /** Owner listing for self-service recovery. Subject and issuer material never leaves this boundary. */
     async listIdentities(userId: unknown): Promise<StudentSsoLinkedIdentity[]> {
         if (!validUuid(userId)) throw unavailableAccount();
-        const rows = await this.deps.pool.query<{ id: string; provider: string; university_name: string; linked_at: Date }>(
-            `SELECT identity.id, identity.provider, university.name AS university_name, identity.linked_at
+        const rows = await this.deps.pool.query<{ id: string; provider: string; university_name: string; linked_at: Date; observed_email: string | null }>(
+            `SELECT identity.id, identity.provider, university.name AS university_name, identity.linked_at, identity.observed_email
              FROM student_auth_identities identity
              JOIN universities university ON university.id = identity.university_id
              WHERE identity.user_id = $1 AND identity.revoked_at IS NULL
@@ -576,59 +680,77 @@ export class StudentSsoLinkService {
         );
         return rows.rows
             .filter((row): row is typeof row & { provider: LoginProvider } => row.provider === 'google' || row.provider === 'microsoft')
-            .map((row) => ({
-                id: row.id,
-                provider: row.provider,
-                universityName: row.university_name,
-                linkedAt: row.linked_at.toISOString(),
-            }));
+            .map((row) => {
+                const mailboxMasked = maskObservedMailbox(row.observed_email);
+                return {
+                    id: row.id,
+                    provider: row.provider,
+                    universityName: row.university_name,
+                    linkedAt: row.linked_at.toISOString(),
+                    ...(mailboxMasked === undefined ? {} : { mailboxMasked }),
+                };
+            });
     }
 
-    private grantSatisfies(
-        grant: GrantRow | undefined,
-        userId: string,
-        sid: string,
-        purpose: StudentSsoReauthPurpose,
-        passwordHash: string | null,
-        now: Date,
-        grantSecret: string,
-    ): grant is GrantRow {
-        // The binding pins the exact password hash verified at reauth: a
-        // reset or removal since then fails the grant. Both sides null only
-        // occurs for forged rows, never for minted grants, which reauth
-        // refuses for passwordless accounts.
-        const bindingIntact = grant?.password_hash === passwordHash
-            || (grant?.password_hash == null && passwordHash == null);
-        return !!grant
-            && grant.user_id === userId
-            && grant.sid === sid
-            && grant.purpose === purpose
-            && grant.consumed_at === null
-            && grant.expires_at > now
-            && bindingIntact
-            && hashSsoSecret(grantSecret) === grant.secret_hash;
+
+    /**
+     * Consume a link/unlink grant only while its provider proof is still
+     * a usable login method. A five-minute grant outlives revocation,
+     * transfer, policy expiry, and provider rollback, so the proof
+     * identity is locked and its full login authority chain is rechecked
+     * first, mirroring recovery-code consumers. Password-backed grants
+     * carry no provider proof and skip the recheck, keeping owner unlink
+     * available.
+     */
+    private async consumeProofGrant(
+        tx: PoolClient,
+        input: { userId: string; sid: string; grantId: string; secret: string; purpose: 'link' | 'unlink'; targetIdentityId?: string },
+        invalid: () => Error,
+    ): Promise<void> {
+        const grant = await tx.query<{ proof_identity_id: string | null }>(
+            'SELECT proof_identity_id FROM student_auth_action_grants WHERE id = $1 AND user_id = $2 FOR UPDATE',
+            [input.grantId, input.userId],
+        );
+        const proofIdentityId = grant.rows[0]?.proof_identity_id ?? null;
+        if (proofIdentityId) {
+            // Lock the proof identity under the grant so a concurrent
+            // revocation cannot interleave the authority recheck.
+            const locked = await tx.query<{ provider: string }>(
+                'SELECT provider FROM student_auth_identities WHERE id = $1 AND user_id = $2 FOR UPDATE',
+                [proofIdentityId, input.userId],
+            );
+            const provider = locked.rows[0]?.provider;
+            if (provider !== 'google' && provider !== 'microsoft') throw invalid();
+            if (this.deps.isProviderEnabled?.(provider) !== true) throw invalid();
+            const authority = await selectCurrentProofAuthority(tx, input.userId, proofIdentityId);
+            if (!authority || authority.provider !== provider) throw invalid();
+        }
+        try {
+            await consumeActionGrant(tx, {
+                userId: input.userId, sid: input.sid, grantId: input.grantId, secret: input.secret, purpose: input.purpose,
+                ...(input.targetIdentityId === undefined ? {} : { targetIdentityId: input.targetIdentityId }),
+            });
+        } catch { throw invalid(); }
     }
 
     private async consumeHandoff(tx: PoolClient, handoffId: string, userId: string, sid: string): Promise<void> {
         // The observation is decoded before use on the link and mismatch
         // paths, and expired rows are terminal; in all cases nothing
         // downstream needs the ciphertext, so it is scrubbed in the same
-        // write. A consumed handoff must never retain identity material for
-        // its 7-day tombstone window. The consume-once trigger permits this
-        // because the row is still unconsumed in OLD.
+        // write. The one-use binding digests go with it: retention cleanup
+        // excludes consumed handoffs and the tombstone lives seven days, so
+        // a consumed handoff must never retain secrets or identity material.
+        // The consume-once trigger permits NULLing all three only together
+        // with consumption, matching the signup-complete consume. Replays
+        // then fail closed at the secret check instead of resolving a
+        // restart, matching consumed attempts.
         await tx.query(
             `UPDATE student_auth_link_handoffs
              SET consumed_at = clock_timestamp(), target_user_id = $2, target_sid = $3::uuid,
-                 encrypted_observation = 'scrubbed'
+                 secret_hash = NULL, browser_binding_hash = NULL, encrypted_observation = NULL
              WHERE id = $1 AND consumed_at IS NULL`,
             [handoffId, userId, sid],
         );
     }
 
-    private async consumeGrant(tx: PoolClient, grantId: string): Promise<void> {
-        await tx.query(
-            'UPDATE student_auth_reauth_grants SET consumed_at = clock_timestamp() WHERE id = $1 AND consumed_at IS NULL',
-            [grantId],
-        );
-    }
 }

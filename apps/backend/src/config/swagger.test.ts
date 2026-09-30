@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import { passwordService } from '../services/auth/password.service.js';
 import { swaggerSpec } from './swagger.js';
 
 interface Schema {
@@ -135,4 +136,158 @@ test('publishes exact strict error envelopes for redacted verification diagnosti
     assert.equal(components.VerificationDiagnosticAggregate.properties?.averageFinishedRequestDurationMs?.nullable, true);
     assert.equal(components.VerificationDiagnosticAggregate.properties?.p95FinishedRequestDurationMs?.nullable, true);
     assert.equal(data?.additionalProperties, false);
+});
+
+test('signup name schema encodes the enforced trimmed length limits', () => {
+    type JsonSchema = { type?: string; minLength?: number; maxLength?: number; pattern?: string; description?: string };
+    const spec = swaggerSpec as { components: { schemas: Record<string, { properties: Record<string, JsonSchema> }> } };
+    const fullName = spec.components.schemas.PasswordlessSignupCompleteRequest.properties.fullName;
+    // StudentSsoSignupService.complete() trims then enforces 2-255, so raw
+    // min/maxLength would diverge in both directions (' a' passes raw but
+    // fails trimmed; a padded 255-char name fails raw but passes
+    // trimmed). The pattern measures the trimmed value instead.
+    assert.equal(fullName.type, 'string');
+    assert.equal(fullName.minLength, undefined);
+    assert.equal(fullName.maxLength, undefined);
+    assert.equal(typeof fullName.pattern, 'string');
+    const pattern = new RegExp(fullName.pattern!);
+    assert.equal(pattern.test(' a'), false);
+    assert.equal(pattern.test('ab'), true);
+    assert.equal(pattern.test(`  ${'x'.repeat(255)}  `), true);
+    assert.equal(pattern.test('x'.repeat(256)), false);
+});
+
+test('signup schemas encode the enforced handoff-secret ceiling', () => {
+    type JsonSchema = { type?: string; minLength?: number; maxLength?: number };
+    const spec = swaggerSpec as { components: { schemas: Record<string, { properties: Record<string, JsonSchema> }> } };
+    // signupHandoffBody() and checked() reject secrets over 1024 chars.
+    for (const name of ['PasswordlessSignupHandoffRequest', 'PasswordlessSignupVerifyRequest', 'PasswordlessSignupCompleteRequest']) {
+        const secret = spec.components.schemas[name].properties.handoffSecret;
+        assert.equal(secret.type, 'string');
+        assert.equal(secret.minLength, 1);
+        assert.equal(secret.maxLength, 1024, `${name} must publish the enforced ceiling`);
+    }
+});
+
+test('recovery schemas encode the enforced handle-secret ceiling', () => {
+    type JsonSchema = { type?: string; minLength?: number; maxLength?: number };
+    const spec = swaggerSpec as { components: { schemas: Record<string, { properties: Record<string, JsonSchema> }> } };
+    // StudentAccountRecoveryService.validOpaque() rejects secrets over 1024 chars.
+    for (const name of ['AccountRecoveryVerifyRequest', 'AccountRecoveryCompleteRequest']) {
+        const secret = spec.components.schemas[name].properties.secret;
+        assert.equal(secret.type, 'string');
+        assert.equal(secret.minLength, 1);
+        assert.equal(secret.maxLength, 1024, `${name} must publish the enforced ceiling`);
+    }
+});
+
+test('grant schema encodes the enforced secret ceiling', () => {
+    type JsonSchema = { type?: string; minLength?: number; maxLength?: number };
+    const spec = swaggerSpec as { components: { schemas: Record<string, { properties: Record<string, JsonSchema> }> } };
+    // grantBody() rejects secrets over 1024 chars on every consumer.
+    const secret = spec.components.schemas.ReauthGrant.properties.grantSecret;
+    assert.equal(secret.type, 'string');
+    assert.equal(secret.minLength, 1);
+    assert.equal(secret.maxLength, 1024);
+});
+
+test('user schema publishes the recovery re-enrollment marker', () => {
+    type JsonSchema = { type?: string; description?: string };
+    const spec = swaggerSpec as { components: { schemas: Record<string, { properties: Record<string, JsonSchema>; required?: string[] }> } };
+    // Login and /auth/me surface recoveryReenrollmentRequired until a
+    // replacement code activates; generated clients must discover it.
+    const marker = spec.components.schemas.User.properties.recoveryReenrollmentRequired;
+    assert.equal(marker.type, 'boolean');
+    assert.ok(!(spec.components.schemas.User.required ?? []).includes('recoveryReenrollmentRequired'), 'absent unless re-enrollment is outstanding');
+});
+
+test('recovery password schema encodes the enforced complexity rules', () => {
+    type JsonSchema = { type?: string; minLength?: number; maxLength?: number; pattern?: string; description?: string };
+    const spec = swaggerSpec as { components: { schemas: Record<string, { properties: Record<string, JsonSchema> }> } };
+    const password = spec.components.schemas.AccountRecoveryCompleteRequest.properties.password;
+    assert.equal(password.type, 'string');
+    assert.equal(password.minLength, 8);
+    // The complete endpoint rejects anything over 72 UTF-8 bytes (bcrypt
+    // incorporates only the first 72), so the schema must publish that
+    // physical ceiling — not the 1024-char transport guard.
+    assert.equal(password.maxLength, 72, 'password schema must publish the enforced 72-byte ceiling');
+    assert.match(password.description ?? '', /72 bytes of UTF-8/, 'password schema must disclose the byte-based limit');
+    assert.ok(password.pattern, 'password schema must encode the complexity rules, not just the length floor');
+    const documented = new RegExp(password.pattern);
+    for (const candidate of ['ValidNew1!', 'all-lowercase-1!', 'ALL-UPPER-1!', 'NoDigits!!', 'NoSpecial11', 'Sh0rt!A', 'Br@cket[1]Aa', 'Back`tick1Aa']) {
+        assert.equal(
+            documented.test(candidate) && candidate.length <= (password.maxLength ?? Number.MAX_SAFE_INTEGER),
+            passwordService.validatePassword(candidate).valid,
+            `documented pattern must agree with enforcement for ${JSON.stringify(candidate)}`,
+        );
+    }
+});
+
+test('student-authenticated operations document the session-validation outage', () => {
+    type Endpoint = { responses?: Record<string, { $ref?: string; description?: string }> };
+    const spec = swaggerSpec as {
+        paths: Record<string, Record<string, Endpoint>>;
+        components: { responses: Record<string, { description?: string }> };
+    };
+    // The authenticate middleware raises a controlled 503 when the student
+    // session lookup fails, before any route handler runs. Every
+    // documented operation behind authenticate must model it: operations
+    // with a cause-specific 503 mention both causes, the rest reference
+    // the shared component.
+    assert.equal(spec.components.responses.SessionValidationUnavailable?.description, 'Student session validation is temporarily unavailable');
+    const operations: Array<[string, string]> = [
+        ['/api/auth/student/sso/reauth', 'post'],
+        ['/api/auth/student/sso/reauth/microsoft/start', 'post'],
+        ['/api/auth/student/sso/reauth/finish', 'post'],
+        ['/api/auth/student/sso/link', 'post'],
+        ['/api/auth/student/sso/identities', 'get'],
+        ['/api/auth/student/sso/identities/{id}/unlink', 'post'],
+        ['/api/auth/student/sso/recovery-code', 'get'],
+        ['/api/auth/student/sso/recovery-code/generate', 'post'],
+        ['/api/auth/student/sso/recovery-code/activate', 'post'],
+        ['/api/auth/student/sso/recovery-code/remove', 'post'],
+        ['/api/auth/student/sso/recovery-code/cancel', 'post'],
+        ['/api/auth/me', 'get'],
+        ['/api/auth/update-password', 'post'],
+        ['/api/students/profile', 'get'],
+        ['/api/students/profile', 'put'],
+        ['/api/students/purchases', 'get'],
+        ['/api/students/savings', 'get'],
+        ['/api/verification/registration', 'post'],
+        ['/api/verification/status', 'get'],
+        ['/api/merchant-verification/assertions', 'post'],
+        ['/api/merchant-verification/claim-sessions/{id}', 'get'],
+        ['/api/merchant-verification/product-claims', 'post'],
+        ['/api/admin/students', 'get'],
+    ];
+    // NOTE: /api/vendors/* blocks carry @swagger annotations but never
+    // parse into the compiled spec (pre-existing, unrelated to the 503:
+    // the whole operations are unpublished). They are excluded until
+    // those blocks are fixed, not because the outage cannot occur there.
+    for (const [path, method] of operations) {
+        const response = spec.paths[path]?.[method]?.responses?.['503'];
+        assert.ok(response, `${method.toUpperCase()} ${path} documents the session-validation 503`);
+    }
+});
+
+test('linked identity schemas publish the optional masked mailbox label', () => {
+    type IdentitySchema = { required?: string[]; properties: Record<string, { type?: string }> };
+    const spec = swaggerSpec as {
+        components: {
+            schemas: Record<string, {
+                properties: Record<string, {
+                    properties?: Record<string, unknown>;
+                    items?: IdentitySchema;
+                } & IdentitySchema>;
+            }>;
+        };
+    };
+    // listIdentities() and link() expose mailboxMasked so owners can tell
+    // same-university identities apart; generated clients must discover it.
+    const listed = spec.components.schemas.StudentSsoIdentitiesResponse.properties.data.properties?.identities as { items: IdentitySchema };
+    assert.equal(listed.items.properties.mailboxMasked?.type, 'string');
+    assert.ok(!listed.items.required?.includes('mailboxMasked'), 'masked mailbox is absent when the provider supplied none');
+    const linked = spec.components.schemas.StudentSsoLinkResponse.properties.data.properties?.identity as IdentitySchema;
+    assert.equal(linked.properties.mailboxMasked?.type, 'string');
+    assert.ok(!linked.required?.includes('mailboxMasked'), 'masked mailbox is absent when the provider supplied none');
 });

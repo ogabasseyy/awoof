@@ -139,6 +139,8 @@
  *                           $ref: '#/components/schemas/User'
  *       401:
  *         $ref: '#/components/responses/Unauthorized'
+ *       503:
+ *         $ref: '#/components/responses/SessionValidationUnavailable'
  */
 
 /**
@@ -294,6 +296,8 @@
  *         $ref: '#/components/responses/BadRequest'
  *       401:
  *         $ref: '#/components/responses/Unauthorized'
+ *       503:
+ *         $ref: '#/components/responses/SessionValidationUnavailable'
  */
 
 /**
@@ -360,6 +364,7 @@
  *                           example: true
  *                         recovery:
  *                           type: boolean
+ *                           description: Whether new signed-out account recovery starts are configured; false when the recovery key or email delivery is unavailable. This reports configuration readiness, not live mail-provider health.
  *                           example: true
  *       400:
  *         $ref: '#/components/responses/BadRequest'
@@ -376,4 +381,3 @@
  *             schema:
  *               $ref: '#/components/schemas/Error'
  */
-

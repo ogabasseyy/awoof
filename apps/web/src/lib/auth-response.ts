@@ -27,7 +27,9 @@ function isUser(value: unknown): value is User {
         && (user.verificationStatus === undefined
             || user.verificationStatus === 'unverified'
             || user.verificationStatus === 'verified'
-            || user.verificationStatus === 'expired');
+            || user.verificationStatus === 'expired')
+        && (user.recoveryReenrollmentRequired === undefined
+            || typeof user.recoveryReenrollmentRequired === 'boolean');
 }
 
 function isTokenPair(value: unknown): value is TokenPair {

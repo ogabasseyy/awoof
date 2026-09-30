@@ -1,7 +1,7 @@
 import { Router, type NextFunction, type Request, type Response } from 'express';
 import rateLimit from 'express-rate-limit';
 import type { Pool } from 'pg';
-import { AppError, BadRequestError, NotFoundError, ServiceUnavailableError, UnauthorizedError } from '../common/errors/AppError.js';
+import { AppError, BadRequestError, ConflictError, NotFoundError, ServiceUnavailableError, UnauthorizedError } from '../common/errors/AppError.js';
 import { asyncHandler } from '../common/middleware/errorHandler.js';
 import { authenticate, requireRole } from '../middleware/auth.middleware.js';
 import { config } from '../config/env.js';
@@ -15,17 +15,28 @@ import {
     parseStudentSsoProvider,
     studentSsoCookieName,
 } from '../services/auth/student-sso-flow.service.js';
-import { StudentGoogleOidc } from '../services/auth/student-google-oidc.js';
+import { StudentGoogleOidc, StudentOidcOperationalError } from '../services/auth/student-google-oidc.js';
 import { StudentMicrosoftOidc } from '../services/auth/student-microsoft-oidc.js';
 import type { ApprovedLoginPolicy, StudentSsoOidcResolver } from '../services/auth/student-sso-flow.service.js';
 import { StudentSsoLinkService } from '../services/auth/student-sso-link.service.js';
+import { StudentSsoSignupService } from '../services/auth/student-sso-signup.service.js';
+import { isEmailConfigured, sendEmail, sendEmailVerificationOTP } from '../services/email/email.service.js';
+import { hasRecoveryOtpOutboxKey } from '../services/auth/recovery-otp-outbox.service.js';
+import { StudentReauthService, reauthAttemptIdFromState, studentReauthCookieName } from '../services/auth/student-reauth.service.js';
+import { StudentRecoveryCodeService } from '../services/auth/student-recovery-code.service.js';
+import { StudentAccountRecoveryService } from '../services/auth/student-account-recovery.service.js';
+import { passwordService } from '../services/auth/password.service.js';
 import type { LoginProvider } from '../services/auth/student-sso.types.js';
 import { hashMicrosoftAttemptSecret } from '../services/verification/microsoft-attempt-crypto.js';
 
-export type StudentSsoFlow = Pick<StudentSsoFlowService, 'start' | 'callback' | 'finish' | 'callbackCookieNameForState'>;
+export type StudentSsoFlow = Pick<StudentSsoFlowService, 'start' | 'callback' | 'finish' | 'callbackCookieNameForState' | 'callbackDuplicateState'>;
 export type StudentSsoLink = Pick<StudentSsoLinkService, 'reauth' | 'link' | 'listIdentities' | 'unlink'>;
 type FlowFactory = () => StudentSsoFlow;
 type LinkFactory = () => StudentSsoLink;
+type ReauthFactory = () => StudentReauthService;
+type SignupFactory = () => StudentSsoSignupService;
+type RecoveryCodeFactory = () => StudentRecoveryCodeService;
+type AccountRecoveryFactory = () => StudentAccountRecoveryService;
 export type StudentSsoRouterOptions = {
     isIssuanceEnabled?: () => boolean;
     enabledProviders?: () => LoginProvider[];
@@ -34,7 +45,19 @@ export type StudentSsoRouterOptions = {
     pool?: Pick<Pool, 'query'>;
     callbackLimiterMax?: number;
     linkService?: LinkFactory;
+    reauthService?: ReauthFactory;
     linkLimiterMax?: number;
+    signupService?: SignupFactory;
+    recoveryCodeService?: RecoveryCodeFactory;
+    accountRecoveryService?: AccountRecoveryFactory;
+    /** Passwordless new-account issuance is independently fail-closed. */
+    isSignupEnabled?: () => boolean;
+    /** Email delivery readiness; signup needs OTP delivery to function. */
+    isEmailConfigured?: () => boolean;
+    /** Outbox key readiness; override only in isolated route tests. */
+    isRecoveryOtpOutboxKeyConfigured?: () => boolean;
+    /** Origin allowlist for provider-independent recovery actions. Defaults to the trusted frontend origin. */
+    recoveryOrigin?: string;
 };
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
@@ -98,19 +121,27 @@ function finishBody(req: Request): { attemptId: string; finishSecret: string } {
     return { attemptId: value.attemptId, finishSecret: value.finishSecret };
 }
 
-function reauthBody(req: Request): { password: string; purpose: 'link' | 'unlink' } {
+function reauthBody(req: Request): { password: string; purpose: 'link' | 'unlink' | 'recovery_code_generate' | 'recovery_code_activate' | 'recovery_code_remove'; targetIdentityId?: string; pendingCodeId?: string } {
     const body = req.body;
     if (!body || typeof body !== 'object' || Array.isArray(body)) throw new BadRequestError('Student SSO reauthentication request is invalid');
     const keys = Object.keys(body);
-    if (keys.length !== 2 || !keys.includes('password') || !keys.includes('purpose')) {
+    if (!keys.includes('password') || !keys.includes('purpose') || keys.some((key) => key !== 'password' && key !== 'purpose' && key !== 'targetIdentityId' && key !== 'pendingCodeId')) {
         throw new BadRequestError('Student SSO reauthentication request is invalid');
     }
-    const value = body as { password: unknown; purpose: unknown };
+    const value = body as { password: unknown; purpose: unknown; targetIdentityId?: unknown; pendingCodeId?: unknown };
     if (typeof value.password !== 'string' || value.password.length === 0 || value.password.length > 1024
-        || (value.purpose !== 'link' && value.purpose !== 'unlink')) {
+        || (value.purpose !== 'link' && value.purpose !== 'unlink' && value.purpose !== 'recovery_code_generate'
+            && value.purpose !== 'recovery_code_activate' && value.purpose !== 'recovery_code_remove')
+        || (value.targetIdentityId !== undefined && (typeof value.targetIdentityId !== 'string' || !UUID.test(value.targetIdentityId)))
+        || (value.pendingCodeId !== undefined && (typeof value.pendingCodeId !== 'string' || !UUID.test(value.pendingCodeId)))) {
         throw new BadRequestError('Student SSO reauthentication request is invalid');
     }
-    return { password: value.password, purpose: value.purpose };
+    // Unlink grants are target-bound. Keeping the target optional in the
+    // schema retains the established link request contract; an unbound
+    // unlink grant simply cannot consume an identity-removal action.
+    return { password: value.password, purpose: value.purpose,
+        ...(value.targetIdentityId === undefined ? {} : { targetIdentityId: value.targetIdentityId }),
+        ...(value.pendingCodeId === undefined ? {} : { pendingCodeId: value.pendingCodeId }) };
 }
 
 function grantBody(value: unknown): { grantId: string; grantSecret: string } {
@@ -152,6 +183,36 @@ function unlinkBody(req: Request): { reauthGrant: { grantId: string; grantSecret
     return { reauthGrant: grantBody((body as { reauthGrant: unknown }).reauthGrant) };
 }
 
+function recoveryCodeBody(req: Request, action: 'generate' | 'activate' | 'remove'): {
+    reauthGrant: { grantId: string; grantSecret: string };
+    pendingCodeId?: string;
+    code?: string;
+    oldCode?: string;
+} {
+    const body = req.body;
+    if (!body || typeof body !== 'object' || Array.isArray(body)) throw new BadRequestError('Recovery-code request is invalid');
+    const allowed = action === 'generate'
+        ? new Set(['reauthGrant', 'oldCode'])
+        : action === 'activate'
+            ? new Set(['reauthGrant', 'pendingCodeId', 'code', 'oldCode'])
+            : new Set(['reauthGrant', 'oldCode']);
+    const value = body as Record<string, unknown>;
+    if (!('reauthGrant' in value) || Object.keys(value).some((key) => !allowed.has(key))
+        || (action === 'activate' && (!('pendingCodeId' in value) || !('code' in value)))
+        || (action === 'remove' && !('oldCode' in value))
+        || (value.oldCode !== undefined && (typeof value.oldCode !== 'string' || value.oldCode.length === 0 || value.oldCode.length > 1024))
+        || (value.code !== undefined && (typeof value.code !== 'string' || value.code.length === 0 || value.code.length > 1024))
+        || (value.pendingCodeId !== undefined && (typeof value.pendingCodeId !== 'string' || !UUID.test(value.pendingCodeId)))) {
+        throw new BadRequestError('Recovery-code request is invalid');
+    }
+    return {
+        reauthGrant: grantBody(value.reauthGrant),
+        ...(typeof value.pendingCodeId === 'string' ? { pendingCodeId: value.pendingCodeId } : {}),
+        ...(typeof value.code === 'string' ? { code: value.code } : {}),
+        ...(typeof value.oldCode === 'string' ? { oldCode: value.oldCode } : {}),
+    };
+}
+
 /** The owner plus their current session. Legacy tokens without a session id fail closed. */
 function ssoActor(req: Request): { userId: string; sid: string } {
     const userId = req.user?.userId;
@@ -174,8 +235,8 @@ function ssoOwner(req: Request): { userId: string } {
 // provider return always reaches its bounded redirect. This dedicated
 // limiter (one attempt lifetime window) keeps replayed states from
 // converting that reachability into unbounded claim transactions.
-// Authenticated completions (3xx) never consume the quota; outage redirects
-// are unauthenticated and stay counted.
+// Successful completions (3xx) never consume the quota; outage and
+// bounded-failure redirects are unauthenticated and stay counted.
 export function isQuotaExcusedCallback(_req: Request, res: Response): boolean {
     return res.statusCode < 400 && (res.locals as { outageRedirect?: boolean }).outageRedirect !== true;
 }
@@ -200,6 +261,67 @@ function studentSsoLinkLimiter(max: number) {
         max,
         standardHeaders: true,
         legacyHeaders: false,
+    });
+}
+
+// Recovery-code continuations spend a five-minute action grant issued by
+// fresh proof. Isolate them by that grant, not by the shared campus/carrier
+// IP, so one student's continuation never consumes another's budget while
+// both grants are live. Keep a separate coarse IP ceiling for abuse control;
+// malformed grants fall back to an IP-scoped bucket.
+function studentSsoGrantLimiter(max: number) {
+    return rateLimit({
+        windowMs: 10 * 60 * 1000,
+        max,
+        standardHeaders: true,
+        legacyHeaders: false,
+        keyGenerator: (req) => {
+            const grant = (req.body as { reauthGrant?: unknown } | undefined)?.reauthGrant;
+            const grantId = (grant as { grantId?: unknown } | null | undefined)?.grantId;
+            return typeof grantId === 'string' && UUID.test(grantId)
+                ? `grant:${grantId.toLowerCase()}`
+                : `ip:${req.ip ?? 'unknown'}`;
+        },
+    });
+}
+
+// Attempt-bound continuations (recovery verification/completion, provider
+// reauthentication finish) should be isolated by their opaque attempt
+// handle, not by the shared campus/carrier IP that happens to originate
+// them. Keep a separate coarse IP ceiling for abuse control, then enforce
+// the normal per-attempt quota; malformed IDs fall back to an IP-scoped
+// attempt bucket.
+function studentSsoAttemptLimiter(max: number) {
+    return rateLimit({
+        windowMs: 10 * 60 * 1000,
+        max,
+        standardHeaders: true,
+        legacyHeaders: false,
+        keyGenerator: (req) => {
+            const attemptId = (req.body as { attemptId?: unknown } | undefined)?.attemptId;
+            return typeof attemptId === 'string' && UUID.test(attemptId)
+                ? `attempt:${attemptId.toLowerCase()}`
+                : `ip:${req.ip ?? 'unknown'}`;
+        },
+    });
+}
+
+// Signup continuations spend an issued provider handoff or mailbox code.
+// Isolate each stage by that handoff so students behind a shared NAT never
+// burn each other's flow; a coarse IP ceiling still bounds abuse, and
+// malformed handoffs fall back to an IP-scoped bucket.
+function studentSsoHandoffLimiter(max: number) {
+    return rateLimit({
+        windowMs: 10 * 60 * 1000,
+        max,
+        standardHeaders: true,
+        legacyHeaders: false,
+        keyGenerator: (req) => {
+            const handoffId = (req.body as { handoffId?: unknown } | undefined)?.handoffId;
+            return typeof handoffId === 'string' && UUID.test(handoffId)
+                ? `handoff:${handoffId.toLowerCase()}`
+                : `ip:${req.ip ?? 'unknown'}`;
+        },
     });
 }
 
@@ -270,12 +392,56 @@ function defaultLink(): StudentSsoLink {
     });
 }
 
+function defaultReauth(): StudentReauthService {
+    const sso = config.studentSso;
+    if (!sso.attemptKey || !sso.completionUrl) throw new ServiceUnavailableError('Student SSO is unavailable');
+    return new StudentReauthService({
+        pool: getPool(), attemptKey: sso.attemptKey, completionUrl: sso.completionUrl,
+        oidcForPolicy: (policy) => defaultOidc().forPolicy(policy),
+        isProviderEnabled: (provider) => enabledStudentSsoProviders(sso).includes(provider),
+    });
+}
+function defaultSignup(): StudentSsoSignupService {
+    const sso = config.studentSso;
+    return new StudentSsoSignupService({
+        pool: getPool(), attemptKey: sso.attemptKey,
+        isEnabled: () => config.passwordlessStudentSignupEnabled,
+        isProviderEnabled: (provider) => enabledStudentSsoProviders(sso).includes(provider),
+        outboxEncryptionKey: config.studentAccountRecovery.otpOutboxEncryptionKey,
+        previousOutboxEncryptionKey: config.studentAccountRecovery.previousOtpOutboxEncryptionKey,
+        deliverOtp: async (email, code, name, expiresAt) => sendEmailVerificationOTP(email, code, name || 'Student', 'student', Math.max(1, Math.ceil((expiresAt.getTime() - Date.now()) / 60000))),
+    });
+}
+function defaultRecoveryCode(): StudentRecoveryCodeService {
+    const key = config.studentAccountRecovery.codeKey;
+    if (!key) throw new ServiceUnavailableError('Account recovery is unavailable');
+    const previous = config.studentAccountRecovery.previousCodeKey;
+    return new StudentRecoveryCodeService({
+        pool: getPool(), codeKey: key, ...(previous === null ? {} : { previousCodeKey: previous }),
+        isProviderEnabled: (provider) => enabledStudentSsoProviders(config.studentSso).includes(provider),
+    });
+}
+function defaultAccountRecovery(): StudentAccountRecoveryService {
+    const key = config.studentAccountRecovery.codeKey;
+    // The digest key gates every operation; the mailer gate lives on the
+    // start route only, since verify and complete never deliver.
+    if (!key) throw new ServiceUnavailableError('Account recovery is unavailable');
+    const previous = config.studentAccountRecovery.previousCodeKey;
+    return new StudentAccountRecoveryService({
+        pool: getPool(), recoveryCodeKey: key, ...(previous === null ? {} : { previousRecoveryCodeKey: previous }),
+        outboxEncryptionKey: config.studentAccountRecovery.otpOutboxEncryptionKey,
+        previousOutboxEncryptionKey: config.studentAccountRecovery.previousOtpOutboxEncryptionKey,
+        deliverOtp: async (email, code) => sendEmail(email, 'Awoof email confirmation code', `<p>Your Awoof email confirmation code is <strong>${code}</strong>.</p><p>It expires shortly. If you did not start account recovery, ignore this email.</p>`, 1, { logFailures: false }),
+    });
+}
+
 export function createStudentSsoRouter(factory: FlowFactory = defaultFlow, options: StudentSsoRouterOptions = {}): Router {
     const router = Router();
     const issuanceEnabled = options.isIssuanceEnabled
         ?? (() => config.studentSso.google.enabled || config.studentSso.microsoft.enabled);
     const providersEnabled = options.enabledProviders ?? (() => enabledStudentSsoProviders(config.studentSso));
     const completionOrigin = options.completionOrigin ?? config.studentSso.completionUrl?.origin;
+    const recoveryAllowedOrigin = options.recoveryOrigin ?? new URL(config.frontend.url).origin;
     // Pools open per request only; mounting the router never connects.
     const poolForRequest = (): Pick<Pool, 'query'> => options.pool ?? getPool();
     const checkStartQuota = options.checkStartQuota ?? (async (clientIp: string, mailbox: string) => {
@@ -285,10 +451,72 @@ export function createStudentSsoRouter(factory: FlowFactory = defaultFlow, optio
     });
     const callbackLimiter = studentSsoCallbackLimiter(options.callbackLimiterMax ?? 60);
     const linkFactory = options.linkService ?? defaultLink;
+    const signupFactory = options.signupService ?? defaultSignup;
+    const signupEnabled = options.isSignupEnabled ?? (() => config.passwordlessStudentSignupEnabled);
+    const emailConfigured = options.isEmailConfigured ?? isEmailConfigured;
+    const recoveryOtpOutboxKeyConfigured = options.isRecoveryOtpOutboxKeyConfigured
+        ?? (() => hasRecoveryOtpOutboxKey(config.studentAccountRecovery.otpOutboxEncryptionKey));
+    const reauthFactory = options.reauthService ?? defaultReauth;
+    const recoveryCodeFactory = options.recoveryCodeService ?? defaultRecoveryCode;
+    const accountRecoveryFactory = options.accountRecoveryService ?? defaultAccountRecovery;
     const linkLimiterMax = options.linkLimiterMax ?? 10;
     const reauthLimiter = studentSsoLinkLimiter(linkLimiterMax);
-    const linkLimiter = studentSsoLinkLimiter(linkLimiterMax);
-    const unlinkLimiter = studentSsoLinkLimiter(linkLimiterMax);
+    // Link and unlink spend the same five-minute action grants as the
+    // recovery-code continuations: isolate them by grant so students behind
+    // a shared NAT never burn each other's proof, with a coarse IP ceiling.
+    const linkLimiter = studentSsoGrantLimiter(linkLimiterMax);
+    const unlinkLimiter = studentSsoGrantLimiter(linkLimiterMax);
+    const linkIpLimiter = studentSsoLinkLimiter(Math.max(linkLimiterMax * 10, 100));
+    const unlinkIpLimiter = studentSsoLinkLimiter(Math.max(linkLimiterMax * 10, 100));
+    // Provider start traffic can be exhausted while a student is in the
+    // browser redirect. Keep the authenticated finish budget independent so
+    // an already-completed proof cannot be stranded by other starts on the
+    // same campus or carrier IP.
+    const reauthMicrosoftStartLimiter = studentSsoLinkLimiter(linkLimiterMax);
+    const reauthMicrosoftFinishLimiter = studentSsoAttemptLimiter(linkLimiterMax);
+    const reauthMicrosoftFinishIpLimiter = studentSsoLinkLimiter(Math.max(linkLimiterMax * 10, 100));
+    // One successful signup spends a request at each of the four stages,
+    // so the stages get separate handoff buckets: a shared bucket would 429
+    // the third student behind a campus or carrier NAT before they can
+    // verify, past the point where waiting out the window still helps.
+    const signupContextLimiter = studentSsoHandoffLimiter(linkLimiterMax);
+    const signupSendCodeLimiter = studentSsoHandoffLimiter(linkLimiterMax);
+    const signupVerifyCodeLimiter = studentSsoHandoffLimiter(linkLimiterMax);
+    const signupCompleteLimiter = studentSsoHandoffLimiter(linkLimiterMax);
+    const signupContextIpLimiter = studentSsoLinkLimiter(Math.max(linkLimiterMax * 10, 100));
+    const signupSendCodeIpLimiter = studentSsoLinkLimiter(Math.max(linkLimiterMax * 10, 100));
+    const signupVerifyCodeIpLimiter = studentSsoLinkLimiter(Math.max(linkLimiterMax * 10, 100));
+    const signupCompleteIpLimiter = studentSsoLinkLimiter(Math.max(linkLimiterMax * 10, 100));
+    const recoveryCodeGenerateLimiter = studentSsoGrantLimiter(linkLimiterMax);
+    const recoveryCodeActivateLimiter = studentSsoGrantLimiter(linkLimiterMax);
+    const recoveryCodeRemoveLimiter = studentSsoGrantLimiter(linkLimiterMax);
+    const recoveryCodeGenerateIpLimiter = studentSsoLinkLimiter(Math.max(linkLimiterMax * 10, 100));
+    const recoveryCodeActivateIpLimiter = studentSsoLinkLimiter(Math.max(linkLimiterMax * 10, 100));
+    const recoveryCodeRemoveIpLimiter = studentSsoLinkLimiter(Math.max(linkLimiterMax * 10, 100));
+    // Unauthenticated recovery issues budget-bounded challenges even for
+    // unknown addresses (indistinguishable retry deadlines), so each
+    // recovery route gets its own per-IP bucket like the link routes.
+    const accountRecoveryStartLimiter = studentSsoLinkLimiter(linkLimiterMax);
+    const accountRecoveryVerifyIpLimiter = studentSsoLinkLimiter(Math.max(linkLimiterMax * 10, 100));
+    const accountRecoveryCompleteIpLimiter = studentSsoLinkLimiter(Math.max(linkLimiterMax * 10, 100));
+    const accountRecoveryVerifyLimiter = studentSsoAttemptLimiter(linkLimiterMax);
+    const accountRecoveryCompleteLimiter = studentSsoAttemptLimiter(linkLimiterMax);
+
+    const signupHandoffBody = (req: Request): { handoffId: string; handoffSecret: string } => {
+        const value = req.body as Record<string, unknown>;
+        if (!value || Array.isArray(value) || typeof value.handoffId !== 'string' || !UUID.test(value.handoffId) || typeof value.handoffSecret !== 'string' || value.handoffSecret.length < 1 || value.handoffSecret.length > 1024) throw new BadRequestError('Passwordless signup request is invalid');
+        return { handoffId: value.handoffId, handoffSecret: value.handoffSecret };
+    };
+    const signupBinding = async (req: Request, body: { handoffId: string; handoffSecret: string }) => {
+        // Handoff IDs are distinct from callback-attempt IDs. Resolve only the
+        // opaque attempt id, then pass its HttpOnly cookie value to the service
+        // for the authoritative hash comparison under its transaction lock.
+        // The attempt id is also retained for post-commit cookie cleanup, so
+        // no fallible lookup runs after the account already exists.
+        const row = await poolForRequest().query<{ attempt_id: string }>('SELECT attempt_id FROM student_auth_link_handoffs WHERE id = $1', [body.handoffId]);
+        const attemptId = row.rows[0]?.attempt_id ?? null;
+        return { ...body, browserBinding: parseBrowserCookies(req).find(cookie => cookie.name === studentSsoCookieName(attemptId ?? 'missing'))?.value ?? '', attemptId };
+    };
 
     const assertIssuanceEnabled = (): void => {
         if (!issuanceEnabled() || !completionOrigin) throw new ServiceUnavailableError('Student SSO is unavailable');
@@ -319,8 +547,102 @@ export function createStudentSsoRouter(factory: FlowFactory = defaultFlow, optio
         }
         next();
     };
+    // Browser-initiated login and Microsoft reauth starts come from the
+    // trusted frontend; provider callbacks return to the separate completion
+    // origin. Allow either exact configured origin only for starts. Finish
+    // remains pinned to the completion origin above.
+    const exactStartOrigin = (req: Request, _res: Response, next: NextFunction): void => {
+        const origin = req.header('origin');
+        const matchesConfiguredOrigin = typeof origin === 'string'
+            && ((typeof completionOrigin === 'string' && origin === completionOrigin)
+                || (typeof recoveryAllowedOrigin === 'string' && origin === recoveryAllowedOrigin));
+        if (!matchesConfiguredOrigin) {
+            return next(new BadRequestError('Student SSO origin is invalid'));
+        }
+        next();
+    };
 
-    router.post('/:provider/start', requireIssuance, exactOrigin, exactJson, asyncHandler(async (req, res) => {
+    // Password reauth stays available when SSO issuance is disabled and no
+    // completion URL exists, so it validates against the trusted frontend
+    // origin instead of the optional SSO completion origin.
+    const exactRecoveryOrigin = (req: Request, _res: Response, next: NextFunction): void => {
+        if (req.header('origin') !== recoveryAllowedOrigin) {
+            return next(new BadRequestError('Student SSO origin is invalid'));
+        }
+        next();
+    };
+
+    // Fresh Microsoft proof continuations POST from the configured SSO
+    // completion page, while password reauth and recovery initiation POST
+    // from the trusted frontend. Accept either exact configured origin only
+    // for grant-consuming recovery/unlink actions; do not widen /reauth or
+    // the one-use /reauth/finish exchange.
+    const exactContinuationOrigin = (req: Request, _res: Response, next: NextFunction): void => {
+        const origin = req.header('origin');
+        const matchesConfiguredOrigin = typeof origin === 'string'
+            && ((typeof recoveryAllowedOrigin === 'string' && origin === recoveryAllowedOrigin)
+                || (typeof completionOrigin === 'string' && origin === completionOrigin));
+        if (!matchesConfiguredOrigin) {
+            return next(new BadRequestError('Student SSO origin is invalid'));
+        }
+        next();
+    };
+
+    // Register before the provider-parametrized /:provider/start route.
+    router.post('/account-recovery/start', accountRecoveryStartLimiter, exactJson, asyncHandler(async (req, res) => {
+        const body = req.body as { email?: unknown; purpose?: unknown; idempotencyKey?: unknown };
+        // Exact key set: the optional idempotency key binds a lost-response
+        // retry to the original start, so a cooldown retry only replaces
+        // the live attempt when it presents the original key. Anything
+        // else is malformed.
+        const keys = body && typeof body === 'object' && !Array.isArray(body) ? Object.keys(body).sort() : null;
+        const shape = keys !== null && ((keys.length === 2 && keys[0] === 'email' && keys[1] === 'purpose') || (keys.length === 3 && keys[0] === 'email' && keys[1] === 'idempotencyKey' && keys[2] === 'purpose'));
+        const key = body?.idempotencyKey;
+        if (!shape || typeof body.email !== 'string' || body.email.length === 0 || body.email.length > 255 || body.email.trim().length === 0 || (body.purpose !== 'lost_access' && body.purpose !== 'compromise') || (key !== undefined && (typeof key !== 'string' || key.length === 0 || key.length > 128))) throw new BadRequestError('Account recovery request is invalid');
+        // Recovery start deliberately swallows delivery failures, so an
+        // unconfigured mailer would 202 and burn challenge allowance for
+        // an OTP that can never arrive. Fail the deployment-wide outage
+        // as a non-enumerating 503 before any account lookup instead.
+        // Verify and complete stay ungated: they never deliver (the
+        // completion notice fails safe), so a replica that loses mailer
+        // configuration mid-flow must not strand a delivered OTP.
+        if (!emailConfigured() || !recoveryOtpOutboxKeyConfigured()) throw new ServiceUnavailableError('Account recovery is unavailable');
+        const result = await accountRecoveryFactory().start({ email: body.email, purpose: body.purpose, ...(key === undefined ? {} : { idempotencyKey: key }) });
+        responseHeaders(res); res.status(202).json({ success: true, data: result });
+    }));
+    router.post('/account-recovery/verify', accountRecoveryVerifyIpLimiter, accountRecoveryVerifyLimiter, exactJson, asyncHandler(async (req, res) => {
+        const body = req.body as { attemptId?: unknown; secret?: unknown; code?: unknown; otp?: unknown };
+        // Exact required key set plus per-field values: a four-key body
+        // missing a required field — or carrying a mistyped one — must
+        // 400 here, not reach the service and return the 409 the strict
+        // OpenAPI schema does not document for malformed input.
+        const verifyKeys = body && typeof body === 'object' && !Array.isArray(body) ? Object.keys(body).sort() : null;
+        if (verifyKeys === null || verifyKeys.length !== 4 || verifyKeys[0] !== 'attemptId' || verifyKeys[1] !== 'code' || verifyKeys[2] !== 'otp' || verifyKeys[3] !== 'secret'
+            || typeof body.attemptId !== 'string' || !UUID.test(body.attemptId)
+            || typeof body.secret !== 'string' || body.secret.length === 0 || body.secret.length > 1024
+            || typeof body.code !== 'string' || body.code.length === 0 || body.code.length > 1024
+            || typeof body.otp !== 'string' || !/^\d{6}$/.test(body.otp)) throw new BadRequestError('Account recovery request is invalid');
+        const result = await accountRecoveryFactory().verify({ attemptId: body.attemptId, secret: body.secret, code: body.code, otp: body.otp });
+        responseHeaders(res); res.json({ success: true, data: result });
+    }));
+    router.post('/account-recovery/complete', accountRecoveryCompleteIpLimiter, accountRecoveryCompleteLimiter, exactJson, asyncHandler(async (req, res) => {
+        const body = req.body as { attemptId?: unknown; secret?: unknown; password?: unknown };
+        const completeKeys = body && typeof body === 'object' && !Array.isArray(body) ? Object.keys(body).sort() : null;
+        if (completeKeys === null || completeKeys.length !== 3 || completeKeys[0] !== 'attemptId' || completeKeys[1] !== 'password' || completeKeys[2] !== 'secret'
+            || typeof body.attemptId !== 'string' || !UUID.test(body.attemptId)
+            || typeof body.secret !== 'string' || body.secret.length === 0 || body.secret.length > 1024
+            || typeof body.password !== 'string' || body.password.length === 0 || body.password.length > 1024) throw new BadRequestError('Account recovery request is invalid');
+        // Complexity is a malformed request, not a proof conflict: 400
+        // with the specific failures, mirroring registration and reset.
+        const passwordValidation = passwordService.validatePassword(body.password);
+        if (!passwordValidation.valid) throw new BadRequestError(passwordValidation.errors.join(', '));
+        // bcrypt incorporates only the first 72 bytes; reject longer
+        // values here too so the contract names the physical limit.
+        if (Buffer.byteLength(body.password, 'utf8') > 72) throw new BadRequestError('Password must be no more than 72 bytes long');
+        await accountRecoveryFactory().complete({ attemptId: body.attemptId, secret: body.secret, password: body.password }); responseHeaders(res); res.status(204).end();
+    }));
+
+    router.post('/:provider/start', requireIssuance, exactStartOrigin, exactJson, asyncHandler(async (req, res) => {
         const provider = parseStudentSsoProvider(req.params.provider);
         if (!providersEnabled().includes(provider)) throw new NotFoundError('Student SSO is not available');
         const body = startBody(req);
@@ -361,6 +683,155 @@ export function createStudentSsoRouter(factory: FlowFactory = defaultFlow, optio
         const provider = parseStudentSsoProvider(req.params.provider);
         const browserCookies = parseBrowserCookies(req);
         const callbackUrl = new URL(`${req.protocol}://${req.get('host')}${req.originalUrl}`);
+        // Reauthentication shares the registered Microsoft callback and
+        // dispatches only after its opaque state resolves to a reauth row.
+        // It never reaches the ordinary login flow or issues a session.
+        if (provider === 'microsoft') {
+            // A full rollback nulls the attempt key, so reauth factory
+            // creation itself is unavailable; fall through to the ordinary
+            // flow so in-flight login callbacks still reach the bounded
+            // outage redirect instead of a bare 503.
+            let reauth: StudentReauthService | null = null;
+            try {
+                reauth = reauthFactory();
+            } catch (error) {
+                if (!(error instanceof ServiceUnavailableError)) throw error;
+            }
+            const reauthCookie = reauth ? await reauth.callbackCookieNameForState(callbackUrl.searchParams.get('state')) : null;
+            if (reauth && reauthCookie) {
+                try {
+                    const result = await reauth.callback({
+                        callbackUrl,
+                        callbackCookie: browserCookies.find((cookie) => cookie.name === reauthCookie)?.value,
+                    });
+                    // Retain the browser binding through the completion-page
+                    // finish POST; finish consumes it and clears the cookie.
+                    res.redirect(303, result.completionUrl.href);
+                } catch (error) {
+                    // Terminal (4xx) fresh-auth failures land on the bounded
+                    // completion page, where finish reports them as an
+                    // unavailable confirmation — never a bare JSON error.
+                    // Provider cancellations and invalid identities are
+                    // terminal too, so they take the same redirect instead
+                    // of a bare 500 that retains the callback binding. The
+                    // dead binding is cleared, mirroring login-callback
+                    // terminal failures. Outages (5xx) still surface as JSON.
+                    const terminalOidc = error instanceof StudentOidcOperationalError && error.category !== 'upstream_unavailable';
+                    if (!terminalOidc && (!(error instanceof AppError) || error.statusCode < 400 || error.statusCode >= 500)) throw error;
+                    // callback() terminalizes — and scrubs the state hash
+                    // of — a redemption whose READY commit failed, so the
+                    // live lookup misses for exactly the attempt being
+                    // handled. The state's nonsecret suffix still names it;
+                    // accept the suffix only when it reproduces the cookie
+                    // resolved before redemption, binding the fallback to
+                    // the validated live dispatch instead of a forged state.
+                    let attemptId = await reauth.attemptIdForState(callbackUrl.searchParams.get('state'));
+                    if (!attemptId) {
+                        const suffixId = reauthAttemptIdFromState(callbackUrl.searchParams.get('state'));
+                        if (suffixId && studentReauthCookieName(suffixId) === reauthCookie) attemptId = suffixId;
+                    }
+                    const failureBase = config.studentSso.completionUrl
+                        ?? (completionOrigin ? new URL(STUDENT_SSO_COMPLETION_PATH, completionOrigin) : undefined);
+                    if (!attemptId || !failureBase) throw error;
+                    // A duplicate racing a live redemption (or landing just
+                    // after it validated) must not destroy the winner's
+                    // binding: terminalize and clear only when no live
+                    // redemption owns this attempt. An in-flight duplicate
+                    // takes the waiting redirect instead of the terminal
+                    // failure URL: its immediate finish would 409 on
+                    // `processing` and misreport failure while the winner
+                    // may validate moments later.
+                    const inFlight = await reauth.isInFlightAttempt(attemptId);
+                    if (!inFlight) {
+                        // The failure redirect deletes the only browser binding
+                        // that could finish this attempt: terminalize and scrub
+                        // the dead row instead of retaining it until expiry.
+                        await reauth.terminalizeFailedAttempt(attemptId);
+                        clearSsoCookie(res, reauthCookie);
+                    }
+                    // Bounded failure redirects are unauthenticated like
+                    // outage redirects: they stay counted against the
+                    // callback quota so replayed states cannot perform
+                    // unbounded lookups behind a 303.
+                    res.locals.outageRedirect = true;
+                    // The configured completion URL is process-wide shared
+                    // state: clone before appending, or the stale reauth
+                    // parameter would hijack every later ordinary completion
+                    // in this process.
+                    const failureCompletion = new URL(failureBase.href);
+                    failureCompletion.searchParams.set('reauth', attemptId);
+                    if (inFlight) failureCompletion.searchParams.set('reauthDuplicate', '1');
+                    res.redirect(303, failureCompletion.href);
+                }
+                return;
+            }
+            // Terminal reauth rows carry no state hash (scrubbed at
+            // terminalization by cleanup, recovery, or failure handling),
+            // so a delayed provider callback for one resolves nothing
+            // above. The state's nonsecret attempt suffix still names it:
+            // when the state also resolves to no login attempt and the
+            // named row is confirmed dead, clear the dead binding and land
+            // on the bounded completion page instead of returning generic
+            // login JSON. The suffix selects the same-named cookie, never
+            // an arbitrary sibling, and both guards still matter: a live
+            // login callback must never be hijacked by a stale dead cookie,
+            // and a live reauth row (state intact) must never be cleared by
+            // a forged state.
+            if (reauth) {
+                const deadAttemptId = reauthAttemptIdFromState(callbackUrl.searchParams.get('state'));
+                const deadCookie = deadAttemptId ? browserCookies.find((cookie) => cookie.name === studentReauthCookieName(deadAttemptId)) : undefined;
+                if (deadCookie && deadAttemptId) {
+                    let loginCookie: string | null = null;
+                    let loginAvailable = false;
+                    try {
+                        loginCookie = await factory().callbackCookieNameForState(callbackUrl, provider);
+                        loginAvailable = true;
+                    } catch (error) {
+                        if (!(error instanceof ServiceUnavailableError)) throw error;
+                    }
+                    const failureBase = config.studentSso.completionUrl
+                        ?? (completionOrigin ? new URL(STUDENT_SSO_COMPLETION_PATH, completionOrigin) : undefined);
+                    if (loginAvailable && !loginCookie && failureBase && await reauth.isDeadAttempt(deadAttemptId)) {
+                        clearSsoCookie(res, deadCookie.name);
+                        res.locals.outageRedirect = true;
+                        const failureCompletion = new URL(failureBase.href);
+                        failureCompletion.searchParams.set('reauth', deadAttemptId);
+                        res.redirect(303, failureCompletion.href);
+                        return;
+                    }
+                }
+            }
+            // During full rollback the reauth factory cannot be created
+            // because the attempt key is intentionally absent. We can still
+            // identify the nonsecret UUID suffix, require its exact browser
+            // cookie and an existing Microsoft reauth row, then fail closed
+            // to the bounded completion UI. No state is redeemed and no
+            // action grant is issued while the provider is disabled.
+            if (!reauth) {
+                const rollbackAttemptId = reauthAttemptIdFromState(callbackUrl.searchParams.get('state'));
+                const rollbackCookie = rollbackAttemptId
+                    ? browserCookies.find((cookie) => cookie.name === studentReauthCookieName(rollbackAttemptId))
+                    : undefined;
+                const failureBase = config.studentSso.completionUrl
+                    ?? (completionOrigin ? new URL(STUDENT_SSO_COMPLETION_PATH, completionOrigin) : undefined);
+                if (rollbackAttemptId && rollbackCookie && failureBase) {
+                    const attempt = await poolForRequest().query<{ id: string }>(
+                        `SELECT id FROM student_auth_reauth_attempts
+                         WHERE id = $1 AND provider = 'microsoft'`,
+                        [rollbackAttemptId],
+                    );
+                    if (attempt.rows[0]) {
+                        clearSsoCookie(res, rollbackCookie.name);
+                        res.locals.outageRedirect = true;
+                        const failureCompletion = new URL(failureBase.href);
+                        failureCompletion.searchParams.set('reauth', rollbackAttemptId);
+                        failureCompletion.searchParams.set('reauthUnavailable', '1');
+                        res.redirect(303, failureCompletion.href);
+                        return;
+                    }
+                }
+            }
+        }
         let flow: StudentSsoFlow;
         try {
             flow = factory();
@@ -374,8 +845,10 @@ export function createStudentSsoRouter(factory: FlowFactory = defaultFlow, optio
             const result = await flow.callback({ provider, callbackUrl, browserCookies });
             // The binding is retained through callback success so finish and
             // an unlinked handoff still prove the same browser. Terminal
-            // failure redirects clear it instead.
+            // failure redirects clear it instead, and stay counted against
+            // the callback quota like any other bounded redirect.
             if (result.outcome) {
+                res.locals.outageRedirect = true;
                 clearSsoCookie(res, studentSsoCookieName(result.attemptId));
             }
             res.redirect(303, result.completionUrl.href);
@@ -389,6 +862,35 @@ export function createStudentSsoRouter(factory: FlowFactory = defaultFlow, optio
                 return;
             }
             if (resolvedCookieName && error instanceof AppError && error.statusCode >= 400 && error.statusCode < 500) {
+                // A duplicate delivered while the winner still redeems must
+                // not clear the shared binding: retain it and send the
+                // duplicate to the waiting completion, where finish stays
+                // retryable until the winner settles. The bounded redirect
+                // stays counted against the callback quota.
+                const duplicate = await flow.callbackDuplicateState(callbackUrl, provider);
+                const waitingBase = config.studentSso.completionUrl
+                    ?? (completionOrigin ? new URL(STUDENT_SSO_COMPLETION_PATH, completionOrigin) : undefined);
+                if (duplicate?.inFlight && waitingBase) {
+                    res.locals.outageRedirect = true;
+                    const waiting = new URL(waitingBase.href);
+                    waiting.searchParams.set('attempt', duplicate.attemptId);
+                    res.redirect(303, waiting.href);
+                    return;
+                }
+                // A settled terminal 4xx (blocked or removed cookie, spent
+                // attempt) still strands the browser on bare JSON unless it
+                // is redirected: land it on the bounded completion page with
+                // the not-completed outcome, which routes to sign-in
+                // recovery. The redirect stays counted against the quota.
+                if (duplicate && waitingBase) {
+                    res.locals.outageRedirect = true;
+                    clearSsoCookie(res, resolvedCookieName);
+                    const failure = new URL(waitingBase.href);
+                    failure.searchParams.set('attempt', duplicate.attemptId);
+                    failure.searchParams.set('outcome', 'connection_not_completed');
+                    res.redirect(303, failure.href);
+                    return;
+                }
                 clearSsoCookie(res, resolvedCookieName);
             }
             throw error;
@@ -401,9 +903,22 @@ export function createStudentSsoRouter(factory: FlowFactory = defaultFlow, optio
         const result = await factory().finish({ attemptId: body.attemptId, finishSecret: body.finishSecret, browserCookie });
         responseHeaders(res);
         if (result.outcome === 'link_required') {
-            // The cookie is retained through the handoff: linking still
-            // proves the same browser, and B4 clears it on successful link.
-            res.json({ success: true, data: result });
+            // Renew only the same attempt-bound cookie through the DB-issued
+            // handoff deadline. A late provider callback can otherwise leave
+            // a live 10-minute handoff whose original cookie expires first.
+            // Keep the renewal metadata private to this route's cookie logic.
+            const { handoffCookieMaxAgeSeconds, ...publicResult } = result;
+            if (browserCookie && Number.isInteger(handoffCookieMaxAgeSeconds)
+                && handoffCookieMaxAgeSeconds! > 0 && handoffCookieMaxAgeSeconds! <= 10 * 60) {
+                res.cookie(studentSsoCookieName(body.attemptId), browserCookie, {
+                    maxAge: handoffCookieMaxAgeSeconds! * 1000,
+                    path: STUDENT_SSO_COOKIE_PATH,
+                    httpOnly: true,
+                    secure: true,
+                    sameSite: 'lax',
+                });
+            }
+            res.json({ success: true, data: publicResult });
             return;
         }
         clearSsoCookie(res, studentSsoCookieName(body.attemptId));
@@ -422,15 +937,143 @@ export function createStudentSsoRouter(factory: FlowFactory = defaultFlow, optio
         res.json({ success: true, data: result });
     }));
 
-    router.post('/reauth', authenticate, requireRole('student'), reauthLimiter, exactOrigin, exactJson, asyncHandler(async (req, res) => {
+    router.post('/signup/context', signupContextIpLimiter, signupContextLimiter, exactOrigin, exactJson, asyncHandler(async (req, res) => {
+        if (!signupEnabled()) throw new ConflictError('Passwordless signup is unavailable');
+        if (!req.body || typeof req.body !== 'object' || Array.isArray(req.body) || Object.keys(req.body).length !== 2) throw new BadRequestError('Passwordless signup request is invalid');
+        const body = signupHandoffBody(req); const result = await signupFactory().context(await signupBinding(req, body)); responseHeaders(res); res.json({ success: true, data: result });
+    }));
+    router.post('/signup/send-code', signupSendCodeIpLimiter, signupSendCodeLimiter, exactOrigin, exactJson, asyncHandler(async (req, res) => {
+        if (!signupEnabled()) throw new ConflictError('Passwordless signup is unavailable');
+        if (!req.body || typeof req.body !== 'object' || Array.isArray(req.body) || Object.keys(req.body).length !== 2) throw new BadRequestError('Passwordless signup request is invalid');
+        if (!emailConfigured() || !recoveryOtpOutboxKeyConfigured()) throw new ServiceUnavailableError('Passwordless signup is unavailable');
+        const body = signupHandoffBody(req); const result = await signupFactory().sendCode(await signupBinding(req, body)); responseHeaders(res); res.status(201).json({ success: true, data: result });
+    }));
+    router.post('/signup/verify-code', signupVerifyCodeIpLimiter, signupVerifyCodeLimiter, exactOrigin, exactJson, asyncHandler(async (req, res) => {
+        if (!signupEnabled()) throw new ConflictError('Passwordless signup is unavailable');
+        const body = req.body as Record<string, unknown>; const handoff = signupHandoffBody(req);
+        if (Object.keys(body).length !== 4 || typeof body.challengeId !== 'string' || typeof body.code !== 'string') throw new BadRequestError('Passwordless signup request is invalid');
+        const result = await signupFactory().verifyCode({ ...await signupBinding(req, handoff), challengeId: body.challengeId, code: body.code }); responseHeaders(res); res.json({ success: true, data: result });
+    }));
+    router.post('/signup/complete', signupCompleteIpLimiter, signupCompleteLimiter, exactOrigin, exactJson, asyncHandler(async (req, res) => {
+        if (!signupEnabled()) throw new ConflictError('Passwordless signup is unavailable');
+        const body = req.body as Record<string, unknown>; const handoff = signupHandoffBody(req);
+        const allowed = new Set(['handoffId', 'handoffSecret', 'fullName', 'ageAttested', 'termsAccepted', 'termsVersion', 'verificationConsent', 'noticeVersion']);
+        if (Object.keys(body).some(key => !allowed.has(key)) || Object.keys(body).length !== 8) throw new BadRequestError('Passwordless signup request is invalid');
+        const bound = await signupBinding(req, handoff); const result = await signupFactory().complete({ ...bound, fullName: body.fullName, ageAttested: body.ageAttested, termsAccepted: body.termsAccepted, termsVersion: body.termsVersion, verificationConsent: body.verificationConsent, noticeVersion: body.noticeVersion }); responseHeaders(res); clearSsoCookie(res, studentSsoCookieName(bound.attemptId ?? handoff.handoffId)); res.status(201).json({ success: true, data: result });
+    }));
+
+    router.get('/signup/availability', asyncHandler(async (req, res) => {
+        // Provider-specific gating: a link_required outcome offers signup
+        // only when the provider that produced the unknown identity is still
+        // enabled for signup, not when any provider is on. The signup service
+        // accepts Microsoft handoffs only, so Google handoffs are never
+        // offered an account creation that /signup/context would reject.
+        const provider = req.query.provider;
+        if (provider !== undefined && provider !== 'google' && provider !== 'microsoft') throw new BadRequestError('Unknown provider');
+        // Signup is OTP-gated: without delivery readiness the endpoint
+        // would advertise an account creation whose send-code can only
+        // burn challenge allowance and 503. Microsoft readiness applies
+        // to unscoped responses too: the signup service accepts Microsoft
+        // handoffs only, so omitting the provider must not advertise a
+        // flow that is disabled or rolled back.
+        const available = signupEnabled() && emailConfigured() && recoveryOtpOutboxKeyConfigured()
+            && providersEnabled().includes('microsoft') && (provider === undefined || provider === 'microsoft');
+        responseHeaders(res); res.json({ success: true, data: { available } });
+    }));
+
+    router.post('/reauth', authenticate, requireRole('student'), reauthLimiter, exactRecoveryOrigin, exactJson, asyncHandler(async (req, res) => {
         const body = reauthBody(req);
         const actor = ssoActor(req);
-        const result = await linkFactory().reauth({ userId: actor.userId, sid: actor.sid, password: body.password, purpose: body.purpose });
+        const result = await linkFactory().reauth({
+            userId: actor.userId, sid: actor.sid, password: body.password, purpose: body.purpose,
+            ...(body.targetIdentityId === undefined ? {} : { targetIdentityId: body.targetIdentityId }),
+            ...(body.pendingCodeId === undefined ? {} : { pendingCodeId: body.pendingCodeId }),
+        });
         responseHeaders(res);
         res.status(201).json({ success: true, data: result });
     }));
 
-    router.post('/link', authenticate, requireRole('student'), linkLimiter, exactOrigin, exactJson, asyncHandler(async (req, res) => {
+    router.post('/reauth/microsoft/start', authenticate, requireRole('student'), reauthMicrosoftStartLimiter, exactStartOrigin, exactJson, asyncHandler(async (req, res) => {
+        const body = req.body as { purpose?: unknown; proofIdentityId?: unknown; targetIdentityId?: unknown; pendingCodeId?: unknown };
+        if (!body || typeof body !== 'object' || Array.isArray(body)
+            || Object.keys(body).some((key) => key !== 'purpose' && key !== 'proofIdentityId' && key !== 'targetIdentityId' && key !== 'pendingCodeId')
+            || (body.purpose !== 'link' && body.purpose !== 'unlink' && body.purpose !== 'recovery_code_generate' && body.purpose !== 'recovery_code_activate' && body.purpose !== 'recovery_code_remove')
+            || (body.proofIdentityId !== undefined && (typeof body.proofIdentityId !== 'string' || !UUID.test(body.proofIdentityId)))
+            || (body.targetIdentityId !== undefined && (typeof body.targetIdentityId !== 'string' || !UUID.test(body.targetIdentityId)))
+            || (body.pendingCodeId !== undefined && (typeof body.pendingCodeId !== 'string' || !UUID.test(body.pendingCodeId)))) throw new BadRequestError('Student SSO reauthentication request is invalid');
+        const actor = ssoActor(req);
+        const result = await reauthFactory().start({ userId: actor.userId, sid: actor.sid, purpose: body.purpose, ...(typeof body.proofIdentityId === 'string' ? { proofIdentityId: body.proofIdentityId } : {}), ...(typeof body.targetIdentityId === 'string' ? { targetIdentityId: body.targetIdentityId } : {}), ...(typeof body.pendingCodeId === 'string' ? { pendingCodeId: body.pendingCodeId } : {}) });
+        responseHeaders(res);
+        // This 256-bit, five-minute bearer value must round-trip through the
+        // initiating browser to bind the OAuth callback. It is HttpOnly,
+        // Secure, SameSite=Lax, path-scoped, and only its digest is persisted.
+        // codeql[js/clear-text-storage-of-sensitive-data]: the browser must hold this one-use binding secret; these controls bound exposure.
+        res.cookie(studentReauthCookieName(result.attemptId), result.callbackCookie, { maxAge: 5 * 60_000, path: STUDENT_SSO_COOKIE_PATH, httpOnly: true, secure: true, sameSite: 'lax' });
+        res.status(201).json({ success: true, data: { attemptId: result.attemptId, authorizationUrl: result.authorizationUrl } });
+    }));
+
+    router.post('/reauth/finish', authenticate, requireRole('student'), reauthMicrosoftFinishIpLimiter, reauthMicrosoftFinishLimiter, exactOrigin, exactJson, asyncHandler(async (req, res) => {
+        const body = req.body as { attemptId?: unknown };
+        if (!body || typeof body !== 'object' || Array.isArray(body) || Object.keys(body).length !== 1 || typeof body.attemptId !== 'string' || !UUID.test(body.attemptId)) throw new BadRequestError('Student SSO reauthentication request is invalid');
+        const attemptId = body.attemptId;
+        const actor = ssoActor(req);
+        const result = await reauthFactory().finish({ userId: actor.userId, sid: actor.sid, attemptId, callbackCookie: parseBrowserCookies(req).find((cookie) => cookie.name === studentReauthCookieName(attemptId))?.value });
+        responseHeaders(res);
+        clearSsoCookie(res, studentReauthCookieName(attemptId));
+        res.status(201).json({ success: true, data: result });
+    }));
+
+    router.get('/recovery-code', authenticate, requireRole('student'), asyncHandler(async (req, res) => {
+        const owner = ssoOwner(req);
+        const result = await recoveryCodeFactory().status(owner);
+        responseHeaders(res);
+        res.json({ success: true, data: result });
+    }));
+
+    router.post('/recovery-code/generate', authenticate, requireRole('student'), recoveryCodeGenerateIpLimiter, recoveryCodeGenerateLimiter, exactContinuationOrigin, exactJson, asyncHandler(async (req, res) => {
+        const body = recoveryCodeBody(req, 'generate');
+        const actor = ssoActor(req);
+        const result = await recoveryCodeFactory().generate({
+            userId: actor.userId, sid: actor.sid, grantId: body.reauthGrant.grantId, secret: body.reauthGrant.grantSecret,
+            ...(body.oldCode === undefined ? {} : { oldCode: body.oldCode }),
+        });
+        responseHeaders(res);
+        res.status(201).json({ success: true, data: result });
+    }));
+
+    router.post('/recovery-code/activate', authenticate, requireRole('student'), recoveryCodeActivateIpLimiter, recoveryCodeActivateLimiter, exactContinuationOrigin, exactJson, asyncHandler(async (req, res) => {
+        const body = recoveryCodeBody(req, 'activate');
+        if (!body.pendingCodeId || !body.code) throw new BadRequestError('Recovery-code request is invalid');
+        const actor = ssoActor(req);
+        const result = await recoveryCodeFactory().activate({
+            userId: actor.userId, sid: actor.sid, grantId: body.reauthGrant.grantId, secret: body.reauthGrant.grantSecret,
+            pendingCodeId: body.pendingCodeId, code: body.code,
+            ...(body.oldCode === undefined ? {} : { oldCode: body.oldCode }),
+        });
+        responseHeaders(res);
+        res.json({ success: true, data: result });
+    }));
+
+    router.post('/recovery-code/remove', authenticate, requireRole('student'), recoveryCodeRemoveIpLimiter, recoveryCodeRemoveLimiter, exactContinuationOrigin, exactJson, asyncHandler(async (req, res) => {
+        const body = recoveryCodeBody(req, 'remove');
+        if (!body.oldCode) throw new BadRequestError('Recovery-code request is invalid');
+        const actor = ssoActor(req);
+        await recoveryCodeFactory().remove({
+            userId: actor.userId, sid: actor.sid, grantId: body.reauthGrant.grantId, secret: body.reauthGrant.grantSecret, oldCode: body.oldCode,
+        });
+        responseHeaders(res);
+        res.status(204).end();
+    }));
+
+    router.post('/recovery-code/cancel', authenticate, requireRole('student'), exactContinuationOrigin, exactJson, asyncHandler(async (req, res) => {
+        const body = req.body as { pendingCodeId?: unknown };
+        if (!body || typeof body !== 'object' || Array.isArray(body) || Object.keys(body).length !== 1 || typeof body.pendingCodeId !== 'string' || !UUID.test(body.pendingCodeId)) throw new BadRequestError('Recovery-code request is invalid');
+        const actor = ssoActor(req);
+        await recoveryCodeFactory().cancel({ userId: actor.userId, sid: actor.sid, pendingCodeId: body.pendingCodeId });
+        responseHeaders(res); res.status(204).end();
+    }));
+
+    router.post('/link', authenticate, requireRole('student'), linkIpLimiter, linkLimiter, exactOrigin, exactJson, asyncHandler(async (req, res) => {
         const body = linkBody(req);
         const actor = ssoActor(req);
         const browserCookies = parseBrowserCookies(req);
@@ -491,7 +1134,10 @@ export function createStudentSsoRouter(factory: FlowFactory = defaultFlow, optio
         res.json({ success: true, data: { identities } });
     }));
 
-    router.post('/identities/:id/unlink', authenticate, requireRole('student'), unlinkLimiter, exactOrigin, exactJson, asyncHandler(async (req, res) => {
+    // Continuation routes accept the completion origin for provider proofs
+    // and the recovery/frontend origin for password proofs. The helper
+    // permits either configured exact origin, never an arbitrary caller.
+    router.post('/identities/:id/unlink', authenticate, requireRole('student'), unlinkIpLimiter, unlinkLimiter, exactContinuationOrigin, exactJson, asyncHandler(async (req, res) => {
         if (typeof req.params.id !== 'string' || !UUID.test(req.params.id)) {
             throw new BadRequestError('Student SSO unlink request is invalid');
         }
@@ -506,13 +1152,16 @@ export function createStudentSsoRouter(factory: FlowFactory = defaultFlow, optio
         });
         responseHeaders(res);
         if ('outcome' in result) {
+            const proof = result.outcome === 'last_proof_method';
             res.status(409).json({
                 success: false,
                 error: {
-                    message: 'Removing this sign-in would lock the account. Keep another sign-in method first.',
-                    code: 'SSO_LAST_LOGIN_METHOD',
+                    message: proof
+                        ? 'Removing this Microsoft sign-in would strand security confirmations. Link another Microsoft sign-in first.'
+                        : 'Removing this sign-in would lock the account. Keep another sign-in method first.',
+                    code: proof ? 'SSO_LAST_PROOF_METHOD' : 'SSO_LAST_LOGIN_METHOD',
                     statusCode: 409,
-                    details: { outcome: 'last_method' },
+                    details: { outcome: result.outcome },
                 },
             });
             return;
@@ -554,7 +1203,7 @@ export default createStudentSsoRouter();
  *             properties:
  *               email: { type: string, format: email, maxLength: 254 }
  *               rememberMe: { type: boolean }
- *               returnPath: { type: string, description: Same-origin relative path, never an auth route }
+ *               returnPath: { type: string, description: Same-origin relative path; the SSO onboarding continuation is the only permitted auth route }
  *     responses:
  *       201:
  *         description: Pending SSO attempt with browser binding
@@ -617,18 +1266,18 @@ export default createStudentSsoRouter();
  *           Cache-Control: { schema: { type: string, example: no-store } }
  *         content: { application/json: { schema: { $ref: '#/components/schemas/StudentSsoFinishResponse' } } }
  *       400: { description: Invalid body, origin, or content type }
- *       409: { description: Attempt is no longer valid, or restart required (SSO_RESTART_REQUIRED) }
+ *       409: { description: Attempt is no longer valid, restart required (SSO_RESTART_REQUIRED), or still redeeming when error.details.retryable is true }
  *       503: { description: Student SSO is unavailable }
  * /api/auth/student/sso/reauth:
  *   post:
  *     summary: Prove the current student account with its password
  *     description: >
  *       Strict JSON. Issues a five-minute single-use grant bound to the
- *       current user, session, and purpose (link or unlink). A password
- *       reset or session replacement invalidates the grant. This release
- *       requires an active usable password. School-account assurance and
- *       enrollment eligibility stay separate; reauthentication never
- *       authorizes benefits.
+ *       current user, session, and purpose. A password reset or session
+ *       replacement invalidates the grant. This release requires an active
+ *       usable password. School-account assurance and enrollment
+ *       eligibility stay separate; reauthentication never authorizes
+ *       benefits.
  *     tags: [Authentication]
  *     security: [{ bearerAuth: [] }]
  *     requestBody:
@@ -640,8 +1289,10 @@ export default createStudentSsoRouter();
  *             additionalProperties: false
  *             required: [password, purpose]
  *             properties:
- *               password: { type: string }
- *               purpose: { type: string, enum: [link, unlink] }
+ *               password: { type: string, minLength: 1, maxLength: 1024 }
+ *               purpose: { type: string, enum: [link, unlink, recovery_code_generate, recovery_code_activate, recovery_code_remove] }
+ *               targetIdentityId: { type: string, format: uuid, description: Required for unlink grants that consume identity removal; binds the grant to one identity }
+ *               pendingCodeId: { type: string, format: uuid, description: Binds a recovery-code purpose grant to one pending code }
  *     responses:
  *       201:
  *         description: Single-use reauthentication grant
@@ -651,8 +1302,79 @@ export default createStudentSsoRouter();
  *       400: { description: Invalid body, origin, or content type }
  *       401: { description: Authentication failed or session unavailable }
  *       403: { description: Password reauthentication is not available for this account }
+ *       404: { description: Bound target identity or recovery code not found }
  *       409: { description: Link-purpose reauthentication is unavailable while providers are disabled }
  *       429: { description: Too many reauthentication requests }
+ *       503: { description: Student session validation unavailable, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+ * /api/auth/student/sso/reauth/microsoft/start:
+ *   post:
+ *     summary: Start a fresh Microsoft proof for the current student account
+ *     description: >
+ *       Strict JSON. Starts a five-minute fresh-Microsoft authentication for
+ *       the current user and session, bound to the requested purpose and
+ *       optional action targets. Returns an authorization URL and sets a
+ *       per-attempt Secure HttpOnly SameSite=Lax browser cookie. The provider
+ *       callback lands on the fixed completion route; no session is issued.
+ *     tags: [Authentication]
+ *     security: [{ bearerAuth: [] }]
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             additionalProperties: false
+ *             required: [purpose]
+ *             properties:
+ *               purpose: { type: string, enum: [link, unlink, recovery_code_generate, recovery_code_activate, recovery_code_remove] }
+ *               proofIdentityId: { type: string, format: uuid, description: Pins the fresh proof to one of the caller's live Microsoft identities instead of the default pick }
+ *               targetIdentityId: { type: string, format: uuid, description: Binds the grant to one identity for unlink consumption }
+ *               pendingCodeId: { type: string, format: uuid, description: Binds the grant to one pending code }
+ *     responses:
+ *       201:
+ *         description: Fresh-proof attempt with browser binding
+ *         headers:
+ *           Cache-Control: { schema: { type: string, example: no-store } }
+ *           Set-Cookie: { schema: { type: string, example: awoof_reauth_<attemptId>=<secret>; Path=/api/auth/student/sso; HttpOnly; Secure; SameSite=Lax } }
+ *         content: { application/json: { schema: { $ref: '#/components/schemas/StudentSsoReauthStartResponse' } } }
+ *       400: { description: Invalid body, origin, or content type }
+ *       401: { description: Authentication failed or session unavailable }
+ *       404: { description: Bound target identity or recovery code not found }
+ *       409: { description: No live Microsoft identity, or Microsoft is unavailable }
+ *       429: { description: Too many reauthentication requests }
+ *       503: { description: Fresh Microsoft authentication or student session validation unavailable }
+ * /api/auth/student/sso/reauth/finish:
+ *   post:
+ *     summary: Exchange a completed fresh proof for an action grant
+ *     description: >
+ *       Strict JSON with the reauthentication attempt ID plus the browser
+ *       binding cookie. Consumes the ready attempt exactly once and issues a
+ *       five-minute single-use grant bound to the current user, session,
+ *       purpose, and recorded action targets. Clears the binding cookie.
+ *     tags: [Authentication]
+ *     security: [{ bearerAuth: [] }]
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             additionalProperties: false
+ *             required: [attemptId]
+ *             properties:
+ *               attemptId: { type: string, format: uuid }
+ *     responses:
+ *       201:
+ *         description: Single-use reauthentication grant with bindings
+ *         headers:
+ *           Cache-Control: { schema: { type: string, example: no-store } }
+ *           Set-Cookie: { schema: { type: string, example: awoof_reauth_<attemptId>=; Path=/api/auth/student/sso } }
+ *         content: { application/json: { schema: { $ref: '#/components/schemas/StudentSsoReauthFinishResponse' } } }
+ *       400: { description: Invalid body, origin, or content type }
+ *       401: { description: Authentication failed or session unavailable }
+ *       409: { description: Attempt expired, consumed, replayed, or no longer valid; still redeeming when error.details.retryable is true }
+ *       429: { description: Too many reauthentication requests }
+ *       503: { description: Fresh Microsoft authentication or student session validation unavailable }
  * /api/auth/student/sso/link:
  *   post:
  *     summary: Link an unlinked provider handoff to the proven owner
@@ -695,6 +1417,7 @@ export default createStudentSsoRouter();
  *       401: { description: Authentication failed or session unavailable }
  *       409: { description: Link invalid, already linked, mismatch (SSO_LINK_MISMATCH), or restart required (SSO_RESTART_REQUIRED) }
  *       429: { description: Too many link requests }
+ *       503: { description: Student session validation unavailable, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
  * /api/auth/student/sso/identities:
  *   get:
  *     summary: List the owner's linked school sign-ins
@@ -712,6 +1435,7 @@ export default createStudentSsoRouter();
  *           Cache-Control: { schema: { type: string, example: no-store } }
  *         content: { application/json: { schema: { $ref: '#/components/schemas/StudentSsoIdentitiesResponse' } } }
  *       401: { description: Authentication failed }
+ *       503: { description: Student session validation unavailable, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
  * /api/auth/student/sso/identities/{id}/unlink:
  *   post:
  *     summary: Revoke one linked school sign-in
@@ -719,7 +1443,9 @@ export default createStudentSsoRouter();
  *       Strict JSON with an unlink-purpose reauthentication grant. Revokes
  *       the login identity and its school assertions, and clears the active
  *       session only when it was issued by the removed identity. Requires
- *       another usable login method (SSO_LAST_LOGIN_METHOD otherwise).
+ *       another usable login method (SSO_LAST_LOGIN_METHOD otherwise), and
+ *       removing a usable Microsoft identity from a passwordless account
+ *       with no second usable Microsoft identity waits (SSO_LAST_PROOF_METHOD).
  *       Independent enrollment consents are never mutated. Available while
  *       providers are disabled.
  *     tags: [Authentication]
@@ -746,10 +1472,220 @@ export default createStudentSsoRouter();
  *                   grantId: { type: string, format: uuid }
  *                   grantSecret: { type: string }
  *     responses:
- *       200: { description: Identity revoked }
+ *       200: { description: Identity revoked, no-store, content: { application/json: { schema: { $ref: '#/components/schemas/StudentSsoUnlinkResponse' } } } }
  *       400: { description: Invalid body, origin, or content type }
  *       401: { description: Authentication failed or session unavailable }
  *       404: { description: Login identity not found }
- *       409: { description: Unlink invalid or last login method (SSO_LAST_LOGIN_METHOD) }
+ *       409: { description: Unlink invalid, last login method (SSO_LAST_LOGIN_METHOD), or last fresh-proof method (SSO_LAST_PROOF_METHOD) }
  *       429: { description: Too many unlink requests }
+ *       503: { description: Student session validation unavailable, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+ * /api/auth/student/sso/signup/context:
+ *   post:
+ *     summary: Read a pending passwordless signup handoff
+ *     description: Disabled unless the server enables passwordless signup. Requires the opaque handoff ID and tab-held secret; it never proves current enrollment or returns provider tokens.
+ *     tags: [Authentication]
+ *     security: []
+ *     requestBody:
+ *       required: true
+ *       content: { application/json: { schema: { $ref: '#/components/schemas/PasswordlessSignupHandoffRequest' } } }
+ *     responses:
+ *       200: { description: Pending signup context, no-store, content: { application/json: { schema: { $ref: '#/components/schemas/PasswordlessSignupContextResponse' } } } }
+ *       400: { description: JSON, exact-origin, or opaque handoff binding failure }
+ *       409: { description: Disabled, expired, consumed, replayed, or invalid handoff, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+ *       429: { description: Signup quota exhausted }
+ * /api/auth/student/sso/signup/send-code:
+ *   post:
+ *     summary: Send a mailbox confirmation code for a pending passwordless signup
+ *     description: Disabled unless server signup issuance is enabled. The code confirms mailbox control only, not current enrollment.
+ *     tags: [Authentication]
+ *     security: []
+ *     requestBody:
+ *       required: true
+ *       content: { application/json: { schema: { $ref: '#/components/schemas/PasswordlessSignupHandoffRequest' } } }
+ *     responses:
+ *       201: { description: Confirmation challenge created with durable delivery queued, no-store, content: { application/json: { schema: { $ref: '#/components/schemas/PasswordlessSignupCodeResponse' } } } }
+ *       400: { description: JSON, exact-origin, or opaque handoff binding failure }
+ *       409: { description: Disabled, invalid handoff, replay, or resend limit, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+ *       429: { description: Signup quota exhausted }
+ *       503: { description: Mailer or signup OTP outbox key unavailable before anything was reserved }
+ * /api/auth/student/sso/signup/verify-code:
+ *   post:
+ *     summary: Verify the pending signup mailbox confirmation code
+ *     tags: [Authentication]
+ *     security: []
+ *     requestBody:
+ *       required: true
+ *       content: { application/json: { schema: { $ref: '#/components/schemas/PasswordlessSignupVerifyRequest' } } }
+ *     responses:
+ *       200: { description: Mailbox confirmation accepted, no-store, content: { application/json: { schema: { $ref: '#/components/schemas/PasswordlessSignupVerifiedResponse' } } } }
+ *       400: { description: JSON, exact-origin, malformed, or stale proof }
+ *       401: { description: Wrong, expired, or exhausted confirmation code, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+ *       409: { description: Disabled, expired, consumed, replayed, or invalid signup state, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+ *       429: { description: Signup quota exhausted }
+ * /api/auth/student/sso/signup/complete:
+ *   post:
+ *     summary: Complete a confirmed passwordless student account
+ *     description: Disabled unless server signup issuance is enabled. Requires the current Terms and processing-notice assent. Login and mailbox control do not authorize benefits.
+ *     tags: [Authentication]
+ *     security: []
+ *     requestBody:
+ *       required: true
+ *       content: { application/json: { schema: { $ref: '#/components/schemas/PasswordlessSignupCompleteRequest' } } }
+ *     responses:
+ *       201: { description: Account and session created, no-store, content: { application/json: { schema: { $ref: '#/components/schemas/PasswordlessSignupCompleteResponse' } } } }
+ *       400: { description: JSON, exact-origin, required assent, or malformed request }
+ *       409:
+ *         description: >-
+ *           Disabled, consumed, expired, replayed, or invalid signup state. If the
+ *           email belongs to an existing Awoof account, error.code is
+ *           SSO_SIGNUP_EXISTING_ACCOUNT; direct the user to sign in with a
+ *           method already linked to that account or recover access. Email
+ *           matching alone never authorizes account linking.
+ *         content:
+ *           application/json:
+ *             schema: { $ref: '#/components/schemas/Error' }
+ *             examples:
+ *               existingAccount:
+ *                 summary: Existing account requires its own sign-in or recovery
+ *                 value:
+ *                   success: false
+ *                   error: { code: SSO_SIGNUP_EXISTING_ACCOUNT, statusCode: 409 }
+ *       429: { description: Signup quota exhausted }
+ * /api/auth/student/sso/signup/availability:
+ *   get:
+ *     summary: Read passwordless signup availability
+ *     description: Reports the deployment signup flag, optionally scoped to one provider. A link-required completion passes the handoff provider so the signup offer appears only while that provider is still enabled. Signup accepts Microsoft handoffs only, so scoped Google requests always report unavailable.
+ *     tags: [Authentication]
+ *     security: []
+ *     parameters:
+ *       - in: query
+ *         name: provider
+ *         required: false
+ *         schema: { type: string, enum: [google, microsoft] }
+ *     responses:
+ *       200: { description: Signup availability flag, no-store, content: { application/json: { schema: { $ref: '#/components/schemas/PasswordlessSignupAvailabilityResponse' } } } }
+ *       400: { description: Unknown provider }
+ * /api/auth/student/sso/recovery-code:
+ *   get:
+ *     summary: Read owner recovery-code status
+ *     description: Returns status and generation metadata only; never returns a recovery-code digest or plaintext.
+ *     tags: [Authentication]
+ *     security: [{ bearerAuth: [] }]
+ *     responses:
+ *       200: { description: Owner recovery-code status, no-store, content: { application/json: { schema: { $ref: '#/components/schemas/RecoveryCodeStatusResponse' } } } }
+ *       401: { description: Missing, invalid, or non-student bearer session }
+ *       503: { description: Recovery-code service unavailable (digest key unconfigured) or student session validation unavailable }
+ * /api/auth/student/sso/recovery-code/generate:
+ *   post:
+ *     summary: Generate a pending recovery code after fresh reauthentication
+ *     tags: [Authentication]
+ *     security: [{ bearerAuth: [] }]
+ *     requestBody:
+ *       required: true
+ *       content: { application/json: { schema: { $ref: '#/components/schemas/RecoveryCodeGenerateRequest' } } }
+ *     responses:
+ *       201: { description: One-time display response, no-store, content: { application/json: { schema: { $ref: '#/components/schemas/RecoveryCodeGeneratedResponse' } } } }
+ *       400: { description: JSON, exact-origin, or malformed request }
+ *       401: { description: Missing, invalid, or non-student bearer session }
+ *       409: { description: Invalid, expired, consumed, revoked, or replayed fresh grant, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+ *       429: { description: Fresh-proof quota exhausted }
+ *       503: { description: Recovery-code service unavailable (digest key unconfigured) or student session validation unavailable }
+ * /api/auth/student/sso/recovery-code/activate:
+ *   post:
+ *     summary: Activate a pending recovery code after a second fresh proof
+ *     tags: [Authentication]
+ *     security: [{ bearerAuth: [] }]
+ *     requestBody:
+ *       required: true
+ *       content: { application/json: { schema: { $ref: '#/components/schemas/RecoveryCodeActivateRequest' } } }
+ *     responses:
+ *       200: { description: Recovery code activated, no-store, content: { application/json: { schema: { $ref: '#/components/schemas/RecoveryCodeActivatedResponse' } } } }
+ *       400: { description: JSON, exact-origin, or malformed request }
+ *       401: { description: Missing, invalid, or non-student bearer session }
+ *       409: { description: Invalid, expired, consumed, revoked, or replayed code/grant, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+ *       429: { description: Fresh-proof quota exhausted }
+ *       503: { description: Recovery-code service unavailable (digest key unconfigured) or student session validation unavailable }
+ * /api/auth/student/sso/recovery-code/remove:
+ *   post:
+ *     summary: Remove an active recovery code after fresh reauthentication
+ *     tags: [Authentication]
+ *     security: [{ bearerAuth: [] }]
+ *     requestBody:
+ *       required: true
+ *       content: { application/json: { schema: { $ref: '#/components/schemas/RecoveryCodeRemoveRequest' } } }
+ *     responses:
+ *       204: { description: Recovery code removed }
+ *       400: { description: JSON, exact-origin, or malformed request }
+ *       401: { description: Missing, invalid, or non-student bearer session }
+ *       409: { description: Invalid, expired, consumed, revoked, or replayed fresh grant }
+ *       429: { description: Fresh-proof quota exhausted }
+ *       503: { description: Recovery-code service unavailable (digest key unconfigured) or student session validation unavailable }
+ * /api/auth/student/sso/recovery-code/cancel:
+ *   post:
+ *     summary: Cancel the owner's pending recovery code
+ *     description: Owner-only cancellation of one pending code for the current session. Revokes the pending candidate without touching an active code and without consuming a grant.
+ *     tags: [Authentication]
+ *     security: [{ bearerAuth: [] }]
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             additionalProperties: false
+ *             required: [pendingCodeId]
+ *             properties:
+ *               pendingCodeId: { type: string, format: uuid }
+ *     responses:
+ *       204: { description: Pending recovery code cancelled }
+ *       400: { description: JSON, exact-origin, or malformed request }
+ *       401: { description: Missing, invalid, or non-student bearer session }
+ *       409: { description: Code is not pending for this owner session }
+ *       503: { description: Recovery-code service unavailable (digest key unconfigured) or student session validation unavailable }
+ * /api/auth/student/sso/account-recovery/start:
+ *   post:
+ *     summary: Start independent password recovery
+ *     description: Requires an explicit lost-access or compromise purpose. Mailbox access alone never transfers account ownership.
+ *     tags: [Authentication]
+ *     security: []
+ *     requestBody:
+ *       required: true
+ *       content: { application/json: { schema: { $ref: '#/components/schemas/AccountRecoveryStartRequest' } } }
+ *     responses:
+ *       202: { description: Recovery handle issued, no-store, content: { application/json: { schema: { $ref: '#/components/schemas/AccountRecoveryStartResponse' } } } }
+ *       400: { description: JSON or malformed explicit-purpose request }
+ *       409: { description: Expired, unavailable, or conflict recovery state }
+ *       429: { description: Recovery quota exhausted }
+ *       503: { description: Recovery service unavailable (recovery-code key, mailer, or OTP outbox key unconfigured) }
+ * /api/auth/student/sso/account-recovery/verify:
+ *   post:
+ *     summary: Verify both recovery-code and mailbox proofs
+ *     tags: [Authentication]
+ *     security: []
+ *     requestBody:
+ *       required: true
+ *       content: { application/json: { schema: { $ref: '#/components/schemas/AccountRecoveryVerifyRequest' } } }
+ *     responses:
+ *       200:
+ *         description: Recovery proofs accepted; confirms the completion deadline already returned by the start response for the post-proof countdown.
+ *         content: { application/json: { schema: { $ref: '#/components/schemas/AccountRecoveryVerifiedResponse' } } }
+ *       400: { description: JSON or malformed proof request }
+ *       409: { description: Expired, invalid, consumed, or replayed recovery proof }
+ *       429: { description: Recovery quota exhausted }
+ *       503: { description: Recovery service unavailable (recovery-code key unconfigured; mailer gates start only) }
+ * /api/auth/student/sso/account-recovery/complete:
+ *   post:
+ *     summary: Set a password after verified independent recovery
+ *     description: Never issues a session or eligibility benefit; normal sign-in follows completion.
+ *     tags: [Authentication]
+ *     security: []
+ *     requestBody:
+ *       required: true
+ *       content: { application/json: { schema: { $ref: '#/components/schemas/AccountRecoveryCompleteRequest' } } }
+ *     responses:
+ *       204: { description: Password set without issuing a session }
+ *       400: { description: JSON or malformed completion request }
+ *       409: { description: Expired, invalid, consumed, or replayed recovery proof }
+ *       429: { description: Recovery quota exhausted }
+ *       503: { description: Recovery service unavailable (recovery-code key unconfigured; mailer gates start only) }
  */

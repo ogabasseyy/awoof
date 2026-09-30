@@ -43,8 +43,20 @@ async function main(): Promise<void> {
             const result = await cleanupStudentSsoTransients(client);
             process.stdout.write(
                 `student SSO cleanup complete: attemptsFailed=${result.attemptsFailed} handoffsScrubbed=${result.handoffsScrubbed} `
-                + `attemptsDeleted=${result.attemptsDeleted} handoffsDeleted=${result.handoffsDeleted} grantsDeleted=${result.grantsDeleted}\n`,
+                + `attemptsDeleted=${result.attemptsDeleted} handoffsDeleted=${result.handoffsDeleted} grantsDeleted=${result.grantsDeleted} `
+                + `signupChallengesTerminalized=${result.signupChallengesTerminalized} signupChallengesDeleted=${result.signupChallengesDeleted} `
+                + `reauthAttemptsTerminalized=${result.reauthAttemptsTerminalized} reauthAttemptsDeleted=${result.reauthAttemptsDeleted} `
+                + `recoveryAttemptsTerminalized=${result.recoveryAttemptsTerminalized} recoveryAttemptsDeleted=${result.recoveryAttemptsDeleted} `
+                + `actionGrantsScrubbed=${result.actionGrantsScrubbed} recoveryCodesScrubbed=${result.recoveryCodesScrubbed} `
+                + `terminalSecretsScrubbed=${result.terminalSecretsScrubbed} overdueExpired=${result.overdueExpired} `
+                + `overdueTerminalSecrets=${result.overdueTerminalSecrets}\n`,
             );
+            if (result.overdueExpired > 0 || result.overdueTerminalSecrets > 0) {
+                process.stderr.write(
+                    `student SSO cleanup overdue state: expired=${result.overdueExpired} terminalSecrets=${result.overdueTerminalSecrets}\n`,
+                );
+                process.exitCode = 1;
+            }
         } finally {
             client.release();
         }

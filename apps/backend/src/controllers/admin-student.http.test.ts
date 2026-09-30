@@ -94,6 +94,12 @@ async function withServer(
         }
         throw new Error(`Unexpected admin students query: ${text.slice(0, 120)}`);
     });
+    t.mock.method(db, 'getPool', () => ({
+        query: async (text: string) => {
+            assert.match(text, /password_setup_requires_recovery_code/);
+            return { rows: [], rowCount: 0 };
+        },
+    }) as ReturnType<typeof db.getPool>);
     const controller = new AdminStudentController({
         readAssurancePage: async (userIds: string[]) => {
             seen.push(userIds);

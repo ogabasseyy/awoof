@@ -15,6 +15,11 @@ export function hasValidMicrosoftAttemptEncryptionKey(value: unknown): value is 
 }
 
 export function hashMicrosoftAttemptSecret(value: string): string {
+    // Production callers fingerprint uniformly random 256-bit one-use
+    // secrets (OAuth state, browser bindings, finish tokens, action grants),
+    // never user passwords, which use the configured password KDF. Test
+    // callers may use fixed fixtures for deterministic assertions.
+    // codeql[js/insufficient-password-hash]: production input is a high-entropy token, not a password hash.
     return createHash('sha256').update(value, 'utf8').digest('base64url');
 }
 

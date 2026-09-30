@@ -15,6 +15,8 @@ export interface User {
     email: string;
     role: 'student' | 'vendor' | 'admin';
     verificationStatus?: 'unverified' | 'verified' | 'expired';
+    /** True until a recovered student saves a replacement recovery code. Absent otherwise. */
+    recoveryReenrollmentRequired?: boolean;
 }
 
 export interface SessionSnapshot {

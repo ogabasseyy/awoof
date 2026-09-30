@@ -51,10 +51,11 @@ export const sendEmail = async (
     to: string,
     subject: string,
     html: string,
-    retries: number = 3
+    retries: number = 3,
+    options: { logFailures?: boolean } = {},
 ): Promise<{ success: boolean; messageId?: string; error?: string }> => {
     if (!process.env.BREVO_API_KEY) {
-        appLogger.error('BREVO_API_KEY is not configured');
+        if (options.logFailures !== false) appLogger.error('BREVO_API_KEY is not configured');
         return { success: false, error: 'Email service not configured' };
     }
 
@@ -74,7 +75,7 @@ export const sendEmail = async (
             return { success: true, messageId: result.messageId };
         } catch (error: unknown) {
             const message = error instanceof Error ? error.message : String(error);
-            appLogger.error(`Email sending failed (attempt ${attempt}/${retries}):`, message);
+            if (options.logFailures !== false) appLogger.error(`Email sending failed (attempt ${attempt}/${retries})`);
 
             if (attempt === retries) {
                 return { success: false, error: message };
@@ -126,13 +127,15 @@ export const sendEmailVerificationOTP = async (
     email: string,
     otp: string,
     name?: string,
-    role: 'vendor' | 'student' = 'vendor'
+    role: 'vendor' | 'student' = 'vendor',
+    expiresInMinutes = 10
 ): Promise<{ success: boolean; messageId?: string; error?: string }> => {
     const isStudent = role === 'student';
     const subject = isStudent
         ? 'Verify your email - Awoof Student Registration'
         : 'Verify your email - Awoof Vendor Registration';
 
+    const expiryMinutes = Number.isSafeInteger(expiresInMinutes) && expiresInMinutes > 0 ? expiresInMinutes : 10;
     const greeting = name ? `Hello ${escapeHtml(name)},` : 'Hello,';
     const registrationText = isStudent
         ? 'Thank you for registering as a student on Awoof.'
@@ -150,7 +153,7 @@ export const sendEmailVerificationOTP = async (
                 <div style="background-color: #1D4ED8; color: #FFFFFF; padding: 20px; text-align: center; font-size: 24px; font-weight: bold; letter-spacing: 5px; margin: 20px 0; border-radius: 5px;">
                     ${otp}
                 </div>
-                <p>This code will expire in 10 minutes.</p>
+                <p>This code will expire in ${expiryMinutes} minute${expiryMinutes === 1 ? '' : 's'}.</p>
                 <p>If you didn't create an account with Awoof, please ignore this email.</p>
             </div>
             <div style="background-color: #1D4ED8; padding: 20px; text-align: center; color: #FFFFFF;">
@@ -191,6 +194,44 @@ export const sendWelcomeEmail = async (
     `;
 
     return await sendEmail(email, subject, html);
+};
+
+/** Completion notice only: never include a recovery code or password. */
+export const sendAccountRecoveryCompletionNotice = async (
+    email: string,
+    purpose: 'lost_access' | 'compromise',
+): Promise<{ success: boolean; messageId?: string; error?: string }> => {
+    const detail = purpose === 'compromise'
+        ? 'Account recovery set a new password for your Awoof account, signed out all sessions, and disconnected linked external sign-in identities.'
+        : 'Account recovery set a new password for your Awoof account and signed out all sessions. Linked school sign-ins were left connected.';
+    return sendEmail(email, 'Awoof account recovery completed', `
+        <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
+            <h1>Awoof account security</h1>
+            <p>${detail}</p>
+            <p>No recovery code or password is included in this notice.</p>
+            <p>If you did not make this change, secure your mailbox and email <a href="mailto:support@awoof.tech">support@awoof.tech</a> from this address.</p>
+        </div>
+    `);
+};
+
+/** Security notice only: never include a recovery code or password. */
+export const sendRecoveryCodeSecurityNotice = async (
+    email: string,
+    event: 'activated' | 'replaced' | 'removed',
+): Promise<{ success: boolean; messageId?: string; error?: string }> => {
+    const detail = event === 'activated'
+        ? 'A recovery code was activated for your Awoof account.'
+        : event === 'replaced'
+            ? 'Your Awoof recovery code was replaced.'
+            : 'Your Awoof recovery code was removed.';
+    return sendEmail(email, 'Awoof account recovery-code security notice', `
+        <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
+            <h1>Awoof account security</h1>
+            <p>${detail}</p>
+            <p>No recovery code or password is included in this notice.</p>
+            <p>If you did not make this change, secure your account and email <a href="mailto:support@awoof.tech">support@awoof.tech</a> from this address.</p>
+        </div>
+    `);
 };
 
 

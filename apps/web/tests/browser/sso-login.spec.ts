@@ -53,6 +53,12 @@ async function readTabHandoff(page: Page): Promise<{ handoffId: string; handoffS
     }, HANDOFF_KEY);
 }
 
+async function seedTabHandoff(page: Page, record: { handoffId: string; handoffSecret: string; expiresAt: string; returnPath: string }): Promise<void> {
+    await page.evaluate(({ key, value }) => {
+        sessionStorage.setItem(key, JSON.stringify(value));
+    }, { key: HANDOFF_KEY, value: record });
+}
+
 async function readSessionEnvelope(page: Page): Promise<string | null> {
     return page.evaluate((key) => localStorage.getItem(key), SESSION_KEY);
 }
@@ -277,6 +283,132 @@ test('an enrolled student completes SSO at the requested page', async ({ page })
     api.assertNoUnexpectedRequests();
 });
 
+test('a still-redeeming login waits and completes instead of failing', async ({ page }) => {
+    const finishBodies: unknown[] = [];
+    let finishCalls = 0;
+    const api = await installSyntheticApi(page);
+    await page.route(`${apiOrigin}/api/auth/student/sso/finish`, async (route) => {
+        finishBodies.push(JSON.parse(route.request().postData() ?? '{}'));
+        finishCalls += 1;
+        if (finishCalls === 1) {
+            await route.fulfill({
+                status: 409,
+                json: { success: false, error: { message: 'Student SSO login is still completing', code: 'CONFLICT', statusCode: 409, details: { retryable: true } } },
+                headers: ssoHeaders,
+            });
+            return;
+        }
+        await route.fulfill({
+            json: {
+                success: true,
+                data: {
+                    outcome: 'authenticated',
+                    user: { id: 'student-1', email: 'student@school.example', role: 'student' },
+                    tokens: { accessToken: 'student-access', refreshToken: 'student-refresh' },
+                    studentAssurance: enrolledAssurance(),
+                    assuranceStatus: 'available',
+                },
+            },
+            headers: ssoHeaders,
+        });
+    });
+
+    await page.goto('/auth/student/login');
+    await seedTabAttempt(page, {
+        attemptId: ATTEMPT_ID,
+        finishSecret: 'synthetic-finish-secret',
+        expiresAt: liveExpiry(),
+        generation: 0,
+        returnPath: '/marketplace?from=sso-test',
+    });
+    await page.goto(`/auth/student/sso/complete?attempt=${ATTEMPT_ID}`);
+    await expect(page.getByRole('heading', { name: 'Sign-in still completing' })).toBeVisible();
+    await page.waitForURL('**/marketplace?from=sso-test');
+    expect(finishBodies).toEqual([
+        { attemptId: ATTEMPT_ID, finishSecret: 'synthetic-finish-secret' },
+        { attemptId: ATTEMPT_ID, finishSecret: 'synthetic-finish-secret' },
+    ]);
+    expect(await readTabAttempt(page)).toBeNull();
+    expect(await readSessionEnvelope(page)).toContain('"state":"active"');
+    api.assertNoUnexpectedRequests();
+});
+
+test('ordinary SSO finish ignores a duplicate retry while a finish request is in flight', async ({ page }) => {
+    let finishCalls = 0;
+    let releaseWinner: (() => void) | undefined;
+    const api = await installSyntheticApi(page);
+    await page.route(`${apiOrigin}/api/auth/student/sso/finish`, async (route) => {
+        finishCalls += 1;
+        if (finishCalls === 1) {
+            await route.fulfill({ status: 409, json: { success: false, error: { message: 'Student SSO login is still completing', code: 'CONFLICT', statusCode: 409, details: { retryable: true } } }, headers: ssoHeaders });
+            return;
+        }
+        if (finishCalls === 2) await new Promise<void>(resolve => { releaseWinner = resolve; });
+        await route.fulfill(finishCalls === 2 ? {
+            json: { success: true, data: { outcome: 'authenticated', user: { id: 'student-1', email: 'student@school.example', role: 'student' }, tokens: { accessToken: 'student-access', refreshToken: 'student-refresh' }, studentAssurance: enrolledAssurance(), assuranceStatus: 'available' } },
+            headers: ssoHeaders,
+        } : { status: 409, json: { success: false, error: { message: 'The sign-in already completed', code: 'CONFLICT', statusCode: 409 } }, headers: ssoHeaders });
+    });
+    await page.goto('/auth/student/login');
+    await seedTabAttempt(page, { attemptId: ATTEMPT_ID, finishSecret: 'synthetic-finish-secret', expiresAt: liveExpiry(), generation: 0, returnPath: '/marketplace?from=sso-test' });
+    await page.goto(`/auth/student/sso/complete?attempt=${ATTEMPT_ID}`);
+    await expect(page.getByRole('button', { name: 'Check again' })).toBeVisible();
+    // Fire two clicks in one browser task to reproduce the gap between the
+    // timer/button event and React's next disabled/unmount render.
+    await page.getByRole('button', { name: 'Check again' }).evaluate(button => {
+        button.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+        button.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    });
+    await expect.poll(() => finishCalls).toBe(2);
+    await page.waitForTimeout(100);
+    expect(finishCalls).toBe(2);
+    releaseWinner?.();
+    await page.waitForURL('**/marketplace?from=sso-test');
+    api.assertNoUnexpectedRequests();
+});
+
+test('an authenticated onboarding return preserves the waiting link handoff', async ({ page }) => {
+    const api = await installSyntheticApi(page);
+    await page.route(`${apiOrigin}/api/auth/student/sso/finish`, (route) => route.fulfill({
+        json: {
+            success: true,
+            data: {
+                outcome: 'authenticated',
+                user: { id: 'student-1', email: 'student@school.example', role: 'student' },
+                tokens: { accessToken: 'student-access', refreshToken: 'student-refresh' },
+                studentAssurance: enrolledAssurance(),
+                assuranceStatus: 'available',
+            },
+        },
+        headers: ssoHeaders,
+    }));
+
+    await page.goto('/auth/student/login');
+    // The onboarding conflict flow signs an existing passwordless account
+    // in from this same tab: the waiting link handoff must survive the
+    // authenticated completion so the return can link instead of
+    // rendering "Nothing to link".
+    await seedTabAttempt(page, {
+        attemptId: ATTEMPT_ID,
+        finishSecret: 'synthetic-finish-secret',
+        expiresAt: liveExpiry(),
+        generation: 0,
+        returnPath: '/auth/student/sso/onboarding',
+    });
+    await seedTabHandoff(page, {
+        handoffId: HANDOFF_ID,
+        handoffSecret: 'synthetic-handoff-secret',
+        expiresAt: liveExpiry(),
+        returnPath: '/marketplace',
+    });
+    await page.goto(`/auth/student/sso/complete?attempt=${ATTEMPT_ID}`);
+    await page.waitForURL('**/auth/student/sso/onboarding**');
+    expect(await readTabAttempt(page)).toBeNull();
+    const kept = await readTabHandoff(page);
+    expect(kept?.handoffId).toBe(HANDOFF_ID);
+    api.assertNoUnexpectedRequests();
+});
+
 test('a pending student continues to enrollment verification with independent labels', async ({ page }) => {
     const api = await installSyntheticApi(page);
     await page.route(`${apiOrigin}/api/auth/student/sso/finish`, (route) => route.fulfill({
@@ -355,8 +487,13 @@ test('an unlinked provider identity stays signed out with an explicit link-requi
                 handoffId: HANDOFF_ID,
                 handoffSecret: 'synthetic-handoff-secret',
                 expiresAt: liveExpiry(),
+                provider: 'microsoft',
             },
         },
+        headers: ssoHeaders,
+    }));
+    await page.route(`${apiOrigin}/api/auth/student/sso/signup/availability*`, (route) => route.fulfill({
+        json: { success: true, data: { available: true } },
         headers: ssoHeaders,
     }));
 
@@ -374,7 +511,7 @@ test('an unlinked provider identity stays signed out with an explicit link-requi
     // The password link carries the user back to the stored handoff so the
     // link step resumes after sign-in instead of orphaning the handoff.
     await expect(page.getByRole('link', { name: 'Sign in with your password' })).toHaveAttribute('href', '/auth/student/login?redirect=%2Fauth%2Fstudent%2Fsso%2Fonboarding');
-    await expect(page.getByRole('link', { name: 'Create an account' })).toHaveAttribute('href', '/auth/student/register?redirect=%2Fauth%2Fstudent%2Fsso%2Fonboarding');
+    await expect(page.getByRole('link', { name: 'Create a passwordless account' })).toHaveAttribute('href', '/auth/student/sso/onboarding?mode=signup');
     expect(await readSessionEnvelope(page)).toBeNull();
     expect(await readTabAttempt(page)).toBeNull();
     const handoff = await readTabHandoff(page);
@@ -383,6 +520,86 @@ test('an unlinked provider identity stays signed out with an explicit link-requi
     // onboarding page can continue to the initiating destination.
     expect(handoff?.returnPath).toBe('/marketplace');
     expect(page.url()).not.toContain('synthetic-handoff-secret');
+    api.assertNoUnexpectedRequests();
+});
+
+test('late link handoff retains the same browser cookie through its own deadline', async ({ page, context }) => {
+    const api = await installSyntheticApi(page);
+    const cookieName = `awoof_sso_${ATTEMPT_ID}`;
+    await page.goto('/auth/student/login');
+    await context.addCookies([{
+        name: cookieName, value: 'same-browser-binding', domain: '127.0.0.1', path: '/api/auth/student/sso',
+        expires: Math.floor(Date.now() / 1000) + 8, httpOnly: true, secure: true, sameSite: 'Lax',
+    }]);
+    await page.route(`${apiOrigin}/api/auth/student/sso/finish`, async (route) => {
+        expect(route.request().headers().cookie).toContain(`${cookieName}=same-browser-binding`);
+        // Playwright's intercepted response does not apply Set-Cookie to the
+        // browser context, so mirror the same server renewal before fulfilling
+        // the link-required response. The backend route test asserts the
+        // actual Set-Cookie attributes and exact remaining TTL.
+        await context.addCookies([{
+            name: cookieName, value: 'same-browser-binding', domain: '127.0.0.1', path: '/api/auth/student/sso',
+            expires: Math.floor(Date.now() / 1000) + 600, httpOnly: true, secure: true, sameSite: 'Lax',
+        }]);
+        await route.fulfill({
+            status: 200,
+            headers: {
+                ...ssoHeaders,
+                'set-cookie': `${cookieName}=same-browser-binding; Max-Age=600; Path=/api/auth/student/sso; HttpOnly; Secure; SameSite=Lax`,
+            },
+            json: { success: true, data: { outcome: 'link_required', handoffId: HANDOFF_ID, handoffSecret: 'synthetic-handoff-secret', expiresAt: liveExpiry(), provider: 'microsoft' } },
+        });
+    });
+    await page.route(`${apiOrigin}/api/auth/student/sso/signup/availability*`, route => route.fulfill({ headers: ssoHeaders, json: { success: true, data: { available: true } } }));
+    let contextCookie: string | undefined;
+    await page.route(`${apiOrigin}/api/auth/student/sso/signup/context`, async route => {
+        contextCookie = route.request().headers().cookie;
+        await route.fulfill({ headers: ssoHeaders, json: { success: true, data: { email: 'student@school.example', universityId: '72000000-0000-4000-8000-000000000001', termsVersion: '2026-01', noticeVersion: '2026-01', noticeText: 'Synthetic processing notice.', expiresAt: liveExpiry() } } });
+    });
+    await seedTabAttempt(page, { attemptId: ATTEMPT_ID, finishSecret: 'synthetic-finish-secret', expiresAt: liveExpiry(), generation: 0, returnPath: '/marketplace' });
+    await page.goto(`/auth/student/sso/complete?attempt=${ATTEMPT_ID}`);
+    await expect(page.getByRole('heading', { name: 'Link your school account' })).toBeVisible();
+    // The pre-finish cookie was deliberately near expiry; a handoff remains
+    // valid for ten minutes, so prove the same cookie was renewed for it.
+    await page.waitForTimeout(9_000);
+    await page.getByRole('link', { name: 'Create a passwordless account' }).click();
+    await expect(page.getByRole('heading', { name: 'Finish setting up Awoof' })).toBeVisible();
+    expect(contextCookie).toContain(`${cookieName}=same-browser-binding`);
+    api.assertNoUnexpectedRequests();
+});
+
+test('link-required hides passwordless signup while issuance is disabled', async ({ page }) => {
+    const api = await installSyntheticApi(page);
+    await page.route(`${apiOrigin}/api/auth/student/sso/finish`, (route) => route.fulfill({
+        json: {
+            success: true,
+            data: {
+                outcome: 'link_required',
+                handoffId: HANDOFF_ID,
+                handoffSecret: 'synthetic-handoff-secret',
+                expiresAt: liveExpiry(),
+                provider: 'microsoft',
+            },
+        },
+        headers: ssoHeaders,
+    }));
+    await page.route(`${apiOrigin}/api/auth/student/sso/signup/availability*`, (route) => route.fulfill({
+        json: { success: true, data: { available: false } },
+        headers: ssoHeaders,
+    }));
+
+    await page.goto('/auth/student/login');
+    await seedTabAttempt(page, {
+        attemptId: ATTEMPT_ID,
+        finishSecret: 'synthetic-finish-secret',
+        expiresAt: liveExpiry(),
+        generation: 0,
+        returnPath: '/marketplace',
+    });
+    await page.goto(`/auth/student/sso/complete?attempt=${ATTEMPT_ID}`);
+    await expect(page.getByRole('heading', { name: 'Link your school account' })).toBeVisible();
+    await expect(page.getByRole('link', { name: 'Sign in with your password' })).toBeVisible();
+    await expect(page.getByRole('link', { name: 'Create a passwordless account' })).toHaveCount(0);
     api.assertNoUnexpectedRequests();
 });
 
@@ -403,6 +620,8 @@ test('a denied provider returns to login with a safe error only', async ({ page 
     const notice = page.locator('#student-login-notice');
     await expect(notice).toBeVisible();
     await expect(notice).toContainText('did not complete');
+    await expect(notice).toContainText('Try again with your school account');
+    await expect(notice).toContainText('password if you set one');
     await expect(notice).toBeFocused();
     expect(await readTabAttempt(page)).toBeNull();
 });
@@ -414,7 +633,7 @@ test('unknown login error codes are ignored rather than echoed', async ({ page }
     await expect(page.getByText('evil')).toHaveCount(0);
 });
 
-test('an expired attempt recovers through a password sign-in', async ({ page }) => {
+test('an expired attempt allows a password fallback only when login options offer it', async ({ page }) => {
     const api = await installSyntheticApi(page);
     await page.goto('/auth/student/login');
     await seedTabAttempt(page, {
@@ -427,6 +646,8 @@ test('an expired attempt recovers through a password sign-in', async ({ page }) 
     await page.goto(`/auth/student/sso/complete?attempt=${ATTEMPT_ID}`);
     await page.waitForURL('**/auth/student/login?error=sso_expired**');
     await expect(page.locator('#student-login-notice')).toContainText('expired');
+    await expect(page.locator('#student-login-notice')).toContainText('school account');
+    await expect(page.locator('#student-login-notice')).toContainText('password if you set one');
 
     await revealPassword(page, 'student@approved.test');
     await page.getByLabel('Password', { exact: true }).fill('Synthetic-Password1!');
@@ -483,7 +704,7 @@ test('an expired student session recovers through the current password login', a
 
     await page.goto('/marketplace');
     await page.waitForURL('**/auth/student/login?error=session_expired**');
-    await expect(page.locator('#student-login-notice')).toContainText('Sign in again with your password');
+    await expect(page.locator('#student-login-notice')).toContainText('school account, or use a password if you set one');
 
     await revealPassword(page, 'student@approved.test');
     await page.getByLabel('Password', { exact: true }).fill('Synthetic-Password1!');

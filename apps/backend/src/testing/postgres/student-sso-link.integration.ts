@@ -8,6 +8,7 @@ import {
     type StudentSsoLinkDependencies,
 } from '../../services/auth/student-sso-link.service.js';
 import { passwordService } from '../../services/auth/password.service.js';
+import { issueActionGrant } from '../../services/auth/student-action-grant.service.js';
 import { studentSsoCookieName } from '../../services/auth/student-sso-flow.service.js';
 import {
     encryptMicrosoftAttemptVerifier,
@@ -249,8 +250,9 @@ async function mintGrant(
     sid: string,
     password: string,
     purpose: 'link' | 'unlink' = 'link',
+    targetIdentityId?: string,
 ): Promise<{ grantId: string; grantSecret: string }> {
-    const result = await service.reauth({ userId, sid, password, purpose });
+    const result = await service.reauth({ userId, sid, password, purpose, ...(targetIdentityId === undefined ? {} : { targetIdentityId }) });
     return { grantId: result.grantId, grantSecret: result.grantSecret };
 }
 
@@ -307,14 +309,17 @@ test('link binds a new google subject and records the school assertion', async (
                 [result.identity.id, owner.userId],
             );
             assert.equal(assertion.rowCount, 1);
-            const spent = await check.query<{ consumed_at: Date | null; encrypted_observation: string }>(
-                'SELECT consumed_at, encrypted_observation FROM student_auth_link_handoffs WHERE id = $1',
+            const spent = await check.query<{ consumed_at: Date | null; encrypted_observation: string | null; secret_hash: string | null; browser_binding_hash: string | null }>(
+                'SELECT consumed_at, encrypted_observation, secret_hash, browser_binding_hash FROM student_auth_link_handoffs WHERE id = $1',
                 [handoff.handoffId],
             );
             assert.notEqual(spent.rows[0]!.consumed_at, null);
-            // Consuming the handoff scrubs its ciphertext in the same write:
-            // no identity material waits out the tombstone window.
-            assert.equal(spent.rows[0]!.encrypted_observation, 'scrubbed');
+            // Consuming the handoff NULLs its ciphertext and one-use
+            // binding digests in the same write: retention cleanup excludes
+            // consumed handoffs, so nothing waits out the tombstone window.
+            assert.equal(spent.rows[0]!.encrypted_observation, null);
+            assert.equal(spent.rows[0]!.secret_hash, null);
+            assert.equal(spent.rows[0]!.browser_binding_hash, null);
             const audit = await check.query(
                 `SELECT 1 FROM verification_audit_events
                  WHERE user_id = $1 AND event_type = 'student_sso_identity_linked'`,
@@ -324,6 +329,21 @@ test('link binds a new google subject and records the school assertion', async (
         } finally {
             check.release();
         }
+        // A replay cannot prove the scrubbed binding and fails closed
+        // instead of resolving a restart, matching consumed attempts.
+        const replayGrant = await mintGrant(service, owner.userId, owner.sid, PASSWORD);
+        await assert.rejects(
+            service.link({
+                userId: owner.userId,
+                sid: owner.sid,
+                handoffId: handoff.handoffId,
+                handoffSecret: handoff.handoffSecret,
+                browserCookies: cookiesFor(handoff.attemptId, handoff.cookieSecret),
+                grantId: replayGrant.grantId,
+                grantSecret: replayGrant.grantSecret,
+            }),
+            /no longer valid/,
+        );
     });
 });
 
@@ -489,7 +509,7 @@ test('link fails closed on a password change after reauth', async () => {
         const grant = await mintGrant(service, owner.userId, owner.sid, PASSWORD);
         const check = await pool.connect();
         try {
-            await check.query('UPDATE users SET password_hash = $2 WHERE id = $1', [
+            await check.query('UPDATE users SET password_hash = $2, credential_generation = credential_generation + 1 WHERE id = $1', [
                 owner.userId,
                 await passwordService.hashPassword('Brand!new-password-4'),
             ]);
@@ -560,6 +580,73 @@ test('link refuses a provider disabled after the handoff was issued', async () =
         } finally {
             check.release();
         }
+    });
+});
+
+test('policy invalidation after a grant is issued restarts without linking an identity', async () => {
+    await withLinkPool(async (pool) => {
+        const attemptKey = randomBytes(32).toString('base64url');
+        const service = makeService(pool, attemptKey);
+        const client = await pool.connect();
+        let owner;
+        let policy;
+        let handoff;
+        try {
+            owner = await seedOwner(client, {});
+            policy = await seedPolicy(client, owner.universityId, owner.email.split('@')[1]!);
+            handoff = await seedHandoff(client, attemptKey, policy, googleObservation(policy.realm, `policy-after-grant-${uniqueLabel()}`, owner.email));
+        } finally { client.release(); }
+        const grant = await mintGrant(service, owner.userId, owner.sid, PASSWORD);
+        const invalidator = await pool.connect();
+        try { await invalidator.query('UPDATE institution_login_policies SET enabled = false, version = version + 1 WHERE id = $1', [policy.id]); }
+        finally { invalidator.release(); }
+        const result = await service.link({ userId: owner.userId, sid: owner.sid, handoffId: handoff.handoffId, handoffSecret: handoff.handoffSecret, browserCookies: cookiesFor(handoff.attemptId, handoff.cookieSecret), grantId: grant.grantId, grantSecret: grant.grantSecret });
+        assert.deepEqual(result, { outcome: 'restart', attemptId: handoff.attemptId });
+        const check = await pool.connect();
+        try {
+            const identities = await check.query('SELECT 1 FROM student_auth_identities WHERE user_id = $1 AND revoked_at IS NULL', [owner.userId]);
+            assert.equal(identities.rowCount, 0);
+        } finally { check.release(); }
+    });
+});
+
+test('action grant transition permits only consume-and-scrub and keeps terminal grants immutable', async () => {
+    await withLinkPool(async (pool) => {
+        const client = await pool.connect();
+        try {
+            const owner = await seedOwner(client, {});
+            const secret = hashMicrosoftAttemptSecret(secretHex());
+            const grantId = (await client.query<{ id: string }>(
+                `INSERT INTO student_auth_action_grants
+                     (user_id, sid, credential_generation, purpose, secret_hash, expires_at)
+                 VALUES ($1, $2, 0, 'link', $3, clock_timestamp() + interval '5 minutes')
+                 RETURNING id`,
+                [owner.userId, owner.sid, secret],
+            )).rows[0]!.id;
+            await client.query(
+                "UPDATE student_auth_action_grants SET consumed_at = clock_timestamp(), secret_hash = 'scrubbed' WHERE id = $1",
+                [grantId],
+            );
+            await assert.rejects(
+                client.query("UPDATE student_auth_action_grants SET purpose = 'unlink' WHERE id = $1", [grantId]),
+                /immutable/,
+            );
+            await assert.rejects(
+                client.query("UPDATE student_auth_action_grants SET secret_hash = 'different' WHERE id = $1", [grantId]),
+                /Terminal passwordless action grants cannot be replayed/,
+            );
+            const unconsumedId = (await client.query<{ id: string }>(
+                `INSERT INTO student_auth_action_grants
+                     (user_id, sid, credential_generation, purpose, secret_hash, expires_at)
+                 VALUES ($1, $2, 0, 'link', $3, clock_timestamp() + interval '5 minutes')
+                 RETURNING id`,
+                [owner.userId, owner.sid, hashMicrosoftAttemptSecret(secretHex())],
+            )).rows[0]!.id;
+            await assert.rejects(
+                client.query('UPDATE student_auth_action_grants SET consumed_at = clock_timestamp() WHERE id = $1', [unconsumedId]),
+                /Terminal passwordless action grants cannot be replayed/,
+            );
+        } finally { client.release(); }
     });
 });
 
@@ -988,6 +1075,113 @@ test('link permits microsoft login without membership but records no assertion',
     });
 });
 
+test('link revalidates a revoked provider proof at grant consumption', async () => {
+    await withLinkPool(async (pool) => {
+        const attemptKey = randomBytes(32).toString('base64url');
+        const service = makeService(pool, attemptKey);
+        const client = await pool.connect();
+        let owner;
+        let policy;
+        let handoff;
+        let grantA: { grantId: string; grantSecret: string };
+        let grantB: { grantId: string; grantSecret: string };
+        try {
+            owner = await seedOwner(client, {});
+            policy = await seedPolicy(client, owner.universityId, owner.email.split('@')[1]!, {
+                provider: 'microsoft',
+                realm: MICROSOFT_TENANT,
+            });
+            // Proof authority matches the mapping to the identity's own
+            // mailbox domain, so the proofs observe the mapped mailbox.
+            const proofA = (await client.query<{ id: string }>(
+                `INSERT INTO student_auth_identities (user_id, university_id, provider, issuer, subject, observed_email)
+                 VALUES ($1, $2, 'microsoft', $3, $4, $5) RETURNING id`,
+                [owner.userId, owner.universityId, policy.issuer, `proof-a-${uniqueLabel()}`, owner.email],
+            )).rows[0]!.id;
+            const proofB = (await client.query<{ id: string }>(
+                `INSERT INTO student_auth_identities (user_id, university_id, provider, issuer, subject, observed_email)
+                 VALUES ($1, $2, 'microsoft', $3, $4, $5) RETURNING id`,
+                [owner.userId, owner.universityId, policy.issuer, `proof-b-${uniqueLabel()}`, owner.email],
+            )).rows[0]!.id;
+            handoff = await seedHandoff(client, attemptKey, policy, {
+                provider: 'microsoft',
+                issuer: policy.issuer,
+                subject: `ms-proof-${uniqueLabel()}`,
+                email: owner.email,
+                mailboxVerified: false,
+                realm: MICROSOFT_TENANT,
+                schoolMembershipAttested: false,
+                objectId: randomUUID(),
+            });
+            grantA = await issueActionGrant(client, { userId: owner.userId, sid: owner.sid, purpose: 'link', credentialGeneration: 0, proofIdentityId: proofA });
+            grantB = await issueActionGrant(client, { userId: owner.userId, sid: owner.sid, purpose: 'link', credentialGeneration: 0, proofIdentityId: proofB });
+            // Revoke after issuance: the five-minute grant must not survive it.
+            await client.query('UPDATE student_auth_identities SET revoked_at = clock_timestamp() WHERE id = $1', [proofA]);
+        } finally {
+            client.release();
+        }
+        const attempt = (grant: { grantId: string; grantSecret: string }) => service.link({
+            userId: owner.userId,
+            sid: owner.sid,
+            handoffId: handoff.handoffId,
+            handoffSecret: handoff.handoffSecret,
+            browserCookies: cookiesFor(handoff.attemptId, handoff.cookieSecret),
+            grantId: grant.grantId,
+            grantSecret: grant.grantSecret,
+        });
+        await assert.rejects(() => attempt(grantA), /no longer valid/,
+            'a provider proof revoked mid-grant must not authorize linking another identity');
+        // The failed consumption spent neither the handoff nor the live grant.
+        const result = await attempt(grantB);
+        assert.equal(result.outcome, 'linked');
+    });
+});
+
+test('unlink revalidates a revoked provider proof at grant consumption', async () => {
+    await withLinkPool(async (pool) => {
+        const attemptKey = randomBytes(32).toString('base64url');
+        const service = makeService(pool, attemptKey);
+        const client = await pool.connect();
+        let owner;
+        let target: string;
+        let grant: { grantId: string; grantSecret: string };
+        try {
+            owner = await seedOwner(client, {});
+            // The proof revalidation requires a live policy for the proof
+            // identity's exact university, provider, and issuer.
+            await seedPolicy(client, owner.universityId, owner.email.split('@')[1]!);
+            const proof = (await client.query<{ id: string }>(
+                `INSERT INTO student_auth_identities (user_id, university_id, provider, issuer, subject)
+                 VALUES ($1, $2, 'google', $3, $4) RETURNING id`,
+                [owner.userId, owner.universityId, GOOGLE_ISSUER, `proof-${uniqueLabel()}`],
+            )).rows[0]!.id;
+            target = (await client.query<{ id: string }>(
+                `INSERT INTO student_auth_identities (user_id, university_id, provider, issuer, subject)
+                 VALUES ($1, $2, 'google', $3, $4) RETURNING id`,
+                [owner.userId, owner.universityId, GOOGLE_ISSUER, `target-${uniqueLabel()}`],
+            )).rows[0]!.id;
+            grant = await issueActionGrant(client, { userId: owner.userId, sid: owner.sid, purpose: 'unlink', credentialGeneration: 0, proofIdentityId: proof, targetIdentityId: target });
+            await client.query('UPDATE student_auth_identities SET revoked_at = clock_timestamp() WHERE id = $1', [proof]);
+        } finally {
+            client.release();
+        }
+        await assert.rejects(
+            () => service.unlink({ userId: owner.userId, sid: owner.sid, identityId: target, grantId: grant.grantId, grantSecret: grant.grantSecret }),
+            /no longer valid/,
+            'a provider proof revoked mid-grant must not authorize removing another identity',
+        );
+        const check = await pool.connect();
+        try {
+            const kept = await check.query<{ revoked_at: Date | null }>(
+                'SELECT revoked_at FROM student_auth_identities WHERE id = $1', [target],
+            );
+            assert.equal(kept.rows[0]!.revoked_at, null);
+        } finally {
+            check.release();
+        }
+    });
+});
+
 async function linkIdentity(
     service: StudentSsoLinkService,
     owner: SeededOwner,
@@ -1040,7 +1234,7 @@ test('unlink revokes the identity and clears only its own session', async () => 
         } finally {
             attributer.release();
         }
-        const grant = await mintGrant(service, owner.userId, owner.sid, PASSWORD, 'unlink');
+        const grant = await mintGrant(service, owner.userId, owner.sid, PASSWORD, 'unlink', identityId);
         const result = await service.unlink({
             userId: owner.userId,
             sid: owner.sid,
@@ -1048,7 +1242,7 @@ test('unlink revokes the identity and clears only its own session', async () => 
             grantId: grant.grantId,
             grantSecret: grant.grantSecret,
         });
-        assert.deepEqual(result, { unlinked: true });
+        assert.deepEqual(result, { unlinked: true, sessionRevoked: true });
         const check = await pool.connect();
         try {
             const identity = await check.query<{ revoked_at: Date | null }>(
@@ -1127,7 +1321,7 @@ test('unlink preserves a session issued by another method', async () => {
         } finally {
             check.release();
         }
-        const grant = await mintGrant(service, owner.userId, owner.sid, PASSWORD, 'unlink');
+        const grant = await mintGrant(service, owner.userId, owner.sid, PASSWORD, 'unlink', identityId);
         const result = await service.unlink({
             userId: owner.userId,
             sid: owner.sid,
@@ -1135,7 +1329,7 @@ test('unlink preserves a session issued by another method', async () => {
             grantId: grant.grantId,
             grantSecret: grant.grantSecret,
         });
-        assert.deepEqual(result, { unlinked: true });
+        assert.deepEqual(result, { unlinked: true, sessionRevoked: false });
         const verify = await pool.connect();
         try {
             const account = await verify.query<{
@@ -1185,9 +1379,9 @@ test('unlink refuses the last login method without revoking anything', async () 
         let grantId = '';
         try {
             grantId = (await inserter.query<{ id: string }>(
-                `INSERT INTO student_auth_reauth_grants (user_id, sid, purpose, secret_hash, expires_at)
-                 VALUES ($1, $2, 'unlink', $3, clock_timestamp() + interval '5 minutes') RETURNING id`,
-                [owner.userId, owner.sid, hashMicrosoftAttemptSecret(unlinkSecret)],
+                `INSERT INTO student_auth_action_grants (user_id, sid, credential_generation, purpose, secret_hash, target_identity_id, expires_at)
+                 VALUES ($1, $2, 0, 'unlink', $3, $4, clock_timestamp() + interval '5 minutes') RETURNING id`,
+                [owner.userId, owner.sid, hashMicrosoftAttemptSecret(unlinkSecret), identityId],
             )).rows[0]!.id;
         } finally {
             inserter.release();
@@ -1212,6 +1406,279 @@ test('unlink refuses the last login method without revoking anything', async () 
             check.release();
         }
     });
+
+});
+
+test('unlink treats a legacy empty password hash as no password', async () => {
+    await withLinkPool(async (pool) => {
+        const attemptKey = randomBytes(32).toString('base64url');
+        const service = makeService(pool, attemptKey);
+        const client = await pool.connect();
+        let owner;
+        let policy;
+        let handoff;
+        try {
+            owner = await seedOwner(client, {});
+            policy = await seedPolicy(client, owner.universityId, owner.email.split('@')[1]!);
+            handoff = await seedHandoff(
+                client,
+                attemptKey,
+                policy,
+                googleObservation(policy.realm, `unlink-empty-sub-${uniqueLabel()}`, owner.email),
+            );
+        } finally {
+            client.release();
+        }
+        const identityId = await linkIdentity(service, owner, handoff);
+        const remover = await pool.connect();
+        try {
+            await remover.query('UPDATE users SET password_hash = \'\' WHERE id = $1', [owner.userId]);
+        } finally {
+            remover.release();
+        }
+        const unlinkSecret = secretHex();
+        const inserter = await pool.connect();
+        let grantId = '';
+        try {
+            grantId = (await inserter.query<{ id: string }>(
+                `INSERT INTO student_auth_action_grants (user_id, sid, credential_generation, purpose, secret_hash, target_identity_id, expires_at)
+                 VALUES ($1, $2, 0, 'unlink', $3, $4, clock_timestamp() + interval '5 minutes') RETURNING id`,
+                [owner.userId, owner.sid, hashMicrosoftAttemptSecret(unlinkSecret), identityId],
+            )).rows[0]!.id;
+        } finally {
+            inserter.release();
+        }
+        const result = await service.unlink({
+            userId: owner.userId,
+            sid: owner.sid,
+            identityId,
+            grantId,
+            grantSecret: unlinkSecret,
+        });
+        assert.deepEqual(result, { outcome: 'last_method' });
+        const check = await pool.connect();
+        try {
+            const row = await check.query<{ revoked_at: Date | null }>(
+                'SELECT revoked_at FROM student_auth_identities WHERE id = $1',
+                [identityId],
+            );
+            assert.equal(row.rows[0]!.revoked_at, null);
+        } finally {
+            check.release();
+        }
+    });
+
+});
+
+test('a refused last-method removal preserves the grant for retry', async () => {
+    await withLinkPool(async (pool) => {
+        const attemptKey = randomBytes(32).toString('base64url');
+        const service = makeService(pool, attemptKey);
+        const client = await pool.connect();
+        let owner;
+        let identityId = '';
+        try {
+            owner = await seedOwner(client, {});
+            const policy = await seedPolicy(client, owner.universityId, owner.email.split('@')[1]!);
+            identityId = (await client.query<{ id: string }>(
+                `INSERT INTO student_auth_identities (user_id, university_id, provider, issuer, subject)
+                 VALUES ($1, $2, 'google', $3, $4) RETURNING id`,
+                [owner.userId, owner.universityId, policy.issuer, `retry-sub-${uniqueLabel()}`],
+            )).rows[0]!.id;
+        } finally {
+            client.release();
+        }
+        const grant = await mintGrant(service, owner.userId, owner.sid, PASSWORD, 'unlink', identityId);
+        const editor = await pool.connect();
+        try {
+            await editor.query('UPDATE users SET password_hash = NULL WHERE id = $1', [owner.userId]);
+        } finally {
+            editor.release();
+        }
+        assert.deepEqual(await service.unlink({
+            userId: owner.userId, sid: owner.sid, identityId, grantId: grant.grantId, grantSecret: grant.grantSecret,
+        }), { outcome: 'last_method' });
+        const liveness = await pool.connect();
+        try {
+            const row = await liveness.query<{ consumed_at: Date | null }>(
+                'SELECT consumed_at FROM student_auth_action_grants WHERE id = $1', [grant.grantId],
+            );
+            assert.equal(row.rows[0]!.consumed_at, null, 'the guard must not spend the target-bound grant');
+            // The user adds another method, then retries with the same grant.
+            await liveness.query('UPDATE users SET password_hash = $2 WHERE id = $1', [owner.userId, 'restored-hash']);
+        } finally {
+            liveness.release();
+        }
+        assert.deepEqual(await service.unlink({
+            userId: owner.userId, sid: owner.sid, identityId, grantId: grant.grantId, grantSecret: grant.grantSecret,
+        }), { unlinked: true, sessionRevoked: false });
+    });
+});
+
+test('unlink keeps the last Microsoft identity on a passwordless account but releases Google', async () => {
+    await withLinkPool(async (pool) => {
+        const attemptKey = randomBytes(32).toString('base64url');
+        const service = makeService(pool, attemptKey);
+        const client = await pool.connect();
+        let owner;
+        let microsoftId = '';
+        let googleId = '';
+        try {
+            owner = await seedOwner(client, {});
+            const domain = owner.email.split('@')[1]!;
+            const googlePolicy = await seedPolicy(client, owner.universityId, domain);
+            // A second provider needs its own domain mapping row. The
+            // Microsoft identity carries an observed mailbox on its mapped
+            // domain, which is what makes it a fresh-proof method: reauth
+            // start rejects identities with no observed mailbox or a
+            // withdrawn observed domain.
+            const microsoftDomain = `ms-${uniqueLabel()}.school.example`;
+            const microsoftPolicy = await seedPolicy(client, owner.universityId, microsoftDomain, {
+                provider: 'microsoft', realm: MICROSOFT_TENANT,
+            });
+            microsoftId = (await client.query<{ id: string }>(
+                `INSERT INTO student_auth_identities (user_id, university_id, provider, issuer, subject, observed_email)
+                 VALUES ($1, $2, 'microsoft', $3, $4, $5) RETURNING id`,
+                [owner.userId, owner.universityId, microsoftPolicy.issuer, `proof-ms-sub-${uniqueLabel()}`, `owner@${microsoftDomain}`],
+            )).rows[0]!.id;
+            googleId = (await client.query<{ id: string }>(
+                `INSERT INTO student_auth_identities (user_id, university_id, provider, issuer, subject)
+                 VALUES ($1, $2, 'google', $3, $4) RETURNING id`,
+                [owner.userId, owner.universityId, googlePolicy.issuer, `proof-google-sub-${uniqueLabel()}`],
+            )).rows[0]!.id;
+        } finally {
+            client.release();
+        }
+        const microsoftGrant = await mintGrant(service, owner.userId, owner.sid, PASSWORD, 'unlink', microsoftId);
+        const googleGrant = await mintGrant(service, owner.userId, owner.sid, PASSWORD, 'unlink', googleId);
+        const editor = await pool.connect();
+        try {
+            await editor.query('UPDATE users SET password_hash = NULL WHERE id = $1', [owner.userId]);
+        } finally {
+            editor.release();
+        }
+        // Google stays a usable login, so last_method would pass — but
+        // every fresh-proof action needs a live Microsoft identity, and a
+        // null password cannot reauthenticate. The removal waits.
+        assert.deepEqual(await service.unlink({
+            userId: owner.userId, sid: owner.sid, identityId: microsoftId,
+            grantId: microsoftGrant.grantId, grantSecret: microsoftGrant.grantSecret,
+        }), { outcome: 'last_proof_method' });
+        const liveness = await pool.connect();
+        try {
+            const grant = await liveness.query<{ consumed_at: Date | null }>(
+                'SELECT consumed_at FROM student_auth_action_grants WHERE id = $1', [microsoftGrant.grantId],
+            );
+            assert.equal(grant.rows[0]!.consumed_at, null, 'the proof guard must not spend the target-bound grant');
+            const identity = await liveness.query<{ revoked_at: Date | null }>(
+                'SELECT revoked_at FROM student_auth_identities WHERE id = $1', [microsoftId],
+            );
+            assert.equal(identity.rows[0]!.revoked_at, null);
+        } finally {
+            liveness.release();
+        }
+        // Removing Google instead leaves Microsoft for fresh proof: allowed.
+        assert.deepEqual(await service.unlink({
+            userId: owner.userId, sid: owner.sid, identityId: googleId,
+            grantId: googleGrant.grantId, grantSecret: googleGrant.grantSecret,
+        }), { unlinked: true, sessionRevoked: false });
+    });
+});
+
+test('unlink requires a proof-capable Microsoft sibling, not just a login-capable one', async () => {
+    await withLinkPool(async (pool) => {
+        const attemptKey = randomBytes(32).toString('base64url');
+        const service = makeService(pool, attemptKey);
+        const client = await pool.connect();
+        let owner;
+        let targetId = '';
+        try {
+            owner = await seedOwner(client, {});
+            const mappedDomain = `proof-${uniqueLabel()}.school.example`;
+            const policy = await seedPolicy(client, owner.universityId, mappedDomain, {
+                provider: 'microsoft', realm: MICROSOFT_TENANT,
+            });
+            targetId = (await client.query<{ id: string }>(
+                `INSERT INTO student_auth_identities (user_id, university_id, provider, issuer, subject, observed_email)
+                 VALUES ($1, $2, 'microsoft', $3, $4, $5) RETURNING id`,
+                [owner.userId, owner.universityId, policy.issuer, `proof-target-sub-${uniqueLabel()}`, `owner@${mappedDomain}`],
+            )).rows[0]!.id;
+            // A sibling with no observed mailbox stays a usable login via
+            // the mapped domain but can never fresh-proof.
+            await client.query(
+                `INSERT INTO student_auth_identities (user_id, university_id, provider, issuer, subject)
+                 VALUES ($1, $2, 'microsoft', $3, $4)`,
+                [owner.userId, owner.universityId, policy.issuer, `proof-null-sub-${uniqueLabel()}`],
+            );
+            // So does a sibling whose own observed domain was withdrawn
+            // while the policy still maps another domain.
+            await client.query(
+                `INSERT INTO student_auth_identities (user_id, university_id, provider, issuer, subject, observed_email)
+                 VALUES ($1, $2, 'microsoft', $3, $4, $5)`,
+                [owner.userId, owner.universityId, policy.issuer, `proof-withdrawn-sub-${uniqueLabel()}`, `owner@withdrawn-${uniqueLabel()}.example`],
+            );
+        } finally {
+            client.release();
+        }
+        const grant = await mintGrant(service, owner.userId, owner.sid, PASSWORD, 'unlink', targetId);
+        const editor = await pool.connect();
+        try {
+            await editor.query('UPDATE users SET password_hash = NULL WHERE id = $1', [owner.userId]);
+        } finally {
+            editor.release();
+        }
+        // Both siblings satisfy the any-domain login guard, so removal
+        // reaches the proof guard — where neither counts, and removing
+        // the only reauth-accepted Microsoft identity must wait.
+        assert.deepEqual(await service.unlink({
+            userId: owner.userId, sid: owner.sid, identityId: targetId,
+            grantId: grant.grantId, grantSecret: grant.grantSecret,
+        }), { outcome: 'last_proof_method' });
+    });
+});
+
+test('unlink ignores a sibling from a replaced tenant when guarding the last login method', async () => {
+    await withLinkPool(async (pool) => {
+        const attemptKey = randomBytes(32).toString('base64url');
+        const service = makeService(pool, attemptKey);
+        const client = await pool.connect();
+        let owner;
+        let policy;
+        let identityId = '';
+        try {
+            owner = await seedOwner(client, {});
+            policy = await seedPolicy(client, owner.universityId, owner.email.split('@')[1]!, { provider: 'microsoft' });
+            identityId = (await client.query<{ id: string }>(
+                `INSERT INTO student_auth_identities (user_id, university_id, provider, issuer, subject)
+                 VALUES ($1, $2, 'microsoft', $3, $4) RETURNING id`,
+                [owner.userId, owner.universityId, policy.issuer, `current-sub-${uniqueLabel()}`],
+            )).rows[0]!.id;
+            await client.query(
+                `INSERT INTO student_auth_identities (user_id, university_id, provider, issuer, subject)
+                 VALUES ($1, $2, 'microsoft', $3, $4)`,
+                [owner.userId, owner.universityId, `https://login.microsoftonline.com/old-tenant-${uniqueLabel()}/v2.0`, `stale-sub-${uniqueLabel()}`],
+            );
+        } finally {
+            client.release();
+        }
+        // Proof precedes the destructive precondition: the grant pins the
+        // credential generation, and the password is removed only after.
+        const grant = await mintGrant(service, owner.userId, owner.sid, PASSWORD, 'unlink', identityId);
+        const remover = await pool.connect();
+        try {
+            await remover.query('UPDATE users SET password_hash = NULL WHERE id = $1', [owner.userId]);
+        } finally {
+            remover.release();
+        }
+        const result = await service.unlink({
+            userId: owner.userId,
+            sid: owner.sid,
+            identityId,
+            grantId: grant.grantId,
+            grantSecret: grant.grantSecret,
+        });
+        assert.deepEqual(result, { outcome: 'last_method' });
+    });
 });
 
 test('unlink of another owner identity reports not found', async () => {
@@ -1222,6 +1689,7 @@ test('unlink of another owner identity reports not found', async () => {
         let ownerA;
         let ownerB;
         let identityId = '';
+        let ownerIdentityId = '';
         try {
             ownerA = await seedOwner(client, {});
             ownerB = await seedOwner(client, { domain: ownerA.email.split('@')[1]! });
@@ -1230,10 +1698,15 @@ test('unlink of another owner identity reports not found', async () => {
                  VALUES ($1, $2, 'google', $3, $4) RETURNING id`,
                 [ownerB.userId, ownerB.universityId, GOOGLE_ISSUER, `other-owner-sub-${uniqueLabel()}`],
             )).rows[0]!.id;
+            ownerIdentityId = (await client.query<{ id: string }>(
+                `INSERT INTO student_auth_identities (user_id, university_id, provider, issuer, subject)
+                 VALUES ($1, $2, 'google', $3, $4) RETURNING id`,
+                [ownerA.userId, ownerA.universityId, GOOGLE_ISSUER, `owner-sub-${uniqueLabel()}`],
+            )).rows[0]!.id;
         } finally {
             client.release();
         }
-        const grant = await mintGrant(service, ownerA.userId, ownerA.sid, PASSWORD, 'unlink');
+        const grant = await mintGrant(service, ownerA.userId, ownerA.sid, PASSWORD, 'unlink', ownerIdentityId);
         await assert.rejects(
             service.unlink({
                 userId: ownerA.userId,
@@ -1244,6 +1717,66 @@ test('unlink of another owner identity reports not found', async () => {
             }),
             /not found/,
         );
+    });
+});
+
+test('reauth issuance rejects foreign, missing, and revoked action targets without a grant', async () => {
+    await withLinkPool(async (pool) => {
+        const attemptKey = randomBytes(32).toString('base64url');
+        const service = makeService(pool, attemptKey);
+        const client = await pool.connect();
+        let ownerA;
+        let ownerB;
+        let foreignIdentity = '';
+        let revokedIdentity = '';
+        let foreignCode = '';
+        let ownCode = '';
+        try {
+            ownerA = await seedOwner(client, {});
+            ownerB = await seedOwner(client, { domain: ownerA.email.split('@')[1]! });
+            foreignIdentity = (await client.query<{ id: string }>(
+                `INSERT INTO student_auth_identities (user_id, university_id, provider, issuer, subject)
+                 VALUES ($1, $2, 'google', $3, $4) RETURNING id`,
+                [ownerB.userId, ownerB.universityId, GOOGLE_ISSUER, `foreign-sub-${uniqueLabel()}`],
+            )).rows[0]!.id;
+            revokedIdentity = (await client.query<{ id: string }>(
+                `INSERT INTO student_auth_identities (user_id, university_id, provider, issuer, subject, revoked_at)
+                 VALUES ($1, $2, 'google', $3, $4, clock_timestamp()) RETURNING id`,
+                [ownerA.userId, ownerA.universityId, GOOGLE_ISSUER, `revoked-sub-${uniqueLabel()}`],
+            )).rows[0]!.id;
+            foreignCode = (await client.query<{ id: string }>(
+                `INSERT INTO student_auth_recovery_codes (user_id, generation, code_digest, status, activated_at)
+                 VALUES ($1, 1, 'foreign-digest', 'active', clock_timestamp()) RETURNING id`,
+                [ownerB.userId],
+            )).rows[0]!.id;
+            ownCode = (await client.query<{ id: string }>(
+                `INSERT INTO student_auth_recovery_codes (user_id, generation, code_digest, status, activated_at)
+                 VALUES ($1, 1, 'own-digest', 'active', clock_timestamp()) RETURNING id`,
+                [ownerA.userId],
+            )).rows[0]!.id;
+        } finally {
+            client.release();
+        }
+        const notFound = (error: unknown) => (error as { code?: string }).code === 'NOT_FOUND';
+        await assert.rejects(
+            service.reauth({ userId: ownerA.userId, sid: ownerA.sid, password: PASSWORD, purpose: 'unlink', targetIdentityId: foreignIdentity }),
+            notFound,
+        );
+        await assert.rejects(
+            service.reauth({ userId: ownerA.userId, sid: ownerA.sid, password: PASSWORD, purpose: 'unlink', targetIdentityId: randomUUID() }),
+            notFound,
+        );
+        await assert.rejects(
+            service.reauth({ userId: ownerA.userId, sid: ownerA.sid, password: PASSWORD, purpose: 'unlink', targetIdentityId: revokedIdentity }),
+            notFound,
+        );
+        await assert.rejects(
+            service.reauth({ userId: ownerA.userId, sid: ownerA.sid, password: PASSWORD, purpose: 'recovery_code_activate', pendingCodeId: foreignCode }),
+            notFound,
+        );
+        // Owned targets still issue.
+        const issued = await service.reauth({ userId: ownerA.userId, sid: ownerA.sid, password: PASSWORD, purpose: 'recovery_code_activate', pendingCodeId: ownCode });
+        assert.ok(issued.grantId);
     });
 });
 
@@ -1268,8 +1801,8 @@ test('concurrent unlink attempts serialize to a single revocation', async () => 
             client.release();
         }
         const identityId = await linkIdentity(service, owner, handoff);
-        const grantA = await mintGrant(service, owner.userId, owner.sid, PASSWORD, 'unlink');
-        const grantB = await mintGrant(service, owner.userId, owner.sid, PASSWORD, 'unlink');
+        const grantA = await mintGrant(service, owner.userId, owner.sid, PASSWORD, 'unlink', identityId);
+        const grantB = await mintGrant(service, owner.userId, owner.sid, PASSWORD, 'unlink', identityId);
         const outcomes = await Promise.allSettled([
             service.unlink({
                 userId: owner.userId,
@@ -1287,10 +1820,42 @@ test('concurrent unlink attempts serialize to a single revocation', async () => 
             }),
         ]);
         const succeeded = outcomes.filter(
-            (outcome): outcome is PromiseFulfilledResult<{ unlinked: true }> =>
+            (outcome): outcome is PromiseFulfilledResult<{ unlinked: true; sessionRevoked: boolean }> =>
                 outcome.status === 'fulfilled' && 'unlinked' in outcome.value && outcome.value.unlinked === true,
         );
         assert.equal(succeeded.length, 1);
+    });
+});
+
+test('concurrent removal of the final two methods leaves one usable identity', async () => {
+    await withLinkPool(async (pool) => {
+        const attemptKey = randomBytes(32).toString('base64url');
+        const service = makeService(pool, attemptKey);
+        const client = await pool.connect();
+        let owner;
+        let first = '';
+        let second = '';
+        try {
+            owner = await seedOwner(client, {});
+            await seedPolicy(client, owner.universityId, owner.email.split('@')[1]!);
+            first = (await client.query<{ id: string }>(`INSERT INTO student_auth_identities (user_id, university_id, provider, issuer, subject) VALUES ($1, $2, 'google', $3, $4) RETURNING id`, [owner.userId, owner.universityId, GOOGLE_ISSUER, `last-a-${uniqueLabel()}`])).rows[0]!.id;
+            second = (await client.query<{ id: string }>(`INSERT INTO student_auth_identities (user_id, university_id, provider, issuer, subject) VALUES ($1, $2, 'google', $3, $4) RETURNING id`, [owner.userId, owner.universityId, GOOGLE_ISSUER, `last-b-${uniqueLabel()}`])).rows[0]!.id;
+        } finally { client.release(); }
+        const grantA = await mintGrant(service, owner.userId, owner.sid, PASSWORD, 'unlink', first);
+        const grantB = await mintGrant(service, owner.userId, owner.sid, PASSWORD, 'unlink', second);
+        const remover = await pool.connect();
+        try { await remover.query('UPDATE users SET password_hash = NULL WHERE id = $1', [owner.userId]); }
+        finally { remover.release(); }
+        const results = await Promise.allSettled([
+            service.unlink({ userId: owner.userId, sid: owner.sid, identityId: first, grantId: grantA.grantId, grantSecret: grantA.grantSecret }),
+            service.unlink({ userId: owner.userId, sid: owner.sid, identityId: second, grantId: grantB.grantId, grantSecret: grantB.grantSecret }),
+        ]);
+        assert.equal(results.filter((result) => result.status === 'fulfilled' && 'unlinked' in result.value).length, 1);
+        const check = await pool.connect();
+        try {
+            const active = await check.query('SELECT 1 FROM student_auth_identities WHERE user_id = $1 AND revoked_at IS NULL', [owner.userId]);
+            assert.equal(active.rowCount, 1);
+        } finally { check.release(); }
     });
 });
 
@@ -1312,5 +1877,255 @@ test('reauth mints a usable grant with the real password check', async () => {
             service.reauth({ userId: owner.userId, sid: owner.sid, password: 'Wrong!password-0', purpose: 'link' }),
             /incorrect/,
         );
+    });
+});
+
+test('unlink keeps the last method when the sibling policy expired', async () => {
+    await withLinkPool(async (pool) => {
+        const attemptKey = randomBytes(32).toString('base64url');
+        const service = makeService(pool, attemptKey);
+        const client = await pool.connect();
+        let owner;
+        let first = '';
+        let second = '';
+        try {
+            owner = await seedOwner(client, {});
+            await seedPolicy(client, owner.universityId, owner.email.split('@')[1]!, { approvedUntil: new Date(Date.now() - 1000).toISOString() });
+            first = (await client.query<{ id: string }>(`INSERT INTO student_auth_identities (user_id, university_id, provider, issuer, subject) VALUES ($1, $2, 'google', $3, $4) RETURNING id`, [owner.userId, owner.universityId, GOOGLE_ISSUER, `expired-a-${uniqueLabel()}`])).rows[0]!.id;
+            second = (await client.query<{ id: string }>(`INSERT INTO student_auth_identities (user_id, university_id, provider, issuer, subject) VALUES ($1, $2, 'google', $3, $4) RETURNING id`, [owner.userId, owner.universityId, GOOGLE_ISSUER, `expired-b-${uniqueLabel()}`])).rows[0]!.id;
+        } finally { client.release(); }
+        const grantA = await mintGrant(service, owner.userId, owner.sid, PASSWORD, 'unlink', first);
+        const grantB = await mintGrant(service, owner.userId, owner.sid, PASSWORD, 'unlink', second);
+        const remover = await pool.connect();
+        try { await remover.query('UPDATE users SET password_hash = NULL WHERE id = $1', [owner.userId]); }
+        finally { remover.release(); }
+        assert.deepEqual(await service.unlink({ userId: owner.userId, sid: owner.sid, identityId: first, grantId: grantA.grantId, grantSecret: grantA.grantSecret }), { outcome: 'last_method' });
+        assert.deepEqual(await service.unlink({ userId: owner.userId, sid: owner.sid, identityId: second, grantId: grantB.grantId, grantSecret: grantB.grantSecret }), { outcome: 'last_method' });
+        const check = await pool.connect();
+        try {
+            const active = await check.query('SELECT 1 FROM student_auth_identities WHERE user_id = $1 AND revoked_at IS NULL', [owner.userId]);
+            assert.equal(active.rowCount, 2);
+        } finally { check.release(); }
+    });
+});
+
+test('unlink keeps the last method when the sibling provider is disabled', async () => {
+    await withLinkPool(async (pool) => {
+        const attemptKey = randomBytes(32).toString('base64url');
+        const service = makeService(pool, attemptKey);
+        const client = await pool.connect();
+        let owner;
+        let first = '';
+        let second = '';
+        try {
+            owner = await seedOwner(client, {});
+            await seedPolicy(client, owner.universityId, owner.email.split('@')[1]!);
+            first = (await client.query<{ id: string }>(`INSERT INTO student_auth_identities (user_id, university_id, provider, issuer, subject) VALUES ($1, $2, 'google', $3, $4) RETURNING id`, [owner.userId, owner.universityId, GOOGLE_ISSUER, `disabled-a-${uniqueLabel()}`])).rows[0]!.id;
+            second = (await client.query<{ id: string }>(`INSERT INTO student_auth_identities (user_id, university_id, provider, issuer, subject) VALUES ($1, $2, 'google', $3, $4) RETURNING id`, [owner.userId, owner.universityId, GOOGLE_ISSUER, `disabled-b-${uniqueLabel()}`])).rows[0]!.id;
+        } finally { client.release(); }
+        const grantA = await mintGrant(service, owner.userId, owner.sid, PASSWORD, 'unlink', first);
+        const grantB = await mintGrant(service, owner.userId, owner.sid, PASSWORD, 'unlink', second);
+        const remover = await pool.connect();
+        try { await remover.query('UPDATE users SET password_hash = NULL WHERE id = $1', [owner.userId]); }
+        finally { remover.release(); }
+        const gated = makeService(pool, attemptKey, { isProviderEnabled: () => false });
+        assert.deepEqual(await gated.unlink({ userId: owner.userId, sid: owner.sid, identityId: first, grantId: grantA.grantId, grantSecret: grantA.grantSecret }), { outcome: 'last_method' });
+        assert.deepEqual(await gated.unlink({ userId: owner.userId, sid: owner.sid, identityId: second, grantId: grantB.grantId, grantSecret: grantB.grantSecret }), { outcome: 'last_method' });
+        const check = await pool.connect();
+        try {
+            const active = await check.query('SELECT 1 FROM student_auth_identities WHERE user_id = $1 AND revoked_at IS NULL', [owner.userId]);
+            assert.equal(active.rowCount, 2);
+        } finally { check.release(); }
+    });
+});
+
+test('unlink keeps the last method when the sibling domain mapping is withdrawn', async () => {
+    await withLinkPool(async (pool) => {
+        const attemptKey = randomBytes(32).toString('base64url');
+        const service = makeService(pool, attemptKey);
+        const client = await pool.connect();
+        let owner;
+        let first = '';
+        let second = '';
+        try {
+            owner = await seedOwner(client, {});
+            const domain = owner.email.split('@')[1]!;
+            await seedPolicy(client, owner.universityId, domain);
+            // The policy row stays live while login discovery rejects the
+            // domain: the sibling cannot authenticate, so it must not
+            // satisfy the last-method guard.
+            await client.query('UPDATE institution_login_domains SET is_active = false WHERE domain = $1 AND university_id = $2', [domain, owner.universityId]);
+            first = (await client.query<{ id: string }>(`INSERT INTO student_auth_identities (user_id, university_id, provider, issuer, subject) VALUES ($1, $2, 'google', $3, $4) RETURNING id`, [owner.userId, owner.universityId, GOOGLE_ISSUER, `withdrawn-a-${uniqueLabel()}`])).rows[0]!.id;
+            second = (await client.query<{ id: string }>(`INSERT INTO student_auth_identities (user_id, university_id, provider, issuer, subject) VALUES ($1, $2, 'google', $3, $4) RETURNING id`, [owner.userId, owner.universityId, GOOGLE_ISSUER, `withdrawn-b-${uniqueLabel()}`])).rows[0]!.id;
+        } finally { client.release(); }
+        const grantA = await mintGrant(service, owner.userId, owner.sid, PASSWORD, 'unlink', first);
+        const grantB = await mintGrant(service, owner.userId, owner.sid, PASSWORD, 'unlink', second);
+        const remover = await pool.connect();
+        try { await remover.query('UPDATE users SET password_hash = NULL WHERE id = $1', [owner.userId]); }
+        finally { remover.release(); }
+        assert.deepEqual(await service.unlink({ userId: owner.userId, sid: owner.sid, identityId: first, grantId: grantA.grantId, grantSecret: grantA.grantSecret }), { outcome: 'last_method' });
+        assert.deepEqual(await service.unlink({ userId: owner.userId, sid: owner.sid, identityId: second, grantId: grantB.grantId, grantSecret: grantB.grantSecret }), { outcome: 'last_method' });
+        const check = await pool.connect();
+        try {
+            const active = await check.query('SELECT 1 FROM student_auth_identities WHERE user_id = $1 AND revoked_at IS NULL', [owner.userId]);
+            assert.equal(active.rowCount, 2);
+        } finally { check.release(); }
+    });
+});
+
+test('unlink keeps the last method when the sibling university is deactivated', async () => {
+    await withLinkPool(async (pool) => {
+        const attemptKey = randomBytes(32).toString('base64url');
+        const service = makeService(pool, attemptKey);
+        const client = await pool.connect();
+        let owner;
+        let first = '';
+        let second = '';
+        let siblingUniversityId = '';
+        try {
+            owner = await seedOwner(client, {});
+            await seedPolicy(client, owner.universityId, owner.email.split('@')[1]!);
+            first = (await client.query<{ id: string }>(`INSERT INTO student_auth_identities (user_id, university_id, provider, issuer, subject) VALUES ($1, $2, 'google', $3, $4) RETURNING id`, [owner.userId, owner.universityId, GOOGLE_ISSUER, `deactivated-a-${uniqueLabel()}`])).rows[0]!.id;
+            siblingUniversityId = (await client.query<{ id: string }>(
+                'INSERT INTO universities (name, is_active) VALUES ($1, true) RETURNING id',
+                [`Sibling School ${uniqueLabel()}`],
+            )).rows[0]!.id;
+            await seedPolicy(client, siblingUniversityId, `sibling${uniqueLabel()}.school.example`);
+            second = (await client.query<{ id: string }>(`INSERT INTO student_auth_identities (user_id, university_id, provider, issuer, subject) VALUES ($1, $2, 'google', $3, $4) RETURNING id`, [owner.userId, siblingUniversityId, GOOGLE_ISSUER, `deactivated-b-${uniqueLabel()}`])).rows[0]!.id;
+        } finally { client.release(); }
+        const grantA = await mintGrant(service, owner.userId, owner.sid, PASSWORD, 'unlink', first);
+        const grantB = await mintGrant(service, owner.userId, owner.sid, PASSWORD, 'unlink', second);
+        const remover = await pool.connect();
+        try {
+            await remover.query('UPDATE users SET password_hash = NULL WHERE id = $1', [owner.userId]);
+            // The canonical university stays active while the sibling's
+            // university is deactivated with its policy row intact: login
+            // through the sibling is impossible, so removing the live
+            // identity must refuse as the last method.
+            await remover.query('UPDATE universities SET is_active = false WHERE id = $1', [siblingUniversityId]);
+        }
+        finally { remover.release(); }
+        assert.deepEqual(await service.unlink({ userId: owner.userId, sid: owner.sid, identityId: first, grantId: grantA.grantId, grantSecret: grantA.grantSecret }), { outcome: 'last_method' });
+        // The reverse direction still succeeds: the live sibling satisfies
+        // the guard, so the dead identity can be removed.
+        const removed = await service.unlink({ userId: owner.userId, sid: owner.sid, identityId: second, grantId: grantB.grantId, grantSecret: grantB.grantSecret });
+        assert.ok(!('outcome' in removed) && removed.unlinked === true);
+        const check = await pool.connect();
+        try {
+            const active = await check.query('SELECT id FROM student_auth_identities WHERE user_id = $1 AND revoked_at IS NULL', [owner.userId]);
+            assert.deepEqual(active.rows.map(row => row.id), [first]);
+        } finally { check.release(); }
+    });
+});
+
+test('unlink ignores a sibling outside the canonical university when guarding the last login method', async () => {
+    await withLinkPool(async (pool) => {
+        const attemptKey = randomBytes(32).toString('base64url');
+        const service = makeService(pool, attemptKey);
+        const client = await pool.connect();
+        let owner;
+        let first = '';
+        let second = '';
+        try {
+            owner = await seedOwner(client, {});
+            await seedPolicy(client, owner.universityId, owner.email.split('@')[1]!);
+            first = (await client.query<{ id: string }>(`INSERT INTO student_auth_identities (user_id, university_id, provider, issuer, subject) VALUES ($1, $2, 'google', $3, $4) RETURNING id`, [owner.userId, owner.universityId, GOOGLE_ISSUER, `canonical-a-${uniqueLabel()}`])).rows[0]!.id;
+            // A fully live sibling at a previous institution: active
+            // university, live policy, live mapping — but login rejects it
+            // because the student's canonical university moved on.
+            const previousUniversityId = (await client.query<{ id: string }>(
+                'INSERT INTO universities (name, is_active) VALUES ($1, true) RETURNING id',
+                [`Previous School ${uniqueLabel()}`],
+            )).rows[0]!.id;
+            await seedPolicy(client, previousUniversityId, `previous${uniqueLabel()}.school.example`);
+            second = (await client.query<{ id: string }>(`INSERT INTO student_auth_identities (user_id, university_id, provider, issuer, subject) VALUES ($1, $2, 'google', $3, $4) RETURNING id`, [owner.userId, previousUniversityId, GOOGLE_ISSUER, `previous-b-${uniqueLabel()}`])).rows[0]!.id;
+        } finally { client.release(); }
+        const grantA = await mintGrant(service, owner.userId, owner.sid, PASSWORD, 'unlink', first);
+        const grantB = await mintGrant(service, owner.userId, owner.sid, PASSWORD, 'unlink', second);
+        const remover = await pool.connect();
+        try { await remover.query('UPDATE users SET password_hash = NULL WHERE id = $1', [owner.userId]); }
+        finally { remover.release(); }
+        // Removing the only currently usable identity must refuse: the
+        // live-but-stale sibling cannot sign in, so removal would lock
+        // the student out.
+        assert.deepEqual(await service.unlink({ userId: owner.userId, sid: owner.sid, identityId: first, grantId: grantA.grantId, grantSecret: grantA.grantSecret }), { outcome: 'last_method' });
+        // The reverse direction still succeeds: the canonical sibling
+        // satisfies the guard, so the stale identity can be removed.
+        const removed = await service.unlink({ userId: owner.userId, sid: owner.sid, identityId: second, grantId: grantB.grantId, grantSecret: grantB.grantSecret });
+        assert.ok(!('outcome' in removed) && removed.unlinked === true);
+    });
+});
+
+test('unlink evaluates every sibling provider before reporting the last method', async () => {
+    await withLinkPool(async (pool) => {
+        const attemptKey = randomBytes(32).toString('base64url');
+        const client = await pool.connect();
+        let owner;
+        let target = '';
+        let disabledSibling = '';
+        let enabledSibling = '';
+        try {
+            owner = await seedOwner(client, {});
+            const domain = owner.email.split('@')[1]!;
+            const google = await seedPolicy(client, owner.universityId, domain);
+            // Domains map to exactly one university but each domain row is
+            // unique: the second provider needs its own domain.
+            const microsoft = await seedPolicy(client, owner.universityId, `ms-${domain}`, { provider: 'microsoft', realm: MICROSOFT_TENANT });
+            target = (await client.query<{ id: string }>(`INSERT INTO student_auth_identities (user_id, university_id, provider, issuer, subject) VALUES ($1, $2, 'google', $3, $4) RETURNING id`, [owner.userId, owner.universityId, google.issuer, `multi-target-${uniqueLabel()}`])).rows[0]!.id;
+            disabledSibling = (await client.query<{ id: string }>(`INSERT INTO student_auth_identities (user_id, university_id, provider, issuer, subject) VALUES ($1, $2, 'google', $3, $4) RETURNING id`, [owner.userId, owner.universityId, google.issuer, `multi-disabled-${uniqueLabel()}`])).rows[0]!.id;
+            enabledSibling = (await client.query<{ id: string }>(`INSERT INTO student_auth_identities (user_id, university_id, provider, issuer, subject) VALUES ($1, $2, 'microsoft', $3, $4) RETURNING id`, [owner.userId, owner.universityId, microsoft.issuer, `multi-enabled-${uniqueLabel()}`])).rows[0]!.id;
+        } finally { client.release(); }
+        const full = makeService(pool, attemptKey);
+        const grantTarget = await mintGrant(full, owner.userId, owner.sid, PASSWORD, 'unlink', target);
+        const grantEnabled = await mintGrant(full, owner.userId, owner.sid, PASSWORD, 'unlink', enabledSibling);
+        const remover = await pool.connect();
+        try { await remover.query('UPDATE users SET password_hash = NULL WHERE id = $1', [owner.userId]); }
+        finally { remover.release(); }
+        // Google is disabled deployment-wide while Microsoft stays live:
+        // the guard must find the enabled Microsoft sibling instead of
+        // sampling a disabled Google row and crying last_method.
+        const gated = makeService(pool, attemptKey, { isProviderEnabled: (provider) => provider === 'microsoft' });
+        const removed = await gated.unlink({ userId: owner.userId, sid: owner.sid, identityId: target, grantId: grantTarget.grantId, grantSecret: grantTarget.grantSecret });
+        assert.ok(!('outcome' in removed) && removed.unlinked === true);
+        // With only the disabled sibling left beside it, the enabled
+        // identity is now genuinely the last method.
+        assert.deepEqual(await gated.unlink({ userId: owner.userId, sid: owner.sid, identityId: enabledSibling, grantId: grantEnabled.grantId, grantSecret: grantEnabled.grantSecret }), { outcome: 'last_method' });
+        const check = await pool.connect();
+        try {
+            const active = await check.query('SELECT id FROM student_auth_identities WHERE user_id = $1 AND revoked_at IS NULL', [owner.userId]);
+            assert.deepEqual(new Set(active.rows.map(row => row.id)), new Set([disabledSibling, enabledSibling]));
+        } finally { check.release(); }
+    });
+});
+
+test('unlink keeps the last method when the sibling approval is withdrawn', async () => {
+    await withLinkPool(async (pool) => {
+        const attemptKey = randomBytes(32).toString('base64url');
+        const service = makeService(pool, attemptKey);
+        const client = await pool.connect();
+        let owner;
+        let first = '';
+        let second = '';
+        try {
+            owner = await seedOwner(client, {});
+            const domain = owner.email.split('@')[1]!;
+            const google = await seedPolicy(client, owner.universityId, domain);
+            const microsoft = await seedPolicy(client, owner.universityId, `ms-${domain}`, { provider: 'microsoft', realm: MICROSOFT_TENANT });
+            first = (await client.query<{ id: string }>(`INSERT INTO student_auth_identities (user_id, university_id, provider, issuer, subject) VALUES ($1, $2, 'google', $3, $4) RETURNING id`, [owner.userId, owner.universityId, google.issuer, `approval-a-${uniqueLabel()}`])).rows[0]!.id;
+            second = (await client.query<{ id: string }>(`INSERT INTO student_auth_identities (user_id, university_id, provider, issuer, subject) VALUES ($1, $2, 'microsoft', $3, $4) RETURNING id`, [owner.userId, owner.universityId, microsoft.issuer, `approval-b-${uniqueLabel()}`])).rows[0]!.id;
+            // Both siblings are canonical with live, unexpired policies;
+            // approval withdrawal (disabled with the approver cleared) on
+            // the Microsoft policy alone removes that sibling from login
+            // authority.
+            await client.query(`UPDATE institution_login_policies SET enabled = false, approved_by = NULL WHERE university_id = $1 AND provider = 'microsoft'`, [owner.universityId]);
+        } finally { client.release(); }
+        const grantA = await mintGrant(service, owner.userId, owner.sid, PASSWORD, 'unlink', first);
+        const grantB = await mintGrant(service, owner.userId, owner.sid, PASSWORD, 'unlink', second);
+        const remover = await pool.connect();
+        try { await remover.query('UPDATE users SET password_hash = NULL WHERE id = $1', [owner.userId]); }
+        finally { remover.release(); }
+        assert.deepEqual(await service.unlink({ userId: owner.userId, sid: owner.sid, identityId: first, grantId: grantA.grantId, grantSecret: grantA.grantSecret }), { outcome: 'last_method' });
+        const removed = await service.unlink({ userId: owner.userId, sid: owner.sid, identityId: second, grantId: grantB.grantId, grantSecret: grantB.grantSecret });
+        assert.ok(!('outcome' in removed) && removed.unlinked === true);
     });
 });

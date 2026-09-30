@@ -35,7 +35,7 @@ CSV imports return the imported schools for explicit policy review and open that
 
 ### Verification data and private uploads
 
-Migration 035 releases registration reservations when the owning identity changes and repairs stale reservations. It adds challenge retention tracking. The backend runs a bounded cleanup at startup and every minute, removing payloads and digests from challenges expired for over 24 hours while retaining tombstone IDs referenced by evidence.
+Migration 035 releases registration reservations when the owning identity changes and repairs stale reservations. It adds challenge retention tracking. The backend runs a bounded cleanup at startup and every minute, removing payloads and digests from challenges expired for over 24 hours while retaining tombstone IDs referenced by evidence. Scrubbed tombstones older than 24 hours with no referencing row, and budgets with no live challenge pointer and a window older than 24 hours, are deleted, so both tables stay bounded under rotating unauthenticated subjects.
 
 Vendor identity uploads now use `uploads/private-vendors` inside the existing persistent volume. Both new files and legacy document URLs require a live owner or admin bearer token. The uploads handler serves only explicitly referenced public media; it does not expose arbitrary files. The vendor settings page downloads documents through the authenticated API client. Any reverse proxy must forward `/uploads` to this handler, not serve the filesystem directly. Previously cached public identity documents must be purged from any external cache before rollout; application code cannot erase copies already downloaded.
 
