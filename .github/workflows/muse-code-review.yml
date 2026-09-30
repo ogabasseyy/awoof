@@ -30,9 +30,8 @@
 #   - --max-model-steps cap + job timeout
 #   - never fails the build and never posts a commit status gate
 #
-# Forked PRs are skipped by the job `if` below (head repo must equal this
-# repo): pull_request_target WOULD expose secrets to forks, so that check
-# is load-bearing — never relax it without a credential boundary rethink.
+# Forks skipped by the job `if` (head repo check) — load-bearing under
+# pull_request_target, which WOULD expose secrets to forks otherwise.
 #
 # Layout: this file only orchestrates steps; every shell program lives in
 # .github/scripts/muse-review/ (each file under 300 lines per repo rules):
@@ -56,13 +55,11 @@
 name: Muse Code Review
 
 on:
-  # pull_request_target (not pull_request): the orchestration below runs
-  # with secrets, so it must come from the trusted BASE revision — a
-  # same-repo PR that edits this file could otherwise replace these steps
-  # and exfiltrate META_API_KEY / GITHUB_TOKEN before any script-level
-  # protection engages. The PR head is checked out explicitly as review
-  # DATA only (see Checkout repository). Workflow edits take effect after
-  # merge; the selftest workflow still validates them pre-merge.
+  # pull_request_target (not pull_request): secret-bearing orchestration
+  # must run from the trusted BASE revision — a same-repo PR editing this
+  # file could otherwise replace these steps and exfiltrate credentials.
+  # The head is checked out explicitly as review DATA only; workflow edits
+  # take effect after merge (selftest validates them pre-merge).
   pull_request_target:
     # edited: only base retargets run (see job if below); title/body edits
     # would otherwise burn quota for an unchanged diff.
@@ -121,7 +118,9 @@ jobs:
           fi
           echo "should_run=true" >> "${GITHUB_OUTPUT}"
 
-      - name: Checkout repository
+      # Reviewed: head is review DATA only, never executed; helpers come
+      # from the default-branch checkout, the agent runs the pinned binary.
+      - name: Checkout repository # nosemgrep: yaml.github-actions.security.pull-request-target-code-checkout.pull-request-target-code-checkout
         if: steps.prereq.outputs.should_run == 'true'
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
