@@ -4,15 +4,6 @@
 # runs `muse exec` headless with the repo checked out, and posts the result as
 # a PR review comment.
 #
-# Trigger is pull_request_target, so this definition always comes from the
-# base repository's DEFAULT branch — not the PR, and not the PR's target
-# branch: under pull_request a same-repo contributor could rewrite this file
-# in their PR to exfiltrate META_API_KEY without merging anything. The PR
-# head is still checked out explicitly below for READING (never executed),
-# which is the precondition that keeps pull_request_target safe here — per
-# GitHub's secure-use guide, "the checkout step alone does not execute
-# untrusted code".
-#
 # Billing: whatever credential is stored in the META_API_KEY secret. That can
 # be the subscription-linked key from `muse login` onboarding (flat monthly
 # rate, subject to plan prompt limits) or a pay-as-you-go Meta Model API key.
@@ -32,10 +23,8 @@
 #   - --max-model-steps cap + job timeout
 #   - never fails the build and never posts a commit status gate
 #
-# Forked PRs are skipped by the job-level same-repo predicate. That predicate
-# is a SECURITY boundary, not an optimization: unlike pull_request,
-# pull_request_target serves secrets to fork runs too, so removing or
-# loosening it would expose META_API_KEY to fork authors. Never loosen it.
+# Forked PRs are skipped: the pull_request event withholds secrets from forks,
+# so there is no credential to review with.
 #
 # Prerequisites per repo:
 #   - Secret META_API_KEY (repo Settings -> Secrets and variables -> Actions)
@@ -43,17 +32,10 @@
 name: Muse Code Review
 
 on:
-  # pull_request_target (see header): the secret-bearing job must run the
-  # trusted default-branch definition, never the PR's own workflow file.
-  pull_request_target:
+  pull_request:
     # edited: only base retargets run (see job if below); title/body edits
     # would otherwise burn quota for an unchanged diff.
-    # converted_to_draft: its job skips via draft == false below, but the
-    # run still takes the PR concurrency group and cancels an in-flight
-    # review — without it a de-drafted PR would still be reviewed.
-    # closed: same shape via state == 'open' below — without it a merged
-    # PR would still be reviewed.
-    types: [opened, synchronize, reopened, ready_for_review, edited, converted_to_draft, closed]
+    types: [opened, synchronize, reopened, ready_for_review, edited]
 
 permissions:
   contents: read
@@ -70,26 +52,18 @@ jobs:
   muse-review:
     name: Muse review
     # pull-requests: write posts the advisory review; contents: read checks out
-    # the PR head; actions: read lets dedupe list this workflow's runs and
-    # their recorded-review artifacts. Scoped to this job so later jobs start
-    # least-privilege.
-    # The same-repo predicate in `if` below is load-bearing (see header):
-    # pull_request_target serves secrets to fork runs, so this job must never
-    # run when head.repo != base repo.
+    # the PR head. Scoped to this job so later jobs start least-privilege.
     permissions:
       contents: read
       pull-requests: write
-      actions: read
     if: >-
       github.event.pull_request.draft == false &&
-      github.event.pull_request.state == 'open' &&
       github.event.pull_request.head.repo.full_name == github.repository &&
       (github.event.action != 'edited' || github.event.changes.base != null)
     runs-on: ubuntu-latest
-    # Budget: prereq 1 + checkout 2 + collect 5 + install 5 + run 10 + post 2
-    # + record 2 = 27 < 28. Every step is bounded and counted, so even if
-    # each step burns its full timeout the Post step still gets its 2 minutes.
-    timeout-minutes: 28
+    # Budget: install 5 + run 10 + headroom for collect/post. Step timeouts
+    # must sum below this or a hung step starves the fallback post.
+    timeout-minutes: 20
     env:
       MUSE_MODEL_RESOLVED: ${{ vars.MUSE_MODEL != '' && vars.MUSE_MODEL || '' }}
       MUSE_EFFORT_RESOLVED: ${{ vars.MUSE_REASONING_EFFORT != '' && vars.MUSE_REASONING_EFFORT || 'medium' }}
@@ -97,10 +71,6 @@ jobs:
     steps:
       - name: Check prerequisites
         id: prereq
-        # Advisory + bounded like every step (see budget above): pure shell,
-        # so the timeout is backstop-only; an unset should_run skips the rest.
-        continue-on-error: true
-        timeout-minutes: 1
         env:
           HAS_KEY: ${{ secrets.META_API_KEY != '' }}
         run: |
@@ -112,21 +82,9 @@ jobs:
           fi
           echo "should_run=true" >> "${GITHUB_OUTPUT}"
 
-      # Audited pull_request_target + PR-head checkout: checked-out code is only
-      # READ into the review prompt — no build, test, install, or exec step
-      # ever runs workspace code, and the agent runs --disable-shell /
-      # --disable-write. Same-repo-only further excludes the classic fork
-      # pwn-request shape this rule targets.
-      - name: Checkout repository  # nosemgrep: yaml.github-actions.security.pull-request-target-code-checkout.pull-request-target-code-checkout
-        id: checkout
+      - name: Checkout repository
         if: steps.prereq.outputs.should_run == 'true'
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
-        # Advisory: a transient checkout failure must skip green, never fail
-        # the job — the Collect step below routes it to the skip path.
-        continue-on-error: true
-        # Bounded (see budget above): an unbounded stall here would eat the
-        # margin and let the job timeout cancel the run before the fallback.
-        timeout-minutes: 2
         with:
           persist-credentials: false
           # Check out the PR head so the agent reads full files from the
@@ -137,28 +95,13 @@ jobs:
       - name: Collect PR diff and build prompt
         id: diff
         if: steps.prereq.outputs.should_run == 'true'
-        # Bounded so slow API pagination or history-deepening cannot eat the
-        # job budget and starve the fallback post (see budget above).
-        timeout-minutes: 5
-        # Advisory: a failed/timed-out collect must still reach the Post
-        # step's fallback (see its always() condition), never fail the job.
-        continue-on-error: true
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GITHUB_REPOSITORY: ${{ github.repository }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
           HEAD_SHA_EVENT: ${{ github.event.pull_request.head.sha }}
-          CHECKOUT_OUTCOME: ${{ steps.checkout.outcome }}
         run: |
           set -euo pipefail
-
-          # Advisory path for checkout failures: without a workspace there is
-          # nothing to review, so skip green (the next PR event re-triggers).
-          if [[ "${CHECKOUT_OUTCOME}" != "success" ]]; then
-            echo "should_review=false" >> "${GITHUB_OUTPUT}"
-            echo "::notice::Checkout did not succeed (${CHECKOUT_OUTCOME}); skipping Muse review."
-            exit 0
-          fi
 
           pr_file="${RUNNER_TEMP}/muse-pr.json"
           if ! gh api "repos/${GITHUB_REPOSITORY}/pulls/${PR_NUMBER}" > "${pr_file}" 2>/dev/null; then
@@ -168,7 +111,7 @@ jobs:
           fi
 
           # Use the event SHA everywhere so checkout, diff, commit_id, and the
-          # record name always agree. If the PR moved since this run started
+          # review marker always agree. If the PR moved since this run started
           # (re-run of an older run), skip: a newer run owns the new head.
           api_head_sha="$(jq -r '.head.sha' "${pr_file}")"
           if [[ "${api_head_sha}" != "${HEAD_SHA_EVENT}" ]]; then
@@ -184,34 +127,16 @@ jobs:
           # Best-effort base fetch up front: the file list, diff ranges, and
           # trusted guidance all derive from it. Fetches the captured base
           # SHA (not the live branch ref, which could advance mid-run).
-          # Works anonymously on public repos; on failure the paginated files
-          # API backs the file list and head guidance is labeled UNTRUSTED.
+          # Works anonymously on public repos; on failure the compare API
+          # backs the file list and head guidance is labeled UNTRUSTED.
           base_available=false
-          fetch_needs_auth=false
           if git fetch --depth 1 origin "${base_sha_full}" >/dev/null 2>&1; then
             base_available=true
-          # Private repos: the anonymous fetch above fails (persist-credentials
-          # is false), so retry once with the job token scoped to this single
-          # command (-c never persists it). Without trusted base guidance a
-          # submitter could delete or weaken AGENTS.md and hide the real rules.
-          elif git -c http.extraHeader="Authorization: Bearer ${GH_TOKEN}" fetch --depth 1 origin "${base_sha_full}" >/dev/null 2>&1; then
-            base_available=true
-            fetch_needs_auth=true
           fi
-          # Deepen with whatever access worked above: an unauthenticated
-          # deepen on a private repo fails, losing the merge base (and the
-          # local file inventory with it).
-          git_fetch() {
-            if [[ "${fetch_needs_auth}" == "true" ]]; then
-              git -c http.extraHeader="Authorization: Bearer ${GH_TOKEN}" fetch "$@"
-            else
-              git fetch "$@"
-            fi
-          }
           # Merge-base discovery: two-dot diff would include base-only
           # changes made after divergence, while the reviewed API diff uses
           # three-dot semantics. Deepen until the merge base resolves. A
-          # failure here only disables the LOCAL file list (paginated files API
+          # failure here only disables the LOCAL file list (compare API
           # backs it); the fetched base tip still backs trusted guidance.
           local_diff=false
           merge_base=""
@@ -221,49 +146,13 @@ jobs:
                 local_diff=true
                 break
               fi
-              git_fetch --deepen 100 origin "${base_sha_full}" "${head_sha}" >/dev/null 2>&1 || break
+              git fetch --deepen 100 origin "${base_sha_full}" "${head_sha}" >/dev/null 2>&1 || break
             done
             if [[ "${local_diff}" != "true" ]]; then
-              echo "::warning::merge-base not found; file list falls back to paginated files API."
+              echo "::warning::merge-base not found; file list falls back to compare API."
             fi
           fi
           head_ref="$(jq -r '.head.ref' "${pr_file}")"
-          # Only the default branch carries reviewed guidance: a same-repo PR
-          # can target an attacker-created base branch, so base guidance is
-          # trusted only when the base IS the default branch. An unknown or
-          # empty default branch fails closed to untrusted.
-          default_branch="$(jq -r '.base.repo.default_branch // ""' "${pr_file}")"
-          base_trusted=false
-          if [[ -n "${default_branch}" && "${base_ref}" == "${default_branch}" ]]; then
-            base_trusted=true
-          fi
-          # Trusted guidance source: the PR base when it IS the default
-          # branch, else a pinned default-branch tip fetched separately —
-          # otherwise authoritative rules (weakened or absent on the
-          # submitter-selected base) never reach the prompt. Skipped when
-          # the base is already trusted; any failure degrades to showing
-          # base guidance as UNTRUSTED, never to trusting it.
-          trusted_sha=""
-          trusted_kind=""
-          if [[ "${base_available}" == "true" && "${base_trusted}" == "true" ]]; then
-            trusted_sha="${base_sha_full}"
-            trusted_kind="base"
-          elif [[ -n "${default_branch}" ]]; then
-            # Branch names can contain slashes, so percent-encode before
-            # interpolating into the API path.
-            default_branch_enc="$(jq -rn --arg b "${default_branch}" '$b|@uri')"
-            default_sha="$(gh api "repos/${GITHUB_REPOSITORY}/branches/${default_branch_enc}" --jq '.commit.sha' 2>/dev/null || true)"
-            if [[ "${default_sha}" =~ ^[0-9a-f]{40}$ ]] \
-              && { git fetch --depth 1 origin "${default_sha}" >/dev/null 2>&1 \
-                || git -c http.extraHeader="Authorization: Bearer ${GH_TOKEN}" fetch --depth 1 origin "${default_sha}" >/dev/null 2>&1; }; then
-              trusted_sha="${default_sha}"
-              trusted_kind="default"
-            else
-              echo "::warning::Default-branch guidance unavailable; base guidance stays UNTRUSTED."
-            fi
-          fi
-          trusted_available=false
-          if [[ -n "${trusted_sha}" ]]; then trusted_available=true; fi
           pr_state="$(jq -r '.state' "${pr_file}")"
           pr_title="$(jq -r '.title' "${pr_file}")"
           pr_body="$(jq -r '.body // ""' "${pr_file}")"
@@ -297,21 +186,18 @@ jobs:
           fi
           echo "should_review=true" >> "${GITHUB_OUTPUT}"
 
-          # Evidence pinning: the unified diff below reads base...head as fixed
-          # commits, so a mid-run push cannot mix diff hunks from two commits.
-          # The file inventory prefers local git (same pinned SHAs); its API
-          # fallback reads the live head instead (see below) and relies on the
-          # Run/Post staleness gates to discard reviews raced by a push.
+          # Immutable evidence pinned to the event SHA: the compare API reads
+          # base...head as fixed commits, so a mid-run push cannot mix files
+          # or diff hunks from two commits.
           base_sha="$(jq -r '.base.sha' "${pr_file}")"
           files_file="${RUNNER_TEMP}/muse-files.json"
           diff_failed=false
           # Complete path list from local git (no 300-file cap), diffed from
           # the merge base so base-only changes are excluded — the same
-          # three-dot semantics as the reviewed API diff. The paginated
-          # PR-files API is the fallback when local history is unavailable
-          # (e.g. private repos, where anonymous fetch has no credentials);
-          # pagination returns every changed file up to the endpoint's
-          # documented 3,000-entry maximum, which fails closed below.
+          # three-dot semantics as the reviewed API diff. The compare API is
+          # the fallback when local history is unavailable (e.g. private
+          # repos, where anonymous fetch has no credentials).
+          files_source="local"
           if [[ "${local_diff}" == "true" ]]; then
             ns_file="${RUNNER_TEMP}/muse-namestat.txt"
             num_file="${RUNNER_TEMP}/muse-numstat.txt"
@@ -353,42 +239,27 @@ jobs:
                 jq -s '.' "${files_file}.jsonl" > "${files_file}" 2>/dev/null || echo '[]' > "${files_file}"
               else
                 echo '[]' > "${files_file}"
-                echo "::warning::local diff join failed; falling back to paginated files API."
+                echo "::warning::local diff join failed; falling back to compare API."
                 local_diff=false
               fi
             else
               echo '[]' > "${files_file}"
-              echo "::warning::local git diff failed; falling back to paginated files API."
+              echo "::warning::local git diff failed; falling back to compare API."
               local_diff=false
             fi
           fi
           if [[ "${local_diff}" != "true" ]]; then
-            files_pages_file="${RUNNER_TEMP}/muse-files-pages.json"
-            if ! gh api --paginate "repos/${GITHUB_REPOSITORY}/pulls/${PR_NUMBER}/files" \
-              > "${files_pages_file}" 2>"${RUNNER_TEMP}/muse-ghfiles.err"; then
-              echo '[]' > "${files_file}"
-              echo "::warning::PR file-list pagination failed: $(head -c 300 "${RUNNER_TEMP}/muse-ghfiles.err" 2>/dev/null || true)"
+            files_source="compare"
+            compare_file="${RUNNER_TEMP}/muse-compare.json"
+            if ! gh api "repos/${GITHUB_REPOSITORY}/compare/${base_sha}...${HEAD_SHA_EVENT}" \
+              > "${compare_file}" 2>"${RUNNER_TEMP}/muse-ghcompare.err"; then
+              echo '{"files":[]}' > "${compare_file}"
+              echo "::warning::compare metadata failed: $(head -c 300 "${RUNNER_TEMP}/muse-ghcompare.err" 2>/dev/null || true)"
               # Missing file list means missing scoped guidance: route to the
               # explicit fallback rather than reviewing blind.
               diff_failed=true
-            # --paginate emits one JSON array per page; merge them. A malformed
-            # page fails the merge and routes to fallback the same way.
-            elif ! jq -s 'add // []' "${files_pages_file}" > "${files_file}" 2>/dev/null; then
-              echo '[]' > "${files_file}"
-              echo "::warning::PR file-list merge failed; routing to fallback."
-              diff_failed=true
             fi
-            # Endpoint cap: list-files returns at most 3,000 entries, so a
-            # full house may hide further paths — fail closed to the explicit
-            # fallback rather than reviewing a silently partial scope. (An
-            # exactly-3,000-file PR takes the same path; the local-history
-            # inventory above never hits this branch.)
-            if [[ "${diff_failed}" != "true" ]] \
-              && (( $(jq -r 'length' "${files_file}") >= 3000 )); then
-              echo '[]' > "${files_file}"
-              echo "::warning::PR file list hit the 3,000-entry API cap; routing to fallback."
-              diff_failed=true
-            fi
+            jq '.files // []' "${compare_file}" > "${files_file}"
           fi
 
           # Changed-file summary with a hard budget. Filenames are untrusted
@@ -404,6 +275,9 @@ jobs:
             files_summary="- No file-level diff metadata was returned by the GitHub API."
           fi
           files_note=""
+          if [[ "${files_source}" == "compare" ]] && (( total_files >= 300 )); then
+            files_note=" (file list may be truncated at 300 by the compare API)"
+          fi
           if (( total_files > 200 )); then
             files_note="${files_note} ($(( total_files - 200 )) more files omitted from summary)"
           fi
@@ -432,12 +306,6 @@ jobs:
             head -c 65536 "${manifest_file}" | iconv -c -f UTF-8 -t UTF-8 > "${manifest_file}.trunc" 2>/dev/null || true
             mv "${manifest_file}.trunc" "${manifest_file}"
             manifest_note=" [manifest truncated at 65536 bytes — PARTIAL SCOPE]"
-            # Files past the manifest cap are undiscoverable to the
-            # shell-disabled reviewer (summary and diff are capped too), so a
-            # truncated manifest routes to the explicit fallback rather than
-            # posting and deduping a review as complete.
-            echo "::warning::changed-path manifest exceeded 65536 bytes; routing to fallback."
-            diff_failed=true
           fi
 
           # Unified diff, truncated to a prompt budget. Collection failures are
@@ -448,34 +316,17 @@ jobs:
             > "${diff_file}" 2>"${RUNNER_TEMP}/muse-ghdiff.err"; then
             diff_failed=true
           fi
-          # Source-cap detection: the compare response omits files past
-          # GitHub's 300-file cap even under our own byte budget, which would
-          # silently hollow out the diff, the removed-lines sidecar, and the
-          # inline ranges. Every entry (including binary/mode-only ones)
-          # emits a `diff --git` header, so fewer headers than inventoried
-          # files proves truncation — route to the explicit fallback rather
-          # than reviewing blind. (More headers than files means the live-head
-          # inventory raced a push; that fails closed the same way.)
-          if [[ "${diff_failed}" != "true" ]]; then
-            diff_file_count="$(grep -c '^diff --git ' "${diff_file}" 2>/dev/null || true)"
-            if (( diff_file_count != total_files )); then
-              echo "::warning::compare diff covers ${diff_file_count} of ${total_files} files; routing to fallback."
-              diff_failed=true
-            fi
-          fi
           echo "diff_failed=${diff_failed}" >> "${GITHUB_OUTPUT}"
 
           # Removed-lines supplement, extracted from the FULL diff before any
           # truncation: beyond the diff cap, deleted base-side lines would be
           # invisible — the agent has no shell for `git show`, and checked-out
-          # head files lack them. Per-file `---`/`+++` headers attribute each
-          # `-` line (the `---` header is the ONLY path a pure deletion
-          # carries, since its `+++` is /dev/null); the sidecar has its own
-          # byte cap with an explicit marker.
+          # head files lack them. Per-file `+++` headers attribute each `-`
+          # line; the sidecar has its own byte cap with an explicit marker.
           removed_file="${RUNNER_TEMP}/muse-removed.txt"
           removed_note=""
           if [[ "${diff_failed}" != "true" ]]; then
-            awk '/^diff --git / {print ""} /^(---|\+\+\+) / {print} /^-/ && !/^--- / {print}' \
+            awk '/^diff --git / {print ""} /^\+\+\+ / {print} /^-/ && !/^--- / {print}' \
               "${diff_file}" 2>/dev/null > "${removed_file}" || : > "${removed_file}"
             if (( $(wc -c < "${removed_file}") > 24576 )); then
               head -c 24576 "${removed_file}" | iconv -c -f UTF-8 -t UTF-8 > "${removed_file}.trunc" 2>/dev/null || true
@@ -506,15 +357,12 @@ jobs:
           fi
 
           # Repo guidance: root candidates plus scoped AGENTS.md/CLAUDE.md from
-          # each changed file's ancestor dirs (capped). Default-branch
-          # versions are trusted; base/head fallbacks are labeled UNTRUSTED
-          # in the prompt.
+          # each changed file's ancestor dirs (capped). Base versions are
+          # trusted; head fallbacks are labeled UNTRUSTED in the prompt.
           guidance_file="${RUNNER_TEMP}/muse-guidance.md"
           : > "${guidance_file}"
-          # Assoc-array dedup, not a line-delimited file: a changed dir
-          # containing a newline would otherwise inject phantom entries and
-          # suppress real scoped guidance for other dirs.
-          declare -A guidance_seen=()
+          guidance_seen="${RUNNER_TEMP}/muse-guidance-seen.txt"
+          : > "${guidance_seen}"
           guidance_bytes=0
           guidance_budget=96000
           guidance_cap=32000
@@ -524,21 +372,11 @@ jobs:
             if [[ "${guidance_capped}" == "true" ]]; then return 0; fi
             content=""
             source=""
-            if [[ "${trusted_available}" == "true" ]] \
-              && content="$(git show "${trusted_sha}:${candidate}" 2>/dev/null)"; then
+            if [[ "${base_available}" == "true" ]] \
+              && content="$(git show "FETCH_HEAD:${candidate}" 2>/dev/null)"; then
               # SHA, not the branch name: branch names are submitter-controlled
-              # and this label prints outside any untrusted block. The explicit
-              # SHA (not FETCH_HEAD, which deepening rewrites) also pins the
-              # read to the fetched commit. For non-default targets this is
-              # the pinned DEFAULT tip, not the submitter-selected base.
-              source="trusted (${trusted_kind} ${trusted_sha:0:10})"
-            elif [[ "${base_trusted}" != "true" && "${base_available}" == "true" ]] \
-              && content="$(git show "${base_sha_full}:${candidate}" 2>/dev/null)"; then
-              # Submitter-selected base (not the default branch): a PR can
-              # target an attacker-created branch, so show its guidance only
-              # as untrusted — it never passed through the reviewed branch.
-              # (The UNTRUSTED branch below wraps this in an untrusted block.)
-              source="UNTRUSTED (base ${base_sha_full:0:10})"
+              # and this label prints outside any untrusted block.
+              source="trusted (base ${base_sha_full:0:10})"
             elif [[ -f "${candidate}" && ! -L "${candidate}" ]]; then
               # Refuse symlinks: a PR-added symlink (e.g. to /proc/self/environ)
               # would otherwise embed runner secrets into the prompt. The --
@@ -561,25 +399,19 @@ jobs:
               trunc_note=" [TRUNCATED at ${guidance_cap} bytes]"
             fi
             content_len="$(printf '%s' "${content}" | wc -c)"
+            if (( guidance_bytes + content_len > guidance_budget )); then
+              guidance_capped=true
+              printf '\n(Guidance budget exhausted at %s bytes; %s and any further scoped files omitted.)\n' \
+                "${guidance_budget}" "${candidate}" >> "${guidance_file}"
+              return 0
+            fi
+            guidance_bytes=$(( guidance_bytes + content_len ))
             # Candidate paths from changed files are submitter-controlled:
             # flatten newlines for display and omit the path from the block
-            # attribute (a quote in the path would break out of it). Computed
-            # before the budget check so the exhaustion note below names the
-            # neutralized form too — the raw path must never print outside
-            # an untrusted block.
+            # attribute (a quote in the path would break out of it).
             safe_candidate="$(printf '%s' "${candidate}" | tr '\n' '_' \
               | perl -pe 's{<\s*/\s*(file|diff|pr_title|pr_description|changed_files|removed_lines|head_ref|base_ref|untrusted_guidance)}{<\\/$1}gi')"
             safe_candidate="${safe_candidate:0:300}"
-            # Framing margin: the heading, source label, and untrusted-block
-            # tags add bytes content_len never counts, so many empty guidance
-            # files would otherwise bypass the budget via metadata alone.
-            # 1024 bounds the ~420-byte worst case (300-char name).
-            if (( guidance_bytes + content_len + 1024 > guidance_budget )); then
-              guidance_capped=true
-              printf '\n(Guidance budget exhausted at %s bytes; %s and any further scoped files omitted.)\n' \
-                "${guidance_budget}" "${safe_candidate}" >> "${guidance_file}"
-              return 0
-            fi
             {
               printf '\n### %s (%s)%s\n\n' "${safe_candidate}" "${source}" "${trunc_note}"
               if [[ "${source}" == UNTRUSTED* ]]; then
@@ -595,52 +427,37 @@ jobs:
                 printf '\n'
               fi
             } >> "${guidance_file}"
-            # Exact accounting: the budget tracks real file bytes (content
-            # plus framing), not content alone.
-            guidance_bytes="$(wc -c < "${guidance_file}")"
           }
           guidance_candidates=()
           add_candidate() {
-            if [[ -n "${guidance_seen[$1]+_}" ]]; then return 0; fi
-            guidance_seen[$1]=1
+            if grep -qxF -e "$1" "${guidance_seen}" 2>/dev/null; then return 0; fi
+            echo "$1" >> "${guidance_seen}"
             guidance_candidates+=("$1")
           }
           for candidate in AGENTS.md CLAUDE.md CONTRIBUTING.md .github/copilot-instructions.md; do
             add_candidate "${candidate}"
           done
           while IFS= read -r -d '' changed; do
-            # Trailing-x sentinel (both calls below): command substitution
-            # strips trailing newlines, which would corrupt directory names
-            # ending in one and misdirect scoped guidance. The sentinel
-            # blocks that stripping (removed first), then exactly one
-            # newline — dirname's own terminator — is removed.
-            dir="$(dirname -- "${changed}"; printf x)"
-            dir="${dir%x}"
-            dir="${dir%$'\n'}"
+            dir="$(dirname -- "${changed}")"
             while [[ "${dir}" != "." && "${dir}" != "/" ]]; do
               add_candidate "${dir}/AGENTS.md"
               add_candidate "${dir}/CLAUDE.md"
-              dir="$(dirname -- "${dir}"; printf x)"
-              dir="${dir%x}"
-              dir="${dir%$'\n'}"
+              dir="$(dirname -- "${dir}")"
             done
           done < <(jq -j '[.[] | .filename, (.previous_filename // empty)] | map(select(length > 0))[] + "\u0000"' "${files_file}" 2>/dev/null)
-          # Two phases: trusted guidance first, everything else second —
-          # so PR-authored content can never exhaust the byte budget
+          # Two phases: trusted base-backed guidance first, head-only files
+          # second — so PR-authored content can never exhaust the byte budget
           # before applicable trusted rules are collected.
-          for phase in trusted rest; do
+          for phase in base head; do
             for candidate in ${guidance_candidates[@]+"${guidance_candidates[@]}"}; do
-              # Capped: later emits are no-ops, so stop stat-ing candidates
-              # instead of probing every remaining path.
-              if [[ "${guidance_capped}" == "true" ]]; then break 2; fi
-              if [[ "${trusted_available}" == "true" ]] \
-                && git show "${trusted_sha}:${candidate}" >/dev/null 2>&1; then
-                is_trusted=true
+              if [[ "${base_available}" == "true" ]] \
+                && git show "FETCH_HEAD:${candidate}" >/dev/null 2>&1; then
+                is_base=true
               else
-                is_trusted=false
+                is_base=false
               fi
-              if [[ "${phase}" == "trusted" && "${is_trusted}" != "true" ]]; then continue; fi
-              if [[ "${phase}" == "rest" && "${is_trusted}" == "true" ]]; then continue; fi
+              if [[ "${phase}" == "base" && "${is_base}" != "true" ]]; then continue; fi
+              if [[ "${phase}" == "head" && "${is_base}" == "true" ]]; then continue; fi
               emit_guidance "${candidate}"
             done
           done
@@ -696,7 +513,7 @@ jobs:
             current authoritative docs — when unsure, lower the severity or
             omit it. Cite the doc source for version-sensitive findings.
           - Reserve "critical"/"high" for issues you have concretely verified.
-          - Deletions live in <removed_lines> (diff `---`/`+++` headers, then
+          - Deletions live in <removed_lines> (diff `+++` header, then its
             removed `-` lines). If a verdict depends on deleted content past
             a PARTIAL cap, say what is missing instead of asserting.
           - Follow the repo guidance below when it names project conventions.
@@ -748,45 +565,29 @@ jobs:
 
           echo "prompt_file=${prompt_file}" >> "${GITHUB_OUTPUT}"
 
-          # Dedupe BEFORE the agent runs so reruns don't burn quota. Identity is
-          # a recorded artifact, NOT a review marker: any same-repo workflow
-          # can forge bot-authored marker reviews (shared github-actions[bot]
-          # login), but only GitHub can attribute an artifact to one of THIS
-          # workflow's runs for this head — and this workflow records one only
-          # after posting a REAL (non-fallback) review. Identity includes the
-          # base SHA so a base retarget (same head, new base) triggers a fresh
-          # review instead of dedupe-skipping. Lookup failures fail open (a
-          # duplicate review beats a dropped one).
-          record_name="muse-review-${head_sha}-${base_sha_full}"
-          runs_file="${RUNNER_TEMP}/muse-workflow-runs.json"
+          # Dedupe BEFORE the agent runs so reruns don't burn quota. Skip only
+          # when a REAL (non-fallback) Muse review already exists for this
+          # commit: the marker must prefix the body (other bot reviews share
+          # the github-actions[bot] login and could quote it).
+          # Marker identity includes the base SHA so a base retarget (same
+          # head, new base) triggers a fresh review instead of dedupe-skipping.
+          marker="<!-- muse-code-review sha:${head_sha} base:${base_sha_full:0:10} -->"
+          dup_reviews="${RUNNER_TEMP}/muse-existing-reviews.json"
+          gh api --paginate "repos/${GITHUB_REPOSITORY}/pulls/${PR_NUMBER}/reviews" > "${dup_reviews}" 2>/dev/null \
+            || echo '[]' > "${dup_reviews}"
+          # shellcheck disable=SC2016  # $marker is a jq variable, not shell
+          # Fallback tag must sit on metadata line 2 (right after the
+          # marker): a whole-body contains() would misfire on real reviews
+          # that quote the tag.
+          real_count="$(jq -s --arg marker "${marker}" \
+            '[add // [] | .[] | select(.user.login == "github-actions[bot]"
+              and (.body | startswith($marker))
+              and ((.body | split("\n") | .[1] // "") != "<!-- muse-fallback:v1 -->"))] | length' \
+            "${dup_reviews}" 2>/dev/null || echo 0)"
           duplicate=false
-          # No head_sha filter: pull_request_target runs execute against the
-          # default-branch tip rather than the PR head, so filtering by the PR
-          # head SHA matches nothing and dedupe silently dies. Scan this
-          # workflow's newest pull_request_target runs instead and match the
-          # exact SHA-bearing artifact name; newest-first plus a 30-run cap
-          # keeps the lookup bounded (a same-head prior review is always
-          # recent, and the Post staleness gate covers ancient reruns).
-          if gh api "repos/${GITHUB_REPOSITORY}/actions/workflows/muse-code-review.yml/runs?event=pull_request_target&per_page=100" \
-            > "${runs_file}" 2>/dev/null; then
-            while IFS= read -r run_id; do
-              [[ -n "${run_id}" ]] || continue
-              # shellcheck disable=SC2016  # $want is a jq variable, not shell
-              # gh api takes no --arg (its --jq accepts one expression only),
-              # so filter through jq: snapshot the body first, never gh|jq,
-              # or an early jq exit SIGPIPEs gh under pipefail and fakes a
-              # miss. jq -e is true only on a real name match; anything
-              # else fails open to a possible duplicate (see above).
-              if artifacts_json="$(gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${run_id}/artifacts" 2>/dev/null)" \
-                && printf '%s' "${artifacts_json}" \
-                | jq -e --arg want "${record_name}" 'any(.artifacts[]?; .name == $want)' >/dev/null 2>&1; then
-                duplicate=true
-                echo "::notice::Muse review for ${head_sha} already posted; skipping duplicate run."
-                break
-              fi
-            done < <(jq -r '.workflow_runs[0:30][]? | .id' "${runs_file}" 2>/dev/null)
-          else
-            echo "::warning::Dedupe lookup failed; proceeding (a duplicate review is possible)."
+          if [[ "${real_count}" =~ [1-9] ]]; then
+            duplicate=true
+            echo "::notice::Muse review for ${head_sha} already posted; skipping duplicate run."
           fi
           echo "duplicate=${duplicate}" >> "${GITHUB_OUTPUT}"
 
@@ -805,24 +606,7 @@ jobs:
         timeout-minutes: 5
         run: |
           set -euo pipefail
-          # No curl|bash pipe: download first so a truncated stream can never
-          # execute partially, then refuse empty files and syntax-check before
-          # running. No pinned checksum or versioned installer exists upstream
-          # (unversioned URL, no npm package), so TLS to Meta's domain is the
-          # trust anchor; the flags below pin that transport (HTTPS-only,
-          # TLS 1.2+, bounded redirects). MUSE_NO_MODIFY_PATH keeps the
-          # installer from editing runner shell profiles (GITHUB_PATH covers
-          # this job already).
-          installer="$(mktemp "${RUNNER_TEMP}/muse-install.XXXXXX")"
-          trap 'rm -f "${installer}"' EXIT
-          curl --fail --silent --show-error --location --max-redirs 3 \
-            --proto '=https' --proto-redir '=https' --tlsv1.2 \
-            --output "${installer}" https://dev.meta.ai/install.sh
-          [[ -s "${installer}" ]]
-          bash -n "${installer}"
-          MUSE_NO_MODIFY_PATH=1 bash "${installer}"
-          rm -f "${installer}"
-          trap - EXIT
+          curl -fsSL https://dev.meta.ai/install.sh | bash
           echo "${HOME}/.local/bin" >> "${GITHUB_PATH}"
           "${HOME}/.local/bin/muse" --version
 
@@ -842,91 +626,30 @@ jobs:
         timeout-minutes: 10
         env:
           META_API_KEY: ${{ secrets.META_API_KEY }}
-          # Load-bearing for the staleness gate below (and scrubbed before
-          # Muse launches): without it the gate misfires and every run skips.
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GITHUB_REPOSITORY: ${{ github.repository }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
           HEAD_SHA: ${{ steps.diff.outputs.head_sha }}
-          BASE_SHA: ${{ steps.diff.outputs.base_sha }}
         run: |
           set -euo pipefail
           # Rerun staleness: a manual rerun uses an isolated concurrency
           # group, so a newer push cannot cancel it — revalidate the live
-          # head, base, draft, AND open state before spending a Muse
-          # invocation. Stale runs exit quietly with no post (the Post step
-          # revalidates again before posting). Fail closed: an unreadable
-          # ref is a skip, never a proceed. The token is scoped to this one
-          # call and scrubbed before Muse launches: the agent needs only
-          # META_API_KEY, so the write-capable job token must never reach
-          # its environment.
-          if ! live_refs="$(GH_TOKEN="${GITHUB_TOKEN}" gh api "repos/${GITHUB_REPOSITORY}/pulls/${PR_NUMBER}" --jq '.head.sha, .base.sha, .draft, .state' 2>/dev/null)" \
-            || [[ -z "${live_refs}" ]]; then
-            echo "::warning::Ref revalidation lookup failed; skipping run to avoid reviewing a stale head."
-            exit 0
-          fi
-          live_head="$(printf '%s' "${live_refs}" | sed -n '1p')"
-          live_base="$(printf '%s' "${live_refs}" | sed -n '2p')"
-          live_draft="$(printf '%s' "${live_refs}" | sed -n '3p')"
-          live_state="$(printf '%s' "${live_refs}" | sed -n '4p')"
-          if [[ -z "${live_head}" || -z "${live_base}" || -z "${live_draft}" || -z "${live_state}" ]]; then
-            echo "::warning::Ref revalidation lookup failed; skipping run to avoid reviewing a stale head."
+          # head before spending a Muse invocation. Stale runs exit quietly
+          # with no post (the Post step revalidates again before posting).
+          # Fail closed: an unreadable head is a skip, never a proceed.
+          # The token is expression-scoped to this one call (the runner does
+          # NOT export GITHUB_TOKEN to step env, so ${GITHUB_TOKEN} would be
+          # unset under set -u and kill every run) and scrubbed before Muse
+          # launches: the agent needs only META_API_KEY, so the write-capable
+          # job token must never reach its environment.
+          if ! live_head="$(GH_TOKEN="${{ secrets.GITHUB_TOKEN }}" gh api "repos/${GITHUB_REPOSITORY}/pulls/${PR_NUMBER}" --jq '.head.sha' 2>/dev/null)" \
+            || [[ -z "${live_head}" ]]; then
+            echo "::warning::Head revalidation lookup failed; skipping run to avoid reviewing a stale head."
             exit 0
           fi
           if [[ "${live_head}" != "${HEAD_SHA}" ]]; then
             echo "::notice::PR head moved (${HEAD_SHA:0:10} -> ${live_head:0:10}); rerun is stale, skipping Muse invocation."
             exit 0
           fi
-          if [[ "${live_base}" != "${BASE_SHA}" ]]; then
-            echo "::notice::PR base moved (${BASE_SHA:0:10} -> ${live_base:0:10}); rerun is stale, skipping Muse invocation."
-            exit 0
-          fi
-          # Draft transitions change no SHA, so the converted_to_draft run
-          # (see trigger types) cannot always cancel an isolated rerun —
-          # recheck eligibility here before spending the invocation.
-          if [[ "${live_draft}" != "false" ]]; then
-            echo "::notice::PR returned to draft; skipping Muse invocation."
-            exit 0
-          fi
-          # Closure changes no SHA either, so the closed run (see trigger
-          # types) cannot always cancel an isolated rerun — a merged PR
-          # must not spend quota or post a stale review.
-          if [[ "${live_state}" != "open" ]]; then
-            echo "::notice::PR is no longer open; skipping Muse invocation."
-            exit 0
-          fi
-          # Symlink-escape gate: a PR can add symlinks resolving outside the
-          # checkout (e.g. `leak -> /proc/self/environ`, which carries
-          # META_API_KEY in this step's environment), and the agent reads
-          # changed files from this workspace. Resolve every symlink first:
-          # anything escaping the checkout is always malicious or broken
-          # elsewhere too — legitimate in-repo links resolve inside — so it
-          # becomes a placeholder file, never agent-readable content. find
-          # never descends into linked dirs without -L/-follow; -mindepth 1
-          # keeps the workspace root itself out of scope; NUL-delimited for
-          # newline paths. Any scan failure fails closed (no launch).
-          ws_real="$(realpath -m "${GITHUB_WORKSPACE}" 2>/dev/null)" \
-            || { echo "::warning::Workspace canonicalization failed; skipping run to avoid exposing secrets via PR-authored links."; exit 1; }
-          links_file="$(mktemp)"
-          if ! find "${GITHUB_WORKSPACE}" -mindepth 1 -type l -print0 > "${links_file}" 2>/dev/null; then
-            echo "::warning::Symlink scan failed; skipping run to avoid exposing secrets via PR-authored links."
-            rm -f "${links_file}"
-            exit 1
-          fi
-          while IFS= read -r -d '' link; do
-            # Unresolvable links (loops) fail closed to outside: an empty
-            # target matches no inside prefix below.
-            target="$(realpath -m "${link}" 2>/dev/null || true)"
-            case "${target}" in
-              "${ws_real}/"*) ;;
-              *)
-                rm -f -- "${link}"
-                printf 'REVIEW-SAFETY PLACEHOLDER: this path was a symlink resolving outside the checked-out workspace and was removed before review (link: %s; target: %s). See the diff for the original link.\n' "${link}" "${target}" > "${link}"
-                echo "::warning::Removed workspace-escaping symlink: ${link} -> ${target}"
-                ;;
-            esac
-          done < "${links_file}"
-          rm -f "${links_file}"
           review_file="${RUNNER_TEMP}/muse-review-body.md"
           : > "${review_file}"
 
@@ -969,106 +692,37 @@ jobs:
           fi
 
       - name: Post Muse review
-        id: post
         if: >-
-          always() &&
           steps.prereq.outputs.should_run == 'true' &&
-          (steps.diff.outputs.should_review == 'true' ||
-            steps.diff.outcome == 'failure') &&
+          steps.diff.outputs.should_review == 'true' &&
           steps.diff.outputs.duplicate != 'true'
-        # Advisory like every other step: a stalled lookup or POST must skip
-        # green, never fail the job (a missing posted_real output simply
-        # skips the Record step below).
-        continue-on-error: true
-        # Bounded like the other steps; one read plus one post needs far less.
-        timeout-minutes: 2
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GITHUB_REPOSITORY: ${{ github.repository }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
           HEAD_SHA: ${{ steps.diff.outputs.head_sha }}
           BASE_SHA: ${{ steps.diff.outputs.base_sha }}
-          HEAD_SHA_EVENT: ${{ github.event.pull_request.head.sha }}
-          BASE_SHA_EVENT: ${{ github.event.pull_request.base.sha }}
           MUSE_OUTCOME: ${{ steps.muse.outcome }}
           DIFF_FAILED: ${{ steps.diff.outputs.diff_failed }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
           set -euo pipefail
-          # Collect-failure path (see the always() condition above): without
-          # diff outputs, fall back to the event SHAs so the fallback post
-          # still carries identity and the staleness gate still applies.
-          collect_failed=false
-          if [[ -z "${HEAD_SHA}" || -z "${BASE_SHA}" ]]; then
-            HEAD_SHA="${HEAD_SHA_EVENT}"
-            BASE_SHA="${BASE_SHA_EVENT}"
-            collect_failed=true
-          fi
-          # Second staleness gate (see the Run step): a push or base retarget
-          # that landed while Muse was working means this review targets old
-          # refs — posting it would misattribute inline lines, so exit
-          # quietly. Fail closed here too: an unreadable ref is a skip, never
-          # a post.
-          if ! live_refs="$(gh api "repos/${GITHUB_REPOSITORY}/pulls/${PR_NUMBER}" --jq '.head.sha, .base.sha, .draft, .state' 2>/dev/null)" \
-            || [[ -z "${live_refs}" ]]; then
-            echo "::warning::Ref revalidation lookup failed; skipping post to avoid publishing a stale review."
-            exit 0
-          fi
-          live_head="$(printf '%s' "${live_refs}" | sed -n '1p')"
-          live_base="$(printf '%s' "${live_refs}" | sed -n '2p')"
-          live_draft="$(printf '%s' "${live_refs}" | sed -n '3p')"
-          live_state="$(printf '%s' "${live_refs}" | sed -n '4p')"
-          if [[ -z "${live_head}" || -z "${live_base}" || -z "${live_draft}" || -z "${live_state}" ]]; then
-            echo "::warning::Ref revalidation lookup failed; skipping post to avoid publishing a stale review."
+          # Second staleness gate (see the Run step): a push that landed
+          # while Muse was working means this review targets an old head —
+          # posting it would misattribute inline lines, so exit quietly.
+          # Fail closed here too: an unreadable head is a skip, never a post.
+          if ! live_head="$(gh api "repos/${GITHUB_REPOSITORY}/pulls/${PR_NUMBER}" --jq '.head.sha' 2>/dev/null)" \
+            || [[ -z "${live_head}" ]]; then
+            echo "::warning::Head revalidation lookup failed; skipping post to avoid publishing a stale review."
             exit 0
           fi
           if [[ "${live_head}" != "${HEAD_SHA}" ]]; then
             echo "::notice::PR head moved during review (${HEAD_SHA:0:10} -> ${live_head:0:10}); skipping stale post."
             exit 0
           fi
-          if [[ "${live_base}" != "${BASE_SHA}" ]]; then
-            echo "::notice::PR base moved during review (${BASE_SHA:0:10} -> ${live_base:0:10}); skipping stale post."
-            exit 0
-          fi
-          # Draft transitions change no SHA (see the Run step): a PR
-          # de-drafted mid-review is no longer eligible, so skip the post.
-          if [[ "${live_draft}" != "false" ]]; then
-            echo "::notice::PR returned to draft during review; skipping stale post."
-            exit 0
-          fi
-          # Closure changes no SHA either (see the Run step): never post a
-          # review to a merged or closed PR.
-          if [[ "${live_state}" != "open" ]]; then
-            echo "::notice::PR closed during review; skipping stale post."
-            exit 0
-          fi
-          # Dedupe re-lookup (see the Collect step): a concurrent same-head
-          # run may have recorded a real review while Muse was working — skip
-          # instead of duplicating. Artifact-verified (reviews alone are
-          # forgeable); a simultaneous post within seconds can still slip
-          # through, duplicating one advisory review.
-          post_record="muse-review-${HEAD_SHA}-${BASE_SHA}"
-          post_runs="${RUNNER_TEMP}/muse-post-runs.json"
-          # Same event-scoped scan as the Collect step: a head_sha filter
-          # would miss this workflow's pull_request_target runs (see above).
-          if gh api "repos/${GITHUB_REPOSITORY}/actions/workflows/muse-code-review.yml/runs?event=pull_request_target&per_page=100" \
-            > "${post_runs}" 2>/dev/null; then
-            while IFS= read -r run_id; do
-              [[ -n "${run_id}" ]] || continue
-              # shellcheck disable=SC2016  # $want is a jq variable, not shell
-              # gh api takes no --arg: snapshot the body, then filter
-              # through jq (see the Collect step) so a lookup error fails
-              # open to a possible duplicate instead of faking a miss.
-              if post_artifacts="$(gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${run_id}/artifacts" 2>/dev/null)" \
-                && printf '%s' "${post_artifacts}" \
-                | jq -e --arg want "${post_record}" 'any(.artifacts[]?; .name == $want)' >/dev/null 2>&1; then
-                echo "::notice::A review for ${HEAD_SHA} posted while this run was working; skipping duplicate post."
-                exit 0
-              fi
-            done < <(jq -r '.workflow_runs[0:30][]? | .id' "${post_runs}" 2>/dev/null)
-          fi
 
           body_file="${RUNNER_TEMP}/muse-review.md"
+          marker="<!-- muse-code-review sha:${HEAD_SHA} base:${BASE_SHA:0:10} -->"
 
           redact() {
             printf '%s' "$1" | perl -0777 -pe 's/-----BEGIN [A-Z ]*PRIVATE KEY-----.*?-----END [A-Z ]*PRIVATE KEY-----/[REDACTED-PRIVATE-KEY]/gs; s/\b(sk-|rk-|ghp_|gho_|github_pat_|xox[bap]-|AKIA)[A-Za-z0-9_\-]+/[REDACTED]/g; s/eyJ[A-Za-z0-9_\-]{10,}\.eyJ[A-Za-z0-9_\-]{10,}\.[A-Za-z0-9_\-]+/[REDACTED-JWT]/g'
@@ -1092,22 +746,7 @@ jobs:
           if [[ -f "${{ steps.muse.outputs.review_file }}" ]]; then
             raw_output="$(cat "${{ steps.muse.outputs.review_file }}")"
           fi
-          if [[ "${collect_failed}" == "true" ]]; then
-            is_fallback=true
-            review="## Verdict
-
-          Muse did not review this PR: evidence collection failed or timed
-          out, so there was no diff to review.
-
-          ## Findings
-
-          - low: No review was attempted because collection failed — check
-            the workflow logs.
-
-          ## Suggested next steps
-
-          Re-run the workflow, or inspect the logs."
-          elif [[ "${DIFF_FAILED}" == "true" ]]; then
+          if [[ "${DIFF_FAILED}" == "true" ]]; then
             is_fallback=true
             review="## Verdict
 
@@ -1144,18 +783,12 @@ jobs:
             printf '%s' "${raw_output}" > "${findings_json}"
             # Normalize: keep only well-formed finding objects. If the model
             # returned findings but none are usable, fall back explicitly
-            # instead of posting a false "no issues" review. Rendered
-            # fields must be strings too: a {"body":{}} finding would
-            # otherwise survive here and then crash the summary renderer's
-            # gsub, silently dropping the finding from a recorded review.
+            # instead of posting a false "no issues" review.
             raw_finding_count="$(jq -r '(.findings // []) | length' "${findings_json}")"
             jq '.findings |= (map(select(type == "object"
               and (.path | type) == "string"
               and ((.line | tostring) | test("^[0-9]+$"))
-              and ((.line | tonumber?) // -1) >= 0
-              and ((.severity // "low") | type) == "string"
-              and ((.title // "") | type) == "string"
-              and ((.body // "") | type) == "string")) | map(.line |= tonumber))' \
+              and ((.line | tonumber?) // -1) >= 0)) | map(.line |= tonumber))' \
               "${findings_json}" > "${findings_json}.clean" \
               && mv "${findings_json}.clean" "${findings_json}"
             clean_finding_count="$(jq -r '(.findings // []) | length' "${findings_json}")"
@@ -1181,13 +814,10 @@ jobs:
             # real tabs/newlines BEFORE a TSV stage would corrupt record
             # framing for paths containing them, so there is no delimited
             # handoff — control chars are JSON-escaped in the path value.
-            # A `+++ ` line counts as a file header only outside hunks: an
-            # added `++ ...` source line renders identically inside one.
             ranges_json="${RUNNER_TEMP}/muse-ranges.json"
             perl -ne '
-              if (/^diff --git /) { undef $f; $in_hunk = 0; }
-              elsif (/^@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@/ && defined $f && $f ne "/dev/null") { $in_hunk = 1; $s = $1; $l = (defined $2 ? $2 : 1); if ($l > 0) { $e = $s + $l - 1; ($j = $f) =~ s/\\/\\\\/g; $j =~ s/"/\\"/g; $j =~ s/([\x00-\x1f])/sprintf("\\u%04x", ord($1))/ge; push @o, "{\"path\":\"$j\",\"start\":$s,\"end\":$e}"; } }
-              elsif (!$in_hunk && /^\+\+\+ (.*)$/) { $f = $1; $f =~ s/^"(.*)"$/$1/; $f =~ s{^b/}{}; $f =~ s/\\([0-7]{3}|[abtnvfr"\\])/length($1)==3?chr(oct($1)):($1 eq "a"?"\a":$1 eq "b"?"\b":$1 eq "t"?"\t":$1 eq "n"?"\n":$1 eq "v"?"\v":$1 eq "f"?"\f":$1 eq "r"?"\r":$1)/ge; }
+              if (/^\+\+\+ (.*)$/) { $f = $1; $f =~ s/^"(.*)"$/$1/; $f =~ s{^b/}{}; $f =~ s/\\([0-7]{3}|[abtnvfr"\\])/length($1)==3?chr(oct($1)):($1 eq "a"?"\a":$1 eq "b"?"\b":$1 eq "t"?"\t":$1 eq "n"?"\n":$1 eq "v"?"\v":$1 eq "f"?"\f":$1 eq "r"?"\r":$1)/ge; }
+              if (/^@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@/ && defined $f && $f ne "/dev/null") { $s = $1; $l = (defined $2 ? $2 : 1); if ($l > 0) { $e = $s + $l - 1; ($j = $f) =~ s/\\/\\\\/g; $j =~ s/"/\\"/g; $j =~ s/([\x00-\x1f])/sprintf("\\u%04x", ord($1))/ge; push @o, "{\"path\":\"$j\",\"start\":$s,\"end\":$e}"; } }
               END { print "[" . join(",", @o) . "]"; }
             ' "${RUNNER_TEMP}/muse.diff" > "${ranges_json}" 2>/dev/null || echo '[]' > "${ranges_json}"
             jq empty "${ranges_json}" 2>/dev/null || echo '[]' > "${ranges_json}"
@@ -1198,11 +828,7 @@ jobs:
               | ([.findings[]? | select(.line == 0 and (.path as $p | $paths | index($p) != null))]) as $filelevel
               | ([.findings[]? | select(.line == 0 and (.path as $p | $paths | index($p) == null))]) as $orphaned
               | ([$lined[] | select(. as $f | any($r[]; .path==$f.path and $f.line >= .start and $f.line <= .end))]) as $ok
-              # Stray positive-line paths (hallucinated or injected, not among
-              # the changed files) get the same unverified marker as line-zero
-              # orphans instead of rendering as normal findings.
-              | (($lined - $ok) | map(if (.path as $p | $paths | index($p) == null) then . + {orphaned: true} else . end)) as $unmatched
-              | {valid: $ok[0:20], summary_only: ($filelevel + $unmatched + $ok[20:] + ($orphaned | map(. + {orphaned: true})))}' \
+              | {valid: $ok[0:20], summary_only: ($filelevel + ($lined - $ok) + $ok[20:] + ($orphaned | map(. + {orphaned: true})))}' \
               "${findings_json}" > "${validated_json}" 2>/dev/null || echo '{"valid":[],"summary_only":[]}' > "${validated_json}"
             {
               printf '## Verdict\n\n%s\n\n## Findings\n\n' "${verdict}"
@@ -1287,10 +913,13 @@ jobs:
           [... review truncated at ${body_budget} bytes ...]"
           fi
 
-          # No machine-readable marker: dedupe keys on the recorded artifact
-          # (see the Collect step), which PR workflows cannot forge — unlike
-          # bot-authored review text.
           {
+            printf '%s\n' "${marker}"
+            # Machine-readable fallback tag for dedupe: never infer fallback
+            # state from review prose (a real review could quote it).
+            if [[ "${is_fallback}" == "true" ]]; then
+              printf '%s\n' "<!-- muse-fallback:v1 -->"
+            fi
             cat <<EOF
           ## Muse code review (advisory)
 
@@ -1309,40 +938,8 @@ jobs:
               else { body: $body, event: "COMMENT", commit_id: $sha, comments: $comments } end' > "${payload_file}"
 
           # Advisory to the end: a failed POST must warn, never fail the job.
-          # posted_real gates the artifact record below: only REAL reviews
-          # are recorded, so fallbacks never suppress a later rerun.
-          posted_real=false
-          if gh api --method POST \
+          if ! gh api --method POST \
             "repos/${GITHUB_REPOSITORY}/pulls/${PR_NUMBER}/reviews" \
             --input "${payload_file}" >/dev/null; then
-            if [[ "${is_fallback}" != "true" ]]; then
-              posted_real=true
-              record_dir="${RUNNER_TEMP}/muse-record"
-              mkdir -p "${record_dir}"
-              {
-                printf 'head=%s\n' "${HEAD_SHA}"
-                printf 'base=%s\n' "${BASE_SHA}"
-                printf 'run=%s\n' "${{ github.run_id }}"
-              } > "${record_dir}/muse-review-record.txt"
-            fi
-          else
             echo "::warning::Failed to post Muse review; see previous logs."
           fi
-          echo "posted_real=${posted_real}" >> "${GITHUB_OUTPUT}"
-
-      - name: Record posted review
-        # Unforgeable dedupe identity (see the Collect step): this artifact
-        # exists ⟺ this workflow posted a REAL review for the head+base in
-        # its name. Only GitHub can attribute artifacts to runs, so PR
-        # workflows cannot forge it — unlike marker review text.
-        timeout-minutes: 2
-        if: steps.post.outputs.posted_real == 'true'
-        # Advisory: a failed record must not fail the job — the review is
-        # already posted, and the next rerun simply reviews again.
-        continue-on-error: true
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          name: muse-review-${{ steps.diff.outputs.head_sha }}-${{ steps.diff.outputs.base_sha }}
-          path: ${{ runner.temp }}/muse-record/muse-review-record.txt
-          if-no-files-found: error
-          retention-days: 90
