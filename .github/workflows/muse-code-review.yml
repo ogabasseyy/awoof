@@ -23,8 +23,11 @@
 #   - --max-model-steps cap + job timeout
 #   - never fails the build and never posts a commit status gate
 #
-# Forked PRs are skipped: the pull_request event withholds secrets from forks,
-# so there is no credential to review with.
+# pull_request_target runs this workflow from the BASE revision, so a PR can
+# never execute its own modified workflow file. Secrets ARE available here
+# (unlike pull_request on forks), so the same-repo gate in the job if below
+# is load-bearing: fork PRs are skipped before any secret is touched, and
+# the PR head is checked out read-only for inspection only — never executed.
 #
 # Prerequisites per repo:
 #   - Secret META_API_KEY (repo Settings -> Secrets and variables -> Actions)
@@ -32,7 +35,7 @@
 name: Muse Code Review
 
 on:
-  pull_request:
+  pull_request_target:
     # edited: only base retargets run (see job if below); title/body edits
     # would otherwise burn quota for an unchanged diff.
     types: [opened, synchronize, reopened, ready_for_review, edited]
@@ -606,9 +609,17 @@ jobs:
         timeout-minutes: 5
         run: |
           set -euo pipefail
-          curl -fsSL https://dev.meta.ai/install.sh | bash
+          # No pipe-to-shell: download first so a truncated or tampered
+          # transfer fails closed instead of executing a partial script.
+          # Upstream publishes no versioned installer artifact to pin;
+          # install.sh itself verifies the launcher payload against the
+          # server-advertised x-content-sha256 before executing it.
+          curl -fsSL --retry 3 --retry-delay 2 \
+            -o "${RUNNER_TEMP}/muse-install.sh" https://dev.meta.ai/install.sh
+          bash "${RUNNER_TEMP}/muse-install.sh"
           echo "${HOME}/.local/bin" >> "${GITHUB_PATH}"
-          "${HOME}/.local/bin/muse" --version
+          muse_version="$("${HOME}/.local/bin/muse" --version)"
+          [[ -n "${muse_version}" ]] || { echo "::error::Muse install produced no version"; exit 1; }
 
       - name: Run Muse review
         id: muse
@@ -698,6 +709,9 @@ jobs:
           steps.diff.outputs.duplicate != 'true'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Exposed ONLY so redact() below can mask the literal key value;
+          # this step never prints its environment.
+          META_API_KEY: ${{ secrets.META_API_KEY }}
           GITHUB_REPOSITORY: ${{ github.repository }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
           HEAD_SHA: ${{ steps.diff.outputs.head_sha }}
@@ -725,7 +739,10 @@ jobs:
           marker="<!-- muse-code-review sha:${HEAD_SHA} base:${BASE_SHA:0:10} -->"
 
           redact() {
-            printf '%s' "$1" | perl -0777 -pe 's/-----BEGIN [A-Z ]*PRIVATE KEY-----.*?-----END [A-Z ]*PRIVATE KEY-----/[REDACTED-PRIVATE-KEY]/gs; s/\b(sk-|rk-|ghp_|gho_|github_pat_|xox[bap]-|AKIA)[A-Za-z0-9_\-]+/[REDACTED]/g; s/eyJ[A-Za-z0-9_\-]{10,}\.eyJ[A-Za-z0-9_\-]{10,}\.[A-Za-z0-9_\-]+/[REDACTED-JWT]/g'
+            # Mask the workflow's own META_API_KEY value first (fixed-string
+            # match, so any key format is covered), then the generic shapes.
+            # The length guard matters: an empty pattern would match everywhere.
+            printf '%s' "$1" | META_API_KEY="${META_API_KEY:-}" perl -0777 -pe 'BEGIN { $k = $ENV{META_API_KEY} // q{} } if (length $k) { $q = quotemeta($k); s/$q/[REDACTED]/g } s/-----BEGIN [A-Z ]*PRIVATE KEY-----.*?-----END [A-Z ]*PRIVATE KEY-----/[REDACTED-PRIVATE-KEY]/gs; s/\b(sk-|rk-|ghp_|gho_|github_pat_|xox[bap]-|AKIA)[A-Za-z0-9_\-]+/[REDACTED]/g; s/eyJ[A-Za-z0-9_\-]{10,}\.eyJ[A-Za-z0-9_\-]{10,}\.[A-Za-z0-9_\-]+/[REDACTED-JWT]/g'
           }
           # Byte-bounded UTF-8-safe truncation. head reads a temp FILE (never
           # a live pipe) so no writer can SIGPIPE; iconv -c drops a split
