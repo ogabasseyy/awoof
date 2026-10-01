@@ -16,6 +16,7 @@ import { canonicalWidgetOrigin } from '../services/verification/eligibility-merc
 const updateWidgetConfigSchema = z.object({
     allowedDomains: z.array(z.string().min(1)).min(1, 'At least one domain is required'),
     allowedOrigins: z.array(z.string().min(1).max(512)).min(1, 'At least one origin is required').optional(),
+    regenerateApiKey: z.boolean().optional(),
 });
 
 function generateWidgetApiKey(): string {
@@ -152,7 +153,7 @@ export async function updateWidgetConfig(req: AuthRequest, res: Response): Promi
             return canonical;
         }))];
 
-    const regenerateKey = Boolean(req.body.regenerateApiKey);
+    const regenerateKey = validated.regenerateApiKey === true;
 
     const row = await db.query(
         `INSERT INTO widget_configs (vendor_id, allowed_domains, allowed_origins, api_key, status)

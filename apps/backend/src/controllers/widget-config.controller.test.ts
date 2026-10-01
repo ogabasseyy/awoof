@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import type { Response } from 'express';
+import { ZodError } from 'zod';
 import { db } from '../config/database.js';
 import { BadRequestError } from '../common/errors/AppError.js';
 import type { AuthRequest } from '../middleware/auth.middleware.js';
@@ -106,4 +107,24 @@ test('updateWidgetConfig drops stored origins that cannot match enforcement', as
     const { res } = responseRecorder();
     await updateWidgetConfig(vendorReq({ allowedDomains: ['shop.example.com'] }), res);
     assert.deepEqual(seen[0]?.[2], ['https://shop.example.com:8443']);
+});
+
+test('updateWidgetConfig rejects a string regenerateApiKey without touching the stored key', async (t) => {
+    const seen: unknown[][] = [];
+    await queryDouble(t, seen);
+    const { res } = responseRecorder();
+    await assert.rejects(
+        updateWidgetConfig(vendorReq({ allowedDomains: ['shop.example.com'], regenerateApiKey: 'false' }), res),
+        ZodError,
+    );
+    assert.equal(seen.length, 0);
+});
+
+test('updateWidgetConfig rotates the key only for a boolean true regenerateApiKey', async (t) => {
+    const seen: unknown[][] = [];
+    await queryDouble(t, seen);
+    const { bodies, res } = responseRecorder();
+    await updateWidgetConfig(vendorReq({ allowedDomains: ['shop.example.com'], regenerateApiKey: true }), res);
+    assert.equal(seen[0]?.[4], true);
+    assert.equal((bodies[0] as { data: { apiKey: unknown } }).data.apiKey, 'awoof_widget_new');
 });

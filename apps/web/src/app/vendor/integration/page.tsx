@@ -497,6 +497,8 @@ export default function VendorIntegrationPage() {
                                 <p className="text-sm text-slate-600">
                                     Widget integration is not yet available. Installation instructions will appear here
                                     when student verification and discount redemption are ready for merchant use.
+                                    Pilot <code>Awoof.init</code>/<code>Awoof.verify</code> and server-side code-exchange
+                                    examples are in the <Link href="/developers" className="underline">developer guide</Link>.
                                 </p>
                                 <p className="mt-3 text-sm text-slate-600">
                                     The controlled synthetic pilot uses a popup. Merchant pages must preserve its opener connection; <code>Cross-Origin-Opener-Policy: same-origin</code> breaks that handoff. See the <Link href="/developers" className="underline">developer guide</Link> for tested policy pairings.
