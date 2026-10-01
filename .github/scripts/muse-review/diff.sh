@@ -41,9 +41,14 @@ echo "diff_failed=${diff_failed}" >> "${GITHUB_OUTPUT}"
 removed_file="${RUNNER_TEMP}/muse-removed.txt"
 removed_note=""
 if [[ "${diff_failed}" != "true" ]]; then
-  # Keep the diff --git and --- headers: whole-file deletions show +++
-  # /dev/null, so without them removed lines lose their original path.
-  awk '/^diff --git / {print} /^--- / {print} /^\+\+\+ / {print} /^-/ && !/^--- / {print}' \
+  # Keep the diff --git and ---/+++ headers: whole-file deletions show
+  # +++ /dev/null, so without them removed lines lose their original
+  # path. Hunk state first (mirrors ranges.pl): a removed "-- x" line
+  # renders as "--- x" and an added "++ y" as "+++ y" INSIDE the hunk,
+  # which an unconditional match would mistake for file headers and
+  # misattribute every later removal to — while genuinely dropping the
+  # removed "-- x" content. Headers only occur outside hunks.
+  awk '/^diff --git / {in_hunk=0; print; next} /^@@ / {in_hunk=1; next} !in_hunk && /^--- / {print; next} !in_hunk && /^\+\+\+ / {print; next} in_hunk && /^-/ {print}' \
     "${diff_file}" 2>/dev/null > "${removed_file}" || : > "${removed_file}"
   if (( $(wc -c < "${removed_file}") > 24576 )); then
     cap_file "${removed_file}" 24576
