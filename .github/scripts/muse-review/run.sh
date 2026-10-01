@@ -60,8 +60,18 @@ echo "review_file=${review_file}" >> "${GITHUB_OUTPUT}"
 if (( muse_rc != 0 )); then
   echo "::warning::muse exec exited ${muse_rc}; stderr tail follows"
   # Redact-then-truncate like review bodies: the raw tail could carry
-  # secrets a misbehaving model echoed to stderr.
-  redact "$(cat "${RUNNER_TEMP}/muse-stderr.log" 2>/dev/null || true)" | tail -c 4000
+  # secrets a misbehaving model echoed to stderr. JSON-aware pass first
+  # while the key is available: byte substitution misses a key hidden
+  # behind legal JSON escapes (\u003d, \/), which would otherwise be
+  # reconstructible from the Actions log. Falls back to the byte pass
+  # when stderr is not valid JSON.
+  stderr_clean="$(mktemp)"
+  if redact_json_key < "${RUNNER_TEMP}/muse-stderr.log" > "${stderr_clean}" 2>/dev/null; then
+    redact "$(cat "${stderr_clean}" 2>/dev/null || true)" | tail -c 4000
+  else
+    redact "$(cat "${RUNNER_TEMP}/muse-stderr.log" 2>/dev/null || true)" | tail -c 4000
+  fi
+  rm -f "${stderr_clean}"
   exit "${muse_rc}"
 fi
 

@@ -245,9 +245,14 @@ jobs:
 
       - name: Verify head fresh
         id: guard
+        # steps.diff.outcome: a failed/timed-out Collect phase can leave
+        # should_review=true behind (collect.sh writes it before the later
+        # phases run) while Post discards any run result for the fallback —
+        # without the outcome gate the billed run still happens.
         if: >-
           steps.prereq.outputs.should_run == 'true' &&
           steps.scriptdir.outputs.scripts_ok == 'true' &&
+          steps.diff.outcome == 'success' &&
           steps.diff.outputs.should_review == 'true' &&
           steps.diff.outputs.diff_failed != 'true' &&
           steps.diff.outputs.duplicate != 'true'
@@ -275,6 +280,7 @@ jobs:
         if: >-
           steps.prereq.outputs.should_run == 'true' &&
           steps.scriptdir.outputs.scripts_ok == 'true' &&
+          steps.diff.outcome == 'success' &&
           steps.diff.outputs.should_review == 'true' &&
           steps.diff.outputs.diff_failed != 'true' &&
           steps.diff.outputs.duplicate != 'true' &&
@@ -297,6 +303,7 @@ jobs:
         if: >-
           steps.prereq.outputs.should_run == 'true' &&
           steps.scriptdir.outputs.scripts_ok == 'true' &&
+          steps.diff.outcome == 'success' &&
           steps.diff.outputs.should_review == 'true' &&
           steps.diff.outputs.diff_failed != 'true' &&
           steps.diff.outputs.duplicate != 'true' &&
