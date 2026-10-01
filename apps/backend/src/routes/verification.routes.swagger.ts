@@ -471,6 +471,7 @@
  *         application/json:
  *           schema:
  *             type: object
+ *             additionalProperties: false
  *             required:
  *               - vendorId
  *               - origin
@@ -484,16 +485,23 @@
  *                 description: Merchant receiving the disclosure
  *               origin:
  *                 type: string
+ *                 minLength: 1
+ *                 maxLength: 2048
  *                 description: Merchant origin the consent is bound to
  *               purpose:
  *                 type: string
+ *                 minLength: 1
+ *                 maxLength: 1024
  *                 description: Consent wording the student approved
  *               accepted:
  *                 type: boolean
+ *                 enum: [true]
  *                 description: Must be true to record consent
  *                 example: true
  *               noticeVersion:
  *                 type: string
+ *                 minLength: 1
+ *                 maxLength: 100
  *                 description: Disclosure notice version the student saw
  *               expectedUserId:
  *                 type: string
@@ -508,9 +516,14 @@
  *               allOf:
  *                 - $ref: '#/components/schemas/SuccessResponse'
  *                 - type: object
+ *                   required:
+ *                     - success
+ *                     - data
  *                   properties:
  *                     data:
  *                       type: object
+ *                       required:
+ *                         - grantId
  *                       properties:
  *                         grantId:
  *                           type: string
@@ -522,4 +535,10 @@
  *         $ref: '#/components/responses/Unauthorized'
  *       403:
  *         description: Account changed during consent; restart the verification flow
+ *       404:
+ *         description: Live merchant widget origin not configured
+ *       422:
+ *         description: Invalid request shape; field validation failure
+ *       503:
+ *         $ref: '#/components/responses/SessionValidationUnavailable'
  */

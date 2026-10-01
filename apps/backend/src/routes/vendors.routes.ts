@@ -377,7 +377,7 @@ router.get(
  *           application/json:
  *             schema: { $ref: '#/components/schemas/Error' }
  *       '422':
- *         description: Invalid JSON body
+ *         description: Invalid request shape; field validation failure
  *         content:
  *           application/json:
  *             schema: { $ref: '#/components/schemas/Error' }

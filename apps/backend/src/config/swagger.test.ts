@@ -58,18 +58,32 @@ test('pilot contracts document retryable session-validation outages and receipt 
 });
 
 test('disclosures contract documents the session fence and account-switch outcome', () => {
-    type JsonSchema = { $ref?: string; type?: string; format?: string; required?: string[]; properties?: Record<string, JsonSchema> };
+    type JsonSchema = {
+        $ref?: string; type?: string; format?: string; enum?: unknown[]; minLength?: number; maxLength?: number;
+        additionalProperties?: boolean; required?: string[]; properties?: Record<string, JsonSchema>; allOf?: JsonSchema[];
+    };
     type PostEndpoint = {
         requestBody?: { content: Record<string, { schema: JsonSchema }> };
-        responses: Record<string, JsonSchema & { description?: string; $ref?: string }>;
+        responses: Record<string, { description?: string; $ref?: string; content?: Record<string, { schema: JsonSchema }> }>;
     };
     const doc = swaggerSpec as { paths: Record<string, { post?: PostEndpoint }> };
     const disclosures = doc.paths['/api/verification/disclosures']?.post;
     assert.ok(disclosures, 'POST /api/verification/disclosures must publish');
     const request = disclosures.requestBody?.content['application/json']?.schema;
     assert.deepEqual(request?.required, ['vendorId', 'origin', 'purpose', 'accepted', 'noticeVersion']);
+    assert.equal(request?.additionalProperties, false);
     assert.equal(request?.properties?.expectedUserId?.format, 'uuid');
+    assert.deepEqual(request?.properties?.accepted?.enum, [true]);
+    assert.equal(request?.properties?.origin?.maxLength, 2048);
+    assert.equal(request?.properties?.purpose?.maxLength, 1024);
+    assert.equal(request?.properties?.noticeVersion?.maxLength, 100);
+    const created = disclosures.responses['201']?.content?.['application/json']?.schema.allOf?.[1];
+    assert.deepEqual(created?.required, ['success', 'data']);
+    assert.deepEqual(created?.properties?.data?.required, ['grantId']);
     assert.match(String(disclosures.responses['403']?.description ?? ''), /account changed/i);
+    assert.match(String(disclosures.responses['404']?.description ?? ''), /origin not configured/i);
+    assert.match(String(disclosures.responses['422']?.description ?? ''), /request shape/i);
+    assert.equal(disclosures.responses['503']?.$ref, '#/components/responses/SessionValidationUnavailable');
 });
 
 test('publishes the vendor widget-config contract with exact origins', () => {
@@ -347,6 +361,7 @@ test('student-authenticated operations document the session-validation outage', 
         ['/api/students/savings', 'get'],
         ['/api/verification/registration', 'post'],
         ['/api/verification/status', 'get'],
+        ['/api/verification/disclosures', 'post'],
         ['/api/merchant-verification/assertions', 'post'],
         ['/api/merchant-verification/claim-sessions/{id}', 'get'],
         ['/api/merchant-verification/product-claims', 'post'],

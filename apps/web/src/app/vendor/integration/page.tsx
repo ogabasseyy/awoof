@@ -20,6 +20,7 @@ import apiClient from '@/lib/api-client';
 import toast from 'react-hot-toast';
 import { useConfirm } from '@/components/ui/ConfirmDialog';
 import { getApiErrorMessage } from '@/lib/api-error';
+import { resolveDisclosureOrigins } from '@/lib/widget-origins';
 
 const iconProps = { className: 'h-5 w-5', strokeWidth: 1.5, fill: 'currentColor' as const };
 
@@ -415,7 +416,7 @@ export default function VendorIntegrationPage() {
                                                 <Button variant="outline" disabled={savingWidgetConfig} onClick={async () => {
                                                     setSavingWidgetConfig(true);
                                                     try {
-                                                        await apiClient.put('/vendors/widget-config', { allowedDomains: widgetConfig.allowedDomains });
+                                                        await apiClient.put('/vendors/widget-config', { allowedDomains: widgetConfig.allowedDomains, allowedOrigins: resolveDisclosureOrigins(widgetConfig.allowedDomains, widgetConfig.allowedOrigins) });
                                                         await fetchWidgetConfig();
                                                         toast.success('HTTPS disclosure origins saved');
                                                     } catch (error) { toast.error(getApiErrorMessage(error, 'Unable to save disclosure origins')); }
@@ -436,7 +437,7 @@ export default function VendorIntegrationPage() {
                                                                 if (next.length === 0) return;
                                                                 setSavingWidgetConfig(true);
                                                                 try {
-                                                                    await apiClient.put('/vendors/widget-config', { allowedDomains: next });
+                                                                    await apiClient.put('/vendors/widget-config', { allowedDomains: next, allowedOrigins: resolveDisclosureOrigins(next, widgetConfig.allowedOrigins) });
                                                                     await fetchWidgetConfig();
                                                                 } finally {
                                                                     setSavingWidgetConfig(false);
@@ -472,7 +473,8 @@ export default function VendorIntegrationPage() {
                                                         }
                                                         setSavingWidgetConfig(true);
                                                         try {
-                                                            await apiClient.put('/vendors/widget-config', { allowedDomains: [...current, domain] });
+                                                            const next = [...current, domain];
+                                                            await apiClient.put('/vendors/widget-config', { allowedDomains: next, allowedOrigins: resolveDisclosureOrigins(next, widgetConfig.allowedOrigins) });
                                                             setNewDomain('');
                                                             await fetchWidgetConfig();
                                                         } finally {
