@@ -141,8 +141,19 @@ for candidate in "${MUSE_CANDIDATES[@]+"${MUSE_CANDIDATES[@]}"}"; do
   # Explicit base SHA, never bare FETCH_HEAD: later deepens append the head
   # to FETCH_HEAD, so the bare ref could resolve to the wrong commit.
   if [[ "${trust_base_flag}" == "true" ]] \
-    && git show "${MUSE_BASE_SHA_FULL}:${candidate}" >/dev/null 2>&1; then
+    && base_probe="$(git show "${MUSE_BASE_SHA_FULL}:${candidate}" 2>/dev/null)"; then
     base_list+=("${candidate}")
+    # Head modified this guidance file: emit the differing head copy as
+    # UNTRUSTED too, so new or strengthened rules apply to this review.
+    # The trusted base copy above still governs, so submitters can add
+    # guidance but never silently erase or weaken established rules.
+    # Identical content and head deletions stay base-only (the head
+    # emission would duplicate, and deleted-file base rules governed
+    # the change under review).
+    if head_readable "${candidate}" \
+      && [[ "$(cat -- "${candidate}")" != "${base_probe}" ]]; then
+      head_list+=("${candidate}")
+    fi
   else
     # Custom base with available content: emit its version as UNTRUSTED
     # too, so base-side rules that the PR deleted or changed are still
