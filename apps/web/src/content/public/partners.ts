@@ -44,7 +44,7 @@ export const developerPilotSteps = [
   },
   {
     title: 'Exchange the code on your server',
-    body: 'Send the code to your own authenticated checkout endpoint in a JSON body. Your server binds it to its checkout session and expected campaign, then exchanges it with the private key. Awoof returns an eligibility receipt; your server owns any pricing or payment decision.',
+    body: 'Send the code to your own authenticated checkout endpoint in a JSON body. Your server binds it to its checkout session and expected campaign and purpose, then exchanges it with the private key. Awoof returns an eligibility receipt; compare its purpose with your server-held intent before honoring it — the browser handoff is student-editable. Your server owns any pricing or payment decision.',
   },
 ];
 
@@ -89,13 +89,15 @@ export const developerPilotReceiptFields = [
   { name: 'assuranceMethod, institutionId', meaning: 'Which check passed and its institution identifier; not student contact details.' },
   { name: 'verifiedAt, validUntil', meaning: 'Evidence time and expiry. Check validity before using a result.' },
   { name: 'campaignId', meaning: 'The campaign bound to the code; match your server-held campaign.' },
+  { name: 'purpose', meaning: 'Consent wording recorded at issuance. Compare with your server-held intent before honoring the receipt.' },
 ];
 
 export const developerPilotErrors = [
-  { status: '400', meaning: 'Invalid input, code or campaign mismatch. Correct the request; do not grant a benefit.' },
+  { status: '400', meaning: 'Code invalid, campaign mismatch, or failed claim-session binding. Correct the request; do not grant a benefit.' },
   { status: '401', meaning: 'Private key invalid or merchant inactive. Check server configuration.' },
   { status: '403', meaning: 'Current eligibility or disclosure is unavailable. Do not grant a benefit; resolve the issue before restarting the check.' },
   { status: '409', meaning: 'Code expired, already consumed, or idempotency binding conflicted. Start a new check unless retrying the exact committed request.' },
+  { status: '422', meaning: 'Malformed JSON body or field shape. Fix the request shape; do not grant a benefit.' },
   { status: '429', meaning: 'Merchant key quota exhausted or unavailable. Wait and retry according to your server policy; do not grant a benefit.' },
 ];
 
@@ -154,6 +156,7 @@ export const developerExamples = [
       '    "verifiedAt": "2026-09-21T00:00:00Z",',
       '    "validUntil": "2026-09-28T00:00:00Z",',
       '    "campaignId": "autumn-2026",',
+      '    "purpose": "10% student discount",',
       '    "benefitAuthorizationId": "40000000-0000-4000-8000-000000000001"',
       '  }',
       '}',
@@ -222,5 +225,5 @@ export const developerSeparations = [
   'Server keys are not browser keys. Keys live on your backend; nothing secret goes in pages, apps, or URLs.',
   'Receipt history is not new authorization. Replays return the committed receipt; only a fresh approved check creates a new one.',
   'Claim links are not redemptions. A shared handoff URL redeems nothing without your nonce-bound checkout session and a server-side exchange.',
-  'Errors are explicit: 400 invalid input, 401 invalid key or inactive merchant, 403 check no longer current, 409 expired, conflicting, or unintegrated claim, 429 quota exhausted.',
+  'Errors are explicit: 400 invalid code or campaign, 401 invalid key or inactive merchant, 403 check no longer current, 409 expired, conflicting, or unintegrated claim, 422 malformed request body, 429 quota exhausted.',
 ];

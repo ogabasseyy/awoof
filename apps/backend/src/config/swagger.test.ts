@@ -48,6 +48,10 @@ test('pilot contracts document retryable session-validation outages and receipt 
     const receipt = doc.components.schemas.MerchantVerificationReceipt;
     assert.ok(receipt?.required?.includes('purpose'), 'receipt must require purpose');
     assert.equal(receipt?.properties?.purpose?.type, 'string');
+    const exchange = doc.paths['/api/merchant-verification/exchange']?.post;
+    assert.ok(exchange?.responses['422'], 'exchange must document 422 for malformed bodies');
+    assert.match(String((exchange?.responses['400'] as { description?: string })?.description ?? ''), /campaign/i);
+    assert.doesNotMatch(String((exchange?.responses['400'] as { description?: string })?.description ?? ''), /invalid input/i);
 });
 
 test('publishes the vendor widget-config contract with exact origins', () => {

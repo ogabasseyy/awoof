@@ -163,10 +163,11 @@ import {
  *               properties:
  *                 success: { type: boolean, enum: [true] }
  *                 data: { $ref: '#/components/schemas/MerchantVerificationReceipt' }
- *       '400': { description: Invalid input, code or campaign mismatch }
+ *       '400': { description: Invalid code or campaign mismatch; failed claim-session binding }
  *       '401': { description: Private merchant key invalid or merchant inactive }
  *       '403': { description: Eligibility or disclosure no longer current }
  *       '409': { description: Code expired, consumed by another operation or conflicting idempotency key }
+ *       '422': { description: Invalid JSON body }
  *       '429': { description: Merchant key hourly quota exhausted or key unavailable }
  * /api/merchant-verification/claim-sessions:
  *   post:
@@ -278,7 +279,7 @@ export type ExchangeAssertion = (merchantKey: string, input: {
 }) => Promise<{
     receiptId: string; merchantSubject: string; eligible: true; assuranceMethod: string;
     institutionId: string; verifiedAt: string; validUntil: string; campaignId: string;
-    benefitAuthorizationId?: string;
+    purpose: string; benefitAuthorizationId?: string;
 }>;
 export type CreateClaimSession = (merchantKey: string, input: ClaimSessionInput) => Promise<ClaimSessionResult>;
 export type ReadClaimSession = (sessionId: string) => Promise<ClaimSessionPublic>;
