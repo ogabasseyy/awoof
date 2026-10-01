@@ -121,6 +121,7 @@ jobs:
       # Reviewed: head is review DATA only, never executed; helpers come
       # from the default-branch checkout, the agent runs the pinned binary.
       - name: Checkout repository # nosemgrep: yaml.github-actions.security.pull-request-target-code-checkout.pull-request-target-code-checkout
+        id: checkout
         if: steps.prereq.outputs.should_run == 'true'
         # Advisory: a transient checkout failure must degrade to the fallback
         # post, not fail the job. Bounded so a hung fetch cannot eat the
@@ -198,9 +199,16 @@ jobs:
 
       - name: Collect PR diff and build prompt
         id: diff
+        # checkout.outcome: a failed head checkout must route to the
+        # fallback post, not the normal review path — collection can
+        # otherwise succeed through the compare API and publish an
+        # incomplete review as successful. (Skipped diff still reaches
+        # Post: its outcome differs from 'success' and post.sh defaults
+        # missing outputs to the failure branch.)
         if: >-
           steps.prereq.outputs.should_run == 'true' &&
-          steps.scriptdir.outputs.scripts_ok == 'true'
+          steps.scriptdir.outputs.scripts_ok == 'true' &&
+          steps.checkout.outcome == 'success'
         # Advisory: a failed collection (or timeout) posts a fallback note
         # instead of failing the job (Post handles DIFF_OUTCOME).
         continue-on-error: true
