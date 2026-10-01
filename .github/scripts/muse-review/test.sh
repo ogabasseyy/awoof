@@ -113,6 +113,39 @@ if [[ -L "${sweepdir}/.git/keeper" && -f "${sweepdir}/real.txt" ]]; then got_kep
 assert_eq "sweep-prunes" "yes" "${got_kept}"
 rm -rf "${sweepdir}"
 
+# --- changed_symlinks ---
+symdir="$(mktemp -d)"
+mkdir -p "${symdir}/ws/sub"
+printf 'x' > "${symdir}/ws/real.txt"
+ln -s /etc "${symdir}/ws/leak.txt"
+ln -s ../real.txt "${symdir}/ws/sub/rel"
+ln -s /etc/hostname "${symdir}/ws/untracked-link"
+ln -s "${symdir}/ws/real.txt" "${symdir}/escape"
+printf '[{"filename":"leak.txt"},{"filename":"sub/rel"},{"filename":"real.txt"},{"filename":"missing.txt"}]' > "${symdir}/files.json"
+got="$(changed_symlinks "${symdir}/files.json" "${symdir}/ws" 50)"
+assert_eq "symlinks-targets" "$(printf 'leak.txt -> /etc\nsub/rel -> ../real.txt')" "${got}"
+got="$(changed_symlinks "${symdir}/files.json" "${symdir}/ws" 1 2>/dev/null)"; got_rc=$?
+assert_eq "symlinks-overcap-first" "leak.txt -> /etc" "${got}"
+assert_eq "symlinks-overcap-rc" "2" "${got_rc}"
+if changed_symlinks "/nonexistent-muse-test-$$" "${symdir}/ws" >/dev/null 2>&1; then got_rc=0; else got_rc=$?; fi
+assert_eq "symlinks-missing-rc" "1" "${got_rc}"
+printf 'not json' > "${symdir}/bad.json"
+if changed_symlinks "${symdir}/bad.json" "${symdir}/ws" >/dev/null 2>&1; then got_rc=0; else got_rc=$?; fi
+assert_eq "symlinks-corrupt-rc" "1" "${got_rc}"
+printf '[{"filename":"../escape"},{"filename":"/etc/hostname"}]' > "${symdir}/evil.json"
+got="$(changed_symlinks "${symdir}/evil.json" "${symdir}/ws" 50)"
+assert_eq "symlinks-skips-escape" "" "${got}"
+ln -s "$(printf 'a\nb')" "${symdir}/ws/nl.txt"
+printf '[{"filename":"nl.txt"}]' > "${symdir}/nlf.json"
+got="$(changed_symlinks "${symdir}/nlf.json" "${symdir}/ws" 50)"
+assert_eq "symlinks-flattens-newline" 'nl.txt -> a\nb' "${got}"
+longt="$(python3 -c "print('t'*600)")"
+ln -s "${longt}" "${symdir}/ws/long.txt"
+printf '[{"filename":"long.txt"}]' > "${symdir}/longf.json"
+got="$(changed_symlinks "${symdir}/longf.json" "${symdir}/ws" 50)"
+assert_eq "symlinks-target-cap" "512" "$(printf '%s' "${got}" | wc -c | tr -d ' ')"
+rm -rf "${symdir}"
+
 # --- redact ---
 pem='-----BEGIN TEST PRIVATE KEY-----FAKEFAKEFAKE-----END TEST PRIVATE KEY-----'
 assert_eq "redact-pem" "[REDACTED-PRIVATE-KEY]" "$(redact "a ${pem} b" | sed 's/^a //; s/ b$//')"
