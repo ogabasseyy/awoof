@@ -13,7 +13,7 @@ import Link from 'next/link';
 import { useSearchParams } from 'next/navigation';
 import axios from 'axios';
 import { AuthShell } from '@/components/auth/AuthShell';
-import { MicrosoftCallbackShell } from '@/components/auth/MicrosoftCallbackShell';
+import { UniversityCallbackShell } from '@/components/auth/UniversityCallbackShell';
 import { Button } from '@/components/ui/button';
 import { useAuth } from '@/contexts/AuthContext';
 import { publicApiClient, studentSsoApiClient, studentSsoSessionApiClient } from '@/lib/api-client';
@@ -617,20 +617,19 @@ function StudentSsoCompleteInner() {
 
     if (view.kind === 'waiting') {
         return (
-            <MicrosoftCallbackShell provider="school" label="School sign-in" status="loading" title="Sign-in still completing" subtitle="Another sign-in is finishing.">
+            <UniversityCallbackShell label="University account" status="loading" title="Sign-in still completing" subtitle="Another sign-in is finishing.">
                 <p role="status">This sign-in arrived twice and the first is still completing. Wait a moment, then check again — nothing failed yet.</p>
                 <Button className="mt-5 min-h-11 w-full rounded-full" onClick={() => { waitingAutoTries.current = 0; setView({ kind: 'checking' }); void runLoginFinish(); }}>
                     Check again
                 </Button>
-            </MicrosoftCallbackShell>
+            </UniversityCallbackShell>
         );
     }
 
     if (view.kind === 'link_required') {
         return (
-            <MicrosoftCallbackShell
-                provider={view.provider}
-                label="School sign-in"
+            <UniversityCallbackShell
+                label="University account"
                 title="Link your school account"
                 subtitle="This school sign-in is not linked to an Awoof account yet."
             >
@@ -649,26 +648,26 @@ function StudentSsoCompleteInner() {
                         <Link href="/auth/student/sso/onboarding?mode=signup">Create a passwordless account</Link>
                     </Button> : null}
                 </div>
-            </MicrosoftCallbackShell>
+            </UniversityCallbackShell>
         );
     }
 
     if (view.kind === 'already_signed_in') {
         return (
-            <MicrosoftCallbackShell provider="school" label="School sign-in" title="Already signed in" subtitle="This device already has a signed-in account.">
+            <UniversityCallbackShell label="University account" title="Already signed in" subtitle="This device already has a signed-in account.">
                 <p role="status" className="text-left text-sm text-slate-600">
                     The school sign-in was discarded and nothing was replaced.
                 </p>
                 <Button type="button" className="mt-5 w-full rounded-full h-11 font-semibold" asChild>
                     <Link href={view.continuePath}>Continue</Link>
                 </Button>
-            </MicrosoftCallbackShell>
+            </UniversityCallbackShell>
         );
     }
 
     if (view.kind === 'discarded') {
         return (
-            <MicrosoftCallbackShell provider="school" label="School sign-in" title="Sign-in discarded" subtitle="Another account signed in on this tab.">
+            <UniversityCallbackShell label="University account" title="Sign-in discarded" subtitle="Another account signed in on this tab.">
                 <p role="status" className="text-left text-sm text-slate-600">
                     Your school sign-in finished after another account signed in here, so it was discarded and nothing
                     was replaced.
@@ -676,25 +675,25 @@ function StudentSsoCompleteInner() {
                 <Button type="button" className="mt-5 w-full rounded-full h-11 font-semibold" asChild>
                     <Link href="/marketplace">Continue to marketplace</Link>
                 </Button>
-            </MicrosoftCallbackShell>
+            </UniversityCallbackShell>
         );
     }
 
     return (
-        <MicrosoftCallbackShell provider="school" label="School sign-in" status="loading" title="Completing school sign-in">
+        <UniversityCallbackShell label="University account" status="loading" title="Completing school sign-in">
             <p role="status" className="text-left text-sm text-slate-600">
                 Finishing your school sign-in. You will continue automatically when it is ready.
             </p>
-        </MicrosoftCallbackShell>
+        </UniversityCallbackShell>
     );
 }
 
 export default function StudentSsoCompletePage() {
     return (
         <Suspense fallback={
-            <MicrosoftCallbackShell provider="school" label="School sign-in" title="Completing school sign-in" status="loading">
+            <UniversityCallbackShell label="University account" title="Completing school sign-in" status="loading">
                 <p role="status">Preparing to finish your school sign-in…</p>
-            </MicrosoftCallbackShell>
+            </UniversityCallbackShell>
         }>
             <StudentSsoCompleteInner />
         </Suspense>

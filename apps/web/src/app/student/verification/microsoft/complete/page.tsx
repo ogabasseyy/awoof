@@ -3,7 +3,7 @@
 import { useEffect, useRef, useState, useSyncExternalStore } from 'react';
 import axios from 'axios';
 import Link from 'next/link';
-import { MicrosoftCallbackShell } from '@/components/auth/MicrosoftCallbackShell';
+import { UniversityCallbackShell } from '@/components/auth/UniversityCallbackShell';
 import ProtectedRoute from '@/components/ProtectedRoute';
 import { microsoftVerificationApiClient, default as apiClient } from '@/lib/api-client';
 import { getSessionSnapshot, isCurrentSession, subscribeSessionChanges } from '@/lib/auth';
@@ -49,14 +49,14 @@ function Complete() {
             if (attempt && session.browserSessionId && attempt.browserSessionId !== session.browserSessionId && isCurrentSession(session)) {
                 clearMicrosoftAttempt(window.sessionStorage);
             }
-            setFinishError('This Microsoft connection cannot be completed in the current Awoof session. Start again from student verification.'); setLoading(false); return;
+            setFinishError('This university connection cannot be completed in the current Awoof session. Start again from student verification.'); setLoading(false); return;
         }
         if (parameters.get('outcome') === 'connection_not_completed') {
             // The server emits this only after the callback has bound state and
             // its Secure cookie. The query itself is never authorization; the
             // tab record and durable browser-session fence must still match.
             clearMicrosoftAttempt(window.sessionStorage);
-            setFinishError('The Microsoft connection was not completed. You can still verify using your school email.');
+            setFinishError('The university connection was not completed. You can still verify using your school email.');
             setLoading(false); return;
         }
         try {
@@ -74,10 +74,10 @@ function Complete() {
             const terminal = axios.isAxiosError(cause) && typeof cause.response?.status === 'number' && isTerminalFinishStatus(cause.response.status);
             if (terminal) {
                 try { clearMicrosoftAttempt(window.sessionStorage); } catch { /* Restart is the safe path. */ }
-                setFinishError('This Microsoft connection can no longer be completed. Start again from student verification.');
+                setFinishError('This university connection can no longer be completed. Start again from student verification.');
             } else {
                 setCanRetryFinish(true);
-                setFinishError('We could not complete the Microsoft connection yet. You can retry while this tab and Awoof session remain active.');
+                setFinishError('We could not complete the university connection yet. You can retry while this tab and Awoof session remain active.');
             }
         } finally { if (isCurrentSession(session)) setLoading(false); }
     };
@@ -88,8 +88,8 @@ function Complete() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
     }, []);
     return (
-        <MicrosoftCallbackShell
-            label="Microsoft connection"
+        <UniversityCallbackShell
+            label="University connection"
             title={loading ? 'Completing your connection…' : result ? 'University account connected' : 'Connection needs attention'}
             status={loading ? 'loading' : result ? 'connected' : 'attention'}
         >
@@ -98,7 +98,7 @@ function Complete() {
             ) : result ? (
                 <>
                     <p role="status">
-                        Your Microsoft account is linked. {result.enrollment === 'eligible' ? 'Current enrollment was confirmed.' : result.enrollment === 'denied' ? 'Current enrollment was not confirmed.' : result.enrollment === 'unconfirmed' ? 'Current enrollment is still unconfirmed.' : 'This connection did not check current enrollment.'}
+                        Your university account is linked. {result.enrollment === 'eligible' ? 'Current enrollment was confirmed.' : result.enrollment === 'denied' ? 'Current enrollment was not confirmed.' : result.enrollment === 'unconfirmed' ? 'Current enrollment is still unconfirmed.' : 'This connection did not check current enrollment.'}
                     </p>
                     {eligibility ? (
                         <p className="mt-5 rounded-2xl border border-slate-100 bg-slate-50 p-4 text-slate-700">
@@ -131,7 +131,7 @@ function Complete() {
                         <Link className="inline-flex min-h-12 items-center justify-center rounded-full border border-blue-200 px-4 font-semibold text-[#1D4ED8] hover:bg-blue-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-600 focus-visible:ring-offset-4" href="/student/verification">
                             Start again
                         </Link>
-                        {finishError === 'The Microsoft connection was not completed. You can still verify using your school email.' && (
+                        {finishError === 'The university connection was not completed. You can still verify using your school email.' && (
                             <Link className="inline-flex min-h-12 items-center justify-center rounded-full px-4 text-center font-semibold text-[#1D4ED8] underline underline-offset-4 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-600 focus-visible:ring-offset-4" href="/student/verification">
                                 Use school email verification
                             </Link>
@@ -139,7 +139,7 @@ function Complete() {
                     </div>
                 </>
             )}
-        </MicrosoftCallbackShell>
+        </UniversityCallbackShell>
     );
 }
 

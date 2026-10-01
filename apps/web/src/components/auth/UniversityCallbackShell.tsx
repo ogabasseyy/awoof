@@ -3,9 +3,8 @@ import Link from 'next/link';
 import { ArrowRight, Check, CircleAlert, GraduationCap, LoaderCircle } from 'lucide-react';
 import Logo from '@/app/components/logo';
 
-type MicrosoftCallbackShellProps = {
+type UniversityCallbackShellProps = {
     label: string;
-    provider?: 'microsoft' | 'google' | 'school';
     title: string;
     subtitle?: string;
     status?: 'loading' | 'connected' | 'attention' | 'neutral';
@@ -13,14 +12,13 @@ type MicrosoftCallbackShellProps = {
 };
 
 /** Presentation only: outcomes and navigation stay owned by the callback. */
-export function MicrosoftCallbackShell({
+export function UniversityCallbackShell({
     label,
-    provider = 'microsoft',
     title,
     subtitle,
     status = 'neutral',
     children,
-}: MicrosoftCallbackShellProps) {
+}: UniversityCallbackShellProps) {
     return (
         <main className="flex min-h-screen flex-col bg-[#F4F7FD] px-5 py-8 text-slate-900 sm:px-8 sm:py-12">
             <header className="mx-auto w-full max-w-lg">
@@ -35,18 +33,9 @@ export function MicrosoftCallbackShell({
                         <div aria-hidden="true" className="pointer-events-none absolute -right-16 -top-20 h-60 w-60 rounded-full border-[32px] border-white/10" />
                         <p className="relative text-xs font-bold uppercase tracking-[0.16em] text-blue-100">Back to Awoof</p>
                         <div aria-hidden="true" className="relative mt-6 flex items-center gap-4">
-                            {provider === 'microsoft' ? (
-                                <div className="grid h-14 w-14 grid-cols-2 gap-1 rounded-2xl bg-white p-3 shadow-sm">
-                                    <span className="bg-[#F25022]" />
-                                    <span className="bg-[#7FBA00]" />
-                                    <span className="bg-[#00A4EF]" />
-                                    <span className="bg-[#FFB900]" />
-                                </div>
-                            ) : (
-                                <div className="flex h-14 w-14 items-center justify-center rounded-2xl bg-white text-[#1D4ED8] shadow-sm">
-                                    <GraduationCap className="h-7 w-7" />
-                                </div>
-                            )}
+                            <div className="flex h-14 w-14 items-center justify-center rounded-2xl bg-white text-[#1D4ED8] shadow-sm">
+                                <GraduationCap className="h-7 w-7" />
+                            </div>
                             <div className="flex flex-1 items-center gap-2 text-blue-200">
                                 <span className="h-px flex-1 bg-white/30" />
                                 <ArrowRight className="h-5 w-5" />
@@ -56,7 +45,7 @@ export function MicrosoftCallbackShell({
                                 <Logo color="white" width={85} height={24} />
                             </div>
                         </div>
-                        <p className="relative mt-5 text-sm font-medium text-blue-50">{provider === 'microsoft' ? 'Microsoft' : provider === 'google' ? 'Google' : 'School account'} · Awoof</p>
+                        <p className="relative mt-5 text-sm font-medium text-blue-50">University account · Awoof</p>
                     </div>
 
                     <div className="px-7 py-8 sm:px-9 sm:py-9">
