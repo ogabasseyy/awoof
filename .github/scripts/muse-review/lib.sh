@@ -196,6 +196,27 @@ redact_json_key() {
   jq --arg k "${_key}" 'walk(if type == "string" then (. | split($k) | join("[REDACTED]")) else . end)'
 }
 
+# Decode JSON escape sequences in possibly-mixed text (stdin to stdout).
+# redact_json_key needs the WHOLE input to be one valid JSON value, so prose
+# around a JSON fragment (e.g. `error: {"key":"live\/key\u003dabc"}`) fails
+# the parse and byte redaction then misses the reversible escaped key. Run
+# this before redact() on the non-JSON path so escaped bytes match too. The
+# lookbehind keeps an escaped backslash (`\\u003d`) intact instead of
+# decoding what JSON itself would leave literal. Aggressive by design: any
+# over-decoding only over-redacts, never leaks.
+decode_json_escapes() {
+  perl -pe 's/(?<!\\)\\u([0-9a-fA-F]{4})/chr(hex($1))/ge; s/(?<!\\)\\\//\//g'
+}
+
+# Changed-path manifest lines from a PR-files JSON array: one escaped path
+# per line. Backslashes escape FIRST, then newlines — escaping newlines
+# alone maps `a<LF>b` and a literal `a\nb` to the same bytes, so the
+# shell-disabled reviewer could miss a file it cannot re-derive. Mirrors
+# jq @tsv (which the changed-files summary already relies on).
+manifest_paths() {
+  jq -r '.[].filename | gsub("\\\\"; "\\\\") | gsub("\n"; "\\n")' "$1" 2>/dev/null
+}
+
 # Guidance trust: a PR base branch is contributor-controlled unless it is the
 # repo default branch, so only default-branch base content earns "trusted"
 # status; stacked-PR and custom bases stay isolated as UNTRUSTED. Prints

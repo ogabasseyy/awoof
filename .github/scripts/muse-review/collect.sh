@@ -50,8 +50,20 @@ fi
 # branch ref, which could advance mid-run). Works anonymously on public
 # repos; on failure the compare API backs the file list and head guidance
 # is labeled UNTRUSTED.
+#
+# One-shot auth retry: persist-credentials:false leaves the checkout
+# credentialless, so the anonymous fetch always fails on private repos and
+# base guidance would silently drop out (a PR deleting AGENTS.md could then
+# erase every rule while the review still posts success). The retry sends
+# the step's read-scoped token via a per-command -c header — never stored,
+# never persisted, stderr swallowed so it cannot leak into logs.
+auth_fetch() {
+  if git fetch "$@" >/dev/null 2>&1; then return 0; fi
+  [[ -n "${GH_TOKEN:-}" ]] || return 1
+  git -c "http.extraHeader=Authorization: Bearer ${GH_TOKEN}" fetch "$@" >/dev/null 2>&1
+}
 base_available=false
-if git fetch --depth 1 origin "${base_sha_full}" >/dev/null 2>&1; then
+if auth_fetch --depth 1 origin "${base_sha_full}"; then
   base_available=true
 fi
 # Merge-base discovery: two-dot diff would include base-only changes made
@@ -67,7 +79,7 @@ if [[ "${base_available}" == "true" ]]; then
       local_diff=true
       break
     fi
-    git fetch --deepen 100 origin "${base_sha_full}" "${head_sha}" >/dev/null 2>&1 || break
+    auth_fetch --deepen 100 origin "${base_sha_full}" "${head_sha}" || break
   done
   if [[ "${local_diff}" != "true" ]]; then
     echo "::warning::merge-base not found; file list falls back to the paginated PR-files API."
@@ -101,7 +113,7 @@ files_file="${RUNNER_TEMP}/muse-files.json"
 # Complete path list from local git (no 300-file cap), diffed from the merge
 # base so base-only changes are excluded — the same three-dot semantics as
 # the reviewed API diff. The compare API is the fallback when local history
-# is unavailable (e.g. private repos, where anonymous fetch has no creds).
+# is unavailable (e.g. fetch failures after the authenticated retry).
 files_source="local"
 if [[ "${local_diff}" == "true" ]]; then
   ns_file="${RUNNER_TEMP}/muse-namestat.txt"
@@ -210,7 +222,7 @@ printf '%s\n' "${files_summary}" > "${RUNNER_TEMP}/muse-summary.txt"
 # without this, files past the cap and outside the truncated diff are
 # undiscoverable.
 manifest_file="${RUNNER_TEMP}/muse-manifest.txt"
-jq -r '.[].filename | gsub("\n"; "\\n")' "${files_file}" > "${manifest_file}" 2>/dev/null \
+manifest_paths "${files_file}" > "${manifest_file}" 2>/dev/null \
   || : > "${manifest_file}"
 manifest_note=""
 if (( $(wc -c < "${manifest_file}") > 65536 )); then

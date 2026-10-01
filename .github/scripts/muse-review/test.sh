@@ -210,6 +210,23 @@ if printf '{}' | META_API_KEY='' redact_json_key >/dev/null 2>&1; then got_rc="0
 assert_eq "redactjson-empty-key-rc" "1" "${got_rc}"
 rm -f "${jfix}"
 
+# --- decode_json_escapes (mixed prose + JSON fragment; the run.sh P1) ---
+# redact_json_key rejects this whole input as invalid JSON, so the run.sh
+# fallback path must decode escapes before byte redaction — otherwise the
+# reversible escaped key survives into the log / posted body.
+mixkey='fake.live/key+abc=123'
+mixfix="$(mktemp)"
+printf '%s' 'error: {"key":"fake.live\/key+abc\u003d123"} tail' > "${mixfix}"
+got="$(decode_json_escapes < "${mixfix}")"
+assert_eq "decode-mixed" 'error: {"key":"fake.live/key+abc=123"} tail' "${got}"
+got="$(META_API_KEY="${mixkey}" redact "$(decode_json_escapes < "${mixfix}")")"
+assert_eq "decode-mixed-redacted" 'error: {"key":"[REDACTED]"} tail' "${got}"
+case "${got}" in *"fake.live"*) got_left="yes";; *) got_left="no";; esac
+assert_eq "decode-mixed-no-key-fragment" "no" "${got_left}"
+got="$(printf '%s' 'keep \\u0041 literal, \/ slash' | decode_json_escapes)"
+assert_eq "decode-escaped-backslash-kept" 'keep \\u0041 literal, / slash' "${got}"
+rm -f "${mixfix}"
+
 # --- strip_images ---
 got="$(printf '%s' 'see ![pixel](https://a.example/p?d=1) and [docs](https://d.example/x) ok' | strip_images)"
 assert_eq "images-inline" "see pixel and [docs](https://d.example/x) ok" "${got}"
@@ -255,6 +272,23 @@ assert_eq "trust-default" "true" "$(trust_base "main" "main" "true")"
 assert_eq "trust-stacked" "false" "$(trust_base "feature" "main" "true")"
 assert_eq "trust-nobase" "false" "$(trust_base "main" "main" "false")"
 assert_eq "trust-unknown-default" "false" "$(trust_base "main" "" "true")"
+
+# --- manifest_paths (backslash-first escaping; the collect.sh P2) ---
+# A literal backslash-n in a filename and a real newline must serialize
+# distinctly, or the shell-disabled reviewer cannot re-derive the path.
+man_fix="$(mktemp)"
+python3 -c "import json; json.dump([{'filename': 'plain.ts'}, {'filename': 'a\\\\nb'}, {'filename': 'a\nb'}], open('${man_fix}', 'w'))"
+got="$(manifest_paths "${man_fix}")"
+assert_eq "manifest-escape" "$(printf 'plain.ts\na\\\\nb\na\\nb')" "${got}"
+col_fix="$(mktemp)"
+python3 -c "import json; json.dump([{'filename': 'x\\\\ny'}, {'filename': 'x\ny'}], open('${col_fix}', 'w'))"
+got1="$(manifest_paths "${col_fix}" | head -n 1)"
+got2="$(manifest_paths "${col_fix}" | tail -n 1)"
+if [[ "${got1}" == "${got2}" ]]; then got_same="yes"; else got_same="no"; fi
+assert_eq "manifest-distinct" "no" "${got_same}"
+if manifest_paths "/nonexistent-muse-test-$$" >/dev/null 2>&1; then got_rc="0"; else got_rc="nonzero"; fi
+assert_eq "manifest-missing-rc" "nonzero" "${got_rc}"
+rm -f "${man_fix}" "${col_fix}"
 
 # --- ranges.pl ---
 diff_fix="$(mktemp)"
