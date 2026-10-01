@@ -87,7 +87,10 @@ function verify(opts = {}) {
     const receive = (event) => {
       if (event.origin !== expectedWebAppOrigin || event.source !== popup) return;
       const value = event.data;
-      if (!value || value.type !== MESSAGE_TYPE || value.state !== nonce || value.campaignId !== campaignId) return;
+      // Purpose is bound too: the popup URL is student-editable, and the
+      // exchange receipt does not return the purpose, so without this check
+      // consent granted for altered wording would be undetectable.
+      if (!value || value.type !== MESSAGE_TYPE || value.state !== nonce || value.campaignId !== campaignId || value.purpose !== purpose) return;
       const expiry = typeof value.expiresAt === 'string' ? Date.parse(value.expiresAt) : NaN;
       // Browser clocks can be fast or slow; the merchant's server exchange checks expiry.
       if (!CODE.test(value.code) || !Number.isFinite(expiry)) return;

@@ -337,7 +337,7 @@ router.get(
  *               allowedOrigins:
  *                 type: array
  *                 minItems: 1
- *                 description: Exact canonical origins (https://shop.example.com[:port]); localhost HTTP is accepted only in development. An omitted list preserves compatible stored origins.
+ *                 description: Exact canonical origins (https://shop.example.com[:port]); each origin's hostname must be listed in allowedDomains. Localhost HTTP is accepted only in development. An omitted list preserves compatible stored origins.
  *                 items: { type: string, minLength: 1, maxLength: 512 }
  *               regenerateApiKey:
  *                 type: boolean

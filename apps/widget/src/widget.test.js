@@ -41,7 +41,7 @@ test('a failed approval releases the init lock so another merchant can retry', a
   } finally { globalThis.window = originalWindow; globalThis.fetch = originalFetch; }
 });
 
-test('popup accepts only a fresh code from its Awoof window, matching state and campaign', async () => {
+test('popup accepts only a fresh code from its Awoof window, matching state, campaign and purpose', async () => {
   const originalWindow = globalThis.window;
   const originalFetch = globalThis.fetch;
   const listeners = new Set();
@@ -67,13 +67,14 @@ test('popup accepts only a fresh code from its Awoof window, matching state and 
     assert.equal(openedUrl.searchParams.get('campaignId'), 'student-2026');
     assert.equal(openedUrl.searchParams.has('apiKey'), false);
     // Simulate a merchant browser clock ahead of the issuing server. Exchange owns expiry.
-    const payload = { type: 'AWOOF_ELIGIBILITY_CODE', state: openedUrl.searchParams.get('state'), campaignId: 'student-2026', code: 'a'.repeat(43), expiresAt: new Date(Date.now() - 60_000).toISOString() };
+    const payload = { type: 'AWOOF_ELIGIBILITY_CODE', state: openedUrl.searchParams.get('state'), campaignId: 'student-2026', purpose: 'Check test checkout eligibility', code: 'a'.repeat(43), expiresAt: new Date(Date.now() - 60_000).toISOString() };
     for (const event of [
       { origin: 'https://evil.example', source: popup, data: payload },
       { origin: 'https://app.awoof.test', source: {}, data: payload },
       { origin: 'https://app.awoof.test', source: popup, data: { ...payload, state: '0'.repeat(32) } },
       { origin: 'https://app.awoof.test', source: popup, data: { ...payload, code: 'awoof_legacy' } },
       { origin: 'https://app.awoof.test', source: popup, data: { ...payload, campaignId: 'other' } },
+      { origin: 'https://app.awoof.test', source: popup, data: { ...payload, purpose: 'Altered purpose wording' } },
       { origin: 'https://app.awoof.test', source: popup, data: { ...payload, expiresAt: 'not-a-date' } },
     ]) for (const listener of listeners) listener(event);
     assert.equal(successes, 0);

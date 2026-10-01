@@ -86,7 +86,7 @@ function PilotSession(props: Props & Pick<Account, 'user' | 'isLoading'>) {
             const expiry = Date.parse(expiresAt);
             // The device clock may differ from the issuing server. Exchange enforces expiry.
             if (!/^[A-Za-z0-9_-]{43}$/.test(code) || !Number.isFinite(expiry)) throw new Error('Invalid assertion response');
-            window.opener.postMessage({ type: 'AWOOF_ELIGIBILITY_CODE', state: props.state, campaignId: props.campaignId, code, expiresAt }, merchant.origin);
+            window.opener.postMessage({ type: 'AWOOF_ELIGIBILITY_CODE', state: props.state, campaignId: props.campaignId, purpose: props.purpose, code, expiresAt }, merchant.origin);
             setSent(true);
             // Leave the popup open: the SDK closes it after its success
             // handler runs. Closing here can make popup.closed read true on

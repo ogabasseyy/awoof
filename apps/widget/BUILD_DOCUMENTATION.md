@@ -146,10 +146,11 @@ The widget serves as:
 #### Message Format
 
 > Retired: the pilot message is `{ type: 'AWOOF_ELIGIBILITY_CODE', state,
-> campaignId, code, expiresAt }`, accepted only from the opened popup at the
-> expected hosted origin with matching state and campaign. The `code` is an
-> opaque string for merchant server-side exchange, not a JWT and not an
-> eligibility result. See the pilot contract notice above.
+> campaignId, purpose, code, expiresAt }`, accepted only from the opened
+> popup at the expected hosted origin with matching state, campaign and
+> purpose. The `code` is an opaque string for merchant server-side
+> exchange, not a JWT and not an eligibility result. See the pilot
+> contract notice above.
 
 ```javascript
 // RETIRED - kept for historical context only

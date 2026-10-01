@@ -62,6 +62,17 @@ test('updateWidgetConfig rejects origins the enforcement path cannot match', asy
     assert.equal(seen.length, 0);
 });
 
+test('updateWidgetConfig rejects explicit origins outside the submitted domains', async (t) => {
+    const seen: unknown[][] = [];
+    await queryDouble(t, seen);
+    const { res } = responseRecorder();
+    await assert.rejects(
+        updateWidgetConfig(vendorReq({ allowedDomains: ['shop.example.com'], allowedOrigins: ['https://other.example.com'] }), res),
+        /must belong to a submitted allowed domain/,
+    );
+    assert.equal(seen.length, 0);
+});
+
 test('updateWidgetConfig derives https origins when none are supplied', async (t) => {
     const seen: unknown[][] = [];
     await queryDouble(t, seen);

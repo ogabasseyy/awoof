@@ -133,14 +133,24 @@ export async function updateWidgetConfig(req: AuthRequest, res: Response): Promi
     // Exact origins (ports, localhost HTTP in development) use the same
     // canonicalization the enforcement path applies, so anything stored
     // here can actually match a later domain-check or merchant-context
-    // call. An explicit list replaces the stored origins. An omitted list
-    // keeps stored origins whose hostname is still allowed — so adding or
-    // removing an unrelated domain cannot silently delete a custom origin
-    // such as https://shop.example.com:8443 — and derives default https
-    // forms only for newly uncovered hostnames.
+    // call. An explicit list replaces the stored origins, but every origin
+    // must belong to a submitted domain: domain-check requires both lists
+    // to match while merchant-context consults origins alone, so a
+    // mismatched pair would leave a contradictory configuration. An
+    // omitted list keeps stored origins whose hostname is still allowed —
+    // so adding or removing an unrelated domain cannot silently delete a
+    // custom origin such as https://shop.example.com:8443 — and derives
+    // default https forms only for newly uncovered hostnames.
+    const wanted = new Set(domains);
     const origins = validated.allowedOrigins === undefined
         ? await omittedOrigins(vendorId, domains)
-        : [...new Set(validated.allowedOrigins.map((origin) => canonicalWidgetOrigin(origin)))];
+        : [...new Set(validated.allowedOrigins.map((origin) => {
+            const canonical = canonicalWidgetOrigin(origin);
+            if (!wanted.has(new URL(canonical).hostname.toLowerCase())) {
+                throw new BadRequestError('Each allowed origin must belong to a submitted allowed domain');
+            }
+            return canonical;
+        }))];
 
     const regenerateKey = Boolean(req.body.regenerateApiKey);
 
