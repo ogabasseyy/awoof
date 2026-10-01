@@ -288,6 +288,20 @@ if ! gh api --method POST \
         .body |= .[0:60000] |
         del(.comments)' \
       "${payload_file}" > "${payload_file}.summary"
+    # Retry bodies interpolate validated-but-untrusted paths: a filename
+    # carrying <img> markup or nested-paren markdown-image syntax would
+    # survive the jq-level path scrub above, so run the assembled body
+    # through the same full filters as the first attempt (idempotent on
+    # clean text). A filter failure keeps the jq-only body and still
+    # attempts the retry rather than losing the review.
+    if jq -r '.body' "${payload_file}.summary" 2>/dev/null \
+      | strip_images | sanitize_mentions > "${RUNNER_TEMP}/muse-retry-body.txt" \
+      && jq --rawfile body "${RUNNER_TEMP}/muse-retry-body.txt" '.body = $body' \
+        "${payload_file}.summary" > "${payload_file}.summary.clean" 2>/dev/null; then
+      mv "${payload_file}.summary.clean" "${payload_file}.summary"
+    else
+      rm -f "${payload_file}.summary.clean"
+    fi
     if ! gh api --method POST \
       "repos/${GITHUB_REPOSITORY}/pulls/${PR_NUMBER}/reviews" \
       --input "${payload_file}.summary" >/dev/null 2>&1; then

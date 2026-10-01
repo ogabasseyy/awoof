@@ -94,11 +94,11 @@ jobs:
       github.event.pull_request.head.repo.full_name == github.repository &&
       (github.event.action != 'edited' || github.event.changes.base != null)
     runs-on: ubuntu-latest
-    # Budget (worst-case caps must sum below this): collect 10 + install 5
-    # + run 10 + post 5 = 30, inside the 35-min job cap, so the fallback
-    # post always retains its window plus step-overhead headroom. Phase
-    # `timeout` caps are fail-fast kill-caps for hung calls (steps have no
-    # timeout-minutes), not expected durations.
+    # Budget (worst-case caps must sum below this): collect 10 + guard 2
+    # + install 5 + run 10 + post 5 = 32, inside the 35-min job cap, so the
+    # fallback post always retains its window plus step-overhead headroom.
+    # Phase `timeout`/`timeout-minutes` caps are fail-fast kill-caps for
+    # hung calls, not expected durations.
     timeout-minutes: 35
     env:
       MUSE_MODEL_RESOLVED: ${{ vars.MUSE_MODEL != '' && vars.MUSE_MODEL || '' }}
@@ -217,6 +217,12 @@ jobs:
           steps.diff.outputs.should_review == 'true' &&
           steps.diff.outputs.diff_failed != 'true' &&
           steps.diff.outputs.duplicate != 'true'
+        # Advisory: a stalled revalidation must not consume the job
+        # deadline and kill the fallback post. On timeout the install/run
+        # steps skip (no fresh=true) while Post still runs and revalidates
+        # staleness itself, so failing open here stays safe.
+        continue-on-error: true
+        timeout-minutes: 2
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GITHUB_REPOSITORY: ${{ github.repository }}
