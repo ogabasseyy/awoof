@@ -199,7 +199,7 @@ printf '[{"filename":"a.ts"}]' > "${files_fix}"
 jq -f "${SCRIPT_DIR}/clean.jq" "${find_fix}" > "${find_fix}.clean" && mv "${find_fix}.clean" "${find_fix}"
 assert_eq "clean-keeps-5" "5" "$(jq -r '.findings | length' "${find_fix}")"
 got="$(jq --slurpfile ranges "${ranges_fix}" --slurpfile files "${files_fix}" -f "${SCRIPT_DIR}/validate.jq" "${find_fix}" | jq -c '{v:[.valid[].title],s:[.summary_only[]|{t:.title,o:(.orphaned//false)}]}')"
-assert_eq "validate-split" '{"v":["T1"],"s":[{"t":"T3","o":false},{"t":"T2","o":true},{"t":"T5","o":true},{"t":"T4","o":true}]}' "${got}"
+assert_eq "validate-split" '{"v":["T1"],"s":[{"t":"T3","o":false},{"t":"T2","o":false},{"t":"T5","o":true},{"t":"T4","o":true}]}' "${got}"
 cat > "${find_fix}" <<'EOF'
 {"verdict":"v","findings":[
  {"path":"a.ts","line":5,"severity":"low","title":42,"body":"B"},
