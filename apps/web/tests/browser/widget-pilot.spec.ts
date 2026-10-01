@@ -152,7 +152,7 @@ test('a real student outside the pilot allowlist is refused before any disclosur
   await expect(popup.getByRole('heading', { name: 'Student eligibility check' })).toBeVisible();
   await popup.getByRole('checkbox', { name: /I approve sharing/ }).check();
   await popup.getByRole('button', { name: 'Continue to merchant' }).click();
-  await expect(popup.getByRole('alert')).toHaveText('This controlled pilot is not enabled for this student account or merchant.');
+  await expect(popup.getByRole('alert').filter({ hasText: 'This controlled pilot is not enabled' })).toHaveText('This controlled pilot is not enabled for this student account or merchant.');
   expect(calls).toContain('/api/widget/pilot-eligibility');
   expect(calls).not.toContain('/api/verification/disclosures');
   expect(calls).not.toContain('/api/merchant-verification/pilot-assertions');
