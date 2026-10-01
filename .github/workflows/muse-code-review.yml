@@ -147,9 +147,11 @@ jobs:
           # a tree with a hole exactly where the attacker planted paths.
           # Stash the workspace copy aside (restored in scriptdir) so the
           # checkout lands cleanly. Check git, not just the filesystem: a
-          # symlink farm could fake either answer.
+          # symlink farm could fake either answer. -L covers a dangling
+          # tracked symlink, for which -e is false but which still blocks
+          # the checkout target path.
           if git -C "${GITHUB_WORKSPACE}" cat-file -e "HEAD:trusted-scripts" 2>/dev/null \
-            && [[ -e "${GITHUB_WORKSPACE}/trusted-scripts" ]]; then
+            && [[ -e "${GITHUB_WORKSPACE}/trusted-scripts" || -L "${GITHUB_WORKSPACE}/trusted-scripts" ]]; then
             rm -rf "${RUNNER_TEMP}/pr-trusted-scripts-orig"
             mv "${GITHUB_WORKSPACE}/trusted-scripts" "${RUNNER_TEMP}/pr-trusted-scripts-orig"
             echo "::warning::PR tracks trusted-scripts/; workspace copy stashed aside during trusted-helper staging."
