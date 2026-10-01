@@ -86,13 +86,17 @@ sanitize_mentions() {
 # no auto-fetch, still readable, same as any citation. Apply with
 # sanitize_mentions(), before byte-bounding.
 strip_images() {
-  # The inline-image destination matches balanced parentheses to any depth
-  # via group-3 self-recursion ((?3)): GitHub-flavored Markdown accepts
-  # nested balanced parens in link destinations, so a one-level pattern
-  # would leave ![pixel](.../a((b)).png) intact and fetchable. Possessive
-  # [^()]++ keeps the match linear; unbalanced destinations match nothing
-  # and (like GFM itself) are left alone.
-  perl -pe 's{!\[([^\]]*)\]\(((?:[^()]++|(\((?:[^()]++|(?3))*\)))*)\)}{$1}g; s/!\[([^\]]*)\]\[[^\]]*\]/$1/g; s/!(\[[^\]]+\])(?!\()/$1/g; s{<\s*img\b[^>]*\balt\s*=\s*"([^"]*)"[^>]*>}{$1}gi; s{<\s*img\b[^>]*\balt\s*=\s*'"'"'([^'"'"']*)'"'"'[^>]*>}{$1}gi; s{<\s*img\b[^>]*>}{}gi'
+  # All three ![...] forms match balanced brackets/parens to any depth
+  # via self-recursive groups ((?2), (?3), (?4)): GFM accepts nested
+  # balanced brackets in descriptions and parens in destinations, so a
+  # flat [^\]]* alt would leave ![outer [inner]](.../pixel) for the
+  # renderer to fetch. Each alternative starts with a disjoint char
+  # (plain char vs backslash escape vs bracket/paren group) and plain
+  # runs are possessive (++), keeping the match linear. Slurp mode
+  # (-0777): link text may span lines, and a line-oriented filter would
+  # miss a multiline image token entirely. Unbalanced tokens match
+  # nothing and (like GFM itself) are left alone.
+  perl -0777 -pe 's{!\[((?:[^\[\]\\]++|\\.|(\[(?:[^\[\]\\]++|\\.|(?2))*\]))*)\]\(((?:[^()\\]++|\\.|(\((?:[^()\\]++|\\.|(?4))*\)))*)\)}{$1}g; s{!\[((?:[^\[\]\\]++|\\.|(\[(?:[^\[\]\\]++|\\.|(?2))*\]))*)\]\[((?:[^\[\]\\]++|\\.|(\[(?:[^\[\]\\]++|\\.|(?4))*\]))*)\]}{$1}g; s{!(\[((?:[^\[\]\\]++|\\.|(\[(?:[^\[\]\\]++|\\.|(?3))*\]))*)\])(?!\()}{$1}g; s{<\s*img\b[^>]*\balt\s*=\s*"([^"]*)"[^>]*>}{$1}gi; s{<\s*img\b[^>]*\balt\s*=\s*'"'"'([^'"'"']*)'"'"'[^>]*>}{$1}gi; s{<\s*img\b[^>]*>}{}gi'
 }
 
 # Remove every symlink under a workspace root (except .git and the trusted
