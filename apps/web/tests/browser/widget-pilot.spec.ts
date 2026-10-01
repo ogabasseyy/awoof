@@ -72,6 +72,11 @@ test('gated hosted pilot asks for disclosure and returns a bound code to the mer
   await expect(consent).toBeChecked();
   await popup.getByRole('button', { name: 'Continue to merchant' }).click();
   await expect(page.getByText('Code received')).toBeVisible();
+  // The hosted page must stay open for the opener to close: self-closing can
+  // strand an issued code when a closed-window poll wins the message race.
+  await expect(popup.getByText('You may close this window')).toBeVisible();
+  expect(popup.isClosed()).toBe(false);
+  await popup.close();
   expect(calls).toContain('/api/verification/disclosures');
   expect(calls).toContain('/api/merchant-verification/pilot-assertions');
 });

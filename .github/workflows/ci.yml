@@ -108,6 +108,10 @@ jobs:
         env:
           PLAYWRIGHT_NO_COPY_PROMPT: '1'
 
+      - name: Test widget
+        working-directory: apps/widget
+        run: npm test
+
       - name: Build widget
         working-directory: apps/widget
         run: npm run build

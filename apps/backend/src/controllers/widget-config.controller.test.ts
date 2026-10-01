@@ -18,9 +18,14 @@ function responseRecorder() {
 
 const vendorReq = (body: unknown) => ({ user: { userId: 'user-1', role: 'vendor' }, body }) as unknown as AuthRequest;
 
-async function queryDouble(t: Parameters<Parameters<typeof test>[1]>[0], seen: unknown[][]) {
+async function queryDouble(t: Parameters<Parameters<typeof test>[1]>[0], seen: unknown[][], existingOrigins: unknown = null) {
     t.mock.method(db, 'query', async (text: string, params?: unknown[]) => {
         if (text.includes('FROM vendors WHERE user_id')) return { rows: [{ id: 'vendor-1' }], rowCount: 1 } as never;
+        if (text.includes('FROM widget_configs WHERE vendor_id')) {
+            return (existingOrigins === null
+                ? { rows: [], rowCount: 0 }
+                : { rows: [{ allowed_origins: existingOrigins }], rowCount: 1 }) as never;
+        }
         seen.push(params ?? []);
         return { rows: [{ api_key: 'awoof_widget_new', status: 'active' }], rowCount: 1 } as never;
     });
@@ -30,7 +35,7 @@ test('updateWidgetConfig stores exact origins with ports and development localho
     const previous = process.env.NODE_ENV;
     process.env.NODE_ENV = 'development';
     const seen: unknown[][] = [];
-    await queryDouble(t, seen);
+    await queryDouble(t, seen, ['https://stale.example.com']);
     const { bodies, res } = responseRecorder();
     try {
         await updateWidgetConfig(vendorReq({
@@ -64,4 +69,30 @@ test('updateWidgetConfig derives https origins when none are supplied', async (t
     await updateWidgetConfig(vendorReq({ allowedDomains: ['Shop.Example.com'] }), res);
     assert.deepEqual(seen[0]?.[2], ['https://shop.example.com']);
     assert.deepEqual((bodies[0] as { data: { allowedOrigins: unknown } }).data.allowedOrigins, ['https://shop.example.com']);
+});
+
+test('updateWidgetConfig keeps compatible custom origins when origins are omitted', async (t) => {
+    const seen: unknown[][] = [];
+    await queryDouble(t, seen, ['https://shop.example.com:8443']);
+    const { bodies, res } = responseRecorder();
+    await updateWidgetConfig(vendorReq({ allowedDomains: ['shop.example.com', 'new.example.com'] }), res);
+    assert.deepEqual(seen[0]?.[2], ['https://shop.example.com:8443', 'https://new.example.com']);
+    assert.deepEqual((bodies[0] as { data: { allowedOrigins: unknown } }).data.allowedOrigins,
+        ['https://shop.example.com:8443', 'https://new.example.com']);
+});
+
+test('updateWidgetConfig drops omitted origins whose domain was removed', async (t) => {
+    const seen: unknown[][] = [];
+    await queryDouble(t, seen, ['https://shop.example.com:8443', 'https://old.example.com']);
+    const { res } = responseRecorder();
+    await updateWidgetConfig(vendorReq({ allowedDomains: ['shop.example.com'] }), res);
+    assert.deepEqual(seen[0]?.[2], ['https://shop.example.com:8443']);
+});
+
+test('updateWidgetConfig drops stored origins that cannot match enforcement', async (t) => {
+    const seen: unknown[][] = [];
+    await queryDouble(t, seen, ['not-a-url', 42, 'https://shop.example.com:8443']);
+    const { res } = responseRecorder();
+    await updateWidgetConfig(vendorReq({ allowedDomains: ['shop.example.com'] }), res);
+    assert.deepEqual(seen[0]?.[2], ['https://shop.example.com:8443']);
 });

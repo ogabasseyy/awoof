@@ -304,6 +304,84 @@ router.get(
  * @desc    Update widget config (allowed domains; optional exact allowed origins incl. ports/localhost; optional regenerate API key)
  * @access  Private (Vendor)
  */
+
+/**
+ * @swagger
+ * /api/vendors/widget-config:
+ *   put:
+ *     summary: Update the calling vendor's widget origins
+ *     description: >
+ *       Replaces the vendor's allowed widget domains. allowedOrigins is the
+ *       exact-origin allowlist the hosted pilot enforces (ports and
+ *       development localhost HTTP included); each entry must already be in
+ *       canonical origin form and is validated with the same predicate as
+ *       enforcement, so anything stored here can match a later domain-check
+ *       or merchant-context call. When allowedOrigins is omitted, stored
+ *       origins whose hostname is still allowed are kept and default https
+ *       forms are derived only for newly uncovered hostnames.
+ *     tags: [Vendors]
+ *     security: [{ bearerAuth: [] }]
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required: [allowedDomains]
+ *             properties:
+ *               allowedDomains:
+ *                 type: array
+ *                 minItems: 1
+ *                 description: HTTPS hostnames without ports, paths or credentials; each entry may include an https:// prefix.
+ *                 items: { type: string, minLength: 1 }
+ *               allowedOrigins:
+ *                 type: array
+ *                 minItems: 1
+ *                 description: Exact canonical origins (https://host[:port]); localhost HTTP is accepted only in development. An omitted list preserves compatible stored origins.
+ *                 items: { type: string, minLength: 1, maxLength: 512 }
+ *               regenerateApiKey:
+ *                 type: boolean
+ *                 description: When true, rotates the public widget site key and returns it once.
+ *     responses:
+ *       '200':
+ *         description: Widget config updated
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               required: [success, data]
+ *               properties:
+ *                 success: { type: boolean, enum: [true] }
+ *                 data:
+ *                   type: object
+ *                   required: [vendorId, allowedDomains, allowedOrigins, status]
+ *                   properties:
+ *                     vendorId: { type: string, format: uuid }
+ *                     allowedDomains: { type: array, items: { type: string } }
+ *                     allowedOrigins: { type: array, items: { type: string } }
+ *                     apiKey: { type: string, description: Returned only when regenerateApiKey is true; absent otherwise. }
+ *                     status: { type: string }
+ *       '400':
+ *         description: Invalid domain or origin
+ *         content:
+ *           application/json:
+ *             schema: { $ref: '#/components/schemas/Error' }
+ *       '401':
+ *         description: Vendor authentication required
+ *         content:
+ *           application/json:
+ *             schema: { $ref: '#/components/schemas/Error' }
+ *       '404':
+ *         description: Vendor profile not found
+ *         content:
+ *           application/json:
+ *             schema: { $ref: '#/components/schemas/Error' }
+ *       '422':
+ *         description: Invalid JSON body
+ *         content:
+ *           application/json:
+ *             schema: { $ref: '#/components/schemas/Error' }
+ */
 router.put(
     '/widget-config',
     authenticate,

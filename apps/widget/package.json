@@ -10,7 +10,8 @@
   "scripts": {
     "build": "rollup -c",
     "build:dev": "rollup -c --environment BUILD:development",
-    "dev": "rollup -c -w"
+    "dev": "rollup -c -w",
+    "test": "node --test src/widget.test.js"
   },
   "devDependencies": {
     "@rollup/plugin-node-resolve": "^16.0.0",

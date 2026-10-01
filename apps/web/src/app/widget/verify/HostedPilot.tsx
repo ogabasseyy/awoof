@@ -88,7 +88,10 @@ function PilotSession(props: Props & Pick<Account, 'user' | 'isLoading'>) {
             if (!/^[A-Za-z0-9_-]{43}$/.test(code) || !Number.isFinite(expiry)) throw new Error('Invalid assertion response');
             window.opener.postMessage({ type: 'AWOOF_ELIGIBILITY_CODE', state: props.state, campaignId: props.campaignId, code, expiresAt }, merchant.origin);
             setSent(true);
-            window.close();
+            // Leave the popup open: the SDK closes it after its success
+            // handler runs. Closing here can make popup.closed read true on
+            // a polling tick before the opener processes the queued message,
+            // stranding an issued code as a cancellation.
         } catch (cause) { setError(message(cause)); }
         finally { setBusy(false); }
     };

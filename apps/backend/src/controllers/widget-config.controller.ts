@@ -63,6 +63,46 @@ export async function getWidgetConfig(req: AuthRequest, res: Response): Promise<
 }
 
 /**
+ * Origins to store when an update omits allowedOrigins.
+ *
+ * Stored origins whose hostname is still in the new domain list are kept
+ * byte-identical: enforcement compares exact canonical strings, so keeping
+ * them unchanged cannot newly authorize anything. Hostnames with no kept
+ * origin get the historical derived https form. Entries that no longer
+ * parse, or whose hostname was removed, are dropped: unparseable entries
+ * can never match enforcement because the enforcement input is always
+ * canonicalized before comparison.
+ */
+async function omittedOrigins(vendorId: string, domains: string[]): Promise<string[]> {
+    const existing = await db.query<{ allowed_origins: unknown }>(
+        `SELECT allowed_origins FROM widget_configs WHERE vendor_id = $1`,
+        [vendorId]
+    );
+    const wanted = new Set(domains);
+    const kept: string[] = [];
+    const covered = new Set<string>();
+    const stored = existing.rows[0]?.allowed_origins;
+    if (Array.isArray(stored)) {
+        for (const origin of stored) {
+            if (typeof origin !== 'string') continue;
+            let hostname: string;
+            try {
+                hostname = new URL(origin).hostname.toLowerCase();
+            } catch {
+                continue;
+            }
+            if (!wanted.has(hostname)) continue;
+            kept.push(origin);
+            covered.add(hostname);
+        }
+    }
+    for (const hostname of domains) {
+        if (!covered.has(hostname)) kept.push(`https://${hostname}`);
+    }
+    return [...new Set(kept)];
+}
+
+/**
  * Update allowed domains. Optionally regenerate API key.
  */
 export async function updateWidgetConfig(req: AuthRequest, res: Response): Promise<void> {
@@ -93,9 +133,13 @@ export async function updateWidgetConfig(req: AuthRequest, res: Response): Promi
     // Exact origins (ports, localhost HTTP in development) use the same
     // canonicalization the enforcement path applies, so anything stored
     // here can actually match a later domain-check or merchant-context
-    // call. Omitted origins keep the historical derived https forms.
+    // call. An explicit list replaces the stored origins. An omitted list
+    // keeps stored origins whose hostname is still allowed — so adding or
+    // removing an unrelated domain cannot silently delete a custom origin
+    // such as https://shop.example.com:8443 — and derives default https
+    // forms only for newly uncovered hostnames.
     const origins = validated.allowedOrigins === undefined
-        ? domains.map((hostname) => `https://${hostname}`)
+        ? await omittedOrigins(vendorId, domains)
         : [...new Set(validated.allowedOrigins.map((origin) => canonicalWidgetOrigin(origin)))];
 
     const regenerateKey = Boolean(req.body.regenerateApiKey);

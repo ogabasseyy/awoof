@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { webcrypto } from 'node:crypto';
 import Awoof from './widget.js';
+import { checkDomain, DOMAIN_CHECK_TIMEOUT_MS } from './api.js';
 
 test('an overlapping init cannot replace a pending merchant approval', async () => {
   const originalWindow = globalThis.window;
@@ -83,6 +84,20 @@ test('popup accepts only a fresh code from its Awoof window, matching state and 
     assert.equal(popup.closed, true);
     assert.equal(listeners.size, 0);
   } finally { globalThis.window = originalWindow; globalThis.fetch = originalFetch; }
+});
+
+test('a stalled merchant approval fails bounded so init can retry', async () => {
+  assert.ok(Number.isFinite(DOMAIN_CHECK_TIMEOUT_MS) && DOMAIN_CHECK_TIMEOUT_MS <= 30000);
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = (_url, request) => new Promise((_resolve, reject) => {
+    request.signal.addEventListener('abort', () => reject(new DOMException('The operation was aborted', 'AbortError')));
+  });
+  try {
+    await assert.rejects(
+      checkDomain('https://api.awoof.test', 'shop.example', 'public-key', 'https://shop.example', { timeoutMs: 20 }),
+      /Merchant approval timed out/,
+    );
+  } finally { globalThis.fetch = originalFetch; }
 });
 
 test('isolated popup fails closed with a COOP configuration hint', async () => {

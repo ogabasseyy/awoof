@@ -33,6 +33,29 @@ test('publishes controlled widget context and assertion contracts', () => {
     for (const status of ['400', '401', '403', '422']) assert.ok(pilot.responses[status], `missing pilot-assertions ${status}`);
 });
 
+test('publishes the vendor widget-config contract with exact origins', () => {
+    type JsonSchema = { $ref?: string; type?: string; minItems?: number; maxLength?: number; required?: string[]; properties?: Record<string, JsonSchema>; items?: JsonSchema };
+    type Endpoint = { requestBody?: { content: Record<string, { schema: JsonSchema }> }; responses: Record<string, { content?: Record<string, { schema: JsonSchema }> }> };
+    const paths = (swaggerSpec as { paths: Record<string, { put?: Endpoint }> }).paths;
+    // Vendors-route annotations only parse from a standalone @swagger-first
+    // block; @route-prefixed blocks are silently dropped. This assertion
+    // pins the generated contract, not just the comment text.
+    const update = paths['/api/vendors/widget-config']?.put;
+    assert.ok(update, 'PUT /api/vendors/widget-config must publish');
+
+    const request = update.requestBody?.content['application/json']?.schema;
+    assert.deepEqual(request?.required, ['allowedDomains']);
+    assert.equal(request?.properties?.allowedDomains?.type, 'array');
+    assert.equal(request?.properties?.allowedDomains?.minItems, 1);
+    assert.equal(request?.properties?.allowedOrigins?.type, 'array');
+    assert.equal(request?.properties?.allowedOrigins?.items?.maxLength, 512);
+    const data = update.responses['200']?.content?.['application/json']?.schema.properties?.data;
+    assert.deepEqual(data?.required, ['vendorId', 'allowedDomains', 'allowedOrigins', 'status']);
+    for (const status of ['400', '401', '404', '422']) {
+        assert.equal(update.responses[status]?.content?.['application/json']?.schema.$ref, '#/components/schemas/Error');
+    }
+});
+
 interface Schema {
     type?: string;
     nullable?: boolean;
