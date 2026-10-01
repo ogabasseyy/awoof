@@ -12,7 +12,7 @@
 # text cannot break out of its prompt block. Single unified tag list for all
 # blocks — neutralizing more is strictly safer than less.
 neutralize_tags() {
-  perl -pe 's{<\s*/\s*(file|diff|pr_title|pr_description|changed_files|removed_lines|head_ref|base_ref|untrusted_guidance)}{<\\/$1}gi'
+  perl -pe 's{<\s*/\s*(file|diff|pr_title|pr_description|changed_files|removed_lines|symlink_targets|head_ref|base_ref|untrusted_guidance)}{<\\/$1}gi'
 }
 
 # In-place byte cap for a file. Only replaces the original when truncation
@@ -177,6 +177,23 @@ head_readable() {
 # cutting first could remove a PEM footer and defeat the full-block match.
 redact() {
   printf '%s' "$1" | META_API_KEY="${META_API_KEY:-}" perl -0777 -pe 'BEGIN { $k = $ENV{META_API_KEY} // q{} } if (length $k) { $q = quotemeta($k); s/$q/[REDACTED]/g } s/-----BEGIN [A-Z ]*PRIVATE KEY-----.*?-----END [A-Z ]*PRIVATE KEY-----/[REDACTED-PRIVATE-KEY]/gs; s/\b(sk-|rk-|ghp_|gho_|ghu_|ghs_|ghr_|github_pat_|xox[A-Za-z]-|AKIA)[A-Za-z0-9_\-]+/[REDACTED]/g; s/\bAIza[0-9A-Za-z_\-]{35}/[REDACTED]/g; s/eyJ[A-Za-z0-9_\-]{10,}\.eyJ[A-Za-z0-9_\-]{10,}\.[A-Za-z0-9_\-]+/[REDACTED-JWT]/g; s/((?:api[_-]?key|secret|token|password)\s*[:=]\s*["'"'"']?)[A-Za-z0-9_\-.\/+]{12,}/${1}[REDACTED]/gi'
+}
+
+# Mask the live META_API_KEY inside DECODED JSON string values (stdin to
+# stdout). Byte substitution misses a key hidden behind legal JSON escapes
+# (e.g. \u003d for =, \/ for /): the raw bytes never match, but a later
+# `jq -r` in the keyless post step decodes them back to the live value and
+# publishes it. So while the key is still available (run step only), parse
+# the model output as JSON, redact inside decoded strings, reserialize.
+# Returns nonzero when the key is empty/unset or the input is not valid
+# JSON — the caller then falls back to byte substitution. The key travels
+# via jq --arg (never interpolated into the program); split/join replaces
+# literally (gsub would read key bytes as regex); walk covers nested
+# strings at any depth. Deterministic: same input key/output every run.
+redact_json_key() {
+  local _key="${META_API_KEY:-}"
+  [[ -n "${_key}" ]] || return 1
+  jq --arg k "${_key}" 'walk(if type == "string" then (. | split($k) | join("[REDACTED]")) else . end)'
 }
 
 # Guidance trust: a PR base branch is contributor-controlled unless it is the
