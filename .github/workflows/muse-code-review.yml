@@ -172,17 +172,24 @@ jobs:
           set -euo pipefail
           if [[ -f "${GITHUB_WORKSPACE}/trusted-scripts/.github/scripts/muse-review/lib.sh" ]]; then
             echo "dir=${GITHUB_WORKSPACE}/trusted-scripts/.github/scripts/muse-review" >> "${GITHUB_OUTPUT}"
+            echo "scripts_ok=true" >> "${GITHUB_OUTPUT}"
           else
-            # Default branch predates the scripts (first-merge bootstrap
-            # only): fall back to the head copy. Afterwards the default
-            # branch always provides them.
-            echo "dir=${GITHUB_WORKSPACE}/.github/scripts/muse-review" >> "${GITHUB_OUTPUT}"
-            echo "::warning::Default branch lacks review scripts; running head copy (first-merge bootstrap)."
+            # Fail closed: never execute the PR-head script copy, which is
+            # submitter-controlled. No bootstrap fallback is needed — under
+            # pull_request_target this workflow only runs once it exists on
+            # the base, so the default branch always provides the scripts;
+            # a miss means a rename/removal is in flight. Head-script
+            # changes are still validated pre-merge by the secret-free
+            # selftest workflow. Downstream steps gate on scripts_ok.
+            echo "scripts_ok=false" >> "${GITHUB_OUTPUT}"
+            echo "::error::Trusted review scripts missing from default branch; skipping advisory review."
           fi
 
       - name: Collect PR diff and build prompt
         id: diff
-        if: steps.prereq.outputs.should_run == 'true'
+        if: >-
+          steps.prereq.outputs.should_run == 'true' &&
+          steps.scriptdir.outputs.scripts_ok == 'true'
         # Advisory: a failed collection (or timeout) posts a fallback note
         # instead of failing the job (Post handles DIFF_OUTCOME).
         continue-on-error: true
@@ -206,6 +213,7 @@ jobs:
         id: guard
         if: >-
           steps.prereq.outputs.should_run == 'true' &&
+          steps.scriptdir.outputs.scripts_ok == 'true' &&
           steps.diff.outputs.should_review == 'true' &&
           steps.diff.outputs.diff_failed != 'true' &&
           steps.diff.outputs.duplicate != 'true'
@@ -226,6 +234,7 @@ jobs:
         id: install
         if: >-
           steps.prereq.outputs.should_run == 'true' &&
+          steps.scriptdir.outputs.scripts_ok == 'true' &&
           steps.diff.outputs.should_review == 'true' &&
           steps.diff.outputs.diff_failed != 'true' &&
           steps.diff.outputs.duplicate != 'true' &&
@@ -247,6 +256,7 @@ jobs:
         id: muse
         if: >-
           steps.prereq.outputs.should_run == 'true' &&
+          steps.scriptdir.outputs.scripts_ok == 'true' &&
           steps.diff.outputs.should_review == 'true' &&
           steps.diff.outputs.diff_failed != 'true' &&
           steps.diff.outputs.duplicate != 'true' &&
@@ -276,6 +286,7 @@ jobs:
         continue-on-error: true
         if: >-
           steps.prereq.outputs.should_run == 'true' &&
+          steps.scriptdir.outputs.scripts_ok == 'true' &&
           steps.diff.outputs.duplicate != 'true' &&
           steps.guard.outputs.fresh != 'false' &&
           (steps.diff.outputs.should_review == 'true' || steps.diff.outcome != 'success')
