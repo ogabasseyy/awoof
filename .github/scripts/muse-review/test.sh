@@ -124,6 +124,9 @@ assert_eq "redact-xoxe" "[REDACTED]" "$(redact 'tok xoxe-fake3 y' | awk '{print 
 assert_eq "redact-aiza" "[REDACTED]" "$(redact 'key AIza0123456789AbCdEfGhIjKlMnOpQrStUvWXY end' | awk '{print $2}')"
 assert_eq "redact-aiza-short" "AIzaShort" "$(redact 'tok AIzaShort y' | awk '{print $2}')"
 assert_eq "redact-meta-assign" "META_API_KEY=[REDACTED]!" "$(redact 'leak META_API_KEY=hunter2hunter2hunter2!' | awk '{print $2}')"
+assert_eq "redact-live-bare" "[REDACTED]" "$(META_API_KEY='fake.live/key+abc=123' redact 'oops fake.live/key+abc=123 end' | awk '{print $2}')"
+assert_eq "redact-live-empty" "plain text stays" "$(META_API_KEY='' redact 'plain text stays' )"
+assert_eq "redact-live-unset" "plain text stays" "$(env -u META_API_KEY "SCRIPT_DIR=${SCRIPT_DIR}" bash -c '. "${SCRIPT_DIR}/lib.sh"; redact "plain text stays"')"
 
 # --- strip_images ---
 got="$(printf '%s' 'see ![pixel](https://a.example/p?d=1) and [docs](https://d.example/x) ok' | strip_images)"

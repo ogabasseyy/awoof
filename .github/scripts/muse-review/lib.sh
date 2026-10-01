@@ -140,13 +140,15 @@ head_readable() {
 # Scrub secret patterns from review text before it is posted publicly.
 # Private keys redact as full header-to-footer blocks; provider prefixes,
 # JWTs, and key-assignment pairs (api_key="...", token: ...) redact by
-# value. The assignment pattern is case-insensitive, so META_API_KEY=<val>
-# echoes are already caught; a bare echoed value in an unknown format is
-# unmatchable by static pattern — the live secret is deliberately never
-# piped into this step to match it. Always redact BEFORE truncating:
+# value. When META_API_KEY is present in the environment (run step only),
+# its literal value is masked first, covering bare echoes in any format;
+# the length guard matters because an empty pattern would match everywhere.
+# The post step deliberately never receives the key: masking there would
+# widen its exposure, and every key-derived byte reaching it already passed
+# through this function in the run step. Always redact BEFORE truncating:
 # cutting first could remove a PEM footer and defeat the full-block match.
 redact() {
-  printf '%s' "$1" | perl -0777 -pe 's/-----BEGIN [A-Z ]*PRIVATE KEY-----.*?-----END [A-Z ]*PRIVATE KEY-----/[REDACTED-PRIVATE-KEY]/gs; s/\b(sk-|rk-|ghp_|gho_|ghu_|ghs_|ghr_|github_pat_|xox[A-Za-z]-|AKIA)[A-Za-z0-9_\-]+/[REDACTED]/g; s/\bAIza[0-9A-Za-z_\-]{35}/[REDACTED]/g; s/eyJ[A-Za-z0-9_\-]{10,}\.eyJ[A-Za-z0-9_\-]{10,}\.[A-Za-z0-9_\-]+/[REDACTED-JWT]/g; s/((?:api[_-]?key|secret|token|password)\s*[:=]\s*["'"'"']?)[A-Za-z0-9_\-.\/+]{12,}/${1}[REDACTED]/gi'
+  printf '%s' "$1" | META_API_KEY="${META_API_KEY:-}" perl -0777 -pe 'BEGIN { $k = $ENV{META_API_KEY} // q{} } if (length $k) { $q = quotemeta($k); s/$q/[REDACTED]/g } s/-----BEGIN [A-Z ]*PRIVATE KEY-----.*?-----END [A-Z ]*PRIVATE KEY-----/[REDACTED-PRIVATE-KEY]/gs; s/\b(sk-|rk-|ghp_|gho_|ghu_|ghs_|ghr_|github_pat_|xox[A-Za-z]-|AKIA)[A-Za-z0-9_\-]+/[REDACTED]/g; s/\bAIza[0-9A-Za-z_\-]{35}/[REDACTED]/g; s/eyJ[A-Za-z0-9_\-]{10,}\.eyJ[A-Za-z0-9_\-]{10,}\.[A-Za-z0-9_\-]+/[REDACTED-JWT]/g; s/((?:api[_-]?key|secret|token|password)\s*[:=]\s*["'"'"']?)[A-Za-z0-9_\-.\/+]{12,}/${1}[REDACTED]/gi'
 }
 
 # Guidance trust: a PR base branch is contributor-controlled unless it is the
