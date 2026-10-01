@@ -16,7 +16,7 @@ export const merchantSteps = [
   },
   {
     title: 'Your server exchanges and applies the benefit',
-    body: 'Exchange the code for an eligibility receipt with your server key, then apply your own benefit. The receipt says eligible, which check passed, and when it expires — nothing more.',
+    body: 'Exchange the code for an eligibility receipt with your server key, then apply your own benefit. The receipt says eligible, which check passed, which institution it came from, the evidence time and expiry, and the campaign and purpose bound to the code — referenced by receipt ID under a merchant-scoped pseudonym, with no student contact details or documents.',
   },
   {
     title: 'Report on redemptions',

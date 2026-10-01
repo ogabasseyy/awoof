@@ -78,6 +78,10 @@ jobs:
         working-directory: apps/web
         run: npm run test:auth
 
+      - name: Test widget disclosure origins
+        working-directory: apps/web
+        run: npm run test:widget-origins
+
       - name: Type check browser suites
         working-directory: apps/web
         run: npm run test:browser:typecheck

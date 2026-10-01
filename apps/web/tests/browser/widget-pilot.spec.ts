@@ -181,3 +181,29 @@ test('an ineligible student cannot approve disclosure or request a pilot code', 
   expect(calls).not.toContain('/api/verification/disclosures');
   expect(calls).not.toContain('/api/merchant-verification/pilot-assertions');
 });
+
+test('maximum-length unbroken tokens do not overflow the narrow popup on mobile', async ({ page, context }) => {
+  // Field ceilings: vendors.name VARCHAR(255), purpose max 200, campaignId max 100.
+  const longName = 'm'.repeat(255);
+  const longPurpose = 'p'.repeat(200);
+  const longCampaign = 'c'.repeat(100);
+  const session = JSON.stringify({ v: 1, state: 'active', sessionId: 'synthetic-student', accessToken: 'student-access', refreshToken: 'student-refresh' });
+  await context.addInitScript((value) => localStorage.setItem('awoof.session.v1', value), session);
+  await context.route(`${apiOrigin}/api/**`, async (route) => {
+    const path = new URL(route.request().url()).pathname;
+    if (route.request().method() === 'OPTIONS') return route.fulfill({ status: 204, headers: cors });
+    let data: unknown;
+    if (path === '/api/widget/merchant-context') data = { vendorId, origin: merchantOrigin, merchantName: longName };
+    else if (path === '/api/auth/me') data = { id: '00000000-0000-4000-8000-000000000001', email: 'synthetic@student.invalid', role: 'student' };
+    else if (path === '/api/verification/status') data = { eligibility: { eligible: true }, notices: { merchantDisclosure: { version: 'pilot-notice-v1', text: 'Awoof shares current eligibility with this merchant.' } } };
+    else throw new Error(`Unexpected API: ${path}`);
+    return route.fulfill({ status: 200, headers: cors, json: { success: true, data } });
+  });
+  const query = new URLSearchParams({ vendorId, origin: merchantOrigin, campaignId: longCampaign, purpose: longPurpose, state: 'a'.repeat(32) });
+  await page.setViewportSize({ width: 390, height: 780 });
+  await page.goto(`/widget/verify?${query}`);
+  await expect(page.getByRole('heading', { name: 'Student eligibility check' })).toBeVisible();
+  // The consent label renders the long merchant name too; all three must wrap.
+  await expect(page.getByRole('checkbox', { name: /I approve sharing/ })).toBeVisible();
+  expect(await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth)).toBeLessThanOrEqual(1);
+});

@@ -12,6 +12,7 @@
     "test:browser:microsoft": "playwright test --config playwright.microsoft.config.ts",
     "test:browser:typecheck": "tsc --noEmit --incremental false -p tsconfig.browser-tests.json",
     "test:public-performance": "node --test scripts/public-performance-fixture.test.mjs scripts/audit-public-performance.test.mjs",
+    "test:widget-origins": "node --test tests/widget-origins.test.mjs",
     "audit:public:baseline": "node scripts/audit-public-performance.mjs capture --label baseline",
     "audit:public:candidate": "node scripts/audit-public-performance.mjs capture --label candidate",
     "audit:public:compare": "node scripts/audit-public-performance.mjs compare"

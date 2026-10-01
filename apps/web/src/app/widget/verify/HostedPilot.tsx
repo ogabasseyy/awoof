@@ -109,10 +109,10 @@ function PilotSession(props: Props & Pick<Account, 'user' | 'isLoading'>) {
         <p className="mt-3 rounded-lg bg-amber-50 p-3 text-sm text-amber-950">Controlled synthetic-account pilot. This page does not apply a discount or take a payment.</p>
         {loading || isLoading ? <p className="mt-5">Loading merchant and eligibility…</p> : <>
             {merchant && <section aria-label="Merchant request" className="mt-6 space-y-2 rounded-xl border p-4">
-                <h2 className="font-semibold">Request from {merchant.merchantName}</h2>
+                <h2 className="break-all font-semibold">Request from {merchant.merchantName}</h2>
                 <p className="break-all text-sm">Site: {merchant.origin}</p>
-                <p className="text-sm">Purpose: {props.purpose}</p>
-                <p className="text-sm">Campaign: {props.campaignId}</p>
+                <p className="break-all text-sm">Purpose: {props.purpose}</p>
+                <p className="break-all text-sm">Campaign: {props.campaignId}</p>
             </section>}
             {!user && merchant && <p className="mt-5">Sign in to your Awoof student account to continue. <Link className="underline" href={`/auth/student/login?redirect=${encodeURIComponent(loginReturn)}`}>Student sign in</Link></p>}
             {user && user.role !== 'student' && <p className="mt-5">Sign in with a student account to continue.</p>}
@@ -121,7 +121,7 @@ function PilotSession(props: Props & Pick<Account, 'user' | 'isLoading'>) {
                 {!status.eligibility.eligible && <p><Link className="underline" href="/student/verification" target="_blank" rel="noopener noreferrer">Review your verification status</Link> and then <button className="underline" type="button" onClick={() => void load()}>check again</button>.</p>}
                 {status.eligibility.eligible && <>
                     <p className="text-sm">{status.notices.merchantDisclosure.text} The merchant server receives a scoped eligibility receipt, method, institution and expiry after exchanging the code. It does not receive your Awoof account ID, school email or documents in this response.</p>
-                    <label className="flex items-start gap-3"><input type="checkbox" className="mt-1" checked={accepted} onChange={(event) => setAccepted(event.target.checked)} disabled={busy || sent} /><span>I approve sharing my current eligibility with {merchant.merchantName} for the purpose shown above.</span></label>
+                    <label className="flex items-start gap-3"><input type="checkbox" className="mt-1" checked={accepted} onChange={(event) => setAccepted(event.target.checked)} disabled={busy || sent} /><span className="break-all">I approve sharing my current eligibility with {merchant.merchantName} for the purpose shown above.</span></label>
                     <button className="rounded-lg bg-slate-900 px-4 py-2 text-white disabled:opacity-50" type="button" disabled={!accepted || busy || sent} onClick={() => void issue()}>{busy ? 'Checking…' : 'Continue to merchant'}</button>
                 </>}
             </section>}
