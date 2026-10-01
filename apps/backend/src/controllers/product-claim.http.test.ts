@@ -381,6 +381,7 @@ test('assertion exchange accepts claim-session proof and validates its shape', a
                 receiptId: sessionId, merchantSubject: grantId, eligible: true as const,
                 assuranceMethod: 'enrollment', institutionId: productId,
                 verifiedAt: new Date().toISOString(), validUntil: new Date().toISOString(), campaignId: 'checkout-1',
+                purpose: 'Test checkout eligibility',
             };
         },
     });

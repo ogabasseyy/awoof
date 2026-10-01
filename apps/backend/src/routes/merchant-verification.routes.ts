@@ -29,7 +29,7 @@ import {
  *     MerchantVerificationReceipt:
  *       type: object
  *       additionalProperties: false
- *       required: [receiptId, merchantSubject, eligible, assuranceMethod, institutionId, verifiedAt, validUntil, campaignId]
+ *       required: [receiptId, merchantSubject, eligible, assuranceMethod, institutionId, verifiedAt, validUntil, campaignId, purpose]
  *       properties:
  *         receiptId: { type: string, format: uuid }
  *         merchantSubject:
@@ -42,6 +42,9 @@ import {
  *         verifiedAt: { type: string, format: date-time }
  *         validUntil: { type: string, format: date-time }
  *         campaignId: { type: string }
+ *         purpose:
+ *           type: string
+ *           description: Consent wording recorded at issuance. The browser handoff is student-editable, so the merchant server MUST compare this with its own intent before honoring the receipt.
  *         benefitAuthorizationId:
  *           type: string
  *           format: uuid
@@ -128,6 +131,7 @@ import {
  *       '401': { description: Student authentication required }
  *       '403': { description: Pilot account or merchant unavailable, or current eligibility or disclosure unavailable. }
  *       '422': { description: Invalid JSON body }
+ *       '503': { $ref: '#/components/responses/SessionValidationUnavailable' }
  * /api/merchant-verification/exchange:
  *   post:
  *     summary: Atomically exchange a code for a merchant-scoped eligibility receipt

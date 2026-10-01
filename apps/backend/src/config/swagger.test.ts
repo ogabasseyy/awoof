@@ -33,6 +33,23 @@ test('publishes controlled widget context and assertion contracts', () => {
     for (const status of ['400', '401', '403', '422']) assert.ok(pilot.responses[status], `missing pilot-assertions ${status}`);
 });
 
+test('pilot contracts document retryable session-validation outages and receipt purpose', () => {
+    type JsonSchema = { $ref?: string; type?: string; required?: string[]; properties?: Record<string, JsonSchema> };
+    type GetEndpoint = { responses: Record<string, { content?: Record<string, { schema: JsonSchema }>; $ref?: string } & { $ref?: string }> };
+    const doc = swaggerSpec as {
+        paths: Record<string, { post?: { responses: Record<string, JsonSchema & { $ref?: string }> }; get?: GetEndpoint }>;
+        components: { schemas: Record<string, JsonSchema>; responses: Record<string, unknown> };
+    };
+    assert.ok(doc.components.responses.SessionValidationUnavailable, 'missing shared 503 response');
+    const pilot = doc.paths['/api/merchant-verification/pilot-assertions']?.post;
+    assert.equal(pilot?.responses['503']?.$ref, '#/components/responses/SessionValidationUnavailable');
+    const eligibility = doc.paths['/api/widget/pilot-eligibility']?.get;
+    assert.equal(eligibility?.responses['503']?.$ref, '#/components/responses/SessionValidationUnavailable');
+    const receipt = doc.components.schemas.MerchantVerificationReceipt;
+    assert.ok(receipt?.required?.includes('purpose'), 'receipt must require purpose');
+    assert.equal(receipt?.properties?.purpose?.type, 'string');
+});
+
 test('publishes the vendor widget-config contract with exact origins', () => {
     type JsonSchema = { $ref?: string; type?: string; minItems?: number; maxLength?: number; required?: string[]; properties?: Record<string, JsonSchema>; items?: JsonSchema };
     type Endpoint = { requestBody?: { content: Record<string, { schema: JsonSchema }> }; responses: Record<string, { content?: Record<string, { schema: JsonSchema }> }> };

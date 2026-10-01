@@ -48,7 +48,7 @@ test('gated hosted pilot asks for disclosure and returns a bound code to the mer
     } else if (path === '/api/verification/status') {
       data = { eligibility: { eligible: true }, notices: { merchantDisclosure: { version: 'pilot-notice-v1', text: 'Awoof shares current eligibility with this merchant.' } } };
     } else if (path === '/api/verification/disclosures') {
-      expect(body).toEqual({ vendorId, origin: merchantOrigin, purpose: 'Test checkout eligibility', accepted: true, noticeVersion: 'pilot-notice-v1' });
+      expect(body).toEqual({ vendorId, origin: merchantOrigin, purpose: 'Test checkout eligibility', accepted: true, noticeVersion: 'pilot-notice-v1', expectedUserId: '00000000-0000-4000-8000-000000000001' });
       data = { grantId };
     } else if (path === '/api/merchant-verification/pilot-assertions') {
       expect(body).toEqual({ vendorId, origin: merchantOrigin, purpose: 'Test checkout eligibility', campaignId: 'sandbox-campaign', disclosureGrantId: grantId });

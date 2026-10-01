@@ -151,6 +151,7 @@ const router = Router();
  *         content:
  *           application/json:
  *             schema: { $ref: '#/components/schemas/Error' }
+ *       '503': { $ref: '#/components/responses/SessionValidationUnavailable' }
  */
 router.post(
     '/domain-check',

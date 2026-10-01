@@ -69,9 +69,13 @@ function PilotSession(props: Props & Pick<Account, 'user' | 'isLoading'>) {
                     }
                     throw cause;
                 }
+                // expectedUserId fences a mid-flight account switch: the server
+                // rejects the write when ambient credentials no longer match
+                // the account that checked this consent box.
                 const consent = await apiClient.post<{ data: { grantId: string } }>('/verification/disclosures', {
                     vendorId: props.vendorId, origin: merchant.origin, purpose: props.purpose,
                     accepted: true, noticeVersion: status.notices.merchantDisclosure.version,
+                    expectedUserId: user?.id,
                 });
                 if (!isCurrentSession(session)) throw new Error('Session changed');
                 currentGrant = consent.data.data.grantId;

@@ -60,6 +60,7 @@ export async function issueMerchantAssertion(pool: Pool, userId: string, input: 
 export type MerchantReceipt = {
     receiptId: string; merchantSubject: string; eligible: true; assuranceMethod: string;
     institutionId: string; verifiedAt: string; validUntil: string; campaignId: string;
+    purpose: string;
     benefitAuthorizationId?: string;
 };
 
@@ -233,7 +234,7 @@ export async function exchangeMerchantAssertion(pool: Pool, key: string, input: 
             receiptId: randomUUID(), merchantSubject: subject.rows[0].subject, eligible: true,
             assuranceMethod: eligibility.method, institutionId: eligibility.universityId,
             verifiedAt: eligibility.verifiedAt.toISOString(), validUntil: eligibility.expiresAt.toISOString(),
-            campaignId: assertion.campaign_id,
+            campaignId: assertion.campaign_id, purpose: assertion.purpose,
             ...(benefitAuthorizationId !== undefined ? { benefitAuthorizationId } : {}),
         };
         const stored = await tx.query(`INSERT INTO merchant_assertion_receipts (vendor_id,idempotency_key,assertion_id,receipt)

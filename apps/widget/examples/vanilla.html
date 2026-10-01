@@ -24,6 +24,8 @@
       onSuccess: function (_code, _data) {
         // Submit the code to your authenticated merchant checkout endpoint.
         // The private Awoof exchange key must stay on that server.
+        // That server must compare the receipt's campaign AND purpose with
+        // its own intent: the browser handoff is student-editable.
       },
       onError: function (err) {
         console.error('Awoof error', err);
