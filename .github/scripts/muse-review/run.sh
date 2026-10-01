@@ -64,3 +64,10 @@ if (( muse_rc != 0 )); then
   redact "$(cat "${RUNNER_TEMP}/muse-stderr.log" 2>/dev/null || true)" | tail -c 4000
   exit "${muse_rc}"
 fi
+
+# Mask the live key value in the captured output while it is still in this
+# key-holding step: a bare echoed value matches no static pattern, and the
+# post step deliberately never receives the key to match it. Failure here
+# fails the step so an unmasked body is never posted (Post renders the
+# no-output fallback instead).
+redact "$(cat "${review_file}")" > "${review_file}.clean" && mv "${review_file}.clean" "${review_file}"
