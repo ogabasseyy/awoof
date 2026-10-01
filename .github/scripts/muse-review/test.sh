@@ -101,12 +101,15 @@ printf 'x' > "${sweepdir}/real.txt"
 ln -s /etc "${sweepdir}/leak.txt"
 ln -s /tmp "${sweepdir}/sub/dirlink"
 ln -s /etc/hostname "${sweepdir}/.git/keeper"
-ln -s /etc/hostname "${sweepdir}/trusted-scripts/keeper"
+ln -s /etc/hostname "${sweepdir}/trusted-scripts/planted"
 got="$(sweep_workspace_symlinks "${sweepdir}")"
-assert_eq "sweep-count" "2" "${got}"
-if [[ -e "${sweepdir}/leak.txt" || -e "${sweepdir}/sub/dirlink" ]]; then got_left="yes"; else got_left="no"; fi
+assert_eq "sweep-count" "3" "${got}"
+if [[ -L "${sweepdir}/leak.txt" || -L "${sweepdir}/sub/dirlink" || -L "${sweepdir}/trusted-scripts/planted" ]]; then got_left="yes"; else got_left="no"; fi
 assert_eq "sweep-removed" "no" "${got_left}"
-if [[ -L "${sweepdir}/.git/keeper" && -L "${sweepdir}/trusted-scripts/keeper" && -f "${sweepdir}/real.txt" ]]; then got_kept="yes"; else got_kept="no"; fi
+# Only .git is pruned: trusted helpers stage outside the reviewed
+# workspace, so a PR-tracked trusted-scripts/ subtree is untrusted and
+# swept like everything else.
+if [[ -L "${sweepdir}/.git/keeper" && -f "${sweepdir}/real.txt" ]]; then got_kept="yes"; else got_kept="no"; fi
 assert_eq "sweep-prunes" "yes" "${got_kept}"
 rm -rf "${sweepdir}"
 
@@ -239,6 +242,18 @@ rm -f "${dup_fix}"
 # --- schema.json ---
 if jq -e '.type == "object" and .additionalProperties == false and (.required | length) == 3' "${SCRIPT_DIR}/schema.json" >/dev/null 2>&1; then got_schema="yes"; else got_schema="no"; fi
 assert_eq "schema-shape" "yes" "${got_schema}"
+
+# --- paginated PR-files inventory merge (collect.sh) ---
+# gh --paginate emits one JSON document per page; only array pages merge,
+# so a mid-stream error object can never masquerade as a file list.
+pages_fix="$(mktemp)"
+printf '[{"filename":"a.ts"}]\n[{"filename":"b.ts"}]\n{"message":"API error"}\n' > "${pages_fix}"
+got="$(jq -s '[.[] | select(type == "array")] | add // []' "${pages_fix}")"
+assert_eq "pages-merge" '[{"filename":"a.ts"},{"filename":"b.ts"}]' "$(printf '%s' "${got}" | jq -c '.')"
+printf '{"message":"only errors"}\n' > "${pages_fix}"
+got="$(jq -s '[.[] | select(type == "array")] | add // []' "${pages_fix}")"
+assert_eq "pages-all-error" '[]' "$(printf '%s' "${got}" | jq -c '.')"
+rm -f "${pages_fix}"
 
 printf '\npass=%d fail=%d%s\n' "${pass}" "${fail}" "${fail_names:+  failed:${fail_names}}"
 [[ "${fail}" == "0" ]]

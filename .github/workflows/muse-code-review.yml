@@ -136,24 +136,23 @@ jobs:
           ref: ${{ github.event.pull_request.head.sha }}
           fetch-depth: 1
 
-      - name: Clear trusted-scripts collision
-        id: collision
+      - name: Stash workspace trusted-scripts copy
         if: steps.prereq.outputs.should_run == 'true'
         run: |
           set -euo pipefail
-          # The trusted checkout below lands at trusted-scripts/ inside the
-          # PR workspace: if the PR itself tracks that path, remove the
-          # workspace copy first so the sparse checkout lands cleanly
-          # instead of merging with (or failing on) submitter-controlled
-          # files. Evidence is preserved — diff, manifest, and git objects
-          # still carry the PR's versions; only working-tree full-file
-          # reads of exactly the planted paths degrade to diff context.
-          # This also keeps the symlink sweep sound: the surviving
-          # trusted-scripts/ tree is always the default-branch checkout,
-          # so pruning it from the sweep stays correct.
-          if git -C "${GITHUB_WORKSPACE}" cat-file -e "HEAD:trusted-scripts" 2>/dev/null; then
-            rm -rf "${GITHUB_WORKSPACE}/trusted-scripts"
-            echo "::warning::PR tracks trusted-scripts/; workspace copy removed before trusted checkout."
+          # The trusted checkout below lands at trusted-scripts/ with
+          # actions/checkout semantics: the target dir must not already
+          # exist, else the action fails. A PR-tracked trusted-scripts/
+          # subtree must never be deleted — the agent would otherwise read
+          # a tree with a hole exactly where the attacker planted paths.
+          # Stash the workspace copy aside (restored in scriptdir) so the
+          # checkout lands cleanly. Check git, not just the filesystem: a
+          # symlink farm could fake either answer.
+          if git -C "${GITHUB_WORKSPACE}" cat-file -e "HEAD:trusted-scripts" 2>/dev/null \
+            && [[ -e "${GITHUB_WORKSPACE}/trusted-scripts" ]]; then
+            rm -rf "${RUNNER_TEMP}/pr-trusted-scripts-orig"
+            mv "${GITHUB_WORKSPACE}/trusted-scripts" "${RUNNER_TEMP}/pr-trusted-scripts-orig"
+            echo "::warning::PR tracks trusted-scripts/; workspace copy stashed aside during trusted-helper staging."
           fi
 
       - name: Checkout trusted review scripts
@@ -182,8 +181,14 @@ jobs:
         if: steps.prereq.outputs.should_run == 'true'
         run: |
           set -euo pipefail
+          # Stage the trusted tree OUTSIDE the reviewed workspace: nothing
+          # trusted lives where the agent reads, so no PR-tracked path can
+          # shadow or poison a helper, and the symlink sweep needs no
+          # trusted carve-out.
           if [[ -f "${GITHUB_WORKSPACE}/trusted-scripts/.github/scripts/muse-review/lib.sh" ]]; then
-            echo "dir=${GITHUB_WORKSPACE}/trusted-scripts/.github/scripts/muse-review" >> "${GITHUB_OUTPUT}"
+            rm -rf "${RUNNER_TEMP}/trusted-scripts"
+            mv "${GITHUB_WORKSPACE}/trusted-scripts" "${RUNNER_TEMP}/trusted-scripts"
+            echo "dir=${RUNNER_TEMP}/trusted-scripts/.github/scripts/muse-review" >> "${GITHUB_OUTPUT}"
             echo "scripts_ok=true" >> "${GITHUB_OUTPUT}"
           else
             # Fail closed: never execute the PR-head script copy, which is
@@ -195,6 +200,14 @@ jobs:
             # selftest workflow. Downstream steps gate on scripts_ok.
             echo "scripts_ok=false" >> "${GITHUB_OUTPUT}"
             echo "::error::Trusted review scripts missing from default branch; skipping advisory review."
+          fi
+          # Restore the PR's own copy unconditionally, even when the trusted
+          # checkout failed: the agent must read the complete PR tree, never
+          # a hole where trusted-scripts/ was. Runs last in the step so a
+          # failed trusted checkout cannot strand the workspace mid-move.
+          if [[ -e "${RUNNER_TEMP}/pr-trusted-scripts-orig" ]]; then
+            rm -rf "${GITHUB_WORKSPACE}/trusted-scripts"
+            mv "${RUNNER_TEMP}/pr-trusted-scripts-orig" "${GITHUB_WORKSPACE}/trusted-scripts"
           fi
 
       - name: Collect PR diff and build prompt

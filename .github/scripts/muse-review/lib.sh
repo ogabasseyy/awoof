@@ -99,8 +99,10 @@ strip_images() {
   perl -0777 -pe 's{!\[((?:[^\[\]\\]++|\\.|(\[(?:[^\[\]\\]++|\\.|(?2))*\]))*)\]\(((?:[^()\\]++|\\.|(\((?:[^()\\]++|\\.|(?4))*\)))*)\)}{$1}g; s{!\[((?:[^\[\]\\]++|\\.|(\[(?:[^\[\]\\]++|\\.|(?2))*\]))*)\]\[((?:[^\[\]\\]++|\\.|(\[(?:[^\[\]\\]++|\\.|(?4))*\]))*)\]}{$1}g; s{!(\[((?:[^\[\]\\]++|\\.|(\[(?:[^\[\]\\]++|\\.|(?3))*\]))*)\])(?!\()}{$1}g; s{<\s*img\b[^>]*\balt\s*=\s*"([^"]*)"[^>]*>}{$1}gi; s{<\s*img\b[^>]*\balt\s*=\s*'"'"'([^'"'"']*)'"'"'[^>]*>}{$1}gi; s{<\s*img\b[^>]*>}{}gi'
 }
 
-# Remove every symlink under a workspace root (except .git and the trusted
-# scripts dir) and print the count. The agent runs with META_API_KEY in its
+# Remove every symlink under a workspace root (except .git) and print the
+# count. No trusted-scripts carve-out: trusted helpers stage outside the
+# reviewed workspace (RUNNER_TEMP), so every path the agent reads is
+# untrusted by construction. The agent runs with META_API_KEY in its
 # environment and is told to read changed files: a PR-added symlink such as
 # leak.txt -> /proc/self/environ would otherwise expose the key to the model
 # and its web tools, and --disable-shell does not stop filesystem reads.
@@ -111,7 +113,7 @@ sweep_workspace_symlinks() {
   local _root="$1" _removed=0 _link
   while IFS= read -r -d '' _link; do
     if rm -f -- "${_link}"; then _removed=$((_removed + 1)); fi
-  done < <(find "${_root}" \( -path "${_root}/.git" -o -path "${_root}/trusted-scripts" \) -prune -o -type l -print0 2>/dev/null)
+  done < <(find "${_root}" -path "${_root}/.git" -prune -o -type l -print0 2>/dev/null)
   printf '%d' "${_removed}"
 }
 
