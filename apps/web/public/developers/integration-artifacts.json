@@ -1,0 +1,20 @@
+{
+  "version": 1,
+  "deployment": "not-verified-by-this-artifact",
+  "enrollmentAuthority": "approved-current-enrollment-source-required",
+  "files": [
+    {
+      "path": "/developers/merchant-api.json",
+      "sha256": "d991db81e6340b962670128258cd70dc61f457ca1614d2ec410b642f32c3bf47"
+    },
+    {
+      "path": "/developers/merchant-starter.tar.gz",
+      "sha256": "cb0731ba6d713833ca64e23f8cee8324c547695d474e19734c236c72618065d4"
+    }
+  ],
+  "prospectiveConnections": {
+    "googleEntitlements": "provider-contract-required",
+    "verveCashback": "qualification-funding-settlement-reversal-contract-required",
+    "paystackMerchantPayments": "merchant-account-configuration-and-runtime-validation-required"
+  }
+}

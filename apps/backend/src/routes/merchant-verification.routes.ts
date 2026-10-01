@@ -38,12 +38,16 @@ import {
  *         assuranceMethod: { type: string, enum: [student_email, enrollment] }
  *         institutionId: { type: string, format: uuid }
  *         verifiedAt: { type: string, format: date-time }
- *         validUntil: { type: string, format: date-time }
+ *         validUntil: { type: string, format: date-time, description: Enrollment evidence expiry; not the discounted transaction settlement deadline. }
  *         campaignId: { type: string }
  *         benefitAuthorizationId:
  *           type: string
  *           format: uuid
  *           description: Present only for product-bound exchanges. Authorizes one discounted transaction report for the bound product; generic campaign receipts never carry it.
+ *         benefitValidUntil:
+ *           type: string
+ *           format: date-time
+ *           description: Persisted benefit authorization expiry for new product-bound receipts; the earlier of evidence expiry and two minutes after exchange. First settlement must complete before this deadline. Historical exact receipt retries are unchanged and may omit it; generic receipts never carry it.
  * /api/merchant-verification/assertions:
  *   post:
  *     summary: Create a short-lived merchant-specific eligibility code
@@ -232,6 +236,7 @@ export type ExchangeAssertion = (merchantKey: string, input: {
     receiptId: string; merchantSubject: string; eligible: true; assuranceMethod: string;
     institutionId: string; verifiedAt: string; validUntil: string; campaignId: string;
     benefitAuthorizationId?: string;
+    benefitValidUntil?: string;
 }>;
 export type CreateClaimSession = (merchantKey: string, input: ClaimSessionInput) => Promise<ClaimSessionResult>;
 export type ReadClaimSession = (sessionId: string) => Promise<ClaimSessionPublic>;

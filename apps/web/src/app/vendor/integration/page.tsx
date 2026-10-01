@@ -7,7 +7,7 @@
 'use client';
 
 import { useState, useEffect } from 'react';
-import { BarChart3, CreditCard, LayoutDashboard, LifeBuoy, Puzzle, Settings, ShoppingBag, Tag, Code, Key, Copy, Check, Webhook, CheckCircle2, AlertCircle } from 'lucide-react';
+import { BarChart3, CreditCard, LayoutDashboard, LifeBuoy, Puzzle, Settings, ShoppingBag, Tag, Code, Key, Copy, Check, CheckCircle2, AlertCircle } from 'lucide-react';
 import Link from 'next/link';
 import ProtectedRoute from '@/components/ProtectedRoute';
 import { useAuth } from '@/contexts/AuthContext';
@@ -119,7 +119,7 @@ export default function VendorIntegrationPage() {
 
             // If API key exists but not shown, indicate it exists
             if (apiKeyRes.data.data.hasApiKey && !apiKeyRes.data.data.apiKey) {
-                setApiKey('***hidden***');
+                setApiKey((current) => current && current !== '***hidden***' ? current : '***hidden***');
             }
 
             if (settingsRes?.data?.data?.settings) {
@@ -175,9 +175,9 @@ export default function VendorIntegrationPage() {
         const hasPaystackConfig = !!paymentSettings?.paystackSubaccountCode;
 
         if (hasPaymentMethod && hasApiKey && hasPaystackConfig) {
-            return { status: 'complete', message: 'Integration fully configured' };
+            return { status: 'partial', message: 'Settings saved — checkout and payment validation pending' };
         } else if (hasPaymentMethod && (hasApiKey || hasPaystackConfig)) {
-            return { status: 'partial', message: 'Integration partially configured' };
+            return { status: 'partial', message: 'Some settings saved — integration validation pending' };
         } else if (hasPaymentMethod) {
             return { status: 'started', message: 'Payment method selected, setup required' };
         } else {
@@ -271,7 +271,7 @@ export default function VendorIntegrationPage() {
                                     : 'border-transparent text-slate-500 hover:border-slate-300 hover:text-slate-700'
                                     }`}
                             >
-                                Widget Integration
+                                Checkout origins
                             </button>
                             <button
                                 onClick={() => setActiveTab('api')}
@@ -289,7 +289,7 @@ export default function VendorIntegrationPage() {
                                     : 'border-transparent text-slate-500 hover:border-slate-300 hover:text-slate-700'
                                     }`}
                             >
-                                Webhook Setup
+                                Payment events
                             </button>
                         </nav>
                     </div>
@@ -321,9 +321,9 @@ export default function VendorIntegrationPage() {
                                             2
                                         </div>
                                         <div className="flex-1">
-                                            <h3 className="font-semibold text-slate-900">Add Widget to Your Website</h3>
+                                            <h3 className="font-semibold text-slate-900">Implement hosted checkout</h3>
                                             <p className="mt-1 text-sm text-slate-600">
-                                                Add the Awoof verification widget to your website. See the &quot;Widget Integration&quot; tab for detailed instructions.
+                                                Use the hosted claim and fixed merchant callback in the Developer guide. Save allowed domains in Checkout origins. Browser widget verification is unavailable.
                                             </p>
                                         </div>
                                     </div>
@@ -335,7 +335,7 @@ export default function VendorIntegrationPage() {
                                         <div className="flex-1">
                                             <h3 className="font-semibold text-slate-900">Configure Payment Tracking</h3>
                                             <p className="mt-1 text-sm text-slate-600">
-                                                Set up either Paystack split payment (recommended) or use the Transaction Reporting API. See the &quot;Webhook Setup&quot; and &quot;API Configuration&quot; tabs.
+                                                Confirm payment on your backend, then report the checkout-bound benefit authorization. Independent Paystack accounts require separate merchant-secret configuration; see Payment events and the Developer guide.
                                             </p>
                                         </div>
                                     </div>
@@ -361,9 +361,7 @@ export default function VendorIntegrationPage() {
                                         <h3 className="text-lg font-semibold text-slate-900">Widget Status</h3>
                                     </div>
                                     <p className="mt-2 text-sm text-slate-600">
-                                        {paymentSettings?.paymentMethod === 'vendor_website'
-                                            ? 'Ready to integrate widget'
-                                            : 'Select &quot;Vendor Website&quot; payment method first'}
+                                        Browser widget unavailable; hosted checkout requires merchant backend validation.
                                     </p>
                                 </div>
 
@@ -374,7 +372,7 @@ export default function VendorIntegrationPage() {
                                     </div>
                                     <p className="mt-2 text-sm text-slate-600">
                                         {apiKeyInfo?.hasApiKey
-                                            ? `Active (${apiKeyInfo.keyInfo?.usageCount || 0} requests)`
+                                            ? `Stored (${apiKeyInfo.keyInfo?.usageCount || 0} requests; ${apiKeyInfo.keyInfo?.status || 'status unavailable'})`
                                             : 'No API key generated'}
                                     </p>
                                 </div>
@@ -387,28 +385,14 @@ export default function VendorIntegrationPage() {
                         <div className="space-y-6">
                             {/* Widget config: allowed domains + API key */}
                             <div className="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm">
-                                <h2 className="mb-2 text-lg font-semibold text-slate-900">Widget settings</h2>
+                                <h2 className="mb-2 text-lg font-semibold text-slate-900">Checkout origin settings</h2>
                                 <p className="mb-4 text-sm text-slate-600">
-                                    Add the HTTPS hostnames where your widget will run (standard port 443). Saving also authorizes those exact HTTPS origins for student disclosure consent.
+                                    Add the HTTPS hostnames for your merchant checkout (standard port 443). Saving authorizes those exact HTTPS origins for student disclosure consent; it does not validate your callback or enable a widget.
                                 </p>
                                 {widgetConfigLoading ? (
                                     <p className="text-slate-500 text-sm">Loading...</p>
                                 ) : widgetConfig ? (
                                     <div className="space-y-4">
-                                        <div>
-                                            <Label className="mb-2 block">Widget API key</Label>
-                                            <div className="flex gap-2">
-                                                <Input
-                                                    value={widgetConfig.apiKey}
-                                                    readOnly
-                                                    className="flex-1 font-mono text-sm"
-                                                />
-                                                <Button type="button" variant="outline" size="sm" onClick={() => copyToClipboard(widgetConfig.apiKey, 'widget-api-key')}>
-                                                    {copiedText === 'widget-api-key' ? <Check className="h-4 w-4" /> : <Copy className="h-4 w-4" />}
-                                                </Button>
-                                            </div>
-                                            <p className="mt-1 text-xs text-slate-500">Use this in Awoof.init(&#123; apiKey: &quot;...&quot; &#125;). Keep it secret.</p>
-                                        </div>
                                         <div>
                                             <Label className="mb-2 block">Allowed domains</Label>
                                             {widgetConfig.allowedDomains.length > 0 && !widgetConfig.allowedOrigins?.length && (
@@ -624,7 +608,7 @@ export default function VendorIntegrationPage() {
     paymentReference: 'paystack_ref_123',
     amount: 15000,
     productId: 'product-uuid',
-    paymentGateway: 'paystack'
+    paymentGateway: 'paystack_merchant'
   })
 })
 .then(response => response.json())
@@ -652,7 +636,7 @@ export default function VendorIntegrationPage() {
     paymentReference: 'paystack_ref_123',
     amount: 15000,
     productId: 'product-uuid',
-    paymentGateway: 'paystack'
+    paymentGateway: 'paystack_merchant'
   })
 })
 .then(response => response.json())
@@ -681,7 +665,7 @@ export default function VendorIntegrationPage() {
                                             <li><strong>paymentReference:</strong> Payment reference from your payment gateway</li>
                                             <li><strong>amount:</strong> Transaction amount in kobo (for Naira)</li>
                                             <li><strong>productId:</strong> UUID of the product purchased</li>
-                                            <li><strong>paymentGateway:</strong> Payment gateway used (&apos;paystack&apos; or &apos;other&apos;)</li>
+                                            <li><strong>paymentGateway:</strong> &apos;paystack_merchant&apos; for configured independent merchant accounts; &apos;paystack&apos; for the Awoof platform account; &apos;other&apos; for merchant-attested payment</li>
                                         </ul>
                                     </div>
                                 </div>
@@ -689,119 +673,15 @@ export default function VendorIntegrationPage() {
                         </div>
                     )}
 
-                    {/* Webhook Setup Tab */}
                     {activeTab === 'webhook' && (
-                        <div className="space-y-6">
-                            <div className="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm">
-                                <h2 className="mb-4 text-lg font-semibold text-slate-900">Paystack Webhook Configuration</h2>
-                                <p className="mb-6 text-sm text-slate-600">
-                                    Configure Paystack to automatically notify Awoof when payments are completed. This enables automatic commission tracking.
-                                </p>
-
-                                <div className="space-y-4">
-                                    <div>
-                                        <Label>Webhook URL</Label>
-                                        <div className="mt-2 flex gap-2">
-                                            <Input
-                                                value={`${apiBaseUrl}/api/webhooks/paystack/vendor-payment`}
-                                                readOnly
-                                                className="flex-1 font-mono text-sm"
-                                            />
-                                            <Button
-                                                type="button"
-                                                variant="outline"
-                                                size="sm"
-                                                onClick={() => copyToClipboard(
-                                                    `${apiBaseUrl}/api/webhooks/paystack/vendor-payment`,
-                                                    'webhook-url'
-                                                )}
-                                            >
-                                                {copiedText === 'webhook-url' ? (
-                                                    <Check className="h-4 w-4" />
-                                                ) : (
-                                                    <Copy className="h-4 w-4" />
-                                                )}
-                                            </Button>
-                                        </div>
-                                    </div>
-
-                                    <div className="rounded-lg bg-blue-50 p-4">
-                                        <h3 className="mb-3 text-sm font-semibold text-blue-900">Setup Instructions:</h3>
-                                        <ol className="space-y-2 text-sm text-blue-800">
-                                            <li className="flex items-start gap-2">
-                                                <span className="mt-0.5 flex h-5 w-5 items-center justify-center rounded-full bg-blue-200 text-xs font-semibold">1</span>
-                                                <span>Log in to your <a href="https://dashboard.paystack.com" target="_blank" rel="noopener noreferrer" className="underline">Paystack Dashboard</a></span>
-                                            </li>
-                                            <li className="flex items-start gap-2">
-                                                <span className="mt-0.5 flex h-5 w-5 items-center justify-center rounded-full bg-blue-200 text-xs font-semibold">2</span>
-                                                <span>Navigate to <strong>Settings → Webhooks</strong></span>
-                                            </li>
-                                            <li className="flex items-start gap-2">
-                                                <span className="mt-0.5 flex h-5 w-5 items-center justify-center rounded-full bg-blue-200 text-xs font-semibold">3</span>
-                                                <span>Click <strong>&quot;Add Webhook&quot;</strong></span>
-                                            </li>
-                                            <li className="flex items-start gap-2">
-                                                <span className="mt-0.5 flex h-5 w-5 items-center justify-center rounded-full bg-blue-200 text-xs font-semibold">4</span>
-                                                <span>Paste the webhook URL above</span>
-                                            </li>
-                                            <li className="flex items-start gap-2">
-                                                <span className="mt-0.5 flex h-5 w-5 items-center justify-center rounded-full bg-blue-200 text-xs font-semibold">5</span>
-                                                <span>Select event: <code className="rounded bg-blue-100 px-1 py-0.5 text-xs">charge.success</code></span>
-                                            </li>
-                                            <li className="flex items-start gap-2">
-                                                <span className="mt-0.5 flex h-5 w-5 items-center justify-center rounded-full bg-blue-200 text-xs font-semibold">6</span>
-                                                <span>Click <strong>&quot;Save&quot;</strong></span>
-                                            </li>
-                                        </ol>
-                                    </div>
-
-                                    {paymentSettings?.paystackSubaccountCode ? (
-                                        <div className="rounded-lg bg-green-50 p-4">
-                                            <div className="flex items-center gap-2">
-                                                <CheckCircle2 className="h-5 w-5 text-green-600" />
-                                                <span className="text-sm font-medium text-green-900">
-                                                    Paystack subaccount configured
-                                                </span>
-                                            </div>
-                                            <p className="mt-1 text-xs text-green-700">
-                                                Payments will be automatically split. Commission will be deducted automatically.
-                                            </p>
-                                        </div>
-                                    ) : (
-                                        <div className="rounded-lg bg-yellow-50 p-4">
-                                            <div className="flex items-center gap-2">
-                                                <AlertCircle className="h-5 w-5 text-yellow-600" />
-                                                <span className="text-sm font-medium text-yellow-900">
-                                                    Paystack subaccount not configured
-                                                </span>
-                                            </div>
-                                            <p className="mt-1 text-xs text-yellow-700">
-                                                Configure your Paystack subaccount in{' '}
-                                                <a href="/vendor/payment" className="underline hover:text-yellow-900">
-                                                    Payment Settings
-                                                </a>{' '}
-                                                to enable automatic commission splitting.
-                                            </p>
-                                        </div>
-                                    )}
-                                </div>
-                            </div>
-
-                            <div className="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm">
-                                <h2 className="mb-4 text-lg font-semibold text-slate-900">Webhook Events</h2>
-                                <p className="mb-4 text-sm text-slate-600">
-                                    The following events are processed by Awoof:
-                                </p>
-                                <div className="space-y-2">
-                                    <div className="flex items-center gap-2 rounded-lg border border-slate-200 p-3">
-                                        <Webhook className="h-5 w-5 text-blue-600" />
-                                        <div>
-                                            <p className="text-sm font-semibold text-slate-900">charge.success</p>
-                                            <p className="text-xs text-slate-600">Triggered when a payment is successfully completed</p>
-                                        </div>
-                                    </div>
-                                </div>
-                            </div>
+                        <div className="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm space-y-4">
+                            <h2 className="text-lg font-semibold text-slate-900">Merchant-owned payment events</h2>
+                            <p className="text-sm text-slate-600">Receive independent merchant payment notifications on your own backend. Validate the provider signature over the raw payload, persist and deduplicate events, then verify the trusted order reference, account, environment, amount and currency before reporting to Awoof. A browser callback alone cannot confirm payment.</p>
+                            <p className="text-sm text-slate-600">For Paystack merchant accounts, initialize payment with metadata awoofVendorId, awoofProductId and awoofBenefitAuthorizationId. The operator must configure the merchant account secret server-side before paystack_merchant reporting can verify payment. Your subaccount setting alone does not supply this configuration.</p>
+                            <p className="text-sm text-slate-600">Awoof&apos;s existing /api/webhooks/paystack route serves its marketplace payment flow. It is not a general webhook destination for independent merchant accounts. Independent merchant checkouts use their own event handler and POST /api/vendors/transactions/report.</p>
+                            <p className="text-sm text-slate-600">Retry reports with the exact original authorization, product, amount, reference and gateway. Keep unresolved payments pending for reconciliation. Confirm refunds with the provider first, then update a completed external-payment order to refunded in your vendor orders dashboard or through PUT /api/vendors/orders/:id/status using your signed-in vendor JWT. This bookkeeping restores consumed stock and reverses recorded student savings; it does not initiate a PSP refund. Reconcile unrecorded or legacy cases through vendor support.</p>
+                            <Link href="/developers#payment" className="inline-flex min-h-[44px] items-center font-semibold text-[#1D4ED8] underline">Payment modes, reporting and reconciliation guide</Link>
+                            <a href="https://paystack.com/docs/payments/webhooks/" target="_blank" rel="noopener noreferrer" className="block min-h-[44px] content-center font-semibold text-[#1D4ED8] underline">Paystack webhook contract</a>
                         </div>
                     )}
                 </div>

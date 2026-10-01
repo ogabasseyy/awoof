@@ -52,3 +52,27 @@ test('developers page renders no secret-shaped example values', async ({ page })
     expect(text.split(/\s+/).some((token) => /^[A-Za-z0-9_-]{43}$/.test(token))).toBe(false);
   }
 });
+
+
+for (const width of [360, 768, 1440]) {
+  test(`merchant guide exposes checkout bindings and downloads at ${width}px`, async ({ page }) => {
+    await installSyntheticApi(page);
+    await page.setViewportSize({ width, height: 900 });
+    await page.goto('/developers');
+    await expect(page.getByRole('heading', { name: 'Hosted checkout and the fixed callback' })).toBeVisible();
+    await expect(page.getByRole('link', { name: 'Download merchant starter' })).toHaveAttribute('href', '/developers/merchant-starter.tar.gz');
+    await expect(page.getByRole('link', { name: 'Download merchant OpenAPI' })).toHaveAttribute('href', '/developers/merchant-api.json');
+    await expect(page.locator('main')).toContainText('/marketplace/{productId}?claimSession={claimSessionId}');
+    await expect(page.locator('main')).toContainText('campaignId exactly equal to merchantCheckoutId');
+    await expect(page.locator('main')).toContainText('awoofBenefitAuthorizationId');
+    await expect(page.locator('main')).toContainText('15000 kobo');
+    await expect(page.locator('main')).toContainText('unconfigured');
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+    const commands = page.locator('pre[aria-label="Local synthetic merchant commands"]');
+    await commands.focus();
+    await expect(commands).toBeFocused();
+    await page.getByRole('navigation', { name: 'Guide sections' }).getByRole('link', { name: 'Partner connection options' }).click();
+    await expect(page).toHaveURL(/#connections$/);
+    await expect(page.getByRole('heading', { name: 'Choose a partner connection' })).toBeVisible();
+  });
+}

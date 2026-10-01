@@ -56,6 +56,15 @@ const envSchema = z.object({
     WHATSAPP_API_URL: z.string().url().optional().or(z.literal('')),
     PAYSTACK_SECRET_KEY: z.string().optional(),
     PAYSTACK_PUBLIC_KEY: z.string().optional(),
+    // Server-only vendor UUID -> merchant account verification secret. No fallback.
+    PAYSTACK_MERCHANT_SECRET_KEYS: z.string().default('{}').transform((raw, ctx) => {
+        try {
+            const parsed = z.record(z.string().uuid(), z.string().trim().min(1)).safeParse(JSON.parse(raw));
+            if (parsed.success) return parsed.data;
+        } catch { /* Report only a generic configuration error; never secret contents. */ }
+        ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'Merchant Paystack keys must be a JSON object mapping vendor UUIDs to non-empty secrets' });
+        return z.NEVER;
+    }),
     // Brevo (Email Service)
     BREVO_API_KEY: z.string().optional(),
     BREVO_FROM_NAME: z.string().optional(),
@@ -252,6 +261,7 @@ export const config = {
     paystack: {
         secretKey: env.PAYSTACK_SECRET_KEY,
         publicKey: env.PAYSTACK_PUBLIC_KEY,
+        merchantSecretKeys: env.PAYSTACK_MERCHANT_SECRET_KEYS,
     },
 
     aws: {

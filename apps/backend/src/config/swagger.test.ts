@@ -260,10 +260,7 @@ test('student-authenticated operations document the session-validation outage', 
         ['/api/merchant-verification/product-claims', 'post'],
         ['/api/admin/students', 'get'],
     ];
-    // NOTE: /api/vendors/* blocks carry @swagger annotations but never
-    // parse into the compiled spec (pre-existing, unrelated to the 503:
-    // the whole operations are unpublished). They are excluded until
-    // those blocks are fixed, not because the outage cannot occur there.
+    operations.push(['/api/vendors/transactions/report', 'post']);
     for (const [path, method] of operations) {
         const response = spec.paths[path]?.[method]?.responses?.['503'];
         assert.ok(response, `${method.toUpperCase()} ${path} documents the session-validation 503`);
@@ -290,4 +287,46 @@ test('linked identity schemas publish the optional masked mailbox label', () => 
     const linked = spec.components.schemas.StudentSsoLinkResponse.properties.data.properties?.identity as IdentitySchema;
     assert.equal(linked.properties.mailboxMasked?.type, 'string');
     assert.ok(!linked.required?.includes('mailboxMasked'), 'masked mailbox is absent when the provider supplied none');
+});
+
+
+test('merchant transaction report is published with both private authentication methods and exact minor units', () => {
+    const spec = swaggerSpec as { paths: Record<string, { post: {
+        security: Record<string, unknown[]>[];
+        requestBody: { content: { 'application/json': { schema: { required: string[]; additionalProperties: boolean; properties: Record<string, { type: string; description?: string }> } } } };
+    } }> };
+    const operation = spec.paths['/api/vendors/transactions/report']?.post;
+    assert.ok(operation);
+    assert.deepEqual(operation.security, [{ bearerAuth: [] }, { merchantReportingKey: [] }]);
+    const body = operation.requestBody.content['application/json'].schema;
+    assert.equal(body.additionalProperties, false);
+    assert.equal(body.properties.amount.type, 'integer');
+    assert.ok(body.required.includes('benefitAuthorizationId'));
+    assert.match(body.properties.paymentGateway.description ?? '', /paystack_merchant/);
+});
+
+
+test('merchant order status contract requires vendor JWT and accurately describes refund bookkeeping', () => {
+    const spec = swaggerSpec as { paths: Record<string, { put: {
+        description: string; security: Record<string, unknown[]>[];
+        requestBody: { content: { 'application/json': { schema: { properties: { status: { enum: string[] } } } } } };
+    } }> };
+    const operation = spec.paths['/api/vendors/orders/{id}/status']?.put;
+    assert.ok(operation);
+    assert.deepEqual(operation.security, [{ bearerAuth: [] }]);
+    assert.deepEqual(operation.requestBody.content['application/json'].schema.properties.status.enum,
+        ['pending', 'completed', 'failed', 'refunded']);
+    assert.match(operation.description, /does not issue a provider refund/);
+    assert.match(operation.description, /require reconciliation/);
+});
+
+
+test('merchant receipt distinguishes evidence validity from the optional persisted benefit deadline', () => {
+    const spec = swaggerSpec as { components: { schemas: Record<string, { required: string[]; properties: Record<string, { type: string; format?: string; description?: string }> }> } };
+    const receipt = spec.components.schemas.MerchantVerificationReceipt;
+    assert.equal(receipt.properties.benefitValidUntil.type, 'string');
+    assert.equal(receipt.properties.benefitValidUntil.format, 'date-time');
+    assert.equal(receipt.required.includes('benefitValidUntil'), false);
+    assert.match(receipt.properties.validUntil.description ?? '', /not the discounted transaction settlement deadline/);
+    assert.match(receipt.properties.benefitValidUntil.description ?? '', /Historical exact receipt retries/);
 });
