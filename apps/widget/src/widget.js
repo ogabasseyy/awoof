@@ -9,6 +9,7 @@ let state = {
   callbacks: { onSuccess: null, onError: null, onCancel: null },
 };
 let active = false;
+let initializing = false;
 
 function secureOrigin(value, description) {
   let url;
@@ -23,6 +24,7 @@ function secureOrigin(value, description) {
 /** Public widget key identifies a merchant site. The private exchange key stays on the merchant server. */
 function init(opts = {}) {
   if (active) throw new Error('Awoof.init: verification is already open');
+  if (initializing) throw new Error('Awoof.init: merchant initialization is already in progress');
   const apiKey = opts.apiKey || opts.api_key;
   if (typeof apiKey !== 'string' || !apiKey.trim()) throw new Error('Awoof.init: apiKey is required');
   if (typeof window === 'undefined') throw new Error('Awoof.init: browser required');
@@ -33,12 +35,14 @@ function init(opts = {}) {
     apiBaseUrl, webAppUrl, apiKey: apiKey.trim(), vendorId: null, originAllowed: false,
     callbacks: { onSuccess: opts.onSuccess || null, onError: opts.onError || null, onCancel: opts.onCancel || null },
   };
+  initializing = true;
   return checkDomain(apiBaseUrl, window.location.hostname, state.apiKey, origin).then((result) => {
     if (!result.allowed || typeof result.vendorId !== 'string') throw new Error('Merchant origin is not approved');
     state.vendorId = result.vendorId;
     state.originAllowed = true;
     return { allowed: true, vendorId: result.vendorId };
-  }).catch((error) => { state.vendorId = null; state.originAllowed = false; throw error; });
+  }).catch((error) => { state.vendorId = null; state.originAllowed = false; throw error; })
+    .finally(() => { initializing = false; });
 }
 
 /**

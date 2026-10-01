@@ -3,6 +3,43 @@ import test from 'node:test';
 import { webcrypto } from 'node:crypto';
 import Awoof from './widget.js';
 
+test('an overlapping init cannot replace a pending merchant approval', async () => {
+  const originalWindow = globalThis.window;
+  const originalFetch = globalThis.fetch;
+  const requests = [];
+  let finish;
+  globalThis.window = { location: { origin: 'https://shop.example', hostname: 'shop.example' } };
+  globalThis.fetch = (url, request) => {
+    requests.push({ url, body: JSON.parse(request.body) });
+    return new Promise((resolve) => { finish = resolve; });
+  };
+  try {
+    const first = Awoof.init({ apiKey: 'first-public-key', apiBaseUrl: 'https://api.awoof.test', webAppUrl: 'https://app.awoof.test' });
+    assert.throws(() => Awoof.init({ apiKey: 'second-public-key', apiBaseUrl: 'https://other-api.example', webAppUrl: 'https://other-app.example' }), /initialization is already in progress/);
+    assert.equal(requests.length, 1);
+    finish({ ok: true, json: async () => ({ data: { allowed: true, vendorId: 'first-merchant' } }) });
+    assert.deepEqual(await first, { allowed: true, vendorId: 'first-merchant' });
+    globalThis.fetch = async (url, request) => {
+      assert.equal(url, 'https://api.awoof.test/api/widget/domain-check');
+      assert.equal(JSON.parse(request.body).apiKey, 'first-public-key');
+      return { ok: true, json: async () => ({ data: { allowed: true, vendorId: 'first-merchant' } }) };
+    };
+    assert.deepEqual(await Awoof.checkDomain(), { allowed: true, vendorId: 'first-merchant' });
+  } finally { globalThis.window = originalWindow; globalThis.fetch = originalFetch; }
+});
+
+test('a failed approval releases the init lock so another merchant can retry', async () => {
+  const originalWindow = globalThis.window;
+  const originalFetch = globalThis.fetch;
+  globalThis.window = { location: { origin: 'https://shop.example', hostname: 'shop.example' } };
+  try {
+    globalThis.fetch = async () => { throw new Error('Network unavailable'); };
+    await assert.rejects(Awoof.init({ apiKey: 'first-public-key', apiBaseUrl: 'https://api.awoof.test', webAppUrl: 'https://app.awoof.test' }), /Network unavailable/);
+    globalThis.fetch = async () => ({ ok: true, json: async () => ({ data: { allowed: true, vendorId: 'retry-merchant' } }) });
+    assert.deepEqual(await Awoof.init({ apiKey: 'retry-public-key', apiBaseUrl: 'https://api.awoof.test', webAppUrl: 'https://app.awoof.test' }), { allowed: true, vendorId: 'retry-merchant' });
+  } finally { globalThis.window = originalWindow; globalThis.fetch = originalFetch; }
+});
+
 test('popup accepts only a fresh code from its Awoof window, matching state and campaign', async () => {
   const originalWindow = globalThis.window;
   const originalFetch = globalThis.fetch;
