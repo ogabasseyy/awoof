@@ -49,9 +49,27 @@ test('pilot contracts document retryable session-validation outages and receipt 
     assert.ok(receipt?.required?.includes('purpose'), 'receipt must require purpose');
     assert.equal(receipt?.properties?.purpose?.type, 'string');
     const exchange = doc.paths['/api/merchant-verification/exchange']?.post;
-    assert.ok(exchange?.responses['422'], 'exchange must document 422 for malformed bodies');
+    assert.ok(exchange?.responses['422'], 'exchange must document 422 for invalid request shapes');
     assert.match(String((exchange?.responses['400'] as { description?: string })?.description ?? ''), /campaign/i);
     assert.doesNotMatch(String((exchange?.responses['400'] as { description?: string })?.description ?? ''), /invalid input/i);
+    assert.match(String((exchange?.responses['400'] as { description?: string })?.description ?? ''), /product unavailable/i);
+    assert.match(String((exchange?.responses['422'] as { description?: string })?.description ?? ''), /request shape/i);
+    assert.doesNotMatch(String((exchange?.responses['422'] as { description?: string })?.description ?? ''), /malformed|JSON body/i);
+});
+
+test('disclosures contract documents the session fence and account-switch outcome', () => {
+    type JsonSchema = { $ref?: string; type?: string; format?: string; required?: string[]; properties?: Record<string, JsonSchema> };
+    type PostEndpoint = {
+        requestBody?: { content: Record<string, { schema: JsonSchema }> };
+        responses: Record<string, JsonSchema & { description?: string; $ref?: string }>;
+    };
+    const doc = swaggerSpec as { paths: Record<string, { post?: PostEndpoint }> };
+    const disclosures = doc.paths['/api/verification/disclosures']?.post;
+    assert.ok(disclosures, 'POST /api/verification/disclosures must publish');
+    const request = disclosures.requestBody?.content['application/json']?.schema;
+    assert.deepEqual(request?.required, ['vendorId', 'origin', 'purpose', 'accepted', 'noticeVersion']);
+    assert.equal(request?.properties?.expectedUserId?.format, 'uuid');
+    assert.match(String(disclosures.responses['403']?.description ?? ''), /account changed/i);
 });
 
 test('publishes the vendor widget-config contract with exact origins', () => {

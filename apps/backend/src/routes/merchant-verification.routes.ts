@@ -130,7 +130,7 @@ import {
  *       '400': { description: Invalid merchant origin or issuance input; product binding is unavailable in this pilot. }
  *       '401': { description: Student authentication required }
  *       '403': { description: Pilot account or merchant unavailable, or current eligibility or disclosure unavailable. }
- *       '422': { description: Invalid JSON body }
+ *       '422': { description: Invalid request shape; field validation failure }
  *       '503': { $ref: '#/components/responses/SessionValidationUnavailable' }
  * /api/merchant-verification/exchange:
  *   post:
@@ -163,11 +163,11 @@ import {
  *               properties:
  *                 success: { type: boolean, enum: [true] }
  *                 data: { $ref: '#/components/schemas/MerchantVerificationReceipt' }
- *       '400': { description: Invalid code or campaign mismatch; failed claim-session binding }
+ *       '400': { description: Invalid code or campaign mismatch; failed claim-session binding; product unavailable for product-bound codes }
  *       '401': { description: Private merchant key invalid or merchant inactive }
  *       '403': { description: Eligibility or disclosure no longer current }
  *       '409': { description: Code expired, consumed by another operation or conflicting idempotency key }
- *       '422': { description: Invalid JSON body }
+ *       '422': { description: Invalid request shape; field validation failure }
  *       '429': { description: Merchant key hourly quota exhausted or key unavailable }
  * /api/merchant-verification/claim-sessions:
  *   post:

@@ -456,3 +456,70 @@
  *       400:
  *         $ref: '#/components/responses/BadRequest'
  */
+
+/**
+ * @swagger
+ * /api/verification/disclosures:
+ *   post:
+ *     summary: Record a merchant disclosure consent for the signed-in student
+ *     tags: [Verification]
+ *     security:
+ *       - bearerAuth: []
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required:
+ *               - vendorId
+ *               - origin
+ *               - purpose
+ *               - accepted
+ *               - noticeVersion
+ *             properties:
+ *               vendorId:
+ *                 type: string
+ *                 format: uuid
+ *                 description: Merchant receiving the disclosure
+ *               origin:
+ *                 type: string
+ *                 description: Merchant origin the consent is bound to
+ *               purpose:
+ *                 type: string
+ *                 description: Consent wording the student approved
+ *               accepted:
+ *                 type: boolean
+ *                 description: Must be true to record consent
+ *                 example: true
+ *               noticeVersion:
+ *                 type: string
+ *                 description: Disclosure notice version the student saw
+ *               expectedUserId:
+ *                 type: string
+ *                 format: uuid
+ *                 description: Optional session fence. When present it must match the authenticated account; a mid-flight account switch fails the write with 403 instead of recording another account's consent.
+ *     responses:
+ *       201:
+ *         description: Merchant disclosure consent recorded
+ *         content:
+ *           application/json:
+ *             schema:
+ *               allOf:
+ *                 - $ref: '#/components/schemas/SuccessResponse'
+ *                 - type: object
+ *                   properties:
+ *                     data:
+ *                       type: object
+ *                       properties:
+ *                         grantId:
+ *                           type: string
+ *                           format: uuid
+ *                           description: Disclosure grant to present at assertion issuance
+ *       400:
+ *         $ref: '#/components/responses/BadRequest'
+ *       401:
+ *         $ref: '#/components/responses/Unauthorized'
+ *       403:
+ *         description: Account changed during consent; restart the verification flow
+ */

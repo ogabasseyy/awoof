@@ -93,11 +93,11 @@ export const developerPilotReceiptFields = [
 ];
 
 export const developerPilotErrors = [
-  { status: '400', meaning: 'Code invalid, campaign mismatch, or failed claim-session binding. Correct the request; do not grant a benefit.' },
+  { status: '400', meaning: 'Code invalid, campaign mismatch, failed claim-session binding, or product unavailable for product-bound codes. Correct the request; do not grant a benefit.' },
   { status: '401', meaning: 'Private key invalid or merchant inactive. Check server configuration.' },
   { status: '403', meaning: 'Current eligibility or disclosure is unavailable. Do not grant a benefit; resolve the issue before restarting the check.' },
   { status: '409', meaning: 'Code expired, already consumed, or idempotency binding conflicted. Start a new check unless retrying the exact committed request.' },
-  { status: '422', meaning: 'Malformed JSON body or field shape. Fix the request shape; do not grant a benefit.' },
+  { status: '422', meaning: 'Invalid request shape or field validation failure on syntactically valid JSON. Fix the request shape; do not grant a benefit.' },
   { status: '429', meaning: 'Merchant key quota exhausted or unavailable. Wait and retry according to your server policy; do not grant a benefit.' },
 ];
 
@@ -225,5 +225,5 @@ export const developerSeparations = [
   'Server keys are not browser keys. Keys live on your backend; nothing secret goes in pages, apps, or URLs.',
   'Receipt history is not new authorization. Replays return the committed receipt; only a fresh approved check creates a new one.',
   'Claim links are not redemptions. A shared handoff URL redeems nothing without your nonce-bound checkout session and a server-side exchange.',
-  'Errors are explicit: 400 invalid code or campaign, 401 invalid key or inactive merchant, 403 check no longer current, 409 expired, conflicting, or unintegrated claim, 422 malformed request body, 429 quota exhausted.',
+  'Errors are explicit: 400 invalid code, campaign, claim-session binding, or product availability, 401 invalid key or inactive merchant, 403 check no longer current, 409 expired, conflicting, or unintegrated claim, 422 invalid request shape, 429 quota exhausted.',
 ];
