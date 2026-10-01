@@ -94,12 +94,12 @@ jobs:
       github.event.pull_request.head.repo.full_name == github.repository &&
       (github.event.action != 'edited' || github.event.changes.base != null)
     runs-on: ubuntu-latest
-    # Budget (worst-case caps must sum below this): collect 10 + guard 2
-    # + install 5 + run 10 + post 5 = 32, inside the 35-min job cap, so the
-    # fallback post always retains its window plus step-overhead headroom.
-    # Phase `timeout`/`timeout-minutes` caps are fail-fast kill-caps for
-    # hung calls, not expected durations.
-    timeout-minutes: 35
+    # Budget (worst-case caps must sum below this): checkouts 5 + 5 +
+    # collect 10 + guard 2 + install 5 + run 10 + post 5 = 42, inside the
+    # 45-min job cap, so the fallback post always retains its window plus
+    # step-overhead headroom. Phase `timeout`/`timeout-minutes` caps are
+    # fail-fast kill-caps for hung calls, not expected durations.
+    timeout-minutes: 45
     env:
       MUSE_MODEL_RESOLVED: ${{ vars.MUSE_MODEL != '' && vars.MUSE_MODEL || '' }}
       MUSE_EFFORT_RESOLVED: ${{ vars.MUSE_REASONING_EFFORT != '' && vars.MUSE_REASONING_EFFORT || 'medium' }}
@@ -122,6 +122,11 @@ jobs:
       # from the default-branch checkout, the agent runs the pinned binary.
       - name: Checkout repository # nosemgrep: yaml.github-actions.security.pull-request-target-code-checkout.pull-request-target-code-checkout
         if: steps.prereq.outputs.should_run == 'true'
+        # Advisory: a transient checkout failure must degrade to the fallback
+        # post, not fail the job. Bounded so a hung fetch cannot eat the
+        # fallback window (see budget above).
+        continue-on-error: true
+        timeout-minutes: 5
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           persist-credentials: false
@@ -152,6 +157,12 @@ jobs:
 
       - name: Checkout trusted review scripts
         if: steps.prereq.outputs.should_run == 'true'
+        # Advisory: same fail-soft contract as the head checkout. If the
+        # trusted tree is missing, scriptdir reports scripts_ok=false and
+        # downstream steps (including Post) skip by condition — the job
+        # still passes with the miss logged.
+        continue-on-error: true
+        timeout-minutes: 5
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           persist-credentials: false
@@ -290,7 +301,13 @@ jobs:
         # Advisory to the end: a posting failure (timeout, jq/filesystem
         # error) must warn, never fail the job or block the merge.
         continue-on-error: true
+        # always(): the fallback post must not inherit the implicit
+        # success() gate — a hard failure upstream (e.g. a checkout that
+        # exhausted its bound) must still reach the fallback note. The
+        # remaining conditions still decide whether posting makes sense,
+        # and post.sh defaults missing outputs to the failure path.
         if: >-
+          always() &&
           steps.prereq.outputs.should_run == 'true' &&
           steps.scriptdir.outputs.scripts_ok == 'true' &&
           steps.diff.outputs.duplicate != 'true' &&
