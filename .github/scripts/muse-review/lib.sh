@@ -86,7 +86,13 @@ sanitize_mentions() {
 # no auto-fetch, still readable, same as any citation. Apply with
 # sanitize_mentions(), before byte-bounding.
 strip_images() {
-  perl -pe 's/!\[([^\]]*)\]\((?:[^()]*|\([^()]*\))*\)/$1/g; s/!\[([^\]]*)\]\[[^\]]*\]/$1/g; s/!(\[[^\]]+\])(?!\()/$1/g; s{<\s*img\b[^>]*\balt\s*=\s*"([^"]*)"[^>]*>}{$1}gi; s{<\s*img\b[^>]*\balt\s*=\s*'"'"'([^'"'"']*)'"'"'[^>]*>}{$1}gi; s{<\s*img\b[^>]*>}{}gi'
+  # The inline-image destination matches balanced parentheses to any depth
+  # via group-3 self-recursion ((?3)): GitHub-flavored Markdown accepts
+  # nested balanced parens in link destinations, so a one-level pattern
+  # would leave ![pixel](.../a((b)).png) intact and fetchable. Possessive
+  # [^()]++ keeps the match linear; unbalanced destinations match nothing
+  # and (like GFM itself) are left alone.
+  perl -pe 's{!\[([^\]]*)\]\(((?:[^()]++|(\((?:[^()]++|(?3))*\)))*)\)}{$1}g; s/!\[([^\]]*)\]\[[^\]]*\]/$1/g; s/!(\[[^\]]+\])(?!\()/$1/g; s{<\s*img\b[^>]*\balt\s*=\s*"([^"]*)"[^>]*>}{$1}gi; s{<\s*img\b[^>]*\balt\s*=\s*'"'"'([^'"'"']*)'"'"'[^>]*>}{$1}gi; s{<\s*img\b[^>]*>}{}gi'
 }
 
 # Remove every symlink under a workspace root (except .git and the trusted

@@ -134,6 +134,8 @@ got="$(printf '%s' 'paren ![p](https://g.example/u(1).png) squote <img alt='"'"'
 assert_eq "images-edge" "paren p squote sq" "${got}"
 got="$(printf '%s' $'see ![pixel]\n\n[pixel]: https://a.example/p and [kept](https://d.example/x)' | strip_images)"
 assert_eq "images-shortcut-ref" $'see [pixel]\n\n[pixel]: https://a.example/p and [kept](https://d.example/x)' "${got}"
+got="$(printf '%s' 'x ![pixel](https://example.invalid/a((b)).png) y and ![t](http://e.example/a((b(c))d).png)' | strip_images)"
+assert_eq "images-nested-parens" "x pixel y and t" "${got}"
 assert_eq "redact-assign" 'api_key="[REDACTED]"' "$(redact 'api_key="abcDEF1234567890"')"
 assert_eq "redact-token-colon" 'token: [REDACTED]' "$(redact 'token: abcDEF1234567890')"
 assert_eq "redact-prose-kept" "no token here" "$(redact 'no token here')"
