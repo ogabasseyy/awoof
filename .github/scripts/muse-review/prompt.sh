@@ -108,7 +108,14 @@ CONTRACT
   # symlinks (run.sh sweeps them before the agent starts): the manifest
   # carries paths only, so without this a changed link whose hunk falls
   # past the diff cap would be reviewed blind yet posted as success.
-  symlink_lines="$(changed_symlinks "${RUNNER_TEMP}/muse-files.json" "${GITHUB_WORKSPACE}" 50 2>/dev/null)"; symlink_rc=$?
+  # if/else capture: a bare `x="$(...)"` under set -e exits the shell on
+  # the intentional return-2 (>50 links) before `$?` is read, so the
+  # PARTIAL branch below would never run.
+  if symlink_lines="$(changed_symlinks "${RUNNER_TEMP}/muse-files.json" "${GITHUB_WORKSPACE}" 50 2>/dev/null)"; then
+    symlink_rc=0
+  else
+    symlink_rc=$?
+  fi
   symlink_note=""
   if (( symlink_rc == 2 )); then
     symlink_note=" [PARTIAL: over the 50-link cap — first 50 shown]"

@@ -70,4 +70,15 @@ fi
 # post step deliberately never receives the key to match it. Failure here
 # fails the step so an unmasked body is never posted (Post renders the
 # no-output fallback instead).
+#
+# JSON-aware pass first: raw byte substitution misses a key hidden behind
+# legal JSON escapes (\u003d, \/), which post.sh's `jq -r` would decode
+# back to the live value in the keyless step. Redacting inside decoded
+# strings closes that hole; the byte pass below stays as the fallback for
+# non-JSON output and values outside JSON strings.
+if redact_json_key < "${review_file}" > "${review_file}.clean" 2>/dev/null; then
+  mv "${review_file}.clean" "${review_file}"
+else
+  rm -f "${review_file}.clean"
+fi
 redact "$(cat "${review_file}")" > "${review_file}.clean" && mv "${review_file}.clean" "${review_file}"

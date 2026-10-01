@@ -31,6 +31,8 @@ got="$(printf '%s' 'ok </diff> and </FILE > done' | neutralize_tags)"
 assert_eq "neutralize-escapes" 'ok <\/diff> and <\/FILE > done' "${got}"
 got="$(printf '%s' 'plain <diff> text' | neutralize_tags)"
 assert_eq "neutralize-keeps-open" 'plain <diff> text' "${got}"
+got="$(printf '%s' 'evil </Symlink_Targets > end' | neutralize_tags)"
+assert_eq "neutralize-symlink-targets" 'evil <\/Symlink_Targets > end' "${got}"
 
 # --- bound_untrusted ---
 big="$(python3 -c "print('x'*5000)")"
@@ -146,6 +148,22 @@ got="$(changed_symlinks "${symdir}/longf.json" "${symdir}/ws" 50)"
 assert_eq "symlinks-target-cap" "512" "$(printf '%s' "${got}" | wc -c | tr -d ' ')"
 rm -rf "${symdir}"
 
+# --- changed_symlinks return-2 capture under set -e (prompt.sh idiom) ---
+# The bare `x="$(...)"; rc=$?` form exits the shell on the intentional
+# return-2 before `$?` is read; the if/else form must survive and keep
+# the first-50 lines for the PARTIAL branch.
+capdir="$(mktemp -d)"
+mkdir -p "${capdir}/ws"
+i=0
+while (( i < 55 )); do
+  ln -s "/target${i}" "${capdir}/ws/link${i}"
+  i=$(( i + 1 ))
+done
+python3 -c "import json; print(json.dumps([{'filename': 'link%d' % i} for i in range(55)]))" > "${capdir}/files.json"
+got="$(set -e; if cap_lines="$(changed_symlinks "${capdir}/files.json" "${capdir}/ws" 50 2>/dev/null)"; then cap_rc=0; else cap_rc=$?; fi; printf 'rc=%s first=%s last=%s' "${cap_rc}" "$(printf '%s' "${cap_lines}" | head -n 1)" "$(printf '%s' "${cap_lines}" | tail -n 1)")"
+assert_eq "capture-rc2-partial" "rc=2 first=link0 -> /target0 last=link49 -> /target49" "${got}"
+rm -rf "${capdir}"
+
 # --- redact ---
 pem='-----BEGIN TEST PRIVATE KEY-----FAKEFAKEFAKE-----END TEST PRIVATE KEY-----'
 assert_eq "redact-pem" "[REDACTED-PRIVATE-KEY]" "$(redact "a ${pem} b" | sed 's/^a //; s/ b$//')"
@@ -163,6 +181,34 @@ assert_eq "redact-meta-assign" "META_API_KEY=[REDACTED]!" "$(redact 'leak META_A
 assert_eq "redact-live-bare" "[REDACTED]" "$(META_API_KEY='fake.live/key+abc=123' redact 'oops fake.live/key+abc=123 end' | awk '{print $2}')"
 assert_eq "redact-live-empty" "plain text stays" "$(META_API_KEY='' redact 'plain text stays' )"
 assert_eq "redact-live-unset" "plain text stays" "$(env -u META_API_KEY "SCRIPT_DIR=${SCRIPT_DIR}" bash -c '. "${SCRIPT_DIR}/lib.sh"; redact "plain text stays"')"
+
+# --- redact_json_key (live key behind JSON escapes) ---
+# Fixture key carries regex metachars (., /, +, =): split/join must
+# replace it literally (gsub would read those as a pattern).
+jkey='fake.live/key+abc=123'
+jfix="$(mktemp)"
+cat > "${jfix}" <<'EOF'
+{"verdict":"ok","findings":[{"path":"a.ts","line":1,"severity":"low","title":"t","body":"oops fake.live\/key+abc=123 end"}],"next_steps":[]}
+EOF
+got="$(META_API_KEY="${jkey}" redact_json_key < "${jfix}" | jq -r '.findings[0].body')"
+assert_eq "redactjson-escaped-slash" "oops [REDACTED] end" "${got}"
+cat > "${jfix}" <<'EOF'
+{"a":{"b":["x fake.live/key+abc\u003d123 y"]},"v":"fakexlive/key+abc=123 stays"}
+EOF
+got="$(META_API_KEY="${jkey}" redact_json_key < "${jfix}" | jq -r '.a.b[0]')"
+assert_eq "redactjson-nested-u-escape" "x [REDACTED] y" "${got}"
+got="$(META_API_KEY="${jkey}" redact_json_key < "${jfix}" | jq -r '.v')"
+assert_eq "redactjson-literal-nomatch" "fakexlive/key+abc=123 stays" "${got}"
+got1="$(META_API_KEY="${jkey}" redact_json_key < "${jfix}")"
+got2="$(META_API_KEY="${jkey}" redact_json_key < "${jfix}")"
+assert_eq "redactjson-deterministic" "${got1}" "${got2}"
+case "${got1}" in *"${jkey}"*) got_left="yes";; *) got_left="no";; esac
+assert_eq "redactjson-no-key-bytes" "no" "${got_left}"
+if printf 'not json' | META_API_KEY="${jkey}" redact_json_key >/dev/null 2>&1; then got_rc="0"; else got_rc="nonzero"; fi
+assert_eq "redactjson-nonjson-rc" "nonzero" "${got_rc}"
+if printf '{}' | META_API_KEY='' redact_json_key >/dev/null 2>&1; then got_rc="0"; else got_rc=$?; fi
+assert_eq "redactjson-empty-key-rc" "1" "${got_rc}"
+rm -f "${jfix}"
 
 # --- strip_images ---
 got="$(printf '%s' 'see ![pixel](https://a.example/p?d=1) and [docs](https://d.example/x) ok' | strip_images)"
