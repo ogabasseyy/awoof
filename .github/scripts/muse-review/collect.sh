@@ -70,7 +70,7 @@ if [[ "${base_available}" == "true" ]]; then
     git fetch --deepen 100 origin "${base_sha_full}" "${head_sha}" >/dev/null 2>&1 || break
   done
   if [[ "${local_diff}" != "true" ]]; then
-    echo "::warning::merge-base not found; file list falls back to compare API."
+    echo "::warning::merge-base not found; file list falls back to the paginated PR-files API."
   fi
 fi
 head_ref="$(jq -r '.head.ref' "${pr_file}")"
@@ -145,7 +145,7 @@ if [[ "${local_diff}" == "true" ]]; then
       jq -s '.' "${files_file}.jsonl" > "${files_file}" 2>/dev/null || echo '[]' > "${files_file}"
     else
       echo '[]' > "${files_file}"
-      echo "::warning::local diff join failed; falling back to compare API."
+      echo "::warning::local diff join failed; falling back to the paginated PR-files API."
       local_diff=false
     fi
   else
@@ -156,17 +156,26 @@ if [[ "${local_diff}" == "true" ]]; then
 fi
 files_failed=false
 if [[ "${local_diff}" != "true" ]]; then
-  files_source="compare"
-  compare_file="${RUNNER_TEMP}/muse-compare.json"
-  if ! gh api "repos/${GITHUB_REPOSITORY}/compare/${base_sha}...${HEAD_SHA_EVENT}" \
-    > "${compare_file}" 2>"${RUNNER_TEMP}/muse-ghcompare.err"; then
-    echo '{"files":[]}' > "${compare_file}"
-    echo "::warning::compare metadata failed: $(head -c 300 "${RUNNER_TEMP}/muse-ghcompare.err" 2>/dev/null || true)"
+  files_source="api"
+  pages_file="${RUNNER_TEMP}/muse-files-pages.json"
+  # Paginated PR-files inventory: the compare endpoint caps file lists at
+  # 300, which would silently drop files from the manifest, guidance, and
+  # verdict. Pagination has no cap. Only array pages are merged, so a
+  # mid-stream error payload can never masquerade as a file list; any
+  # fetch/parse failure routes to the explicit fallback (via files_failed)
+  # rather than reviewing blind.
+  if gh api "repos/${GITHUB_REPOSITORY}/pulls/${PR_NUMBER}/files?per_page=100" --paginate \
+      > "${pages_file}" 2>"${RUNNER_TEMP}/muse-ghfiles.err" \
+    && jq -s '[.[] | select(type == "array")] | add // []' "${pages_file}" > "${files_file}" 2>/dev/null \
+    && jq -e 'type == "array"' "${files_file}" >/dev/null 2>&1; then
+    :
+  else
+    echo '[]' > "${files_file}"
+    echo "::warning::PR files inventory failed: $(head -c 300 "${RUNNER_TEMP}/muse-ghfiles.err" 2>/dev/null || true)"
     # Missing file list means missing scoped guidance: diff.sh routes to the
     # explicit fallback rather than reviewing blind.
     files_failed=true
   fi
-  jq '.files // []' "${compare_file}" > "${files_file}"
 fi
 
 # Changed-file summary with a hard budget. Filenames are untrusted (Git
@@ -181,9 +190,6 @@ if [[ -z "${files_summary}" ]]; then
   files_summary="- No file-level diff metadata was returned by the GitHub API."
 fi
 files_note=""
-if [[ "${files_source}" == "compare" ]] && (( total_files >= 300 )); then
-  files_note=" (PARTIAL SCOPE: file list capped at 300 by the compare API — manifest, guidance, and verdict may miss files)"
-fi
 if (( total_files > 200 )); then
   files_note="${files_note} ($(( total_files - 200 )) more files omitted from summary)"
 fi
@@ -209,7 +215,10 @@ jq -r '.[].filename | gsub("\n"; "\\n")' "${files_file}" > "${manifest_file}" 2>
 manifest_note=""
 if (( $(wc -c < "${manifest_file}") > 65536 )); then
   cap_file "${manifest_file}" 65536
-  manifest_note=" [manifest truncated at 65536 bytes — PARTIAL SCOPE]"
+  manifest_note=" [manifest truncated at 65536 bytes — routed to fallback]"
+  # Truncation can cut mid-filename, hiding changed paths from a reviewer
+  # with no shell: never publish a clean verdict over a cut manifest.
+  files_failed=true
 fi
 
 # Inter-phase state. %q quoting keeps newlines/quotes/unicode source-safe.
@@ -229,7 +238,5 @@ fi
   printf 'MUSE_DEFAULT_BRANCH=%q\n' "${default_branch}"
   printf 'MUSE_FILES_FAILED=%q\n' "${files_failed}"
   printf 'MUSE_MERGE_BASE=%q\n' "${merge_base}"
-  capped=false
-  if [[ "${files_source}" == "compare" ]] && (( total_files >= 300 )); then capped=true; fi
-  printf 'MUSE_FILES_CAPPED=%q\n' "${capped}"
+  printf 'MUSE_TOTAL_FILES=%q\n' "${total_files}"
 } > "${RUNNER_TEMP}/muse-vars.env"
