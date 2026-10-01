@@ -1,5 +1,15 @@
 # Awoof Widget SDK - Build Documentation
 
+> **Pilot contract notice.** The modal/iframe/token flow described in the
+> build-spec sections below is retired: `POST /api/verification/widget/token`
+> now returns the retired-widget response, and the SDK no longer embeds an
+> iframe or listens for `AWOOF_VERIFICATION_SUCCESS`. The implemented flow is
+> the gated popup/code pilot described in
+> [`docs/merchant-widget-pilot.md`](../../docs/merchant-widget-pilot.md), with
+> a working merchant example in [`examples/vanilla.html`](examples/vanilla.html).
+> Do not implement new integrations from the retired sections; they are kept
+> for historical context and are marked where they conflict with the pilot.
+
 ## Overview
 
 This document outlines the specific requirements for building the **Awoof Vendor Integration Widget** - a standalone, embeddable JavaScript SDK that allows vendors to integrate student verification directly into their websites.
@@ -9,22 +19,21 @@ This document outlines the specific requirements for building the **Awoof Vendor
 ## Current implementation status (as of build)
 
 - **Backend**
-  - `POST /api/widget/domain-check` with JSON body `{domain, apiKey}` – validates that the request origin’s domain is in the vendor’s `widget_configs.allowed_domains`. Returns `{ allowed: true, vendorId }` or 403. POST-only: the API key must never travel in the URL query string (logs/history/Referer exposure).
-  - `POST /api/verification/widget/token` (authenticated student) – generates a verification token for the widget; widget can use this after the user has verified (e.g. logged in as student).
-  - `GET /api/vendors/widget-config` (authenticated vendor) – returns widget config (allowedDomains, apiKey). Creates default config if none.
-  - `PUT /api/vendors/widget-config` (authenticated vendor) – update allowed domains; optional `regenerateApiKey`.
+  - `POST /api/widget/domain-check` with JSON body `{domain, apiKey, origin}` – validates that the exact request origin is in the vendor’s `widget_configs.allowed_origins`. Returns `{ allowed: true, vendorId }` or 403. POST-only: the API key must never travel in the URL query string (logs/history/Referer exposure).
+  - `POST /api/widget/merchant-context` – pilot-gated merchant context for the hosted page (strict `{vendorId, origin}` request).
+  - `POST /api/merchant-verification/pilot-assertions` – pilot-gated issuance of a short-lived opaque eligibility code after disclosure consent; deliberately rejects product binding.
+  - `GET /api/vendors/widget-config` (authenticated vendor) – returns widget config (allowedDomains, allowedOrigins, apiKey). Creates default config if none.
+  - `PUT /api/vendors/widget-config` (authenticated vendor) – update allowed domains and optional exact `allowedOrigins` (ports, development localhost); optional `regenerateApiKey`.
 - **Widget package** (`apps/widget`)
   - Scaffold: Rollup UMD build, `Awoof` global, `dist/awoof.js`.
-  - `Awoof.init({ apiKey, apiBaseUrl, webAppUrl, onSuccess, onError })` – calls domain-check, stores config. `webAppUrl` is required for the verification iframe.
-  - `Awoof.verify()` – opens modal with iframe to `webAppUrl/widget/verify?vendorId=...&origin=...#apiKey=...`. The API key travels in the URL fragment (never sent to the server, never in Referer headers). Listens for `postMessage` type `AWOOF_VERIFICATION_SUCCESS`; on receipt closes modal and calls `onSuccess` / postMessage to parent.
-  - Modal component and postMessage contract in place.
+  - `Awoof.init({ apiKey, apiBaseUrl, webAppUrl, onSuccess, onError })` – calls domain-check for the exact merchant origin (bounded approval request), stores config. `webAppUrl` is the hosted pilot origin for the verification popup.
+  - `Awoof.verify({ campaignId, purpose, onSuccess, onError, onCancel })` – opens a popup to `webAppUrl/widget/verify?vendorId=...&origin=...&campaignId=...&purpose=...&state=...`. Listens for `postMessage` type `AWOOF_ELIGIBILITY_CODE` from that popup only (origin + source + state + campaign binding); on receipt closes the popup and resolves `{ code, campaignId, expiresAt }`. The code is opaque: the merchant server exchanges it with its private key. Merchant pages must not send `Cross-Origin-Opener-Policy: same-origin`, which severs the opener relationship.
 - **Web app** (`apps/web`)
-  - `/widget/verify` – embeddable page (for iframe): NDPR consent → university select → method (registration number or WhatsApp OTP) → verify via API → store tokens → `POST /api/verification/widget/token` → postMessage to parent with token. Used by the widget when the user clicks Verify.
+  - `/widget/verify` – gated hosted pilot page (popup, not an iframe): pilot + student + merchant gates → eligibility precheck → disclosure consent → pilot-assertion issuance → `postMessage` to the registered merchant origin, then waits for the opener to close it. Framing is restricted by response headers.
 - **Vendor dashboard**
-  - Integration → Widget tab: Widget settings card with Widget API key (copy), Allowed domains (list, add/remove). Init/verify code example includes apiKey, apiBaseUrl, webAppUrl.
+  - Integration → Widget tab: Widget settings card with Widget API key (copy), Allowed domains (list, add/remove). Init/verify code example includes apiKey, apiBaseUrl, webAppUrl, campaignId, purpose, and server-side code exchange.
 - **Still to do**
-  - Email verification in widget flow (magic link redirect back to iframe or dedicated callback).
-  - Portal login method in widget flow.
+  - General-availability rollout decision (the pilot stays allowlisted and disabled by default).
   - CDN deploy and script tag URL.
 
 ---
@@ -57,6 +66,9 @@ The widget serves as:
 
 ### 2. Modal Interface
 
+> Retired: the pilot SDK opens a popup to the hosted `/widget/verify` page
+> instead of rendering a modal; see the pilot contract notice above.
+
 #### Modal Component
 - **Responsive modal** that overlays vendor website
 - **Student verification form** inside modal
@@ -79,6 +91,10 @@ The widget serves as:
 - Backdrop click to close (optional)
 
 ### 3. Verification Flow
+
+> Retired: the pilot flow is popup → hosted consent → opaque eligibility code
+> → merchant server-side exchange; no modal, no JWT token delivery. See the
+> pilot contract notice above.
 
 #### Step 1: Initialization
 - Widget loads on vendor page
@@ -128,7 +144,15 @@ The widget serves as:
 - Event-based communication
 
 #### Message Format
+
+> Retired: the pilot message is `{ type: 'AWOOF_ELIGIBILITY_CODE', state,
+> campaignId, code, expiresAt }`, accepted only from the opened popup at the
+> expected hosted origin with matching state and campaign. The `code` is an
+> opaque string for merchant server-side exchange, not a JWT and not an
+> eligibility result. See the pilot contract notice above.
+
 ```javascript
+// RETIRED - kept for historical context only
 {
   type: 'AWOOF_VERIFICATION_SUCCESS',
   token: 'jwt_token_here',
@@ -145,6 +169,10 @@ The widget serves as:
 - Extracts token and uses for discount application
 
 ### 6. JWT Token Generation
+
+> Retired: the pilot issues an opaque eligibility code, not a JWT; expiry is
+> enforced by the merchant's server-side exchange. See the pilot contract
+> notice above.
 
 #### Token Creation
 - Widget requests token from backend
@@ -221,14 +249,19 @@ Awoof.init({
 ```
 
 ### Verification Trigger
-```javascript
-// Trigger verification modal
-Awoof.verify();
 
-// With callback
+> Pilot contract: `Awoof.verify({ campaignId, purpose, ... })` — `campaignId`
+> and `purpose` are required. The promise resolves with `{ code, campaignId,
+> expiresAt }`; send `code` to your own server for private-key exchange. The
+> bare `Awoof.verify()` / token-callback form below is retired.
+
+```javascript
+// Trigger verification popup (pilot contract)
 Awoof.verify({
-  onSuccess: (token, data) => {
-    // Handle verified token
+  campaignId: 'back-to-school',
+  purpose: 'checkout-discount',
+  onSuccess: (code, data) => {
+    // Send code to your server; it exchanges the code with its private key
   },
   onError: (error) => {
     // Handle error
@@ -307,8 +340,15 @@ widget/
 
 ## Integration Examples
 
+> Retired: these examples use the old `AWOOF_VERIFICATION_SUCCESS`/token flow.
+> For the pilot popup/code contract, follow
+> [`examples/vanilla.html`](examples/vanilla.html): pass `campaignId` +
+> `purpose`, receive the opaque code, and exchange it server-side with the
+> private key. The snippets below are kept for historical context only.
+
 ### Vanilla JavaScript
 ```html
+<!-- RETIRED - kept for historical context only -->
 <script src="https://widget.awoof.com/awoof.js"></script>
 <script>
   window.addEventListener('message', (event) => {
@@ -317,7 +357,7 @@ widget/
       applyStudentDiscount(event.data.token);
     }
   });
-  
+
   function verifyStudent() {
     Awoof.verify();
   }
@@ -327,6 +367,7 @@ widget/
 
 ### React
 ```jsx
+// RETIRED - kept for historical context only
 import { useEffect } from 'react';
 
 function App() {
@@ -351,6 +392,7 @@ function App() {
 
 ### Vue
 ```vue
+<!-- RETIRED - kept for historical context only -->
 <template>
   <button @click="verifyStudent">Verify Student Status</button>
 </template>
