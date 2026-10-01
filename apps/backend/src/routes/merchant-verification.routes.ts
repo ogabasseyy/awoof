@@ -163,12 +163,13 @@ import {
  *               properties:
  *                 success: { type: boolean, enum: [true] }
  *                 data: { $ref: '#/components/schemas/MerchantVerificationReceipt' }
- *       '400': { description: Invalid code or campaign mismatch; failed claim-session binding; product unavailable for product-bound codes }
+ *       '400': { description: Invalid code or campaign mismatch; missing or unexpected claim-session proof; product unavailable for product-bound codes }
  *       '401': { description: Private merchant key invalid or merchant inactive }
  *       '403': { description: Eligibility or disclosure no longer current }
- *       '409': { description: Code expired, consumed by another operation or conflicting idempotency key }
+ *       '409': { description: 'Code expired, consumed by another operation or conflicting idempotency key; claim session expired, already redeemed, or checkout ID or browser nonce binding failed' }
  *       '422': { description: Invalid request shape; field validation failure }
  *       '429': { description: Merchant key hourly quota exhausted or key unavailable }
+ *       '500': { description: Malformed JSON or unexpected server error. Treat the exchange as failed and do not grant a benefit. }
  * /api/merchant-verification/claim-sessions:
  *   post:
  *     summary: Create a merchant claim session binding one checkout to one product

@@ -53,6 +53,9 @@ test('pilot contracts document retryable session-validation outages and receipt 
     assert.match(String((exchange?.responses['400'] as { description?: string })?.description ?? ''), /campaign/i);
     assert.doesNotMatch(String((exchange?.responses['400'] as { description?: string })?.description ?? ''), /invalid input/i);
     assert.match(String((exchange?.responses['400'] as { description?: string })?.description ?? ''), /product unavailable/i);
+    assert.match(String((exchange?.responses['400'] as { description?: string })?.description ?? ''), /missing or unexpected claim-session proof/i);
+    assert.match(String((exchange?.responses['409'] as { description?: string })?.description ?? ''), /checkout ID or browser nonce binding failed/i);
+    assert.match(String((exchange?.responses['500'] as { description?: string })?.description ?? ''), /malformed JSON.*do not grant a benefit/i);
     assert.match(String((exchange?.responses['422'] as { description?: string })?.description ?? ''), /request shape/i);
     assert.doesNotMatch(String((exchange?.responses['422'] as { description?: string })?.description ?? ''), /malformed|JSON body/i);
 });

@@ -13,7 +13,8 @@ export function resolveDisclosureOrigins(
     domains: readonly string[],
     storedOrigins: readonly unknown[] | undefined,
 ): string[] {
-    const wanted = new Set(domains.map((domain) => domain.toLowerCase()));
+    const parsedDomains = domains.map((domain) => new URL(`https://${domain}`));
+    const wanted = new Set(parsedDomains.map((domain) => domain.hostname));
     const resolved: string[] = [];
     for (const origin of storedOrigins ?? []) {
         if (typeof origin !== 'string') continue;
@@ -25,8 +26,8 @@ export function resolveDisclosureOrigins(
         }
         if (wanted.has(hostname)) resolved.push(origin);
     }
-    for (const domain of domains) {
-        const standard = `https://${domain.toLowerCase()}`;
+    for (const domain of parsedDomains) {
+        const standard = domain.origin;
         if (!resolved.includes(standard)) resolved.push(standard);
     }
     return [...new Set(resolved)];

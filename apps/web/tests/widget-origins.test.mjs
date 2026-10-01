@@ -9,6 +9,17 @@ test('dashboard save keeps a stored custom-port origin and adds the promised sta
     );
 });
 
+test('dashboard save canonicalizes internationalized hostnames and preserves their stored custom ports', () => {
+    assert.deepEqual(
+        resolveDisclosureOrigins(['bücher.example'], ['https://xn--bcher-kva.example:8443']),
+        ['https://xn--bcher-kva.example:8443', 'https://xn--bcher-kva.example'],
+    );
+    assert.deepEqual(
+        resolveDisclosureOrigins(['bücher.example', 'xn--bcher-kva.example'], ['https://xn--bcher-kva.example:8443']),
+        ['https://xn--bcher-kva.example:8443', 'https://xn--bcher-kva.example'],
+    );
+});
+
 test('dashboard save drops stored origins whose hostname was removed', () => {
     assert.deepEqual(
         resolveDisclosureOrigins(['shop.example.com'], ['https://shop.example.com:8443', 'https://old.example.com']),

@@ -93,12 +93,13 @@ export const developerPilotReceiptFields = [
 ];
 
 export const developerPilotErrors = [
-  { status: '400', meaning: 'Code invalid, campaign mismatch, failed claim-session binding, or product unavailable for product-bound codes. Correct the request; do not grant a benefit.' },
+  { status: '400', meaning: 'Code invalid, campaign mismatch, missing or unexpected claim-session proof, or product unavailable for product-bound codes. Correct the request; do not grant a benefit.' },
   { status: '401', meaning: 'Private key invalid or merchant inactive. Check server configuration.' },
   { status: '403', meaning: 'Current eligibility or disclosure is unavailable. Do not grant a benefit; resolve the issue before restarting the check.' },
-  { status: '409', meaning: 'Code expired, already consumed, or idempotency binding conflicted. Start a new check unless retrying the exact committed request.' },
+  { status: '409', meaning: 'Code expired, already consumed, or idempotency binding conflicted; claim session expired, already redeemed, or checkout ID or browser nonce binding failed. Start a new check unless retrying the exact committed request.' },
   { status: '422', meaning: 'Invalid request shape or field validation failure on syntactically valid JSON. Fix the request shape; do not grant a benefit.' },
   { status: '429', meaning: 'Merchant key quota exhausted or unavailable. Wait and retry according to your server policy; do not grant a benefit.' },
+  { status: '500', meaning: 'Malformed JSON or an unexpected server error. Treat the exchange as failed and do not grant a benefit.' },
 ];
 
 export const developerExamples = [

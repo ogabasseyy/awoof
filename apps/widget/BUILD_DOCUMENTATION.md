@@ -31,7 +31,7 @@ This document outlines the specific requirements for building the **Awoof Vendor
 - **Web app** (`apps/web`)
   - `/widget/verify` – gated hosted pilot page (popup, not an iframe): pilot + student + merchant gates → eligibility precheck → disclosure consent → pilot-assertion issuance → `postMessage` to the registered merchant origin, then waits for the opener to close it. Framing is restricted by response headers.
 - **Vendor dashboard**
-  - Integration → Widget tab: Widget settings card with Widget API key (copy), Allowed domains (list, add/remove). Init/verify code example includes apiKey, apiBaseUrl, webAppUrl, campaignId, purpose, and server-side code exchange.
+  - Integration → Widget tab: Widget settings card with Widget API key (copy), Allowed domains (list, add/remove). Installation instructions are planned; the current tab links to the public `/developers` guide for pilot init/verify and server-side code exchange examples.
 - **Still to do**
   - General-availability rollout decision (the pilot stays allowlisted and disabled by default).
   - CDN deploy and script tag URL.
