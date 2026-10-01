@@ -67,4 +67,4 @@
 - [x] Run tests against fresh Node 24 dependencies and disposable databases only.
 - [x] Inspect the full diff and public API/examples for code/schema parity and claim accuracy.
 - [x] Fix valid findings and rerun affected checks.
-- [ ] Commit a reviewable change, open and attach a PR, including the repository documentation-impact checklist and outstanding external gates.
+- [x] Commit a reviewable change, open and attach a PR, including the repository documentation-impact checklist and outstanding external gates.

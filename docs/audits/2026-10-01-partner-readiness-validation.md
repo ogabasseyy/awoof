@@ -1,6 +1,6 @@
 # Merchant and partner readiness validation
 
-Reviewed: 2026-10-01. Base: `origin/main` at `01181472b08b16d91aa32180d8ef15fbb2cc46ba`. Implementation branch: `codex/awoof-partner-readiness`. This is an internal source and local-validation record, not deployment or partnership evidence.
+Reviewed: 2026-10-01. Base: `origin/main` at `01181472b08b16d91aa32180d8ef15fbb2cc46ba`. Implementation branch: `codex/awoof-partner-readiness`. Review: [draft PR #59](https://github.com/ogabasseyy/awoof/pull/59); CI/review, merge and deployment remain pending. This is an internal source and local-validation record, not deployment or partnership evidence.
 
 ## Delivered source
 
@@ -28,6 +28,7 @@ Reviewed: 2026-10-01. Base: `origin/main` at `01181472b08b16d91aa32180d8ef15fbb2
 | Lint | No errors. Existing backend warnings and two hook/helper warnings in focused web files remain. |
 | Fresh review | Two confirmed findings fixed: conflicting concurrent operations borrowing a success response, and evidence expiry incorrectly standing in for the shorter benefit deadline. Independent conflict reproduction returned 200 then 409. No additional actionable findings in focused final review. |
 | Final source parity | Published API/archive match current backend/SDK/reference source; whitespace checks passed. |
+| Existing dependency alerts | GitHub's repository alert API reported nine open default-branch alerts on 2026-10-01: one critical, two high, five medium and one low. Runtime reachability and fixes were not established by this integration review; dependency manifests are unchanged. These alerts require separate triage before launch, including [alert 214](https://github.com/ogabasseyy/awoof/security/dependabot/214). |
 
 ## Documentation impact
 
@@ -40,5 +41,6 @@ The affected public routes and claim evidence are recorded in `docs/public-trust
 3. A real end-to-end Awoof checkout and merchant Paystack test payment, including expiry, failed reporting, duplicate events, refunds and reconciliation, before live merchant use.
 4. Google entitlement acceptance/fulfillment access and Verve qualification, funding, limits, settlement and reversal contracts before implementing provider adapters or enabling campaigns.
 5. Production merchant carts, shared storage, background reconciliation, operational data retention/deletion and refund/dispute ledger. The single-process reference is a starting example and does not implement these production responsibilities.
+6. Triage and resolve applicable existing dependency alerts. The focused merchant review is not a full security audit or evidence that every fraud/security concern is addressed.
 
 The original dirty checkout at `/Users/mac/Downloads/Awoof` was left intact. No production configuration, provider account, money movement, outbound partner message or agreement was changed by this work.
