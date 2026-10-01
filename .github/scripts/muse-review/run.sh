@@ -63,13 +63,15 @@ if (( muse_rc != 0 )); then
   # secrets a misbehaving model echoed to stderr. JSON-aware pass first
   # while the key is available: byte substitution misses a key hidden
   # behind legal JSON escapes (\u003d, \/), which would otherwise be
-  # reconstructible from the Actions log. Falls back to the byte pass
-  # when stderr is not valid JSON.
+  # reconstructible from the Actions log. The whole-input JSON parse fails
+  # on mixed prose around a JSON fragment, so the fallback decodes escape
+  # sequences first — without that, the reversible escaped key survives.
   stderr_clean="$(mktemp)"
   if redact_json_key < "${RUNNER_TEMP}/muse-stderr.log" > "${stderr_clean}" 2>/dev/null; then
     redact "$(cat "${stderr_clean}" 2>/dev/null || true)" | tail -c 4000
   else
-    redact "$(cat "${RUNNER_TEMP}/muse-stderr.log" 2>/dev/null || true)" | tail -c 4000
+    decode_json_escapes < "${RUNNER_TEMP}/muse-stderr.log" > "${stderr_clean}" 2>/dev/null || : > "${stderr_clean}"
+    redact "$(cat "${stderr_clean}" 2>/dev/null || true)" | tail -c 4000
   fi
   rm -f "${stderr_clean}"
   exit "${muse_rc}"
@@ -85,10 +87,14 @@ fi
 # legal JSON escapes (\u003d, \/), which post.sh's `jq -r` would decode
 # back to the live value in the keyless step. Redacting inside decoded
 # strings closes that hole; the byte pass below stays as the fallback for
-# non-JSON output and values outside JSON strings.
+# non-JSON output and values outside JSON strings. The fallback decodes
+# escapes first: mixed prose around a JSON fragment fails the whole-input
+# parse, and the reversible escaped key would otherwise survive to the post.
 if redact_json_key < "${review_file}" > "${review_file}.clean" 2>/dev/null; then
   mv "${review_file}.clean" "${review_file}"
 else
   rm -f "${review_file}.clean"
+  decode_json_escapes < "${review_file}" > "${review_file}.decoded" 2>/dev/null \
+    && mv "${review_file}.decoded" "${review_file}" || rm -f "${review_file}.decoded"
 fi
 redact "$(cat "${review_file}")" > "${review_file}.clean" && mv "${review_file}.clean" "${review_file}"

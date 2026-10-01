@@ -22,13 +22,16 @@ set -euo pipefail
 . "${SCRIPT_DIR}/lib.sh"
 
 # Second staleness gate (see guard.sh): skip quietly when head or base
-# moved mid-run (findings would misattribute), or the lookup fails.
-if ! live_shas="$(gh api "repos/${GITHUB_REPOSITORY}/pulls/${PR_NUMBER}" --jq '[.head.sha, .base.sha] | @tsv' 2>/dev/null)" \
+# moved mid-run (findings would misattribute), the PR became a draft
+# (drafts are excluded, and conversion changes neither SHA), or the
+# lookup fails.
+if ! live_shas="$(gh api "repos/${GITHUB_REPOSITORY}/pulls/${PR_NUMBER}" --jq '[.head.sha, .base.sha, .draft] | @tsv' 2>/dev/null)" \
   || [[ -z "${live_shas}" ]]; then
   echo "::warning::Head revalidation lookup failed; skipping post to avoid publishing a stale review."
   exit 0
 fi
-live_head="${live_shas%%$'\t'*}"; live_base="${live_shas#*$'\t'}"
+live_head="${live_shas%%$'\t'*}"; live_rest="${live_shas#*$'\t'}"
+live_base="${live_rest%%$'\t'*}"; live_draft="${live_rest#*$'\t'}"
 if [[ "${live_head}" != "${HEAD_SHA}" ]]; then
   echo "::notice::PR head moved during review (${HEAD_SHA:0:10} -> ${live_head:0:10}); skipping stale post."
   exit 0
@@ -37,9 +40,60 @@ if [[ "${live_base}" != "${BASE_SHA}" ]]; then
   echo "::notice::PR base moved during review (${BASE_SHA:0:10} -> ${live_base:0:10}); skipping stale post."
   exit 0
 fi
+if [[ "${live_draft}" == "true" ]]; then
+  echo "::notice::PR was converted to draft during review; skipping post."
+  exit 0
+fi
 
 body_file="${RUNNER_TEMP}/muse-review.md"
 marker="<!-- muse-code-review sha:${HEAD_SHA} base:${BASE_SHA:0:10} -->"
+# GitHub rejects review bodies past 65536 chars; stay below with headroom.
+body_budget=60000
+
+# Render the summary from the validated findings (globals: verdict,
+# validated_json, findings_json). Full mode prints every summary-only body;
+# compact mode keeps every finding header but omits the bodies with an
+# explicit note — used when the full render exceeds the post budget, so no
+# finding is ever silently dropped by a byte cut. Inline threads are
+# unaffected (they render separately), so compacted findings keep their
+# "(see inline)" pointers.
+render_summary() {
+  local _mode="$1"
+  {
+    printf '## Verdict\n\n%s\n\n## Findings\n\n' "${verdict}"
+    total_findings="$(jq -r '(.valid|length) + (.summary_only|length)' "${validated_json}")"
+    if [[ "${total_findings}" == "0" ]]; then
+      printf '%s\n' "- No meaningful issues found."
+    fi
+    while IFS=$'\t' read -r sev title path line; do
+      printf '%s\n' "- ${sev}: ${title} in ${path}:${line} (see inline)"
+    done < <(jq -r '.valid[]? | [(.severity // "low" | gsub("\t"; " ")), (.title // "" | gsub("\t"; " ")), (.path // "" | gsub("\t"; " ") | gsub("\n"; " ")), (.line // 0)] | @tsv' "${validated_json}")
+    while IFS=$'\t' read -r sev title path line body orphaned; do
+      if [[ "${orphaned}" == "true" ]]; then
+        printf '%s\n' "- ${sev}: ${title} in ${path}:${line} (path not in changed files — unverified)"
+      else
+        printf '%s\n' "- ${sev}: ${title} in ${path}:${line}"
+      fi
+      if [[ "${_mode}" == "compact" ]]; then
+        printf '  %s\n' "(details omitted: full review exceeded the ${body_budget}-byte post budget)"
+      else
+        printf '  %s\n' "${body}"
+      fi
+    done < <(jq -r '.summary_only[]? | [(.severity // "low" | gsub("\t"; " ")), (.title // "" | gsub("\t"; " ")), (.path // "" | gsub("\t"; " ") | gsub("\n"; " ")), (.line // 0), ((.body // "") | gsub("\n"; " ") | gsub("\t"; " ")), (.orphaned // false)] | @tsv' "${validated_json}")
+    printf '\n## Suggested next steps\n\n'
+    jq -r '.next_steps[]?' "${findings_json}" 2>/dev/null | while IFS= read -r step; do
+      printf '%s\n' "- ${step}"
+    done
+  } > "${RUNNER_TEMP}/muse-summary.md"
+}
+
+# Scrub secrets from the review body before posting (prompt is partly
+# attacker-controlled; see lib.sh redact). Redact BEFORE sanitizing and
+# budget checks (both can defeat the full-block match or add characters).
+sanitize_review() {
+  review="$(redact "${review}")"
+  review="$(printf '%s' "${review}" | strip_images | sanitize_mentions)"
+}
 
 review=""
 inline_payload='[]'
@@ -137,28 +191,7 @@ Re-run the workflow, or inspect the logs."
   jq --slurpfile ranges "${ranges_json}" --slurpfile files "${RUNNER_TEMP}/muse-files.json" \
     -f "${SCRIPT_DIR}/validate.jq" \
     "${findings_json}" > "${validated_json}" 2>/dev/null || echo '{"valid":[],"summary_only":[]}' > "${validated_json}"
-  {
-    printf '## Verdict\n\n%s\n\n## Findings\n\n' "${verdict}"
-    total_findings="$(jq -r '(.valid|length) + (.summary_only|length)' "${validated_json}")"
-    if [[ "${total_findings}" == "0" ]]; then
-      printf '%s\n' "- No meaningful issues found."
-    fi
-    while IFS=$'\t' read -r sev title path line; do
-      printf '%s\n' "- ${sev}: ${title} in ${path}:${line} (see inline)"
-    done < <(jq -r '.valid[]? | [(.severity // "low" | gsub("\t"; " ")), (.title // "" | gsub("\t"; " ")), (.path // "" | gsub("\t"; " ") | gsub("\n"; " ")), (.line // 0)] | @tsv' "${validated_json}")
-    while IFS=$'\t' read -r sev title path line body orphaned; do
-      if [[ "${orphaned}" == "true" ]]; then
-        printf '%s\n' "- ${sev}: ${title} in ${path}:${line} (path not in changed files — unverified)"
-      else
-        printf '%s\n' "- ${sev}: ${title} in ${path}:${line}"
-      fi
-      printf '  %s\n' "${body}"
-    done < <(jq -r '.summary_only[]? | [(.severity // "low" | gsub("\t"; " ")), (.title // "" | gsub("\t"; " ")), (.path // "" | gsub("\t"; " ") | gsub("\n"; " ")), (.line // 0), ((.body // "") | gsub("\n"; " ") | gsub("\t"; " ")), (.orphaned // false)] | @tsv' "${validated_json}")
-    printf '\n## Suggested next steps\n\n'
-    jq -r '.next_steps[]?' "${findings_json}" 2>/dev/null | while IFS= read -r step; do
-      printf '%s\n' "- ${step}"
-    done
-  } > "${RUNNER_TEMP}/muse-summary.md"
+  render_summary full
   review="$(cat "${RUNNER_TEMP}/muse-summary.md")"
   # Inline thread bodies, redacted and bounded each.
   inline_jsonl="${RUNNER_TEMP}/muse-inline.jsonl"
@@ -217,20 +250,38 @@ review is posted as fact. See the workflow logs.
 Re-run the workflow, or inspect the logs."
 fi
 
-# Scrub secrets from the review body before posting (prompt is partly
-# attacker-controlled; see lib.sh redact). Redact BEFORE truncating and
-# sanitizing (both can defeat the full-block match or add characters).
-review="$(redact "${review}")"
-review="$(printf '%s' "${review}" | strip_images | sanitize_mentions)"
+sanitize_review
 
-# Bound the posted body: GitHub rejects review bodies past 65536 chars, which
-# would lose the whole review and fail the workflow.
-body_budget=60000
+# Fit the posted body in budget WITHOUT dropping findings: a byte cut here
+# would silently remove trailing findings while the success marker still
+# posts (and pre-run dedupe would then block recovery on rerun). First
+# re-render compactly — every finding header stays, only the summary-only
+# bodies collapse to an explicit note. If headers alone still exceed the
+# budget, route to the explicit fallback instead of posting a partial
+# review as fact; the fallback tag keeps dedupe from blocking recovery.
 if (( $(printf '%s' "${review}" | wc -c) > body_budget )); then
-  review="$(printf '%s' "${review}" | trunc_bytes "${body_budget}")"
-  review="${review}
+  if [[ "${is_fallback}" == "false" ]]; then
+    render_summary compact
+    review="$(cat "${RUNNER_TEMP}/muse-summary.md")"
+    sanitize_review
+  fi
+  if (( $(printf '%s' "${review}" | wc -c) > body_budget )); then
+    is_fallback=true
+    review="## Verdict
 
-[... review truncated at ${body_budget} bytes ...]"
+Muse returned a review that exceeds the ${body_budget}-byte post budget
+even in compact form, so no review is posted as fact. See the workflow
+logs.
+
+## Findings
+
+- low: Model output exceeded the post budget — check the workflow logs.
+
+## Suggested next steps
+
+Re-run the workflow, or inspect the logs."
+    sanitize_review
+  fi
 fi
 
 {

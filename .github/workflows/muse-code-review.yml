@@ -63,7 +63,12 @@ on:
   pull_request_target:
     # edited: only base retargets run (see job if below); title/body edits
     # would otherwise burn quota for an unchanged diff.
-    types: [opened, synchronize, reopened, ready_for_review, edited]
+    # converted_to_draft: lands in the live concurrency lane, so the new
+    # run cancels an in-flight review of the same PR, then skips itself
+    # via the job if (draft == false). Without the trigger, a mid-run
+    # draft conversion spends a billed invocation and still publishes
+    # (conversion changes neither head nor base SHA).
+    types: [opened, synchronize, reopened, ready_for_review, edited, converted_to_draft]
 
 permissions:
   contents: read
@@ -119,7 +124,7 @@ jobs:
           echo "should_run=true" >> "${GITHUB_OUTPUT}"
 
       # Reviewed: head is review DATA only, never executed; helpers come
-      # from the default-branch checkout, the agent runs the pinned binary.
+      # from the base-SHA checkout, the agent runs the pinned binary.
       - name: Checkout repository # nosemgrep: yaml.github-actions.security.pull-request-target-code-checkout.pull-request-target-code-checkout
         id: checkout
         if: steps.prereq.outputs.should_run == 'true'
@@ -168,12 +173,16 @@ jobs:
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           persist-credentials: false
-          # Scripts run with GH_TOKEN, so they come from the DEFAULT branch
-          # (reviewed, merged code) — never the PR head or base, which are
-          # submitter-controlled on stacked/custom-base PRs. Sparse: only
-          # the scripts directory. Helper PRs are still validated by the
-          # selftest workflow, which runs the head copy's test suite.
-          ref: ${{ github.event.repository.default_branch }}
+          # Scripts run with GH_TOKEN, so they come from the immutable BASE
+          # SHA that supplied this workflow run — never the PR head, and
+          # never the live default-branch tip, which could advance mid-run
+          # (or before a rerun) and pair this YAML revision with newer,
+          # incompatible helpers. Under pull_request_target the workflow
+          # itself executes from the base revision, so this pins YAML and
+          # scripts to the same commit. Sparse: only the scripts directory.
+          # Helper PRs are still validated by the selftest workflow, which
+          # runs the head copy's test suite.
+          ref: ${{ github.event.pull_request.base.sha }}
           path: trusted-scripts
           fetch-depth: 1
           sparse-checkout: .github/scripts/muse-review
@@ -196,18 +205,21 @@ jobs:
             # Fail closed: never execute the PR-head script copy, which is
             # submitter-controlled. No bootstrap fallback is needed — under
             # pull_request_target this workflow only runs once it exists on
-            # the base, so the default branch always provides the scripts;
-            # a miss means a rename/removal is in flight. Head-script
-            # changes are still validated pre-merge by the secret-free
-            # selftest workflow. Downstream steps gate on scripts_ok.
+            # the base, so the base SHA always provides the scripts; a miss
+            # means a rename/removal is in flight. Head-script changes are
+            # still validated pre-merge by the secret-free selftest
+            # workflow. Downstream steps gate on scripts_ok.
             echo "scripts_ok=false" >> "${GITHUB_OUTPUT}"
-            echo "::error::Trusted review scripts missing from default branch; skipping advisory review."
+            echo "::error::Trusted review scripts missing at the workflow base SHA; skipping advisory review."
           fi
           # Restore the PR's own copy unconditionally, even when the trusted
           # checkout failed: the agent must read the complete PR tree, never
           # a hole where trusted-scripts/ was. Runs last in the step so a
           # failed trusted checkout cannot strand the workspace mid-move.
-          if [[ -e "${RUNNER_TEMP}/pr-trusted-scripts-orig" ]]; then
+          # -L mirrors the stash detection: a dangling (or
+          # relatively-linked, dangling-after-move) tracked symlink fails
+          # -e but still needs restoring.
+          if [[ -e "${RUNNER_TEMP}/pr-trusted-scripts-orig" || -L "${RUNNER_TEMP}/pr-trusted-scripts-orig" ]]; then
             rm -rf "${GITHUB_WORKSPACE}/trusted-scripts"
             mv "${RUNNER_TEMP}/pr-trusted-scripts-orig" "${GITHUB_WORKSPACE}/trusted-scripts"
           fi
