@@ -457,3 +457,44 @@ test('academic-profile input documents the read-institution token', () => {
     assert.deepEqual(token?.required, ['binding', 'displayName']);
     assert.deepEqual(token?.properties?.binding?.enum, ['server_bound', 'student_claimed', 'unbound']);
 });
+
+test('merchant transaction report is published with both private authentication methods and exact minor units', () => {
+    const spec = swaggerSpec as { paths: Record<string, { post: {
+        security: Record<string, unknown[]>[];
+        requestBody: { content: { 'application/json': { schema: { required: string[]; additionalProperties: boolean; properties: Record<string, { type: string; description?: string }> } } } };
+    } }> };
+    const operation = spec.paths['/api/vendors/transactions/report']?.post;
+    assert.ok(operation);
+    assert.deepEqual(operation.security, [{ bearerAuth: [] }, { merchantReportingKey: [] }]);
+    const body = operation.requestBody.content['application/json'].schema;
+    assert.equal(body.additionalProperties, false);
+    assert.equal(body.properties.amount.type, 'integer');
+    assert.ok(body.required.includes('benefitAuthorizationId'));
+    assert.match(body.properties.paymentGateway.description ?? '', /paystack_merchant/);
+});
+
+
+test('merchant order status contract requires vendor JWT and accurately describes refund bookkeeping', () => {
+    const spec = swaggerSpec as { paths: Record<string, { put: {
+        description: string; security: Record<string, unknown[]>[];
+        requestBody: { content: { 'application/json': { schema: { properties: { status: { enum: string[] } } } } } };
+    } }> };
+    const operation = spec.paths['/api/vendors/orders/{id}/status']?.put;
+    assert.ok(operation);
+    assert.deepEqual(operation.security, [{ bearerAuth: [] }]);
+    assert.deepEqual(operation.requestBody.content['application/json'].schema.properties.status.enum,
+        ['pending', 'completed', 'failed', 'refunded']);
+    assert.match(operation.description, /does not issue a provider refund/);
+    assert.match(operation.description, /require reconciliation/);
+});
+
+
+test('merchant receipt distinguishes evidence validity from the optional persisted benefit deadline', () => {
+    const spec = swaggerSpec as { components: { schemas: Record<string, { required: string[]; properties: Record<string, { type: string; format?: string; description?: string }> }> } };
+    const receipt = spec.components.schemas.MerchantVerificationReceipt;
+    assert.equal(receipt.properties.benefitValidUntil.type, 'string');
+    assert.equal(receipt.properties.benefitValidUntil.format, 'date-time');
+    assert.equal(receipt.required.includes('benefitValidUntil'), false);
+    assert.match(receipt.properties.validUntil.description ?? '', /not the discounted transaction settlement deadline/);
+    assert.match(receipt.properties.benefitValidUntil.description ?? '', /Historical exact receipt retries/);
+});
