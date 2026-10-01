@@ -38,7 +38,9 @@ test('gated hosted pilot asks for disclosure and returns a bound code to the mer
     calls.push(path);
     const body = route.request().method() === 'POST' ? route.request().postDataJSON() : null;
     let data: unknown;
-    if (path === '/api/widget/merchant-context') {
+    if (path === '/api/widget/pilot-eligibility') {
+      data = { eligible: true, vendorId };
+    } else if (path === '/api/widget/merchant-context') {
       expect(body).toEqual({ vendorId, origin: merchantOrigin });
       data = { vendorId, origin: merchantOrigin, merchantName: 'Pilot Merchant' };
     } else if (path === '/api/auth/me') {
@@ -109,6 +111,46 @@ test('signed-out student gets a same-site sign-in return without requesting elig
   const href = await login.getAttribute('href');
   expect(new URL(href!, appOrigin).searchParams.get('redirect')).toBe(`/widget/verify?${query}`);
   expect(calls).not.toContain('/api/verification/status');
+});
+
+test('a real student outside the pilot allowlist is refused before any disclosure is recorded', async ({ page, context }) => {
+  const calls: string[] = [];
+  const session = JSON.stringify({ v: 1, state: 'active', sessionId: 'real-student', accessToken: 'student-access', refreshToken: 'student-refresh' });
+  await context.addInitScript(({ origin, value }) => { if (location.origin === origin) localStorage.setItem('awoof.session.v1', value); }, { origin: appOrigin, value: session });
+  await context.route(`${merchantOrigin}/**`, (route) => {
+    return route.fulfill({ contentType: 'text/html', body: `<!doctype html><title>Test merchant</title><button id="start">Check eligibility</button><script>
+      document.querySelector('#start').onclick = () => {
+        const state = 'a'.repeat(32);
+        const query = new URLSearchParams({vendorId:'${vendorId}', origin:location.origin, campaignId:'sandbox-campaign', purpose:'Test checkout eligibility', state});
+        window.open('${appOrigin}/widget/verify?' + query, '_blank');
+      };
+    </script>` });
+  });
+  await context.route(`${apiOrigin}/api/**`, async (route) => {
+    const path = new URL(route.request().url()).pathname;
+    if (route.request().method() === 'OPTIONS') return route.fulfill({ status: 204, headers: cors });
+    calls.push(path);
+    if (path === '/api/widget/pilot-eligibility') {
+      return route.fulfill({ status: 403, headers: cors, json: { success: false, error: { message: 'Hosted verification pilot is unavailable for this account or merchant' } } });
+    }
+    let data: unknown;
+    if (path === '/api/widget/merchant-context') data = { vendorId, origin: merchantOrigin, merchantName: 'Pilot Merchant' };
+    else if (path === '/api/auth/me') data = { id: '00000000-0000-4000-8000-000000000002', email: 'real@student.invalid', role: 'student' };
+    else if (path === '/api/verification/status') data = { eligibility: { eligible: true }, notices: { merchantDisclosure: { version: 'pilot-notice-v1', text: 'Awoof shares current eligibility with this merchant.' } } };
+    else throw new Error(`Unexpected API: ${path}`);
+    await route.fulfill({ status: 200, headers: cors, json: { success: true, data } });
+  });
+  await page.goto(merchantOrigin);
+  const popupPromise = page.waitForEvent('popup');
+  await page.getByRole('button', { name: 'Check eligibility' }).click();
+  const popup = await popupPromise;
+  await expect(popup.getByRole('heading', { name: 'Student eligibility check' })).toBeVisible();
+  await popup.getByRole('checkbox', { name: /I approve sharing/ }).check();
+  await popup.getByRole('button', { name: 'Continue to merchant' }).click();
+  await expect(popup.getByRole('alert')).toHaveText('This controlled pilot is not enabled for this student account or merchant.');
+  expect(calls).toContain('/api/widget/pilot-eligibility');
+  expect(calls).not.toContain('/api/verification/disclosures');
+  expect(calls).not.toContain('/api/merchant-verification/pilot-assertions');
 });
 
 test('an ineligible student cannot approve disclosure or request a pilot code', async ({ page, context }) => {

@@ -11,9 +11,11 @@ import { success } from '../common/utils/response.js';
 import type { AuthRequest } from '../middleware/auth.middleware.js';
 import { z } from 'zod';
 import crypto from 'crypto';
+import { canonicalWidgetOrigin } from '../services/verification/eligibility-merchant-context.service.js';
 
 const updateWidgetConfigSchema = z.object({
     allowedDomains: z.array(z.string().min(1)).min(1, 'At least one domain is required'),
+    allowedOrigins: z.array(z.string().min(1).max(512)).min(1, 'At least one origin is required').optional(),
 });
 
 function generateWidgetApiKey(): string {
@@ -88,7 +90,13 @@ export async function updateWidgetConfig(req: AuthRequest, res: Response): Promi
         }
         return parsed.hostname.toLowerCase();
     }))];
-    const origins = domains.map((hostname) => `https://${hostname}`);
+    // Exact origins (ports, localhost HTTP in development) use the same
+    // canonicalization the enforcement path applies, so anything stored
+    // here can actually match a later domain-check or merchant-context
+    // call. Omitted origins keep the historical derived https forms.
+    const origins = validated.allowedOrigins === undefined
+        ? domains.map((hostname) => `https://${hostname}`)
+        : [...new Set(validated.allowedOrigins.map((origin) => canonicalWidgetOrigin(origin)))];
 
     const regenerateKey = Boolean(req.body.regenerateApiKey);
 

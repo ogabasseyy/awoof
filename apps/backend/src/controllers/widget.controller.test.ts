@@ -3,7 +3,8 @@ import test from 'node:test';
 import type { Request, Response } from 'express';
 import { db } from '../config/database.js';
 import { BadRequestError, ForbiddenError } from '../common/errors/AppError.js';
-import { domainCheck, merchantContext } from './widget.controller.js';
+import type { AuthRequest } from '../middleware/auth.middleware.js';
+import { domainCheck, merchantContext, pilotEligibility } from './widget.controller.js';
 import { canonicalWidgetOrigin } from '../services/verification/eligibility-merchant-context.service.js';
 
 test('development widget origins accept the bracketed IPv6 loopback hostname', () => {
@@ -104,6 +105,39 @@ test('merchantContext stays unavailable without the pilot gate', async (t) => {
     } finally {
         if (previous === undefined) delete process.env.AWOOF_WIDGET_PILOT_ENABLED; else process.env.AWOOF_WIDGET_PILOT_ENABLED = previous;
     }
+});
+
+test('pilotEligibility admits only allowlisted students for allowlisted merchants', async () => {
+    const vendorId = '4f088fa7-79d9-4c64-a48c-9ecbbbc3c4a3';
+    const studentId = '00000000-0000-4000-8000-000000000001';
+    const previous = [process.env.AWOOF_WIDGET_PILOT_ENABLED, process.env.AWOOF_WIDGET_PILOT_VENDOR_IDS, process.env.AWOOF_WIDGET_PILOT_STUDENT_IDS];
+    process.env.AWOOF_WIDGET_PILOT_ENABLED = 'true';
+    process.env.AWOOF_WIDGET_PILOT_VENDOR_IDS = vendorId;
+    process.env.AWOOF_WIDGET_PILOT_STUDENT_IDS = studentId;
+    try {
+        const eligible = responseRecorder();
+        await pilotEligibility({ query: { vendorId }, user: { id: studentId } } as unknown as AuthRequest, eligible.res);
+        assert.deepEqual(eligible.bodies, [{ success: true, message: 'Pilot eligibility', data: { eligible: true, vendorId } }]);
+        const { res } = responseRecorder();
+        await assert.rejects(
+            pilotEligibility({ query: { vendorId }, user: { id: '11111111-1111-4111-8111-111111111111' } } as unknown as AuthRequest, res),
+            (error: unknown) => error instanceof ForbiddenError,
+        );
+    } finally {
+        const names = ['AWOOF_WIDGET_PILOT_ENABLED', 'AWOOF_WIDGET_PILOT_VENDOR_IDS', 'AWOOF_WIDGET_PILOT_STUDENT_IDS'] as const;
+        names.forEach((name, index) => {
+            const value = previous[index];
+            if (value === undefined) delete process.env[name]; else process.env[name] = value;
+        });
+    }
+});
+
+test('pilotEligibility rejects malformed merchants without consulting the allowlist', async () => {
+    const { res } = responseRecorder();
+    await assert.rejects(
+        pilotEligibility({ query: { vendorId: 'not-a-uuid' }, user: { id: 'x' } } as unknown as AuthRequest, res),
+        (error: unknown) => error instanceof BadRequestError,
+    );
 });
 
 test('domainCheck rejects unknown domain/key pairs', async (t) => {

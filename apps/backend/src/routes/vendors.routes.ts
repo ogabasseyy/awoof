@@ -301,7 +301,7 @@ router.get(
 
 /**
  * @route   PUT /api/vendors/widget-config
- * @desc    Update widget config (allowed domains; optional regenerate API key)
+ * @desc    Update widget config (allowed domains; optional exact allowed origins incl. ports/localhost; optional regenerate API key)
  * @access  Private (Vendor)
  */
 router.put(

@@ -8,6 +8,7 @@
 
 import { Router } from 'express';
 import { asyncHandler } from '../common/middleware/errorHandler.js';
+import { authenticate, requireRole } from '../middleware/auth.middleware.js';
 import * as widgetController from '../controllers/widget.controller.js';
 
 const router = Router();
@@ -107,11 +108,55 @@ const router = Router();
  *         content:
  *           application/json:
  *             schema: { $ref: '#/components/schemas/Error' }
+ * /api/widget/pilot-eligibility:
+ *   get:
+ *     summary: Check whether the calling student may use the hosted pilot for a merchant
+ *     description: Student-authenticated precheck so the hosted page enforces the synthetic-student allowlist before recording a merchant disclosure. Same predicate and generic message as pilot issuance.
+ *     tags: [Widget]
+ *     security: [{ bearerAuth: [] }]
+ *     parameters:
+ *       - in: query
+ *         name: vendorId
+ *         required: true
+ *         schema: { type: string, format: uuid }
+ *     responses:
+ *       '200':
+ *         description: Caller is a pilot participant for this merchant; Cache-Control no-store
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               required: [success, data]
+ *               properties:
+ *                 success: { type: boolean, enum: [true] }
+ *                 data:
+ *                   type: object
+ *                   additionalProperties: false
+ *                   required: [eligible, vendorId]
+ *                   properties:
+ *                     eligible: { type: boolean, enum: [true] }
+ *                     vendorId: { type: string, format: uuid }
+ *       '400':
+ *         description: Invalid merchant id
+ *         content:
+ *           application/json:
+ *             schema: { $ref: '#/components/schemas/Error' }
+ *       '401':
+ *         description: Student authentication required
+ *         content:
+ *           application/json:
+ *             schema: { $ref: '#/components/schemas/Error' }
+ *       '403':
+ *         description: Hosted verification pilot is unavailable for this account or merchant
+ *         content:
+ *           application/json:
+ *             schema: { $ref: '#/components/schemas/Error' }
  */
 router.post(
     '/domain-check',
     asyncHandler(widgetController.domainCheck)
 );
 router.post('/merchant-context', asyncHandler(widgetController.merchantContext));
+router.get('/pilot-eligibility', authenticate, requireRole('student'), asyncHandler(widgetController.pilotEligibility));
 
 export default router;

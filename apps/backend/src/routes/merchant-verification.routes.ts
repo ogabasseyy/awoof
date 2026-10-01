@@ -6,6 +6,7 @@ import { asyncHandler } from '../common/middleware/errorHandler.js';
 import { BadRequestError, ForbiddenError } from '../common/errors/AppError.js';
 import { authenticate, requireRole } from '../middleware/auth.middleware.js';
 import { issueMerchantAssertion, exchangeMerchantAssertion } from '../services/verification/merchant-assertion.service.js';
+import { isWidgetPilotParticipant } from '../services/verification/eligibility-merchant-context.service.js';
 import {
     claimProductBenefit,
     createMerchantClaimSession,
@@ -123,7 +124,7 @@ import {
  *                   properties:
  *                     code: { type: string, minLength: 43, maxLength: 43 }
  *                     expiresAt: { type: string, format: date-time }
- *       '400': { description: Product binding is unavailable in this pilot. }
+ *       '400': { description: Invalid merchant origin or issuance input; product binding is unavailable in this pilot. }
  *       '401': { description: Student authentication required }
  *       '403': { description: Pilot account or merchant unavailable, or current eligibility or disclosure unavailable. }
  *       '422': { description: Invalid JSON body }
@@ -321,10 +322,7 @@ export function createMerchantVerificationRouter(deps: MerchantVerificationRoute
     // synthetic student IDs and merchant IDs. This gate adds no eligibility:
     // issueAssertion still performs the complete current-evidence/consent read.
     router.post('/pilot-assertions', authenticate, requireRole('student'), (req, _res, next) => {
-        const ids = (name: string) => new Set((process.env[name] ?? '').split(',').map((id) => id.trim().toLowerCase()).filter(Boolean));
-        if (process.env.AWOOF_WIDGET_PILOT_ENABLED !== 'true'
-            || !ids('AWOOF_WIDGET_PILOT_STUDENT_IDS').has(req.user!.id.toLowerCase())
-            || !ids('AWOOF_WIDGET_PILOT_VENDOR_IDS').has(String(req.body?.vendorId ?? '').toLowerCase())) {
+        if (!isWidgetPilotParticipant(req.user!.id, String(req.body?.vendorId ?? ''))) {
             return next(new ForbiddenError('Hosted verification pilot is unavailable for this account or merchant'));
         }
         if (req.body?.productId !== undefined) return next(new BadRequestError('Product binding is unavailable in the hosted pilot'));

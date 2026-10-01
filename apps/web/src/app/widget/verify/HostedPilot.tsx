@@ -57,6 +57,18 @@ function PilotSession(props: Props & Pick<Account, 'user' | 'isLoading'>) {
         try {
             let currentGrant = grantId;
             if (!currentGrant) {
+                // Pilot gate before the disclosure side effect: a real student
+                // on a shared pilot link must be refused here, not after their
+                // consent is recorded and issuance 403s.
+                try {
+                    await apiClient.get('/widget/pilot-eligibility', { params: { vendorId: props.vendorId } });
+                } catch (cause) {
+                    if (axios.isAxiosError(cause) && cause.response?.status === 403) {
+                        setError('This controlled pilot is not enabled for this student account or merchant.');
+                        return;
+                    }
+                    throw cause;
+                }
                 const consent = await apiClient.post<{ data: { grantId: string } }>('/verification/disclosures', {
                     vendorId: props.vendorId, origin: merchant.origin, purpose: props.purpose,
                     accepted: true, noticeVersion: status.notices.merchantDisclosure.version,

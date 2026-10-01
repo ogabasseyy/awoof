@@ -32,9 +32,11 @@ export default function PartnerPage() {
           </ol>
           <div className="mt-6 rounded-2xl bg-amber-50 px-5 py-4 ring-1 ring-amber-200">
             <p className="text-sm leading-relaxed text-amber-900">
-              Browser widget verification is unavailable: the verification widget
-              page is retired. The supported integration path is the server API
-              described in the developer guide.
+              Browser widget verification is unavailable by default: the verification
+              widget page is retired for general use. The supported integration
+              path is the server API described in the developer guide. A
+              controlled synthetic-account pilot may be enabled per merchant in
+              isolated sandboxes; it is not a live availability signal.
             </p>
           </div>
           <nav aria-label="Merchant account" className="mt-6 flex flex-col gap-3 sm:flex-row">

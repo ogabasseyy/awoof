@@ -8,7 +8,8 @@
 import type { Request, Response } from 'express';
 import { db } from '../config/database.js';
 import { BadRequestError, ForbiddenError } from '../common/errors/AppError.js';
-import { canonicalWidgetOrigin } from '../services/verification/eligibility-merchant-context.service.js';
+import type { AuthRequest } from '../middleware/auth.middleware.js';
+import { canonicalWidgetOrigin, isWidgetPilotParticipant } from '../services/verification/eligibility-merchant-context.service.js';
 import { success } from '../common/utils/response.js';
 import { z } from 'zod';
 
@@ -67,6 +68,26 @@ export async function domainCheck(req: Request, res: Response): Promise<void> {
             vendorId: result.rows[0].vendor_id,
         },
     });
+}
+
+/**
+ * Whether the calling student may use the hosted pilot for a merchant.
+ * Lets the hosted page enforce the synthetic-student allowlist BEFORE it
+ * records a merchant disclosure: without this precheck a real student on
+ * a shared pilot link would persist consent and only then hit the
+ * issuance 403. Same predicate — and same generic message — as issuance.
+ */
+export async function pilotEligibility(req: AuthRequest, res: Response): Promise<void> {
+    const vendorId = typeof req.query?.vendorId === 'string' ? req.query.vendorId : '';
+    if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(vendorId)) {
+        throw new BadRequestError('Invalid merchant');
+    }
+    const userId = req.user?.id;
+    if (typeof userId !== 'string' || !isWidgetPilotParticipant(userId, vendorId)) {
+        throw new ForbiddenError('Hosted verification pilot is unavailable for this account or merchant');
+    }
+    res.set('Cache-Control', 'no-store');
+    success(res, { message: 'Pilot eligibility', data: { eligible: true, vendorId } });
 }
 
 /** Public display context for the hosted pilot. Never returns a secret or a student result. */

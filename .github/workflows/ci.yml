@@ -93,6 +93,15 @@ jobs:
           AWOOF_BROWSER_MODE: dev
           PLAYWRIGHT_NO_COPY_PROMPT: '1'
 
+      - name: Test widget pilot browser flows
+        working-directory: apps/web
+        run: npm run test:browser -- widget-pilot.spec.ts
+        env:
+          AWOOF_BROWSER_MODE: dev
+          AWOOF_WIDGET_PILOT_ENABLED: 'true'
+          AWOOF_WIDGET_PILOT_VENDOR_IDS: '4f088fa7-79d9-4c64-a48c-9ecbbbc3c4a3'
+          PLAYWRIGHT_NO_COPY_PROMPT: '1'
+
       - name: Test Microsoft browser flows
         working-directory: apps/web
         run: npm run test:browser:microsoft
