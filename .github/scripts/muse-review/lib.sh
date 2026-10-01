@@ -117,6 +117,32 @@ sweep_workspace_symlinks() {
   printf '%d' "${_removed}"
 }
 
+# Changed-path symlink targets, one `path -> target` line per link, for the
+# review input. The agent runs symlink-blind (the sweep above removes every
+# workspace link before the key is exposed), the manifest records paths only,
+# and a changed link's hunk can fall past the diff cap — without this, the
+# run would publish success over an unseen target. Record BEFORE the sweep.
+# Targets are untrusted (readlink output on submitter-controlled paths):
+# newlines flattened like the manifest, each target cut at 500 bytes, and
+# the caller neutralizes tags and bounds the whole block. Prints at most
+# _max entries; returns 2 when more changed symlinks exist (caller marks
+# PARTIAL), 1 when the inventory is unreadable. Absolute and ..-carrying
+# paths are skipped: joined onto the root they could resolve outside the
+# checkout (same containment rule as head_readable).
+changed_symlinks() {
+  local _files="$1" _root="$2" _max="${3:-50}" _count=0 _f _t
+  jq -e 'type == "array"' "${_files}" >/dev/null 2>&1 || return 1
+  while IFS= read -r -d '' _f; do
+    case "${_f}" in /*|..|../*|*/../*|*/..) continue ;; esac
+    [[ -L "${_root}/${_f}" ]] || continue
+    _count=$((_count + 1))
+    if (( _count > _max )); then return 2; fi
+    _t="$(readlink -- "${_root}/${_f}" 2>/dev/null || true)"
+    _t="$(printf '%s' "${_t}" | trunc_bytes 500)"
+    printf '%s -> %s\n' "${_f//$'\n'/\\n}" "${_t//$'\n'/\\n}"
+  done < <(jq -j '[.[] | .filename // empty] | map(select(type == "string"))[] + "\u0000"' "${_files}" 2>/dev/null)
+}
+
 # True when a head-tree candidate is safe to read: a regular file, not a
 # symlink itself, with no symlinked ancestor directory, and contained in
 # the workspace. Checking only the final path would let a PR-added symlink
