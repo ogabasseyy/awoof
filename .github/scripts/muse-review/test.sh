@@ -318,6 +318,23 @@ got="$(jq -s --arg marker '<!-- muse-code-review sha:AAA base:BBB -->' -f "${SCR
 assert_eq "fallback-same-and-recent" "2" "${got}"
 rm -f "${dup_fix}"
 
+# --- null-body dedupe fixtures ---
+# A bodyless review (API body null, or the key missing) must not error
+# either filter: the pre-run caller maps jq failure to 0 (existing marker
+# ignored, duplicate billed review) while the retry caller maps it to 1
+# (needed retry suppressed).
+null_fix="$(mktemp)"
+cat > "${null_fix}" <<'EOF'
+[{"user":{"login":"github-actions[bot]"},"body":null,"submitted_at":"2020-01-01T00:00:00Z"},
+ {"user":{"login":"github-actions[bot]"},"submitted_at":"2020-01-01T00:00:00Z"},
+ {"user":{"login":"github-actions[bot]"},"body":"<!-- muse-code-review sha:AAA base:BBB -->\nreal review","submitted_at":"2020-01-01T00:00:00Z"}]
+EOF
+got="$(jq -s --arg marker '<!-- muse-code-review sha:AAA base:BBB -->' -f "${SCRIPT_DIR}/dedupe.jq" "${null_fix}")"
+assert_eq "dedupe-null-body" "1" "${got}"
+got="$(jq -s --arg marker '<!-- muse-code-review sha:AAA base:BBB -->' -f "${SCRIPT_DIR}/fallback.jq" "${null_fix}")"
+assert_eq "fallback-null-body" "0" "${got}"
+rm -f "${null_fix}"
+
 # --- schema.json ---
 if jq -e '.type == "object" and .additionalProperties == false and (.required | length) == 3' "${SCRIPT_DIR}/schema.json" >/dev/null 2>&1; then got_schema="yes"; else got_schema="no"; fi
 assert_eq "schema-shape" "yes" "${got_schema}"
