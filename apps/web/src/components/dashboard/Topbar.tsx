@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState, type ReactNode } from 'react';
 import Image from 'next/image';
+import Logo from '@/app/components/logo';
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 import { ChevronDown, Menu, X } from 'lucide-react';
@@ -57,13 +58,7 @@ export function DashboardTopbar({
                     {isSidebarOpen ? <X className="h-5 w-5" /> : <Menu className="h-5 w-5" />}
                 </button>
                 <Link href={homeHref} className="lg:hidden">
-                    <Image
-                        src="/images/awoofLogoMain.png"
-                        alt="Awoof"
-                        width={96}
-                        height={28}
-                        className="object-contain"
-                    />
+                    <Logo width={96} height={32} />
                 </Link>
             </div>
 
