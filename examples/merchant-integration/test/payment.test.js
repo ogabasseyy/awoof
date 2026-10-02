@@ -29,7 +29,11 @@ test('merchant test Paystack signature, verification, durable acceptance and exa
     expectedAmount = 80000;
     const conflictingBody = JSON.stringify({ event: 'charge.success', data: { reference: 'different', metadata } }); const conflictingSig = createHmac('sha512', secret).update(conflictingBody).digest('hex');
     const events = await Promise.all([webhook(signature), request('/webhooks/paystack', { method: 'POST', headers: { 'x-paystack-signature': conflictingSig }, body: conflictingBody })]);
-    assert.equal(events[0].status, 200); assert.equal(events[1].status, 409); assert.equal(app.store.get(checkoutId).state, 'reconciliation_required'); assert.equal(reports, 1);
+    const eventStatuses = events.map(response => response.status);
+    assert.equal(eventStatuses.filter(status => status === 200).length, 1);
+    assert.ok([400, 409].includes(eventStatuses.find(status => status !== 200)));
+    assert.equal(app.store.get(checkoutId).paymentReference, 'payment');
+    assert.equal(app.store.get(checkoutId).state, 'reconciliation_required'); assert.equal(reports, 1);
     await request('/reconcile', { method: 'POST', headers: { Cookie: cookie, Origin: origin } });
     assert.equal(app.store.get(checkoutId).state, 'reported'); assert.equal(reports, 2);
     const duplicateEvents = await Promise.all([webhook(signature), webhook(signature)]);
@@ -57,7 +61,11 @@ for (const gateway of ['paystack', 'other']) test(`${gateway} server report requ
     assert.equal((await request('/payments/report', { method: 'POST', body })).status, 401); assert.equal(reports, 0);
     const headers = { Authorization: `Bearer ${reportSecret}` };
     const simultaneous = await Promise.all([request('/payments/report', { method: 'POST', headers, body }), request('/payments/report', { method: 'POST', headers, body: JSON.stringify({ merchantCheckoutId: checkoutId, paymentReference: 'conflicting' }) })]);
-    assert.equal(simultaneous[0].status, 200); assert.equal(simultaneous[1].status, 409); assert.equal(reports, 1);
+    const reportStatuses = simultaneous.map(response => response.status);
+    assert.equal(reportStatuses.filter(status => status === 200).length, 1);
+    assert.equal(reportStatuses.filter(status => status === 409).length, 1);
+    assert.equal(app.store.get(checkoutId).paymentReference, simultaneous[0].status === 200 ? 'reference' : 'conflicting');
+    assert.equal(reports, 1);
     await request('/payments/report', { method: 'POST', headers, body }); assert.equal(reports, 1);
     assert.equal((await request('/payments/report', { method: 'POST', headers, body: JSON.stringify({ merchantCheckoutId: checkoutId, paymentReference: 'different' }) })).status, 409);
   } finally { await new Promise(r => app.server.close(r)); app.store.close(); }

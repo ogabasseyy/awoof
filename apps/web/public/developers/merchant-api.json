@@ -741,9 +741,6 @@
           },
           "422": {
             "description": "Invalid order ID or status input"
-          },
-          "503": {
-            "$ref": "#/components/responses/SessionValidationUnavailable"
           }
         }
       }

@@ -55,7 +55,7 @@ test('starter package excludes local state and credentials and refuses symlinks 
     writeFileSync(join(merchant, '.env'), 'PRIVATE_LOCAL_VALUE=secret');
     writeFileSync(join(merchant, '.env.example'), 'AWOOF_SERVER_KEY=REPLACE_ME');
     writeFileSync(join(merchant, 'local.sqlite'), 'private state');
-    const files = starterFiles(root);
+    const files = starterFiles(root).map((file) => file.path);
     assert.ok(files.includes('examples/merchant-integration/.env.example'));
     assert.ok(!files.some((file) => file.endsWith('.env') || file.endsWith('.sqlite')));
     symlinkSync(join(merchant, '.env'), join(sdk, 'linked.mjs'));
@@ -66,7 +66,7 @@ test('starter package excludes local state and credentials and refuses symlinks 
     writeFileSync(join(sdk, 'bad.mjs'), `const key = '${'sk_test_'}${'b'.repeat(24)}';`);
     assert.throws(() => starterFiles(root), /Secret-shaped/);
     writeFileSync(join(sdk, 'bad.mjs'), `const key = 'sk_test_fixture';`);
-    assert.ok(starterFiles(root).includes('packages/partner-sdk/bad.mjs'));
+    assert.ok(starterFiles(root).some((file) => file.path === 'packages/partner-sdk/bad.mjs'));
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
 

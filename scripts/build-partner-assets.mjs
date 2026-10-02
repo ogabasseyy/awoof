@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
-import { closeSync, copyFileSync, fstatSync, mkdirSync, mkdtempSync, openSync, readdirSync, readFileSync, rmSync, writeFileSync, constants as fsConstants } from 'node:fs';
+import { closeSync, fstatSync, mkdirSync, mkdtempSync, openSync, readdirSync, readFileSync, rmSync, writeFileSync, constants as fsConstants } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -96,19 +96,21 @@ export function starterFiles(root) {
       }
       try {
         if (!fstatSync(fd).isFile()) throw new Error('Starter downloads cannot contain symbolic links');
-        const content = readFileSync(fd, 'utf8');
-        if (/(?:sk_(?:live|test)_[A-Za-z0-9]{16,}|awoof_[a-f0-9]{64}|BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY)/.test(content)) {
+        // Keep the scanned bytes: the archive is written from this buffer, so
+        // a file swapped or rewritten after the scan cannot enter the download.
+        const content = readFileSync(fd);
+        if (/(?:sk_(?:live|test)_[A-Za-z0-9]{16,}|awoof_[a-f0-9]{64}|BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY)/.test(content.toString('utf8'))) {
           throw new Error('Secret-shaped value in starter download; replace it with a placeholder');
         }
+        files.push({ path: relative(root, path), content });
       } finally {
         closeSync(fd);
       }
-      files.push(relative(root, path));
     }
   }
   collect(join(root, 'packages/partner-sdk'));
   collect(join(root, 'examples/merchant-integration'));
-  if (!files.includes('packages/partner-sdk/package.json') || !files.includes('examples/merchant-integration/package.json')) {
+  if (!files.some((file) => file.path === 'packages/partner-sdk/package.json') || !files.some((file) => file.path === 'examples/merchant-integration/package.json')) {
     throw new Error('Starter must include both self-contained package manifests');
   }
   return files;
@@ -126,12 +128,12 @@ function writeDeterministicArchive(root, files, archive) {
     // System tar cannot set member timestamps portably (bsdtar lacks
     // --mtime), so stage copies with a fixed timestamp instead of touching
     // the repository. Only listed files are staged; tar stores no directories.
-    for (const file of files) {
+    for (const { path: file, content } of files) {
       const destination = join(staging, file);
       mkdirSync(dirname(destination), { recursive: true });
-      copyFileSync(join(root, file), destination);
+      writeFileSync(destination, content);
     }
-    execFileSync('touch', ['-t', '202401010000.00', ...files.map((file) => join(staging, file))],
+    execFileSync('touch', ['-t', '202401010000.00', ...files.map((file) => join(staging, file.path))],
       { stdio: 'pipe', env: { ...process.env, TZ: 'UTC' } });
     const plain = join(staging, 'merchant-starter.tar');
     const version = execFileSync('tar', ['--version'], { encoding: 'utf8' });
@@ -142,7 +144,7 @@ function writeDeterministicArchive(root, files, archive) {
       : ['--owner=0', '--group=0', '--numeric-owner'];
     // COPYFILE_DISABLE plus --no-xattrs keeps macOS tar from adding AppleDouble
     // ._* entries and extended attributes, which GNU tar lists as extra members.
-    execFileSync('tar', ['--no-xattrs', '--format', 'ustar', ...ownership, '-cf', plain, '-C', staging, ...files],
+    execFileSync('tar', ['--no-xattrs', '--format', 'ustar', ...ownership, '-cf', plain, '-C', staging, ...files.map((file) => file.path)],
       { stdio: 'pipe', env: { ...process.env, COPYFILE_DISABLE: '1' } });
     writeFileSync(archive, gzipSync(readFileSync(plain), { mtime: 0 }));
   } finally {
@@ -183,7 +185,7 @@ export function checkPartnerAssets(root = repository) {
   const sourceContract = merchantApiReference(JSON.parse(readFileSync(join(root, 'apps/backend/dist/config/openapi.json'), 'utf8')));
   const publishedContract = readFileSync(join(output, 'merchant-api.json'), 'utf8');
   if (publishedContract !== `${JSON.stringify(sourceContract, null, 2)}\n`) throw new Error('Published merchant API is stale: run npm run docs:partner');
-  const expectedFiles = starterFiles(root).sort();
+  const expectedFiles = starterFiles(root).map((file) => file.path).sort();
   const archive = join(output, 'merchant-starter.tar.gz');
   const archivedFiles = execFileSync('tar', ['-tzf', archive], { encoding: 'utf8' }).trim().split('\n').sort();
   if (JSON.stringify(archivedFiles) !== JSON.stringify(expectedFiles)) throw new Error('Published starter file list is stale');

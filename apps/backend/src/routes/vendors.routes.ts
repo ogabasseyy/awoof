@@ -231,7 +231,6 @@ router.get(
  *       '404': { description: Vendor profile or owned order not found }
  *       '409': { description: Savings reconciliation required before refund bookkeeping }
  *       '422': { description: Invalid order ID or status input }
- *       '503': { $ref: '#/components/responses/SessionValidationUnavailable' }
  */
 router.put(
     '/orders/:id/status',
