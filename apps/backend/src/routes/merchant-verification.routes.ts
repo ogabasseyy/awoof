@@ -68,7 +68,7 @@ import {
  *               purpose: { type: string, minLength: 1, maxLength: 200 }
  *               campaignId: { type: string, minLength: 1, maxLength: 100 }
  *               disclosureGrantId: { type: string, format: uuid }
- *               productId: { type: string, format: uuid, description: Optional active product of this vendor. When present, the exchange receipt carries a benefitAuthorizationId for one discounted transaction report. }
+ *               productId: { type: string, format: uuid, description: 'Optional active product of this vendor. When present, the exchange receipt carries a benefitAuthorizationId for one discounted transaction report.' }
  *     responses:
  *       '201':
  *         description: Pass this opaque code only to the intended merchant backend; it is not an eligibility receipt.
@@ -107,7 +107,7 @@ import {
  *               code: { type: string, pattern: '^[A-Za-z0-9_-]{43}$' }
  *               campaignId: { type: string, minLength: 1, maxLength: 100 }
  *               idempotencyKey: { type: string, minLength: 1, maxLength: 100 }
- *               browserNonce: { type: string, minLength: 16, maxLength: 512, description: Required only for claim-bound codes. The merchant's cookie-derived browser nonce, sent over its authenticated server connection; never place it in a URL. }
+ *               browserNonce: { type: string, minLength: 16, maxLength: 512, description: "Required only for claim-bound codes. The merchant's cookie-derived browser nonce, sent over its authenticated server connection; never place it in a URL." }
  *               merchantCheckoutId: { type: string, minLength: 1, maxLength: 100, description: Required only for claim-bound codes. Must match the checkout the claim session was created for. }
  *     responses:
  *       '200':
@@ -120,10 +120,10 @@ import {
  *               properties:
  *                 success: { type: boolean, enum: [true] }
  *                 data: { $ref: '#/components/schemas/MerchantVerificationReceipt' }
- *       '400': { description: Invalid input, code or campaign mismatch }
+ *       '400': { description: 'Invalid input, code or campaign mismatch' }
  *       '401': { description: Private merchant key invalid or merchant inactive }
  *       '403': { description: Eligibility or disclosure no longer current }
- *       '409': { description: Code expired, consumed by another operation or conflicting idempotency key }
+ *       '409': { description: 'Code expired, consumed by another operation or conflicting idempotency key' }
  *       '429': { description: Merchant key hourly quota exhausted or key unavailable }
  * /api/merchant-verification/claim-sessions:
  *   post:
@@ -149,7 +149,7 @@ import {
  *       '200': { description: Exact creation retry; returns the same live session. }
  *       '400': { description: Invalid input or product unavailable to this merchant. }
  *       '401': { description: Private merchant key invalid or merchant inactive. }
- *       '409': { description: Checkout already bound differently, used, or expired. Start a new checkout. }
+ *       '409': { description: 'Checkout already bound differently, used, or expired. Start a new checkout.' }
  * /api/merchant-verification/claim-sessions/{id}:
  *   get:
  *     summary: Read the public projection of one claim session
@@ -165,7 +165,7 @@ import {
  *       '200': { description: Public claim-session projection. }
  *       '401': { description: Student authentication required. }
  *       '404': { description: Unknown session or claim no longer available. }
- *       '409': { description: Session expired or redeemed, or merchant integration unavailable. }
+ *       '409': { description: 'Session expired or redeemed, or merchant integration unavailable.' }
  *       '503': { $ref: '#/components/responses/SessionValidationUnavailable' }
  * /api/merchant-verification/product-claims:
  *   post:
@@ -208,7 +208,7 @@ import {
  *       '401': { description: Student authentication required. }
  *       '403': { description: Current enrollment or merchant disclosure unavailable. }
  *       '404': { description: Unknown claim session or disclosure grant. }
- *       '409': { description: Session expired or redeemed, or MERCHANT_INTEGRATION_REQUIRED. }
+ *       '409': { description: 'Session expired or redeemed, or MERCHANT_INTEGRATION_REQUIRED.' }
  *       '503': { $ref: '#/components/responses/SessionValidationUnavailable' }
  */
 const bounded = z.string().trim().min(1).max(100);

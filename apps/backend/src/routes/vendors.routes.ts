@@ -193,7 +193,7 @@ router.get(
  *       - in: path
  *         name: id
  *         required: true
- *         schema: { type: string }
+ *         schema: { type: string, format: uuid }
  *         description: Awoof transaction ID returned by reporting.
  *     requestBody:
  *       required: true
@@ -226,11 +226,11 @@ router.get(
  *                         id: { type: string, format: uuid }
  *                         status: { type: string, enum: [pending, completed, failed, refunded] }
  *                         updatedAt: { type: string, format: date-time }
- *       '400': { description: Invalid transition, inactive vendor, or Awoof-managed payment }
+ *       '400': { description: 'Invalid transition, inactive vendor, or Awoof-managed payment' }
  *       '401': { description: Valid vendor JWT required }
  *       '404': { description: Vendor profile or owned order not found }
  *       '409': { description: Savings reconciliation required before refund bookkeeping }
- *       '422': { description: Invalid status input }
+ *       '422': { description: Invalid order ID or status input }
  *       '503': { $ref: '#/components/responses/SessionValidationUnavailable' }
  */
 router.put(
@@ -412,7 +412,7 @@ router.put(
  *       enforce an external checkout: the merchant must hold current enrollment
  *       authority before granting a discount.
  *     tags: [Vendors]
- *     security: [{ bearerAuth: [] }, { merchantReportingKey: [] }]
+ *     security: [{ bearerAuth: [] }, { merchantServerKey: [] }]
  *     requestBody:
  *       required: true
  *       content:
@@ -453,11 +453,11 @@ router.put(
  *         content:
  *           application/json:
  *             schema: { $ref: '#/components/schemas/MerchantTransactionReportResponse' }
- *       '400': { description: Invalid input, retired token, or amount/product/currency mismatch }
- *       '401': { description: Vendor JWT or reporting key invalid, or merchant inactive }
+ *       '400': { description: 'Invalid input, retired token, or amount/product/currency mismatch' }
+ *       '401': { description: 'Vendor JWT or reporting key invalid, or merchant inactive' }
  *       '403': { description: Current enrollment authority or merchant disclosure unavailable }
  *       '404': { description: Unknown benefit authorization for this merchant }
- *       '409': { description: Conflicting report bindings, or a late first report needing explicit reconciliation }
+ *       '409': { description: 'Conflicting report bindings, or a late first report needing explicit reconciliation' }
  *       '422': { description: Request body failed strict validation }
  *       '503': { $ref: '#/components/responses/SessionValidationUnavailable' }
  */

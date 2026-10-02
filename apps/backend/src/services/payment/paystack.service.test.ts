@@ -83,6 +83,12 @@ test('merchant verification selects only authenticated vendor credentials and va
         }
         axios.get = (async () => { throw new Error('synthetic-secret-account-detail'); }) as typeof axios.get;
         assert.deepEqual(await verifyMerchantPaystackPayment(vendor, 'ref/test'), { verified: false, error: 'Merchant payment verification failed' });
+        axios.get = (async () => { throw { isAxiosError: true, response: { status: 404, data: { message: 'not found' } } }; }) as typeof axios.get;
+        assert.deepEqual(await verifyMerchantPaystackPayment(vendor, 'ref/test'), { verified: false, error: 'Merchant payment verification failed' });
+        for (const outage of [{ isAxiosError: true, code: 'ECONNABORTED' }, { isAxiosError: true, code: 'ERR_CANCELED' }, { isAxiosError: true, response: { status: 502, data: {} } }, { isAxiosError: true, response: { status: 503, data: {} } }]) {
+            axios.get = (async () => { throw outage; }) as typeof axios.get;
+            await assert.rejects(verifyMerchantPaystackPayment(vendor, 'ref/test'), { statusCode: 503 });
+        }
     } finally {
         axios.get = originalGet;
         Object.assign(config.paystack, { merchantSecretKeys: oldKeys });

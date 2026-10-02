@@ -340,8 +340,13 @@ export async function verifyMerchantPaystackPayment(
             return { verified: false, error: 'Merchant payment amount, currency or metadata is invalid' };
         }
         return { verified: true, amountKobo: data.amount, currency: data.currency, metadata: data.metadata };
-    } catch {
+    } catch (error: unknown) {
         // Provider errors can contain account information; keep the public error generic.
+        // An outage is retryable: report 503 so merchants retry instead of
+        // treating the checkout as definitively unpaid.
+        if (axios.isAxiosError(error) && (!error.response || error.response.status >= 500)) {
+            throw new ServiceUnavailableError('Merchant payment verification is temporarily unavailable. Please retry.');
+        }
         return { verified: false, error: 'Merchant payment verification failed' };
     }
 }

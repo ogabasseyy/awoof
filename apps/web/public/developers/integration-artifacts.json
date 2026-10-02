@@ -5,11 +5,11 @@
   "files": [
     {
       "path": "/developers/merchant-api.json",
-      "sha256": "d991db81e6340b962670128258cd70dc61f457ca1614d2ec410b642f32c3bf47"
+      "sha256": "b57b7080524a437f24517154737ffe1c87732d1937ea45b5ee026b4be9eaaccf"
     },
     {
       "path": "/developers/merchant-starter.tar.gz",
-      "sha256": "cb0731ba6d713833ca64e23f8cee8324c547695d474e19734c236c72618065d4"
+      "sha256": "0357237371f67ddd826384310a212608ee18433919c95d2da339beb87bb469e3"
     }
   ],
   "prospectiveConnections": {

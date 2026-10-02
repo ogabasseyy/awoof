@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
-import { lstatSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { closeSync, fstatSync, mkdirSync, openSync, readdirSync, readFileSync, writeFileSync, constants as fsConstants } from 'node:fs';
 import { join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -49,6 +49,7 @@ export function merchantApiReference(fullSpec) {
     paths[path][method] = structuredClone(operation);
     inspect(operation);
   }
+  rejectNullValues({ paths, components });
   return {
     openapi: fullSpec.openapi,
     info: {
@@ -65,19 +66,40 @@ export function merchantApiReference(fullSpec) {
   };
 }
 
+/** Unquoted commas in YAML flow mappings split into null-valued keys; never publish that shape. */
+function rejectNullValues(value, trail = 'contract') {
+  if (value === null) throw new Error(`Published merchant contract has a null value at ${trail}; quote the source description`);
+  if (!value || typeof value !== 'object') return;
+  for (const [key, item] of Object.entries(value)) rejectNullValues(item, `${trail}.${key}`);
+}
+
 export function starterFiles(root) {
   const files = [];
   function collect(directory) {
     for (const entry of readdirSync(directory, { withFileTypes: true }).sort((a, b) => a.name.localeCompare(b.name))) {
       const path = join(directory, entry.name);
-      if (lstatSync(path).isSymbolicLink()) throw new Error('Starter downloads cannot contain symbolic links');
+      if (entry.isSymbolicLink()) throw new Error('Starter downloads cannot contain symbolic links');
       if (['node_modules', 'dist', '.git', 'data', 'coverage', 'test-results'].includes(entry.name)) continue;
       if (entry.name.startsWith('.') && entry.name !== '.env.example' && entry.name !== '.gitignore') continue;
       if (entry.isDirectory()) { collect(path); continue; }
       if (!entry.isFile() || !/\.(?:mjs|js|ts|json|md)$/.test(entry.name) && entry.name !== '.env.example' && entry.name !== '.gitignore') continue;
-      const content = readFileSync(path, 'utf8');
-      if (/(?:sk_live_[A-Za-z0-9]{16,}|awoof_[a-f0-9]{64}|BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY)/.test(content)) {
-        throw new Error('Secret-shaped value in starter download; replace it with a placeholder');
+      // Open once with O_NOFOLLOW and read through the descriptor: the file
+      // cannot be swapped for a symlink between a path check and the read.
+      let fd;
+      try {
+        fd = openSync(path, fsConstants.O_RDONLY | (fsConstants.O_NOFOLLOW ?? 0));
+      } catch (error) {
+        if (error?.code === 'ELOOP') throw new Error('Starter downloads cannot contain symbolic links');
+        throw error;
+      }
+      try {
+        if (!fstatSync(fd).isFile()) throw new Error('Starter downloads cannot contain symbolic links');
+        const content = readFileSync(fd, 'utf8');
+        if (/(?:sk_(?:live|test)_[A-Za-z0-9]{16,}|awoof_[a-f0-9]{64}|BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY)/.test(content)) {
+          throw new Error('Secret-shaped value in starter download; replace it with a placeholder');
+        }
+      } finally {
+        closeSync(fd);
       }
       files.push(relative(root, path));
     }
@@ -99,7 +121,9 @@ export function buildPartnerAssets(root = repository) {
   mkdirSync(output, { recursive: true });
   writeFileSync(join(output, 'merchant-api.json'), serialized);
   const archive = join(output, 'merchant-starter.tar.gz');
-  execFileSync('tar', ['-czf', archive, '-C', root, ...files], { stdio: 'pipe' });
+  // COPYFILE_DISABLE plus --no-xattrs keeps macOS tar from adding AppleDouble
+  // ._* entries and extended attributes, which GNU tar lists as extra members.
+  execFileSync('tar', ['--no-xattrs', '-czf', archive, '-C', root, ...files], { stdio: 'pipe', env: { ...process.env, COPYFILE_DISABLE: '1' } });
   const sha256 = (value) => createHash('sha256').update(value).digest('hex');
   writeFileSync(join(output, 'integration-artifacts.json'), `${JSON.stringify({
     version: 1,

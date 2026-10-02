@@ -297,7 +297,7 @@ test('merchant transaction report is published with both private authentication 
     } }> };
     const operation = spec.paths['/api/vendors/transactions/report']?.post;
     assert.ok(operation);
-    assert.deepEqual(operation.security, [{ bearerAuth: [] }, { merchantReportingKey: [] }]);
+    assert.deepEqual(operation.security, [{ bearerAuth: [] }, { merchantServerKey: [] }]);
     const body = operation.requestBody.content['application/json'].schema;
     assert.equal(body.additionalProperties, false);
     assert.equal(body.properties.amount.type, 'integer');
@@ -309,6 +309,7 @@ test('merchant transaction report is published with both private authentication 
 test('merchant order status contract requires vendor JWT and accurately describes refund bookkeeping', () => {
     const spec = swaggerSpec as { paths: Record<string, { put: {
         description: string; security: Record<string, unknown[]>[];
+        parameters: { name: string; schema: { type: string; format?: string } }[];
         requestBody: { content: { 'application/json': { schema: { properties: { status: { enum: string[] } } } } } };
     } }> };
     const operation = spec.paths['/api/vendors/orders/{id}/status']?.put;
@@ -318,6 +319,34 @@ test('merchant order status contract requires vendor JWT and accurately describe
         ['pending', 'completed', 'failed', 'refunded']);
     assert.match(operation.description, /does not issue a provider refund/);
     assert.match(operation.description, /require reconciliation/);
+    const id = operation.parameters.find((parameter) => parameter.name === 'id');
+    assert.equal(id?.schema.type, 'string');
+    assert.equal(id?.schema.format, 'uuid');
+});
+
+test('published merchant operations carry no YAML-split null values', () => {
+    const spec = swaggerSpec as { paths: Record<string, Record<string, unknown>> };
+    const operations: [string, string][] = [
+        ['/api/merchant-verification/assertions', 'post'],
+        ['/api/merchant-verification/exchange', 'post'],
+        ['/api/merchant-verification/claim-sessions', 'post'],
+        ['/api/merchant-verification/claim-sessions/{id}', 'get'],
+        ['/api/merchant-verification/product-claims', 'post'],
+        ['/api/vendors/transactions/report', 'post'],
+        ['/api/vendors/orders/{id}/status', 'put'],
+    ];
+    const nulls: string[] = [];
+    const scan = (value: unknown, trail: string): void => {
+        if (value === null) { nulls.push(trail); return; }
+        if (!value || typeof value !== 'object') return;
+        for (const [key, item] of Object.entries(value)) scan(item, `${trail}.${key}`);
+    };
+    for (const [path, method] of operations) {
+        const operation = spec.paths[path]?.[method];
+        assert.ok(operation, `merchant contract missing ${method.toUpperCase()} ${path}`);
+        scan(operation, `${method.toUpperCase()} ${path}`);
+    }
+    assert.deepEqual(nulls, []);
 });
 
 

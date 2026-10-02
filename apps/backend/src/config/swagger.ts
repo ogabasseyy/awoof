@@ -71,10 +71,6 @@ Access tokens expire in 15 minutes. Use the refresh token endpoint to get a new 
         ],
         components: {
             securitySchemes: {
-                merchantReportingKey: {
-                    type: 'apiKey', in: 'header', name: 'Authorization',
-                    description: 'Private merchant reporting key in the form Bearer awoof_…; server-to-server only.',
-                },
                 bearerAuth: {
                     type: 'http',
                     scheme: 'bearer',

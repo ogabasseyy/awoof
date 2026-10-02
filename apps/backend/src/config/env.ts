@@ -60,7 +60,18 @@ const envSchema = z.object({
     PAYSTACK_MERCHANT_SECRET_KEYS: z.string().default('{}').transform((raw, ctx) => {
         try {
             const parsed = z.record(z.string().uuid(), z.string().trim().min(1)).safeParse(JSON.parse(raw));
-            if (parsed.success) return parsed.data;
+            if (parsed.success) {
+                // PostgreSQL reports vendor IDs lowercase and the lookup is
+                // case-sensitive; normalize here so a valid uppercase UUID in
+                // configuration cannot fail closed at runtime without warning.
+                const normalized: Record<string, string> = {};
+                for (const [vendorId, secret] of Object.entries(parsed.data)) {
+                    const key = vendorId.toLowerCase();
+                    if (Object.hasOwn(normalized, key)) throw new Error('Duplicate vendor UUID after case normalization');
+                    normalized[key] = secret;
+                }
+                return normalized;
+            }
         } catch { /* Report only a generic configuration error; never secret contents. */ }
         ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'Merchant Paystack keys must be a JSON object mapping vendor UUIDs to non-empty secrets' });
         return z.NEVER;

@@ -9,7 +9,7 @@ export const CALLBACK_PATH = '/awoof/student-claim';
 const COOKIE = 'awoof_reference_nonce';
 const fail = (message, status = 409) => Object.assign(new Error(message), { status });
 export function createMerchant({ origin, apiOrigin, webOrigin, privateKey, productId, vendorId, amountKobo, synthetic = false, paymentGateway = 'other', paystackSecret, reportSecret, dbPath = './.local/merchant.sqlite', fetchImpl = fetch }) {
-  trustedBase(origin, synthetic);
+  origin = trustedBase(origin, synthetic);
   if (!Number.isSafeInteger(amountKobo) || amountKobo < 1) throw new Error('Configure the agreed student price in integer NGN kobo');
   if (!['paystack', 'paystack_merchant', 'other'].includes(paymentGateway)) throw new Error('Unsupported payment gateway');
   if (synthetic && paymentGateway !== 'other') throw new Error('Synthetic payments use the merchant-attested other label only');
@@ -168,7 +168,9 @@ export function createMerchant({ origin, apiOrigin, webOrigin, privateKey, produ
           if (!store.get(reviewId)) store.put(reviewId, { id: reviewId, kind: 'provider_review', eventType: String(event.event ?? 'unknown').slice(0, 100), paymentReference: String(event.data?.transaction?.reference ?? event.data?.reference ?? '').slice(0, 200), receivedAt: new Date().toISOString(), state: 'reconciliation_required' });
           json(res, 202, { accepted: true, reconciliation: 'Refund/dispute/reversal events recorded for merchant review; this example does not settle them.' }); return;
         }
-        const row = store.find(row => row.receipt?.benefitAuthorizationId === event.data?.metadata?.awoofBenefitAuthorizationId);
+        const authorizationId = event.data?.metadata?.awoofBenefitAuthorizationId;
+        if (typeof authorizationId !== 'string' || !authorizationId) throw fail('Unknown checkout', 404);
+        const row = store.find(row => row.receipt?.benefitAuthorizationId === authorizationId);
         if (!row) throw fail('Unknown checkout', 404);
         await once(row.id, async () => {
           const current = store.get(row.id); const reference = event.data.reference;
