@@ -124,7 +124,8 @@ jobs:
           echo "should_run=true" >> "${GITHUB_OUTPUT}"
 
       # Reviewed: head is review DATA only, never executed; helpers come
-      # from the base-SHA checkout, the agent runs the pinned binary.
+      # from the trusted-ref checkout (event base SHA on default-base PRs,
+      # default-branch tip otherwise), the agent runs the pinned binary.
       - name: Checkout repository # nosemgrep: yaml.github-actions.security.pull-request-target-code-checkout.pull-request-target-code-checkout
         id: checkout
         if: steps.prereq.outputs.should_run == 'true'
@@ -162,6 +163,46 @@ jobs:
             echo "::warning::PR tracks trusted-scripts/; workspace copy stashed aside during trusted-helper staging."
           fi
 
+      - name: Resolve trusted scripts ref
+        id: trusted_ref
+        if: steps.prereq.outputs.should_run == 'true'
+        env:
+          BASE_REF: ${{ github.event.pull_request.base.ref }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+        run: |
+          set -euo pipefail
+          # Helpers execute with GH_TOKEN/META_API_KEY, so their ref must
+          # never be contributor-controlled: a custom/stacked base is an
+          # attacker-chosen branch (see trust_base in lib.sh), and pinning
+          # to its SHA would run credentialed custom code. Compare the
+          # PR base against trusted repo config (not the PR) and resolve:
+          #   - base IS the default branch: pin the immutable event base
+          #     SHA. It is the default tip at event time (reviewed, merged
+          #     code — the submitter chose only which branch is base, never
+          #     the tip's content), and the commit that supplied this YAML
+          #     revision under pull_request_target, so YAML and scripts
+          #     pair to one commit with no skew, mid-run or on rerun.
+          #   - otherwise (stacked/custom base): fall back to the default
+          #     branch tip. Trusted (reviewed code), but live: it can skew
+          #     newer than this YAML revision. That skew is benign and
+          #     fail-closed — a version mismatch surfaces as a step error
+          #     and degrades to skip/fallback via scripts_ok, never as
+          #     credentialed custom code. Stacked-PR reviews keep running;
+          #     only the helper source stays trusted.
+          # The SHA shape check keeps a malformed event value from becoming
+          # a ref; an empty default branch resolves to a sentinel that fails
+          # the checkout closed (scripts_ok=false, review skipped).
+          if [[ -n "${DEFAULT_BRANCH}" && "${BASE_REF}" == "${DEFAULT_BRANCH}" \
+            && "${BASE_SHA}" =~ ^[0-9a-f]{40}$ ]]; then
+            ref="${BASE_SHA}"
+          elif [[ -n "${DEFAULT_BRANCH}" ]]; then
+            ref="${DEFAULT_BRANCH}"
+          else
+            ref="refs/heads/__missing-default-branch__"
+          fi
+          echo "ref=${ref}" >> "${GITHUB_OUTPUT}"
+
       - name: Checkout trusted review scripts
         if: steps.prereq.outputs.should_run == 'true'
         # Advisory: same fail-soft contract as the head checkout. If the
@@ -173,16 +214,15 @@ jobs:
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           persist-credentials: false
-          # Scripts run with GH_TOKEN, so they come from the immutable BASE
-          # SHA that supplied this workflow run — never the PR head, and
-          # never the live default-branch tip, which could advance mid-run
-          # (or before a rerun) and pair this YAML revision with newer,
-          # incompatible helpers. Under pull_request_target the workflow
-          # itself executes from the base revision, so this pins YAML and
-          # scripts to the same commit. Sparse: only the scripts directory.
-          # Helper PRs are still validated by the selftest workflow, which
-          # runs the head copy's test suite.
-          ref: ${{ github.event.pull_request.base.sha }}
+          # Scripts run with GH_TOKEN, so their ref comes from the resolve
+          # step above — never from the PR event directly: the immutable
+          # event base SHA when the PR base is the default branch, else
+          # the trusted default-branch tip (see above for the trust/skew
+          # story in each case). The step-output indirection keeps every
+          # PR-controlled value out of this checkout's ref. Sparse: only
+          # the scripts directory. Helper PRs are still validated by the
+          # selftest workflow, which runs the head copy's test suite.
+          ref: ${{ steps.trusted_ref.outputs.ref }}
           path: trusted-scripts
           fetch-depth: 1
           sparse-checkout: .github/scripts/muse-review
@@ -205,12 +245,13 @@ jobs:
             # Fail closed: never execute the PR-head script copy, which is
             # submitter-controlled. No bootstrap fallback is needed — under
             # pull_request_target this workflow only runs once it exists on
-            # the base, so the base SHA always provides the scripts; a miss
-            # means a rename/removal is in flight. Head-script changes are
-            # still validated pre-merge by the secret-free selftest
-            # workflow. Downstream steps gate on scripts_ok.
+            # the base, so the resolved trusted ref always provides the
+            # scripts; a miss means a rename/removal is in flight.
+            # Head-script changes are still validated pre-merge by the
+            # secret-free selftest workflow. Downstream steps gate on
+            # scripts_ok.
             echo "scripts_ok=false" >> "${GITHUB_OUTPUT}"
-            echo "::error::Trusted review scripts missing at the workflow base SHA; skipping advisory review."
+            echo "::error::Trusted review scripts missing at the resolved trusted ref; skipping advisory review."
           fi
           # Restore the PR's own copy unconditionally, even when the trusted
           # checkout failed: the agent must read the complete PR tree, never
