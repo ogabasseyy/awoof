@@ -344,8 +344,13 @@ export async function verifyMerchantPaystackPayment(
         // Provider errors can contain account information; keep the public error generic.
         // An outage is retryable: report 503 so merchants retry instead of
         // treating the checkout as definitively unpaid. Throttling and
-        // timeouts are explicitly transient, not rejections.
+        // timeouts are explicitly transient, not rejections. Provider
+        // authentication failures (401/403) mean the configured merchant
+        // secret was revoked, rotated, or rejected — an Awoof-side
+        // configuration problem, not proof the checkout is unpaid — so they
+        // surface as 503 too, keeping the report available for reconciliation.
         if (axios.isAxiosError(error) && (!error.response || error.response.status >= 500
+            || error.response.status === 401 || error.response.status === 403
             || error.response.status === 408 || error.response.status === 429)) {
             throw new ServiceUnavailableError('Merchant payment verification is temporarily unavailable. Please retry.');
         }
