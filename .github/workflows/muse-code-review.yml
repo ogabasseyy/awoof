@@ -74,7 +74,9 @@ on:
     # otherwise spends a billed invocation and still publishes (closing
     # changes neither head SHA, base SHA, nor draft). Manual reruns sit
     # in isolated lanes the cancel cannot reach, so guard.sh/post.sh also
-    # require live state == open (defense in depth).
+    # require live state == open (defense in depth), and a second live
+    # check runs after install, immediately before the invocation, so a
+    # close during the install window still skips the billed run.
     types: [opened, synchronize, reopened, ready_for_review, edited, converted_to_draft, closed]
 
 permissions:
@@ -111,10 +113,10 @@ jobs:
       (github.event.action != 'edited' || github.event.changes.base != null)
     runs-on: ubuntu-latest
     # Budget (worst-case caps must sum below this): checkouts 5 + 5 +
-    # collect 10 + guard 2 + install 5 + run 10 + post 5 = 42, inside the
-    # 45-min job cap, so the fallback post always retains its window plus
-    # step-overhead headroom. Phase `timeout`/`timeout-minutes` caps are
-    # fail-fast kill-caps for hung calls, not expected durations.
+    # collect 10 + guard 2 + install 5 + reguard 2 + run 10 + post 5 = 44,
+    # inside the 45-min job cap, so the fallback post always retains its
+    # window plus step-overhead headroom. Phase `timeout`/`timeout-minutes`
+    # caps are fail-fast kill-caps for hung calls, not expected durations.
     timeout-minutes: 45
     env:
       MUSE_MODEL_RESOLVED: ${{ vars.MUSE_MODEL != '' && vars.MUSE_MODEL || '' }}
@@ -382,6 +384,39 @@ jobs:
           # Pinned versioned artifact + SHA256 check (see install.sh).
           bash "${SCRIPT_DIR}/install.sh"
 
+      - name: Re-verify live PR state
+        id: reguard
+        # Check-to-use window: install takes up to 5 minutes, and a manual
+        # rerun's isolated concurrency lane means no closed trigger can
+        # cancel it mid-install — without this step a close after guard.sh
+        # passed would still spend the billed invocation. Re-runs guard.sh
+        # unchanged (same fail-closed fresh=false semantics on lookup
+        # failure); the GitHub token stays in this step, never in Run.
+        if: >-
+          steps.prereq.outputs.should_run == 'true' &&
+          steps.scriptdir.outputs.scripts_ok == 'true' &&
+          steps.diff.outcome == 'success' &&
+          steps.diff.outputs.should_review == 'true' &&
+          steps.diff.outputs.diff_failed != 'true' &&
+          steps.diff.outputs.duplicate != 'true' &&
+          steps.guard.outputs.fresh == 'true' &&
+          steps.install.outcome == 'success'
+        # Advisory: same fail-soft contract as the guard step — a stalled
+        # revalidation skips the billed run (no fresh=true) while Post
+        # still runs and revalidates staleness itself.
+        continue-on-error: true
+        timeout-minutes: 2
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          HEAD_SHA: ${{ steps.diff.outputs.head_sha }}
+          BASE_SHA: ${{ steps.diff.outputs.base_sha }}
+          SCRIPT_DIR: ${{ steps.scriptdir.outputs.dir }}
+        run: |
+          set -euo pipefail
+          bash "${SCRIPT_DIR}/guard.sh"
+
       - name: Run Muse review
         id: muse
         if: >-
@@ -392,7 +427,8 @@ jobs:
           steps.diff.outputs.diff_failed != 'true' &&
           steps.diff.outputs.duplicate != 'true' &&
           steps.guard.outputs.fresh == 'true' &&
-          steps.install.outcome == 'success'
+          steps.install.outcome == 'success' &&
+          steps.reguard.outputs.fresh == 'true'
         # Advisory: a failed/quota-exhausted run posts a fallback note instead
         # of failing the build, so subscription limits can never block merges.
         continue-on-error: true
@@ -426,6 +462,7 @@ jobs:
           steps.scriptdir.outputs.scripts_ok == 'true' &&
           steps.diff.outputs.duplicate != 'true' &&
           steps.guard.outputs.fresh != 'false' &&
+          steps.reguard.outputs.fresh != 'false' &&
           (steps.diff.outputs.should_review == 'true' || steps.diff.outcome != 'success')
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

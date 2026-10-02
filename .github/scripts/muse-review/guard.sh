@@ -4,7 +4,9 @@
 # A manual rerun uses an isolated concurrency group, so a newer push cannot
 # cancel it — without this check the stale run would review (and post about)
 # an old head. Runs as its own step so the GitHub token never shares an
-# environment with the third-party agent process.
+# environment with the third-party agent process. Invoked twice per run —
+# pre-install (guard) and pre-invocation (reguard) — to narrow the
+# check-to-use window a manual rerun's isolated lane otherwise leaves open.
 #
 # Env in: GH_TOKEN, GITHUB_REPOSITORY, PR_NUMBER, HEAD_SHA, BASE_SHA,
 #   GITHUB_OUTPUT.
