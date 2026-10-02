@@ -73,11 +73,11 @@ test('ambiguous exchange preserves original retry binding while a changed code f
 test('live merchant keys cannot enable this test-only reference', () => {
   assert.throws(() => createMerchant({ origin: 'https://merchant.test', apiOrigin: 'https://api.test', webOrigin: 'https://awoof.test', privateKey: 'awoof_test', productId: 'product', vendorId: 'vendor', amountKobo: 1, paystackSecret: 'sk_live_not_allowed', dbPath: ':memory:' }), /test secrets/);
 });
-test('ambiguous initialization timeout reconciles the held reference instead of reposting', async () => {
-  const port = await freePort(); const origin = `https://127.0.0.1:${port}`; let checkoutId; let reference; let initializes = 0; let verifies = 0;
+test('ambiguous initialization timeout abandons the taken reference for a fresh one', async () => {
+  const port = await freePort(); const origin = `https://127.0.0.1:${port}`; let checkoutId; const references = []; let verifies = 0; let lost = true;
   const app = createMerchant({ origin, apiOrigin: 'https://api.test', webOrigin: 'https://awoof.test', privateKey: 'awoof_test', productId: 'product', vendorId: 'vendor', amountKobo: 80000, paymentGateway: 'paystack_merchant', paystackSecret: 'sk_test_fixture', dbPath: ':memory:', fetchImpl: async (url, init) => {
-    if (url.endsWith('/transaction/initialize')) { initializes++; reference = JSON.parse(init.body).reference; throw new Error('Ambiguous connection loss'); }
-    if (url.includes('/transaction/verify/')) { verifies++; assert.equal(url, `https://api.paystack.co/transaction/verify/${reference}`); return Response.json({ status: true, data: { reference, authorization: { authorization_url: 'https://checkout.paystack.com/reconciled-payment' } } }); }
+    if (url.endsWith('/transaction/initialize')) { const reference = JSON.parse(init.body).reference; references.push(reference); if (lost) { lost = false; throw new Error('Ambiguous connection loss'); } return Response.json({ status: true, data: { authorization_url: 'https://checkout.paystack.com/fresh-payment', reference } }); }
+    if (url.includes('/transaction/verify/')) { verifies++; assert.equal(url, `https://api.paystack.co/transaction/verify/${references[0]}`); return Response.json({ status: true, data: { reference: references[0], status: 'abandoned' } }); }
     const body = JSON.parse(init.body);
     if (url.endsWith('/claim-sessions')) { checkoutId = body.merchantCheckoutId; return Response.json({ success: true, data: { claimSessionId: 'session' } }); }
     if (url.endsWith('/exchange')) return Response.json({ success: true, data: { eligible: true, assuranceMethod: 'enrollment', campaignId: checkoutId, benefitAuthorizationId: 'benefit', validUntil: new Date(Date.now() + 600000).toISOString() } });
@@ -92,16 +92,16 @@ test('ambiguous initialization timeout reconciles the held reference instead of 
     assert.equal((await request('/payments/paystack-initialize', { method: 'POST', headers, body: form })).status, 502);
     assert.equal(app.store.get(checkoutId).state, 'payment_initialization_unknown');
     const retry = await request('/payments/paystack-initialize', { method: 'POST', headers, body: form });
-    assert.equal(retry.status, 303); assert.equal(retry.headers.get('location'), 'https://checkout.paystack.com/reconciled-payment');
-    assert.equal(initializes, 1); assert.equal(verifies, 1);
+    assert.equal(retry.status, 303); assert.equal(retry.headers.get('location'), 'https://checkout.paystack.com/fresh-payment');
+    assert.equal(references.length, 2); assert.notEqual(references[0], references[1]); assert.equal(verifies, 1);
     assert.equal(app.store.get(checkoutId).state, 'payment_initialized');
   } finally { await new Promise(r => app.server.close(r)); app.store.close(); }
 });
-test('duplicate initialization rejection reconciles the held reference on retry', async () => {
+test('duplicate initialization rejection renews the reference instead of reposting', async () => {
   const port = await freePort(); const origin = `https://127.0.0.1:${port}`; let checkoutId; const references = []; let verifies = 0; let duplicate = true;
   const app = createMerchant({ origin, apiOrigin: 'https://api.test', webOrigin: 'https://awoof.test', privateKey: 'awoof_test', productId: 'product', vendorId: 'vendor', amountKobo: 80000, paymentGateway: 'paystack_merchant', paystackSecret: 'sk_test_fixture', dbPath: ':memory:', fetchImpl: async (url, init) => {
-    if (url.endsWith('/transaction/initialize')) { references.push(JSON.parse(init.body).reference); if (duplicate) { duplicate = false; return Response.json({ status: false, message: 'Duplicate Transaction Reference' }, { status: 400 }); } return Response.json({ status: true, data: { authorization_url: 'https://checkout.paystack.com/should-not-repost', reference: references.at(-1) } }); }
-    if (url.includes('/transaction/verify/')) { verifies++; return Response.json({ status: true, data: { reference: references[0], authorization: { authorization_url: 'https://checkout.paystack.com/adopted-payment' } } }); }
+    if (url.endsWith('/transaction/initialize')) { const reference = JSON.parse(init.body).reference; references.push(reference); if (duplicate) { duplicate = false; return Response.json({ status: false, message: 'Duplicate Transaction Reference' }, { status: 400 }); } return Response.json({ status: true, data: { authorization_url: 'https://checkout.paystack.com/renewed-payment', reference } }); }
+    if (url.includes('/transaction/verify/')) { verifies++; return Response.json({ status: true, data: { reference: references[0], status: 'abandoned' } }); }
     const body = JSON.parse(init.body);
     if (url.endsWith('/claim-sessions')) { checkoutId = body.merchantCheckoutId; return Response.json({ success: true, data: { claimSessionId: 'session' } }); }
     if (url.endsWith('/exchange')) return Response.json({ success: true, data: { eligible: true, assuranceMethod: 'enrollment', campaignId: checkoutId, benefitAuthorizationId: 'benefit', validUntil: new Date(Date.now() + 600000).toISOString() } });
@@ -116,8 +116,31 @@ test('duplicate initialization rejection reconciles the held reference on retry'
     assert.equal((await request('/payments/paystack-initialize', { method: 'POST', headers, body: form })).status, 502);
     assert.equal(app.store.get(checkoutId).state, 'payment_initialization_unknown');
     const retry = await request('/payments/paystack-initialize', { method: 'POST', headers, body: form });
-    assert.equal(retry.status, 303); assert.equal(retry.headers.get('location'), 'https://checkout.paystack.com/adopted-payment');
-    assert.equal(references.length, 1); assert.equal(verifies, 1);
+    assert.equal(retry.status, 303); assert.equal(retry.headers.get('location'), 'https://checkout.paystack.com/renewed-payment');
+    assert.equal(references.length, 2); assert.notEqual(references[0], references[1]); assert.equal(verifies, 1);
+  } finally { await new Promise(r => app.server.close(r)); app.store.close(); }
+});
+test('definitive initialization rejection releases inputs so the email can be corrected', async () => {
+  const port = await freePort(); const origin = `https://127.0.0.1:${port}`; let checkoutId; const emails = [];
+  const app = createMerchant({ origin, apiOrigin: 'https://api.test', webOrigin: 'https://awoof.test', privateKey: 'awoof_test', productId: 'product', vendorId: 'vendor', amountKobo: 80000, paymentGateway: 'paystack_merchant', paystackSecret: 'sk_test_fixture', dbPath: ':memory:', fetchImpl: async (url, init) => {
+    if (url.endsWith('/transaction/initialize')) { const body = JSON.parse(init.body); emails.push(body.email); if (body.email === 'rejected@example.test') return Response.json({ status: false, message: 'Invalid email address' }, { status: 400 }); return Response.json({ status: true, data: { authorization_url: 'https://checkout.paystack.com/corrected-payment', reference: body.reference } }); }
+    if (url.includes('/transaction/verify/')) throw new Error('definitive rejection must not reconcile');
+    const body = JSON.parse(init.body);
+    if (url.endsWith('/claim-sessions')) { checkoutId = body.merchantCheckoutId; return Response.json({ success: true, data: { claimSessionId: 'session' } }); }
+    if (url.endsWith('/exchange')) return Response.json({ success: true, data: { eligible: true, assuranceMethod: 'enrollment', campaignId: checkoutId, benefitAuthorizationId: 'benefit', validUntil: new Date(Date.now() + 600000).toISOString() } });
+    throw new Error(`unexpected backend call ${url}`);
+  } });
+  await new Promise(r => app.server.listen(port, '127.0.0.1', r));
+  const request = (path, init = {}) => fetch(`http://127.0.0.1:${port}${path}`, { redirect: 'manual', ...init });
+  try {
+    const start = await request('/checkout', { method: 'POST', headers: { Origin: origin } }); const cookie = start.headers.get('set-cookie').split(';')[0];
+    await request('/awoof/student-claim?assertion=' + 'a'.repeat(43), { headers: { Cookie: cookie } });
+    const headers = { Origin: origin, Cookie: cookie };
+    assert.equal((await request('/payments/paystack-initialize', { method: 'POST', headers, body: 'email=rejected%40example.test' })).status, 400);
+    assert.equal(app.store.get(checkoutId).state, 'authorized');
+    const retry = await request('/payments/paystack-initialize', { method: 'POST', headers, body: 'email=corrected%40example.test' });
+    assert.equal(retry.status, 303); assert.equal(retry.headers.get('location'), 'https://checkout.paystack.com/corrected-payment');
+    assert.deepEqual(emails, ['rejected@example.test', 'corrected@example.test']);
   } finally { await new Promise(r => app.server.close(r)); app.store.close(); }
 });
 test('references unknown upstream initialize with the held reference after reconcile', async () => {
