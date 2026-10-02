@@ -68,7 +68,14 @@ on:
     # via the job if (draft == false). Without the trigger, a mid-run
     # draft conversion spends a billed invocation and still publishes
     # (conversion changes neither head nor base SHA).
-    types: [opened, synchronize, reopened, ready_for_review, edited, converted_to_draft]
+    # closed: same shape — lands in the live lane (no -ignored suffix,
+    # cancel-in-progress true) to cancel an in-flight review, then skips
+    # itself via the job if (action != closed). A mid-run close/merge
+    # otherwise spends a billed invocation and still publishes (closing
+    # changes neither head SHA, base SHA, nor draft). Manual reruns sit
+    # in isolated lanes the cancel cannot reach, so guard.sh/post.sh also
+    # require live state == open (defense in depth).
+    types: [opened, synchronize, reopened, ready_for_review, edited, converted_to_draft, closed]
 
 permissions:
   contents: read
@@ -94,7 +101,11 @@ jobs:
     permissions:
       contents: read
       pull-requests: write
+    # action != closed: the closed-triggered run exists only to cancel an
+    # in-flight review via the live concurrency lane; the PR is closed so
+    # there is nothing to review (collect.sh would skip it too).
     if: >-
+      github.event.action != 'closed' &&
       github.event.pull_request.draft == false &&
       github.event.pull_request.head.repo.full_name == github.repository &&
       (github.event.action != 'edited' || github.event.changes.base != null)
@@ -185,11 +196,13 @@ jobs:
           #     pair to one commit with no skew, mid-run or on rerun.
           #   - otherwise (stacked/custom base): fall back to the default
           #     branch tip. Trusted (reviewed code), but live: it can skew
-          #     newer than this YAML revision. That skew is benign and
-          #     fail-closed — a version mismatch surfaces as a step error
-          #     and degrades to skip/fallback via scripts_ok, never as
-          #     credentialed custom code. Stacked-PR reviews keep running;
-          #     only the helper source stays trusted.
+          #     newer than this YAML revision. That skew is fail-closed via
+          #     the protocol handshake in the scriptdir step — lib.sh
+          #     declares MUSE_REVIEW_PROTOCOL, this YAML requires its own
+          #     value, and any mismatch sets scripts_ok=false so the run
+          #     skips loudly instead of running mismatched orchestration.
+          #     Stacked-PR reviews keep running; only the helper source
+          #     stays trusted.
           # The SHA shape check keeps a malformed event value from becoming
           # a ref; an empty default branch resolves to a sentinel that fails
           # the checkout closed (scripts_ok=false, review skipped).
@@ -239,8 +252,26 @@ jobs:
           if [[ -f "${GITHUB_WORKSPACE}/trusted-scripts/.github/scripts/muse-review/lib.sh" ]]; then
             rm -rf "${RUNNER_TEMP}/trusted-scripts"
             mv "${GITHUB_WORKSPACE}/trusted-scripts" "${RUNNER_TEMP}/trusted-scripts"
-            echo "dir=${RUNNER_TEMP}/trusted-scripts/.github/scripts/muse-review" >> "${GITHUB_OUTPUT}"
-            echo "scripts_ok=true" >> "${GITHUB_OUTPUT}"
+            # Protocol handshake: custom/stacked-base runs pair this
+            # event-revision YAML with live-tip scripts, so a contract
+            # change in between (step outputs, env inputs, inter-phase
+            # files) would otherwise run silently against stale
+            # orchestration and skip or mis-post. lib.sh declares
+            # MUSE_REVIEW_PROTOCOL; this revision requires the value
+            # below (a pre-handshake lib.sh reports <unset>). Same-commit
+            # checkouts (default-base path) always agree; a mismatch
+            # fails closed with a loud log. Bump BOTH values together
+            # with any contract change.
+            expected_protocol=1
+            # shellcheck disable=SC1091  # resolved trusted tree, staged above
+            . "${RUNNER_TEMP}/trusted-scripts/.github/scripts/muse-review/lib.sh"
+            if [[ "${MUSE_REVIEW_PROTOCOL:-}" != "${expected_protocol}" ]]; then
+              echo "scripts_ok=false" >> "${GITHUB_OUTPUT}"
+              echo "::error::Trusted review scripts protocol ${MUSE_REVIEW_PROTOCOL:-<unset>} != required ${expected_protocol}; skipping advisory review."
+            else
+              echo "dir=${RUNNER_TEMP}/trusted-scripts/.github/scripts/muse-review" >> "${GITHUB_OUTPUT}"
+              echo "scripts_ok=true" >> "${GITHUB_OUTPUT}"
+            fi
           else
             # Fail closed: never execute the PR-head script copy, which is
             # submitter-controlled. No bootstrap fallback is needed — under

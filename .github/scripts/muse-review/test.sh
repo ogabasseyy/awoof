@@ -385,5 +385,16 @@ got="$(jq -s '[.[] | select(type == "array")] | add // []' "${pages_fix}")"
 assert_eq "pages-all-error" '[]' "$(printf '%s' "${got}" | jq -c '.')"
 rm -f "${pages_fix}"
 
+# --- MUSE_REVIEW_PROTOCOL handshake (custom-base skew) ---
+# lib.sh declares the YAML<->scripts contract version; the workflow's
+# scriptdir step requires its own expected value and fails closed on
+# mismatch. Same-revision YAML and scripts must agree — a contract
+# change bumps BOTH values together, and this cross-file assert catches
+# a bump that updates only one side.
+if [[ "${MUSE_REVIEW_PROTOCOL:-}" =~ ^[0-9]+$ ]]; then got_proto="yes"; else got_proto="no"; fi
+assert_eq "protocol-declared" "yes" "${got_proto}"
+yaml_proto="$(sed -n 's/^[[:space:]]*expected_protocol=\([0-9][0-9]*\)[[:space:]]*$/\1/p' "${SCRIPT_DIR}/../../workflows/muse-code-review.yml" 2>/dev/null || true)"
+assert_eq "protocol-yaml-agrees" "${MUSE_REVIEW_PROTOCOL:-<unset>}" "${yaml_proto:-<missing>}"
+
 printf '\npass=%d fail=%d%s\n' "${pass}" "${fail}" "${fail_names:+  failed:${fail_names}}"
 [[ "${fail}" == "0" ]]
