@@ -85,7 +85,7 @@ test('merchant verification selects only authenticated vendor credentials and va
         assert.deepEqual(await verifyMerchantPaystackPayment(vendor, 'ref/test'), { verified: false, error: 'Merchant payment verification failed' });
         axios.get = (async () => { throw { isAxiosError: true, response: { status: 404, data: { message: 'not found' } } }; }) as typeof axios.get;
         assert.deepEqual(await verifyMerchantPaystackPayment(vendor, 'ref/test'), { verified: false, error: 'Merchant payment verification failed' });
-        for (const outage of [{ isAxiosError: true, code: 'ECONNABORTED' }, { isAxiosError: true, code: 'ERR_CANCELED' }, { isAxiosError: true, response: { status: 502, data: {} } }, { isAxiosError: true, response: { status: 503, data: {} } }]) {
+        for (const outage of [{ isAxiosError: true, code: 'ECONNABORTED' }, { isAxiosError: true, code: 'ERR_CANCELED' }, { isAxiosError: true, response: { status: 408, data: {} } }, { isAxiosError: true, response: { status: 429, data: {} } }, { isAxiosError: true, response: { status: 502, data: {} } }, { isAxiosError: true, response: { status: 503, data: {} } }]) {
             axios.get = (async () => { throw outage; }) as typeof axios.get;
             await assert.rejects(verifyMerchantPaystackPayment(vendor, 'ref/test'), { statusCode: 503 });
         }
