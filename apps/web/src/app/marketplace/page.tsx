@@ -20,6 +20,7 @@ import { Input } from '@/components/ui/input';
 import { Button } from '@/components/ui/button';
 import apiClient, { getImageUrl, studentSsoSessionApiClient } from '@/lib/api-client';
 import Image from 'next/image';
+import Logo from '@/app/components/logo';
 import Link from 'next/link';
 import { useAuth } from '@/contexts/AuthContext';
 import { formatCurrency, formatSavings } from '@/lib/format';
@@ -304,13 +305,7 @@ export default function MarketplacePage() {
                 <div className="mx-auto max-w-6xl px-4 py-3">
                     <div className="flex items-center justify-between gap-3">
                         <Link href="/" className="shrink-0">
-                            <Image
-                                src="/images/awoofLogoMain.png"
-                                alt="Awoof"
-                                width={108}
-                                height={36}
-                                className="object-contain"
-                            />
+                            <Logo width={108} height={36} />
                         </Link>
 
                         <form onSubmit={handleSearch} className="flex-1 max-w-xl mx-2 hidden sm:block">

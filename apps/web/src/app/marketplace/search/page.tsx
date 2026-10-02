@@ -10,7 +10,7 @@ import { Search, ShoppingBag, ArrowLeft, Sparkles } from 'lucide-react';
 import { Input } from '@/components/ui/input';
 import { Button } from '@/components/ui/button';
 import apiClient from '@/lib/api-client';
-import Image from 'next/image';
+import Logo from '@/app/components/logo';
 import Link from 'next/link';
 import { useAuth } from '@/contexts/AuthContext';
 import { FadeIn } from '../_components/ExpectancyUI';
@@ -140,13 +140,7 @@ function SearchContent() {
                         </Button>
                     </Link>
                     <Link href="/marketplace" className="hidden sm:block shrink-0">
-                        <Image
-                            src="/images/awoofLogoMain.png"
-                            alt="Awoof"
-                            width={100}
-                            height={32}
-                            className="object-contain"
-                        />
+                        <Logo width={100} height={32} />
                     </Link>
                     <form onSubmit={handleSubmit} className="min-w-0 flex-1 max-w-2xl">
                         <div className="relative">
