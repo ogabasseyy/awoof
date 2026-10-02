@@ -1,8 +1,9 @@
 # Muse Code PR reviewer (advisory only, never blocks merges).
 #
-# Runs automatically on every same-repo pull request. It collects the PR diff,
-# runs `muse exec` headless with the repo checked out, and posts the result as
-# a PR review comment.
+# Runs automatically on every same-repo pull request against the default
+# branch (stacked/custom-base PRs are skipped by the job `if` — see below).
+# It collects the PR diff, runs `muse exec` headless with the repo checked
+# out, and posts the result as a PR review comment.
 #
 # Billing: whatever credential is stored in the META_API_KEY secret. That can
 # be the subscription-linked key from `muse login` onboarding (flat monthly
@@ -32,6 +33,9 @@
 #
 # Forks skipped by the job `if` (head repo check) — load-bearing under
 # pull_request_target, which WOULD expose secrets to forks otherwise.
+# Non-default bases skipped by the same `if` (base ref check) — also
+# load-bearing: pull_request_target runs this file from the PR BASE
+# revision, so a custom base could otherwise supply attacker YAML.
 #
 # Layout: this file only orchestrates steps; every shell program lives in
 # .github/scripts/muse-review/ (each file under 300 lines per repo rules):
@@ -106,18 +110,30 @@ jobs:
     # action != closed: the closed-triggered run exists only to cancel an
     # in-flight review via the live concurrency lane; the PR is closed so
     # there is nothing to review (collect.sh would skip it too).
+    # base == default_branch: load-bearing under pull_request_target, which
+    # runs THIS file from the PR base revision. A same-repo contributor can
+    # push a malicious workflow copy to an unprotected custom base and
+    # open/retarget a PR to it; without this gate that attacker YAML would
+    # execute with secrets before any helper runs. Only the protected
+    # default branch may supply the executed revision. Accepted scope
+    # change: stacked/custom-base PRs are skipped, not reviewed (fail
+    # closed when the default branch is unknown — an empty value never
+    # equals a base ref).
     if: >-
       github.event.action != 'closed' &&
       github.event.pull_request.draft == false &&
       github.event.pull_request.head.repo.full_name == github.repository &&
+      github.event.pull_request.base.ref == github.event.repository.default_branch &&
       (github.event.action != 'edited' || github.event.changes.base != null)
     runs-on: ubuntu-latest
     # Budget (worst-case caps must sum below this): checkouts 5 + 5 +
     # collect 10 + guard 2 + install 5 + reguard 2 + run 10 + post 5 = 44,
-    # inside the 45-min job cap, so the fallback post always retains its
-    # window plus step-overhead headroom. Phase `timeout`/`timeout-minutes`
-    # caps are fail-fast kill-caps for hung calls, not expected durations.
-    timeout-minutes: 45
+    # inside the 60-min job cap, so the fallback post always retains its
+    # full window plus headroom for the uncapped steps (prereq, stash,
+    # trusted-ref, scriptdir) and step-transition overhead. Phase
+    # `timeout`/`timeout-minutes` caps are fail-fast kill-caps for hung
+    # calls, not expected durations.
+    timeout-minutes: 60
     env:
       MUSE_MODEL_RESOLVED: ${{ vars.MUSE_MODEL != '' && vars.MUSE_MODEL || '' }}
       MUSE_EFFORT_RESOLVED: ${{ vars.MUSE_REASONING_EFFORT != '' && vars.MUSE_REASONING_EFFORT || 'medium' }}
@@ -196,15 +212,15 @@ jobs:
           #     the tip's content), and the commit that supplied this YAML
           #     revision under pull_request_target, so YAML and scripts
           #     pair to one commit with no skew, mid-run or on rerun.
-          #   - otherwise (stacked/custom base): fall back to the default
-          #     branch tip. Trusted (reviewed code), but live: it can skew
-          #     newer than this YAML revision. That skew is fail-closed via
-          #     the protocol handshake in the scriptdir step — lib.sh
-          #     declares MUSE_REVIEW_PROTOCOL, this YAML requires its own
-          #     value, and any mismatch sets scripts_ok=false so the run
-          #     skips loudly instead of running mismatched orchestration.
-          #     Stacked-PR reviews keep running; only the helper source
-          #     stays trusted.
+          #   - otherwise (stacked/custom base): unreachable — the job `if`
+          #     skips non-default-base PRs before any step runs. Kept as
+          #     fail-closed defense in depth (fall back to the default
+          #     branch tip, never the event SHA): trusted but live, so any
+          #     skew vs this YAML revision is caught by the protocol
+          #     handshake in the scriptdir step — lib.sh declares
+          #     MUSE_REVIEW_PROTOCOL, this YAML requires its own value,
+          #     and any mismatch sets scripts_ok=false so the run skips
+          #     loudly instead of running mismatched orchestration.
           # The SHA shape check keeps a malformed event value from becoming
           # a ref; an empty default branch resolves to a sentinel that fails
           # the checkout closed (scripts_ok=false, review skipped).
@@ -231,9 +247,9 @@ jobs:
           persist-credentials: false
           # Scripts run with GH_TOKEN, so their ref comes from the resolve
           # step above — never from the PR event directly: the immutable
-          # event base SHA when the PR base is the default branch, else
-          # the trusted default-branch tip (see above for the trust/skew
-          # story in each case). The step-output indirection keeps every
+          # event base SHA (the PR base is always the default branch here;
+          # the job `if` excludes the custom-base fallback path). The
+          # step-output indirection keeps every
           # PR-controlled value out of this checkout's ref. Sparse: only
           # the scripts directory. Helper PRs are still validated by the
           # selftest workflow, which runs the head copy's test suite.
@@ -254,16 +270,17 @@ jobs:
           if [[ -f "${GITHUB_WORKSPACE}/trusted-scripts/.github/scripts/muse-review/lib.sh" ]]; then
             rm -rf "${RUNNER_TEMP}/trusted-scripts"
             mv "${GITHUB_WORKSPACE}/trusted-scripts" "${RUNNER_TEMP}/trusted-scripts"
-            # Protocol handshake: custom/stacked-base runs pair this
-            # event-revision YAML with live-tip scripts, so a contract
-            # change in between (step outputs, env inputs, inter-phase
-            # files) would otherwise run silently against stale
-            # orchestration and skip or mis-post. lib.sh declares
-            # MUSE_REVIEW_PROTOCOL; this revision requires the value
-            # below (a pre-handshake lib.sh reports <unset>). Same-commit
-            # checkouts (default-base path) always agree; a mismatch
-            # fails closed with a loud log. Bump BOTH values together
-            # with any contract change.
+            # Protocol handshake: defense in depth for YAML<->scripts
+            # skew (unreachable today — the job `if` admits only
+            # default-base PRs, whose same-commit checkouts always
+            # agree). Without it, a contract change in between (step
+            # outputs, env inputs, inter-phase files) would run
+            # silently against stale orchestration and skip or
+            # mis-post. lib.sh declares MUSE_REVIEW_PROTOCOL; this
+            # revision requires the value below (a pre-handshake
+            # lib.sh reports <unset>). A mismatch fails closed with
+            # a loud log. Bump BOTH values together with any
+            # contract change.
             expected_protocol=1
             # shellcheck disable=SC1091  # resolved trusted tree, staged above
             . "${RUNNER_TEMP}/trusted-scripts/.github/scripts/muse-review/lib.sh"
