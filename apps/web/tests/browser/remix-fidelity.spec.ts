@@ -10,7 +10,7 @@ for (const width of [390, 1440]) {
     await expect(hero).toHaveCSS('background-image', 'none');
     await expect(hero.locator('h1')).toHaveCSS('text-align', 'center');
     await expect(hero.locator('h1 em')).toBeVisible();
-    await expect(hero.getByAltText('Awoof')).toBeVisible();
+    await expect(hero.getByRole('img', { name: 'Awoof' })).toBeVisible();
     await expect(hero.getByText('Good fuel.')).toBeVisible();
     await expect(hero.getByText('More power')).toBeVisible();
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
