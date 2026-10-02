@@ -106,7 +106,7 @@ export const developerExamples = [
   {
     title: '1. Student approves a check (student session)',
     route: 'POST /api/merchant-verification/assertions',
-    body: 'Requires the student bearer token and an explicit disclosure grant for your vendor, origin, purpose, and campaign. Add "productId" to bind the code to one of your active products for a discounted transaction report. Returns a short-lived opaque code — not an eligibility receipt.',
+    body: 'Requires the student bearer token and an explicit disclosure grant for your vendor, origin, and purpose. The campaignId is bound to the code at issuance, not covered by the grant. Add "productId" to bind the code to one of your active products for a discounted transaction report. Returns a short-lived opaque code — not an eligibility receipt.',
     request: [
       'POST /api/merchant-verification/assertions',
       'Authorization: Bearer <student JWT>',
