@@ -3,8 +3,10 @@ import type { Pool } from 'pg';
 import { z } from 'zod';
 import { getPool } from '../config/database.js';
 import { asyncHandler } from '../common/middleware/errorHandler.js';
+import { BadRequestError, ForbiddenError } from '../common/errors/AppError.js';
 import { authenticate, requireRole } from '../middleware/auth.middleware.js';
 import { issueMerchantAssertion, exchangeMerchantAssertion } from '../services/verification/merchant-assertion.service.js';
+import { isWidgetPilotParticipant } from '../services/verification/eligibility-merchant-context.service.js';
 import {
     claimProductBenefit,
     createMerchantClaimSession,
@@ -27,7 +29,7 @@ import {
  *     MerchantVerificationReceipt:
  *       type: object
  *       additionalProperties: false
- *       required: [receiptId, merchantSubject, eligible, assuranceMethod, institutionId, verifiedAt, validUntil, campaignId]
+ *       required: [receiptId, merchantSubject, eligible, assuranceMethod, institutionId, verifiedAt, validUntil, campaignId, purpose]
  *       properties:
  *         receiptId: { type: string, format: uuid }
  *         merchantSubject:
@@ -40,6 +42,9 @@ import {
  *         verifiedAt: { type: string, format: date-time }
  *         validUntil: { type: string, format: date-time }
  *         campaignId: { type: string }
+ *         purpose:
+ *           type: string
+ *           description: Consent wording recorded at issuance. The browser handoff is student-editable, so the merchant server MUST compare this with its own intent before honoring the receipt.
  *         benefitAuthorizationId:
  *           type: string
  *           format: uuid
@@ -85,6 +90,48 @@ import {
  *       '401': { description: Student authentication required }
  *       '403': { description: Current eligibility or merchant consent unavailable }
  *       '503': { $ref: '#/components/responses/SessionValidationUnavailable' }
+ * /api/merchant-verification/pilot-assertions:
+ *   post:
+ *     summary: Controlled synthetic-account hosted-widget assertion
+ *     description: Same student authorization and current evidence/disclosure checks as /assertions, with explicit environment allowlists for synthetic student and merchant IDs. Product binding is rejected. Disabled by default. This is not a live merchant-availability signal.
+ *     tags: [Merchant Verification]
+ *     security: [{ bearerAuth: [] }]
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             additionalProperties: false
+ *             required: [vendorId, origin, purpose, campaignId, disclosureGrantId]
+ *             properties:
+ *               vendorId: { type: string, format: uuid }
+ *               origin: { type: string, maxLength: 512, description: Exact registered merchant origin including port; HTTPS outside local development }
+ *               purpose: { type: string, minLength: 1, maxLength: 200 }
+ *               campaignId: { type: string, minLength: 1, maxLength: 100 }
+ *               disclosureGrantId: { type: string, format: uuid }
+ *     responses:
+ *       '201':
+ *         description: Opaque short-lived code; Cache-Control no-store. The code is not an eligibility receipt.
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               required: [success, data]
+ *               properties:
+ *                 success: { type: boolean, enum: [true] }
+ *                 data:
+ *                   type: object
+ *                   additionalProperties: false
+ *                   required: [code, expiresAt]
+ *                   properties:
+ *                     code: { type: string, minLength: 43, maxLength: 43 }
+ *                     expiresAt: { type: string, format: date-time }
+ *       '400': { description: Invalid merchant origin or issuance input; product binding is unavailable in this pilot. }
+ *       '401': { description: Student authentication required }
+ *       '403': { description: Pilot account or merchant unavailable, or current eligibility or disclosure unavailable. }
+ *       '422': { description: Invalid request shape; field validation failure }
+ *       '503': { $ref: '#/components/responses/SessionValidationUnavailable' }
  * /api/merchant-verification/exchange:
  *   post:
  *     summary: Atomically exchange a code for a merchant-scoped eligibility receipt
@@ -116,11 +163,13 @@ import {
  *               properties:
  *                 success: { type: boolean, enum: [true] }
  *                 data: { $ref: '#/components/schemas/MerchantVerificationReceipt' }
- *       '400': { description: Invalid input, code or campaign mismatch }
+ *       '400': { description: Invalid code or campaign mismatch; missing or unexpected claim-session proof; product unavailable for product-bound codes }
  *       '401': { description: Private merchant key invalid or merchant inactive }
  *       '403': { description: Eligibility or disclosure no longer current }
- *       '409': { description: Code expired, consumed by another operation or conflicting idempotency key }
+ *       '409': { description: 'Code expired, consumed by another operation or conflicting idempotency key; claim session expired, already redeemed, or checkout ID or browser nonce binding failed' }
+ *       '422': { description: Invalid request shape; field validation failure }
  *       '429': { description: Merchant key hourly quota exhausted or key unavailable }
+ *       '500': { description: Malformed JSON or unexpected server error. Treat the exchange as failed and do not grant a benefit. }
  * /api/merchant-verification/claim-sessions:
  *   post:
  *     summary: Create a merchant claim session binding one checkout to one product
@@ -231,7 +280,7 @@ export type ExchangeAssertion = (merchantKey: string, input: {
 }) => Promise<{
     receiptId: string; merchantSubject: string; eligible: true; assuranceMethod: string;
     institutionId: string; verifiedAt: string; validUntil: string; campaignId: string;
-    benefitAuthorizationId?: string;
+    purpose: string; benefitAuthorizationId?: string;
 }>;
 export type CreateClaimSession = (merchantKey: string, input: ClaimSessionInput) => Promise<ClaimSessionResult>;
 export type ReadClaimSession = (sessionId: string) => Promise<ClaimSessionPublic>;
@@ -263,15 +312,28 @@ export function createMerchantVerificationRouter(deps: MerchantVerificationRoute
     const claim: ClaimProduct = deps.claimProduct
         ?? ((userId, input) => claimProductBenefit(pool(), userId, input));
 
-    router.post('/assertions', authenticate, requireRole('student'), asyncHandler(async (req,res) => {
+    const issueAssertion = asyncHandler(async (req,res) => {
         const parsed = issuance.parse(req.body);
         const data = await issue(req.user!.id, {
             vendorId: parsed.vendorId, origin: parsed.origin, purpose: parsed.purpose,
             campaignId: parsed.campaignId, disclosureGrantId: parsed.disclosureGrantId,
             ...(parsed.productId !== undefined ? { productId: parsed.productId } : {}),
         });
+        res.set('Cache-Control', 'no-store');
+        res.set('Referrer-Policy', 'no-referrer');
         res.status(201).json({ success:true, data });
-    }));
+    });
+    router.post('/assertions', authenticate, requireRole('student'), issueAssertion);
+    // The hosted widget is deliberately limited to explicitly provisioned
+    // synthetic student IDs and merchant IDs. This gate adds no eligibility:
+    // issueAssertion still performs the complete current-evidence/consent read.
+    router.post('/pilot-assertions', authenticate, requireRole('student'), (req, _res, next) => {
+        if (!isWidgetPilotParticipant(req.user!.id, String(req.body?.vendorId ?? ''))) {
+            return next(new ForbiddenError('Hosted verification pilot is unavailable for this account or merchant'));
+        }
+        if (req.body?.productId !== undefined) return next(new BadRequestError('Product binding is unavailable in the hosted pilot'));
+        return issueAssertion(req, _res, next);
+    });
     router.post('/exchange', asyncHandler(async (req,res) => {
         const data = await exchangeAssertion(merchantKeyFrom(req), exchange.parse(req.body));
         res.json({ success:true, data });

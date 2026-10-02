@@ -3,6 +3,7 @@ import { z } from 'zod';
 import {
     AppError,
     BadRequestError,
+    ForbiddenError,
     ServiceUnavailableError,
 } from '../common/errors/AppError.js';
 import { success } from '../common/utils/response.js';
@@ -46,6 +47,7 @@ const disclosureSchema = z.object({
     purpose: z.string().min(1).max(1024),
     accepted: z.literal(true),
     noticeVersion: z.string().min(1).max(100),
+    expectedUserId: z.string().uuid('Invalid expected user ID').optional(),
 }).strict();
 
 const consentIdSchema = z.string().uuid('Invalid consent ID');
@@ -129,7 +131,16 @@ export class VerificationController {
 
     public async grantMerchantDisclosure(req: AuthRequest, res: Response): Promise<void> {
         const input = disclosureSchema.parse(req.body);
-        const result = await this.flow.grantDisclosure(authenticatedUserId(req), input);
+        const userId = authenticatedUserId(req);
+        // Session fence: when the caller states which account checked the
+        // consent box, a mid-flight account switch in another tab must fail
+        // this write instead of recording someone else's consent. The check
+        // runs in the same request as the grant, so no client-side gap
+        // remains between the last identity read and the insert.
+        if (input.expectedUserId !== undefined && input.expectedUserId !== userId) {
+            throw new ForbiddenError('Account changed during consent; restart the verification flow');
+        }
+        const result = await this.flow.grantDisclosure(userId, input);
         success(res, { message: 'Merchant disclosure consent recorded', data: result }, 201);
     }
 

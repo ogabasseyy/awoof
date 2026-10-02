@@ -39,6 +39,25 @@ test('developers page documents real routes with synthetic examples', async ({ p
   await expect(page.getByRole('link', { name: 'Open vendor integration' })).toHaveAttribute('href', '/vendor/integration');
 });
 
+test('developers page presents the controlled widget exchange with clear availability and key boundaries', async ({ page }) => {
+  await installSyntheticApi(page);
+  await page.goto('/developers');
+  const pilot = page.locator('main #widget-pilot');
+  await expect(pilot.getByRole('heading', { name: 'Controlled widget pilot' })).toBeVisible();
+  await expect(pilot).toContainText('disabled by default');
+  await expect(pilot).toContainText('isolated sandbox with allowlisted synthetic accounts and merchants');
+  await expect(pilot.getByLabel('Controlled widget browser example')).toContainText('Awoof.verify');
+  await expect(pilot.getByLabel('Controlled widget browser example')).toContainText("fetch('/your-checkout/awoof-eligibility'");
+  await expect(pilot.getByLabel('Controlled widget server exchange example')).toContainText('Authorization: Bearer <private merchant server key>');
+  await expect(pilot.getByLabel('Controlled widget server exchange example')).toContainText('idempotencyKey');
+  await expect(pilot.getByRole('rowheader', { name: 'merchantSubject' })).toBeVisible();
+  await expect(pilot.getByRole('link', { name: 'Security and Trust' })).toHaveAttribute('href', '/trust');
+  await expect(pilot.getByRole('link', { name: 'Privacy' })).toHaveAttribute('href', '/privacy');
+  await expect(pilot).toContainText('Cross-Origin-Opener-Policy');
+  await expect(pilot).toContainText('same-origin-allow-popups');
+  await expect(pilot).toContainText('Live use still requires an approved current-enrollment source');
+});
+
 test('developers page renders no secret-shaped example values', async ({ page }) => {
   await installSyntheticApi(page);
   await page.goto('/developers');

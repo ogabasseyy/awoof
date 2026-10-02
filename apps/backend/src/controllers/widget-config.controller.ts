@@ -11,9 +11,12 @@ import { success } from '../common/utils/response.js';
 import type { AuthRequest } from '../middleware/auth.middleware.js';
 import { z } from 'zod';
 import crypto from 'crypto';
+import { canonicalWidgetOrigin } from '../services/verification/eligibility-merchant-context.service.js';
 
 const updateWidgetConfigSchema = z.object({
     allowedDomains: z.array(z.string().min(1)).min(1, 'At least one domain is required'),
+    allowedOrigins: z.array(z.string().min(1).max(512)).min(1, 'At least one origin is required').optional(),
+    regenerateApiKey: z.boolean().optional(),
 });
 
 function generateWidgetApiKey(): string {
@@ -61,6 +64,46 @@ export async function getWidgetConfig(req: AuthRequest, res: Response): Promise<
 }
 
 /**
+ * Origins to store when an update omits allowedOrigins.
+ *
+ * Stored origins whose hostname is still in the new domain list are kept
+ * byte-identical: enforcement compares exact canonical strings, so keeping
+ * them unchanged cannot newly authorize anything. Hostnames with no kept
+ * origin get the historical derived https form. Entries that no longer
+ * parse, or whose hostname was removed, are dropped: unparseable entries
+ * can never match enforcement because the enforcement input is always
+ * canonicalized before comparison.
+ */
+async function omittedOrigins(vendorId: string, domains: string[]): Promise<string[]> {
+    const existing = await db.query<{ allowed_origins: unknown }>(
+        `SELECT allowed_origins FROM widget_configs WHERE vendor_id = $1`,
+        [vendorId]
+    );
+    const wanted = new Set(domains);
+    const kept: string[] = [];
+    const covered = new Set<string>();
+    const stored = existing.rows[0]?.allowed_origins;
+    if (Array.isArray(stored)) {
+        for (const origin of stored) {
+            if (typeof origin !== 'string') continue;
+            let hostname: string;
+            try {
+                hostname = new URL(origin).hostname.toLowerCase();
+            } catch {
+                continue;
+            }
+            if (!wanted.has(hostname)) continue;
+            kept.push(origin);
+            covered.add(hostname);
+        }
+    }
+    for (const hostname of domains) {
+        if (!covered.has(hostname)) kept.push(`https://${hostname}`);
+    }
+    return [...new Set(kept)];
+}
+
+/**
  * Update allowed domains. Optionally regenerate API key.
  */
 export async function updateWidgetConfig(req: AuthRequest, res: Response): Promise<void> {
@@ -88,9 +131,29 @@ export async function updateWidgetConfig(req: AuthRequest, res: Response): Promi
         }
         return parsed.hostname.toLowerCase();
     }))];
-    const origins = domains.map((hostname) => `https://${hostname}`);
+    // Exact origins (ports, localhost HTTP in development) use the same
+    // canonicalization the enforcement path applies, so anything stored
+    // here can actually match a later domain-check or merchant-context
+    // call. An explicit list replaces the stored origins, but every origin
+    // must belong to a submitted domain: domain-check requires both lists
+    // to match while merchant-context consults origins alone, so a
+    // mismatched pair would leave a contradictory configuration. An
+    // omitted list keeps stored origins whose hostname is still allowed —
+    // so adding or removing an unrelated domain cannot silently delete a
+    // custom origin such as https://shop.example.com:8443 — and derives
+    // default https forms only for newly uncovered hostnames.
+    const wanted = new Set(domains);
+    const origins = validated.allowedOrigins === undefined
+        ? await omittedOrigins(vendorId, domains)
+        : [...new Set(validated.allowedOrigins.map((origin) => {
+            const canonical = canonicalWidgetOrigin(origin);
+            if (!wanted.has(new URL(canonical).hostname.toLowerCase())) {
+                throw new BadRequestError('Each allowed origin must belong to a submitted allowed domain');
+            }
+            return canonical;
+        }))];
 
-    const regenerateKey = Boolean(req.body.regenerateApiKey);
+    const regenerateKey = validated.regenerateApiKey === true;
 
     const row = await db.query(
         `INSERT INTO widget_configs (vendor_id, allowed_domains, allowed_origins, api_key, status)

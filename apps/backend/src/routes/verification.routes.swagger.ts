@@ -456,3 +456,89 @@
  *       400:
  *         $ref: '#/components/responses/BadRequest'
  */
+
+/**
+ * @swagger
+ * /api/verification/disclosures:
+ *   post:
+ *     summary: Record a merchant disclosure consent for the signed-in student
+ *     tags: [Verification]
+ *     security:
+ *       - bearerAuth: []
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             additionalProperties: false
+ *             required:
+ *               - vendorId
+ *               - origin
+ *               - purpose
+ *               - accepted
+ *               - noticeVersion
+ *             properties:
+ *               vendorId:
+ *                 type: string
+ *                 format: uuid
+ *                 description: Merchant receiving the disclosure
+ *               origin:
+ *                 type: string
+ *                 minLength: 1
+ *                 maxLength: 2048
+ *                 description: Merchant origin the consent is bound to
+ *               purpose:
+ *                 type: string
+ *                 minLength: 1
+ *                 maxLength: 1024
+ *                 description: Consent wording the student approved
+ *               accepted:
+ *                 type: boolean
+ *                 enum: [true]
+ *                 description: Must be true to record consent
+ *                 example: true
+ *               noticeVersion:
+ *                 type: string
+ *                 minLength: 1
+ *                 maxLength: 100
+ *                 description: Disclosure notice version the student saw
+ *               expectedUserId:
+ *                 type: string
+ *                 format: uuid
+ *                 description: Optional session fence. When present it must match the authenticated account; a mid-flight account switch fails the write with 403 instead of recording another account's consent.
+ *     responses:
+ *       201:
+ *         description: Merchant disclosure consent recorded
+ *         content:
+ *           application/json:
+ *             schema:
+ *               allOf:
+ *                 - $ref: '#/components/schemas/SuccessResponse'
+ *                 - type: object
+ *                   required:
+ *                     - success
+ *                     - data
+ *                   properties:
+ *                     data:
+ *                       type: object
+ *                       required:
+ *                         - grantId
+ *                       properties:
+ *                         grantId:
+ *                           type: string
+ *                           format: uuid
+ *                           description: Disclosure grant to present at assertion issuance
+ *       400:
+ *         $ref: '#/components/responses/BadRequest'
+ *       401:
+ *         $ref: '#/components/responses/Unauthorized'
+ *       403:
+ *         description: Account changed during consent; restart the verification flow
+ *       404:
+ *         description: Live merchant widget origin not configured
+ *       422:
+ *         description: Invalid request shape; field validation failure
+ *       503:
+ *         $ref: '#/components/responses/SessionValidationUnavailable'
+ */

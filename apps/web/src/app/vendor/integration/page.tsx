@@ -20,6 +20,7 @@ import apiClient from '@/lib/api-client';
 import toast from 'react-hot-toast';
 import { useConfirm } from '@/components/ui/ConfirmDialog';
 import { getApiErrorMessage } from '@/lib/api-error';
+import { resolveDisclosureOrigins } from '@/lib/widget-origins';
 
 const iconProps = { className: 'h-5 w-5', strokeWidth: 1.5, fill: 'currentColor' as const };
 
@@ -323,7 +324,7 @@ export default function VendorIntegrationPage() {
                                         <div className="flex-1">
                                             <h3 className="font-semibold text-slate-900">Add Widget to Your Website</h3>
                                             <p className="mt-1 text-sm text-slate-600">
-                                                Add the Awoof verification widget to your website. See the &quot;Widget Integration&quot; tab for detailed instructions.
+                                                The hosted widget is unavailable for general installation. See the Widget Integration tab for the controlled pilot status.
                                             </p>
                                         </div>
                                     </div>
@@ -362,8 +363,8 @@ export default function VendorIntegrationPage() {
                                     </div>
                                     <p className="mt-2 text-sm text-slate-600">
                                         {paymentSettings?.paymentMethod === 'vendor_website'
-                                            ? 'Ready to integrate widget'
-                                            : 'Select &quot;Vendor Website&quot; payment method first'}
+                                            ? 'Hosted widget pilot is not available for general installation'
+                                            : 'Select Vendor Website payment method to configure your own checkout'}
                                     </p>
                                 </div>
 
@@ -407,7 +408,7 @@ export default function VendorIntegrationPage() {
                                                     {copiedText === 'widget-api-key' ? <Check className="h-4 w-4" /> : <Copy className="h-4 w-4" />}
                                                 </Button>
                                             </div>
-                                            <p className="mt-1 text-xs text-slate-500">Use this in Awoof.init(&#123; apiKey: &quot;...&quot; &#125;). Keep it secret.</p>
+                                            <p className="mt-1 text-xs text-slate-500">This is a public site key for an approved widget installation. Keep the separate merchant server key out of browser code.</p>
                                         </div>
                                         <div>
                                             <Label className="mb-2 block">Allowed domains</Label>
@@ -415,7 +416,7 @@ export default function VendorIntegrationPage() {
                                                 <Button variant="outline" disabled={savingWidgetConfig} onClick={async () => {
                                                     setSavingWidgetConfig(true);
                                                     try {
-                                                        await apiClient.put('/vendors/widget-config', { allowedDomains: widgetConfig.allowedDomains });
+                                                        await apiClient.put('/vendors/widget-config', { allowedDomains: widgetConfig.allowedDomains, allowedOrigins: resolveDisclosureOrigins(widgetConfig.allowedDomains, widgetConfig.allowedOrigins) });
                                                         await fetchWidgetConfig();
                                                         toast.success('HTTPS disclosure origins saved');
                                                     } catch (error) { toast.error(getApiErrorMessage(error, 'Unable to save disclosure origins')); }
@@ -436,7 +437,7 @@ export default function VendorIntegrationPage() {
                                                                 if (next.length === 0) return;
                                                                 setSavingWidgetConfig(true);
                                                                 try {
-                                                                    await apiClient.put('/vendors/widget-config', { allowedDomains: next });
+                                                                    await apiClient.put('/vendors/widget-config', { allowedDomains: next, allowedOrigins: resolveDisclosureOrigins(next, widgetConfig.allowedOrigins) });
                                                                     await fetchWidgetConfig();
                                                                 } finally {
                                                                     setSavingWidgetConfig(false);
@@ -472,7 +473,8 @@ export default function VendorIntegrationPage() {
                                                         }
                                                         setSavingWidgetConfig(true);
                                                         try {
-                                                            await apiClient.put('/vendors/widget-config', { allowedDomains: [...current, domain] });
+                                                            const next = [...current, domain];
+                                                            await apiClient.put('/vendors/widget-config', { allowedDomains: next, allowedOrigins: resolveDisclosureOrigins(next, widgetConfig.allowedOrigins) });
                                                             setNewDomain('');
                                                             await fetchWidgetConfig();
                                                         } finally {
@@ -495,6 +497,11 @@ export default function VendorIntegrationPage() {
                                 <p className="text-sm text-slate-600">
                                     Widget integration is not yet available. Installation instructions will appear here
                                     when student verification and discount redemption are ready for merchant use.
+                                    Pilot <code>Awoof.init</code>/<code>Awoof.verify</code> and server-side code-exchange
+                                    examples are in the <Link href="/developers" className="underline">developer guide</Link>.
+                                </p>
+                                <p className="mt-3 text-sm text-slate-600">
+                                    The controlled synthetic pilot uses a popup. Merchant pages must preserve its opener connection; <code>Cross-Origin-Opener-Policy: same-origin</code> breaks that handoff. See the <Link href="/developers" className="underline">developer guide</Link> for tested policy pairings.
                                 </p>
                             </div>
                         </div>

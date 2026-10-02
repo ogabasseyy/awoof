@@ -8,13 +8,17 @@
 import type { Request, Response } from 'express';
 import { db } from '../config/database.js';
 import { BadRequestError, ForbiddenError } from '../common/errors/AppError.js';
+import type { AuthRequest } from '../middleware/auth.middleware.js';
+import { canonicalWidgetOrigin, isWidgetPilotParticipant } from '../services/verification/eligibility-merchant-context.service.js';
 import { success } from '../common/utils/response.js';
 import { z } from 'zod';
 
 const domainCheckSchema = z.object({
     domain: z.string().min(1, 'Domain is required'),
     apiKey: z.string().min(1, 'API key is required'),
+    origin: z.string().optional(),
 });
+const contextSchema = z.object({ vendorId: z.string().uuid(), origin: z.string().max(512) }).strict();
 
 /**
  * Check if a domain is allowed for a given widget API key.
@@ -28,6 +32,7 @@ export async function domainCheck(req: Request, res: Response): Promise<void> {
     const parsed = domainCheckSchema.safeParse({
         domain: req.body?.domain,
         apiKey: req.body?.apiKey ?? req.body?.api_key,
+        origin: req.body?.origin,
     });
 
     if (!parsed.success) {
@@ -42,11 +47,14 @@ export async function domainCheck(req: Request, res: Response): Promise<void> {
         throw new BadRequestError('Invalid domain');
     }
 
+    const origin = parsed.data.origin === undefined ? null : canonicalWidgetOrigin(parsed.data.origin);
+    if (origin && new URL(origin).hostname !== hostname) throw new BadRequestError('Domain and origin differ');
     const result = await db.query(
         `SELECT wc.vendor_id FROM widget_configs wc
          JOIN vendors v ON v.id = wc.vendor_id AND v.status = 'active' AND v.deleted_at IS NULL
-         WHERE wc.api_key = $1 AND wc.status = 'active' AND $2 = ANY(wc.allowed_domains)`,
-        [apiKey, hostname]
+         WHERE wc.api_key = $1 AND wc.status = 'active' AND $2 = ANY(wc.allowed_domains)
+           AND ($3::text IS NULL OR $3 = ANY(wc.allowed_origins))`,
+        [apiKey, hostname, origin]
     );
 
     if (result.rows.length === 0) {
@@ -60,4 +68,43 @@ export async function domainCheck(req: Request, res: Response): Promise<void> {
             vendorId: result.rows[0].vendor_id,
         },
     });
+}
+
+/**
+ * Whether the calling student may use the hosted pilot for a merchant.
+ * Lets the hosted page enforce the synthetic-student allowlist BEFORE it
+ * records a merchant disclosure: without this precheck a real student on
+ * a shared pilot link would persist consent and only then hit the
+ * issuance 403. Same predicate — and same generic message — as issuance.
+ */
+export async function pilotEligibility(req: AuthRequest, res: Response): Promise<void> {
+    const vendorId = typeof req.query?.vendorId === 'string' ? req.query.vendorId : '';
+    if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(vendorId)) {
+        throw new BadRequestError('Invalid merchant');
+    }
+    const userId = req.user?.id;
+    if (typeof userId !== 'string' || !isWidgetPilotParticipant(userId, vendorId)) {
+        throw new ForbiddenError('Hosted verification pilot is unavailable for this account or merchant');
+    }
+    res.set('Cache-Control', 'no-store');
+    success(res, { message: 'Pilot eligibility', data: { eligible: true, vendorId } });
+}
+
+/** Public display context for the hosted pilot. Never returns a secret or a student result. */
+export async function merchantContext(req: Request, res: Response): Promise<void> {
+    const input = contextSchema.parse(req.body);
+    const pilotVendors = (process.env.AWOOF_WIDGET_PILOT_VENDOR_IDS ?? '').split(',').map((id) => id.trim().toLowerCase());
+    if (process.env.AWOOF_WIDGET_PILOT_ENABLED !== 'true' || !pilotVendors.includes(input.vendorId.toLowerCase())) {
+        throw new ForbiddenError('Hosted merchant context is unavailable');
+    }
+    const origin = canonicalWidgetOrigin(input.origin);
+    const result = await db.query<{ name: string }>(
+        `SELECT v.name FROM vendors v JOIN widget_configs wc ON wc.vendor_id = v.id
+         WHERE v.id = $1 AND v.status = 'active' AND v.deleted_at IS NULL
+           AND wc.status = 'active' AND $2 = ANY(wc.allowed_origins)`,
+        [input.vendorId, origin],
+    );
+    if (result.rowCount !== 1) throw new ForbiddenError('Merchant origin is unavailable');
+    res.set('Cache-Control', 'no-store');
+    success(res, { message: 'Merchant context', data: { vendorId: input.vendorId, origin, merchantName: result.rows[0]!.name } });
 }

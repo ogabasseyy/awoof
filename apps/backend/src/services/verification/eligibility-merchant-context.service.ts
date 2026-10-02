@@ -24,6 +24,18 @@ export type MerchantDisclosureContext = {
     origin: string;
 };
 
+/**
+ * Controlled hosted-widget pilot membership: the pilot flag plus the
+ * synthetic student and merchant allowlists. Shared by issuance and the
+ * pre-disclosure eligibility check so the gate cannot drift between them.
+ */
+export function isWidgetPilotParticipant(userId: string, vendorId: string): boolean {
+    if (process.env.AWOOF_WIDGET_PILOT_ENABLED !== 'true') return false;
+    const ids = (name: string) => new Set((process.env[name] ?? '').split(',').map((id) => id.trim().toLowerCase()).filter(Boolean));
+    return ids('AWOOF_WIDGET_PILOT_STUDENT_IDS').has(userId.toLowerCase())
+        && ids('AWOOF_WIDGET_PILOT_VENDOR_IDS').has(vendorId.toLowerCase());
+}
+
 export function canonicalWidgetOrigin(value: string): string {
     let parsed: URL;
     try {
@@ -34,7 +46,7 @@ export function canonicalWidgetOrigin(value: string): string {
     const permittedSpelling = value === parsed.origin || value === `${parsed.origin}/`;
     const localDevelopmentHttp = process.env.NODE_ENV === 'development'
         && parsed.protocol === 'http:'
-        && (parsed.hostname === 'localhost' || parsed.hostname === '127.0.0.1' || parsed.hostname === '::1');
+        && (parsed.hostname === 'localhost' || parsed.hostname === '127.0.0.1' || parsed.hostname === '[::1]');
     if ((parsed.protocol !== 'https:' && !localDevelopmentHttp) || parsed.username || parsed.password || parsed.pathname !== '/'
         || parsed.search || parsed.hash || !permittedSpelling) {
         throw new BadRequestError('Invalid merchant origin');

@@ -60,6 +60,7 @@ export async function issueMerchantAssertion(pool: Pool, userId: string, input: 
 export type MerchantReceipt = {
     receiptId: string; merchantSubject: string; eligible: true; assuranceMethod: string;
     institutionId: string; verifiedAt: string; validUntil: string; campaignId: string;
+    purpose: string;
     benefitAuthorizationId?: string;
 };
 
@@ -70,13 +71,22 @@ export type MerchantReceipt = {
  * immutable receipt instead of a spurious conflict.
  */
 async function readCommittedReceipt(tx: PoolClient, vendorId: string, idempotencyKey: string, assertionId: string): Promise<MerchantReceipt | null> {
-    const committed = await tx.query<{ assertion_id: string; receipt: MerchantReceipt }>(
-        `SELECT assertion_id,receipt FROM merchant_assertion_receipts WHERE vendor_id=$1 AND idempotency_key=$2`,
+    const committed = await tx.query<{ assertion_id: string; receipt: MerchantReceipt; purpose: string }>(
+        `SELECT r.assertion_id,r.receipt,a.purpose FROM merchant_assertion_receipts r
+         JOIN merchant_assertions a ON a.id=r.assertion_id WHERE r.vendor_id=$1 AND r.idempotency_key=$2`,
         [vendorId, idempotencyKey],
     );
     if (!committed.rows[0]) return null;
     if (committed.rows[0].assertion_id !== assertionId) throw new ConflictError('Idempotency key already used');
-    return committed.rows[0].receipt;
+    const receipt = committed.rows[0].receipt;
+    if ((receipt as Partial<MerchantReceipt>).purpose === undefined) {
+        // Receipts committed before purpose joined the receipt schema
+        // carry no purpose. The linked assertion always records one, so
+        // fill it at read time; stored bytes stay untouched and the
+        // receipt remains immutable.
+        return { ...receipt, purpose: committed.rows[0].purpose };
+    }
+    return receipt;
 }
 export async function exchangeMerchantAssertion(pool: Pool, key: string, input: {
     code: string; campaignId: string; idempotencyKey: string;
@@ -233,7 +243,7 @@ export async function exchangeMerchantAssertion(pool: Pool, key: string, input: 
             receiptId: randomUUID(), merchantSubject: subject.rows[0].subject, eligible: true,
             assuranceMethod: eligibility.method, institutionId: eligibility.universityId,
             verifiedAt: eligibility.verifiedAt.toISOString(), validUntil: eligibility.expiresAt.toISOString(),
-            campaignId: assertion.campaign_id,
+            campaignId: assertion.campaign_id, purpose: assertion.purpose,
             ...(benefitAuthorizationId !== undefined ? { benefitAuthorizationId } : {}),
         };
         const stored = await tx.query(`INSERT INTO merchant_assertion_receipts (vendor_id,idempotency_key,assertion_id,receipt)

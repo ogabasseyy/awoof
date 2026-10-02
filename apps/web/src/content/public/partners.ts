@@ -16,7 +16,7 @@ export const merchantSteps = [
   },
   {
     title: 'Your server exchanges and applies the benefit',
-    body: 'Exchange the code for an eligibility receipt with your server key, then apply your own benefit. The receipt says eligible, which check passed, and when it expires — nothing more.',
+    body: 'Exchange the code for an eligibility receipt with your server key, then apply your own benefit. The receipt says eligible, which check passed, which institution it came from, the evidence time and expiry, and the campaign and purpose bound to the code — referenced by receipt ID under a merchant-scoped pseudonym, with no student contact details or documents.',
   },
   {
     title: 'Report on redemptions',
@@ -31,13 +31,82 @@ export const universityBody = [
 ];
 
 export const developerIntro =
-  'Integration concepts for the verification API now in integration: real route names, synthetic examples, and the separations that keep student data safe.';
+  'Source-backed API contracts and synthetic examples for merchant integrations. The hosted widget remains a controlled synthetic-account pilot; this guide does not indicate live merchant or enrollment activation.';
+
+export const developerPilotSteps = [
+  {
+    title: 'Get a sandbox setup from Awoof',
+    body: 'The hosted widget is disabled by default. Awoof must provision a synthetic student account, allowlist your merchant and exact HTTPS origin, and provide the pilot bundle, public site key and separate private server key. There is no public self-service installation yet.',
+  },
+  {
+    title: 'Open the student check from your site',
+    body: 'Initialize the widget with the public site key. Call verify from a click handler with a campaign and a purpose the student can understand. The popup handles student sign-in, current eligibility and explicit merchant disclosure before returning a short-lived opaque code.',
+  },
+  {
+    title: 'Exchange the code on your server',
+    body: 'Send the code to your own authenticated checkout endpoint in a JSON body. Your server binds it to its checkout session and expected campaign and purpose, then exchanges it with the private key. Awoof returns an eligibility receipt; compare its purpose with your server-held intent before honoring it — the browser handoff is student-editable. Your server owns any pricing or payment decision.',
+  },
+];
+
+export const developerPilotBrowserExample = [
+  '// Illustrative sandbox code. Awoof supplies the bundle and origins.',
+  'await Awoof.init({',
+  '  apiKey: PUBLIC_SITE_KEY,',
+  '  apiBaseUrl: AWOOF_API_ORIGIN,',
+  '  webAppUrl: AWOOF_WEB_ORIGIN,',
+  '});',
+  "verifyButton.addEventListener('click', async () => {",
+  '  const { code } = await Awoof.verify({',
+  "    campaignId: 'sandbox-student-offer',",
+  "    purpose: 'Check eligibility for this test checkout',",
+  '  });',
+  "  const response = await fetch('/your-checkout/awoof-eligibility', {",
+  "    method: 'POST',",
+  "    credentials: 'same-origin',",
+  "    headers: { 'content-type': 'application/json', 'x-csrf-token': csrfToken },",
+  '    body: JSON.stringify({ code }),',
+  '  });',
+  "  if (!response.ok) throw new Error('Eligibility was not confirmed');",
+  '});',
+].join('\n');
+
+export const developerPilotExchangeExample = [
+  'POST /api/merchant-verification/exchange',
+  'Authorization: Bearer <private merchant server key>',
+  'Content-Type: application/json',
+  '',
+  '{',
+  '  "code": "<opaque code received by your checkout server>",',
+  '  "campaignId": "sandbox-student-offer",',
+  '  "idempotencyKey": "<stable key for this checkout and code>"',
+  '}',
+].join('\n');
+
+export const developerPilotReceiptFields = [
+  { name: 'receiptId', meaning: 'Unique receipt reference for this exchange.' },
+  { name: 'merchantSubject', meaning: 'Pseudonym scoped to this merchant; not an Awoof user ID.' },
+  { name: 'eligible', meaning: 'True for a successful exchange. This pilot result is test-only.' },
+  { name: 'assuranceMethod, institutionId', meaning: 'Which check passed and its institution identifier; not student contact details.' },
+  { name: 'verifiedAt, validUntil', meaning: 'Evidence time and expiry. Check validity before using a result.' },
+  { name: 'campaignId', meaning: 'The campaign bound to the code; match your server-held campaign.' },
+  { name: 'purpose', meaning: 'Consent wording recorded at issuance. Compare with your server-held intent before honoring the receipt.' },
+];
+
+export const developerPilotErrors = [
+  { status: '400', meaning: 'Code invalid, campaign mismatch, missing or unexpected claim-session proof, or product unavailable for product-bound codes. Correct the request; do not grant a benefit.' },
+  { status: '401', meaning: 'Private key invalid or merchant inactive. Check server configuration.' },
+  { status: '403', meaning: 'Current eligibility or disclosure is unavailable. Do not grant a benefit; resolve the issue before restarting the check.' },
+  { status: '409', meaning: 'Code expired, already consumed, or idempotency binding conflicted; claim session expired, already redeemed, or checkout ID or browser nonce binding failed. Start a new check unless retrying the exact committed request.' },
+  { status: '422', meaning: 'Invalid request shape or field validation failure on syntactically valid JSON. Fix the request shape; do not grant a benefit.' },
+  { status: '429', meaning: 'Merchant key quota exhausted or unavailable. Wait and retry according to your server policy; do not grant a benefit.' },
+  { status: '500', meaning: 'Malformed JSON or an unexpected server error. Treat the exchange as failed and do not grant a benefit.' },
+];
 
 export const developerExamples = [
   {
     title: '1. Student approves a check (student session)',
     route: 'POST /api/merchant-verification/assertions',
-    body: 'Requires the student bearer token and an explicit disclosure grant for your vendor, origin, purpose, and campaign. Add "productId" to bind the code to one of your active products for a discounted transaction report. Returns a short-lived opaque code — not an eligibility receipt.',
+    body: 'Requires the student bearer token and an explicit disclosure grant for your vendor, origin, and purpose. The campaignId is bound to the code at issuance, not covered by the grant. Add "productId" to bind the code to one of your active products for a discounted transaction report. Returns a short-lived opaque code — not an eligibility receipt.',
     request: [
       'POST /api/merchant-verification/assertions',
       'Authorization: Bearer <student JWT>',
@@ -88,6 +157,7 @@ export const developerExamples = [
       '    "verifiedAt": "2026-09-21T00:00:00Z",',
       '    "validUntil": "2026-09-28T00:00:00Z",',
       '    "campaignId": "autumn-2026",',
+      '    "purpose": "10% student discount",',
       '    "benefitAuthorizationId": "40000000-0000-4000-8000-000000000001"',
       '  }',
       '}',
@@ -156,5 +226,5 @@ export const developerSeparations = [
   'Server keys are not browser keys. Keys live on your backend; nothing secret goes in pages, apps, or URLs.',
   'Receipt history is not new authorization. Replays return the committed receipt; only a fresh approved check creates a new one.',
   'Claim links are not redemptions. A shared handoff URL redeems nothing without your nonce-bound checkout session and a server-side exchange.',
-  'Errors are explicit: 400 invalid input, 401 invalid key or inactive merchant, 403 check no longer current, 409 expired, conflicting, or unintegrated claim, 429 quota exhausted.',
+  'Errors are explicit: 400 invalid code, campaign, claim-session binding, or product availability, 401 invalid key or inactive merchant, 403 check no longer current, 409 expired, conflicting, or unintegrated claim, 422 invalid request shape, 429 quota exhausted.',
 ];

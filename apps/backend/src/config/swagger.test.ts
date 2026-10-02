@@ -3,6 +3,115 @@ import test from 'node:test';
 import { passwordService } from '../services/auth/password.service.js';
 import { swaggerSpec } from './swagger.js';
 
+test('publishes controlled widget context and assertion contracts', () => {
+    type JsonSchema = { $ref?: string; type?: string; additionalProperties?: boolean; required?: string[]; properties?: Record<string, JsonSchema> };
+    type Endpoint = { security?: Array<Record<string, unknown>>; requestBody?: { content: Record<string, { schema: JsonSchema }> }; responses: Record<string, { content?: Record<string, { schema: JsonSchema }> }> };
+    const paths = (swaggerSpec as { paths: Record<string, { post?: Endpoint }> }).paths;
+    const context = paths['/api/widget/merchant-context']?.post;
+    const pilot = paths['/api/merchant-verification/pilot-assertions']?.post;
+    assert.ok(paths['/api/widget/domain-check']?.post);
+    assert.ok(context);
+    assert.ok(pilot);
+
+    const contextRequest = context.requestBody?.content['application/json']?.schema;
+    assert.deepEqual(context.security, []);
+    assert.equal(contextRequest?.additionalProperties, false);
+    assert.deepEqual(contextRequest?.required, ['vendorId', 'origin']);
+    assert.deepEqual(Object.keys(contextRequest?.properties ?? {}), ['vendorId', 'origin']);
+    const contextData = context.responses['200']?.content?.['application/json']?.schema.properties?.data;
+    assert.deepEqual(contextData?.required, ['vendorId', 'origin', 'merchantName']);
+    for (const status of ['400', '403', '422']) {
+        assert.equal(context.responses[status]?.content?.['application/json']?.schema.$ref, '#/components/schemas/Error');
+    }
+
+    const pilotRequest = pilot.requestBody?.content['application/json']?.schema;
+    assert.equal(pilotRequest?.additionalProperties, false);
+    assert.deepEqual(pilotRequest?.required, ['vendorId', 'origin', 'purpose', 'campaignId', 'disclosureGrantId']);
+    assert.equal(pilotRequest?.properties?.productId, undefined);
+    const pilotData = pilot.responses['201']?.content?.['application/json']?.schema.properties?.data;
+    assert.deepEqual(pilotData?.required, ['code', 'expiresAt']);
+    for (const status of ['400', '401', '403', '422']) assert.ok(pilot.responses[status], `missing pilot-assertions ${status}`);
+});
+
+test('pilot contracts document retryable session-validation outages and receipt purpose', () => {
+    type JsonSchema = { $ref?: string; type?: string; required?: string[]; properties?: Record<string, JsonSchema> };
+    type GetEndpoint = { responses: Record<string, { content?: Record<string, { schema: JsonSchema }>; $ref?: string } & { $ref?: string }> };
+    const doc = swaggerSpec as {
+        paths: Record<string, { post?: { responses: Record<string, JsonSchema & { $ref?: string }> }; get?: GetEndpoint }>;
+        components: { schemas: Record<string, JsonSchema>; responses: Record<string, unknown> };
+    };
+    assert.ok(doc.components.responses.SessionValidationUnavailable, 'missing shared 503 response');
+    const pilot = doc.paths['/api/merchant-verification/pilot-assertions']?.post;
+    assert.equal(pilot?.responses['503']?.$ref, '#/components/responses/SessionValidationUnavailable');
+    const eligibility = doc.paths['/api/widget/pilot-eligibility']?.get;
+    assert.equal(eligibility?.responses['503']?.$ref, '#/components/responses/SessionValidationUnavailable');
+    const receipt = doc.components.schemas.MerchantVerificationReceipt;
+    assert.ok(receipt?.required?.includes('purpose'), 'receipt must require purpose');
+    assert.equal(receipt?.properties?.purpose?.type, 'string');
+    const exchange = doc.paths['/api/merchant-verification/exchange']?.post;
+    assert.ok(exchange?.responses['422'], 'exchange must document 422 for invalid request shapes');
+    assert.match(String((exchange?.responses['400'] as { description?: string })?.description ?? ''), /campaign/i);
+    assert.doesNotMatch(String((exchange?.responses['400'] as { description?: string })?.description ?? ''), /invalid input/i);
+    assert.match(String((exchange?.responses['400'] as { description?: string })?.description ?? ''), /product unavailable/i);
+    assert.match(String((exchange?.responses['400'] as { description?: string })?.description ?? ''), /missing or unexpected claim-session proof/i);
+    assert.match(String((exchange?.responses['409'] as { description?: string })?.description ?? ''), /checkout ID or browser nonce binding failed/i);
+    assert.match(String((exchange?.responses['500'] as { description?: string })?.description ?? ''), /malformed JSON.*do not grant a benefit/i);
+    assert.match(String((exchange?.responses['422'] as { description?: string })?.description ?? ''), /request shape/i);
+    assert.doesNotMatch(String((exchange?.responses['422'] as { description?: string })?.description ?? ''), /malformed|JSON body/i);
+});
+
+test('disclosures contract documents the session fence and account-switch outcome', () => {
+    type JsonSchema = {
+        $ref?: string; type?: string; format?: string; enum?: unknown[]; minLength?: number; maxLength?: number;
+        additionalProperties?: boolean; required?: string[]; properties?: Record<string, JsonSchema>; allOf?: JsonSchema[];
+    };
+    type PostEndpoint = {
+        requestBody?: { content: Record<string, { schema: JsonSchema }> };
+        responses: Record<string, { description?: string; $ref?: string; content?: Record<string, { schema: JsonSchema }> }>;
+    };
+    const doc = swaggerSpec as { paths: Record<string, { post?: PostEndpoint }> };
+    const disclosures = doc.paths['/api/verification/disclosures']?.post;
+    assert.ok(disclosures, 'POST /api/verification/disclosures must publish');
+    const request = disclosures.requestBody?.content['application/json']?.schema;
+    assert.deepEqual(request?.required, ['vendorId', 'origin', 'purpose', 'accepted', 'noticeVersion']);
+    assert.equal(request?.additionalProperties, false);
+    assert.equal(request?.properties?.expectedUserId?.format, 'uuid');
+    assert.deepEqual(request?.properties?.accepted?.enum, [true]);
+    assert.equal(request?.properties?.origin?.maxLength, 2048);
+    assert.equal(request?.properties?.purpose?.maxLength, 1024);
+    assert.equal(request?.properties?.noticeVersion?.maxLength, 100);
+    const created = disclosures.responses['201']?.content?.['application/json']?.schema.allOf?.[1];
+    assert.deepEqual(created?.required, ['success', 'data']);
+    assert.deepEqual(created?.properties?.data?.required, ['grantId']);
+    assert.match(String(disclosures.responses['403']?.description ?? ''), /account changed/i);
+    assert.match(String(disclosures.responses['404']?.description ?? ''), /origin not configured/i);
+    assert.match(String(disclosures.responses['422']?.description ?? ''), /request shape/i);
+    assert.equal(disclosures.responses['503']?.$ref, '#/components/responses/SessionValidationUnavailable');
+});
+
+test('publishes the vendor widget-config contract with exact origins', () => {
+    type JsonSchema = { $ref?: string; type?: string; minItems?: number; maxLength?: number; required?: string[]; properties?: Record<string, JsonSchema>; items?: JsonSchema };
+    type Endpoint = { requestBody?: { content: Record<string, { schema: JsonSchema }> }; responses: Record<string, { content?: Record<string, { schema: JsonSchema }> }> };
+    const paths = (swaggerSpec as { paths: Record<string, { put?: Endpoint }> }).paths;
+    // Vendors-route annotations only parse from a standalone @swagger-first
+    // block; @route-prefixed blocks are silently dropped. This assertion
+    // pins the generated contract, not just the comment text.
+    const update = paths['/api/vendors/widget-config']?.put;
+    assert.ok(update, 'PUT /api/vendors/widget-config must publish');
+
+    const request = update.requestBody?.content['application/json']?.schema;
+    assert.deepEqual(request?.required, ['allowedDomains']);
+    assert.equal(request?.properties?.allowedDomains?.type, 'array');
+    assert.equal(request?.properties?.allowedDomains?.minItems, 1);
+    assert.equal(request?.properties?.allowedOrigins?.type, 'array');
+    assert.equal(request?.properties?.allowedOrigins?.items?.maxLength, 512);
+    const data = update.responses['200']?.content?.['application/json']?.schema.properties?.data;
+    assert.deepEqual(data?.required, ['vendorId', 'allowedDomains', 'allowedOrigins', 'status']);
+    for (const status of ['400', '401', '404', '422']) {
+        assert.equal(update.responses[status]?.content?.['application/json']?.schema.$ref, '#/components/schemas/Error');
+    }
+});
+
 interface Schema {
     type?: string;
     nullable?: boolean;
@@ -255,6 +364,7 @@ test('student-authenticated operations document the session-validation outage', 
         ['/api/students/savings', 'get'],
         ['/api/verification/registration', 'post'],
         ['/api/verification/status', 'get'],
+        ['/api/verification/disclosures', 'post'],
         ['/api/merchant-verification/assertions', 'post'],
         ['/api/merchant-verification/claim-sessions/{id}', 'get'],
         ['/api/merchant-verification/product-claims', 'post'],
