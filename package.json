@@ -1,6 +1,8 @@
 {
   "private": true,
   "scripts": {
+    "docs:partner": "npm --prefix apps/backend run build:artifact && node scripts/build-partner-assets.mjs",
+    "test:partner-assets": "node --test scripts/build-partner-assets.test.mjs",
     "dev:web": "cd apps/web && npm run dev",
     "build:web": "cd apps/web && npm run build",
     "install:web": "cd apps/web && npm install",

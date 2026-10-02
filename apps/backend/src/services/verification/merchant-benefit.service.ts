@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto';
 import type { Pool, PoolClient } from 'pg';
 import { BadRequestError, ConflictError, NotFoundError, UnauthorizedError } from '../../common/errors/AppError.js';
 import { recheckReportingKeyInTransaction } from '../auth/reporting-key.service.js';
-import { verifyPaystackPayment } from '../payment/paystack.service.js';
+import { verifyPaystackPayment, verifyMerchantPaystackPayment } from '../payment/paystack.service.js';
 import { calculateMarketplaceCommission, effectiveVendorCommissionRate } from '../payment/checkout.service.js';
 import { prepareMerchantDisclosure } from './eligibility-merchant-context.service.js';
 import { getEffectiveEligibility } from './eligibility-read.service.js';
@@ -300,10 +300,14 @@ export async function reportMerchantBenefit(
     pool: Pool,
     auth: ReportBenefitAuth,
     input: ReportBenefitInput,
-    dependencies: { verifyPaystack?: (reference: string) => Promise<{ verified: boolean; amount?: number; error?: string }> } = {},
+    dependencies: {
+        verifyPaystack?: (reference: string) => Promise<{ verified: boolean; amount?: number; error?: string }>;
+        verifyMerchantPaystack?: typeof verifyMerchantPaystackPayment;
+    } = {},
 ): Promise<ReportBenefitResult> {
     const reportedNaira = koboToNaira(input.amountKobo);
-    const paymentSource = input.paymentGateway === 'paystack' ? 'vendor_paystack' : 'vendor_other';
+    const paymentSource = input.paymentGateway === 'paystack' ? 'vendor_paystack'
+        : input.paymentGateway === 'paystack_merchant' ? 'vendor_merchant_paystack' : 'vendor_other';
     const vendor = (await pool.query('SELECT id FROM vendors WHERE user_id = $1 AND deleted_at IS NULL AND status = $2', [auth.ownerUserId, 'active'])).rows[0];
     if (!vendor) throw new NotFoundError('Vendor profile not found');
     const candidate = (await pool.query(
@@ -327,6 +331,20 @@ export async function reportMerchantBenefit(
             throw new BadRequestError(
                 `Paystack payment amount (${payment.amount}) does not match reported amount (${reportedNaira})`,
             );
+        }
+    }
+    if (candidate.transaction_id === null && input.paymentGateway === 'paystack_merchant') {
+        const verify = dependencies.verifyMerchantPaystack ?? verifyMerchantPaystackPayment;
+        const payment = await verify(vendor.id, input.paymentReference);
+        if (!payment.verified) throw new BadRequestError(payment.error || 'Merchant payment verification failed');
+        if (payment.currency !== BENEFIT_CURRENCY || !Number.isSafeInteger(payment.amountKobo)
+            || payment.amountKobo !== input.amountKobo) {
+            throw new BadRequestError('Merchant payment amount or currency does not match the report');
+        }
+        const metadata = payment.metadata;
+        if (metadata?.awoofVendorId !== vendor.id || metadata?.awoofProductId !== input.productId
+            || metadata?.awoofBenefitAuthorizationId !== input.benefitAuthorizationId) {
+            throw new BadRequestError('Merchant payment metadata does not match the benefit authorization');
         }
     }
     const tx = await pool.connect();

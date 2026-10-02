@@ -1,0 +1,956 @@
+{
+  "openapi": "3.0.0",
+  "info": {
+    "title": "Awoof merchant integration API",
+    "version": "1.0.0",
+    "description": "Source contract for hosted student discount claims and merchant reporting. Private merchant keys stay on your server. Student-authenticated operations are performed by Awoof's hosted journey. Obtain the enabled API origin and test access during onboarding; this artifact does not establish production or provider activation."
+  },
+  "servers": [
+    {
+      "url": "{apiBaseUrl}",
+      "variables": {
+        "apiBaseUrl": {
+          "default": "http://127.0.0.1:5001",
+          "description": "API origin supplied during onboarding, without a trailing /api. Default is local development only."
+        }
+      }
+    }
+  ],
+  "paths": {
+    "/api/merchant-verification/assertions": {
+      "post": {
+        "summary": "Create a short-lived merchant-specific eligibility code",
+        "description": "Requires current eligibility and current explicit merchant disclosure. Code lifetime is at most two minutes and never exceeds evidence expiry. No payment is created. Pass productId to bind the code to one active product of this vendor; exchanging a product-bound code mints a single-transaction benefit authorization.",
+        "tags": [
+          "Merchant Verification"
+        ],
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "vendorId",
+                  "origin",
+                  "purpose",
+                  "campaignId",
+                  "disclosureGrantId"
+                ],
+                "properties": {
+                  "vendorId": {
+                    "type": "string",
+                    "format": "uuid"
+                  },
+                  "origin": {
+                    "type": "string",
+                    "maxLength": 512,
+                    "description": "Exact registered merchant origin including port. HTTPS outside local development."
+                  },
+                  "purpose": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 200
+                  },
+                  "campaignId": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 100
+                  },
+                  "disclosureGrantId": {
+                    "type": "string",
+                    "format": "uuid"
+                  },
+                  "productId": {
+                    "type": "string",
+                    "format": "uuid",
+                    "description": "Optional active product of this vendor. When present, the exchange receipt carries a benefitAuthorizationId for one discounted transaction report."
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Pass this opaque code only to the intended merchant backend; it is not an eligibility receipt.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "success",
+                    "data"
+                  ],
+                  "properties": {
+                    "success": {
+                      "type": "boolean",
+                      "enum": [
+                        true
+                      ]
+                    },
+                    "data": {
+                      "type": "object",
+                      "required": [
+                        "code",
+                        "expiresAt"
+                      ],
+                      "properties": {
+                        "code": {
+                          "type": "string",
+                          "minLength": 43,
+                          "maxLength": 43
+                        },
+                        "expiresAt": {
+                          "type": "string",
+                          "format": "date-time"
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid input or merchant origin"
+          },
+          "401": {
+            "description": "Student authentication required"
+          },
+          "403": {
+            "description": "Current eligibility or merchant consent unavailable"
+          },
+          "503": {
+            "$ref": "#/components/responses/SessionValidationUnavailable"
+          }
+        }
+      }
+    },
+    "/api/merchant-verification/exchange": {
+      "post": {
+        "summary": "Atomically exchange a code for a merchant-scoped eligibility receipt",
+        "description": "Merchant backend selects the expected campaign. Identical code/campaign/idempotency retries return the immutable committed receipt, including after later consent withdrawal; this is not a new eligibility authorization and mints no new benefit authorization. Product-bound codes add a benefitAuthorizationId for one discounted transaction report. Different idempotency reuse conflicts. Codes minted through a protected product claim additionally require the merchant's browser nonce and checkout binding from its own cookie-derived server state; the claim session is consumed once atomically. No payment, pricing or coupon rules are applied by this endpoint.",
+        "tags": [
+          "Merchant Verification"
+        ],
+        "security": [
+          {
+            "merchantServerKey": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "code",
+                  "campaignId",
+                  "idempotencyKey"
+                ],
+                "properties": {
+                  "code": {
+                    "type": "string",
+                    "pattern": "^[A-Za-z0-9_-]{43}$"
+                  },
+                  "campaignId": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 100
+                  },
+                  "idempotencyKey": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 100
+                  },
+                  "browserNonce": {
+                    "type": "string",
+                    "minLength": 16,
+                    "maxLength": 512,
+                    "description": "Required only for claim-bound codes. The merchant's cookie-derived browser nonce, sent over its authenticated server connection; never place it in a URL."
+                  },
+                  "merchantCheckoutId": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 100,
+                    "description": "Required only for claim-bound codes. Must match the checkout the claim session was created for."
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Merchant-scoped receipt; no email, matric number or global student ID.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "success",
+                    "data"
+                  ],
+                  "properties": {
+                    "success": {
+                      "type": "boolean",
+                      "enum": [
+                        true
+                      ]
+                    },
+                    "data": {
+                      "$ref": "#/components/schemas/MerchantVerificationReceipt"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid input, code or campaign mismatch"
+          },
+          "401": {
+            "description": "Private merchant key invalid or merchant inactive"
+          },
+          "403": {
+            "description": "Eligibility or disclosure no longer current"
+          },
+          "409": {
+            "description": "Code expired, consumed by another operation or conflicting idempotency key"
+          },
+          "429": {
+            "description": "Merchant key hourly quota exhausted or key unavailable"
+          }
+        }
+      }
+    },
+    "/api/merchant-verification/claim-sessions": {
+      "post": {
+        "summary": "Create a merchant claim session binding one checkout to one product",
+        "description": "Merchant server-to-server bootstrap. The merchant sets its own Secure HttpOnly browser nonce cookie, creates this session with the nonce hash and the initiating origin, then navigates the browser to Awoof's claim page. Sessions expire after ten minutes and are consumed once at exchange. Exact creation retries return the same session; changed product, nonce, or origin bindings conflict. Never put the nonce in a URL. Retention keeps a redeemed checkout ID permanently bound (a single-use tombstone retains checkout/vendor/product bindings and timestamps after proof material is scrubbed, so never reuse a redeemed checkout ID), while an abandoned checkout becomes reusable after the 7-day retention window.",
+        "tags": [
+          "Merchant Verification"
+        ],
+        "security": [
+          {
+            "merchantServerKey": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "productId",
+                  "merchantCheckoutId",
+                  "browserNonceHash",
+                  "origin"
+                ],
+                "properties": {
+                  "productId": {
+                    "type": "string",
+                    "format": "uuid",
+                    "description": "Active product of the calling merchant."
+                  },
+                  "merchantCheckoutId": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 100,
+                    "description": "Merchant checkout reference. Unique per merchant; one redemption per checkout."
+                  },
+                  "browserNonceHash": {
+                    "type": "string",
+                    "pattern": "^[0-9a-f]{64}$",
+                    "description": "Hex SHA-256 of the merchant's browser nonce."
+                  },
+                  "origin": {
+                    "type": "string",
+                    "maxLength": 512,
+                    "description": "Initiating merchant site. Must exactly match one of the vendor's active allowed origins; the handoff goes only there."
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Exact creation retry; returns the same live session.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "success",
+                    "data"
+                  ],
+                  "properties": {
+                    "success": {
+                      "type": "boolean",
+                      "enum": [
+                        true
+                      ]
+                    },
+                    "data": {
+                      "$ref": "#/components/schemas/MerchantClaimSession"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "201": {
+            "description": "Claim session created.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "success",
+                    "data"
+                  ],
+                  "properties": {
+                    "success": {
+                      "type": "boolean",
+                      "enum": [
+                        true
+                      ]
+                    },
+                    "data": {
+                      "$ref": "#/components/schemas/MerchantClaimSession"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid input or product unavailable to this merchant."
+          },
+          "401": {
+            "description": "Private merchant key invalid or merchant inactive."
+          },
+          "409": {
+            "description": "Checkout already bound differently, used, or expired. Start a new checkout."
+          }
+        }
+      }
+    },
+    "/api/merchant-verification/claim-sessions/{id}": {
+      "get": {
+        "summary": "Read the public projection of one claim session",
+        "description": "Signed-in students only. Returns the vendor, product, advertised prices and registered handoff origin needed to review and consent to a protected claim. Never contains nonce hashes, codes, or handoff URLs.",
+        "tags": [
+          "Merchant Verification"
+        ],
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Public claim-session projection."
+          },
+          "401": {
+            "description": "Student authentication required."
+          },
+          "404": {
+            "description": "Unknown session or claim no longer available."
+          },
+          "409": {
+            "description": "Session expired or redeemed, or merchant integration unavailable."
+          },
+          "503": {
+            "$ref": "#/components/responses/SessionValidationUnavailable"
+          }
+        }
+      }
+    },
+    "/api/merchant-verification/product-claims": {
+      "post": {
+        "summary": "Claim a protected product discount for one merchant checkout",
+        "description": "Signed-in students only. Resolves vendor, product, registered origin and campaign from the claim session and disclosure grant; no vendor, origin or product input is accepted. Requires current enrollment evidence and current merchant disclosure at commit time. Returns an opaque short-lived assertion plus the validated merchant handoff destination; the merchant exchanges the assertion from its backend. Without a deployed merchant integration the claim fails with MERCHANT_INTEGRATION_REQUIRED and only ordinary public merchant navigation remains.",
+        "tags": [
+          "Merchant Verification"
+        ],
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "merchantClaimSessionId",
+                  "disclosureGrantId"
+                ],
+                "properties": {
+                  "merchantClaimSessionId": {
+                    "type": "string",
+                    "format": "uuid"
+                  },
+                  "disclosureGrantId": {
+                    "type": "string",
+                    "format": "uuid"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Opaque assertion plus validated merchant handoff destination. No-store; never log or share the handoff URL.",
+            "headers": {
+              "Cache-Control": {
+                "schema": {
+                  "type": "string",
+                  "enum": [
+                    "no-store"
+                  ]
+                }
+              },
+              "Referrer-Policy": {
+                "schema": {
+                  "type": "string",
+                  "enum": [
+                    "no-referrer"
+                  ]
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "success",
+                    "data"
+                  ],
+                  "properties": {
+                    "success": {
+                      "type": "boolean",
+                      "enum": [
+                        true
+                      ]
+                    },
+                    "data": {
+                      "type": "object",
+                      "required": [
+                        "code",
+                        "expiresAt",
+                        "handoffUrl"
+                      ],
+                      "properties": {
+                        "code": {
+                          "type": "string",
+                          "minLength": 43,
+                          "maxLength": 43
+                        },
+                        "expiresAt": {
+                          "type": "string",
+                          "format": "date-time"
+                        },
+                        "handoffUrl": {
+                          "type": "string",
+                          "description": "Registered merchant origin plus the fixed /awoof/student-claim path with only the opaque assertion."
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Product no longer available."
+          },
+          "401": {
+            "description": "Student authentication required."
+          },
+          "403": {
+            "description": "Current enrollment or merchant disclosure unavailable."
+          },
+          "404": {
+            "description": "Unknown claim session or disclosure grant."
+          },
+          "409": {
+            "description": "Session expired or redeemed, or MERCHANT_INTEGRATION_REQUIRED."
+          },
+          "503": {
+            "$ref": "#/components/responses/SessionValidationUnavailable"
+          }
+        }
+      }
+    },
+    "/api/vendors/transactions/report": {
+      "post": {
+        "summary": "Report a discounted transaction against a benefit authorization",
+        "description": "Server-to-server only with a vendor JWT or a private awoof_ reporting key. Settles one discounted transaction against a product-bound benefit authorization minted by exchanging a merchant assertion. First use rechecks current enrollment authority, product binding, disclosure, quoted price and authorization expiry; legacy verification tokens are retired and fail closed. Exact committed retries return the original result without new benefit; changed bindings conflict. Late or expired first reports fail with reconciliation details instead of settling, and never mint a new authorization. A payment report alone cannot enforce an external checkout: the merchant must hold current enrollment authority before granting a discount.\n",
+        "tags": [
+          "Vendors"
+        ],
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "merchantServerKey": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "benefitAuthorizationId",
+                  "paymentReference",
+                  "amount",
+                  "productId",
+                  "paymentGateway"
+                ],
+                "properties": {
+                  "benefitAuthorizationId": {
+                    "type": "string",
+                    "format": "uuid",
+                    "description": "Product-bound authorization from a merchant-assertion exchange receipt."
+                  },
+                  "paymentReference": {
+                    "type": "string",
+                    "minLength": 1,
+                    "description": "Payment reference from the merchant payment gateway."
+                  },
+                  "amount": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "description": "Charged amount in kobo (NGN minor units). Must exactly match the quoted student price."
+                  },
+                  "productId": {
+                    "type": "string",
+                    "format": "uuid",
+                    "description": "UUID of the purchased product. Must match the authorization binding."
+                  },
+                  "paymentGateway": {
+                    "type": "string",
+                    "minLength": 1,
+                    "description": "paystack uses the Awoof Paystack account; paystack_merchant uses this vendor's configured account and validates NGN, exact kobo amount and awoofVendorId/awoofProductId/awoofBenefitAuthorizationId metadata. Other values are merchant-attested."
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Exact committed retry; the original result without new benefit.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MerchantTransactionReportResponse"
+                }
+              }
+            }
+          },
+          "201": {
+            "description": "Discounted transaction settled.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MerchantTransactionReportResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid input, retired token, or amount/product/currency mismatch"
+          },
+          "401": {
+            "description": "Vendor JWT or reporting key invalid, or merchant inactive"
+          },
+          "403": {
+            "description": "Current enrollment authority or merchant disclosure unavailable"
+          },
+          "404": {
+            "description": "Unknown benefit authorization for this merchant"
+          },
+          "409": {
+            "description": "Conflicting report bindings, or a late first report needing explicit reconciliation"
+          },
+          "422": {
+            "description": "Request body failed strict validation"
+          },
+          "503": {
+            "$ref": "#/components/responses/MerchantPaymentUnavailable"
+          }
+        }
+      }
+    },
+    "/api/vendors/orders/{id}/status": {
+      "put": {
+        "summary": "Update a merchant order's recorded status",
+        "description": "Requires a vendor JWT; private awoof_ reporting keys are not accepted. The active vendor must own the transaction. Awoof-managed Paystack states cannot be changed here. For merchant-collected payments, marking refunded records bookkeeping only and does not issue a provider refund. The merchant must separately refund the payment through its provider. Only completed orders can become refunded, and refunded orders cannot change again. Refund bookkeeping reverses the recorded savings credit and restores consumed inventory atomically. Legacy orders without a recorded savings delta, or missing savings balances, require reconciliation and return 409.\n",
+        "tags": [
+          "Vendors"
+        ],
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "description": "Awoof transaction ID returned by reporting."
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "status"
+                ],
+                "properties": {
+                  "status": {
+                    "type": "string",
+                    "enum": [
+                      "pending",
+                      "completed",
+                      "failed",
+                      "refunded"
+                    ]
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Recorded order status updated; no provider refund is issued.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "success",
+                    "message",
+                    "data"
+                  ],
+                  "properties": {
+                    "success": {
+                      "type": "boolean",
+                      "enum": [
+                        true
+                      ]
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "data": {
+                      "type": "object",
+                      "required": [
+                        "order"
+                      ],
+                      "properties": {
+                        "order": {
+                          "type": "object",
+                          "required": [
+                            "id",
+                            "status",
+                            "updatedAt"
+                          ],
+                          "properties": {
+                            "id": {
+                              "type": "string",
+                              "format": "uuid"
+                            },
+                            "status": {
+                              "type": "string",
+                              "enum": [
+                                "pending",
+                                "completed",
+                                "failed",
+                                "refunded"
+                              ]
+                            },
+                            "updatedAt": {
+                              "type": "string",
+                              "format": "date-time"
+                            }
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid transition, inactive vendor, or Awoof-managed payment"
+          },
+          "401": {
+            "description": "Valid vendor JWT required"
+          },
+          "404": {
+            "description": "Vendor profile or owned order not found"
+          },
+          "409": {
+            "description": "Savings reconciliation required before refund bookkeeping"
+          },
+          "422": {
+            "description": "Invalid order ID or status input"
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "securitySchemes": {
+      "bearerAuth": {
+        "type": "http",
+        "scheme": "bearer",
+        "bearerFormat": "JWT",
+        "description": "JWT access token. Get token from /api/auth/login"
+      },
+      "merchantServerKey": {
+        "type": "http",
+        "scheme": "bearer",
+        "description": "Private awoof_ reporting server key sent as a Bearer token. Never send this key to a browser. JWTs and public widget keys are not accepted."
+      }
+    },
+    "responses": {
+      "SessionValidationUnavailable": {
+        "description": "Student session validation is temporarily unavailable",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/Error"
+            }
+          }
+        }
+      },
+      "MerchantPaymentUnavailable": {
+        "description": "Merchant payment verification is temporarily unavailable",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/Error"
+            }
+          }
+        }
+      }
+    },
+    "schemas": {
+      "Error": {
+        "type": "object",
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "example": false
+          },
+          "error": {
+            "type": "object",
+            "properties": {
+              "message": {
+                "type": "string",
+                "example": "Error message"
+              },
+              "code": {
+                "type": "string",
+                "example": "ERROR_CODE"
+              },
+              "statusCode": {
+                "type": "number",
+                "example": 400
+              },
+              "details": {
+                "type": "object"
+              }
+            }
+          }
+        }
+      },
+      "MerchantVerificationReceipt": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "receiptId",
+          "merchantSubject",
+          "eligible",
+          "assuranceMethod",
+          "institutionId",
+          "verifiedAt",
+          "validUntil",
+          "campaignId"
+        ],
+        "properties": {
+          "receiptId": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "merchantSubject": {
+            "type": "string",
+            "format": "uuid",
+            "description": "Stable pseudonym scoped to this merchant, not an Awoof user ID."
+          },
+          "eligible": {
+            "type": "boolean",
+            "enum": [
+              true
+            ]
+          },
+          "assuranceMethod": {
+            "type": "string",
+            "enum": [
+              "student_email",
+              "enrollment"
+            ]
+          },
+          "institutionId": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "verifiedAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "validUntil": {
+            "type": "string",
+            "format": "date-time",
+            "description": "Enrollment evidence expiry; not the discounted transaction settlement deadline."
+          },
+          "campaignId": {
+            "type": "string"
+          },
+          "benefitAuthorizationId": {
+            "type": "string",
+            "format": "uuid",
+            "description": "Present only for product-bound exchanges. Authorizes one discounted transaction report for the bound product; generic campaign receipts never carry it."
+          },
+          "benefitValidUntil": {
+            "type": "string",
+            "format": "date-time",
+            "description": "Persisted benefit authorization expiry for new product-bound receipts; the earlier of evidence expiry and two minutes after exchange. First settlement must complete before this deadline. Historical exact receipt retries are unchanged and may omit it; generic receipts never carry it."
+          }
+        }
+      },
+      "MerchantClaimSession": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "claimSessionId",
+          "expiresAt"
+        ],
+        "properties": {
+          "claimSessionId": {
+            "type": "string",
+            "format": "uuid",
+            "description": "Session to append as a claimSession query value to the marketplace product URL."
+          },
+          "expiresAt": {
+            "type": "string",
+            "format": "date-time",
+            "description": "Creation expiry. Sessions expire after ten minutes and are consumed once at exchange."
+          }
+        }
+      },
+      "MerchantTransactionReportResponse": {
+        "type": "object",
+        "required": [
+          "success",
+          "message",
+          "data"
+        ],
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "enum": [
+              true
+            ]
+          },
+          "message": {
+            "type": "string"
+          },
+          "data": {
+            "type": "object",
+            "required": [
+              "transactionId",
+              "status",
+              "amount",
+              "commission",
+              "earnings",
+              "createdAt"
+            ],
+            "properties": {
+              "transactionId": {
+                "type": "string",
+                "format": "uuid"
+              },
+              "status": {
+                "type": "string"
+              },
+              "amount": {
+                "type": "number",
+                "description": "Recorded amount in naira; request amount is integer kobo."
+              },
+              "commission": {
+                "type": "number",
+                "description": "Commission in naira."
+              },
+              "earnings": {
+                "type": "number",
+                "description": "Vendor earnings in naira."
+              },
+              "createdAt": {
+                "type": "string",
+                "format": "date-time"
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}

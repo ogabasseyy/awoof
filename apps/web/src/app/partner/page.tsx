@@ -2,7 +2,7 @@ import Link from 'next/link';
 import PublicPage from '@/components/public/PublicPage';
 import { buildPublicMetadata } from '@/lib/public-metadata';
 import { publicPageMetadata } from '@/content/public/page-metadata';
-import { merchantSteps, partnerIntro, universityBody } from '@/content/public/partners';
+import { merchantSteps, partnerIntro, universityBody, partnerConnections } from '@/content/public/partners';
 
 export const metadata = buildPublicMetadata(publicPageMetadata['/partner']);
 
@@ -57,6 +57,12 @@ export default function PartnerPage() {
               Developer guide
             </Link>
           </nav>
+        </section>
+        <section aria-labelledby="connection-options">
+          <h2 id="connection-options" className="text-2xl font-extrabold tracking-tight text-slate-900">Marketplace, verification and prospective connections</h2>
+          <p className="mt-3 leading-relaxed text-slate-600">Marketplace discovery and Awoof Verify serve different needs. Hosted consent plus your merchant backend is the implemented integration path; your checkout applies the benefit. Source and local examples require separate deployment and merchant validation before live use.</p>
+          <dl className="mt-5 space-y-5">{partnerConnections.map((connection) => <div key={connection.title}><dt className="font-bold text-slate-900">{connection.title}</dt><dd className="mt-1 leading-relaxed text-slate-600">{connection.body}</dd></div>)}</dl>
+          <Link href="/developers#connections" className="mt-4 inline-flex min-h-[44px] items-center font-semibold text-[#3858bb] underline">Connection and activation guide</Link>
         </section>
         <section aria-labelledby="partner-legal">
           <h2 id="partner-legal" className="text-2xl font-extrabold tracking-tight text-slate-900">

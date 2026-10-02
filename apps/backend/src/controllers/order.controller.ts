@@ -22,6 +22,9 @@ import { z } from 'zod';
 const updateOrderStatusSchema = z.object({
     status: z.enum(['pending', 'completed', 'failed', 'refunded']),
 });
+const updateOrderStatusParams = z.object({
+    id: z.string().uuid(),
+});
 
 /**
  * Order Controller
@@ -283,11 +286,9 @@ export class OrderController {
         }
 
         const vendorId = vendorResult.rows[0].id as string;
-        const orderId = req.params.id as string;
-
-        if (!orderId) {
-            throw new BadRequestError('Order ID is required');
-        }
+        // Validate before the UUID comparison: a typo must be a client
+        // error, not a database 22P02 failure.
+        const { id: orderId } = updateOrderStatusParams.parse(req.params);
 
         // Validate request body
         const validated = updateOrderStatusSchema.parse(req.body);

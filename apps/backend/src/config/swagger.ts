@@ -700,6 +700,14 @@ Access tokens expire in 15 minutes. Use the refresh token endpoint to get a new 
                         },
                     },
                 },
+                MerchantPaymentUnavailable: {
+                    description: 'Merchant payment verification is temporarily unavailable',
+                    content: {
+                        'application/json': {
+                            schema: { $ref: '#/components/schemas/Error' },
+                        },
+                    },
+                },
             },
         },
         security: [

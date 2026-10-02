@@ -70,6 +70,12 @@ jobs:
         working-directory: apps/backend
         run: npm run test:scripts
 
+      - name: Test partner SDK, merchant starter and public asset safeguards
+        run: |
+          npm --prefix packages/partner-sdk test
+          npm --prefix examples/merchant-integration test
+          npm run test:partner-assets
+
       - name: Test PostgreSQL authority and migration regressions
         working-directory: apps/backend
         run: POSTGRES_BIN_DIR="$(pg_config --bindir)" npm run test:postgres
@@ -160,3 +166,6 @@ jobs:
       - name: Test artifact parity and runtime
         working-directory: apps/backend
         run: npm run test:artifact
+
+      - name: Verify published merchant documentation artifacts
+        run: node scripts/build-partner-assets.mjs --check

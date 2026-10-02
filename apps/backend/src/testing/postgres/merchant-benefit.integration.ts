@@ -336,6 +336,7 @@ test('product-bound exchange mints a server-quoted authorization while generic r
             code: generic.code, campaignId: 'generic-campaign', idempotencyKey: `generic-${randomUUID()}`,
         }) as unknown as Record<string, unknown>;
         assert.equal('benefitAuthorizationId' in genericReceipt, false);
+        assert.equal('benefitValidUntil' in genericReceipt, false);
         const genericRow = (await client.query(
             'SELECT product_id FROM merchant_assertions WHERE vendor_id = $1 AND campaign_id = $2',
             [fixture.vendor, 'generic-campaign'],
@@ -362,6 +363,9 @@ test('product-bound exchange mints a server-quoted authorization while generic r
         assert.ok(stored.expires_at <= current.expires_at);
         assert.ok((stored.expires_at as Date).getTime() <= Date.now() + 2 * 60_000 + 5_000);
         assert.equal(receipt.benefitAuthorizationId, benefitAuthorizationId);
+        assert.equal(receipt.benefitValidUntil, (stored.expires_at as Date).toISOString());
+        assert.equal(receipt.validUntil, (current.expires_at as Date).toISOString());
+        assert.ok(Date.parse(receipt.benefitValidUntil as string) <= Date.parse(receipt.validUntil as string));
         assert.equal(receipt.eligible, true);
         await assert.rejects(issueMerchantAssertion(pool, fixture.student, {
             vendorId: fixture.vendor, origin: fixture.origin, purpose: 'student-discount',
@@ -871,9 +875,18 @@ test('committed exchange retries return the receipt after the origin is removed'
         const pending = await issue();
         const idempotencyKey = `retry-${randomUUID()}`;
         const receipt = await exchangeMerchantAssertion(pool, fixture.key, { code: first.code, campaignId, idempotencyKey });
+        assert.equal(typeof receipt.benefitValidUntil, 'string');
+        await client.query("UPDATE merchant_benefit_authorizations SET expires_at = clock_timestamp() - interval '1 minute' WHERE id = $1", [receipt.benefitAuthorizationId]);
         await client.query('UPDATE widget_configs SET allowed_origins = $2 WHERE vendor_id = $1', [fixture.vendor, ['https://elsewhere.example']]);
         const replayed = await exchangeMerchantAssertion(pool, fixture.key, { code: first.code, campaignId, idempotencyKey });
         assert.deepEqual(replayed, receipt);
+        // Receipts persisted before deadline exposure stay byte-for-byte historical:
+        // retries must not synthesize a deadline or renew a benefit.
+        await client.query("UPDATE merchant_assertion_receipts SET receipt = receipt - 'benefitValidUntil' WHERE vendor_id = $1 AND idempotency_key = $2", [fixture.vendor, idempotencyKey]);
+        const { benefitValidUntil: _deadline, ...historicalReceipt } = receipt;
+        const historicalReplay = await exchangeMerchantAssertion(pool, fixture.key, { code: first.code, campaignId, idempotencyKey });
+        assert.deepEqual(historicalReplay, historicalReceipt);
+        assert.equal('benefitValidUntil' in historicalReplay, false);
         // Fresh exchanges still require a live origin configuration.
         await assert.rejects(
             exchangeMerchantAssertion(pool, fixture.key, { code: pending.code, campaignId, idempotencyKey: `retry-${randomUUID()}` }),
@@ -1196,5 +1209,109 @@ test('expired reservations release stock at authorization expiry, independent of
         await server.close();
         client.release();
         await pool.end();
+    }
+});
+
+
+test('merchant-account Paystack reports bind merchant, quote, metadata and mode; historical retries avoid providers', async () => {
+    const { default: axios } = await import('axios');
+    const { config } = await import('../../config/env.js');
+    const originalGet = axios.get;
+    const oldKeys = config.paystack.merchantSecretKeys;
+    const pool = createTestPool();
+    const client = await pool.connect();
+    const server = await startReportServer();
+    let calls = 0;
+    try {
+        await assertFixtureDatabase(client);
+        const fixture = await enrolledFixture(pool, client);
+        const { benefitAuthorizationId } = await productAuthorization(pool, fixture);
+        const payload = { benefitAuthorizationId, productId: fixture.product, amount: 8000,
+            paymentReference: randomUUID(), paymentGateway: 'paystack_merchant' };
+        const auth = `Bearer ${fixture.key}`;
+        Object.assign(config.paystack, { merchantSecretKeys: {} });
+        axios.get = (async () => { calls++; throw new Error('must not call without merchant key'); }) as typeof axios.get;
+        assert.equal((await postReport(server.endpoint, auth, payload)).status, 503);
+        assert.equal(calls, 0);
+        Object.assign(config.paystack, { merchantSecretKeys: { [fixture.vendor]: { secret: 'synthetic-merchant-secret', domain: 'test' } } });
+        const metadata = { awoofVendorId: fixture.vendor, awoofProductId: fixture.product,
+            awoofBenefitAuthorizationId: benefitAuthorizationId };
+        let transaction: Record<string, unknown> = {};
+        axios.get = (async (_url: string, options: { headers: Record<string, string> }) => {
+            calls++;
+            assert.equal(options.headers.Authorization, 'Bearer synthetic-merchant-secret');
+            return { data: { status: true, data: transaction } };
+        }) as typeof axios.get;
+        const before = await ledgerSnapshot(client, fixture);
+        for (const invalid of [
+            { status: 'pending' }, { amount: 80 }, { amount: 8100 }, { currency: 'USD' },
+            { domain: 'live' }, { domain: undefined },
+            { metadata: {} }, { metadata: { ...metadata, awoofVendorId: randomUUID() } },
+            { metadata: { ...metadata, awoofProductId: randomUUID() } },
+            { metadata: { ...metadata, awoofBenefitAuthorizationId: randomUUID() } },
+        ]) {
+            transaction = { status: 'success', reference: payload.paymentReference, amount: 8000, currency: 'NGN', domain: 'test', metadata, ...invalid };
+            assert.equal((await postReport(server.endpoint, auth, payload)).status, 400);
+            assert.deepEqual(await ledgerSnapshot(client, fixture), before);
+        }
+        transaction = { status: 'success', reference: payload.paymentReference, amount: 8000, currency: 'NGN', domain: 'test', metadata };
+        const first = await postReport(server.endpoint, auth, payload);
+        assert.equal(first.status, 201);
+        const stored = (await client.query('SELECT payment_source FROM transactions WHERE vendor_id = $1', [fixture.vendor])).rows[0];
+        assert.equal(stored.payment_source, 'vendor_merchant_paystack');
+        // A second authorization cannot reuse a merchant payment reference.
+        const second = await productAuthorization(pool, fixture);
+        transaction = { ...transaction, metadata: { ...metadata, awoofBenefitAuthorizationId: second.benefitAuthorizationId } };
+        assert.equal((await postReport(server.endpoint, auth, { ...payload, benefitAuthorizationId: second.benefitAuthorizationId })).status, 409);
+        await client.query("UPDATE merchant_benefit_authorizations SET expires_at = clock_timestamp() - interval '1 minute' WHERE id = $1", [benefitAuthorizationId]);
+        await inTransaction(client, () => withdrawConsent(client, fixture.student, fixture.disclosure));
+        await lapseEnrollmentToExpired(client, fixture);
+        const rotated = await rotateReportingKey(pool, fixture.owner);
+        Object.assign(config.paystack, { merchantSecretKeys: {} });
+        const callsAtCommit = calls;
+        const retry = await postReport(server.endpoint, `Bearer ${rotated}`, payload);
+        assert.equal(retry.status, 200);
+        assert.deepEqual(retry.body.data, first.body.data);
+        for (const paymentGateway of ['paystack', 'other']) {
+            assert.equal((await postReport(server.endpoint, `Bearer ${rotated}`, { ...payload, paymentGateway })).status, 409);
+        }
+        assert.equal(calls, callsAtCommit);
+        assert.equal((await ledgerSnapshot(client, fixture)).transactions, 1);
+    } finally {
+        axios.get = originalGet;
+        Object.assign(config.paystack, { merchantSecretKeys: oldKeys });
+        await server.close(); client.release(); await pool.end();
+    }
+});
+
+test('merchant-account Paystack references are vendor scoped while platform uniqueness remains global', async () => {
+    const { default: axios } = await import('axios');
+    const { config } = await import('../../config/env.js');
+    const originalGet = axios.get;
+    const oldKeys = config.paystack.merchantSecretKeys;
+    const pool = createTestPool(); const client = await pool.connect(); const server = await startReportServer();
+    try {
+        await assertFixtureDatabase(client);
+        const fixtures = [await enrolledFixture(pool, client), await enrolledFixture(pool, client)];
+        const reference = randomUUID();
+        Object.assign(config.paystack, { merchantSecretKeys: Object.fromEntries(fixtures.map(f => [f.vendor, { secret: `synthetic-${f.vendor}`, domain: 'test' }])) });
+        for (const fixture of fixtures) {
+            const { benefitAuthorizationId } = await productAuthorization(pool, fixture);
+            axios.get = (async (_url: string, options: { headers: Record<string, string> }) => {
+                assert.equal(options.headers.Authorization, `Bearer synthetic-${fixture.vendor}`);
+                return { data: { status: true, data: { status: 'success', reference, amount: 8000, currency: 'NGN', domain: 'test', metadata: {
+                    awoofVendorId: fixture.vendor, awoofProductId: fixture.product, awoofBenefitAuthorizationId: benefitAuthorizationId,
+                } } } };
+            }) as typeof axios.get;
+            assert.equal((await postReport(server.endpoint, `Bearer ${fixture.key}`, {
+                benefitAuthorizationId, productId: fixture.product, paymentReference: reference, amount: 8000, paymentGateway: 'paystack_merchant',
+            })).status, 201);
+        }
+        const index = (await client.query("SELECT indexdef FROM pg_indexes WHERE indexname = 'transactions_global_paystack_reference'")).rows[0].indexdef;
+        assert.match(index, /vendor_paystack/);
+        assert.doesNotMatch(index, /vendor_merchant_paystack/);
+    } finally {
+        axios.get = originalGet; Object.assign(config.paystack, { merchantSecretKeys: oldKeys });
+        await server.close(); client.release(); await pool.end();
     }
 });

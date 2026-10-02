@@ -315,3 +315,51 @@ export async function updatePaystackSubaccount(
         throw new BadRequestError(paystackErrorMessage(error, 'Failed to update Paystack subaccount'));
     }
 }
+
+
+/** Verify a merchant-account charge. Credentials are selected exclusively by
+ * the authenticated vendor, never from request data or platform credentials. */
+export async function verifyMerchantPaystackPayment(
+    vendorId: string,
+    paymentReference: string,
+): Promise<{ verified: boolean; amountKobo?: number; currency?: string; metadata?: Record<string, unknown>; error?: string }> {
+    const credential = Object.hasOwn(config.paystack.merchantSecretKeys, vendorId)
+        ? config.paystack.merchantSecretKeys[vendorId] : undefined;
+    // Missing credentials are an Awoof-side configuration outage, not proof
+    // the checkout is unpaid: surface retryable 503 like a revoked or rotated
+    // merchant secret (401/403) so the report stays available for reconciliation.
+    if (!credential?.secret) throw new ServiceUnavailableError('Merchant Paystack verification is not configured');
+    try {
+        const response = await axios.get(
+            `https://api.paystack.co/transaction/verify/${encodeURIComponent(paymentReference)}`,
+            { timeout: 15000, signal: AbortSignal.timeout(15000), headers: { Authorization: `Bearer ${credential.secret}` } },
+        );
+        const data = response.data?.data;
+        if (response.data?.status !== true || data?.status !== 'success' || data.reference !== paymentReference) {
+            return { verified: false, error: 'Merchant payment not successful' };
+        }
+        if (data.domain !== credential.domain) {
+            return { verified: false, error: 'Merchant payment environment does not match the configured account' };
+        }
+        if (!Number.isSafeInteger(data.amount) || data.amount <= 0 || data.currency !== 'NGN'
+            || !data.metadata || typeof data.metadata !== 'object' || Array.isArray(data.metadata)) {
+            return { verified: false, error: 'Merchant payment amount, currency or metadata is invalid' };
+        }
+        return { verified: true, amountKobo: data.amount, currency: data.currency, metadata: data.metadata };
+    } catch (error: unknown) {
+        // Provider errors can contain account information; keep the public error generic.
+        // An outage is retryable: report 503 so merchants retry instead of
+        // treating the checkout as definitively unpaid. Throttling and
+        // timeouts are explicitly transient, not rejections. Provider
+        // authentication failures (401/403) mean the configured merchant
+        // secret was revoked, rotated, or rejected — an Awoof-side
+        // configuration problem, not proof the checkout is unpaid — so they
+        // surface as 503 too, keeping the report available for reconciliation.
+        if (axios.isAxiosError(error) && (!error.response || error.response.status >= 500
+            || error.response.status === 401 || error.response.status === 403
+            || error.response.status === 408 || error.response.status === 429)) {
+            throw new ServiceUnavailableError('Merchant payment verification is temporarily unavailable. Please retry.');
+        }
+        return { verified: false, error: 'Merchant payment verification failed' };
+    }
+}
