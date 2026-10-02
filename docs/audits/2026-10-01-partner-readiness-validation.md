@@ -36,7 +36,7 @@ The affected public routes and claim evidence are recorded in `docs/public-trust
 
 ## Remaining activation work
 
-1. Review, CI, merge and deployment; apply migration 085 and verify configured runtime routes and artifacts.
+1. Review, CI, merge and deployment; apply migrations 085 then 086 (086 validates the NOT VALID constraints from 085) and verify configured runtime routes and artifacts.
 2. Approved institution enrollment authority, merchant agreement/annexes, test merchant origins/products/keys and operational ownership.
 3. A real end-to-end Awoof checkout and merchant Paystack test payment, including expiry, failed reporting, duplicate events, refunds and reconciliation, before live merchant use.
 4. Google entitlement acceptance/fulfillment access and Verve qualification, funding, limits, settlement and reversal contracts before implementing provider adapters or enabling campaigns.
