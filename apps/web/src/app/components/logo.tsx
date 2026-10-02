@@ -24,6 +24,9 @@ export default function Logo({
     width,
     height: renderedHeight,
     backgroundColor: color === 'white' ? '#fff' : '#244ee7',
+    // Real images are exempt from forced-colors adjustment; keep the masked
+    // brand mark painted too so it survives Windows High Contrast mode.
+    forcedColorAdjust: 'none',
     WebkitMaskImage: `url(${asset})`,
     maskImage: `url(${asset})`,
     WebkitMaskRepeat: 'no-repeat',
