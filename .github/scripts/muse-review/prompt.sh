@@ -110,8 +110,14 @@ CONTRACT
   # past the diff cap would be reviewed blind yet posted as success.
   # if/else capture: a bare `x="$(...)"` under set -e exits the shell on
   # the intentional return-2 (>50 links) before `$?` is read, so the
-  # PARTIAL branch below would never run.
-  if symlink_lines="$(changed_symlinks "${RUNNER_TEMP}/muse-files.json" "${GITHUB_WORKSPACE}" 50 2>/dev/null)"; then
+  # PARTIAL branch below would never run. Base ref from the fetched base
+  # commit (collect.sh): lets the lookup also capture targets for links the
+  # PR deletes or replaces, which fail the head -L test.
+  base_ref_for_links=""
+  if [[ "${MUSE_BASE_AVAILABLE:-}" == "true" && -n "${MUSE_BASE_SHA_FULL:-}" ]]; then
+    base_ref_for_links="${MUSE_BASE_SHA_FULL}"
+  fi
+  if symlink_lines="$(changed_symlinks "${RUNNER_TEMP}/muse-files.json" "${GITHUB_WORKSPACE}" 50 "${base_ref_for_links}" "${GITHUB_WORKSPACE}" 2>/dev/null)"; then
     symlink_rc=0
   else
     symlink_rc=$?
@@ -122,6 +128,9 @@ CONTRACT
   elif (( symlink_rc != 0 )); then
     symlink_lines=""
     symlink_note=" [evidence unavailable: changed-file inventory unreadable]"
+  fi
+  if [[ -z "${base_ref_for_links}" ]]; then
+    symlink_note="${symlink_note} [base-side targets unavailable: base commit not fetched]"
   fi
   symlink_tmp="$(mktemp)"
   : > "${symlink_tmp}"

@@ -164,6 +164,34 @@ got="$(set -e; if cap_lines="$(changed_symlinks "${capdir}/files.json" "${capdir
 assert_eq "capture-rc2-partial" "rc=2 first=link0 -> /target0 last=link49 -> /target49" "${got}"
 rm -rf "${capdir}"
 
+# --- changed_symlinks base-side targets (deleted/replaced links) ---
+# A PR that deletes a symlink or replaces it with a regular file fails the
+# head -L test; the base-side target must still print when the fetched base
+# commit is given, or the review posts success over unseen evidence.
+basedir="$(mktemp -d)"
+mkdir -p "${basedir}/repo"
+git -C "${basedir}/repo" init -q 2>/dev/null
+printf 'x' > "${basedir}/repo/keep.txt"
+ln -s /etc/target "${basedir}/repo/gone.txt"
+ln -s /etc/old "${basedir}/repo/replaced.txt"
+ln -s /etc/still "${basedir}/repo/still.txt"
+git -C "${basedir}/repo" add -A 2>/dev/null
+git -C "${basedir}/repo" -c user.email=t@t -c user.name=t commit -qm base 2>/dev/null
+base_sha="$(git -C "${basedir}/repo" rev-parse HEAD 2>/dev/null)"
+rm "${basedir}/repo/gone.txt"
+rm "${basedir}/repo/replaced.txt" && printf 'now a file' > "${basedir}/repo/replaced.txt"
+printf '[{"filename":"gone.txt"},{"filename":"replaced.txt"},{"filename":"still.txt"},{"filename":"keep.txt"}]' > "${basedir}/files.json"
+got="$(changed_symlinks "${basedir}/files.json" "${basedir}/repo" 50 "${base_sha}" "${basedir}/repo")"
+assert_eq "symlinks-base-side" "$(printf 'gone.txt -> /etc/target (base-side; deleted or replaced in head)\nreplaced.txt -> /etc/old (base-side; deleted or replaced in head)\nstill.txt -> /etc/still')" "${got}"
+got="$(changed_symlinks "${basedir}/files.json" "${basedir}/repo" 50 "" "")"
+assert_eq "symlinks-no-base-head-only" "still.txt -> /etc/still" "${got}"
+got="$(changed_symlinks "${basedir}/files.json" "${basedir}/repo" 50 "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef" "${basedir}/repo" 2>/dev/null)"
+assert_eq "symlinks-bad-ref-head-only" "still.txt -> /etc/still" "${got}"
+got="$(changed_symlinks "${basedir}/files.json" "${basedir}/repo" 1 "${base_sha}" "${basedir}/repo" 2>/dev/null)"; got_rc=$?
+assert_eq "symlinks-base-counts-cap" "gone.txt -> /etc/target (base-side; deleted or replaced in head)" "${got}"
+assert_eq "symlinks-base-cap-rc" "2" "${got_rc}"
+rm -rf "${basedir}"
+
 # --- redact ---
 pem='-----BEGIN TEST PRIVATE KEY-----FAKEFAKEFAKE-----END TEST PRIVATE KEY-----'
 assert_eq "redact-pem" "[REDACTED-PRIVATE-KEY]" "$(redact "a ${pem} b" | sed 's/^a //; s/ b$//')"
@@ -226,6 +254,18 @@ assert_eq "decode-mixed-no-key-fragment" "no" "${got_left}"
 got="$(printf '%s' 'keep \\u0041 literal, \/ slash' | decode_json_escapes)"
 assert_eq "decode-escaped-backslash-kept" 'keep \\u0041 literal, / slash' "${got}"
 rm -f "${mixfix}"
+
+# --- neutralize_workflow_commands (run.sh stderr-tail P2) ---
+# Decoded model stderr can smuggle `\n::error...` via `\u000a\u003a...`
+# escapes; the runner would execute it as a workflow command on print.
+got="$(printf '%s' '::error::forged annotation' | neutralize_workflow_commands)"
+assert_eq "wfcmd-leading" " ::error::forged annotation" "${got}"
+got="$(printf 'first line\n::warning::second\nplain ::mid:: kept' | neutralize_workflow_commands)"
+assert_eq "wfcmd-multiline" "$(printf 'first line\n ::warning::second\nplain ::mid:: kept')" "${got}"
+got="$(printf '\r::group::leak' | neutralize_workflow_commands)"
+assert_eq "wfcmd-cr" " ::group::leak" "${got}"
+got="$(printf '%s' 'x\u000a\u003a\u003aerror\u003a\u003afake' | decode_json_escapes | neutralize_workflow_commands)"
+assert_eq "wfcmd-decoded-smuggle" "$(printf 'x\n ::error::fake')" "${got}"
 
 # --- strip_images ---
 got="$(printf '%s' 'see ![pixel](https://a.example/p?d=1) and [docs](https://d.example/x) ok' | strip_images)"

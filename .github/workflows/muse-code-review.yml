@@ -33,9 +33,13 @@
 #
 # Forks skipped by the job `if` (head repo check) — load-bearing under
 # pull_request_target, which WOULD expose secrets to forks otherwise.
-# Non-default bases skipped by the same `if` (base ref check) — also
-# load-bearing: pull_request_target runs this file from the PR BASE
-# revision, so a custom base could otherwise supply attacker YAML.
+# Non-default bases skipped by the same `if` (base ref check): a scope
+# gate, not a security boundary — pull_request_target always runs THIS
+# file from the DEFAULT branch (per GitHub docs, "the workflow ... is
+# taken from the base repository's default branch, not from the pull
+# request"), so a custom base can never supply YAML and this `if` is
+# always evaluated from trusted default-branch code. It skips stacked
+# PRs to save quota and keeps YAML+scripts paired to one trusted commit.
 #
 # Layout: this file only orchestrates steps; every shell program lives in
 # .github/scripts/muse-review/ (each file under 300 lines per repo rules):
@@ -60,8 +64,9 @@ name: Muse Code Review
 
 on:
   # pull_request_target (not pull_request): secret-bearing orchestration
-  # must run from the trusted BASE revision — a same-repo PR editing this
-  # file could otherwise replace these steps and exfiltrate credentials.
+  # must run from the trusted DEFAULT-BRANCH revision — a same-repo PR
+  # editing this file could otherwise replace these steps and exfiltrate
+  # credentials (pull_request runs the file from the merge commit).
   # The head is checked out explicitly as review DATA only; workflow edits
   # take effect after merge (selftest validates them pre-merge).
   pull_request_target:
@@ -110,15 +115,12 @@ jobs:
     # action != closed: the closed-triggered run exists only to cancel an
     # in-flight review via the live concurrency lane; the PR is closed so
     # there is nothing to review (collect.sh would skip it too).
-    # base == default_branch: load-bearing under pull_request_target, which
-    # runs THIS file from the PR base revision. A same-repo contributor can
-    # push a malicious workflow copy to an unprotected custom base and
-    # open/retarget a PR to it; without this gate that attacker YAML would
-    # execute with secrets before any helper runs. Only the protected
-    # default branch may supply the executed revision. Accepted scope
-    # change: stacked/custom-base PRs are skipped, not reviewed (fail
-    # closed when the default branch is unknown — an empty value never
-    # equals a base ref).
+    # base == default_branch: scope gate (stacked/custom-base PRs are
+    # skipped, not reviewed). NOT a security boundary: pull_request_target
+    # always runs this file from the DEFAULT branch, so a malicious copy
+    # on a custom base is never executed and this `if` is always evaluated
+    # from trusted default-branch code (fail closed when the default
+    # branch is unknown — an empty value never equals a base ref).
     if: >-
       github.event.action != 'closed' &&
       github.event.pull_request.draft == false &&
@@ -209,9 +211,11 @@ jobs:
           #   - base IS the default branch: pin the immutable event base
           #     SHA. It is the default tip at event time (reviewed, merged
           #     code — the submitter chose only which branch is base, never
-          #     the tip's content), and the commit that supplied this YAML
-          #     revision under pull_request_target, so YAML and scripts
-          #     pair to one commit with no skew, mid-run or on rerun.
+          #     the tip's content), near the default-tip commit that supplied
+          #     this YAML revision under pull_request_target (docs: the file
+          #     runs from the default branch). YAML and scripts pair with at
+          #     most scheduling-time skew — caught by the protocol handshake
+          #     below — and none mid-run or on rerun.
           #   - otherwise (stacked/custom base): unreachable — the job `if`
           #     skips non-default-base PRs before any step runs. Kept as
           #     fail-closed defense in depth (fall back to the default

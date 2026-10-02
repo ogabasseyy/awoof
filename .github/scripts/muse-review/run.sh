@@ -66,12 +66,15 @@ if (( muse_rc != 0 )); then
   # reconstructible from the Actions log. The whole-input JSON parse fails
   # on mixed prose around a JSON fragment, so the fallback decodes escape
   # sequences first — without that, the reversible escaped key survives.
+  # Neutralize LAST, closest to the channel: decoding can turn
+  # `\u000a\u003a\u003aerror...` into a line starting with `::error`,
+  # which the runner would execute as a workflow command on print.
   stderr_clean="$(mktemp)"
   if redact_json_key < "${RUNNER_TEMP}/muse-stderr.log" > "${stderr_clean}" 2>/dev/null; then
-    redact "$(cat "${stderr_clean}" 2>/dev/null || true)" | tail -c 4000
+    redact "$(cat "${stderr_clean}" 2>/dev/null || true)" | tail -c 4000 | neutralize_workflow_commands
   else
     decode_json_escapes < "${RUNNER_TEMP}/muse-stderr.log" > "${stderr_clean}" 2>/dev/null || : > "${stderr_clean}"
-    redact "$(cat "${stderr_clean}" 2>/dev/null || true)" | tail -c 4000
+    redact "$(cat "${stderr_clean}" 2>/dev/null || true)" | tail -c 4000 | neutralize_workflow_commands
   fi
   rm -f "${stderr_clean}"
   exit "${muse_rc}"
