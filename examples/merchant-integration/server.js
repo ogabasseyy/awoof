@@ -49,8 +49,9 @@ export function createMerchant({ origin, apiOrigin, webOrigin, privateKey, produ
     if (!response.ok || body.status !== true || payment?.status !== 'success' || payment.reference !== reference || payment.amount !== row.amountKobo || payment.currency !== 'NGN' || payment.domain !== 'test' || !Object.entries(expected).every(([key, value]) => payment.metadata?.[key] === value)) throw fail('Payment verification or checkout binding mismatch', 400);
   }
   async function reconcileInitialization(current) {
-    // An ambiguous initialization may already exist upstream: adopt its
-    // authorization URL instead of reposting and stranding on a duplicate.
+    // Paystack returns the authorization URL only from initialization, never
+    // from verification, so a held reference found upstream is abandoned and
+    // replaced: only a reference unknown upstream is safe to initialize.
     let response; let body;
     try {
       response = await fetchImpl(`https://api.paystack.co/transaction/verify/${encodeURIComponent(current.initializedReference)}`, { headers: { Authorization: `Bearer ${paystackSecret}` }, redirect: 'error', signal: AbortSignal.timeout(15_000) });
@@ -58,13 +59,10 @@ export function createMerchant({ origin, apiOrigin, webOrigin, privateKey, produ
     } catch (error) {
       throw fail('Test payment initialization outcome still unknown; retry later', 502);
     }
-    // Unknown upstream: the held reference was never used and is safe to initialize.
     if (response.status === 404 || (response.status === 400 && /not.?found/i.test(body?.message ?? ''))) return;
     const payment = body?.data;
     if (!response.ok || body?.status !== true || payment?.reference !== current.initializedReference) throw fail('Test payment initialization outcome still unknown; retry later', 502);
-    const destination = new URL(payment.authorization?.authorization_url ?? 'invalid:');
-    if (destination.protocol !== 'https:' || destination.hostname !== 'checkout.paystack.com' || destination.port || destination.username || destination.password) throw fail('Unexpected payment checkout destination', 502);
-    current.paymentUrl = destination.href; current.state = 'payment_initialized';
+    current.initializedReference = `awoof-${randomUUID()}`;
   }
   const server = createServer(async (req, res) => {
     try {
@@ -137,7 +135,6 @@ export function createMerchant({ origin, apiOrigin, webOrigin, privateKey, produ
           // duplicate or creates a second payment.
           if (current.initializedReference && !current.paymentUrl) {
             await reconcileInitialization(current);
-            if (current.paymentUrl) { store.put(current.id, current); return; }
           }
           current.initializedReference ??= `awoof-${randomUUID()}`; current.state = 'payment_initializing'; store.put(current.id, current);
           let response; let initialized;
@@ -149,14 +146,21 @@ export function createMerchant({ origin, apiOrigin, webOrigin, privateKey, produ
             throw fail('Test payment initialization outcome unknown; retry to reconcile the held reference', 502);
           }
           if (!response.ok || initialized.status !== true || initialized.data?.reference !== current.initializedReference) {
-            // A duplicate-text rejection means an earlier ambiguous attempt
-            // may already exist upstream: reconcile it on retry.
             const detail = `${initialized?.code ?? ''} ${initialized?.message ?? ''}`;
-            if (/duplicate|already|in.use|used|exists/i.test(detail)) {
+            // A duplicate-text, throttled, timed-out, 5xx, or mismatched
+            // success-shape response may already exist upstream: hold the
+            // reference and reconcile on retry.
+            const ambiguous = /duplicate|already|in.use|used|exists/i.test(detail)
+              || (!response.ok && (response.status >= 500 || response.status === 408 || response.status === 429))
+              || (response.ok && initialized?.status === true);
+            if (ambiguous) {
               current.state = 'payment_initialization_unknown'; store.put(current.id, current);
               throw fail('Test payment initialization outcome unknown; retry to reconcile the held reference', 502);
             }
-            throw fail('Test payment initialization not confirmed; preserve reference for retry', 502);
+            // A definitive rejection releases the held inputs so the form can
+            // be corrected instead of reposting the same invalid request.
+            delete current.paymentEmailHash; delete current.initializedReference; current.state = 'authorized'; store.put(current.id, current);
+            throw fail('Test payment initialization was rejected; correct the payment email and retry', 400);
           }
           const destination = new URL(initialized.data.authorization_url);
           if (destination.protocol !== 'https:' || destination.hostname !== 'checkout.paystack.com' || destination.port || destination.username || destination.password) throw fail('Unexpected payment checkout destination', 502);
