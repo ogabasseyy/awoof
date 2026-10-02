@@ -171,15 +171,14 @@ export default function VendorIntegrationPage() {
 
     const getIntegrationStatus = () => {
         const hasApiKey = apiKeyInfo?.hasApiKey || false;
-        const hasPaymentMethod = paymentSettings?.paymentMethod === 'vendor_website';
         const hasPaystackConfig = !!paymentSettings?.paystackSubaccountCode;
 
-        if (hasPaymentMethod && hasApiKey && hasPaystackConfig) {
+        // Vendor Website selection is disabled, so readiness on the enabled
+        // mode comes from actual setup signals rather than the stored method.
+        if (hasApiKey && hasPaystackConfig) {
             return { status: 'partial', message: 'Settings saved — checkout and payment validation pending' };
-        } else if (hasPaymentMethod && (hasApiKey || hasPaystackConfig)) {
-            return { status: 'partial', message: 'Some settings saved — integration validation pending' };
-        } else if (hasPaymentMethod) {
-            return { status: 'started', message: 'Payment method selected, setup required' };
+        } else if (hasApiKey || hasPaystackConfig) {
+            return { status: 'started', message: 'Setup underway — complete the remaining steps' };
         } else {
             return { status: 'not_started', message: 'Integration not started' };
         }

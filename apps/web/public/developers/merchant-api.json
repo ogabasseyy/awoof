@@ -568,7 +568,7 @@
             "description": "Request body failed strict validation"
           },
           "503": {
-            "$ref": "#/components/responses/SessionValidationUnavailable"
+            "$ref": "#/components/responses/MerchantPaymentUnavailable"
           }
         }
       }
@@ -722,6 +722,16 @@
     "responses": {
       "SessionValidationUnavailable": {
         "description": "Student session validation is temporarily unavailable",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/Error"
+            }
+          }
+        }
+      },
+      "MerchantPaymentUnavailable": {
+        "description": "Merchant payment verification is temporarily unavailable",
         "content": {
           "application/json": {
             "schema": {

@@ -294,7 +294,8 @@ test('merchant transaction report is published with both private authentication 
     const spec = swaggerSpec as { paths: Record<string, { post: {
         security: Record<string, unknown[]>[];
         requestBody: { content: { 'application/json': { schema: { required: string[]; additionalProperties: boolean; properties: Record<string, { type: string; description?: string }> } } } };
-    } }> };
+        responses: Record<string, { $ref?: string }>;
+    } }>; components: { responses: Record<string, { description?: string }> } };
     const operation = spec.paths['/api/vendors/transactions/report']?.post;
     assert.ok(operation);
     assert.deepEqual(operation.security, [{ bearerAuth: [] }, { merchantServerKey: [] }]);
@@ -303,6 +304,11 @@ test('merchant transaction report is published with both private authentication 
     assert.equal(body.properties.amount.type, 'integer');
     assert.ok(body.required.includes('benefitAuthorizationId'));
     assert.match(body.properties.paymentGateway.description ?? '', /paystack_merchant/);
+    // Retryable merchant verification failures (missing merchant credentials,
+    // rejected secrets, provider outages) name the payment subsystem, not the
+    // student session validator.
+    assert.equal(operation.responses['503']?.$ref, '#/components/responses/MerchantPaymentUnavailable');
+    assert.equal(spec.components.responses.MerchantPaymentUnavailable?.description, 'Merchant payment verification is temporarily unavailable');
 });
 
 

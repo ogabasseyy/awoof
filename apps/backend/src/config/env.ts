@@ -56,24 +56,30 @@ const envSchema = z.object({
     WHATSAPP_API_URL: z.string().url().optional().or(z.literal('')),
     PAYSTACK_SECRET_KEY: z.string().optional(),
     PAYSTACK_PUBLIC_KEY: z.string().optional(),
-    // Server-only vendor UUID -> merchant account verification secret. No fallback.
+    // Server-only vendor UUID -> merchant account verification credential: the
+    // Paystack secret plus the expected test/live environment. The verifier
+    // rejects a mismatched provider domain, so a test secret retained where
+    // live money was intended cannot settle inventory. No fallback.
     PAYSTACK_MERCHANT_SECRET_KEYS: z.string().default('{}').transform((raw, ctx) => {
         try {
-            const parsed = z.record(z.string().uuid(), z.string().trim().min(1)).safeParse(JSON.parse(raw));
+            const parsed = z.record(z.string().uuid(), z.object({
+                secret: z.string().trim().min(1),
+                domain: z.enum(['test', 'live']),
+            })).safeParse(JSON.parse(raw));
             if (parsed.success) {
                 // PostgreSQL reports vendor IDs lowercase and the lookup is
                 // case-sensitive; normalize here so a valid uppercase UUID in
                 // configuration cannot fail closed at runtime without warning.
-                const normalized: Record<string, string> = {};
-                for (const [vendorId, secret] of Object.entries(parsed.data)) {
+                const normalized: Record<string, { secret: string; domain: 'test' | 'live' }> = {};
+                for (const [vendorId, credential] of Object.entries(parsed.data)) {
                     const key = vendorId.toLowerCase();
                     if (Object.hasOwn(normalized, key)) throw new Error('Duplicate vendor UUID after case normalization');
-                    normalized[key] = secret;
+                    normalized[key] = credential;
                 }
                 return normalized;
             }
         } catch { /* Report only a generic configuration error; never secret contents. */ }
-        ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'Merchant Paystack keys must be a JSON object mapping vendor UUIDs to non-empty secrets' });
+        ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'Merchant Paystack keys must be a JSON object mapping vendor UUIDs to { secret, domain } credentials' });
         return z.NEVER;
     }),
     // Brevo (Email Service)
