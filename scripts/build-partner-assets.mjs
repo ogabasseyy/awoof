@@ -1,8 +1,10 @@
 import { createHash } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
-import { closeSync, fstatSync, mkdirSync, openSync, readdirSync, readFileSync, writeFileSync, constants as fsConstants } from 'node:fs';
-import { join, relative, resolve } from 'node:path';
+import { closeSync, copyFileSync, fstatSync, mkdirSync, mkdtempSync, openSync, readdirSync, readFileSync, rmSync, writeFileSync, constants as fsConstants } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { dirname, join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { gzipSync } from 'node:zlib';
 
 const repository = resolve(import.meta.dirname, '..');
 export const partnerOperations = [
@@ -112,6 +114,42 @@ export function starterFiles(root) {
   return files;
 }
 
+/** Fixed UTC member timestamp for the public archive, as a Unix epoch. */
+export const starterArchiveEpoch = Date.parse('2024-01-01T00:00:00.000Z') / 1000;
+
+/** Build a reproducible public archive: numeric owner/group 0, a fixed member
+ * timestamp, pinned ustar format and deterministic gzip metadata, so the
+ * download carries no builder identity and identical sources share a checksum. */
+function writeDeterministicArchive(root, files, archive) {
+  const staging = mkdtempSync(join(tmpdir(), 'awoof-starter-'));
+  try {
+    // System tar cannot set member timestamps portably (bsdtar lacks
+    // --mtime), so stage copies with a fixed timestamp instead of touching
+    // the repository. Only listed files are staged; tar stores no directories.
+    for (const file of files) {
+      const destination = join(staging, file);
+      mkdirSync(dirname(destination), { recursive: true });
+      copyFileSync(join(root, file), destination);
+    }
+    execFileSync('touch', ['-t', '202401010000.00', ...files.map((file) => join(staging, file))],
+      { stdio: 'pipe', env: { ...process.env, TZ: 'UTC' } });
+    const plain = join(staging, 'merchant-starter.tar');
+    const version = execFileSync('tar', ['--version'], { encoding: 'utf8' });
+    // bsdtar and GNU tar spell ownership normalization differently; select by
+    // implementation so the same sources build the same headers everywhere.
+    const ownership = version.includes('bsdtar')
+      ? ['--uid', '0', '--gid', '0', '--uname', '', '--gname', '']
+      : ['--owner=0', '--group=0', '--numeric-owner'];
+    // COPYFILE_DISABLE plus --no-xattrs keeps macOS tar from adding AppleDouble
+    // ._* entries and extended attributes, which GNU tar lists as extra members.
+    execFileSync('tar', ['--no-xattrs', '--format', 'ustar', ...ownership, '-cf', plain, '-C', staging, ...files],
+      { stdio: 'pipe', env: { ...process.env, COPYFILE_DISABLE: '1' } });
+    writeFileSync(archive, gzipSync(readFileSync(plain), { mtime: 0 }));
+  } finally {
+    rmSync(staging, { recursive: true, force: true });
+  }
+}
+
 export function buildPartnerAssets(root = repository) {
   const output = join(root, 'apps/web/public/developers');
   const fullSpec = JSON.parse(readFileSync(join(root, 'apps/backend/dist/config/openapi.json'), 'utf8'));
@@ -121,9 +159,7 @@ export function buildPartnerAssets(root = repository) {
   mkdirSync(output, { recursive: true });
   writeFileSync(join(output, 'merchant-api.json'), serialized);
   const archive = join(output, 'merchant-starter.tar.gz');
-  // COPYFILE_DISABLE plus --no-xattrs keeps macOS tar from adding AppleDouble
-  // ._* entries and extended attributes, which GNU tar lists as extra members.
-  execFileSync('tar', ['--no-xattrs', '-czf', archive, '-C', root, ...files], { stdio: 'pipe', env: { ...process.env, COPYFILE_DISABLE: '1' } });
+  writeDeterministicArchive(root, files, archive);
   const sha256 = (value) => createHash('sha256').update(value).digest('hex');
   writeFileSync(join(output, 'integration-artifacts.json'), `${JSON.stringify({
     version: 1,

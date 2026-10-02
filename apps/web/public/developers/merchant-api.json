@@ -287,10 +287,54 @@
         },
         "responses": {
           "200": {
-            "description": "Exact creation retry; returns the same live session."
+            "description": "Exact creation retry; returns the same live session.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "success",
+                    "data"
+                  ],
+                  "properties": {
+                    "success": {
+                      "type": "boolean",
+                      "enum": [
+                        true
+                      ]
+                    },
+                    "data": {
+                      "$ref": "#/components/schemas/MerchantClaimSession"
+                    }
+                  }
+                }
+              }
+            }
           },
           "201": {
-            "description": "Claim session created."
+            "description": "Claim session created.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "success",
+                    "data"
+                  ],
+                  "properties": {
+                    "success": {
+                      "type": "boolean",
+                      "enum": [
+                        true
+                      ]
+                    },
+                    "data": {
+                      "$ref": "#/components/schemas/MerchantClaimSession"
+                    }
+                  }
+                }
+              }
+            }
           },
           "400": {
             "description": "Invalid input or product unavailable to this merchant."
@@ -832,6 +876,26 @@
             "type": "string",
             "format": "date-time",
             "description": "Persisted benefit authorization expiry for new product-bound receipts; the earlier of evidence expiry and two minutes after exchange. First settlement must complete before this deadline. Historical exact receipt retries are unchanged and may omit it; generic receipts never carry it."
+          }
+        }
+      },
+      "MerchantClaimSession": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "claimSessionId",
+          "expiresAt"
+        ],
+        "properties": {
+          "claimSessionId": {
+            "type": "string",
+            "format": "uuid",
+            "description": "Session to append as a claimSession query value to the marketplace product URL."
+          },
+          "expiresAt": {
+            "type": "string",
+            "format": "date-time",
+            "description": "Creation expiry. Sessions expire after ten minutes and are consumed once at exchange."
           }
         }
       },

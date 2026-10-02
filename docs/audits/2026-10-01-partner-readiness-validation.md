@@ -16,12 +16,12 @@ Reviewed: 2026-10-01. Base: `origin/main` at `01181472b08b16d91aa32180d8ef15fbb2
 | Check | Observed result and limits |
 | --- | --- |
 | Fresh Node 24 dependencies | Backend and web `npm ci` completed in the isolated worktree. |
-| Backend unit suite | Final `npm test`: 484 passed, zero failed or skipped. |
+| Backend unit suite | Final `npm test`: 485 passed, zero failed or skipped. |
 | Backend compilation and artifacts | Typecheck, build, compiled OpenAPI parity and artifact runtime/source-absent checks passed. |
 | Disposable PostgreSQL targeted suites | Merchant-benefit and checkout-refund run: 41 passed. Final merchant-assertion and merchant-benefit run: 35 passed. Runs overlap; counts are not additive. |
 | Full PostgreSQL suite | Both full runs exceeded the launcher's 300-second timeout, including the final run without this task's parallel build/browser load. The full suite is incomplete; no full-suite pass is claimed. Focused changed-path suites passed as listed above, and CI must run the full suite. |
-| SDK and merchant reference | Four SDK and fourteen reference tests passed; mocked/local transports only, no provider or real Awoof calls. |
-| Download safeguard tests | Four tests passed for merchant API allowlisting, missing definitions, excluded credentials/state, symlink rejection and YAML-split null rejection. |
+| SDK and merchant reference | Four SDK and fifteen reference tests passed; mocked/local transports only, no provider or real Awoof calls. |
+| Download safeguard tests | Five tests passed for merchant API allowlisting, missing definitions, excluded credentials/state, symlink rejection, YAML-split null rejection and deterministic archive headers. |
 | Extracted public starter | Both package suites passed after HTTP download from the production build and extraction outside the repository. No installation required. |
 | Production web build and HTTP | Web build passed. `/developers` contained the deadline and download links; API, archive and manifest were served successfully, with verified checksums and seven API paths. |
 | Web checks | Web and browser typechecks passed. Focused browser runs covered 20 cases, including 360/768/1440 widths, keyboard examples, saved configuration and newly issued key-copy visibility. |
