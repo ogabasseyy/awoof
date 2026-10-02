@@ -142,17 +142,35 @@ sweep_workspace_symlinks() {
 # PARTIAL), 1 when the inventory is unreadable. Absolute and ..-carrying
 # paths are skipped: joined onto the root they could resolve outside the
 # checkout (same containment rule as head_readable).
+# Links the PR deletes (or replaces with a regular file) fail the head -L
+# test, yet their base-side target is review evidence too: when _base_ref and
+# _repo name the fetched base commit, mode-120000 base entries print as
+# `path -> target (base-side; deleted or replaced in head)` and count toward
+# _max like head lines. Empty ref/repo disables the base lookup (head-only);
+# the caller labels that absence explicitly.
 changed_symlinks() {
-  local _files="$1" _root="$2" _max="${3:-50}" _count=0 _f _t
+  local _files="$1" _root="$2" _max="${3:-50}" _base_ref="${4:-}" _repo="${5:-}" _count=0 _f _t _suffix _entry
   jq -e 'type == "array"' "${_files}" >/dev/null 2>&1 || return 1
   while IFS= read -r -d '' _f; do
     case "${_f}" in /*|..|../*|*/../*|*/..) continue ;; esac
-    [[ -L "${_root}/${_f}" ]] || continue
+    if [[ -L "${_root}/${_f}" ]]; then
+      _t="$(readlink -- "${_root}/${_f}" 2>/dev/null || true)"
+      _suffix=""
+    else
+      _t=""
+      _suffix=" (base-side; deleted or replaced in head)"
+      if [[ -n "${_base_ref}" && -n "${_repo}" ]]; then
+        _entry="$(git -C "${_repo}" ls-tree "${_base_ref}" -- "${_f}" 2>/dev/null || true)"
+        if [[ "${_entry}" == 120000[[:space:]]* ]]; then
+          _t="$(git -C "${_repo}" show "${_base_ref}:${_f}" 2>/dev/null || true)"
+        fi
+      fi
+      [[ -n "${_t}" ]] || continue
+    fi
     _count=$((_count + 1))
     if (( _count > _max )); then return 2; fi
-    _t="$(readlink -- "${_root}/${_f}" 2>/dev/null || true)"
     _t="$(printf '%s' "${_t}" | trunc_bytes 500)"
-    printf '%s -> %s\n' "${_f//$'\n'/\\n}" "${_t//$'\n'/\\n}"
+    printf '%s -> %s%s\n' "${_f//$'\n'/\\n}" "${_t//$'\n'/\\n}" "${_suffix}"
   done < <(jq -j '[.[] | .filename // empty] | map(select(type == "string"))[] + "\u0000"' "${_files}" 2>/dev/null)
 }
 
@@ -219,6 +237,15 @@ redact_json_key() {
 # over-decoding only over-redacts, never leaks.
 decode_json_escapes() {
   perl -pe 's/(?<!\\)\\u([0-9a-fA-F]{4})/chr(hex($1))/ge; s/(?<!\\)\\\//\//g'
+}
+
+# Neutralize Actions workflow commands in untrusted log text (stdin to
+# stdout). The runner executes any log line starting with `::` as a command
+# (annotations, masks, groups); decoded model stderr can smuggle one via
+# `\u000a\u003a...` escapes, and GitHub offers no command escaping — so break
+# the prefix with a space. CRs go first: `\r::cmd` might survive the anchor.
+neutralize_workflow_commands() {
+  perl -pe 's/\r//g; s/^::/ ::/'
 }
 
 # Changed-path manifest lines from a PR-files JSON array: one escaped path

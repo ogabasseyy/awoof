@@ -35,16 +35,20 @@ The agent holds this key with web tools on:
 - Failures that post a short fallback note on the PR (job stays green):
   evidence-collection failures (diff/collect phases, including a failed
   head checkout or a phase timeout), installer failures, and agent-run
-  failures (quota, errors, invalid output).
+  failures (quota, errors, invalid output). Two collection-time outages
+  are instead silent skips (see below): the PR-metadata lookup and the
+  pre-run dedupe lookup.
 - Failures that skip silently (workflow logs only, no PR note): stale
   live-state revalidation (head/base moved, mid-run draft or close —
   there is nothing to say), live-state lookup outages (`fresh=false`),
-  and trusted-script staging failures (`scripts_ok=false`: missing
+  PR-metadata lookup outages (collect exits `should_review=false`),
+  pre-run dedupe-lookup outages (prompt exits `duplicate=true`), and
+  trusted-script staging failures (`scripts_ok=false`: missing
   checkout or protocol mismatch). During an outage, check the run logs:
   silence does not mean success.
 - Workflow edits take effect after merge (the workflow runs from the
-  trusted base revision); script changes are validated pre-merge by the
-  secret-free `Muse Review Selftest` workflow.
+  trusted default-branch revision); script changes are validated pre-merge
+  by the secret-free `Muse Review Selftest` workflow.
 - Quota safety: bounded prompt, `--max-model-steps` cap, job timeout.
   Subscription prompt limits can never block a merge.
 

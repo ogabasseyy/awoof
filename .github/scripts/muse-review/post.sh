@@ -101,6 +101,25 @@ sanitize_review() {
   review="$(printf '%s' "${review}" | strip_images | sanitize_mentions)"
 }
 
+# Assemble the summary-only retry body after the API rejects the inline
+# payload: the rejected summary minus dangling "(see inline)" pointers, plus
+# the sanitized findings. $1 "compact" keeps headers only with an explicit
+# note; anything else keeps capped finding bodies. Lands in
+# ${payload_file}.summary for the size gate at the retry site.
+build_retry() {
+  local _compact="false"
+  if [[ "$1" == "compact" ]]; then _compact="true"; fi
+  jq --argjson compact "${_compact}" --arg budget "${body_budget}" '
+    .body |= gsub(" \\(see inline\\)"; "") |
+    .body += "\n\n<sub>Inline threads were rejected by the API; findings inlined below.</sub>\n\n" +
+      ([.comments[]? |
+        "### \(.path | gsub("\\n"; " ") | gsub("!\\[[^\\]]*\\]\\([^\\)]*\\)"; "") | gsub("(?<![A-Za-z0-9_])@(?=[A-Za-z0-9_])"; "@\u200b")):\(.line)\n\n" +
+        (if $compact then "(details omitted: retry body exceeded the \($budget)-byte post budget)"
+         else (.body | gsub("\\n\\n<sub>Useful\\?.*"; "") | if length > 2000 then .[0:2000] + "\n\n[...explanation truncated for length...]" else . end) end)
+       ] | join("\n\n---\n\n")) |
+    del(.comments)' "${payload_file}" > "${payload_file}.summary" 2>/dev/null
+}
+
 review=""
 inline_payload='[]'
 raw_output=""
@@ -327,6 +346,32 @@ jq -n \
   'if ($comments | length) == 0 then { body: $body, event: "COMMENT", commit_id: $sha }
     else { body: $body, event: "COMMENT", commit_id: $sha, comments: $comments } end' > "${payload_file}"
 
+# Final marker recheck: the pre-run dedupe passed minutes ago, and a manual
+# rerun's isolated concurrency lane lets two same-head runs reach this point
+# together — without this, both would spend a billed invocation and publish
+# duplicate success reviews. Success-after-fallback still posts (dedupe.jq
+# counts real reviews only), so recovery reruns are unaffected. Fails closed
+# like every other lookup: an unknown state skips the post, and the next
+# event retries. Residual TOCTOU risk (documented, accepted): check-then-act
+# with no idempotency key on review creation — two runs can both pass this
+# lookup before either POST lands. The window is seconds (vs minutes without
+# this check), converting routine double-posts into a rare race; full
+# serialization would need one shared success lane, which conflicts with
+# isolated manual-rerun lanes by design.
+if [[ "${is_fallback}" == "false" ]]; then
+  final_check="${RUNNER_TEMP}/muse-final-check.json"
+  if gh api "repos/${GITHUB_REPOSITORY}/pulls/${PR_NUMBER}/reviews" --paginate \
+      > "${final_check}" 2>/dev/null; then
+    if (( $(jq -s --arg marker "${marker}" -f "${SCRIPT_DIR}/dedupe.jq" "${final_check}" 2>/dev/null || echo 1) > 0 )); then
+      echo "::notice::A Muse review for ${HEAD_SHA:0:10} posted while this run was in flight; skipping duplicate post."
+      exit 0
+    fi
+  else
+    echo "::warning::Final dedupe lookup failed; skipping post to avoid a double-post."
+    exit 0
+  fi
+fi
+
 # Advisory: a failed POST warns, never fails. The endpoint is
 # all-or-nothing, so retry once summary-only rather than lose the review.
 post_resp="${RUNNER_TEMP}/muse-post-resp.txt"
@@ -354,13 +399,46 @@ if ! gh api --method POST \
     echo "::warning::Retrying as summary-only."
     # Reuse the rejected payload's already-sanitized bodies (paths
     # re-sanitized here, bodies capped with markers), minus dangling
-    # "(see inline)" pointers; char-sliced back under the body limit.
-    jq '.body |= gsub(" \\(see inline\\)"; "") |
-        .body += "\n\n<sub>Inline threads were rejected by the API; findings inlined below.</sub>\n\n" +
-          ([.comments[]? | "### \(.path | gsub("\\n"; " ") | gsub("!\\[[^\\]]*\\]\\([^\\)]*\\)"; "") | gsub("(?<![A-Za-z0-9_])@(?=[A-Za-z0-9_])"; "@\u200b")):\(.line)\n\n\(.body | gsub("\\n\\n<sub>Useful\\?.*"; "") | if length > 2000 then .[0:2000] + "\n\n[...explanation truncated for length...]" else . end)"] | join("\n\n---\n\n")) |
-        .body |= .[0:60000] |
-        del(.comments)' \
-      "${payload_file}" > "${payload_file}.summary"
+    # "(see inline)" pointers. NEVER a blind byte cut: findings dropped by a
+    # slice would still post under the success marker while dedupe blocks
+    # recovery — so an over-budget retry compacts to headers-only with an
+    # explicit note (the main body's treatment), and past that posts the
+    # explicit fallback instead (its tag keeps dedupe from blocking a rerun).
+    retry_ok=false
+    if build_retry full \
+      && (( $(jq -r '.body // ""' "${payload_file}.summary" 2>/dev/null | wc -c) <= body_budget )); then
+      retry_ok=true
+    elif build_retry compact \
+      && (( $(jq -r '.body // ""' "${payload_file}.summary" 2>/dev/null | wc -c) <= body_budget )); then
+      retry_ok=true
+    fi
+    if [[ "${retry_ok}" != "true" ]]; then
+      is_fallback=true
+      review="## Verdict
+
+Muse returned a review that exceeds the ${body_budget}-byte post budget
+even in compact form, so no review is posted as fact. See the workflow
+logs.
+
+## Findings
+
+- low: Model output exceeded the post budget — check the workflow logs.
+
+## Suggested next steps
+
+Re-run the workflow, or inspect the logs."
+      sanitize_review
+      {
+        printf '%s\n' "${marker}"
+        printf '%s\n' "<!-- muse-fallback:v1 -->"
+        printf '## Muse code review (advisory)\n\nWorkflow: %s\n\n%s\n' "${RUN_URL}" "${review}"
+      } > "${body_file}"
+      if ! jq -n --rawfile body "${body_file}" --arg sha "${HEAD_SHA}" \
+        '{body: $body, event: "COMMENT", commit_id: $sha}' > "${payload_file}.summary" 2>/dev/null; then
+        echo "::warning::Retry-body assembly failed; skipping retry to avoid posting a partial review."
+        exit 0
+      fi
+    fi
     # Retry bodies interpolate validated-but-untrusted paths: a filename
     # carrying <img> markup or nested-paren markdown-image syntax would
     # survive the jq-level path scrub above, so run the assembled body
