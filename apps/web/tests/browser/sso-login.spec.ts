@@ -563,8 +563,11 @@ test('late link handoff retains the same browser cookie through its own deadline
     // valid for ten minutes, so prove the same cookie was renewed for it.
     await page.waitForTimeout(9_000);
     await page.getByRole('link', { name: 'Create a passwordless account' }).click();
+    await page.waitForURL('**/auth/student/sso/onboarding?mode=signup');
     await expect(page.getByRole('heading', { name: 'Finish setting up Awoof' })).toBeVisible();
-    expect(contextCookie).toContain(`${cookieName}=same-browser-binding`);
+    // The heading also appears while signup context is loading. Wait for the
+    // context request itself so a rendered loading shell cannot race this check.
+    await expect.poll(() => contextCookie).toContain(`${cookieName}=same-browser-binding`);
     api.assertNoUnexpectedRequests();
 });
 

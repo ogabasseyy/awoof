@@ -34,6 +34,7 @@ import {
 import { Button } from '@/components/ui/button';
 import apiClient, { getImageUrl } from '@/lib/api-client';
 import Image from 'next/image';
+import Logo from '@/app/components/logo';
 import Link from 'next/link';
 import { useAuth } from '@/contexts/AuthContext';
 import { formatCurrency } from '@/lib/format';
@@ -488,13 +489,7 @@ export default function ProductDetailPage() {
                             </Button>
                         </Link>
                         <Link href="/marketplace" className="hidden sm:block">
-                            <Image
-                                src="/images/awoofLogoMain.png"
-                                alt="Awoof"
-                                width={100}
-                                height={32}
-                                className="object-contain"
-                            />
+                            <Logo width={100} height={32} />
                         </Link>
                     </div>
                     {product.category_name ? (

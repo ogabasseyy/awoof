@@ -20,7 +20,7 @@ import {
 } from 'lucide-react';
 import ProtectedRoute from '@/components/ProtectedRoute';
 import { useAuth } from '@/contexts/AuthContext';
-import Image from 'next/image';
+import Logo from '@/app/components/logo';
 import Link from 'next/link';
 import { FadeIn } from '@/app/marketplace/_components/ExpectancyUI';
 import { useConfirm } from '@/components/ui/ConfirmDialog';
@@ -232,14 +232,7 @@ export default function StudentProfilePage() {
                             <span className="hidden sm:inline">Marketplace</span>
                         </Link>
                         <Link href="/marketplace" className="absolute left-1/2 -translate-x-1/2">
-                            <Image
-                                src="/images/awoofLogoMain.png"
-                                alt="Awoof"
-                                width={100}
-                                height={32}
-                                className="object-contain"
-                                priority
-                            />
+                            <Logo width={100} height={32} />
                         </Link>
                     <span className="text-sm font-bold text-slate-900 w-16 text-right sm:w-auto hidden sm:inline">
                         Profile

@@ -119,6 +119,28 @@ Every material public security or operational claim must have a filled record be
 
 Missing evidence means omit/narrow the claim or label it as planned, never treat the empty register as a passed review. Future PRs must update the register and affected pages or explain why no changes are necessary, as required by AGENTS.md.
 
+## University-account callback presentation review — 2026-10-01
+
+The existing `/auth/student/sso/complete` and `/student/verification/microsoft/complete` routes now share Awoof's logo, colors, university-account handoff card, responsive controls and status presentation through `UniversityCallbackShell.tsx`. The generic graduation-cap mark and university-account labels describe the student journey; they do not claim a direct institutional connection or approval. No new route, provider connection, data-sharing purpose, credential handling, security control or legal promise is introduced. Recovery management continues to use its existing auth shell.
+
+| User-visible statement or surface | Source evidence | Status and owner |
+| --- | --- | --- |
+| Account connection and current enrollment eligibility are separate checks | Microsoft completion renders the unchanged `not_checked`, `eligible`, `unconfirmed` and `denied` result labels, then independently reloads `/verification/status`; existing Microsoft browser cases exercise identity-only and enrollment results | Source/local validation only; no change to provider enablement or institutional authority. Callback presentation team / 2026-10-01 |
+| Shared school sign-in may use Microsoft or Google; university-account branding does not change the provider | Both completion routes use a generic graduation-cap mark. `MicrosoftVerificationCard.tsx` retains Microsoft identification and notice acceptance before connection; existing sign-in buttons identify the provider. `/privacy` sections `verification` and `recipients` retain Microsoft/Google disclosure | Source/local validation only; no new provider availability, institutional approval or partnership claim. Callback presentation team / 2026-10-01 |
+| Completion and retry actions retain their existing authentication boundaries | Page diff changes presentation only; request handlers, tab/session binding, expiry, retry, account replacement, recovery and navigation code remain unchanged | Existing callback browser tests and focused read-only review; real-provider and production behavior are separate deployment checks. Callback presentation team / 2026-10-01 |
+
+Documentation-impact assessment: the callback copy is updated alongside the implementation. `/trust` and `/help` already distinguish school-account control from current enrollment and require no additional claim. `/privacy`, `/terms`, partner/developer pages and legal schedules need no copy change because processing, sharing, APIs, retention and commitments are unchanged. Callback links use the existing home/privacy/terms destinations. Heading, keyboard, responsive and reduced-motion checks are recorded in the change's validation report. Merge, deployment and real Microsoft sign-in validation remain pending; this visual change does not establish provider activation.
+
+## Site-wide logo presentation review — 2026-10-02
+
+The existing public, authentication, student, merchant and admin journeys use the new shared Awoof wordmark/icon. Browser-tab and Apple touch icons match it. The marketplace QR's old center logo was removed by regenerating a QR with the same decoded destination, verified again at its displayed size. No application page, provider connection, assurance rule, data-sharing purpose or legal commitment was added.
+
+| Presentation fact | Source/local evidence | Status and review owner |
+| --- | --- | --- |
+| Awoof brand artwork is consistent across existing journeys | `app/components/logo.tsx`; public header/footer/AuthShell consumers; converted marketplace/profile/dashboard placements; `brand-logo.spec.ts` and existing public/student/merchant/admin browser suites | Source and local validation only; merge/deployment/live cache checks pending. Codex implementation/review / 2026-10-02 |
+| The logo's check badge is decorative branding, not an enrollment decision | Only the shared logo renderer and image placements change; existing school-account/enrollment labels, result handling and authorization logic remain unchanged | Source diff and fresh read-only review; no new verification-success or institutional approval claim. Codex implementation/review / 2026-10-02 |
+
+Documentation-impact checklist: (1) existing journey artwork and browser/bookmark icons change; (2) this inventory and `docs/audits/2026-10-02-sitewide-logo-refresh.md` are updated, while page/policy/API copy has a no-change rationale because processing, sharing, retention, consent and support destinations are unchanged; (3) evidence is source/local checks, not production activation; (4) accessible names, keyboard links, responsive layout, icon discovery and QR decoding checked; (5) merge, deployment and live cache verification remain pending, with no new legal/operational commitment to approve.
 ## Partner readiness review — 2026-10-01 (source only)
 
 The existing `/developers`, `/partner` and `/vendor/integration` routes now explain hosted merchant checkout, nonce/callback binding, account-specific payment verification, reconciliation and prospective capability adapters. No new public page, legal policy, support address or provider partnership is introduced. The merchant-only OpenAPI download and source starter are linked under `/developers`; artifacts are source/reference material, not live-provider activation.
