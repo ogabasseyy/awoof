@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 # Collect repo guidance: root candidates plus scoped AGENTS.md/CLAUDE.md from
 # each changed file's ancestor dirs. Default-branch base versions are
-# trusted; custom-base versions (stacked PRs, custom branches) are emitted
-# from the captured base SHA labeled UNTRUSTED, as are all head fallbacks.
+# trusted; custom-base versions are still emitted from the captured base
+# SHA labeled UNTRUSTED (unreachable today — the job `if` admits only
+# default-base PRs; kept as defense in depth), as are all head fallbacks.
 #
 # Env in: RUNNER_TEMP, SCRIPT_DIR. Reads muse-vars.env, muse-files.json.
 # Files out: muse-guidance.md. Must run from the checked-out PR head: head

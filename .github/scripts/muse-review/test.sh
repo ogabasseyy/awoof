@@ -385,7 +385,7 @@ got="$(jq -s '[.[] | select(type == "array")] | add // []' "${pages_fix}")"
 assert_eq "pages-all-error" '[]' "$(printf '%s' "${got}" | jq -c '.')"
 rm -f "${pages_fix}"
 
-# --- MUSE_REVIEW_PROTOCOL handshake (custom-base skew) ---
+# --- MUSE_REVIEW_PROTOCOL handshake (YAML<->scripts skew) ---
 # lib.sh declares the YAML<->scripts contract version; the workflow's
 # scriptdir step requires its own expected value and fails closed on
 # mismatch. Same-revision YAML and scripts must agree — a contract

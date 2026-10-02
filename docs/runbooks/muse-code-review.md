@@ -1,8 +1,8 @@
 # Muse Code Review runbook
 
 Advisory PR reviewer. Runs `muse exec` headless on every same-repo pull
-request and posts the result as a PR review comment. Never blocks merges,
-never posts a commit status gate.
+request against the default branch and posts the result as a PR review
+comment. Never blocks merges, never posts a commit status gate.
 
 ## Setup
 
@@ -28,10 +28,21 @@ The agent holds this key with web tools on:
 
 - Only the latest push per PR is reviewed (concurrency cancel-in-progress);
   manual reruns review their own head and skip when it moved.
-- Skips without posting: drafts, closed/merged PRs, forks, title/body-only
-  edits, duplicate heads, missing secret.
-- Every failure degrades to a short fallback note on the PR; the job stays
-  green. Workflow edits take effect after merge (the workflow runs from the
+- Skips without posting: drafts, closed/merged PRs, forks, stacked or
+  custom-base PRs (only the default branch may supply the executed
+  workflow revision under `pull_request_target`), title/body-only edits,
+  duplicate heads, missing secret.
+- Failures that post a short fallback note on the PR (job stays green):
+  evidence-collection failures (diff/collect phases, including a failed
+  head checkout or a phase timeout), installer failures, and agent-run
+  failures (quota, errors, invalid output).
+- Failures that skip silently (workflow logs only, no PR note): stale
+  live-state revalidation (head/base moved, mid-run draft or close —
+  there is nothing to say), live-state lookup outages (`fresh=false`),
+  and trusted-script staging failures (`scripts_ok=false`: missing
+  checkout or protocol mismatch). During an outage, check the run logs:
+  silence does not mean success.
+- Workflow edits take effect after merge (the workflow runs from the
   trusted base revision); script changes are validated pre-merge by the
   secret-free `Muse Review Selftest` workflow.
 - Quota safety: bounded prompt, `--max-model-steps` cap, job timeout.

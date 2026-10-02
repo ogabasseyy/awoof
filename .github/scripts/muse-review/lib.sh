@@ -10,13 +10,14 @@
 
 # YAML<->scripts contract version. The workflow YAML and these helpers
 # evolve together (step outputs, env inputs, RUNNER_TEMP inter-phase
-# files): default-base runs pair same-commit YAML and scripts, but
-# custom/stacked-base runs pair event-revision YAML with live-tip
-# scripts, so a contract change in between would run silently against
-# stale orchestration and skip or mis-post. The workflow's scriptdir
-# step requires this exact value and fails closed (scripts_ok=false)
-# on mismatch. Bump this AND the YAML's expected_protocol together
-# with any contract change; test.sh asserts same-revision agreement.
+# files): runs pair same-commit YAML and scripts (the job `if` admits
+# only default-base PRs), and the handshake is defense in depth so a
+# contract change in between would fail closed instead of running
+# silently against stale orchestration and skipping or mis-posting.
+# The workflow's scriptdir step requires this exact value and fails
+# closed (scripts_ok=false) on mismatch. Bump this AND the YAML's
+# expected_protocol together with any contract change; test.sh asserts
+# same-revision agreement.
 # shellcheck disable=SC2034  # consumed by the workflow handshake + test.sh
 MUSE_REVIEW_PROTOCOL=1
 
