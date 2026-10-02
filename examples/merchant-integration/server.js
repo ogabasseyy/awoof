@@ -152,6 +152,14 @@ export function createMerchant({ origin, apiOrigin, webOrigin, privateKey, produ
             throw fail('Test payment initialization outcome unknown; retry to reconcile the held reference', 502);
           }
           if (!response.ok || initialized.status !== true || initialized.data?.reference !== current.initializedReference) {
+            // Provider authentication failures mean the configured test secret
+            // was revoked or misconfigured: a merchant-side configuration
+            // outage, not a shopper email problem. Hold the reference and stay
+            // retryable instead of releasing inputs for correction.
+            if (response.status === 401 || response.status === 403) {
+              current.state = 'payment_initialization_unknown'; store.put(current.id, current);
+              throw fail('Merchant Paystack test credentials rejected; fix the server secret and retry to reconcile the held reference', 503);
+            }
             const detail = `${initialized?.code ?? ''} ${initialized?.message ?? ''}`;
             // A duplicate-text, throttled, timed-out, 5xx, or mismatched
             // success-shape response may already exist upstream: hold the

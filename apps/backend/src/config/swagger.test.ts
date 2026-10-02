@@ -365,3 +365,26 @@ test('merchant receipt distinguishes evidence validity from the optional persist
     assert.match(receipt.properties.validUntil.description ?? '', /not the discounted transaction settlement deadline/);
     assert.match(receipt.properties.benefitValidUntil.description ?? '', /Historical exact receipt retries/);
 });
+
+test('merchant claim-session creation publishes the session id and expiry schema', () => {
+    const spec = swaggerSpec as { paths: Record<string, Record<string, {
+        responses: Record<string, { content?: { 'application/json': { schema: {
+            required: string[]; properties: { success: { enum: boolean[] }; data: { $ref?: string } };
+        } } } }>;
+    } >>; components: { schemas: Record<string, { required: string[]; properties: Record<string, { type: string; format?: string }> }> } };
+    const operation = spec.paths['/api/merchant-verification/claim-sessions']?.post;
+    assert.ok(operation);
+    for (const status of ['200', '201']) {
+        const schema = operation.responses[status]?.content?.['application/json']?.schema;
+        assert.ok(schema, `${status} publishes a claim-session success schema`);
+        assert.ok(schema.required.includes('data'));
+        assert.deepEqual(schema.properties.success.enum, [true]);
+        assert.equal(schema.properties.data.$ref, '#/components/schemas/MerchantClaimSession');
+    }
+    const session = spec.components.schemas.MerchantClaimSession;
+    assert.deepEqual([...session.required].sort(), ['claimSessionId', 'expiresAt']);
+    assert.equal(session.properties.claimSessionId.type, 'string');
+    assert.equal(session.properties.claimSessionId.format, 'uuid');
+    assert.equal(session.properties.expiresAt.type, 'string');
+    assert.equal(session.properties.expiresAt.format, 'date-time');
+});

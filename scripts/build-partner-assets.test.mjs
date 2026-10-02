@@ -1,9 +1,10 @@
 import assert from 'node:assert/strict';
-import { mkdtempSync, mkdirSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
-import { merchantApiReference, partnerOperations, starterFiles } from './build-partner-assets.mjs';
+import { gunzipSync } from 'node:zlib';
+import { buildPartnerAssets, merchantApiReference, partnerOperations, starterArchiveEpoch, starterFiles } from './build-partner-assets.mjs';
 
 function spec() {
   return {
@@ -73,4 +74,29 @@ test('publication rejects merchant operations carrying YAML-split null values', 
   const corrupted = spec();
   corrupted.paths['/api/vendors/transactions/report'].post.responses['400'] = { description: 'Invalid input', 'retired token': null };
   assert.throws(() => merchantApiReference(corrupted), /null value/);
+});
+
+test('published starter archive normalizes ownership, timestamps and gzip metadata', () => {
+  const root = mkdtempSync(join(tmpdir(), 'awoof-partner-archive-'));
+  try {
+    mkdirSync(join(root, 'apps/backend/dist/config'), { recursive: true });
+    writeFileSync(join(root, 'apps/backend/dist/config/openapi.json'), JSON.stringify(spec()));
+    const sdk = join(root, 'packages/partner-sdk');
+    const merchant = join(root, 'examples/merchant-integration');
+    mkdirSync(sdk, { recursive: true }); mkdirSync(merchant, { recursive: true });
+    writeFileSync(join(sdk, 'package.json'), '{}'); writeFileSync(join(merchant, 'package.json'), '{}');
+    writeFileSync(join(merchant, 'server.js'), 'export const example = 1;\n');
+    buildPartnerAssets(root);
+    const archive = join(root, 'apps/web/public/developers/merchant-starter.tar.gz');
+    const first = readFileSync(archive);
+    buildPartnerAssets(root);
+    assert.deepEqual(readFileSync(archive), first);
+    assert.deepEqual([...first.subarray(0, 3)], [0x1f, 0x8b, 0x08]);
+    assert.equal(first.readUInt32LE(4), 0);
+    const member = gunzipSync(first);
+    const octal = (offset, length) => parseInt(member.subarray(offset, offset + length).toString('utf8').replace(/[\0 ]/g, ''), 8);
+    assert.equal(octal(108, 8), 0);
+    assert.equal(octal(116, 8), 0);
+    assert.equal(octal(136, 12), starterArchiveEpoch);
+  } finally { rmSync(root, { recursive: true, force: true }); }
 });

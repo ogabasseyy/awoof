@@ -48,6 +48,19 @@ import {
  *           type: string
  *           format: date-time
  *           description: Persisted benefit authorization expiry for new product-bound receipts; the earlier of evidence expiry and two minutes after exchange. First settlement must complete before this deadline. Historical exact receipt retries are unchanged and may omit it; generic receipts never carry it.
+ *     MerchantClaimSession:
+ *       type: object
+ *       additionalProperties: false
+ *       required: [claimSessionId, expiresAt]
+ *       properties:
+ *         claimSessionId:
+ *           type: string
+ *           format: uuid
+ *           description: Session to append as a claimSession query value to the marketplace product URL.
+ *         expiresAt:
+ *           type: string
+ *           format: date-time
+ *           description: Creation expiry. Sessions expire after ten minutes and are consumed once at exchange.
  * /api/merchant-verification/assertions:
  *   post:
  *     summary: Create a short-lived merchant-specific eligibility code
@@ -145,8 +158,26 @@ import {
  *               browserNonceHash: { type: string, pattern: '^[0-9a-f]{64}$', description: Hex SHA-256 of the merchant's browser nonce. }
  *               origin: { type: string, maxLength: 512, description: Initiating merchant site. Must exactly match one of the vendor's active allowed origins; the handoff goes only there. }
  *     responses:
- *       '201': { description: Claim session created. }
- *       '200': { description: Exact creation retry; returns the same live session. }
+ *       '201':
+ *         description: Claim session created.
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               required: [success, data]
+ *               properties:
+ *                 success: { type: boolean, enum: [true] }
+ *                 data: { $ref: '#/components/schemas/MerchantClaimSession' }
+ *       '200':
+ *         description: Exact creation retry; returns the same live session.
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               required: [success, data]
+ *               properties:
+ *                 success: { type: boolean, enum: [true] }
+ *                 data: { $ref: '#/components/schemas/MerchantClaimSession' }
  *       '400': { description: Invalid input or product unavailable to this merchant. }
  *       '401': { description: Private merchant key invalid or merchant inactive. }
  *       '409': { description: 'Checkout already bound differently, used, or expired. Start a new checkout.' }
