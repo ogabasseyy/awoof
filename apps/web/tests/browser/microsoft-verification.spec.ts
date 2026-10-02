@@ -282,7 +282,7 @@ test('a callback without tab-scoped state is rejected before the HTTPS finish re
   await page.goto('/__fixture-storage-tab');
   const before = await evidence(page);
   await page.goto('/student/verification/microsoft/complete?attempt=fixture-attempt-missing');
-  await expect(page.getByText('This Microsoft connection cannot be completed in the current Awoof session. Start again from student verification.')).toBeVisible();
+  await expect(page.getByText('This university connection cannot be completed in the current Awoof session. Start again from student verification.')).toBeVisible();
   const after = await evidence(page);
   expect(after.finishCalls).toBe(before.finishCalls);
 });
@@ -295,7 +295,7 @@ test('expired tab state is removed and cannot be replayed through a full callbac
   await page.goto('/__fixture-storage-tab');
   const before = await evidence(page);
   await page.goto('/student/verification/microsoft/complete?attempt=expired-attempt');
-  await expect(page.getByText('This Microsoft connection cannot be completed in the current Awoof session. Start again from student verification.')).toBeVisible();
+  await expect(page.getByText('This university connection cannot be completed in the current Awoof session. Start again from student verification.')).toBeVisible();
   expect(await page.evaluate((key) => sessionStorage.getItem(key), attemptStorageKey)).toBeNull();
   expect((await evidence(page)).finishCalls).toBe(before.finishCalls);
 });
@@ -309,7 +309,7 @@ test('cross-tab replacement never grants Microsoft evidence to the replacement a
   await replacement.goto(`${appOrigin}/__fixture-storage-tab`);
   await replacement.evaluate(({ key, value }) => localStorage.setItem(key, value), { key: sessionStorageKey, value: session('student-b-browser-session', 'student-access:account-b') });
   await provider.release();
-  await expect(page.getByText('This Microsoft connection cannot be completed in the current Awoof session. Start again from student verification.')).toBeVisible();
+  await expect(page.getByText('This university connection cannot be completed in the current Awoof session. Start again from student verification.')).toBeVisible();
   await expect(page.getByText('University account connected')).toHaveCount(0);
   expect((await evidence(page)).accounts['00000000-0000-4000-8000-000000000002'].linkedMicrosoftIdentities).toBe(0);
 });
@@ -321,7 +321,7 @@ test('an untrusted different completion attempt cannot clear a current-session t
   })), { key: attemptStorageKey });
   await page.goto('/__fixture-storage-tab');
   await page.goto('/student/verification/microsoft/complete?attempt=untrusted-other-attempt&outcome=connection_not_completed');
-  await expect(page.getByText('This Microsoft connection cannot be completed in the current Awoof session. Start again from student verification.')).toBeVisible();
+  await expect(page.getByText('This university connection cannot be completed in the current Awoof session. Start again from student verification.')).toBeVisible();
   expect(await page.evaluate((key) => sessionStorage.getItem(key), attemptStorageKey)).toContain('current-attempt');
 });
 
@@ -335,7 +335,7 @@ test('a replacement browser session removes its obsolete prior-session tab attem
     localStorage.setItem(sessionKey, replacement);
   }, { attemptKey: attemptStorageKey, sessionKey: sessionStorageKey, replacement: session('replacement-browser-session') });
   await page.goto('/student/verification/microsoft/complete?attempt=old-attempt&outcome=connection_not_completed');
-  await expect(page.getByText('This Microsoft connection cannot be completed in the current Awoof session. Start again from student verification.')).toBeVisible();
+  await expect(page.getByText('This university connection cannot be completed in the current Awoof session. Start again from student verification.')).toBeVisible();
   expect(await page.evaluate((key) => sessionStorage.getItem(key), attemptStorageKey)).toBeNull();
 });
 
@@ -414,7 +414,7 @@ test('a bound provider cancellation returns to the Awoof email alternative witho
     return page.url();
   }, { timeout: 15000 }).not.toMatch(/^https:\/\/login\.microsoftonline\.com\//);
   await expect(page.getByRole('heading', { name: 'Connection needs attention' })).toBeVisible({ timeout: 10000 });
-  await expect(page.getByText('The Microsoft connection was not completed. You can still verify using your school email.')).toBeVisible();
+  await expect(page.getByText('The university connection was not completed. You can still verify using your school email.')).toBeVisible();
   await expect(page.getByRole('link', { name: 'Use school email verification' })).toBeVisible();
   const observed = await evidence(page);
   const attempt = observed.attempts.find((item) => item.attemptId === callbackAttemptId(provider.callbackUrl()));
@@ -664,7 +664,7 @@ test('one transient finish failure retains the current tab attempt for one expli
   await seedStudent(page, 'transient-browser-session', 'student-access:transient');
   const provider = await installSyntheticMicrosoftDocument(context);
   await start(page); await provider.arrived; await provider.release();
-  await expect(page.getByText('We could not complete the Microsoft connection yet. You can retry while this tab and Awoof session remain active.')).toBeVisible();
+  await expect(page.getByText('We could not complete the university connection yet. You can retry while this tab and Awoof session remain active.')).toBeVisible();
   await expect(page.getByRole('button', { name: 'Retry completion' })).toBeVisible();
   expect(await page.evaluate((key) => {
     const attempt = JSON.parse(sessionStorage.getItem(key) ?? 'null') as { attemptId?: unknown; finishSecret?: unknown } | null;
@@ -710,7 +710,7 @@ test('same-user fixture logout and relogin rotate server session and reject the 
   await fixtureLogout(replacement, 'student-access');
   await replacement.evaluate(({ key, value }) => localStorage.setItem(key, value), { key: sessionStorageKey, value: session('same-user-new-browser-session', 'student-access:relogin') });
   await provider.release();
-  await expect(page.getByText('This Microsoft connection cannot be completed in the current Awoof session. Start again from student verification.')).toBeVisible();
+  await expect(page.getByText('This university connection cannot be completed in the current Awoof session. Start again from student verification.')).toBeVisible();
   await expect(page.getByText('University account connected')).toHaveCount(0);
   const attempt = (await evidence(page)).attempts[0];
   expect(attempt).toMatchObject({ completed: false, completionWrites: 0, finishCalls: 0 });
@@ -729,7 +729,7 @@ test('a delayed finish response after account replacement cannot render its old 
   await replacement.evaluate(({ key, value }) => localStorage.setItem(key, value), { key: sessionStorageKey, value: session('delayed-b-browser-session', 'student-access:account-b') });
   await fixtureControl(replacement, '/api/__fixture/release-delayed-finish');
   await expect.poll(async () => (await evidence(page)).delayedFinishDeliveries).toBe(1);
-  await expect(page.getByText('This Microsoft connection cannot be completed in the current Awoof session. Start again from student verification.')).toBeVisible();
+  await expect(page.getByText('This university connection cannot be completed in the current Awoof session. Start again from student verification.')).toBeVisible();
   await expect(page.getByText('University account connected')).toHaveCount(0);
   const observed = await evidence(page);
   expect(observed.attempts[0]).toMatchObject({ completed: true, completionWrites: 1 });

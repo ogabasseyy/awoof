@@ -13,6 +13,7 @@ import Link from 'next/link';
 import { useSearchParams } from 'next/navigation';
 import axios from 'axios';
 import { AuthShell } from '@/components/auth/AuthShell';
+import { UniversityCallbackShell } from '@/components/auth/UniversityCallbackShell';
 import { Button } from '@/components/ui/button';
 import { useAuth } from '@/contexts/AuthContext';
 import { publicApiClient, studentSsoApiClient, studentSsoSessionApiClient } from '@/lib/api-client';
@@ -614,15 +615,23 @@ function StudentSsoCompleteInner() {
 
     if (reauthAttempt) return <RecoveryReauthComplete attemptId={reauthAttempt} duplicate={search.get('reauthDuplicate') === '1'} unavailable={search.get('reauthUnavailable') === '1'} />;
 
-    if (view.kind === 'waiting') return <AuthShell role="student" title="Sign-in still completing" subtitle="Another sign-in is finishing." footer={null}><p role="status">This sign-in arrived twice and the first is still completing. Wait a moment, then check again — nothing failed yet.</p><Button className="mt-5 w-full rounded-full" onClick={() => { waitingAutoTries.current = 0; setView({ kind: 'checking' }); void runLoginFinish(); }}>Check again</Button></AuthShell>;
+    if (view.kind === 'waiting') {
+        return (
+            <UniversityCallbackShell label="University account" status="loading" title="Sign-in still completing" subtitle="Another sign-in is finishing.">
+                <p role="status">This sign-in arrived twice and the first is still completing. Wait a moment, then check again — nothing failed yet.</p>
+                <Button className="mt-5 min-h-11 w-full rounded-full" onClick={() => { waitingAutoTries.current = 0; setView({ kind: 'checking' }); void runLoginFinish(); }}>
+                    Check again
+                </Button>
+            </UniversityCallbackShell>
+        );
+    }
 
     if (view.kind === 'link_required') {
         return (
-            <AuthShell
-                role="student"
+            <UniversityCallbackShell
+                label="University account"
                 title="Link your school account"
                 subtitle="This school sign-in is not linked to an Awoof account yet."
-                footer={null}
             >
                 <p role="status" className="text-left text-sm text-slate-600">
                     You are still signed out. Sign in with your password{signupOffer === 'available' ? ', or create an account,' : ''} to link this school
@@ -639,26 +648,26 @@ function StudentSsoCompleteInner() {
                         <Link href="/auth/student/sso/onboarding?mode=signup">Create a passwordless account</Link>
                     </Button> : null}
                 </div>
-            </AuthShell>
+            </UniversityCallbackShell>
         );
     }
 
     if (view.kind === 'already_signed_in') {
         return (
-            <AuthShell role="student" title="Already signed in" subtitle="This device already has a signed-in account." footer={null}>
+            <UniversityCallbackShell label="University account" title="Already signed in" subtitle="This device already has a signed-in account.">
                 <p role="status" className="text-left text-sm text-slate-600">
                     The school sign-in was discarded and nothing was replaced.
                 </p>
                 <Button type="button" className="mt-5 w-full rounded-full h-11 font-semibold" asChild>
                     <Link href={view.continuePath}>Continue</Link>
                 </Button>
-            </AuthShell>
+            </UniversityCallbackShell>
         );
     }
 
     if (view.kind === 'discarded') {
         return (
-            <AuthShell role="student" title="Sign-in discarded" subtitle="Another account signed in on this tab." footer={null}>
+            <UniversityCallbackShell label="University account" title="Sign-in discarded" subtitle="Another account signed in on this tab.">
                 <p role="status" className="text-left text-sm text-slate-600">
                     Your school sign-in finished after another account signed in here, so it was discarded and nothing
                     was replaced.
@@ -666,22 +675,26 @@ function StudentSsoCompleteInner() {
                 <Button type="button" className="mt-5 w-full rounded-full h-11 font-semibold" asChild>
                     <Link href="/marketplace">Continue to marketplace</Link>
                 </Button>
-            </AuthShell>
+            </UniversityCallbackShell>
         );
     }
 
     return (
-        <AuthShell role="student" title="Completing school sign-in" subtitle="Checking student status." footer={null}>
+        <UniversityCallbackShell label="University account" status="loading" title="Completing school sign-in">
             <p role="status" className="text-left text-sm text-slate-600">
-                Checking student status… Your school may ask you to approve enrollment access next; follow its prompts.
+                Finishing your school sign-in. You will continue automatically when it is ready.
             </p>
-        </AuthShell>
+        </UniversityCallbackShell>
     );
 }
 
 export default function StudentSsoCompletePage() {
     return (
-        <Suspense fallback={<p role="status">Loading school sign-in…</p>}>
+        <Suspense fallback={
+            <UniversityCallbackShell label="University account" title="Completing school sign-in" status="loading">
+                <p role="status">Preparing to finish your school sign-in…</p>
+            </UniversityCallbackShell>
+        }>
             <StudentSsoCompleteInner />
         </Suspense>
     );
