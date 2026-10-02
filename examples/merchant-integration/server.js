@@ -48,6 +48,24 @@ export function createMerchant({ origin, apiOrigin, webOrigin, privateKey, produ
     const expected = merchantPaystackMetadata({ vendorId, productId: row.productId, benefitAuthorizationId: row.receipt.benefitAuthorizationId });
     if (!response.ok || body.status !== true || payment?.status !== 'success' || payment.reference !== reference || payment.amount !== row.amountKobo || payment.currency !== 'NGN' || payment.domain !== 'test' || !Object.entries(expected).every(([key, value]) => payment.metadata?.[key] === value)) throw fail('Payment verification or checkout binding mismatch', 400);
   }
+  async function reconcileInitialization(current) {
+    // An ambiguous initialization may already exist upstream: adopt its
+    // authorization URL instead of reposting and stranding on a duplicate.
+    let response; let body;
+    try {
+      response = await fetchImpl(`https://api.paystack.co/transaction/verify/${encodeURIComponent(current.initializedReference)}`, { headers: { Authorization: `Bearer ${paystackSecret}` }, redirect: 'error', signal: AbortSignal.timeout(15_000) });
+      body = await response.json();
+    } catch (error) {
+      throw fail('Test payment initialization outcome still unknown; retry later', 502);
+    }
+    // Unknown upstream: the held reference was never used and is safe to initialize.
+    if (response.status === 404 || (response.status === 400 && /not.?found/i.test(body?.message ?? ''))) return;
+    const payment = body?.data;
+    if (!response.ok || body?.status !== true || payment?.reference !== current.initializedReference) throw fail('Test payment initialization outcome still unknown; retry later', 502);
+    const destination = new URL(payment.authorization?.authorization_url ?? 'invalid:');
+    if (destination.protocol !== 'https:' || destination.hostname !== 'checkout.paystack.com' || destination.port || destination.username || destination.password) throw fail('Unexpected payment checkout destination', 502);
+    current.paymentUrl = destination.href; current.state = 'payment_initialized';
+  }
   const server = createServer(async (req, res) => {
     try {
       if (req.headers.host !== new URL(origin).host) throw fail('Unexpected Host', 400);
@@ -99,7 +117,7 @@ export function createMerchant({ origin, apiOrigin, webOrigin, privateKey, produ
       }
       if (req.method === 'GET' && url.pathname === '/checkout') {
         const { row } = checkout(req);
-        html(res, `<h1>Checkout ${escape(row.state)}</h1><p>${escape(row.id)}</p><p>Payment model: ${escape(row.paymentGateway)}${row.paymentGateway === 'other' ? ` (merchant-attested${synthetic ? '; synthetic in this walkthrough' : '; no external provider verification by Awoof'})` : row.paymentGateway === 'paystack_merchant' ? ' (independent merchant account)' : ' (Awoof-account collection)'}</p>${['creating', 'awaiting_claim'].includes(row.state) ? '<form method="post" action="/resume-claim"><button>Resume the same claim session</button></form>' : ''}${row.state === 'authorized' && synthetic ? '<form method="post" action="/payments/simulate"><button>Simulate payment and report</button></form>' : ''}${['authorized', 'payment_initializing'].includes(row.state) && !synthetic && row.paymentGateway === 'paystack_merchant' ? '<form method="post" action="/payments/paystack-initialize"><label>Payment email (sent only to Paystack)<input name="email" type="email" required autocomplete="email"></label><button>Start merchant Paystack test payment</button></form><p>Test keys only. No live payments. After payment, the merchant verifies the exact order before reporting.</p>' : ''}${row.state === 'payment_initialized' ? '<form method="post" action="/payments/paystack-initialize"><button>Resume the same test payment</button></form>' : ''}${row.state === 'authorized' && !synthetic && row.paymentGateway !== 'paystack_merchant' ? `<p>Your existing payment backend must confirm the payment in the configured collection model, then use the authenticated server reporting endpoint.</p>` : ''}${['reconciliation_required', 'paid_pending_report'].includes(row.state) ? '<p>Payment exists but Awoof settlement is not confirmed. Do not re-charge or obtain a new authorization. Investigate eligibility/expiry/provider state first.</p><form method="post" action="/reconcile"><button>Retry the identical report</button></form>' : ''}${row.state === 'reported' ? `<p>Report recorded once.${synthetic ? ' Synthetic results do not prove real backend or merchant activation.' : ''}</p>` : ''}`); return;
+        html(res, `<h1>Checkout ${escape(row.state)}</h1><p>${escape(row.id)}</p><p>Payment model: ${escape(row.paymentGateway)}${row.paymentGateway === 'other' ? ` (merchant-attested${synthetic ? '; synthetic in this walkthrough' : '; no external provider verification by Awoof'})` : row.paymentGateway === 'paystack_merchant' ? ' (independent merchant account)' : ' (Awoof-account collection)'}</p>${['creating', 'awaiting_claim'].includes(row.state) ? '<form method="post" action="/resume-claim"><button>Resume the same claim session</button></form>' : ''}${row.state === 'authorized' && synthetic ? '<form method="post" action="/payments/simulate"><button>Simulate payment and report</button></form>' : ''}${['authorized', 'payment_initializing'].includes(row.state) && !synthetic && row.paymentGateway === 'paystack_merchant' ? '<form method="post" action="/payments/paystack-initialize"><label>Payment email (sent only to Paystack)<input name="email" type="email" required autocomplete="email"></label><button>Start merchant Paystack test payment</button></form><p>Test keys only. No live payments. After payment, the merchant verifies the exact order before reporting.</p>' : ''}${row.state === 'payment_initialized' ? '<form method="post" action="/payments/paystack-initialize"><button>Resume the same test payment</button></form>' : ''}${row.state === 'payment_initialization_unknown' && !synthetic && row.paymentGateway === 'paystack_merchant' ? '<form method="post" action="/payments/paystack-initialize"><label>Payment email (sent only to Paystack)<input name="email" type="email" required autocomplete="email"></label><button>Reconcile the pending test payment</button></form><p>Initialization outcome unknown. Retrying reconciles the held reference instead of starting a duplicate payment.</p>' : ''}${row.state === 'authorized' && !synthetic && row.paymentGateway !== 'paystack_merchant' ? `<p>Your existing payment backend must confirm the payment in the configured collection model, then use the authenticated server reporting endpoint.</p>` : ''}${['reconciliation_required', 'paid_pending_report'].includes(row.state) ? '<p>Payment exists but Awoof settlement is not confirmed. Do not re-charge or obtain a new authorization. Investigate eligibility/expiry/provider state first.</p><form method="post" action="/reconcile"><button>Retry the identical report</button></form>' : ''}${row.state === 'reported' ? `<p>Report recorded once.${synthetic ? ' Synthetic results do not prove real backend or merchant activation.' : ''}</p>` : ''}`); return;
       }
       if (req.method === 'POST' && url.pathname === '/payments/paystack-initialize') {
         requireOrigin(req); const { row } = checkout(req);
@@ -107,16 +125,39 @@ export function createMerchant({ origin, apiOrigin, webOrigin, privateKey, produ
         const form = new URLSearchParams((await rawBody(req)).toString()); const email = form.get('email')?.trim();
         await once(row.id, async () => {
           const current = store.get(row.id);
-          if (!current.receipt || !['authorized', 'payment_initializing', 'payment_initialized'].includes(current.state)) throw fail('A current claimed checkout is required');
+          if (!current.receipt || !['authorized', 'payment_initializing', 'payment_initialized', 'payment_initialization_unknown'].includes(current.state)) throw fail('A current claimed checkout is required');
           if (!(Date.parse(current.receipt.validUntil) > Date.now()) || !(benefitDeadline(current) > Date.now())) throw fail('Benefit authorization expired; do not start payment');
           if (current.paymentUrl) return;
           if (!email || email.length > 254 || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) throw fail('Payment email required', 400);
           const emailHash = createHash('sha256').update(email).digest('hex');
           if (current.paymentEmailHash && current.paymentEmailHash !== emailHash) throw fail('Retry with the original payment email');
-          current.paymentEmailHash = emailHash; current.initializedReference ??= `awoof-${randomUUID()}`; current.state = 'payment_initializing'; store.put(current.id, current);
-          const response = await fetchImpl('https://api.paystack.co/transaction/initialize', { method: 'POST', redirect: 'error', signal: AbortSignal.timeout(15_000), headers: { Authorization: `Bearer ${paystackSecret}`, 'Content-Type': 'application/json' }, body: JSON.stringify({ email, amount: String(current.amountKobo), currency: 'NGN', reference: current.initializedReference, callback_url: `${origin}/payments/paystack-return`, metadata: JSON.stringify(merchantPaystackMetadata({ vendorId, productId: current.productId, benefitAuthorizationId: current.receipt.benefitAuthorizationId })) }) });
-          const initialized = await response.json();
-          if (!response.ok || initialized.status !== true || initialized.data?.reference !== current.initializedReference) throw fail('Test payment initialization not confirmed; preserve reference for retry', 502);
+          current.paymentEmailHash = emailHash;
+          // A held reference without a URL has an unknown outcome: reconcile
+          // it before posting, so an ambiguous retry never strands on a
+          // duplicate or creates a second payment.
+          if (current.initializedReference && !current.paymentUrl) {
+            await reconcileInitialization(current);
+            if (current.paymentUrl) { store.put(current.id, current); return; }
+          }
+          current.initializedReference ??= `awoof-${randomUUID()}`; current.state = 'payment_initializing'; store.put(current.id, current);
+          let response; let initialized;
+          try {
+            response = await fetchImpl('https://api.paystack.co/transaction/initialize', { method: 'POST', redirect: 'error', signal: AbortSignal.timeout(15_000), headers: { Authorization: `Bearer ${paystackSecret}`, 'Content-Type': 'application/json' }, body: JSON.stringify({ email, amount: String(current.amountKobo), currency: 'NGN', reference: current.initializedReference, callback_url: `${origin}/payments/paystack-return`, metadata: JSON.stringify(merchantPaystackMetadata({ vendorId, productId: current.productId, benefitAuthorizationId: current.receipt.benefitAuthorizationId })) }) });
+            initialized = await response.json();
+          } catch (error) {
+            current.state = 'payment_initialization_unknown'; store.put(current.id, current);
+            throw fail('Test payment initialization outcome unknown; retry to reconcile the held reference', 502);
+          }
+          if (!response.ok || initialized.status !== true || initialized.data?.reference !== current.initializedReference) {
+            // A duplicate-text rejection means an earlier ambiguous attempt
+            // may already exist upstream: reconcile it on retry.
+            const detail = `${initialized?.code ?? ''} ${initialized?.message ?? ''}`;
+            if (/duplicate|already|in.use|used|exists/i.test(detail)) {
+              current.state = 'payment_initialization_unknown'; store.put(current.id, current);
+              throw fail('Test payment initialization outcome unknown; retry to reconcile the held reference', 502);
+            }
+            throw fail('Test payment initialization not confirmed; preserve reference for retry', 502);
+          }
           const destination = new URL(initialized.data.authorization_url);
           if (destination.protocol !== 'https:' || destination.hostname !== 'checkout.paystack.com' || destination.port || destination.username || destination.password) throw fail('Unexpected payment checkout destination', 502);
           current.paymentUrl = destination.href; current.state = 'payment_initialized'; store.put(current.id, current);
