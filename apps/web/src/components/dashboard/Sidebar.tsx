@@ -1,5 +1,5 @@
 import Link from 'next/link';
-import Image from 'next/image';
+import Logo from '@/app/components/logo';
 import { usePathname } from 'next/navigation';
 import { LogOut } from 'lucide-react';
 import type { DashboardNavItem } from './types';
@@ -65,19 +65,12 @@ export function DashboardSidebar({
             <div className="space-y-8">
                 <div className={cn('px-4', isCollapsed && 'flex justify-center')}>
                     {isCollapsed ? (
-                        <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-white/15 text-lg font-bold text-white">
-                            A
+                        <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-white/15">
+                            <Logo color="white" variant="icon" width={32} height={32} />
                         </div>
                     ) : (
                         <div className="rounded-xl bg-white/10 px-3 py-2.5 backdrop-blur-sm">
-                            <Image
-                                src="/images/awoofLogo.png"
-                                alt="Awoof"
-                                width={120}
-                                height={40}
-                                className="object-contain"
-                                priority
-                            />
+                            <Logo color="white" width={120} height={40} />
                         </div>
                     )}
                 </div>
@@ -108,4 +101,3 @@ export function DashboardSidebar({
         </aside>
     );
 }
-
