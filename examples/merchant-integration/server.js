@@ -43,8 +43,14 @@ export function createMerchant({ origin, apiOrigin, webOrigin, privateKey, produ
   }
   async function verifiedPaystack(reference, row) {
     if (!paystackSecret) throw fail('Merchant Paystack verification is unconfigured', 503);
-    const response = await fetchImpl(`https://api.paystack.co/transaction/verify/${encodeURIComponent(reference)}`, { headers: { Authorization: `Bearer ${paystackSecret}` }, redirect: 'error', signal: AbortSignal.timeout(15_000) });
-    const body = await response.json(); const payment = body.data;
+    let response;
+    try { response = await fetchImpl(`https://api.paystack.co/transaction/verify/${encodeURIComponent(reference)}`, { headers: { Authorization: `Bearer ${paystackSecret}` }, redirect: 'error', signal: AbortSignal.timeout(15_000) }); }
+    catch { throw fail('Paystack verification unavailable; retry later', 503); }
+    if (response.status >= 500 || [401, 403, 408, 429].includes(response.status)) throw fail('Paystack verification unavailable; retry later', 503);
+    let body;
+    try { body = await response.json(); }
+    catch { throw fail('Paystack verification response invalid', response.ok ? 503 : 400); }
+    const payment = body?.data;
     const expected = merchantPaystackMetadata({ vendorId, productId: row.productId, benefitAuthorizationId: row.receipt.benefitAuthorizationId });
     if (!response.ok || body.status !== true || payment?.status !== 'success' || payment.reference !== reference || payment.amount !== row.amountKobo || payment.currency !== 'NGN' || payment.domain !== 'test' || !Object.entries(expected).every(([key, value]) => payment.metadata?.[key] === value)) throw fail('Payment verification or checkout binding mismatch', 400);
   }

@@ -325,7 +325,10 @@ export async function verifyMerchantPaystackPayment(
 ): Promise<{ verified: boolean; amountKobo?: number; currency?: string; metadata?: Record<string, unknown>; error?: string }> {
     const secret = Object.hasOwn(config.paystack.merchantSecretKeys, vendorId)
         ? config.paystack.merchantSecretKeys[vendorId] : undefined;
-    if (!secret) throw new BadRequestError('Merchant Paystack verification is not configured');
+    // Missing credentials are an Awoof-side configuration outage, not proof
+    // the checkout is unpaid: surface retryable 503 like a revoked or rotated
+    // merchant secret (401/403) so the report stays available for reconciliation.
+    if (!secret) throw new ServiceUnavailableError('Merchant Paystack verification is not configured');
     try {
         const response = await axios.get(
             `https://api.paystack.co/transaction/verify/${encodeURIComponent(paymentReference)}`,

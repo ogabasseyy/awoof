@@ -311,7 +311,7 @@ export default function VendorIntegrationPage() {
                                                 <a href="/vendor/payment" className="text-blue-600 hover:underline">
                                                     Payment Settings
                                                 </a>{' '}
-                                                and select &quot;Vendor Website&quot; as your payment method.
+                                                and keep &quot;Awoof Platform&quot; selected (&quot;Vendor Website&quot; is unavailable while merchant verification is being replaced).
                                             </p>
                                         </div>
                                     </div>

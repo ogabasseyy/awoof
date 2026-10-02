@@ -68,7 +68,10 @@ test('merchant verification selects only authenticated vendor credentials and va
         return { data: { status: true, data: transaction } };
     }) as typeof axios.get;
     try {
-        await assert.rejects(verifyMerchantPaystackPayment('00000000-0000-4000-8000-000000000002', 'ref/test'), /not configured/);
+        await assert.rejects(
+            verifyMerchantPaystackPayment('00000000-0000-4000-8000-000000000002', 'ref/test'),
+            { statusCode: 503, message: /not configured/ },
+        );
         assert.equal(calls, 0);
         assert.deepEqual(await verifyMerchantPaystackPayment(vendor, 'ref/test'), {
             verified: true, amountKobo: 8000, currency: 'NGN', metadata: {},

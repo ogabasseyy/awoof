@@ -62,3 +62,42 @@ for (const gateway of ['paystack', 'other']) test(`${gateway} server report requ
     assert.equal((await request('/payments/report', { method: 'POST', headers, body: JSON.stringify({ merchantCheckoutId: checkoutId, paymentReference: 'different' }) })).status, 409);
   } finally { await new Promise(r => app.server.close(r)); app.store.close(); }
 });
+test('merchant verification keeps transient Paystack failures retryable and definitive mismatches rejected', async () => {
+  const p = await port(); const origin = `https://127.0.0.1:${p}`; const secret = 'sk_test_fixture'; let checkoutId; let reports = 0; let verifyBehavior = 'transient';
+  const metadata = { awoofVendorId: 'vendor', awoofProductId: 'product', awoofBenefitAuthorizationId: 'benefit' };
+  const app = createMerchant({ origin, apiOrigin: 'https://awoof-api.test', webOrigin: 'https://awoof.test', privateKey: 'awoof_test', productId: 'product', vendorId: 'vendor', amountKobo: 80000, paymentGateway: 'paystack_merchant', paystackSecret: secret, dbPath: ':memory:', fetchImpl: async (url, init) => {
+    if (url.startsWith('https://api.paystack.co/')) {
+      if (verifyBehavior === 'transport') throw new Error('synthetic-transport-failure');
+      if (verifyBehavior === 'transient') return Response.json({ status: false, message: 'upstream' }, { status: 503 });
+      if (verifyBehavior === 'auth') return Response.json({ status: false, message: 'invalid key' }, { status: 401 });
+      if (verifyBehavior === 'malformed-ok') return new Response('not-json{', { status: 200, headers: { 'content-type': 'application/json' } });
+      if (verifyBehavior === 'malformed-missing') return new Response('not-json{', { status: 404 });
+      return Response.json({ status: true, data: { status: 'success', domain: 'test', reference: 'payment', amount: 80000, currency: 'NGN', metadata } });
+    }
+    const body = JSON.parse(init.body);
+    if (url.endsWith('/claim-sessions')) { checkoutId = body.merchantCheckoutId; return Response.json({ success: true, data: { claimSessionId: 'session', expiresAt: new Date(Date.now() + 600000).toISOString() } }); }
+    if (url.endsWith('/exchange')) return Response.json({ success: true, data: { eligible: true, assuranceMethod: 'enrollment', campaignId: checkoutId, benefitAuthorizationId: 'benefit', validUntil: new Date(Date.now() + 600000).toISOString() } });
+    reports++; return Response.json({ success: true, data: { transactionId: 'transaction' } });
+  } });
+  await new Promise(r => app.server.listen(p, '127.0.0.1', r));
+  const request = (path, init = {}) => fetch(`http://127.0.0.1:${p}${path}`, { redirect: 'manual', ...init });
+  try {
+    const start = await request('/checkout', { method: 'POST', headers: { Origin: origin } }); const cookie = start.headers.get('set-cookie').split(';')[0];
+    await request('/awoof/student-claim?assertion=' + 'c'.repeat(43), { headers: { Cookie: cookie } });
+    const body = JSON.stringify({ event: 'charge.success', data: { reference: 'payment', metadata } });
+    const signature = createHmac('sha512', secret).update(body).digest('hex');
+    const webhook = () => request('/webhooks/paystack', { method: 'POST', headers: { 'x-paystack-signature': signature }, body });
+    for (const behavior of ['transient', 'transport', 'auth', 'malformed-ok']) {
+      verifyBehavior = behavior;
+      assert.equal((await webhook()).status, 503);
+    }
+    assert.equal(reports, 0);
+    assert.equal(app.store.get(checkoutId).state, 'authorized');
+    verifyBehavior = 'malformed-missing';
+    assert.equal((await webhook()).status, 400);
+    verifyBehavior = 'success';
+    assert.equal((await webhook()).status, 200);
+    assert.equal(reports, 1);
+    assert.equal(app.store.get(checkoutId).state, 'reported');
+  } finally { await new Promise(r => app.server.close(r)); app.store.close(); }
+});
