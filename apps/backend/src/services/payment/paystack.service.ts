@@ -323,20 +323,23 @@ export async function verifyMerchantPaystackPayment(
     vendorId: string,
     paymentReference: string,
 ): Promise<{ verified: boolean; amountKobo?: number; currency?: string; metadata?: Record<string, unknown>; error?: string }> {
-    const secret = Object.hasOwn(config.paystack.merchantSecretKeys, vendorId)
+    const credential = Object.hasOwn(config.paystack.merchantSecretKeys, vendorId)
         ? config.paystack.merchantSecretKeys[vendorId] : undefined;
     // Missing credentials are an Awoof-side configuration outage, not proof
     // the checkout is unpaid: surface retryable 503 like a revoked or rotated
     // merchant secret (401/403) so the report stays available for reconciliation.
-    if (!secret) throw new ServiceUnavailableError('Merchant Paystack verification is not configured');
+    if (!credential?.secret) throw new ServiceUnavailableError('Merchant Paystack verification is not configured');
     try {
         const response = await axios.get(
             `https://api.paystack.co/transaction/verify/${encodeURIComponent(paymentReference)}`,
-            { timeout: 15000, signal: AbortSignal.timeout(15000), headers: { Authorization: `Bearer ${secret}` } },
+            { timeout: 15000, signal: AbortSignal.timeout(15000), headers: { Authorization: `Bearer ${credential.secret}` } },
         );
         const data = response.data?.data;
         if (response.data?.status !== true || data?.status !== 'success' || data.reference !== paymentReference) {
             return { verified: false, error: 'Merchant payment not successful' };
+        }
+        if (data.domain !== credential.domain) {
+            return { verified: false, error: 'Merchant payment environment does not match the configured account' };
         }
         if (!Number.isSafeInteger(data.amount) || data.amount <= 0 || data.currency !== 'NGN'
             || !data.metadata || typeof data.metadata !== 'object' || Array.isArray(data.metadata)) {

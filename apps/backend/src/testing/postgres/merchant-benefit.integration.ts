@@ -1231,9 +1231,9 @@ test('merchant-account Paystack reports bind merchant, quote, metadata and mode;
         const auth = `Bearer ${fixture.key}`;
         Object.assign(config.paystack, { merchantSecretKeys: {} });
         axios.get = (async () => { calls++; throw new Error('must not call without merchant key'); }) as typeof axios.get;
-        assert.equal((await postReport(server.endpoint, auth, payload)).status, 400);
+        assert.equal((await postReport(server.endpoint, auth, payload)).status, 503);
         assert.equal(calls, 0);
-        Object.assign(config.paystack, { merchantSecretKeys: { [fixture.vendor]: 'synthetic-merchant-secret' } });
+        Object.assign(config.paystack, { merchantSecretKeys: { [fixture.vendor]: { secret: 'synthetic-merchant-secret', domain: 'test' } } });
         const metadata = { awoofVendorId: fixture.vendor, awoofProductId: fixture.product,
             awoofBenefitAuthorizationId: benefitAuthorizationId };
         let transaction: Record<string, unknown> = {};
@@ -1245,15 +1245,16 @@ test('merchant-account Paystack reports bind merchant, quote, metadata and mode;
         const before = await ledgerSnapshot(client, fixture);
         for (const invalid of [
             { status: 'pending' }, { amount: 80 }, { amount: 8100 }, { currency: 'USD' },
+            { domain: 'live' }, { domain: undefined },
             { metadata: {} }, { metadata: { ...metadata, awoofVendorId: randomUUID() } },
             { metadata: { ...metadata, awoofProductId: randomUUID() } },
             { metadata: { ...metadata, awoofBenefitAuthorizationId: randomUUID() } },
         ]) {
-            transaction = { status: 'success', reference: payload.paymentReference, amount: 8000, currency: 'NGN', metadata, ...invalid };
+            transaction = { status: 'success', reference: payload.paymentReference, amount: 8000, currency: 'NGN', domain: 'test', metadata, ...invalid };
             assert.equal((await postReport(server.endpoint, auth, payload)).status, 400);
             assert.deepEqual(await ledgerSnapshot(client, fixture), before);
         }
-        transaction = { status: 'success', reference: payload.paymentReference, amount: 8000, currency: 'NGN', metadata };
+        transaction = { status: 'success', reference: payload.paymentReference, amount: 8000, currency: 'NGN', domain: 'test', metadata };
         const first = await postReport(server.endpoint, auth, payload);
         assert.equal(first.status, 201);
         const stored = (await client.query('SELECT payment_source FROM transactions WHERE vendor_id = $1', [fixture.vendor])).rows[0];
@@ -1293,12 +1294,12 @@ test('merchant-account Paystack references are vendor scoped while platform uniq
         await assertFixtureDatabase(client);
         const fixtures = [await enrolledFixture(pool, client), await enrolledFixture(pool, client)];
         const reference = randomUUID();
-        Object.assign(config.paystack, { merchantSecretKeys: Object.fromEntries(fixtures.map(f => [f.vendor, `synthetic-${f.vendor}`])) });
+        Object.assign(config.paystack, { merchantSecretKeys: Object.fromEntries(fixtures.map(f => [f.vendor, { secret: `synthetic-${f.vendor}`, domain: 'test' }])) });
         for (const fixture of fixtures) {
             const { benefitAuthorizationId } = await productAuthorization(pool, fixture);
             axios.get = (async (_url: string, options: { headers: Record<string, string> }) => {
                 assert.equal(options.headers.Authorization, `Bearer synthetic-${fixture.vendor}`);
-                return { data: { status: true, data: { status: 'success', reference, amount: 8000, currency: 'NGN', metadata: {
+                return { data: { status: true, data: { status: 'success', reference, amount: 8000, currency: 'NGN', domain: 'test', metadata: {
                     awoofVendorId: fixture.vendor, awoofProductId: fixture.product, awoofBenefitAuthorizationId: benefitAuthorizationId,
                 } } } };
             }) as typeof axios.get;

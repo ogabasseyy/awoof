@@ -32,23 +32,27 @@ test('merchant credentials are opt-in and keyed by exact vendor UUIDs', () => {
     const disabled = probe();
     assert.equal(disabled.status, 0, disabled.stderr);
     assert.ok(disabled.stdout.endsWith('[]'));
-    const configured = probe('{"00000000-0000-4000-8000-000000000001":"synthetic-secret"}');
+    const configured = probe('{"00000000-0000-4000-8000-000000000001":{"secret":"synthetic-secret","domain":"test"}}');
     assert.equal(configured.status, 0, configured.stderr);
     assert.ok(configured.stdout.endsWith('["00000000-0000-4000-8000-000000000001"]'));
     assert.doesNotMatch(configured.stdout, /synthetic-secret/);
 });
 
 test('merchant credential keys normalize to lowercase and reject case collisions', () => {
-    const upper = probe('{"00000000-0000-4000-8000-00000000000A":"synthetic-secret"}');
+    const upper = probe('{"00000000-0000-4000-8000-00000000000A":{"secret":"synthetic-secret","domain":"live"}}');
     assert.equal(upper.status, 0, upper.stderr);
     assert.ok(upper.stdout.endsWith('["00000000-0000-4000-8000-00000000000a"]'));
-    const collision = probe('{"00000000-0000-4000-8000-00000000000a":"one","00000000-0000-4000-8000-00000000000A":"two"}');
+    const collision = probe('{"00000000-0000-4000-8000-00000000000a":{"secret":"one","domain":"test"},"00000000-0000-4000-8000-00000000000A":{"secret":"two","domain":"test"}}');
     assert.equal(collision.status, 1);
     assert.match(collision.stderr, /Merchant Paystack keys must be a JSON object/);
 });
 
 test('malformed merchant credential maps fail startup without exposing secret values', () => {
-    for (const mapping of ['synthetic-secret', '[]', '{"not-a-vendor":"synthetic-secret"}', '{"00000000-0000-4000-8000-000000000001":" "}']) {
+    for (const mapping of ['synthetic-secret', '[]', '{"not-a-vendor":{"secret":"synthetic-secret","domain":"test"}}',
+        '{"00000000-0000-4000-8000-000000000001":{"secret":" ","domain":"test"}}',
+        '{"00000000-0000-4000-8000-000000000001":"synthetic-secret"}',
+        '{"00000000-0000-4000-8000-000000000001":{"secret":"synthetic-secret"}}',
+        '{"00000000-0000-4000-8000-000000000001":{"secret":"synthetic-secret","domain":"sandbox"}}']) {
         const result = probe(mapping);
         assert.equal(result.status, 1);
         assert.match(result.stderr, /Merchant Paystack keys must be a JSON object/);

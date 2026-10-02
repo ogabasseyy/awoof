@@ -56,9 +56,9 @@ test('merchant verification selects only authenticated vendor credentials and va
     const originalGet = axios.get;
     const oldKeys = config.paystack.merchantSecretKeys;
     const vendor = '00000000-0000-4000-8000-000000000001';
-    Object.assign(config.paystack, { merchantSecretKeys: { [vendor]: 'synthetic-merchant-key' } });
+    Object.assign(config.paystack, { merchantSecretKeys: { [vendor]: { secret: 'synthetic-merchant-key', domain: 'test' } } });
     let calls = 0;
-    let transaction: Record<string, unknown> = { status: 'success', reference: 'ref/test', amount: 8000, currency: 'NGN', metadata: {} };
+    let transaction: Record<string, unknown> = { status: 'success', reference: 'ref/test', amount: 8000, currency: 'NGN', domain: 'test', metadata: {} };
     axios.get = (async (url: string, options: { timeout: number; signal: AbortSignal; headers: Record<string, string> }) => {
         calls++;
         assert.equal(url, 'https://api.paystack.co/transaction/verify/ref%2Ftest');
@@ -80,10 +80,19 @@ test('merchant verification selects only authenticated vendor credentials and va
             { status: 'pending' }, { status: 'failed' }, { reference: undefined }, { reference: 'wrong-reference' }, { currency: 'USD' },
             { amount: 80.5 }, { amount: '8000' }, { amount: 0 },
             { amount: Number.MAX_SAFE_INTEGER + 1 }, { metadata: null }, { metadata: [] },
+            { domain: 'live' }, { domain: undefined },
         ]) {
-            transaction = { status: 'success', reference: 'ref/test', amount: 8000, currency: 'NGN', metadata: {}, ...invalid };
+            transaction = { status: 'success', reference: 'ref/test', amount: 8000, currency: 'NGN', domain: 'test', metadata: {}, ...invalid };
             assert.equal((await verifyMerchantPaystackPayment(vendor, 'ref/test')).verified, false);
         }
+        assert.deepEqual(await verifyMerchantPaystackPayment(vendor, 'ref/test'), {
+            verified: false, error: 'Merchant payment environment does not match the configured account',
+        });
+        Object.assign(config.paystack, { merchantSecretKeys: { [vendor]: { secret: 'synthetic-merchant-key', domain: 'live' } } });
+        transaction = { status: 'success', reference: 'ref/test', amount: 8000, currency: 'NGN', domain: 'live', metadata: {} };
+        assert.deepEqual(await verifyMerchantPaystackPayment(vendor, 'ref/test'), {
+            verified: true, amountKobo: 8000, currency: 'NGN', metadata: {},
+        });
         axios.get = (async () => { throw new Error('synthetic-secret-account-detail'); }) as typeof axios.get;
         assert.deepEqual(await verifyMerchantPaystackPayment(vendor, 'ref/test'), { verified: false, error: 'Merchant payment verification failed' });
         axios.get = (async () => { throw { isAxiosError: true, response: { status: 404, data: { message: 'not found' } } }; }) as typeof axios.get;
