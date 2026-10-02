@@ -1,6 +1,19 @@
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
+import { mkdtempSync } from 'node:fs';
+import { createRequire } from 'node:module';
+import { tmpdir } from 'node:os';
+import { dirname, join } from 'node:path';
 import test from 'node:test';
+import { fileURLToPath } from 'node:url';
+
+const require = createRequire(import.meta.url);
+// Absolute module paths keep the probe independent of the caller's cwd.
+const tsxHook = require.resolve('tsx');
+const envModule = join(dirname(fileURLToPath(import.meta.url)), 'env.ts');
+// An isolated empty cwd keeps dotenv (and tsx env injection) from loading a
+// developer's local .env into the disabled-case assertion.
+const isolatedCwd = mkdtempSync(join(tmpdir(), 'awoof-merchant-config-'));
 
 function probe(mapping?: string) {
     const environment = {
@@ -10,9 +23,9 @@ function probe(mapping?: string) {
     };
     delete environment.PAYSTACK_MERCHANT_SECRET_KEYS;
     if (mapping !== undefined) environment.PAYSTACK_MERCHANT_SECRET_KEYS = mapping;
-    return spawnSync(process.execPath, ['--import', 'tsx', '--input-type=module', '--eval',
-        "import { config } from './src/config/env.ts'; process.stdout.write(JSON.stringify(Object.keys(config.paystack.merchantSecretKeys)));"],
-        { env: environment, encoding: 'utf8', timeout: 15_000 });
+    return spawnSync(process.execPath, ['--import', tsxHook, '--input-type=module', '--eval',
+        `import { config } from ${JSON.stringify(envModule)}; process.stdout.write(JSON.stringify(Object.keys(config.paystack.merchantSecretKeys)));`],
+        { env: environment, encoding: 'utf8', timeout: 15_000, cwd: isolatedCwd });
 }
 
 test('merchant credentials are opt-in and keyed by exact vendor UUIDs', () => {
@@ -23,6 +36,15 @@ test('merchant credentials are opt-in and keyed by exact vendor UUIDs', () => {
     assert.equal(configured.status, 0, configured.stderr);
     assert.ok(configured.stdout.endsWith('["00000000-0000-4000-8000-000000000001"]'));
     assert.doesNotMatch(configured.stdout, /synthetic-secret/);
+});
+
+test('merchant credential keys normalize to lowercase and reject case collisions', () => {
+    const upper = probe('{"00000000-0000-4000-8000-00000000000A":"synthetic-secret"}');
+    assert.equal(upper.status, 0, upper.stderr);
+    assert.ok(upper.stdout.endsWith('["00000000-0000-4000-8000-00000000000a"]'));
+    const collision = probe('{"00000000-0000-4000-8000-00000000000a":"one","00000000-0000-4000-8000-00000000000A":"two"}');
+    assert.equal(collision.status, 1);
+    assert.match(collision.stderr, /Merchant Paystack keys must be a JSON object/);
 });
 
 test('malformed merchant credential maps fail startup without exposing secret values', () => {

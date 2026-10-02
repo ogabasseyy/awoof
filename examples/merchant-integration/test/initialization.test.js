@@ -73,3 +73,11 @@ test('ambiguous exchange preserves original retry binding while a changed code f
 test('live merchant keys cannot enable this test-only reference', () => {
   assert.throws(() => createMerchant({ origin: 'https://merchant.test', apiOrigin: 'https://api.test', webOrigin: 'https://awoof.test', privateKey: 'awoof_test', productId: 'product', vendorId: 'vendor', amountKobo: 1, paystackSecret: 'sk_live_not_allowed', dbPath: ':memory:' }), /test secrets/);
 });
+test('trailing-slash merchant origin is normalized for Origin and Host checks', async () => {
+  const port = await freePort(); const canonical = `https://127.0.0.1:${port}`;
+  const app = createMerchant({ origin: `${canonical}/`, apiOrigin: 'https://api.test', webOrigin: 'https://awoof.test', privateKey: 'awoof_test', productId: 'product', vendorId: 'vendor', amountKobo: 80000, synthetic: true, dbPath: ':memory:', fetchImpl: async () => Response.json({ success: true, data: { claimSessionId: 'session' } }) });
+  await new Promise(r => app.server.listen(port, '127.0.0.1', r));
+  try {
+    assert.equal((await fetch(`http://127.0.0.1:${port}/checkout`, { method: 'POST', redirect: 'manual', headers: { Origin: canonical } })).status, 303);
+  } finally { await new Promise(r => app.server.close(r)); app.store.close(); }
+});

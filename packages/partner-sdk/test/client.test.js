@@ -21,6 +21,10 @@ test('transport fails closed and never follows credential redirects', async () =
   assert.throws(() => new AwoofPartnerClient({ apiOrigin: 'https://test.com/path', webOrigin: 'https://test.com', privateKey: 'awoof_x' }));
   const client = new AwoofPartnerClient({ apiOrigin: 'https://test.com', webOrigin: 'https://test.com', privateKey: 'awoof_x', fetch: async (_, options) => { assert.equal(options.redirect, 'error'); return Response.json({ success: false }, { status: 409 }); } });
   await assert.rejects(client.reportTransaction({ amount: 1 }), error => error instanceof AwoofApiError && error.status === 409);
+  const outage = new AwoofPartnerClient({ apiOrigin: 'https://test.com', webOrigin: 'https://test.com', privateKey: 'awoof_x', fetch: async () => new Response('<html>proxy outage</html>', { status: 503, headers: { 'content-type': 'text/html' } }) });
+  await assert.rejects(outage.reportTransaction({ amount: 1 }), error => error instanceof AwoofApiError && error.status === 503);
+  const empty = new AwoofPartnerClient({ apiOrigin: 'https://test.com', webOrigin: 'https://test.com', privateKey: 'awoof_x', fetch: async () => new Response('', { status: 502 }) });
+  await assert.rejects(empty.reportTransaction({ amount: 1 }), error => error instanceof AwoofApiError && error.status === 502);
 });
 test('raw-body Paystack HMAC and metadata are exact', () => {
   const body = Buffer.from('{"event":"charge.success"}'); const secret = 'sk_test_fixture'; const signature = createHmac('sha512', secret).update(body).digest('hex');

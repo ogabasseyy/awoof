@@ -37,6 +37,8 @@ test('merchant test Paystack signature, verification, durable acceptance and exa
     const reversalBody = JSON.stringify({ event: 'refund.processed', data: {} }); const reversalSig = createHmac('sha512', secret).update(reversalBody).digest('hex');
     assert.equal((await request('/webhooks/paystack', { method: 'POST', headers: { 'x-paystack-signature': reversalSig }, body: reversalBody })).status, 202); assert.equal(reports, 2);
     assert.equal(app.store.find(row => row.kind === 'provider_review').state, 'reconciliation_required');
+    const noMetadataBody = JSON.stringify({ event: 'charge.success', data: { reference: 'payment' } }); const noMetadataSig = createHmac('sha512', secret).update(noMetadataBody).digest('hex');
+    assert.equal((await request('/webhooks/paystack', { method: 'POST', headers: { 'x-paystack-signature': noMetadataSig }, body: noMetadataBody })).status, 404); assert.equal(reports, 2);
   } finally { await new Promise(r => app.server.close(r)); app.store.close(); }
 });
 for (const gateway of ['paystack', 'other']) test(`${gateway} server report requires independent merchant authorization and preserves payment mode`, async () => {

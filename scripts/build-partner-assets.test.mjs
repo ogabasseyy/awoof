@@ -62,5 +62,15 @@ test('starter package excludes local state and credentials and refuses symlinks 
     rmSync(join(sdk, 'linked.mjs'));
     writeFileSync(join(sdk, 'bad.mjs'), `const key = '${'sk_live_'}${'a'.repeat(24)}';`);
     assert.throws(() => starterFiles(root), /Secret-shaped/);
+    writeFileSync(join(sdk, 'bad.mjs'), `const key = '${'sk_test_'}${'b'.repeat(24)}';`);
+    assert.throws(() => starterFiles(root), /Secret-shaped/);
+    writeFileSync(join(sdk, 'bad.mjs'), `const key = 'sk_test_fixture';`);
+    assert.ok(starterFiles(root).includes('packages/partner-sdk/bad.mjs'));
   } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test('publication rejects merchant operations carrying YAML-split null values', () => {
+  const corrupted = spec();
+  corrupted.paths['/api/vendors/transactions/report'].post.responses['400'] = { description: 'Invalid input', 'retired token': null };
+  assert.throws(() => merchantApiReference(corrupted), /null value/);
 });

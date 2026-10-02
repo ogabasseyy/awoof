@@ -23,8 +23,9 @@ export class AwoofPartnerClient {
   }
   async #post(path, input) {
     const response = await this.#fetch(`${this.#api}${path}`, { method: 'POST', redirect: 'error', signal: AbortSignal.timeout(15_000), headers: { Authorization: `Bearer ${this.#key}`, 'Content-Type': 'application/json' }, body: JSON.stringify(input) });
-    const body = await response.json();
-    if (!response.ok || body.success !== true) throw new AwoofApiError(response.status, body);
+    let body;
+    try { body = await response.json(); } catch { body = null; }
+    if (!response.ok || body?.success !== true) throw new AwoofApiError(response.status, body);
     return body.data;
   }
   createClaimSession({ productId, merchantCheckoutId, browserNonce, origin }) {

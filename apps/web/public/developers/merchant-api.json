@@ -70,8 +70,7 @@
                   "productId": {
                     "type": "string",
                     "format": "uuid",
-                    "description": "Optional active product of this vendor. When present",
-                    "the exchange receipt carries a benefitAuthorizationId for one discounted transaction report.": null
+                    "description": "Optional active product of this vendor. When present, the exchange receipt carries a benefitAuthorizationId for one discounted transaction report."
                   }
                 }
               }
@@ -177,8 +176,7 @@
                     "type": "string",
                     "minLength": 16,
                     "maxLength": 512,
-                    "description": "Required only for claim-bound codes. The merchant's cookie-derived browser nonce",
-                    "sent over its authenticated server connection; never place it in a URL.": null
+                    "description": "Required only for claim-bound codes. The merchant's cookie-derived browser nonce, sent over its authenticated server connection; never place it in a URL."
                   },
                   "merchantCheckoutId": {
                     "type": "string",
@@ -218,8 +216,7 @@
             }
           },
           "400": {
-            "description": "Invalid input",
-            "code or campaign mismatch": null
+            "description": "Invalid input, code or campaign mismatch"
           },
           "401": {
             "description": "Private merchant key invalid or merchant inactive"
@@ -228,8 +225,7 @@
             "description": "Eligibility or disclosure no longer current"
           },
           "409": {
-            "description": "Code expired",
-            "consumed by another operation or conflicting idempotency key": null
+            "description": "Code expired, consumed by another operation or conflicting idempotency key"
           },
           "429": {
             "description": "Merchant key hourly quota exhausted or key unavailable"
@@ -303,9 +299,7 @@
             "description": "Private merchant key invalid or merchant inactive."
           },
           "409": {
-            "description": "Checkout already bound differently",
-            "used": null,
-            "or expired. Start a new checkout.": null
+            "description": "Checkout already bound differently, used, or expired. Start a new checkout."
           }
         }
       }
@@ -344,8 +338,7 @@
             "description": "Unknown session or claim no longer available."
           },
           "409": {
-            "description": "Session expired or redeemed",
-            "or merchant integration unavailable.": null
+            "description": "Session expired or redeemed, or merchant integration unavailable."
           },
           "503": {
             "$ref": "#/components/responses/SessionValidationUnavailable"
@@ -467,8 +460,7 @@
             "description": "Unknown claim session or disclosure grant."
           },
           "409": {
-            "description": "Session expired or redeemed",
-            "or MERCHANT_INTEGRATION_REQUIRED.": null
+            "description": "Session expired or redeemed, or MERCHANT_INTEGRATION_REQUIRED."
           },
           "503": {
             "$ref": "#/components/responses/SessionValidationUnavailable"
@@ -488,7 +480,7 @@
             "bearerAuth": []
           },
           {
-            "merchantReportingKey": []
+            "merchantServerKey": []
           }
         ],
         "requestBody": {
@@ -558,13 +550,10 @@
             }
           },
           "400": {
-            "description": "Invalid input",
-            "retired token": null,
-            "or amount/product/currency mismatch": null
+            "description": "Invalid input, retired token, or amount/product/currency mismatch"
           },
           "401": {
-            "description": "Vendor JWT or reporting key invalid",
-            "or merchant inactive": null
+            "description": "Vendor JWT or reporting key invalid, or merchant inactive"
           },
           "403": {
             "description": "Current enrollment authority or merchant disclosure unavailable"
@@ -573,8 +562,7 @@
             "description": "Unknown benefit authorization for this merchant"
           },
           "409": {
-            "description": "Conflicting report bindings",
-            "or a late first report needing explicit reconciliation": null
+            "description": "Conflicting report bindings, or a late first report needing explicit reconciliation"
           },
           "422": {
             "description": "Request body failed strict validation"
@@ -603,7 +591,8 @@
             "name": "id",
             "required": true,
             "schema": {
-              "type": "string"
+              "type": "string",
+              "format": "uuid"
             },
             "description": "Awoof transaction ID returned by reporting."
           }
@@ -695,9 +684,7 @@
             }
           },
           "400": {
-            "description": "Invalid transition",
-            "inactive vendor": null,
-            "or Awoof-managed payment": null
+            "description": "Invalid transition, inactive vendor, or Awoof-managed payment"
           },
           "401": {
             "description": "Valid vendor JWT required"
@@ -709,7 +696,7 @@
             "description": "Savings reconciliation required before refund bookkeeping"
           },
           "422": {
-            "description": "Invalid status input"
+            "description": "Invalid order ID or status input"
           },
           "503": {
             "$ref": "#/components/responses/SessionValidationUnavailable"
@@ -730,12 +717,6 @@
         "type": "http",
         "scheme": "bearer",
         "description": "Private awoof_ reporting server key sent as a Bearer token. Never send this key to a browser. JWTs and public widget keys are not accepted."
-      },
-      "merchantReportingKey": {
-        "type": "apiKey",
-        "in": "header",
-        "name": "Authorization",
-        "description": "Private merchant reporting key in the form Bearer awoof_…; server-to-server only."
       }
     },
     "responses": {
