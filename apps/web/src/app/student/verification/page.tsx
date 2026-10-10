@@ -147,6 +147,7 @@ function VerificationForm() {
         <Link href="/student/profile" className="underline">Back to profile</Link>
         <h1 className="text-2xl font-semibold">Student verification</h1>
         <p><Link href="/student/profile/complete?redirect=%2Fstudent%2Fverification" className="underline">Complete your student profile (optional)</Link></p>
+        <p>Optional details never change your verification status.</p>
         {error && <p role="alert" className="text-red-700">{error}</p>}
         {!status && error && <button type="button" className="underline" onClick={() => void retryStatus()}>Retry</button>}
         {message && <p role="status">{message}</p>}

@@ -43,4 +43,11 @@ export const helpSections: HelpSection[] = [
       'If you cannot complete a recovery step, recovery cannot continue without the requested proofs. Account-specific help may require a signed-in session to inspect the account state. Receipts on an existing account remain its history.',
     ],
   },
+  {
+    heading: 'Optional academic details',
+    paragraphs: [
+      'If your account is offered optional academic details, your answers stay in your own account: completing them never verifies your enrollment and never changes your eligibility. Merchants never receive your course, entry year, entry route, or expected graduation year.',
+      'An estimated graduation year appears only where a reviewed duration rule covers your exact programme and entry route. Where no reviewed rule exists, no estimate is shown instead of a guess.',
+    ],
+  },
 ];

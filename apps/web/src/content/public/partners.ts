@@ -226,5 +226,6 @@ export const developerSeparations = [
   'Server keys are not browser keys. Keys live on your backend; nothing secret goes in pages, apps, or URLs.',
   'Receipt history is not new authorization. Replays return the committed receipt; only a fresh approved check creates a new one.',
   'Claim links are not redemptions. A shared handoff URL redeems nothing without your nonce-bound checkout session and a server-side exchange.',
+  'Academic answers are not merchant data. Optional course, entry, and graduation details never appear in receipts, and the student academic-profile routes are not a merchant integration surface.',
   'Errors are explicit: 400 invalid code, campaign, claim-session binding, or product availability, 401 invalid key or inactive merchant, 403 check no longer current, 409 expired, conflicting, or unintegrated claim, 422 invalid request shape, 429 quota exhausted.',
 ];

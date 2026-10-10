@@ -29,6 +29,19 @@ test('help page is usable without login and guides pending states honestly', asy
   await expect(page).not.toHaveURL(/\/auth\//);
 });
 
+test('help and trust state the optional academic-details boundaries', async ({ page }) => {
+  await installSyntheticApi(page);
+  await page.goto('/help');
+  await expect(page.getByRole('heading', { name: 'Optional academic details' })).toBeVisible();
+  await expect(page.locator('main')).toContainText('never verifies your enrollment');
+  await expect(page.locator('main')).toContainText('Merchants never receive your course');
+  await expect(page.locator('main')).toContainText('no estimate is shown instead of a guess');
+  await page.goto('/trust');
+  await expect(page.locator('main')).toContainText('Merchants never receive optional academic answers');
+  await page.goto('/developers');
+  await expect(page.locator('main')).toContainText('Academic answers are not merchant data');
+});
+
 test('contact page links real support with sign-in expectations', async ({ page }) => {
   await installSyntheticApi(page);
   await page.goto('/contact');
