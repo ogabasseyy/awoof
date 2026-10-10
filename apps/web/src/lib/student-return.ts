@@ -11,6 +11,42 @@ function hasMalformedEscape(value: string): boolean {
  */
 export const STUDENT_SSO_ONBOARDING_RETURN_PATH = '/auth/student/sso/onboarding';
 
+/**
+ * The full-screen student profile completion route. It is never a prompt
+ * source or an automatic-prompt target of itself: completion exits reject
+ * this pathname family so routing cannot wrap or loop.
+ */
+export const STUDENT_PROFILE_COMPLETION_PATH = '/student/profile/complete';
+
+/**
+ * True for the completion pathname, its trailing-slash equivalent, any
+ * deeper completion path, and any query/hash variant. Operates on an
+ * already-resolved same-origin path; it never validates a raw candidate.
+ */
+export function isStudentProfileCompletionDestination(path: string): boolean {
+    return path === STUDENT_PROFILE_COMPLETION_PATH
+        || path.startsWith(`${STUDENT_PROFILE_COMPLETION_PATH}/`)
+        || path.startsWith(`${STUDENT_PROFILE_COMPLETION_PATH}?`)
+        || path.startsWith(`${STUDENT_PROFILE_COMPLETION_PATH}#`);
+}
+
+export type StudentPostAuthDecision = 'complete_profile' | 'continue';
+
+/**
+ * Resolve the post-auth navigation target. Completion routes to the full
+ * screen with the single validated continuation preserved; continue passes
+ * the safe destination through unchanged, never recursively wrapping a
+ * completion URL in another return parameter.
+ */
+export function resolveStudentPostAuthDestination(input: {
+    decision: StudentPostAuthDecision;
+    safeDestination: string;
+}): string {
+    if (input.decision !== 'complete_profile') return input.safeDestination;
+    const query = new URLSearchParams({ redirect: input.safeDestination }).toString();
+    return `${STUDENT_PROFILE_COMPLETION_PATH}?${query}`;
+}
+
 function resolveCandidate(candidate: string | null, origin: string): string | null {
     if (!candidate || hasMalformedEscape(candidate) || candidate.includes('\\')) return null;
     try {

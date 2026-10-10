@@ -29,6 +29,12 @@ import {
 } from '@/lib/auth-response';
 import { resolveStudentReturn } from '@/lib/student-return';
 import { revokeLogoutSession } from '@/lib/logout-revocation';
+import { fetchAcademicProfile } from '@/lib/student-academic-profile';
+import {
+    clearDeferral,
+    deferralStorage,
+    resolveStudentPostAuthNavigation,
+} from '@/lib/student-profile-prompt';
 import { parseStudentAssurance, type StudentAssurance } from '@/lib/student-assurance';
 import { parseSsoFinishResponse } from '@/lib/student-login-flow';
 import {
@@ -257,6 +263,28 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         setIsLoading(false);
         setUser(account);
         setStudentAssurance(studentAssuranceFrom(account, response.data));
+        if (account.role === 'student' && typeof window !== 'undefined') {
+            // Ordinary marketplace browse consults the profile projection
+            // once; explicit continuations resolve without a projection read
+            // and failures fail open to the validated destination.
+            const rawRedirect = new URLSearchParams(window.location.search).get('redirect');
+            const safeDestination = resolveStudentReturn(rawRedirect, window.location.origin);
+            const explicitContinuation = rawRedirect !== null && rawRedirect !== '';
+            const navigate = (destination: string): void => {
+                if (!mountedRef.current || operation !== operationRef.current) return;
+                if (getSessionSnapshot().generation !== persisted.generation) return;
+                redirectAfterAuth(destination);
+            };
+            void resolveStudentPostAuthNavigation({
+                accountId: account.id,
+                sessionSnapshot: persisted,
+                safeDestination,
+                explicitContinuation,
+                storage: deferralStorage(),
+                readProjection: fetchAcademicProfile,
+            }).then(navigate, () => navigate(safeDestination));
+            return;
+        }
         redirectAfterAuth(destinationFor(account));
     }, [commitAuthenticatedResponse]);
 
@@ -377,6 +405,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         } finally {
             ownCommitRef.current = false;
         }
+        // Remove only the invalidated session's deferral marker; a delayed
+        // logout must never clear a newer session's choice.
+        clearDeferral(deferralStorage(), captured);
         if (mountedRef.current) {
             setUser(null);
             setStudentAssurance(null);

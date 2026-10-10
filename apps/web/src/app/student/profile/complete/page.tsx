@@ -17,6 +17,7 @@ import Logo from '@/app/components/logo';
 import ProtectedRoute from '@/components/ProtectedRoute';
 import { useAuth } from '@/contexts/AuthContext';
 import { getSessionSnapshot, isCurrentSession, subscribeSessionChanges } from '@/lib/auth';
+import { deferralStorage, writeDeferral } from '@/lib/student-profile-prompt';
 import { schoolAccountLabel, studentStatusLabel } from '@/lib/student-assurance';
 import {
     academicProfileGreeting,
@@ -273,6 +274,7 @@ function MarkButtons({ field, marked, onMark }: MarkButtonsProps) {
 
 function CompletionForm() {
     const router = useRouter();
+    const { user: currentUser } = useAuth();
     const [view, setView] = useState<AcademicProfileView | null>(null);
     const [loadState, setLoadState] = useState<'loading' | 'ready' | 'error'>('loading');
     const [loadError, setLoadError] = useState('');
@@ -630,8 +632,18 @@ function CompletionForm() {
         if (outcome === 'saved') navigateToExit();
     };
 
+    const writeCompleteLaterDeferral = () => {
+        // The captured session fences the write: a late write from an
+        // obsolete session removes only its own key and never suppresses
+        // another login. Navigation proceeds regardless.
+        const accountId = currentUser?.id ?? null;
+        if (!accountId) return;
+        writeDeferral(deferralStorage(), getSessionSnapshot(), accountId);
+    };
+
     const handleCompleteLater = () => {
         if (!dirty) {
+            writeCompleteLaterDeferral();
             navigateToExit();
             return;
         }
@@ -1312,7 +1324,13 @@ function CompletionForm() {
                                 onClick={() => {
                                     setLeaveDialog(false);
                                     void saveDraft().then((outcome) => {
-                                        if (outcome === 'saved') navigateToExit();
+                                        // Defer only after the save is
+                                        // confirmed or reconciled; a failed
+                                        // save stays on the form instead.
+                                        if (outcome === 'saved') {
+                                            writeCompleteLaterDeferral();
+                                            navigateToExit();
+                                        }
                                     });
                                 }}
                                 className="inline-flex min-h-[44px] items-center justify-center rounded-full bg-[#1D4ED8] px-5 text-sm font-bold text-white hover:bg-[#1E40AF] disabled:opacity-50"
@@ -1321,7 +1339,15 @@ function CompletionForm() {
                             </button>
                             <button
                                 type="button"
-                                onClick={navigateToExit}
+                                onClick={() => {
+                                    // Confirmed discard clears only this
+                                    // page's unsaved local draft; saved
+                                    // answers are untouched.
+                                    if (view) resetDraft(view);
+                                    setLeaveDialog(false);
+                                    writeCompleteLaterDeferral();
+                                    navigateToExit();
+                                }}
                                 className="inline-flex min-h-[44px] items-center justify-center rounded-full border border-slate-300 px-5 text-sm font-bold text-slate-700 hover:bg-slate-50"
                             >
                                 Discard and continue

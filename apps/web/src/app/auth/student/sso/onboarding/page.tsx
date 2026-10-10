@@ -17,7 +17,12 @@ import axios from 'axios';
 import { AuthShell } from '@/components/auth/AuthShell';
 import { Button } from '@/components/ui/button';
 import { studentSsoApiClient } from '@/lib/api-client';
-import { getSessionSnapshot, storeTokens, subscribeSessionChanges } from '@/lib/auth';
+import { getSessionSnapshot, getUserFromToken, storeTokens, subscribeSessionChanges } from '@/lib/auth';
+import { fetchAcademicProfile } from '@/lib/student-academic-profile';
+import {
+    deferralStorage,
+    resolveStudentPostAuthNavigation,
+} from '@/lib/student-profile-prompt';
 import { resolveStudentReturn } from '@/lib/student-return';
 import {
     clearSsoAttempt,
@@ -99,6 +104,7 @@ function SignupOnboarding() {
     const [age, setAge] = useState(false); const [terms, setTerms] = useState(false); const [consent, setConsent] = useState(false);
     const [busy, setBusy] = useState(false); const [error, setError] = useState<string | null>(null);
     const [createdDestination, setCreatedDestination] = useState<string | null>(null);
+    const [continuing, setContinuing] = useState(false);
     const started = useRef(false); const initialSession = useRef<number | null>(null);
     const handoff = useRef<SsoHandoffRecord | null>(null);
     // Another tab can sign in while a signup request is in flight. Every
@@ -270,7 +276,26 @@ function SignupOnboarding() {
             completeInFlight.current = false; setBusy(false);
         }
     };
-    if (createdDestination !== null) return <AuthShell role="student" title="Account created" subtitle="Your passwordless account is ready." footer={null}><p role="status" className="text-left text-sm">Recovery is not configured, and losing your school sign-in may prevent account access. Save a recovery code so you can recover with your school mailbox.</p><div className="mt-5 space-y-2"><Button className="w-full rounded-full" asChild><Link href="/student/security">Save your recovery code</Link></Button><Button variant="outline" className="w-full rounded-full" onClick={() => { window.location.href = createdDestination; }}>Continue</Button></div></AuthShell>;
+    const continueAfterRecoveryWarning = (): void => {
+        if (continuing || createdDestination === null) return;
+        setContinuing(true);
+        // After the recovery warning, the same destination rule applies:
+        // only ordinary marketplace browse consults the profile projection,
+        // and failures fail open to the validated continuation.
+        const fallback = createdDestination;
+        void resolveStudentPostAuthNavigation({
+            accountId: getUserFromToken()?.id ?? null,
+            sessionSnapshot: getSessionSnapshot(),
+            safeDestination: fallback,
+            explicitContinuation: false,
+            storage: deferralStorage(),
+            readProjection: fetchAcademicProfile,
+        }).then(
+            (destination) => { window.location.href = destination; },
+            () => { window.location.href = fallback; },
+        );
+    };
+    if (createdDestination !== null) return <AuthShell role="student" title="Account created" subtitle="Your passwordless account is ready." footer={null}><p role="status" className="text-left text-sm">Recovery is not configured, and losing your school sign-in may prevent account access. Save a recovery code so you can recover with your school mailbox.</p><div className="mt-5 space-y-2"><Button className="w-full rounded-full" asChild><Link href="/student/security">Save your recovery code</Link></Button><Button variant="outline" className="w-full rounded-full" onClick={continueAfterRecoveryWarning} disabled={continuing}>{continuing ? 'Continuing…' : 'Continue'}</Button></div></AuthShell>;
     if (ambiguousComplete) return <AuthShell role="student" title="Finish setting up Awoof" subtitle="Setup may have completed." footer={null}><p role="alert">Setup may have finished but the confirmation was lost. Sign in with Microsoft again: if your account was created, you will be signed straight in.</p><Button className="mt-5 w-full rounded-full" asChild><Link href="/auth/student/login">Sign in with Microsoft</Link></Button></AuthShell>;
     if (!context) return <AuthShell role="student" title="Finish setting up Awoof" subtitle="Checking your school sign-in." footer={null}><p role="status">{error ?? 'Checking the pending sign-in…'}</p>{error ? <Button className="mt-5 w-full rounded-full" asChild><Link href="/auth/student/login">Restart Microsoft sign-in</Link></Button> : null}</AuthShell>;
     if (existingAccount) return <AuthShell role="student" title="Finish setting up Awoof" subtitle="An account already uses this email." footer={null}><p role="alert">An Awoof account already uses this school email, so this setup cannot create another. Sign in using a method already linked to that account, or recover it. Once signed in, use Account security to add Microsoft; linking requires fresh proof and this email alone does not authorize it.</p><Button className="mt-5 w-full rounded-full" asChild><Link href="/auth/student/login?redirect=%2Fstudent%2Fsecurity">Sign in to account security</Link></Button><Link className="mt-4 block text-center text-sm text-primary underline" href="/auth/student/recovery">Recover account access</Link></AuthShell>;
