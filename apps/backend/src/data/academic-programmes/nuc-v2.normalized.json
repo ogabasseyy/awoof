@@ -1,0 +1,1914 @@
+{
+  "artifactVersion": 1,
+  "sourceVersion": "NUC_Programme_Durations_2026-10-02_v2",
+  "sourceChecksumSha256": "fc0e27a0dd320da5de75c98a2082c302e5b71af1cfa2ee734a10ceb01855f7a2",
+  "redistributionAllowed": false,
+  "calculationsEnabled": false,
+  "programmes": [],
+  "excluded": [],
+  "blocked": [
+    {
+      "sourceId": "NG001",
+      "reason": "content_withheld_pending_licence",
+      "locator": {
+        "sheet": "Nigeria Register",
+        "row": 2
+      }
+    },
+    {
+      "sourceId": "NG002",
+      "reason": "content_withheld_pending_licence",
+      "locator": {
+        "sheet": "Nigeria Register",
+        "row": 3
+      }
+    },
+    {
+      "sourceId": "NG003",
+      "reason": "content_withheld_pending_licence",
+      "locator": {
+        "sheet": "Nigeria Register",
+        "row": 4
+      }
+    },
+    {
+      "sourceId": "NG004",
+      "reason": "content_withheld_pending_licence",
+      "locator": {
+        "sheet": "Nigeria Register",
+        "row": 5
+      }
+    },
+    {
+      "sourceId": "NG005",
+      "reason": "content_withheld_pending_licence",
+      "locator": {
+        "sheet": "Nigeria Register",
+        "row": 6
+      }
+    },
+    {
+      "sourceId": "NG006",
+      "reason": "content_withheld_pending_licence",
+      "locator": {
+        "sheet": "Nigeria Register",
+        "row": 7
+      }
+    },
+    {
+      "sourceId": "NG007",
+      "reason": "content_withheld_pending_licence",
+      "locator": {
+        "sheet": "Nigeria Register",
+        "row": 8
+      }
+    },
+    {
+      "sourceId": "NG008",
+      "reason": "content_withheld_pending_licence",
+      "locator": {
+        "sheet": "Nigeria Register",
+        "row": 9
+      }
+    },
+    {
+      "sourceId": "NG009",
+      "reason": "content_withheld_pending_licence",
+      "locator": {
+        "sheet": "Nigeria Register",
+        "row": 10
+      }
+    },
+    {
+      "sourceId": "NG010",
+      "reason": "content_withheld_pending_licence",
+      "locator": {
+        "sheet": "Nigeria Register",
+        "row": 11
+      }
+    },
+    {
+      "sourceId": "NG011",
+      "reason": "content_withheld_pending_licence",
+      "locator": {
+        "sheet": "Nigeria Register",
+        "row": 12
+      }
+    },
+    {
+      "sourceId": "NG012",
+      "reason": "content_withheld_pending_licence",
+      "locator": {
+        "sheet": "Nigeria Register",
+        "row": 13
+      }
+    },
+    {
+      "sourceId": "NG013",
+      "reason": "content_withheld_pending_licence",
+      "locator": {
+        "sheet": "Nigeria Register",
+        "row": 14
+      }
+    },
+    {
+      "sourceId": "NG014",
+      "reason": "content_withheld_pending_licence",
+      "locator": {
+        "sheet": "Nigeria Register",
+        "row": 15
+      }
+    },
+    {
+      "sourceId": "NG015",
+      "reason": "content_withheld_pending_licence",
+      "locator": {
+        "sheet": "Nigeria Register",
+        "row": 16
+      }
+    },
+    {
+      "sourceId": "NG016",
+      "reason": "content_withheld_pending_licence",
+      "locator": {
+        "sheet": "Nigeria Register",
+        "row": 17
+      }
+    },
+    {
+      "sourceId": "NG017",
+      "reason": "content_withheld_pending_licence",
+      "locator": {
+        "sheet": "Nigeria Register",
+        "row": 18
+      }
+    },
+    {
+      "sourceId": "NG018",
+      "reason": "content_withheld_pending_licence",
+      "locator": {
+        "sheet": "Nigeria Register",
+        "row": 19
+      }
+    },
+    {
+      "sourceId": "NG019",
+      "reason": "content_withheld_pending_licence",
+      "locator": {
+        "sheet": "Nigeria Register",
+        "row": 20
+      }
+    },
+    {
+      "sourceId": "NG020",
+      "reason": "content_withheld_pending_licence",
+      "locator": {
+        "sheet": "Nigeria Register",
+        "row": 21
+      }
+    },
+    {
+      "sourceId": "NG021",
+      "reason": "content_withheld_pending_licence",
+      "locator": {
+        "sheet": "Nigeria Register",
+        "row": 22
+      }
+    },
+    {
+      "sourceId": "NG022",
+      "reason": "content_withheld_pending_licence",
+      "locator": {
+        "sheet": "Nigeria Register",
+        "row": 23
+      }
+    },
+    {
+      "sourceId": "NG023",
+      "reason": "content_withheld_pending_licence",
+      "locator": {
+        "sheet": "Nigeria Register",
+        "row": 24
+      }
+    },
+    {
+      "sourceId": "NG024",
+      "reason": "content_withheld_pending_licence",
+      "locator": {
+        "sheet": "Nigeria Register",
+        "row": 25
+      }
+    },
+    {
+      "sourceId": "NG025",
+      "reason": "content_withheld_pending_licence",
+      "locator": {
+        "sheet": "Nigeria Register",
+        "row": 26
+      }
+    },
+    {
+      "sourceId": "NG026",
+      "reason": "content_withheld_pending_licence",
+      "locator": {
+        "sheet": "Nigeria Register",
+        "row": 27
+      }
+    },
+    {
+      "sourceId": "NG027",
+      "reason": "content_withheld_pending_licence",
+      "locator": {
+        "sheet": "Nigeria Register",
+        "row": 28
+      }
+    },
+    {
+      "sourceId": "NG028",
+      "reason": "content_withheld_pending_licence",
+      "locator": {
+        "sheet": "Nigeria Register",
+        "row": 29
+      }
+    },
+    {
+      "sourceId": "NG029",
+      "reason": "content_withheld_pending_licence",
+      "locator": {
+        "sheet": "Nigeria Register",
+        "row": 30
+      }
+    },
+    {
+      "sourceId": "NG030",
+      "reason": "content_withheld_pending_licence",
+      "locator": {
+        "sheet": "Nigeria Register",
+        "row": 31
+      }
+    },
+    {
+      "sourceId": "NG031",
+      "reason": "content_withheld_pending_licence",
+      "locator": {
+        "sheet": "Nigeria Register",
+        "row": 32
+      }
+    },
+    {
+      "sourceId": "NG032",
+      "reason": "content_withheld_pending_licence",
+      "locator": {
+        "sheet": "Nigeria Register",
+        "row": 33
+      }
+    },
+    {
+      "sourceId": "NG033",
+      "reason": "content_withheld_pending_licence",
+      "locator": {
+        "sheet": "Nigeria Register",
+        "row": 34
+      }
+    },
+    {
+      "sourceId": "NG034",
+      "reason": "content_withheld_pending_licence",
+      "locator": {
+        "sheet": "Nigeria Register",
+        "row": 35
+      }
+    },
+    {
+      "sourceId": "NG035",
+      "reason": "content_withheld_pending_licence",
+      "locator": {
+        "sheet": "Nigeria Register",
+        "row": 36
+      }
+    },
+    {
+      "sourceId": "NG036",
+      "reason": "content_withheld_pending_licence",
+      "locator": {
+        "sheet": "Nigeria Register",
+        "row": 37
+      }
+    },
+    {
+      "sourceId": "NG037",
+      "reason": "content_withheld_pending_licence",
+      "locator": {
+        "sheet": "Nigeria Register",
+        "row": 38
+      }
+    },
+    {
+      "sourceId": "NG038",
+      "reason": "content_withheld_pending_licence",
+      "locator": {
+        "sheet": "Nigeria Register",
+        "row": 39
+      }
+    },
+    {
+      "sourceId": "NG039",
+      "reason": "content_withheld_pending_licence",
+      "locator": {
+        "sheet": "Nigeria Register",
+        "row": 40
+      }
+    },
+    {
+      "sourceId": "NG040",
+      "reason": "content_withheld_pending_licence",
+      "locator": {
+        "sheet": "Nigeria Register",
+        "row": 41
+      }
+    },
+    {
+      "sourceId": "NG041",
+      "reason": "content_withheld_pending_licence",
+      "locator": {
+        "sheet": "Nigeria Register",
+        "row": 42
+      }
+    },
+    {
+      "sourceId": "NG042",
+      "reason": "content_withheld_pending_licence",
+      "locator": {
+        "sheet": "Nigeria Register",
+        "row": 43
+      }
+    },
+    {
+      "sourceId": "NG043",
+      "reason": "content_withheld_pending_licence",
+      "locator": {
+        "sheet": "Nigeria Register",
+        "row": 44
+      }
+    },
+    {
+      "sourceId": "NG044",
+      "reason": "content_withheld_pending_licence",
+      "locator": {
+        "sheet": "Nigeria Register",
+        "row": 45
+      }
+    },
+    {
+      "sourceId": "NG045",
+      "reason": "content_withheld_pending_licence",
+      "locator": {
+        "sheet": "Nigeria Register",
+        "row": 46
+      }
+    },
+    {
+      "sourceId": "NG046",
+      "reason": "content_withheld_pending_licence",
+      "locator": {
+        "sheet": "Nigeria Register",
+        "row": 47
+      }
+    },
+    {
+      "sourceId": "NG047",
+      "reason": "content_withheld_pending_licence",
+      "locator": {
+        "sheet": "Nigeria Register",
+        "row": 48
+      }
+    },
+    {
+      "sourceId": "NG048",
+      "reason": "content_withheld_pending_licence",
+      "locator": {
+        "sheet": "Nigeria Register",
+        "row": 49
+      }
+    },
+    {
+      "sourceId": "NG049",
+      "reason": "content_withheld_pending_licence",
+      "locator": {
+        "sheet": "Nigeria Register",
+        "row": 50
+      }
+    },
+    {
+      "sourceId": "NG050",
+      "reason": "content_withheld_pending_licence",
+      "locator": {
+        "sheet": "Nigeria Register",
+        "row": 51
+      }
+    },
+    {
+      "sourceId": "NG051",
+      "reason": "content_withheld_pending_licence",
+      "locator": {
+        "sheet": "Nigeria Register",
+        "row": 52
+      }
+    },
+    {
+      "sourceId": "NG052",
+      "reason": "content_withheld_pending_licence",
+      "locator": {
+        "sheet": "Nigeria Register",
+        "row": 53
+      }
+    },
+    {
+      "sourceId": "NG053",
+      "reason": "content_withheld_pending_licence",
+      "locator": {
+        "sheet": "Nigeria Register",
+        "row": 54
+      }
+    },
+    {
+      "sourceId": "NG054",
+      "reason": "content_withheld_pending_licence",
+      "locator": {
+        "sheet": "Nigeria Register",
+        "row": 55
+      }
+    },
+    {
+      "sourceId": "NG055",
+      "reason": "content_withheld_pending_licence",
+      "locator": {
+        "sheet": "Nigeria Register",
+        "row": 56
+      }
+    },
+    {
+      "sourceId": "NG056",
+      "reason": "content_withheld_pending_licence",
+      "locator": {
+        "sheet": "Nigeria Register",
+        "row": 57
+      }
+    },
+    {
+      "sourceId": "NG057",
+      "reason": "content_withheld_pending_licence",
+      "locator": {
+        "sheet": "Nigeria Register",
+        "row": 58
+      }
+    },
+    {
+      "sourceId": "NG058",
+      "reason": "content_withheld_pending_licence",
+      "locator": {
+        "sheet": "Nigeria Register",
+        "row": 59
+      }
+    },
+    {
+      "sourceId": "NG059",
+      "reason": "content_withheld_pending_licence",
+      "locator": {
+        "sheet": "Nigeria Register",
+        "row": 60
+      }
+    },
+    {
+      "sourceId": "NG060",
+      "reason": "content_withheld_pending_licence",
+      "locator": {
+        "sheet": "Nigeria Register",
+        "row": 61
+      }
+    },
+    {
+      "sourceId": "NG061",
+      "reason": "content_withheld_pending_licence",
+      "locator": {
+        "sheet": "Nigeria Register",
+        "row": 62
+      }
+    },
+    {
+      "sourceId": "NG062",
+      "reason": "content_withheld_pending_licence",
+      "locator": {
+        "sheet": "Nigeria Register",
+        "row": 63
+      }
+    },
+    {
+      "sourceId": "NG063",
+      "reason": "content_withheld_pending_licence",
+      "locator": {
+        "sheet": "Nigeria Register",
+        "row": 64
+      }
+    },
+    {
+      "sourceId": "NG064",
+      "reason": "content_withheld_pending_licence",
+      "locator": {
+        "sheet": "Nigeria Register",
+        "row": 65
+      }
+    },
+    {
+      "sourceId": "NG065",
+      "reason": "content_withheld_pending_licence",
+      "locator": {
+        "sheet": "Nigeria Register",
+        "row": 66
+      }
+    },
+    {
+      "sourceId": "NG066",
+      "reason": "content_withheld_pending_licence",
+      "locator": {
+        "sheet": "Nigeria Register",
+        "row": 67
+      }
+    },
+    {
+      "sourceId": "NG067",
+      "reason": "content_withheld_pending_licence",
+      "locator": {
+        "sheet": "Nigeria Register",
+        "row": 68
+      }
+    },
+    {
+      "sourceId": "NG068",
+      "reason": "content_withheld_pending_licence",
+      "locator": {
+        "sheet": "Nigeria Register",
+        "row": 69
+      }
+    },
+    {
+      "sourceId": "NG069",
+      "reason": "content_withheld_pending_licence",
+      "locator": {
+        "sheet": "Nigeria Register",
+        "row": 70
+      }
+    },
+    {
+      "sourceId": "NG070",
+      "reason": "content_withheld_pending_licence",
+      "locator": {
+        "sheet": "Nigeria Register",
+        "row": 71
+      }
+    },
+    {
+      "sourceId": "NG071",
+      "reason": "content_withheld_pending_licence",
+      "locator": {
+        "sheet": "Nigeria Register",
+        "row": 72
+      }
+    },
+    {
+      "sourceId": "NG072",
+      "reason": "content_withheld_pending_licence",
+      "locator": {
+        "sheet": "Nigeria Register",
+        "row": 73
+      }
+    },
+    {
+      "sourceId": "NG073",
+      "reason": "content_withheld_pending_licence",
+      "locator": {
+        "sheet": "Nigeria Register",
+        "row": 74
+      }
+    },
+    {
+      "sourceId": "NG074",
+      "reason": "content_withheld_pending_licence",
+      "locator": {
+        "sheet": "Nigeria Register",
+        "row": 75
+      }
+    },
+    {
+      "sourceId": "NG075",
+      "reason": "content_withheld_pending_licence",
+      "locator": {
+        "sheet": "Nigeria Register",
+        "row": 76
+      }
+    },
+    {
+      "sourceId": "NG076",
+      "reason": "content_withheld_pending_licence",
+      "locator": {
+        "sheet": "Nigeria Register",
+        "row": 77
+      }
+    },
+    {
+      "sourceId": "NG077",
+      "reason": "content_withheld_pending_licence",
+      "locator": {
+        "sheet": "Nigeria Register",
+        "row": 78
+      }
+    },
+    {
+      "sourceId": "NG078",
+      "reason": "content_withheld_pending_licence",
+      "locator": {
+        "sheet": "Nigeria Register",
+        "row": 79
+      }
+    },
+    {
+      "sourceId": "NG079",
+      "reason": "content_withheld_pending_licence",
+      "locator": {
+        "sheet": "Nigeria Register",
+        "row": 80
+      }
+    },
+    {
+      "sourceId": "NG080",
+      "reason": "content_withheld_pending_licence",
+      "locator": {
+        "sheet": "Nigeria Register",
+        "row": 81
+      }
+    },
+    {
+      "sourceId": "NG081",
+      "reason": "content_withheld_pending_licence",
+      "locator": {
+        "sheet": "Nigeria Register",
+        "row": 82
+      }
+    },
+    {
+      "sourceId": "NG082",
+      "reason": "content_withheld_pending_licence",
+      "locator": {
+        "sheet": "Nigeria Register",
+        "row": 83
+      }
+    },
+    {
+      "sourceId": "NG083",
+      "reason": "content_withheld_pending_licence",
+      "locator": {
+        "sheet": "Nigeria Register",
+        "row": 84
+      }
+    },
+    {
+      "sourceId": "NG084",
+      "reason": "content_withheld_pending_licence",
+      "locator": {
+        "sheet": "Nigeria Register",
+        "row": 85
+      }
+    },
+    {
+      "sourceId": "NG085",
+      "reason": "content_withheld_pending_licence",
+      "locator": {
+        "sheet": "Nigeria Register",
+        "row": 86
+      }
+    },
+    {
+      "sourceId": "NG086",
+      "reason": "content_withheld_pending_licence",
+      "locator": {
+        "sheet": "Nigeria Register",
+        "row": 87
+      }
+    },
+    {
+      "sourceId": "NG087",
+      "reason": "content_withheld_pending_licence",
+      "locator": {
+        "sheet": "Nigeria Register",
+        "row": 88
+      }
+    },
+    {
+      "sourceId": "NG088",
+      "reason": "content_withheld_pending_licence",
+      "locator": {
+        "sheet": "Nigeria Register",
+        "row": 89
+      }
+    },
+    {
+      "sourceId": "NG089",
+      "reason": "content_withheld_pending_licence",
+      "locator": {
+        "sheet": "Nigeria Register",
+        "row": 90
+      }
+    },
+    {
+      "sourceId": "NG090",
+      "reason": "content_withheld_pending_licence",
+      "locator": {
+        "sheet": "Nigeria Register",
+        "row": 91
+      }
+    },
+    {
+      "sourceId": "NG091",
+      "reason": "content_withheld_pending_licence",
+      "locator": {
+        "sheet": "Nigeria Register",
+        "row": 92
+      }
+    },
+    {
+      "sourceId": "NG092",
+      "reason": "content_withheld_pending_licence",
+      "locator": {
+        "sheet": "Nigeria Register",
+        "row": 93
+      }
+    },
+    {
+      "sourceId": "NG093",
+      "reason": "content_withheld_pending_licence",
+      "locator": {
+        "sheet": "Nigeria Register",
+        "row": 94
+      }
+    },
+    {
+      "sourceId": "NG094",
+      "reason": "content_withheld_pending_licence",
+      "locator": {
+        "sheet": "Nigeria Register",
+        "row": 95
+      }
+    },
+    {
+      "sourceId": "NG095",
+      "reason": "content_withheld_pending_licence",
+      "locator": {
+        "sheet": "Nigeria Register",
+        "row": 96
+      }
+    },
+    {
+      "sourceId": "NG096",
+      "reason": "content_withheld_pending_licence",
+      "locator": {
+        "sheet": "Nigeria Register",
+        "row": 97
+      }
+    },
+    {
+      "sourceId": "NG097",
+      "reason": "content_withheld_pending_licence",
+      "locator": {
+        "sheet": "Nigeria Register",
+        "row": 98
+      }
+    },
+    {
+      "sourceId": "NG098",
+      "reason": "content_withheld_pending_licence",
+      "locator": {
+        "sheet": "Nigeria Register",
+        "row": 99
+      }
+    },
+    {
+      "sourceId": "NG099",
+      "reason": "content_withheld_pending_licence",
+      "locator": {
+        "sheet": "Nigeria Register",
+        "row": 100
+      }
+    },
+    {
+      "sourceId": "NG100",
+      "reason": "content_withheld_pending_licence",
+      "locator": {
+        "sheet": "Nigeria Register",
+        "row": 101
+      }
+    },
+    {
+      "sourceId": "NG101",
+      "reason": "content_withheld_pending_licence",
+      "locator": {
+        "sheet": "Nigeria Register",
+        "row": 102
+      }
+    },
+    {
+      "sourceId": "NG102",
+      "reason": "content_withheld_pending_licence",
+      "locator": {
+        "sheet": "Nigeria Register",
+        "row": 103
+      }
+    },
+    {
+      "sourceId": "NG103",
+      "reason": "content_withheld_pending_licence",
+      "locator": {
+        "sheet": "Nigeria Register",
+        "row": 104
+      }
+    },
+    {
+      "sourceId": "NG104",
+      "reason": "content_withheld_pending_licence",
+      "locator": {
+        "sheet": "Nigeria Register",
+        "row": 105
+      }
+    },
+    {
+      "sourceId": "NG105",
+      "reason": "content_withheld_pending_licence",
+      "locator": {
+        "sheet": "Nigeria Register",
+        "row": 106
+      }
+    },
+    {
+      "sourceId": "NG106",
+      "reason": "content_withheld_pending_licence",
+      "locator": {
+        "sheet": "Nigeria Register",
+        "row": 107
+      }
+    },
+    {
+      "sourceId": "NG107",
+      "reason": "content_withheld_pending_licence",
+      "locator": {
+        "sheet": "Nigeria Register",
+        "row": 108
+      }
+    },
+    {
+      "sourceId": "NG108",
+      "reason": "content_withheld_pending_licence",
+      "locator": {
+        "sheet": "Nigeria Register",
+        "row": 109
+      }
+    },
+    {
+      "sourceId": "NG109",
+      "reason": "content_withheld_pending_licence",
+      "locator": {
+        "sheet": "Nigeria Register",
+        "row": 110
+      }
+    },
+    {
+      "sourceId": "NG110",
+      "reason": "content_withheld_pending_licence",
+      "locator": {
+        "sheet": "Nigeria Register",
+        "row": 111
+      }
+    },
+    {
+      "sourceId": "NG111",
+      "reason": "content_withheld_pending_licence",
+      "locator": {
+        "sheet": "Nigeria Register",
+        "row": 112
+      }
+    },
+    {
+      "sourceId": "NG112",
+      "reason": "content_withheld_pending_licence",
+      "locator": {
+        "sheet": "Nigeria Register",
+        "row": 113
+      }
+    },
+    {
+      "sourceId": "NG113",
+      "reason": "content_withheld_pending_licence",
+      "locator": {
+        "sheet": "Nigeria Register",
+        "row": 114
+      }
+    },
+    {
+      "sourceId": "NG114",
+      "reason": "content_withheld_pending_licence",
+      "locator": {
+        "sheet": "Nigeria Register",
+        "row": 115
+      }
+    },
+    {
+      "sourceId": "NG115",
+      "reason": "content_withheld_pending_licence",
+      "locator": {
+        "sheet": "Nigeria Register",
+        "row": 116
+      }
+    },
+    {
+      "sourceId": "NG116",
+      "reason": "content_withheld_pending_licence",
+      "locator": {
+        "sheet": "Nigeria Register",
+        "row": 117
+      }
+    },
+    {
+      "sourceId": "NG117",
+      "reason": "content_withheld_pending_licence",
+      "locator": {
+        "sheet": "Nigeria Register",
+        "row": 118
+      }
+    },
+    {
+      "sourceId": "NG118",
+      "reason": "content_withheld_pending_licence",
+      "locator": {
+        "sheet": "Nigeria Register",
+        "row": 119
+      }
+    },
+    {
+      "sourceId": "NG119",
+      "reason": "content_withheld_pending_licence",
+      "locator": {
+        "sheet": "Nigeria Register",
+        "row": 120
+      }
+    },
+    {
+      "sourceId": "NG120",
+      "reason": "content_withheld_pending_licence",
+      "locator": {
+        "sheet": "Nigeria Register",
+        "row": 121
+      }
+    },
+    {
+      "sourceId": "NG121",
+      "reason": "content_withheld_pending_licence",
+      "locator": {
+        "sheet": "Nigeria Register",
+        "row": 122
+      }
+    },
+    {
+      "sourceId": "NG122",
+      "reason": "content_withheld_pending_licence",
+      "locator": {
+        "sheet": "Nigeria Register",
+        "row": 123
+      }
+    },
+    {
+      "sourceId": "NG123",
+      "reason": "content_withheld_pending_licence",
+      "locator": {
+        "sheet": "Nigeria Register",
+        "row": 124
+      }
+    },
+    {
+      "sourceId": "NG124",
+      "reason": "content_withheld_pending_licence",
+      "locator": {
+        "sheet": "Nigeria Register",
+        "row": 125
+      }
+    },
+    {
+      "sourceId": "NG125",
+      "reason": "content_withheld_pending_licence",
+      "locator": {
+        "sheet": "Nigeria Register",
+        "row": 126
+      }
+    },
+    {
+      "sourceId": "NG126",
+      "reason": "content_withheld_pending_licence",
+      "locator": {
+        "sheet": "Nigeria Register",
+        "row": 127
+      }
+    },
+    {
+      "sourceId": "NG127",
+      "reason": "content_withheld_pending_licence",
+      "locator": {
+        "sheet": "Nigeria Register",
+        "row": 128
+      }
+    },
+    {
+      "sourceId": "NG128",
+      "reason": "content_withheld_pending_licence",
+      "locator": {
+        "sheet": "Nigeria Register",
+        "row": 129
+      }
+    },
+    {
+      "sourceId": "NG129",
+      "reason": "content_withheld_pending_licence",
+      "locator": {
+        "sheet": "Nigeria Register",
+        "row": 130
+      }
+    },
+    {
+      "sourceId": "NG130",
+      "reason": "content_withheld_pending_licence",
+      "locator": {
+        "sheet": "Nigeria Register",
+        "row": 131
+      }
+    },
+    {
+      "sourceId": "NG131",
+      "reason": "content_withheld_pending_licence",
+      "locator": {
+        "sheet": "Nigeria Register",
+        "row": 132
+      }
+    },
+    {
+      "sourceId": "NG132",
+      "reason": "content_withheld_pending_licence",
+      "locator": {
+        "sheet": "Nigeria Register",
+        "row": 133
+      }
+    },
+    {
+      "sourceId": "NG133",
+      "reason": "content_withheld_pending_licence",
+      "locator": {
+        "sheet": "Nigeria Register",
+        "row": 134
+      }
+    },
+    {
+      "sourceId": "NG134",
+      "reason": "content_withheld_pending_licence",
+      "locator": {
+        "sheet": "Nigeria Register",
+        "row": 135
+      }
+    },
+    {
+      "sourceId": "NG135",
+      "reason": "content_withheld_pending_licence",
+      "locator": {
+        "sheet": "Nigeria Register",
+        "row": 136
+      }
+    },
+    {
+      "sourceId": "NG136",
+      "reason": "content_withheld_pending_licence",
+      "locator": {
+        "sheet": "Nigeria Register",
+        "row": 137
+      }
+    },
+    {
+      "sourceId": "NG137",
+      "reason": "content_withheld_pending_licence",
+      "locator": {
+        "sheet": "Nigeria Register",
+        "row": 138
+      }
+    },
+    {
+      "sourceId": "NG138",
+      "reason": "content_withheld_pending_licence",
+      "locator": {
+        "sheet": "Nigeria Register",
+        "row": 139
+      }
+    },
+    {
+      "sourceId": "NG139",
+      "reason": "content_withheld_pending_licence",
+      "locator": {
+        "sheet": "Nigeria Register",
+        "row": 140
+      }
+    },
+    {
+      "sourceId": "NG140",
+      "reason": "content_withheld_pending_licence",
+      "locator": {
+        "sheet": "Nigeria Register",
+        "row": 141
+      }
+    },
+    {
+      "sourceId": "NG141",
+      "reason": "content_withheld_pending_licence",
+      "locator": {
+        "sheet": "Nigeria Register",
+        "row": 142
+      }
+    },
+    {
+      "sourceId": "NG142",
+      "reason": "content_withheld_pending_licence",
+      "locator": {
+        "sheet": "Nigeria Register",
+        "row": 143
+      }
+    },
+    {
+      "sourceId": "NG143",
+      "reason": "content_withheld_pending_licence",
+      "locator": {
+        "sheet": "Nigeria Register",
+        "row": 144
+      }
+    },
+    {
+      "sourceId": "NG144",
+      "reason": "content_withheld_pending_licence",
+      "locator": {
+        "sheet": "Nigeria Register",
+        "row": 145
+      }
+    },
+    {
+      "sourceId": "NG145",
+      "reason": "content_withheld_pending_licence",
+      "locator": {
+        "sheet": "Nigeria Register",
+        "row": 146
+      }
+    },
+    {
+      "sourceId": "NG146",
+      "reason": "content_withheld_pending_licence",
+      "locator": {
+        "sheet": "Nigeria Register",
+        "row": 147
+      }
+    },
+    {
+      "sourceId": "NG147",
+      "reason": "content_withheld_pending_licence",
+      "locator": {
+        "sheet": "Nigeria Register",
+        "row": 148
+      }
+    },
+    {
+      "sourceId": "NG148",
+      "reason": "content_withheld_pending_licence",
+      "locator": {
+        "sheet": "Nigeria Register",
+        "row": 149
+      }
+    },
+    {
+      "sourceId": "NG149",
+      "reason": "content_withheld_pending_licence",
+      "locator": {
+        "sheet": "Nigeria Register",
+        "row": 150
+      }
+    },
+    {
+      "sourceId": "NG150",
+      "reason": "content_withheld_pending_licence",
+      "locator": {
+        "sheet": "Nigeria Register",
+        "row": 151
+      }
+    },
+    {
+      "sourceId": "NG151",
+      "reason": "content_withheld_pending_licence",
+      "locator": {
+        "sheet": "Nigeria Register",
+        "row": 152
+      }
+    },
+    {
+      "sourceId": "NG152",
+      "reason": "content_withheld_pending_licence",
+      "locator": {
+        "sheet": "Nigeria Register",
+        "row": 153
+      }
+    },
+    {
+      "sourceId": "NG153",
+      "reason": "content_withheld_pending_licence",
+      "locator": {
+        "sheet": "Nigeria Register",
+        "row": 154
+      }
+    },
+    {
+      "sourceId": "NG154",
+      "reason": "content_withheld_pending_licence",
+      "locator": {
+        "sheet": "Nigeria Register",
+        "row": 155
+      }
+    },
+    {
+      "sourceId": "NG155",
+      "reason": "content_withheld_pending_licence",
+      "locator": {
+        "sheet": "Nigeria Register",
+        "row": 156
+      }
+    },
+    {
+      "sourceId": "NG156",
+      "reason": "content_withheld_pending_licence",
+      "locator": {
+        "sheet": "Nigeria Register",
+        "row": 157
+      }
+    },
+    {
+      "sourceId": "NG157",
+      "reason": "content_withheld_pending_licence",
+      "locator": {
+        "sheet": "Nigeria Register",
+        "row": 158
+      }
+    },
+    {
+      "sourceId": "NG158",
+      "reason": "content_withheld_pending_licence",
+      "locator": {
+        "sheet": "Nigeria Register",
+        "row": 159
+      }
+    },
+    {
+      "sourceId": "NG159",
+      "reason": "content_withheld_pending_licence",
+      "locator": {
+        "sheet": "Nigeria Register",
+        "row": 160
+      }
+    },
+    {
+      "sourceId": "NG160",
+      "reason": "content_withheld_pending_licence",
+      "locator": {
+        "sheet": "Nigeria Register",
+        "row": 161
+      }
+    },
+    {
+      "sourceId": "NG161",
+      "reason": "content_withheld_pending_licence",
+      "locator": {
+        "sheet": "Nigeria Register",
+        "row": 162
+      }
+    },
+    {
+      "sourceId": "NG162",
+      "reason": "content_withheld_pending_licence",
+      "locator": {
+        "sheet": "Nigeria Register",
+        "row": 163
+      }
+    },
+    {
+      "sourceId": "NG163",
+      "reason": "content_withheld_pending_licence",
+      "locator": {
+        "sheet": "Nigeria Register",
+        "row": 164
+      }
+    },
+    {
+      "sourceId": "NG164",
+      "reason": "content_withheld_pending_licence",
+      "locator": {
+        "sheet": "Nigeria Register",
+        "row": 165
+      }
+    },
+    {
+      "sourceId": "NG165",
+      "reason": "content_withheld_pending_licence",
+      "locator": {
+        "sheet": "Nigeria Register",
+        "row": 166
+      }
+    },
+    {
+      "sourceId": "NG166",
+      "reason": "content_withheld_pending_licence",
+      "locator": {
+        "sheet": "Nigeria Register",
+        "row": 167
+      }
+    },
+    {
+      "sourceId": "NG167",
+      "reason": "content_withheld_pending_licence",
+      "locator": {
+        "sheet": "Nigeria Register",
+        "row": 168
+      }
+    },
+    {
+      "sourceId": "NG168",
+      "reason": "content_withheld_pending_licence",
+      "locator": {
+        "sheet": "Nigeria Register",
+        "row": 169
+      }
+    },
+    {
+      "sourceId": "NG169",
+      "reason": "content_withheld_pending_licence",
+      "locator": {
+        "sheet": "Nigeria Register",
+        "row": 170
+      }
+    },
+    {
+      "sourceId": "NG170",
+      "reason": "content_withheld_pending_licence",
+      "locator": {
+        "sheet": "Nigeria Register",
+        "row": 171
+      }
+    },
+    {
+      "sourceId": "NG171",
+      "reason": "content_withheld_pending_licence",
+      "locator": {
+        "sheet": "Nigeria Register",
+        "row": 172
+      }
+    },
+    {
+      "sourceId": "NG172",
+      "reason": "content_withheld_pending_licence",
+      "locator": {
+        "sheet": "Nigeria Register",
+        "row": 173
+      }
+    },
+    {
+      "sourceId": "NG173",
+      "reason": "content_withheld_pending_licence",
+      "locator": {
+        "sheet": "Nigeria Register",
+        "row": 174
+      }
+    },
+    {
+      "sourceId": "NG174",
+      "reason": "content_withheld_pending_licence",
+      "locator": {
+        "sheet": "Nigeria Register",
+        "row": 175
+      }
+    },
+    {
+      "sourceId": "NG175",
+      "reason": "content_withheld_pending_licence",
+      "locator": {
+        "sheet": "Nigeria Register",
+        "row": 176
+      }
+    },
+    {
+      "sourceId": "NG176",
+      "reason": "content_withheld_pending_licence",
+      "locator": {
+        "sheet": "Nigeria Register",
+        "row": 177
+      }
+    },
+    {
+      "sourceId": "NG177",
+      "reason": "content_withheld_pending_licence",
+      "locator": {
+        "sheet": "Nigeria Register",
+        "row": 178
+      }
+    },
+    {
+      "sourceId": "NG178",
+      "reason": "content_withheld_pending_licence",
+      "locator": {
+        "sheet": "Nigeria Register",
+        "row": 179
+      }
+    },
+    {
+      "sourceId": "NG179",
+      "reason": "content_withheld_pending_licence",
+      "locator": {
+        "sheet": "Nigeria Register",
+        "row": 180
+      }
+    },
+    {
+      "sourceId": "NG180",
+      "reason": "content_withheld_pending_licence",
+      "locator": {
+        "sheet": "Nigeria Register",
+        "row": 181
+      }
+    },
+    {
+      "sourceId": "NG181",
+      "reason": "content_withheld_pending_licence",
+      "locator": {
+        "sheet": "Nigeria Register",
+        "row": 182
+      }
+    },
+    {
+      "sourceId": "NG182",
+      "reason": "content_withheld_pending_licence",
+      "locator": {
+        "sheet": "Nigeria Register",
+        "row": 183
+      }
+    },
+    {
+      "sourceId": "NG183",
+      "reason": "content_withheld_pending_licence",
+      "locator": {
+        "sheet": "Nigeria Register",
+        "row": 184
+      }
+    },
+    {
+      "sourceId": "NG184",
+      "reason": "content_withheld_pending_licence",
+      "locator": {
+        "sheet": "Nigeria Register",
+        "row": 185
+      }
+    },
+    {
+      "sourceId": "NG185",
+      "reason": "content_withheld_pending_licence",
+      "locator": {
+        "sheet": "Nigeria Register",
+        "row": 186
+      }
+    },
+    {
+      "sourceId": "NG186",
+      "reason": "content_withheld_pending_licence",
+      "locator": {
+        "sheet": "Nigeria Register",
+        "row": 187
+      }
+    },
+    {
+      "sourceId": "NG187",
+      "reason": "content_withheld_pending_licence",
+      "locator": {
+        "sheet": "Nigeria Register",
+        "row": 188
+      }
+    },
+    {
+      "sourceId": "NG188",
+      "reason": "content_withheld_pending_licence",
+      "locator": {
+        "sheet": "Nigeria Register",
+        "row": 189
+      }
+    },
+    {
+      "sourceId": "NG189",
+      "reason": "content_withheld_pending_licence",
+      "locator": {
+        "sheet": "Nigeria Register",
+        "row": 190
+      }
+    },
+    {
+      "sourceId": "NG190",
+      "reason": "content_withheld_pending_licence",
+      "locator": {
+        "sheet": "Nigeria Register",
+        "row": 191
+      }
+    },
+    {
+      "sourceId": "NG191",
+      "reason": "content_withheld_pending_licence",
+      "locator": {
+        "sheet": "Nigeria Register",
+        "row": 192
+      }
+    },
+    {
+      "sourceId": "NG192",
+      "reason": "content_withheld_pending_licence",
+      "locator": {
+        "sheet": "Nigeria Register",
+        "row": 193
+      }
+    },
+    {
+      "sourceId": "NG193",
+      "reason": "content_withheld_pending_licence",
+      "locator": {
+        "sheet": "Nigeria Register",
+        "row": 194
+      }
+    },
+    {
+      "sourceId": "NG194",
+      "reason": "content_withheld_pending_licence",
+      "locator": {
+        "sheet": "Nigeria Register",
+        "row": 195
+      }
+    },
+    {
+      "sourceId": "NG195",
+      "reason": "content_withheld_pending_licence",
+      "locator": {
+        "sheet": "Nigeria Register",
+        "row": 196
+      }
+    },
+    {
+      "sourceId": "NG196",
+      "reason": "content_withheld_pending_licence",
+      "locator": {
+        "sheet": "Nigeria Register",
+        "row": 197
+      }
+    },
+    {
+      "sourceId": "NG197",
+      "reason": "content_withheld_pending_licence",
+      "locator": {
+        "sheet": "Nigeria Register",
+        "row": 198
+      }
+    },
+    {
+      "sourceId": "NG198",
+      "reason": "content_withheld_pending_licence",
+      "locator": {
+        "sheet": "Nigeria Register",
+        "row": 199
+      }
+    },
+    {
+      "sourceId": "NG199",
+      "reason": "content_withheld_pending_licence",
+      "locator": {
+        "sheet": "Nigeria Register",
+        "row": 200
+      }
+    },
+    {
+      "sourceId": "NG200",
+      "reason": "content_withheld_pending_licence",
+      "locator": {
+        "sheet": "Nigeria Register",
+        "row": 201
+      }
+    },
+    {
+      "sourceId": "NG201",
+      "reason": "content_withheld_pending_licence",
+      "locator": {
+        "sheet": "Nigeria Register",
+        "row": 202
+      }
+    },
+    {
+      "sourceId": "NG202",
+      "reason": "content_withheld_pending_licence",
+      "locator": {
+        "sheet": "Nigeria Register",
+        "row": 203
+      }
+    },
+    {
+      "sourceId": "NG203",
+      "reason": "content_withheld_pending_licence",
+      "locator": {
+        "sheet": "Nigeria Register",
+        "row": 204
+      }
+    },
+    {
+      "sourceId": "NG204",
+      "reason": "content_withheld_pending_licence",
+      "locator": {
+        "sheet": "Nigeria Register",
+        "row": 205
+      }
+    },
+    {
+      "sourceId": "NG205",
+      "reason": "content_withheld_pending_licence",
+      "locator": {
+        "sheet": "Nigeria Register",
+        "row": 206
+      }
+    },
+    {
+      "sourceId": "NG206",
+      "reason": "content_withheld_pending_licence",
+      "locator": {
+        "sheet": "Nigeria Register",
+        "row": 207
+      }
+    },
+    {
+      "sourceId": "NG207",
+      "reason": "content_withheld_pending_licence",
+      "locator": {
+        "sheet": "Nigeria Register",
+        "row": 208
+      }
+    },
+    {
+      "sourceId": "NG208",
+      "reason": "content_withheld_pending_licence",
+      "locator": {
+        "sheet": "Nigeria Register",
+        "row": 209
+      }
+    },
+    {
+      "sourceId": "NG209",
+      "reason": "content_withheld_pending_licence",
+      "locator": {
+        "sheet": "Nigeria Register",
+        "row": 210
+      }
+    },
+    {
+      "sourceId": "NG210",
+      "reason": "content_withheld_pending_licence",
+      "locator": {
+        "sheet": "Nigeria Register",
+        "row": 211
+      }
+    },
+    {
+      "sourceId": "NG211",
+      "reason": "content_withheld_pending_licence",
+      "locator": {
+        "sheet": "Nigeria Register",
+        "row": 212
+      }
+    },
+    {
+      "sourceId": "NG212",
+      "reason": "content_withheld_pending_licence",
+      "locator": {
+        "sheet": "Nigeria Register",
+        "row": 213
+      }
+    },
+    {
+      "sourceId": "NG213",
+      "reason": "content_withheld_pending_licence",
+      "locator": {
+        "sheet": "Nigeria Register",
+        "row": 214
+      }
+    },
+    {
+      "sourceId": "NG214",
+      "reason": "content_withheld_pending_licence",
+      "locator": {
+        "sheet": "Nigeria Register",
+        "row": 215
+      }
+    },
+    {
+      "sourceId": "NG215",
+      "reason": "content_withheld_pending_licence",
+      "locator": {
+        "sheet": "Nigeria Register",
+        "row": 216
+      }
+    },
+    {
+      "sourceId": "NG216",
+      "reason": "content_withheld_pending_licence",
+      "locator": {
+        "sheet": "Nigeria Register",
+        "row": 217
+      }
+    },
+    {
+      "sourceId": "NG217",
+      "reason": "content_withheld_pending_licence",
+      "locator": {
+        "sheet": "Nigeria Register",
+        "row": 218
+      }
+    },
+    {
+      "sourceId": "NG218",
+      "reason": "content_withheld_pending_licence",
+      "locator": {
+        "sheet": "Nigeria Register",
+        "row": 219
+      }
+    },
+    {
+      "sourceId": "NG219",
+      "reason": "content_withheld_pending_licence",
+      "locator": {
+        "sheet": "Nigeria Register",
+        "row": 220
+      }
+    },
+    {
+      "sourceId": "NG220",
+      "reason": "content_withheld_pending_licence",
+      "locator": {
+        "sheet": "Nigeria Register",
+        "row": 221
+      }
+    },
+    {
+      "sourceId": "NG221",
+      "reason": "content_withheld_pending_licence",
+      "locator": {
+        "sheet": "Nigeria Register",
+        "row": 222
+      }
+    },
+    {
+      "sourceId": "NG222",
+      "reason": "content_withheld_pending_licence",
+      "locator": {
+        "sheet": "Nigeria Register",
+        "row": 223
+      }
+    },
+    {
+      "sourceId": "NG223",
+      "reason": "content_withheld_pending_licence",
+      "locator": {
+        "sheet": "Nigeria Register",
+        "row": 224
+      }
+    },
+    {
+      "sourceId": "NG224",
+      "reason": "content_withheld_pending_licence",
+      "locator": {
+        "sheet": "Nigeria Register",
+        "row": 225
+      }
+    },
+    {
+      "sourceId": "NG225",
+      "reason": "content_withheld_pending_licence",
+      "locator": {
+        "sheet": "Nigeria Register",
+        "row": 226
+      }
+    },
+    {
+      "sourceId": "NG226",
+      "reason": "content_withheld_pending_licence",
+      "locator": {
+        "sheet": "Nigeria Register",
+        "row": 227
+      }
+    },
+    {
+      "sourceId": "NG227",
+      "reason": "content_withheld_pending_licence",
+      "locator": {
+        "sheet": "Nigeria Register",
+        "row": 228
+      }
+    },
+    {
+      "sourceId": "NG228",
+      "reason": "content_withheld_pending_licence",
+      "locator": {
+        "sheet": "Nigeria Register",
+        "row": 229
+      }
+    },
+    {
+      "sourceId": "NG229",
+      "reason": "content_withheld_pending_licence",
+      "locator": {
+        "sheet": "Nigeria Register",
+        "row": 230
+      }
+    },
+    {
+      "sourceId": "NG230",
+      "reason": "content_withheld_pending_licence",
+      "locator": {
+        "sheet": "Nigeria Register",
+        "row": 231
+      }
+    },
+    {
+      "sourceId": "NG231",
+      "reason": "content_withheld_pending_licence",
+      "locator": {
+        "sheet": "Nigeria Register",
+        "row": 232
+      }
+    },
+    {
+      "sourceId": "NG232",
+      "reason": "content_withheld_pending_licence",
+      "locator": {
+        "sheet": "Nigeria Register",
+        "row": 233
+      }
+    },
+    {
+      "sourceId": "NG233",
+      "reason": "content_withheld_pending_licence",
+      "locator": {
+        "sheet": "Nigeria Register",
+        "row": 234
+      }
+    },
+    {
+      "sourceId": "NG234",
+      "reason": "content_withheld_pending_licence",
+      "locator": {
+        "sheet": "Nigeria Register",
+        "row": 235
+      }
+    },
+    {
+      "sourceId": "NG235",
+      "reason": "content_withheld_pending_licence",
+      "locator": {
+        "sheet": "Nigeria Register",
+        "row": 236
+      }
+    },
+    {
+      "sourceId": "NG236",
+      "reason": "content_withheld_pending_licence",
+      "locator": {
+        "sheet": "Nigeria Register",
+        "row": 237
+      }
+    },
+    {
+      "sourceId": "NG237",
+      "reason": "content_withheld_pending_licence",
+      "locator": {
+        "sheet": "Nigeria Register",
+        "row": 238
+      }
+    }
+  ],
+  "counts": {
+    "total": 237,
+    "included": 0,
+    "excluded": 0,
+    "blocked": 237
+  },
+  "checksum": "68df62beff526d4c6218d78c4d9ba5c790b53926ce8fd342d055b0a100518732"
+}
