@@ -17,6 +17,12 @@ export interface User {
     verificationStatus?: 'unverified' | 'verified' | 'expired';
     /** True until a recovered student saves a replacement recovery code. Absent otherwise. */
     recoveryReenrollmentRequired?: boolean;
+    /**
+     * Validated student display name from `/auth/me`. Narrowly limited to the
+     * stored name; authentication responses may omit it, and a blank value
+     * falls back to a generic greeting instead of email guessing.
+     */
+    profile?: { name?: string };
 }
 
 export interface SessionSnapshot {

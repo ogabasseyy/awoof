@@ -17,6 +17,7 @@ import {
     ChevronLeft,
     Sparkles,
     ShieldCheck,
+    GraduationCap,
 } from 'lucide-react';
 import ProtectedRoute from '@/components/ProtectedRoute';
 import { useAuth } from '@/contexts/AuthContext';
@@ -112,6 +113,7 @@ export default function StudentProfilePage() {
     };
 
     const generalItems: MenuItem[] = [
+        { href: '/student/profile/complete?redirect=%2Fstudent%2Fprofile', label: 'Complete your student profile', icon: GraduationCap },
         { href: '/student/verification', label: 'Student verification', icon: ShieldCheck },
         { href: '/student/security', label: 'Account security', icon: KeyRound },
         { href: '/student/profile/notifications', label: 'Notifications', icon: Bell },
