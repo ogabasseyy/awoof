@@ -477,6 +477,156 @@ Access tokens expire in 15 minutes. Use the refresh token endpoint to get a new 
                         },
                     },
                 },
+                AcademicProfileField: {
+                    type: 'string',
+                    enum: ['claimedInstitution', 'programme', 'entryYear', 'entryRoute', 'expectedGraduationYear'],
+                },
+                AcademicProfileClaimedInstitution: {
+                    type: 'object',
+                    additionalProperties: false,
+                    required: ['name', 'countryCode'],
+                    properties: {
+                        name: { type: 'string', minLength: 1, maxLength: 255 },
+                        countryCode: { type: 'string', pattern: '^[A-Z]{2}$', description: 'ISO 3166-1 alpha-2; lower case input is normalized.' },
+                    },
+                },
+                AcademicProfileProgrammeSelection: {
+                    type: 'object',
+                    additionalProperties: false,
+                    required: ['programmeId', 'courseLabel'],
+                    description: 'Exactly one of programmeId (catalogue selection) or courseLabel (free text) is set; the other is null.',
+                    properties: {
+                        programmeId: { type: 'string', minLength: 1, maxLength: 128, nullable: true },
+                        courseLabel: { type: 'string', minLength: 1, maxLength: 255, nullable: true },
+                    },
+                },
+                AcademicProfileGraduationYearChoice: {
+                    oneOf: [
+                        { type: 'object', additionalProperties: false, required: ['kind', 'year'], properties: { kind: { type: 'string', enum: ['accept_estimate'] }, year: { type: 'integer', description: 'Must equal the server-recomputed reviewed estimate.' } } },
+                        { type: 'object', additionalProperties: false, required: ['kind', 'year'], properties: { kind: { type: 'string', enum: ['self_reported'] }, year: { type: 'integer' } } },
+                    ],
+                    discriminator: { propertyName: 'kind' },
+                },
+                AcademicProfileClaimedInstitutionUpdate: {
+                    oneOf: [
+                        { type: 'object', additionalProperties: false, required: ['state', 'value'], properties: { state: { type: 'string', enum: ['supplied'] }, value: { $ref: '#/components/schemas/AcademicProfileClaimedInstitution' } } },
+                        { type: 'object', additionalProperties: false, required: ['state'], properties: { state: { type: 'string', enum: ['unanswered', 'unknown', 'skipped'] } } },
+                    ],
+                    discriminator: { propertyName: 'state' },
+                },
+                AcademicProfileProgrammeUpdate: {
+                    oneOf: [
+                        { type: 'object', additionalProperties: false, required: ['state', 'value'], properties: { state: { type: 'string', enum: ['supplied'] }, value: { $ref: '#/components/schemas/AcademicProfileProgrammeSelection' } } },
+                        { type: 'object', additionalProperties: false, required: ['state'], properties: { state: { type: 'string', enum: ['unanswered', 'unknown', 'skipped'] } } },
+                    ],
+                    discriminator: { propertyName: 'state' },
+                },
+                AcademicProfileEntryYearUpdate: {
+                    oneOf: [
+                        { type: 'object', additionalProperties: false, required: ['state', 'value'], properties: { state: { type: 'string', enum: ['supplied'] }, value: { type: 'integer', minimum: 1900, description: 'Four-digit year, 1900 through the current server year.' } } },
+                        { type: 'object', additionalProperties: false, required: ['state'], properties: { state: { type: 'string', enum: ['unanswered', 'unknown', 'skipped'] } } },
+                    ],
+                    discriminator: { propertyName: 'state' },
+                },
+                AcademicProfileEntryRouteUpdate: {
+                    oneOf: [
+                        { type: 'object', additionalProperties: false, required: ['state', 'value'], properties: { state: { type: 'string', enum: ['supplied'] }, value: { type: 'string', enum: ['utme', 'de_200', 'de_300', 'transfer_other'] } } },
+                        { type: 'object', additionalProperties: false, required: ['state'], properties: { state: { type: 'string', enum: ['unanswered', 'unknown', 'skipped'] } } },
+                    ],
+                    discriminator: { propertyName: 'state' },
+                },
+                AcademicProfileGraduationYearUpdate: {
+                    oneOf: [
+                        { type: 'object', additionalProperties: false, required: ['state', 'value'], properties: { state: { type: 'string', enum: ['supplied'] }, value: { $ref: '#/components/schemas/AcademicProfileGraduationYearChoice' } } },
+                        { type: 'object', additionalProperties: false, required: ['state'], properties: { state: { type: 'string', enum: ['unanswered', 'unknown', 'skipped'] } } },
+                    ],
+                    discriminator: { propertyName: 'state' },
+                },
+                AcademicProfileInput: {
+                    type: 'object',
+                    additionalProperties: false,
+                    required: ['expectedRevision'],
+                    description: 'Strict patch contract. Omitted fields stay unchanged; explicit unanswered clears. No student id, canonical institution id, origin, basis, rule, or review fields are accepted.',
+                    properties: {
+                        expectedRevision: { type: 'integer', minimum: 0 },
+                        claimedInstitution: { $ref: '#/components/schemas/AcademicProfileClaimedInstitutionUpdate' },
+                        programme: { $ref: '#/components/schemas/AcademicProfileProgrammeUpdate' },
+                        entryYear: { $ref: '#/components/schemas/AcademicProfileEntryYearUpdate' },
+                        entryRoute: { $ref: '#/components/schemas/AcademicProfileEntryRouteUpdate' },
+                        expectedGraduationYear: { $ref: '#/components/schemas/AcademicProfileGraduationYearUpdate' },
+                    },
+                },
+                AcademicProfileFields: {
+                    type: 'object',
+                    required: ['claimedInstitution', 'programme', 'entryYear', 'entryRoute', 'expectedGraduationYear', 'graduationYearOrigin', 'estimateBasis', 'estimateStale'],
+                    properties: {
+                        claimedInstitution: { $ref: '#/components/schemas/AcademicProfileClaimedInstitutionUpdate' },
+                        programme: { $ref: '#/components/schemas/AcademicProfileProgrammeUpdate' },
+                        entryYear: { $ref: '#/components/schemas/AcademicProfileEntryYearUpdate' },
+                        entryRoute: { $ref: '#/components/schemas/AcademicProfileEntryRouteUpdate' },
+                        expectedGraduationYear: {
+                            oneOf: [
+                                { type: 'object', additionalProperties: false, required: ['state', 'value'], properties: { state: { type: 'string', enum: ['supplied'] }, value: { type: 'integer' } } },
+                                { type: 'object', additionalProperties: false, required: ['state'], properties: { state: { type: 'string', enum: ['unanswered', 'unknown', 'skipped'] } } },
+                            ],
+                            discriminator: { propertyName: 'state' },
+                        },
+                        graduationYearOrigin: { type: 'string', enum: ['calculated', 'self_reported'], nullable: true, description: 'Server-set; never submitted by the browser.' },
+                        estimateBasis: {
+                            nullable: true,
+                            type: 'object',
+                            additionalProperties: false,
+                            required: ['programmeId', 'entryYear', 'entryRoute', 'ruleId', 'sourceVersion'],
+                            properties: {
+                                programmeId: { type: 'string' },
+                                entryYear: { type: 'integer' },
+                                entryRoute: { type: 'string', enum: ['utme', 'de_200', 'de_300', 'transfer_other'] },
+                                ruleId: { type: 'string' },
+                                sourceVersion: { type: 'string' },
+                            },
+                        },
+                        estimateStale: { type: 'boolean' },
+                    },
+                },
+                AcademicProfileInstitution: {
+                    type: 'object',
+                    required: ['displayName', 'countryCode', 'binding'],
+                    description: 'Effective institution label. Never exposes a canonical institution id.',
+                    properties: {
+                        displayName: { type: 'string', nullable: true },
+                        countryCode: { type: 'string', nullable: true },
+                        binding: { type: 'string', enum: ['server_bound', 'student_claimed', 'unbound'] },
+                    },
+                },
+                AcademicProfileProjection: {
+                    type: 'object',
+                    required: ['revision', 'fields', 'institution', 'institutionConfirmedGraduationYear', 'entryYearSuggestion', 'optionalUnansweredFields', 'attentionFields', 'verificationRequirements', 'verificationContinuationAvailable', 'assuranceState', 'assurance', 'referenceVersion', 'estimate', 'featureEnabled', 'promptDecision'],
+                    properties: {
+                        revision: { type: 'integer', minimum: 0 },
+                        fields: { $ref: '#/components/schemas/AcademicProfileFields' },
+                        institution: { $ref: '#/components/schemas/AcademicProfileInstitution' },
+                        institutionConfirmedGraduationYear: { nullable: true, type: 'object', additionalProperties: false, required: ['year', 'observedAt'], properties: { year: { type: 'integer' }, observedAt: { type: 'string', format: 'date-time' } }, description: 'Read-only; null unless an existing approved source provides it. This feature adds no such source.' },
+                        entryYearSuggestion: { nullable: true, type: 'object', description: 'Null while the optional parser is not enabled for the current context.' },
+                        optionalUnansweredFields: { type: 'array', items: { $ref: '#/components/schemas/AcademicProfileField' } },
+                        attentionFields: { type: 'array', items: { $ref: '#/components/schemas/AcademicProfileField' } },
+                        verificationRequirements: { type: 'array', items: { type: 'string', enum: ['registration_number', 'processing_consent'] } },
+                        verificationContinuationAvailable: { type: 'boolean' },
+                        assuranceState: { type: 'string', enum: ['available', 'unavailable'] },
+                        assurance: { allOf: [{ $ref: '#/components/schemas/StudentAssurance' }], nullable: true },
+                        referenceVersion: { type: 'string', nullable: true },
+                        estimate: { nullable: true, type: 'object', additionalProperties: false, required: ['year', 'ruleId', 'sourceVersion'], properties: { year: { type: 'integer' }, ruleId: { type: 'string' }, sourceVersion: { type: 'string' } } },
+                        featureEnabled: { type: 'boolean' },
+                        promptDecision: { type: 'string', enum: ['complete_profile', 'continue'], description: 'Eligibility to be offered the profile, not a navigation order or authorization change.' },
+                    },
+                },
+                AcademicProfileProjectionResponse: {
+                    type: 'object',
+                    required: ['success', 'data'],
+                    properties: {
+                        success: { type: 'boolean', enum: [true] },
+                        data: { $ref: '#/components/schemas/AcademicProfileProjection' },
+                    },
+                },
                 VerificationMethod: {
                     type: 'object',
                     properties: {

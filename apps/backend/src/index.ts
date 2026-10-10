@@ -285,6 +285,15 @@ export class App {
     }
 
     try {
+      const studentAcademicProfileRoutes = await import('./routes/student-academic-profile.routes.js');
+      this.app.use('/api/students', studentAcademicProfileRoutes.default);
+      appLogger.info('Student academic profile routes registered');
+    } catch (error) {
+      appLogger.error('Failed to register student academic profile routes:', error);
+      throw error;
+    }
+
+    try {
       const universityRoutes = await import('./routes/universities.routes.js');
       this.app.use('/api/universities', universityRoutes.default);
       appLogger.info('University routes registered');
