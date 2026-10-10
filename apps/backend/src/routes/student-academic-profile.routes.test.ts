@@ -10,6 +10,7 @@ import { swaggerSpec } from '../config/swagger.js';
 import { StudentAcademicProfileController } from '../controllers/student-academic-profile.controller.js';
 import { createStudentAcademicProfileRouter } from './student-academic-profile.routes.js';
 import { academicProfileInputSchema, type AcademicProfileProjection } from '../services/academic-profile/academic-profile.types.js';
+import { estimateInputSchema, parseCatalogueQuery } from '../services/academic-profile/academic-programme-reference.service.js';
 
 const ACTOR_ID = 'aaaaaaaa-aaaa-4aaa-aaaa-aaaaaaaaaaaa';
 const SID = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
@@ -235,4 +236,119 @@ test('generated OpenAPI includes the academic profile contract', () => {
     assert.ok(path['put'], 'OpenAPI must document the academic profile write');
     assert.ok(spec.components?.schemas?.['AcademicProfileProjection'], 'OpenAPI must define the projection schema');
     assert.ok(spec.components?.schemas?.['AcademicProfileInput'], 'OpenAPI must define the input schema');
+});
+
+test('catalogue and estimate endpoints reject unauthenticated requests', async () => {
+    const controller = new StudentAcademicProfileController({ isCollectionEnabled: () => true });
+    await withServer(createStudentAcademicProfileRouter(controller), async (baseUrl) => {
+        for (const [method, path] of [['GET', 'institutions'], ['GET', 'programmes']] as const) {
+            const response = await fetch(`${baseUrl}/academic-profile/${path}`, { method });
+            assert.equal(response.status, 401, path);
+        }
+        const estimate = await fetch(`${baseUrl}/academic-profile/estimate`, {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ programmeId: null, entryYear: null, entryRoute: null }),
+        });
+        assert.equal(estimate.status, 401);
+    });
+});
+
+test('catalogue and estimate endpoints reject requests while collection is disabled', async () => {
+    const controller = new StudentAcademicProfileController({ isCollectionEnabled: () => false });
+    await withServer(createStudentAcademicProfileRouter(controller), async (baseUrl) => {
+        const headers = { authorization: `Bearer ${studentToken()}` };
+        for (const path of ['institutions', 'programmes']) {
+            const response = await fetch(`${baseUrl}/academic-profile/${path}?q=a`, { headers });
+            assert.equal(response.status, 403, path);
+        }
+        const estimate = await fetch(`${baseUrl}/academic-profile/estimate`, {
+            method: 'POST',
+            headers: { ...headers, 'content-type': 'application/json' },
+            body: JSON.stringify({ programmeId: null, entryYear: null, entryRoute: null }),
+        });
+        assert.equal(estimate.status, 403);
+    });
+});
+
+test('catalogue searches bind to the authenticated student and enforce bounded queries', async () => {
+    const seen: Array<{ userId: string; query: unknown }> = [];
+    const controller = new StudentAcademicProfileController({
+        isCollectionEnabled: () => true,
+        searchInstitutions: async (userId, query) => {
+            seen.push({ userId, query });
+            parseCatalogueQuery(query);
+            return { items: [{ name: 'Fixture University', countryCode: 'NG' }], nextCursor: null };
+        },
+        searchProgrammes: async (userId, query) => {
+            seen.push({ userId, query });
+            parseCatalogueQuery(query);
+            return { items: [{ programmeId: 'SYN-ENG', label: 'Synthetic Engineering', award: 'B.Eng' }], nextCursor: null };
+        },
+    });
+    await withServer(createStudentAcademicProfileRouter(controller), async (baseUrl) => {
+        const headers = { authorization: `Bearer ${studentToken()}` };
+        const institutions = await fetch(`${baseUrl}/academic-profile/institutions?q=fixture&limit=5`, { headers });
+        assert.equal(institutions.status, 200);
+        const institutionBody = (await institutions.json()) as { success: boolean; data: { items: unknown[]; nextCursor: null } };
+        assert.equal(institutionBody.success, true);
+        assert.equal(institutionBody.data.items.length, 1);
+        const programmes = await fetch(`${baseUrl}/academic-profile/programmes?q=eng`, { headers });
+        assert.equal(programmes.status, 200);
+        assert.deepEqual(seen.map((entry) => entry.userId), [ACTOR_ID, ACTOR_ID]);
+        assert.deepEqual(JSON.parse(JSON.stringify(seen[0]?.query)), { q: 'fixture', limit: '5' });
+        const overLimit = await fetch(`${baseUrl}/academic-profile/institutions?limit=500`, { headers });
+        assert.equal(overLimit.status, 422);
+        const smuggled = await fetch(`${baseUrl}/academic-profile/programmes?institutionId=${ACTOR_ID}`, { headers });
+        assert.equal(smuggled.status, 422);
+    });
+});
+
+test('estimate binds to the authenticated student and rejects country overrides', async () => {
+    const seen: Array<{ userId: string; body: unknown }> = [];
+    const controller = new StudentAcademicProfileController({
+        isCollectionEnabled: () => true,
+        estimateGraduationYear: async (userId, body) => {
+            seen.push({ userId, body });
+            estimateInputSchema.parse(body);
+            return { state: 'unavailable', reason: 'unreviewed_rule' };
+        },
+    });
+    await withServer(createStudentAcademicProfileRouter(controller), async (baseUrl) => {
+        const headers = { authorization: `Bearer ${studentToken()}`, 'content-type': 'application/json' };
+        const response = await fetch(`${baseUrl}/academic-profile/estimate`, {
+            method: 'POST',
+            headers,
+            body: JSON.stringify({ programmeId: 'SYN-ENG', entryYear: 2022, entryRoute: 'utme' }),
+        });
+        assert.equal(response.status, 200);
+        const body = (await response.json()) as { success: boolean; data: { state: string; reason: string } };
+        assert.equal(body.success, true);
+        assert.deepEqual(body.data, { state: 'unavailable', reason: 'unreviewed_rule' });
+        assert.deepEqual(seen.map((entry) => entry.userId), [ACTOR_ID]);
+        const override = await fetch(`${baseUrl}/academic-profile/estimate`, {
+            method: 'POST',
+            headers,
+            body: JSON.stringify({ programmeId: 'SYN-ENG', entryYear: 2022, entryRoute: 'utme', countryCode: 'GH' }),
+        });
+        assert.equal(override.status, 422);
+    });
+});
+
+test('generated OpenAPI includes the catalogue and estimate contracts', () => {
+    const spec = swaggerSpec as { paths?: Record<string, unknown>; components?: { schemas?: Record<string, unknown> } };
+    assert.ok(spec.paths?.['/api/students/academic-profile/institutions'], 'OpenAPI must document institution search');
+    assert.ok(spec.paths?.['/api/students/academic-profile/programmes'], 'OpenAPI must document programme search');
+    assert.ok(spec.paths?.['/api/students/academic-profile/estimate'], 'OpenAPI must document the estimate');
+    for (const schema of [
+        'AcademicProfileEntryYearSuggestion',
+        'AcademicProfileCatalogueInstitutionItem',
+        'AcademicProfileCatalogueProgrammeItem',
+        'AcademicProfileInstitutionCataloguePage',
+        'AcademicProfileProgrammeCataloguePage',
+        'AcademicProfileEstimateInput',
+        'AcademicProfileEstimateResult',
+    ]) {
+        assert.ok(spec.components?.schemas?.[schema], `OpenAPI must define ${schema}`);
+    }
 });

@@ -606,7 +606,7 @@ Access tokens expire in 15 minutes. Use the refresh token endpoint to get a new 
                         fields: { $ref: '#/components/schemas/AcademicProfileFields' },
                         institution: { $ref: '#/components/schemas/AcademicProfileInstitution' },
                         institutionConfirmedGraduationYear: { nullable: true, type: 'object', additionalProperties: false, required: ['year', 'observedAt'], properties: { year: { type: 'integer' }, observedAt: { type: 'string', format: 'date-time' } }, description: 'Read-only; null unless an existing approved source provides it. This feature adds no such source.' },
-                        entryYearSuggestion: { nullable: true, type: 'object', description: 'Null while the optional parser is not enabled for the current context.' },
+                        entryYearSuggestion: { $ref: '#/components/schemas/AcademicProfileEntryYearSuggestion' },
                         optionalUnansweredFields: { type: 'array', items: { $ref: '#/components/schemas/AcademicProfileField' } },
                         attentionFields: { type: 'array', items: { $ref: '#/components/schemas/AcademicProfileField' } },
                         verificationRequirements: { type: 'array', items: { type: 'string', enum: ['registration_number', 'processing_consent'] } },
@@ -625,6 +625,92 @@ Access tokens expire in 15 minutes. Use the refresh token endpoint to get a new 
                     properties: {
                         success: { type: 'boolean', enum: [true] },
                         data: { $ref: '#/components/schemas/AcademicProfileProjection' },
+                    },
+                },
+                AcademicProfileEntryYearSuggestion: {
+                    nullable: true,
+                    oneOf: [
+                        { type: 'object', additionalProperties: false, required: ['state', 'year', 'parserId', 'parserVersion', 'confidence'], properties: { state: { type: 'string', enum: ['suggested'] }, year: { type: 'integer' }, parserId: { type: 'string' }, parserVersion: { type: 'string' }, confidence: { type: 'string', enum: ['high', 'medium', 'low'] } } },
+                        { type: 'object', additionalProperties: false, required: ['state', 'reason'], properties: { state: { type: 'string', enum: ['unavailable'] }, reason: { type: 'string', enum: ['no_registration_number', 'unsupported_institution', 'unrecognized_format', 'ambiguous_format'] } } },
+                    ],
+                    discriminator: { propertyName: 'state' },
+                    description: 'Null while the optional parser is not enabled for the current context. Suggestions are never stored values.',
+                },
+                AcademicProfileCatalogueInstitutionItem: {
+                    type: 'object',
+                    additionalProperties: false,
+                    required: ['name', 'countryCode'],
+                    description: 'Display projection only; catalogue membership is not a supported-institution claim.',
+                    properties: {
+                        name: { type: 'string' },
+                        countryCode: { type: 'string', pattern: '^[A-Z]{2}$', nullable: true },
+                    },
+                },
+                AcademicProfileCatalogueProgrammeItem: {
+                    type: 'object',
+                    additionalProperties: false,
+                    required: ['programmeId', 'label', 'award'],
+                    description: 'Programme-name suggestion, not a confirmed list of courses offered by an institution.',
+                    properties: {
+                        programmeId: { type: 'string' },
+                        label: { type: 'string' },
+                        award: { type: 'string', nullable: true },
+                    },
+                },
+                AcademicProfileInstitutionCataloguePage: {
+                    type: 'object',
+                    required: ['success', 'data'],
+                    properties: {
+                        success: { type: 'boolean', enum: [true] },
+                        data: {
+                            type: 'object',
+                            required: ['items', 'nextCursor'],
+                            properties: {
+                                items: { type: 'array', items: { $ref: '#/components/schemas/AcademicProfileCatalogueInstitutionItem' } },
+                                nextCursor: { type: 'string', nullable: true, description: 'Opaque cursor for the next page; null on the last page.' },
+                            },
+                        },
+                    },
+                },
+                AcademicProfileProgrammeCataloguePage: {
+                    type: 'object',
+                    required: ['success', 'data'],
+                    properties: {
+                        success: { type: 'boolean', enum: [true] },
+                        data: {
+                            type: 'object',
+                            required: ['items', 'nextCursor'],
+                            properties: {
+                                items: { type: 'array', items: { $ref: '#/components/schemas/AcademicProfileCatalogueProgrammeItem' } },
+                                nextCursor: { type: 'string', nullable: true, description: 'Opaque cursor for the next page; null on the last page.' },
+                            },
+                        },
+                    },
+                },
+                AcademicProfileEstimateInput: {
+                    type: 'object',
+                    additionalProperties: false,
+                    required: ['programmeId', 'entryYear', 'entryRoute'],
+                    description: 'Estimate inputs only. No country override, rule pick, or cross-user key is accepted.',
+                    properties: {
+                        programmeId: { type: 'string', minLength: 1, maxLength: 128, nullable: true },
+                        entryYear: { type: 'integer', nullable: true },
+                        entryRoute: { type: 'string', enum: ['utme', 'de_200', 'de_300', 'transfer_other'], nullable: true },
+                    },
+                },
+                AcademicProfileEstimateResult: {
+                    type: 'object',
+                    required: ['success', 'data'],
+                    properties: {
+                        success: { type: 'boolean', enum: [true] },
+                        data: {
+                            oneOf: [
+                                { type: 'object', additionalProperties: false, required: ['state', 'year', 'ruleId', 'sourceVersion'], properties: { state: { type: 'string', enum: ['available'] }, year: { type: 'integer' }, ruleId: { type: 'string' }, sourceVersion: { type: 'string' } } },
+                                { type: 'object', additionalProperties: false, required: ['state', 'reason'], properties: { state: { type: 'string', enum: ['unavailable'] }, reason: { type: 'string', enum: ['missing_input', 'unsupported_country', 'unsupported_route', 'unknown_programme', 'unreviewed_rule', 'conflicting_rule', 'out_of_range'] } } },
+                            ],
+                            discriminator: { propertyName: 'state' },
+                            description: 'Advisory only; an available estimate is stored only after the student confirms it.',
+                        },
                     },
                 },
                 VerificationMethod: {

@@ -23,6 +23,12 @@ import {
 import { readStudentAssurance } from '../verification/student-assurance.service.js';
 import type { StudentAssurance } from '../verification/student-assurance.types.js';
 import {
+    REVIEWED_MATRIC_PARSERS,
+    normalizeInstitutionKey,
+    resolveEntryYearSuggestionForProjection,
+    type MatricParser,
+} from './academic-entry-year.service.js';
+import {
     getAvailableVerificationMethods,
     type VerificationMethodInfo,
 } from '../verification/verification-orchestrator.service.js';
@@ -440,14 +446,18 @@ export type AcademicProfileDeps = {
     now?: Date;
     readAssurance?: (tx: PoolClient, userId: string) => Promise<StudentAssurance>;
     listVerificationMethods?: (universityId: string | null) => Promise<VerificationMethodInfo[]>;
+    matricParsers?: readonly MatricParser[];
 };
 
-type AcademicProfileContext = {
+export type AcademicProfileContext = {
     userId: string;
     studentId: string;
     universityId: string | null;
     identityVersion: number;
     universityName: string | null;
+    registrationNumber: string | null;
+    institutionShortcode: string | null;
+    institutionCountry: string | null;
 };
 
 async function defaultReadAssurance(tx: PoolClient, userId: string): Promise<StudentAssurance> {
@@ -464,12 +474,16 @@ function resolveDeps(deps: AcademicProfileDeps): {
     reference: AcademicProgrammeReference;
     readAssurance: (tx: PoolClient, userId: string) => Promise<StudentAssurance>;
     listVerificationMethods: (universityId: string | null) => Promise<VerificationMethodInfo[]>;
+    matricParsers: readonly MatricParser[];
+    currentYear: number;
 } {
     return {
         featureEnabled: deps.featureEnabled ?? isAcademicProfileCollectionEnabled(config.academicProfile),
         reference: deps.reference ?? loadAcademicProgrammeReference(),
         readAssurance: deps.readAssurance ?? defaultReadAssurance,
         listVerificationMethods: deps.listVerificationMethods ?? defaultListVerificationMethods,
+        matricParsers: deps.matricParsers ?? REVIEWED_MATRIC_PARSERS,
+        currentYear: (deps.now ?? new Date()).getUTCFullYear(),
     };
 }
 
@@ -478,7 +492,7 @@ function resolveDeps(deps: AcademicProfileDeps): {
  * directly. Soft-deleted users and deleted student rows project as missing so
  * academic data stays invisible; suspended students keep read access.
  */
-async function lockAcademicProfileContext(
+export async function lockAcademicProfileContext(
     tx: PoolClient,
     userId: string,
     mode: 'read' | 'write',
@@ -490,8 +504,8 @@ async function lockAcademicProfileContext(
     const user = userResult.rows[0];
     if (!user || user.deleted_at !== null) throw new NotFoundError('Student user not found');
     if (user.role !== 'student') throw new ForbiddenError('Academic profiles are available to student accounts only');
-    const studentResult = await tx.query<{ id: string; university_id: string | null; identity_version: number; status: string }>(
-        `SELECT id, university_id, identity_version, status FROM students WHERE user_id = $1 FOR UPDATE`,
+    const studentResult = await tx.query<{ id: string; university_id: string | null; identity_version: number; status: string; registration_number: string | null }>(
+        `SELECT id, university_id, identity_version, status, registration_number FROM students WHERE user_id = $1 FOR UPDATE`,
         [userId],
     );
     const student = studentResult.rows[0];
@@ -500,14 +514,18 @@ async function lockAcademicProfileContext(
         throw new ForbiddenError('Academic profile cannot be updated while the student account is not active');
     }
     let universityName: string | null = null;
+    let institutionShortcode: string | null = null;
+    let institutionCountry: string | null = null;
     if (student.university_id !== null) {
-        const universityResult = await tx.query<{ id: string; name: string }>(
-            `SELECT id, name FROM universities WHERE id = $1 FOR UPDATE`,
+        const universityResult = await tx.query<{ id: string; name: string; shortcode: string | null; country: string | null }>(
+            `SELECT id, name, shortcode, country FROM universities WHERE id = $1 FOR UPDATE`,
             [student.university_id],
         );
         const university = universityResult.rows[0];
         if (!university) throw new NotFoundError('Canonical university not found');
         universityName = university.name;
+        institutionShortcode = university.shortcode ?? null;
+        institutionCountry = university.country ?? null;
     }
     return {
         userId: user.id,
@@ -515,6 +533,9 @@ async function lockAcademicProfileContext(
         universityId: student.university_id,
         identityVersion: student.identity_version,
         universityName,
+        registrationNumber: student.registration_number ?? null,
+        institutionShortcode,
+        institutionCountry,
     };
 }
 
@@ -671,6 +692,8 @@ async function buildProjection(input: {
     featureEnabled: boolean;
     readAssurance: (tx: PoolClient, userId: string) => Promise<StudentAssurance>;
     listVerificationMethods: (universityId: string | null) => Promise<VerificationMethodInfo[]>;
+    matricParsers: readonly MatricParser[];
+    currentYear: number;
 }): Promise<AcademicProfileProjection> {
     const { ctx, reference } = input;
     const binding: AcademicProfileInstitution['binding'] = ctx.universityId !== null
@@ -715,12 +738,22 @@ async function buildProjection(input: {
     const optionalUnansweredFields = computeOptionalUnansweredFields(fields, binding);
     const attentionFields = computeAttentionFields({ fields, binding, currentSourceVersion: reference.sourceVersion });
     const estimate = input.featureEnabled ? estimateFromFields(fields, reference) : null;
+    const entryYearSuggestion = resolveEntryYearSuggestionForProjection(
+        {
+            featureEnabled: input.featureEnabled,
+            entryYearState: fields.entryYear.state,
+            institutionKey: normalizeInstitutionKey(ctx.institutionShortcode),
+            registrationNumber: ctx.registrationNumber,
+            currentYear: input.currentYear,
+        },
+        input.matricParsers,
+    );
     return {
         revision: input.revision,
         fields,
         institution,
         institutionConfirmedGraduationYear: null,
-        entryYearSuggestion: null,
+        entryYearSuggestion,
         optionalUnansweredFields,
         attentionFields,
         verificationRequirements,
@@ -768,6 +801,8 @@ export async function readAcademicProfile(
             featureEnabled: resolved.featureEnabled,
             readAssurance: resolved.readAssurance,
             listVerificationMethods: resolved.listVerificationMethods,
+            matricParsers: resolved.matricParsers,
+            currentYear: resolved.currentYear,
         });
         await client.query('COMMIT');
         return projection;
@@ -844,6 +879,8 @@ export async function saveAcademicProfile(
             featureEnabled: resolved.featureEnabled,
             readAssurance: resolved.readAssurance,
             listVerificationMethods: resolved.listVerificationMethods,
+            matricParsers: resolved.matricParsers,
+            currentYear: resolved.currentYear,
         });
         await client.query('COMMIT');
         committed = true;
