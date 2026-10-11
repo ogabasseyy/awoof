@@ -183,6 +183,20 @@ export function boundInstitutionCountryCode(universityId: string | null, institu
  */
 export const ESTIMATE_RULE_ID_MAX_LENGTH = 128;
 
+/**
+ * Storage mirror of migration 085 `estimate_basis_source_version
+ * VARCHAR(128)`: no available estimate may carry a longer version, or the
+ * later accept would fail the profile transaction.
+ */
+export const ESTIMATE_SOURCE_VERSION_MAX_LENGTH = 128;
+
+/**
+ * Longest reviewed route duration any estimate path accepts. The reference
+ * builder rejects longer durations at build time; both runtime rule
+ * builders re-check defensively so a hand-fed reference fails closed.
+ */
+export const MAX_REVIEWED_DURATION_YEARS = 20;
+
 /** Every entry-route id any rule builder accepts, so the id cap below covers the longest suffix. */
 const RULE_ID_ROUTE_IDS = ['utme', 'de_200', 'de_300', 'transfer_other'] as const;
 

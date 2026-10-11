@@ -23,7 +23,9 @@ import {
 } from './academic-programme-reference.service.js';
 import {
     ESTIMATE_RULE_ID_MAX_LENGTH,
+    ESTIMATE_SOURCE_VERSION_MAX_LENGTH,
     MAX_ESTIMABLE_PROGRAMME_ID_LENGTH,
+    MAX_REVIEWED_DURATION_YEARS,
 } from './academic-profile.types.js';
 
 const CURRENT_YEAR = 2026;
@@ -200,6 +202,47 @@ test('estimate never emits a rule id that overflows rule-id storage', () => {
     });
 });
 
+test('estimate rejects route durations above the reviewed maximum', () => {
+    const reference = {
+        ...syntheticReference(),
+        programmes: syntheticReference().programmes.map((programme) => (
+            programme.programmeId === 'SYN-ENG'
+                ? { ...programme, routes: { ...programme.routes, utme: rule({ durationYears: MAX_REVIEWED_DURATION_YEARS + 5 }) } }
+                : programme
+        )),
+    };
+    assert.deepEqual(
+        estimateGraduationYear(input({ programmeId: 'SYN-ENG', entryYear: 2000 }), reference, { currentYear: CURRENT_YEAR }),
+        { state: 'unavailable', reason: 'unreviewed_rule' },
+    );
+    const boundaryReference = {
+        ...syntheticReference(),
+        programmes: syntheticReference().programmes.map((programme) => (
+            programme.programmeId === 'SYN-ENG'
+                ? { ...programme, routes: { ...programme.routes, utme: rule({ durationYears: MAX_REVIEWED_DURATION_YEARS }) } }
+                : programme
+        )),
+    };
+    assert.deepEqual(
+        estimateGraduationYear(input({ programmeId: 'SYN-ENG', entryYear: 2000 }), boundaryReference, { currentYear: CURRENT_YEAR }),
+        { state: 'available', year: 2020, ruleId: 'SYN-ENG:utme', sourceVersion: SOURCE_VERSION },
+    );
+});
+
+test('estimate rejects source versions that overflow rule-id storage', () => {
+    const longVersion = `v${'0'.repeat(ESTIMATE_SOURCE_VERSION_MAX_LENGTH)}`;
+    assert.equal(longVersion.length, ESTIMATE_SOURCE_VERSION_MAX_LENGTH + 1);
+    assert.deepEqual(
+        estimateGraduationYear(input({ programmeId: 'SYN-ENG' }), { ...syntheticReference(), sourceVersion: longVersion }, { currentYear: CURRENT_YEAR }),
+        { state: 'unavailable', reason: 'unreviewed_rule' },
+    );
+    const boundaryVersion = `v${'0'.repeat(ESTIMATE_SOURCE_VERSION_MAX_LENGTH - 1)}`;
+    assert.deepEqual(
+        estimateGraduationYear(input({ programmeId: 'SYN-ENG' }), { ...syntheticReference(), sourceVersion: boundaryVersion }, { currentYear: CURRENT_YEAR }),
+        { state: 'available', year: 2026, ruleId: 'SYN-ENG:utme', sourceVersion: boundaryVersion },
+    );
+});
+
 test('transfer route is unavailable without an explicit reviewed rule', () => {
     const reference = syntheticReference();
     assert.deepEqual(
@@ -247,13 +290,6 @@ test('estimate reports out-of-range years instead of fabricating a value', () =>
     );
     assert.deepEqual(
         estimateGraduationYear(input({ entryYear: 2022.5 }), reference, { currentYear: CURRENT_YEAR }),
-        { state: 'unavailable', reason: 'out_of_range' },
-    );
-    const longDuration = syntheticReference({
-        programmes: [programme({ programmeId: 'SYN-ENG', routes: { utme: rule({ durationYears: 25 }) } })],
-    });
-    assert.deepEqual(
-        estimateGraduationYear(input(), longDuration, { currentYear: CURRENT_YEAR }),
         { state: 'unavailable', reason: 'out_of_range' },
     );
 });

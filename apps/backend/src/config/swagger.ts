@@ -491,14 +491,27 @@ Access tokens expire in 15 minutes. Use the refresh token endpoint to get a new 
                     },
                 },
                 AcademicProfileProgrammeSelection: {
-                    type: 'object',
-                    additionalProperties: false,
-                    required: ['programmeId', 'courseLabel'],
+                    oneOf: [
+                        {
+                            type: 'object',
+                            additionalProperties: false,
+                            required: ['programmeId', 'courseLabel'],
+                            properties: {
+                                programmeId: { type: 'string', minLength: 1, maxLength: 128 },
+                                courseLabel: { enum: [null], nullable: true, description: 'Must be null when programmeId is set.' },
+                            },
+                        },
+                        {
+                            type: 'object',
+                            additionalProperties: false,
+                            required: ['programmeId', 'courseLabel'],
+                            properties: {
+                                programmeId: { enum: [null], nullable: true, description: 'Must be null when courseLabel is set.' },
+                                courseLabel: { type: 'string', minLength: 1, maxLength: 255 },
+                            },
+                        },
+                    ],
                     description: 'Exactly one of programmeId (catalogue selection) or courseLabel (free text) is set; the other is null.',
-                    properties: {
-                        programmeId: { type: 'string', minLength: 1, maxLength: 128, nullable: true },
-                        courseLabel: { type: 'string', minLength: 1, maxLength: 255, nullable: true },
-                    },
                 },
                 AcademicProfileGraduationYearChoice: {
                     oneOf: [

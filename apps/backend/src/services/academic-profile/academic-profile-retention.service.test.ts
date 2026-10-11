@@ -19,7 +19,7 @@ test('retention resolution fails closed when the approved window is unset', () =
 });
 
 test('retention resolution rejects non-positive or non-integer windows', () => {
-    for (const value of [0, -30, 1.5, Number.NaN, 'abc', '10x', '0', '-7', '9.5', true, {}, []]) {
+    for (const value of [0, -30, 1.5, Number.NaN, 'abc', '10x', '0', '-7', '9.5', '1e3', '+30', '0x10', '  1e3  ', true, {}, []]) {
         assert.throws(
             () => resolveAcademicProfileRetentionDays(value),
             /positive integer/,

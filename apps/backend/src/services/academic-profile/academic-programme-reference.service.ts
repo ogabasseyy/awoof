@@ -24,6 +24,8 @@ import {
     boundInstitutionCountryCode,
     countryNameToCode,
     ESTIMATE_RULE_ID_MAX_LENGTH,
+    ESTIMATE_SOURCE_VERSION_MAX_LENGTH,
+    MAX_REVIEWED_DURATION_YEARS,
     normalizeArtifactCountryCode,
     type EntryRoute,
 } from './academic-profile.types.js';
@@ -257,7 +259,8 @@ export function estimateGraduationYear(
         return { state: 'unavailable', reason: 'conflicting_rule' };
     }
     if (rule.estimable !== true || rule.reviewed !== true || rule.applicable !== true
-        || typeof rule.durationYears !== 'number' || !Number.isInteger(rule.durationYears) || rule.durationYears < 1) {
+        || typeof rule.durationYears !== 'number' || !Number.isInteger(rule.durationYears)
+        || rule.durationYears < 1 || rule.durationYears > MAX_REVIEWED_DURATION_YEARS) {
         return { state: 'unavailable', reason: 'unreviewed_rule' };
     }
     if (!Number.isInteger(input.entryYear) || input.entryYear < ENTRY_YEAR_MIN || input.entryYear > currentYear) {
@@ -268,7 +271,7 @@ export function estimateGraduationYear(
         return { state: 'unavailable', reason: 'out_of_range' };
     }
     const sourceVersion = reference.sourceVersion;
-    if (sourceVersion === null) {
+    if (sourceVersion === null || sourceVersion.length > ESTIMATE_SOURCE_VERSION_MAX_LENGTH) {
         return { state: 'unavailable', reason: 'unreviewed_rule' };
     }
     const ruleId = `${programme.programmeId}:${input.entryRoute}`;

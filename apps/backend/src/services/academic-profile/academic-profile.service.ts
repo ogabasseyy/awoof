@@ -40,6 +40,8 @@ import {
     academicProfileInputSchema,
     boundInstitutionCountryCode,
     ESTIMATE_RULE_ID_MAX_LENGTH,
+    ESTIMATE_SOURCE_VERSION_MAX_LENGTH,
+    MAX_REVIEWED_DURATION_YEARS,
     normalizeArtifactCountryCode,
     type AcademicField,
     type AcademicProfileFields,
@@ -56,7 +58,6 @@ export const ACADEMIC_PROFILE_REVISION_CONFLICT = 'ACADEMIC_PROFILE_REVISION_CON
 export const ACADEMIC_PROFILE_INSTITUTION_CHANGED = 'ACADEMIC_PROFILE_INSTITUTION_CHANGED';
 
 const ESTIMABLE_ROUTES: readonly string[] = ['utme', 'de_200', 'de_300'];
-const MAX_DURATION_YEARS = 20;
 
 export type ReviewedRouteRule = { durationYears: number; ruleId: string; sourceVersion: string };
 
@@ -98,7 +99,10 @@ export function ruleFromArtifact(
     // input behind it. Imported labels and bare numbers are never approval.
     if (rule.estimable !== true || rule.reviewed !== true || rule.applicable !== true) return null;
     if (typeof rule.durationYears !== 'number' || !Number.isInteger(rule.durationYears)
-        || rule.durationYears < 1 || rule.durationYears > MAX_DURATION_YEARS) return null;
+        || rule.durationYears < 1 || rule.durationYears > MAX_REVIEWED_DURATION_YEARS) return null;
+    // Storage contract: an over-long source version would fail the later
+    // accept write, so it fails closed here instead.
+    if (sourceVersion.length > ESTIMATE_SOURCE_VERSION_MAX_LENGTH) return null;
     const ruleId = `${programmeId}:${route}`;
     // Storage contract: the builder caps ids, but a hand-fed reference must
     // still never produce a rule id that overflows estimate_basis_rule_id.

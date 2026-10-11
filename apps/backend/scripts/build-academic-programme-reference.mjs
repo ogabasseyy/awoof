@@ -50,6 +50,9 @@ const RULE_ID_STORAGE_MAX_LENGTH = 128;
 const RULE_ID_ROUTE_IDS = ['utme', 'de_200', 'de_300', 'transfer_other'];
 export const MAX_ESTIMABLE_PROGRAMME_ID_LENGTH = RULE_ID_STORAGE_MAX_LENGTH - 1
     - Math.max(...RULE_ID_ROUTE_IDS.map((route) => route.length));
+// Storage mirror of migration 085 `estimate_basis_source_version
+// VARCHAR(128)`: longer versions would fail the later accept write.
+export const MAX_ESTIMATE_SOURCE_VERSION_LENGTH = 128;
 
 function isPlainObject(value) {
     if (value === null || typeof value !== 'object' || Array.isArray(value)) return false;
@@ -288,6 +291,9 @@ export function buildReference({ extract, expectedChecksum, redistribution }) {
     assertKnownFields(extract, KNOWN_EXTRACT_FIELDS, 'extract');
     if (typeof extract.sourceVersion !== 'string' || extract.sourceVersion.trim() === '') {
         throw new Error('invalid source version: expected a non-empty string');
+    }
+    if (extract.sourceVersion.trim().length > MAX_ESTIMATE_SOURCE_VERSION_LENGTH) {
+        throw new Error(`invalid source version: exceeds ${MAX_ESTIMATE_SOURCE_VERSION_LENGTH} characters and cannot be stored on accept`);
     }
     if (typeof extract.sourceChecksumSha256 !== 'string' || !CHECKSUM_PATTERN.test(extract.sourceChecksumSha256)) {
         throw new Error('invalid source checksum: expected 64 hex characters');

@@ -8,7 +8,9 @@ import {
     academicProfileInputSchema,
     boundInstitutionCountryCode,
     ESTIMATE_RULE_ID_MAX_LENGTH,
+    ESTIMATE_SOURCE_VERSION_MAX_LENGTH,
     MAX_ESTIMABLE_PROGRAMME_ID_LENGTH,
+    MAX_REVIEWED_DURATION_YEARS,
     normalizeArtifactCountryCode,
     type AcademicField,
     type AcademicProfileInput,
@@ -550,6 +552,40 @@ test('artifact rules never emit a rule id that overflows rule-id storage', () =>
     assert.deepEqual(
         ruleFromArtifact(boundaryProgrammes, 'TEST-REF-v1', boundaryId, 'de_300'),
         { durationYears: 4, ruleId: `${boundaryId}:de_300`, sourceVersion: 'TEST-REF-v1' },
+    );
+});
+
+test('artifact rules reject durations above the reviewed maximum', () => {
+    const programmes = [{
+        programmeId: 'P-001',
+        countryCode: 'NG',
+        routes: { utme: { durationYears: MAX_REVIEWED_DURATION_YEARS + 1, reviewed: true, applicable: true, estimable: true } },
+    }];
+    assert.deepEqual(ruleFromArtifact(programmes, 'TEST-REF-v1', 'P-001', 'utme'), null);
+    const boundary = [{
+        programmeId: 'P-001',
+        countryCode: 'NG',
+        routes: { utme: { durationYears: MAX_REVIEWED_DURATION_YEARS, reviewed: true, applicable: true, estimable: true } },
+    }];
+    assert.deepEqual(
+        ruleFromArtifact(boundary, 'TEST-REF-v1', 'P-001', 'utme'),
+        { durationYears: MAX_REVIEWED_DURATION_YEARS, ruleId: 'P-001:utme', sourceVersion: 'TEST-REF-v1' },
+    );
+});
+
+test('artifact rules reject source versions that overflow estimate storage', () => {
+    const programmes = [{
+        programmeId: 'P-001',
+        countryCode: 'NG',
+        routes: { utme: { durationYears: 4, reviewed: true, applicable: true, estimable: true } },
+    }];
+    const longVersion = `v${'0'.repeat(ESTIMATE_SOURCE_VERSION_MAX_LENGTH)}`;
+    assert.equal(longVersion.length, ESTIMATE_SOURCE_VERSION_MAX_LENGTH + 1);
+    assert.deepEqual(ruleFromArtifact(programmes, longVersion, 'P-001', 'utme'), null);
+    const boundaryVersion = `v${'0'.repeat(ESTIMATE_SOURCE_VERSION_MAX_LENGTH - 1)}`;
+    assert.deepEqual(
+        ruleFromArtifact(programmes, boundaryVersion, 'P-001', 'utme'),
+        { durationYears: 4, ruleId: 'P-001:utme', sourceVersion: boundaryVersion },
     );
 });
 

@@ -9,6 +9,7 @@ import {
     KNOWN_EVIDENCE,
     KNOWN_ROUTES,
     MAX_ESTIMABLE_PROGRAMME_ID_LENGTH,
+    MAX_ESTIMATE_SOURCE_VERSION_LENGTH,
     buildReference,
     classifyRow,
     computeArtifactChecksum,
@@ -120,6 +121,17 @@ test('over-long source ids fail generation before they can overflow rule-id stor
     const artifact = build([baseRow({ sourceId: longest })]);
     assert.equal(artifact.programmes[0].programmeId, longest.toLowerCase());
     assert.throws(() => build([baseRow({ sourceId: `${longest}0` })]), /cannot form a storable rule id/i);
+});
+
+test('over-long source versions fail generation before they can overflow estimate storage', () => {
+    const longest = `v${'0'.repeat(MAX_ESTIMATE_SOURCE_VERSION_LENGTH - 1)}`;
+    assert.equal(longest.length, MAX_ESTIMATE_SOURCE_VERSION_LENGTH);
+    const artifact = build([baseRow()], { extract: baseExtract([baseRow()], { sourceVersion: longest }) });
+    assert.equal(artifact.sourceVersion, longest);
+    assert.throws(
+        () => build([baseRow()], { extract: baseExtract([baseRow()], { sourceVersion: `${longest}0` }) }),
+        /cannot be stored on accept/i,
+    );
 });
 
 test('missing source locators fail generation', () => {
