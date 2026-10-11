@@ -21,6 +21,10 @@ import {
     type ReferenceProgramme,
     type ReferenceRouteRule,
 } from './academic-programme-reference.service.js';
+import {
+    ESTIMATE_RULE_ID_MAX_LENGTH,
+    MAX_ESTIMABLE_PROGRAMME_ID_LENGTH,
+} from './academic-profile.types.js';
 
 const CURRENT_YEAR = 2026;
 const SOURCE_VERSION = 'SYNTHETIC-REF-v1';
@@ -144,9 +148,56 @@ test('estimate rejects a programme from outside the bound institution country', 
         { state: 'available', year: 2026, ruleId: 'SYN-ENG:utme', sourceVersion: SOURCE_VERSION },
     );
     assert.deepEqual(
-        estimateGraduationYear(input({ programmeId: 'SYN-ENG' }), reference, { currentYear: CURRENT_YEAR, expectedCountryCode: null }),
+        estimateGraduationYear(input({ programmeId: 'SYN-ENG' }), reference, { currentYear: CURRENT_YEAR, expectedCountryCode: undefined }),
         { state: 'available', year: 2026, ruleId: 'SYN-ENG:utme', sourceVersion: SOURCE_VERSION },
     );
+});
+
+test('estimate fails closed for a bound but country-unmapped student', () => {
+    const reference = syntheticReference();
+    assert.deepEqual(
+        estimateGraduationYear(input({ programmeId: 'SYN-ENG' }), reference, { currentYear: CURRENT_YEAR, expectedCountryCode: null }),
+        { state: 'unavailable', reason: 'unsupported_country' },
+    );
+});
+
+test('estimate never emits a rule id that overflows rule-id storage', () => {
+    const longId = `syn-${'e'.repeat(118)}`;
+    assert.equal(longId.length, 122);
+    assert.ok(`${longId}:transfer_other`.length > ESTIMATE_RULE_ID_MAX_LENGTH);
+    const reference = {
+        ...syntheticReference(),
+        programmes: syntheticReference().programmes.map((programme) => (
+            programme.programmeId === 'SYN-ENG'
+                ? { ...programme, programmeId: longId, routes: { ...programme.routes, transfer_other: programme.routes.utme } }
+                : programme
+        )),
+    };
+    assert.deepEqual(
+        estimateGraduationYear(input({ programmeId: longId, entryRoute: 'transfer_other' }), reference, { currentYear: CURRENT_YEAR }),
+        { state: 'unavailable', reason: 'unreviewed_rule' },
+    );
+    const boundaryId = `syn-${'e'.repeat(MAX_ESTIMABLE_PROGRAMME_ID_LENGTH - 4)}`;
+    assert.equal(`${boundaryId}:transfer_other`.length, ESTIMATE_RULE_ID_MAX_LENGTH);
+    const boundaryReference = {
+        ...syntheticReference(),
+        programmes: syntheticReference().programmes.map((programme) => (
+            programme.programmeId === 'SYN-ENG'
+                ? { ...programme, programmeId: boundaryId, routes: { ...programme.routes, transfer_other: programme.routes.utme } }
+                : programme
+        )),
+    };
+    const boundary = estimateGraduationYear(
+        input({ programmeId: boundaryId, entryRoute: 'transfer_other' }),
+        boundaryReference,
+        { currentYear: CURRENT_YEAR },
+    );
+    assert.deepEqual(boundary, {
+        state: 'available',
+        year: 2026,
+        ruleId: `${boundaryId}:transfer_other`,
+        sourceVersion: SOURCE_VERSION,
+    });
 });
 
 test('transfer route is unavailable without an explicit reviewed rule', () => {
@@ -341,6 +392,8 @@ test('programme search scopes bound students to their national reference', () =>
     assert.equal(scoped.nextCursor, null);
     const general = searchProgrammes(reference, { q: '', cursor: null, limit: 20, countryCode: null });
     assert.equal(general.items.length, 5);
+    const unbound = searchProgrammes(reference, { q: '', cursor: null, limit: 20, countryCode: undefined });
+    assert.equal(unbound.items.length, 5);
 });
 
 test('programme search over the blocked production reference advertises nothing', () => {

@@ -39,6 +39,7 @@ import {
     GRADUATION_HORIZON_YEARS,
     academicProfileInputSchema,
     boundInstitutionCountryCode,
+    ESTIMATE_RULE_ID_MAX_LENGTH,
     normalizeArtifactCountryCode,
     type AcademicField,
     type AcademicProfileFields,
@@ -82,12 +83,15 @@ export function ruleFromArtifact(
     expectedCountryCode?: string | null,
 ): ReviewedRouteRule | null {
     if (!ESTIMABLE_ROUTES.includes(route)) return null;
+    // Bound but country-unmapped (null) fails closed: a rule from another
+    // country's reference must never estimate silently. Undefined (unbound)
+    // imposes no constraint.
+    if (expectedCountryCode === null) return null;
     const programme = programmes.find((candidate) => candidate.programmeId === programmeId);
     if (!programme || typeof programme.routes !== 'object' || programme.routes === null) return null;
     // A bound student's server institution country must match the programme's
-    // own country. Null (unbound or unmapped) imposes no constraint.
-    if (expectedCountryCode !== undefined && expectedCountryCode !== null
-        && programme.countryCode !== expectedCountryCode) return null;
+    // own country.
+    if (expectedCountryCode !== undefined && programme.countryCode !== expectedCountryCode) return null;
     const rule = (programme.routes as Record<string, unknown>)[route] as ReferenceArtifactRoute | undefined;
     if (!rule || typeof rule !== 'object') return null;
     // Fail closed: require the builder's explicit estimable flag plus every
@@ -95,7 +99,11 @@ export function ruleFromArtifact(
     if (rule.estimable !== true || rule.reviewed !== true || rule.applicable !== true) return null;
     if (typeof rule.durationYears !== 'number' || !Number.isInteger(rule.durationYears)
         || rule.durationYears < 1 || rule.durationYears > MAX_DURATION_YEARS) return null;
-    return { durationYears: rule.durationYears, ruleId: `${programmeId}:${route}`, sourceVersion };
+    const ruleId = `${programmeId}:${route}`;
+    // Storage contract: the builder caps ids, but a hand-fed reference must
+    // still never produce a rule id that overflows estimate_basis_rule_id.
+    if (ruleId.length > ESTIMATE_RULE_ID_MAX_LENGTH) return null;
+    return { durationYears: rule.durationYears, ruleId, sourceVersion };
 }
 
 /**
@@ -370,7 +378,7 @@ export function validateAndMergePatch(input: {
     serverBound: boolean;
     reference: AcademicProgrammeReference;
     currentYear: number;
-    expectedCountryCode?: string | null;
+    expectedCountryCode?: string | null | undefined;
 }): AcademicProfileFields {
     const { stored, patch, serverBound, reference, currentYear, expectedCountryCode } = input;
     const merged: AcademicProfileFields = {

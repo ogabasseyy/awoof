@@ -6,6 +6,9 @@ import type { StudentAssurance } from '../verification/student-assurance.types.j
 import type { VerificationMethodInfo } from '../verification/verification-orchestrator.service.js';
 import {
     academicProfileInputSchema,
+    boundInstitutionCountryCode,
+    ESTIMATE_RULE_ID_MAX_LENGTH,
+    MAX_ESTIMABLE_PROGRAMME_ID_LENGTH,
     normalizeArtifactCountryCode,
     type AcademicField,
     type AcademicProfileInput,
@@ -519,8 +522,34 @@ test('artifact rules never estimate a programme from another bound country', () 
         { durationYears: 4, ruleId: 'P-001:utme', sourceVersion: 'TEST-REF-v1' },
     );
     assert.deepEqual(
-        ruleFromArtifact(programmes, 'TEST-REF-v1', 'P-001', 'utme', null),
+        ruleFromArtifact(programmes, 'TEST-REF-v1', 'P-001', 'utme', undefined),
         { durationYears: 4, ruleId: 'P-001:utme', sourceVersion: 'TEST-REF-v1' },
+    );
+    assert.deepEqual(
+        ruleFromArtifact(programmes, 'TEST-REF-v1', 'P-001', 'utme', null),
+        null,
+    );
+});
+
+test('artifact rules never emit a rule id that overflows rule-id storage', () => {
+    const longId = `p-${'0'.repeat(120)}`;
+    assert.equal(`${longId}:de_300`.length, ESTIMATE_RULE_ID_MAX_LENGTH + 1);
+    const programmes = [{
+        programmeId: longId,
+        countryCode: 'NG',
+        routes: { de_300: { durationYears: 4, reviewed: true, applicable: true, estimable: true } },
+    }];
+    assert.deepEqual(ruleFromArtifact(programmes, 'TEST-REF-v1', longId, 'de_300'), null);
+    const boundaryId = `p-${'0'.repeat(MAX_ESTIMABLE_PROGRAMME_ID_LENGTH - 2)}`;
+    assert.equal(boundaryId.length, MAX_ESTIMABLE_PROGRAMME_ID_LENGTH);
+    const boundaryProgrammes = [{
+        programmeId: boundaryId,
+        countryCode: 'NG',
+        routes: { de_300: { durationYears: 4, reviewed: true, applicable: true, estimable: true } },
+    }];
+    assert.deepEqual(
+        ruleFromArtifact(boundaryProgrammes, 'TEST-REF-v1', boundaryId, 'de_300'),
+        { durationYears: 4, ruleId: `${boundaryId}:de_300`, sourceVersion: 'TEST-REF-v1' },
     );
 });
 
@@ -556,6 +585,55 @@ test('merge rejects an accepted estimate from outside the bound country', () => 
         reference: countryAwareReference,
         currentYear: CURRENT_YEAR,
         expectedCountryCode: 'NG',
+    });
+    assert.deepEqual(merged.expectedGraduationYear, { state: 'supplied', value: 2026 });
+});
+
+test('bound institution country distinguishes unbound from unmapped', () => {
+    assert.equal(boundInstitutionCountryCode(null, 'Nigeria'), undefined);
+    assert.equal(boundInstitutionCountryCode(null, null), undefined);
+    assert.equal(boundInstitutionCountryCode(UNIVERSITY_ID, 'Nigeria'), 'NG');
+    assert.equal(boundInstitutionCountryCode(UNIVERSITY_ID, 'Kenya'), null);
+    assert.equal(boundInstitutionCountryCode(UNIVERSITY_ID, null), null);
+});
+
+test('merge rejects an accepted estimate for a country-unmapped bound student', () => {
+    const stored = emptyStored({
+        fields: {
+            ...emptyStored().fields,
+            programme: { state: 'supplied', value: { programmeId: 'P-001', courseLabel: null } },
+            entryYear: { state: 'supplied', value: 2022 },
+            entryRoute: { state: 'supplied', value: 'utme' },
+        },
+    });
+    const programmes = [{
+        programmeId: 'P-001',
+        countryCode: 'NG',
+        label: 'Stylised Physics',
+        routes: { utme: { durationYears: 4, reviewed: true, applicable: true, estimable: true } },
+    }];
+    const artifactReference: AcademicProgrammeReference = {
+        sourceVersion: 'TEST-REF-v1',
+        findReviewedRule: (programmeId, route, expectedCountryCode) => (
+            ruleFromArtifact(programmes, 'TEST-REF-v1', programmeId, route, expectedCountryCode)
+        ),
+        findProgrammeLabel: (programmeId) => labelFromArtifact(programmes, programmeId),
+    };
+    assert.throws(() => validateAndMergePatch({
+        stored,
+        patch: parsePatch({ expectedRevision: 0, expectedGraduationYear: { state: 'supplied', value: { kind: 'accept_estimate', year: 2026 } } }),
+        serverBound: true,
+        reference: artifactReference,
+        currentYear: CURRENT_YEAR,
+        expectedCountryCode: boundInstitutionCountryCode(UNIVERSITY_ID, 'Kenya'),
+    }), BadRequestError);
+    const merged = validateAndMergePatch({
+        stored,
+        patch: parsePatch({ expectedRevision: 0, expectedGraduationYear: { state: 'supplied', value: { kind: 'accept_estimate', year: 2026 } } }),
+        serverBound: true,
+        reference: artifactReference,
+        currentYear: CURRENT_YEAR,
+        expectedCountryCode: boundInstitutionCountryCode(UNIVERSITY_ID, 'Nigeria'),
     });
     assert.deepEqual(merged.expectedGraduationYear, { state: 'supplied', value: 2026 });
 });

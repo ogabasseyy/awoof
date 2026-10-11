@@ -165,11 +165,34 @@ export function countryNameToCode(country: string | null | undefined): string | 
     return COUNTRY_NAME_TO_CODE[country.trim().toUpperCase()] ?? null;
 }
 
-/** Server-bound institution country for estimate scoping: null when unbound or unmapped (no constraint). */
-export function boundInstitutionCountryCode(universityId: string | null, institutionCountry: string | null): string | null {
-    if (universityId === null) return null;
+/**
+ * Server-bound institution country for catalogue and estimate scoping.
+ * Undefined means unbound (no institution, so no constraint); null means
+ * bound but unmapped (the server country name has no code mapping, so
+ * catalogue search stays general while estimate computation fails closed
+ * rather than serving another country's rules silently).
+ */
+export function boundInstitutionCountryCode(universityId: string | null, institutionCountry: string | null): string | null | undefined {
+    if (universityId === null) return undefined;
     return countryNameToCode(institutionCountry);
 }
+
+/**
+ * Storage mirror of migration 085 `estimate_basis_rule_id VARCHAR(128)`:
+ * every constructed rule id must fit, whatever route suffix it carries.
+ */
+export const ESTIMATE_RULE_ID_MAX_LENGTH = 128;
+
+/** Every entry-route id any rule builder accepts, so the id cap below covers the longest suffix. */
+const RULE_ID_ROUTE_IDS = ['utme', 'de_200', 'de_300', 'transfer_other'] as const;
+
+/**
+ * Longest programme id that still forms a storable `${programmeId}:${route}`
+ * rule id under the longest route suffix. The reference builder rejects
+ * longer ids at build time; the rule builders below re-check defensively.
+ */
+export const MAX_ESTIMABLE_PROGRAMME_ID_LENGTH = ESTIMATE_RULE_ID_MAX_LENGTH - 1
+    - Math.max(...RULE_ID_ROUTE_IDS.map((route) => route.length));
 
 /** Default national system for programme artifacts whose root omits a country. */
 export const NUC_ARTIFACT_DEFAULT_COUNTRY_CODE = 'NG';

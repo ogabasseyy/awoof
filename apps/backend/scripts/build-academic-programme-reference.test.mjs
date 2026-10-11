@@ -8,6 +8,7 @@ import {
     ARTIFACT_VERSION,
     KNOWN_EVIDENCE,
     KNOWN_ROUTES,
+    MAX_ESTIMABLE_PROGRAMME_ID_LENGTH,
     buildReference,
     classifyRow,
     computeArtifactChecksum,
@@ -111,6 +112,14 @@ test('aliases colliding with another source id fail generation', () => {
 
 test('empty aliases fail generation', () => {
     assert.throws(() => build([baseRow({ aliases: ['  '] })]), /alias/i);
+});
+
+test('over-long source ids fail generation before they can overflow rule-id storage', () => {
+    const longest = `syn-${'0'.repeat(MAX_ESTIMABLE_PROGRAMME_ID_LENGTH - 4)}`;
+    assert.equal(longest.length, MAX_ESTIMABLE_PROGRAMME_ID_LENGTH);
+    const artifact = build([baseRow({ sourceId: longest })]);
+    assert.equal(artifact.programmes[0].programmeId, longest.toLowerCase());
+    assert.throws(() => build([baseRow({ sourceId: `${longest}0` })]), /cannot form a storable rule id/i);
 });
 
 test('missing source locators fail generation', () => {

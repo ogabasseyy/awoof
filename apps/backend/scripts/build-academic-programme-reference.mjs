@@ -42,6 +42,14 @@ const KNOWN_FLAG_FIELDS = ['legacy', 'derived', 'awardCaveat', 'numericConflict'
 const CHECKSUM_PATTERN = /^[0-9a-f]{64}$/i;
 const PROGRAMME_ID_PATTERN = /^[a-z0-9][a-z0-9._-]*$/;
 const MAX_DURATION_YEARS = 20;
+// Storage mirror of migration 085 `estimate_basis_rule_id VARCHAR(128)`:
+// every `${programmeId}:${route}` rule id must fit. The route list covers
+// every suffix any rule builder accepts (the runtime HTTP path also builds
+// transfer_other rule ids), mirroring MAX_ESTIMABLE_PROGRAMME_ID_LENGTH.
+const RULE_ID_STORAGE_MAX_LENGTH = 128;
+const RULE_ID_ROUTE_IDS = ['utme', 'de_200', 'de_300', 'transfer_other'];
+export const MAX_ESTIMABLE_PROGRAMME_ID_LENGTH = RULE_ID_STORAGE_MAX_LENGTH - 1
+    - Math.max(...RULE_ID_ROUTE_IDS.map((route) => route.length));
 
 function isPlainObject(value) {
     if (value === null || typeof value !== 'object' || Array.isArray(value)) return false;
@@ -169,6 +177,9 @@ function validateRowShape(row, index) {
     const programmeId = normalizeProgrammeId(row.sourceId);
     if (!PROGRAMME_ID_PATTERN.test(programmeId)) {
         throw new Error(`invalid source id '${label}': cannot form a stable programme id`);
+    }
+    if (programmeId.length > MAX_ESTIMABLE_PROGRAMME_ID_LENGTH) {
+        throw new Error(`invalid source id '${label}': programme id exceeds ${MAX_ESTIMABLE_PROGRAMME_ID_LENGTH} characters and cannot form a storable rule id`);
     }
     const locator = normalizeLocator(row.locator, label);
     if (row.withheld === true) {

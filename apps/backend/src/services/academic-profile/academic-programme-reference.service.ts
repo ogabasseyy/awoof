@@ -23,6 +23,7 @@ import {
     GRADUATION_HORIZON_YEARS,
     boundInstitutionCountryCode,
     countryNameToCode,
+    ESTIMATE_RULE_ID_MAX_LENGTH,
     normalizeArtifactCountryCode,
     type EntryRoute,
 } from './academic-profile.types.js';
@@ -219,7 +220,7 @@ export function loadProgrammeReference(...args: [] | [unknown]): ProgrammeRefere
 export function estimateGraduationYear(
     input: EstimateInput,
     reference: ProgrammeReference,
-    options?: { currentYear?: number; expectedCountryCode?: string | null },
+    options?: { currentYear?: number; expectedCountryCode?: string | null | undefined },
 ): EstimateResult {
     const currentYear = options?.currentYear ?? new Date().getUTCFullYear();
     if (input.programmeId === null || input.entryYear === null || input.entryRoute === null) {
@@ -228,14 +229,20 @@ export function estimateGraduationYear(
     if (!reference.calculationsEnabled) {
         return { state: 'unavailable', reason: 'unreviewed_rule' };
     }
+    // Bound but country-unmapped (null) fails closed with the documented
+    // reason instead of silently serving another country's rules. Undefined
+    // (unbound) imposes no constraint.
+    if (options?.expectedCountryCode === null) {
+        return { state: 'unavailable', reason: 'unsupported_country' };
+    }
     const programme = reference.programmes.find((candidate) => candidate.programmeId === input.programmeId);
     if (!programme) {
         return { state: 'unavailable', reason: 'unknown_programme' };
     }
     // A bound student's server institution country must match the programme's
     // own country: one national system's rules never estimate another
-    // country's programme. Null (unbound or unmapped) imposes no constraint.
-    if (options?.expectedCountryCode !== undefined && options.expectedCountryCode !== null
+    // country's programme.
+    if (options?.expectedCountryCode !== undefined
         && programme.countryCode !== options.expectedCountryCode) {
         return { state: 'unavailable', reason: 'unsupported_country' };
     }
@@ -264,7 +271,13 @@ export function estimateGraduationYear(
     if (sourceVersion === null) {
         return { state: 'unavailable', reason: 'unreviewed_rule' };
     }
-    return { state: 'available', year, ruleId: `${programme.programmeId}:${input.entryRoute}`, sourceVersion };
+    const ruleId = `${programme.programmeId}:${input.entryRoute}`;
+    // Storage contract: the builder caps ids, but a hand-fed reference must
+    // still never produce a rule id that overflows estimate_basis_rule_id.
+    if (ruleId.length > ESTIMATE_RULE_ID_MAX_LENGTH) {
+        return { state: 'unavailable', reason: 'unreviewed_rule' };
+    }
+    return { state: 'available', year, ruleId, sourceVersion };
 }
 
 export function encodeCatalogueCursor(offset: number): string {
@@ -303,7 +316,7 @@ export function parseCatalogueQuery(raw: unknown): CatalogueQuery {
 
 export { boundInstitutionCountryCode, countryNameToCode } from './academic-profile.types.js';
 
-export type ProgrammeSearchQuery = CatalogueQuery & { countryCode?: string | null };
+export type ProgrammeSearchQuery = CatalogueQuery & { countryCode?: string | null | undefined };
 
 /** Pure bounded programme search over display fields only. No catalogue entry is a supported-school claim. */
 export function searchProgrammes(reference: ProgrammeReference, query: ProgrammeSearchQuery): CataloguePage<ProgrammeCatalogueItem> {
