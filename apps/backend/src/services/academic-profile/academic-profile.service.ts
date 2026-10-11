@@ -28,6 +28,7 @@ import {
     resolveEntryYearSuggestionForProjection,
     type MatricParser,
 } from './academic-entry-year.service.js';
+import { retentionWindowProducesValidCutoff } from './academic-profile-retention.service.js';
 import {
     getAvailableVerificationMethods,
     type VerificationMethodInfo,
@@ -37,6 +38,7 @@ import {
     ENTRY_YEAR_MIN,
     GRADUATION_HORIZON_YEARS,
     academicProfileInputSchema,
+    boundInstitutionCountryCode,
     type AcademicField,
     type AcademicProfileFields,
     type AcademicProfileInstitution,
@@ -58,21 +60,33 @@ export type ReviewedRouteRule = { durationYears: number; ruleId: string; sourceV
 
 export type AcademicProgrammeReference = {
     sourceVersion: string | null;
-    findReviewedRule: (programmeId: string, route: string) => ReviewedRouteRule | null;
+    findReviewedRule: (programmeId: string, route: string, expectedCountryCode?: string | null) => ReviewedRouteRule | null;
+    findProgrammeLabel: (programmeId: string) => string | null;
 };
 
-type ReferenceArtifactProgramme = { programmeId: unknown; routes: unknown };
-type ReferenceArtifactRoute = { durationYears: unknown; reviewed: unknown; applicable: unknown; estimable: unknown };
+export type ReferenceArtifactProgramme = { programmeId: unknown; routes: unknown; countryCode: unknown; label: unknown };
 
-function ruleFromArtifact(
+export function labelFromArtifact(programmes: ReferenceArtifactProgramme[], programmeId: string): string | null {
+    const programme = programmes.find((candidate) => candidate.programmeId === programmeId);
+    if (!programme || typeof programme.label !== 'string' || programme.label.trim() === '') return null;
+    return programme.label.trim();
+}
+export type ReferenceArtifactRoute = { durationYears: unknown; reviewed: unknown; applicable: unknown; estimable: unknown };
+
+export function ruleFromArtifact(
     programmes: ReferenceArtifactProgramme[],
     sourceVersion: string,
     programmeId: string,
     route: string,
+    expectedCountryCode?: string | null,
 ): ReviewedRouteRule | null {
     if (!ESTIMABLE_ROUTES.includes(route)) return null;
     const programme = programmes.find((candidate) => candidate.programmeId === programmeId);
     if (!programme || typeof programme.routes !== 'object' || programme.routes === null) return null;
+    // A bound student's server institution country must match the programme's
+    // own country. Null (unbound or unmapped) imposes no constraint.
+    if (expectedCountryCode !== undefined && expectedCountryCode !== null
+        && programme.countryCode !== expectedCountryCode) return null;
     const rule = (programme.routes as Record<string, unknown>)[route] as ReferenceArtifactRoute | undefined;
     if (!rule || typeof rule !== 'object') return null;
     // Fail closed: require the builder's explicit estimable flag plus every
@@ -96,36 +110,39 @@ export function loadAcademicProgrammeReference(): AcademicProgrammeReference {
         );
         const parsed: unknown = JSON.parse(raw);
         if (typeof parsed !== 'object' || parsed === null) {
-            return { sourceVersion: null, findReviewedRule: () => null };
+            return { sourceVersion: null, findReviewedRule: () => null, findProgrammeLabel: () => null };
         }
         const artifact = parsed as { calculationsEnabled?: unknown; sourceVersion?: unknown; programmes?: unknown };
         const sourceVersion = typeof artifact.sourceVersion === 'string' && artifact.sourceVersion.length > 0
             ? artifact.sourceVersion
             : null;
         if (artifact.calculationsEnabled !== true || !Array.isArray(artifact.programmes) || sourceVersion === null) {
-            return { sourceVersion, findReviewedRule: () => null };
+            return { sourceVersion, findReviewedRule: () => null, findProgrammeLabel: () => null };
         }
         const programmes = artifact.programmes as ReferenceArtifactProgramme[];
         return {
             sourceVersion,
-            findReviewedRule: (programmeId, route) => ruleFromArtifact(programmes, sourceVersion, programmeId, route),
+            findReviewedRule: (programmeId, route, expectedCountryCode) => ruleFromArtifact(programmes, sourceVersion, programmeId, route, expectedCountryCode),
+            findProgrammeLabel: (programmeId) => labelFromArtifact(programmes, programmeId),
         };
     } catch {
-        return { sourceVersion: null, findReviewedRule: () => null };
+        return { sourceVersion: null, findReviewedRule: () => null, findProgrammeLabel: () => null };
     }
 }
 
 /**
- * Collection gate. The feature flag alone is not enough: an unset (or
- * invalid) approved retention window keeps collection disabled and makes the
- * purge command refuse to run. Reads of existing own-profile data and
+ * Collection gate. The feature flag alone is not enough: an unset, invalid,
+ * or unusable approved retention window keeps collection disabled and makes
+ * the purge command refuse to run. Reads of existing own-profile data and
  * authorized purge stay available while disabled.
  */
-export function isAcademicProfileCollectionEnabled(input: { enabled: boolean; retentionDays: number | null }): boolean {
+export function isAcademicProfileCollectionEnabled(
+    input: { enabled: boolean; retentionDays: number | null },
+    now: Date = new Date(),
+): boolean {
     return input.enabled === true
         && typeof input.retentionDays === 'number'
-        && Number.isInteger(input.retentionDays)
-        && input.retentionDays > 0;
+        && retentionWindowProducesValidCutoff(input.retentionDays, now);
 }
 
 export type StoredAcademicProfile = {
@@ -252,11 +269,12 @@ function storedOrEmpty(row: AcademicProfileRow | null): StoredAcademicProfile {
 export function estimateFromFields(
     fields: AcademicProfileFields,
     reference: AcademicProgrammeReference,
+    expectedCountryCode?: string | null,
 ): { year: number; ruleId: string; sourceVersion: string } | null {
     if (fields.programme.state !== 'supplied' || fields.programme.value.programmeId === null) return null;
     if (fields.entryYear.state !== 'supplied' || fields.entryRoute.state !== 'supplied') return null;
     if (fields.entryYear.value < ENTRY_YEAR_MIN) return null;
-    const rule = reference.findReviewedRule(fields.programme.value.programmeId, fields.entryRoute.value);
+    const rule = reference.findReviewedRule(fields.programme.value.programmeId, fields.entryRoute.value, expectedCountryCode);
     if (!rule) return null;
     return { year: fields.entryYear.value + rule.durationYears, ruleId: rule.ruleId, sourceVersion: rule.sourceVersion };
 }
@@ -336,8 +354,9 @@ export function validateAndMergePatch(input: {
     serverBound: boolean;
     reference: AcademicProgrammeReference;
     currentYear: number;
+    expectedCountryCode?: string | null;
 }): AcademicProfileFields {
-    const { stored, patch, serverBound, reference, currentYear } = input;
+    const { stored, patch, serverBound, reference, currentYear, expectedCountryCode } = input;
     const merged: AcademicProfileFields = {
         claimedInstitution: stored.fields.claimedInstitution,
         programme: stored.fields.programme,
@@ -393,7 +412,7 @@ export function validateAndMergePatch(input: {
             merged.estimateBasis = null;
             merged.estimateStale = false;
         } else {
-            const estimate = estimateFromFields(merged, reference);
+            const estimate = estimateFromFields(merged, reference, expectedCountryCode);
             if (!estimate) {
                 throw new BadRequestError('No reviewed graduation estimate is available for these entries');
             }
@@ -717,15 +736,15 @@ async function buildProjection(input: {
             : { displayName: null, countryCode: null, binding: 'unbound' };
     let assurance: StudentAssurance | null = null;
     let assuranceState: 'available' | 'unavailable' = 'unavailable';
-    // A failing assurance query must not abort the save transaction: without
+    // Failing projection lookups must not abort the save transaction: without
     // this savepoint, PostgreSQL would roll back the already-run upsert at
     // COMMIT while node-postgres still resolves, reporting a phantom
-    // revision as saved.
+    // revision as saved. Both lookups below are side-effect-free reads, so a
+    // rollback keeps the upsert while discarding nothing of value.
     await input.tx.query('SAVEPOINT academic_profile_assurance');
     try {
         assurance = await input.readAssurance(input.tx, input.userId);
         assuranceState = 'available';
-        await input.tx.query('RELEASE SAVEPOINT academic_profile_assurance');
     } catch {
         await input.tx.query('ROLLBACK TO SAVEPOINT academic_profile_assurance');
     }
@@ -740,7 +759,9 @@ async function buildProjection(input: {
             verificationRequirements.push('registration_number');
         }
         if (verificationContinuationAvailable) verificationRequirements.push('processing_consent');
+        await input.tx.query('RELEASE SAVEPOINT academic_profile_assurance');
     } catch {
+        await input.tx.query('ROLLBACK TO SAVEPOINT academic_profile_assurance');
         // Fail closed: an unknown resolver state must not trigger a profile
         // prompt that could overtake a verification continuation.
         verificationContinuationAvailable = true;
@@ -749,7 +770,8 @@ async function buildProjection(input: {
     const fields: AcademicProfileFields = { ...input.fields, estimateStale: isEstimateStale(input.fields, reference.sourceVersion) };
     const optionalUnansweredFields = computeOptionalUnansweredFields(fields, binding);
     const attentionFields = computeAttentionFields({ fields, binding, currentSourceVersion: reference.sourceVersion });
-    const estimate = input.featureEnabled ? estimateFromFields(fields, reference) : null;
+    const expectedCountryCode = boundInstitutionCountryCode(ctx.universityId, ctx.institutionCountry);
+    const estimate = input.featureEnabled ? estimateFromFields(fields, reference, expectedCountryCode) : null;
     const entryYearSuggestion = resolveEntryYearSuggestionForProjection(
         {
             featureEnabled: input.featureEnabled,
@@ -774,6 +796,9 @@ async function buildProjection(input: {
         assurance,
         referenceVersion: reference.sourceVersion,
         estimate,
+        programmeLabel: fields.programme.state === 'supplied' && fields.programme.value.programmeId !== null
+            ? reference.findProgrammeLabel(fields.programme.value.programmeId)
+            : null,
         featureEnabled: input.featureEnabled,
         promptDecision: computePromptDecision({
             featureEnabled: input.featureEnabled,
@@ -878,6 +903,7 @@ export async function saveAcademicProfile(
             serverBound: ctx.universityId !== null,
             reference: resolved.reference,
             currentYear,
+            expectedCountryCode: boundInstitutionCountryCode(ctx.universityId, ctx.institutionCountry),
         });
         const revision = stored.revision + 1;
         await client.query(UPSERT_SQL, upsertParams(ctx, revision, merged));

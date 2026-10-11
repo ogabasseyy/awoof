@@ -17,8 +17,10 @@ import {
     computePromptDecision,
     isAcademicProfileCollectionEnabled,
     isEstimateStale,
+    labelFromArtifact,
     purgeAcademicProfileForUser,
     readAcademicProfile,
+    ruleFromArtifact,
     saveAcademicProfile,
     validateAndMergePatch,
     type AcademicProgrammeReference,
@@ -62,6 +64,7 @@ const registrationAvailable = async (): Promise<VerificationMethodInfo[]> => ([
 const blockedReference: AcademicProgrammeReference = {
     sourceVersion: 'TEST-REF-v1',
     findReviewedRule: () => null,
+    findProgrammeLabel: () => null,
 };
 
 const reviewedReference: AcademicProgrammeReference = {
@@ -75,6 +78,7 @@ const reviewedReference: AcademicProgrammeReference = {
         }
         return null;
     },
+    findProgrammeLabel: (programmeId: string) => (programmeId === 'P-001' ? 'Stylised Physics' : null),
 };
 
 type FakeState = {
@@ -315,6 +319,8 @@ test('collection gate requires both the feature flag and an approved retention w
     assert.equal(isAcademicProfileCollectionEnabled({ enabled: true, retentionDays: -30 }), false);
     assert.equal(isAcademicProfileCollectionEnabled({ enabled: true, retentionDays: 1.5 }), false);
     assert.equal(isAcademicProfileCollectionEnabled({ enabled: true, retentionDays: 90 }), true);
+    assert.equal(isAcademicProfileCollectionEnabled({ enabled: true, retentionDays: 1e308 }), false);
+    assert.equal(isAcademicProfileCollectionEnabled({ enabled: true, retentionDays: 1_000_000_000 }), false);
 });
 
 test('merge preserves omitted fields while applying a partial update', () => {
@@ -495,6 +501,62 @@ test('merge rejects mismatched or unavailable accepted estimates', () => {
         patch: parsePatch({ expectedRevision: 0, expectedGraduationYear: { state: 'supplied', value: { kind: 'accept_estimate', year: 2026 } } }),
         reference: blockedReference,
     }), BadRequestError);
+});
+
+test('artifact rules never estimate a programme from another bound country', () => {
+    const programmes = [{
+        programmeId: 'P-001',
+        countryCode: 'NG',
+        routes: { utme: { durationYears: 4, reviewed: true, applicable: true, estimable: true } },
+    }];
+    assert.deepEqual(
+        ruleFromArtifact(programmes, 'TEST-REF-v1', 'P-001', 'utme', 'GH'),
+        null,
+    );
+    assert.deepEqual(
+        ruleFromArtifact(programmes, 'TEST-REF-v1', 'P-001', 'utme', 'NG'),
+        { durationYears: 4, ruleId: 'P-001:utme', sourceVersion: 'TEST-REF-v1' },
+    );
+    assert.deepEqual(
+        ruleFromArtifact(programmes, 'TEST-REF-v1', 'P-001', 'utme', null),
+        { durationYears: 4, ruleId: 'P-001:utme', sourceVersion: 'TEST-REF-v1' },
+    );
+});
+
+test('merge rejects an accepted estimate from outside the bound country', () => {
+    const stored = emptyStored({
+        fields: {
+            ...emptyStored().fields,
+            programme: { state: 'supplied', value: { programmeId: 'P-001', courseLabel: null } },
+            entryYear: { state: 'supplied', value: 2022 },
+            entryRoute: { state: 'supplied', value: 'utme' },
+        },
+    });
+    const countryAwareReference: AcademicProgrammeReference = {
+        sourceVersion: 'TEST-REF-v1',
+        findProgrammeLabel: () => null,
+        findReviewedRule: (programmeId, route, expectedCountryCode) => {
+            if (expectedCountryCode !== undefined && expectedCountryCode !== null && expectedCountryCode !== 'NG') return null;
+            return reviewedReference.findReviewedRule(programmeId, route);
+        },
+    };
+    assert.throws(() => validateAndMergePatch({
+        stored,
+        patch: parsePatch({ expectedRevision: 0, expectedGraduationYear: { state: 'supplied', value: { kind: 'accept_estimate', year: 2026 } } }),
+        serverBound: true,
+        reference: countryAwareReference,
+        currentYear: CURRENT_YEAR,
+        expectedCountryCode: 'GH',
+    }), BadRequestError);
+    const merged = validateAndMergePatch({
+        stored,
+        patch: parsePatch({ expectedRevision: 0, expectedGraduationYear: { state: 'supplied', value: { kind: 'accept_estimate', year: 2026 } } }),
+        serverBound: true,
+        reference: countryAwareReference,
+        currentYear: CURRENT_YEAR,
+        expectedCountryCode: 'NG',
+    });
+    assert.deepEqual(merged.expectedGraduationYear, { state: 'supplied', value: 2026 });
 });
 
 test('merge never calculates transfer routes without an explicit reviewed rule', () => {
@@ -749,6 +811,29 @@ test('read projects server-bound institutions as read-only display values', asyn
     assert.deepEqual(projection.institution, { displayName: 'Fixture University', countryCode: null, binding: 'server_bound' });
     assert.ok(!projection.optionalUnansweredFields.includes('claimedInstitution'));
     assert.ok(!JSON.stringify(projection).includes(UNIVERSITY_ID));
+});
+
+test('read resolves the saved programme label for catalogue selections', async () => {
+    const state = fakeState({ profile: profileRow({ programme_state: 'supplied', programme_id: 'P-001', course_label: null }) });
+    const labelled = await readAcademicProfile(createFakePool(state) as never, USER_ID, serviceDeps({ reference: reviewedReference }));
+    assert.equal(labelled.programmeLabel, 'Stylised Physics');
+    const unlabelled = await readAcademicProfile(createFakePool(state) as never, USER_ID, serviceDeps());
+    assert.equal(unlabelled.programmeLabel, null);
+    const freeText = fakeState({ profile: profileRow({ programme_state: 'supplied', programme_id: null, course_label: 'Free text' }) });
+    const free = await readAcademicProfile(createFakePool(freeText) as never, USER_ID, serviceDeps({ reference: reviewedReference }));
+    assert.equal(free.programmeLabel, null);
+});
+
+test('artifact labels resolve display text and fail closed on malformed entries', () => {
+    const programmes = [
+        { programmeId: 'P-001', countryCode: 'NG', label: '  Stylised Physics  ', routes: {} },
+        { programmeId: 'P-002', countryCode: 'NG', label: '', routes: {} },
+        { programmeId: 'P-003', countryCode: 'NG', label: 42, routes: {} },
+    ];
+    assert.equal(labelFromArtifact(programmes, 'P-001'), 'Stylised Physics');
+    assert.equal(labelFromArtifact(programmes, 'P-002'), null);
+    assert.equal(labelFromArtifact(programmes, 'P-003'), null);
+    assert.equal(labelFromArtifact(programmes, 'P-404'), null);
 });
 
 test('read derives verification requirements from operational method availability', async () => {

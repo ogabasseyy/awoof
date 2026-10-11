@@ -3,7 +3,7 @@ import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
-import { stageMigrationSql } from './artifact-layout.mjs';
+import { stageMigrationSql, stageProgrammeReferenceJson } from './artifact-layout.mjs';
 import { writeArtifactManifest } from './artifact-manifest.mjs';
 import { selectPostgresTestMode } from './postgres-test-mode.mjs';
 
@@ -11,6 +11,8 @@ function fixture() {
     const root = mkdtempSync(join(tmpdir(), 'awoof-postgres-mode-'));
     mkdirSync(join(root, 'src/database/migrations'), { recursive: true });
     mkdirSync(join(root, 'src/testing/postgres'), { recursive: true });
+    mkdirSync(join(root, 'src/data/academic-programmes'), { recursive: true });
+    mkdirSync(join(root, 'dist/data/academic-programmes'), { recursive: true });
     mkdirSync(join(root, 'dist/database/migrations'), { recursive: true });
     mkdirSync(join(root, 'dist/testing/postgres'), { recursive: true });
     mkdirSync(join(root, 'dist/config'), { recursive: true });
@@ -22,6 +24,8 @@ function fixture() {
     writeFileSync(join(root, 'dist/config/openapi.json'), '{"paths":{"/api/auth/login":{}}}\n');
     writeFileSync(join(root, 'dist/scripts/cleanup-microsoft-attempts.js'), 'export {};\n');
     writeFileSync(join(root, 'dist/scripts/cleanup-student-sso.js'), 'export {};\n');
+    writeFileSync(join(root, 'dist/scripts/cleanup-academic-profile-data.js'), 'export {};\n');
+    writeFileSync(join(root, 'src/data/academic-programmes/nuc-v2.normalized.json'), '{"sourceVersion":"fixture"}\n');
     return root;
 }
 
@@ -66,6 +70,7 @@ test('compiled PostgreSQL tests run only compiled migration and JavaScript paths
     const root = fixture();
     try {
         stageMigrationSql(root);
+        stageProgrammeReferenceJson(root);
         const mode = selectPostgresTestMode({
             backendRoot: root,
             environment: { AWOOF_POSTGRES_ARTIFACT_ROOT: 'dist' },

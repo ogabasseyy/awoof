@@ -18,11 +18,25 @@ import type { Pool } from 'pg';
 
 export const ACADEMIC_PROFILE_RETENTION_ENV_VAR = 'ACADEMIC_PROFILE_RETENTION_DAYS';
 const DAY_MS = 24 * 60 * 60 * 1000;
+const MAX_DATE_MS = 8_640_000_000_000_000;
 
 export type PurgeSummary = {
     deletedProfiles: number;
     cutoff: string;
 };
+
+/**
+ * A retention window is usable only when it is a positive integer and the
+ * resulting cutoff stays inside JavaScript's valid date range. This is a
+ * representability check, not a policy duration: no approved window is
+ * invented or narrowed here.
+ */
+export function retentionWindowProducesValidCutoff(days: number, now: Date): boolean {
+    if (typeof days !== 'number' || !Number.isInteger(days) || days <= 0) return false;
+    if (!(now instanceof Date) || Number.isNaN(now.getTime())) return false;
+    const cutoffMs = now.getTime() - days * DAY_MS;
+    return Number.isFinite(cutoffMs) && Math.abs(cutoffMs) <= MAX_DATE_MS;
+}
 
 /**
  * Resolve the single approved retention window. Unset fails closed with a
@@ -56,7 +70,7 @@ export async function purgeSoftDeletedAcademicProfiles(
         throw new Error('Academic profile purge requires a valid reference time');
     }
     const cutoff = new Date(now.getTime() - days * DAY_MS);
-    if (Number.isNaN(cutoff.getTime())) {
+    if (!retentionWindowProducesValidCutoff(days, now)) {
         throw new Error(`Academic profile retention window does not produce a valid cutoff (${ACADEMIC_PROFILE_RETENTION_ENV_VAR})`);
     }
     const client = await pool.connect();

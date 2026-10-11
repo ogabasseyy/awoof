@@ -31,6 +31,7 @@ const syntheticReference: AcademicProgrammeReference = {
         }
         return null;
     },
+    findProgrammeLabel: (programmeId: string) => (programmeId === 'INT-001' ? 'Integration Physics' : null),
 };
 
 function uniqueLabel(): string {
@@ -126,6 +127,27 @@ test('a failing assurance query does not abort the profile save', async () => {
         const reread = await readAcademicProfile(pool, fixture.userId, enabled);
         assert.equal(reread.revision, 1);
         assert.deepEqual(reread.fields.programme, { state: 'supplied', value: { programmeId: null, courseLabel: 'Synthetic Physics' } });
+    });
+});
+
+test('a failing verification-method lookup does not abort the profile save', async () => {
+    await withTestClient(async (client) => {
+        const fixture = await createStudent(client, null);
+        const pool = db.getPool();
+        const saved = await saveAcademicProfile(pool, fixture.userId, {
+            expectedRevision: 0,
+            programme: { state: 'supplied', value: { programmeId: null, courseLabel: 'Synthetic Physics' } },
+        }, {
+            ...enabled,
+            listVerificationMethods: async (tx) => {
+                await tx.query('SELECT * FROM academic_profile_missing_relation');
+                throw new Error('unreachable: missing relation must fail first');
+            },
+        });
+        assert.equal(saved.verificationContinuationAvailable, true);
+        assert.deepEqual(saved.verificationRequirements, []);
+        assert.equal(saved.revision, 1);
+        assert.equal(await profileRowCount(client, fixture.userId), 1);
     });
 });
 

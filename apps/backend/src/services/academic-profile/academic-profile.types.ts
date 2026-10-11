@@ -97,6 +97,8 @@ export type AcademicProfileProjection = {
     assurance: StudentAssurance | null;
     referenceVersion: string | null;
     estimate: { year: number; ruleId: string; sourceVersion: string } | null;
+    /** Display label for a saved catalogue programme selection; null for free text or unresolvable ids. */
+    programmeLabel: string | null;
     featureEnabled: boolean;
     promptDecision: 'complete_profile' | 'continue';
 };
@@ -151,3 +153,20 @@ export type ParsedAcademicProfileInput = z.output<typeof academicProfileInputSch
 type AssertTrue<T extends true> = T;
 // Compile-time only: fails the build if the manual contract drifts from the parser.
 export type _ManualContractFitsParser = AssertTrue<AcademicProfileInput extends ParsedAcademicProfileInput ? true : false>;
+
+/** Explicit institution-country mapping shared by search and estimate paths. Unmapped countries resolve to null, never a guess. */
+const COUNTRY_NAME_TO_CODE: Readonly<Record<string, string>> = {
+    NIGERIA: 'NG',
+    GHANA: 'GH',
+};
+
+export function countryNameToCode(country: string | null | undefined): string | null {
+    if (typeof country !== 'string') return null;
+    return COUNTRY_NAME_TO_CODE[country.trim().toUpperCase()] ?? null;
+}
+
+/** Server-bound institution country for estimate scoping: null when unbound or unmapped (no constraint). */
+export function boundInstitutionCountryCode(universityId: string | null, institutionCountry: string | null): string | null {
+    if (universityId === null) return null;
+    return countryNameToCode(institutionCountry);
+}

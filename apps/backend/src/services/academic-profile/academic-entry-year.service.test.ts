@@ -294,7 +294,7 @@ function createSuggestionPool(profile: Record<string, unknown> | null): { connec
 function suggestionDeps(): Parameters<typeof readAcademicProfile>[2] {
     return {
         featureEnabled: true,
-        reference: { sourceVersion: 'TEST-REF-v1', findReviewedRule: () => null },
+        reference: { sourceVersion: 'TEST-REF-v1', findReviewedRule: () => null, findProgrammeLabel: () => null },
         now: new Date('2026-06-15T12:00:00.000Z'),
         readAssurance: async () => ({
             schoolAccountStatus: 'unverified',

@@ -21,6 +21,8 @@ import { BadRequestError } from '../../common/errors/AppError.js';
 import {
     ENTRY_YEAR_MIN,
     GRADUATION_HORIZON_YEARS,
+    boundInstitutionCountryCode,
+    countryNameToCode,
     type EntryRoute,
 } from './academic-profile.types.js';
 import { lockAcademicProfileContext } from './academic-profile.service.js';
@@ -219,7 +221,7 @@ export function loadProgrammeReference(...args: [] | [unknown]): ProgrammeRefere
 export function estimateGraduationYear(
     input: EstimateInput,
     reference: ProgrammeReference,
-    options?: { currentYear?: number },
+    options?: { currentYear?: number; expectedCountryCode?: string | null },
 ): EstimateResult {
     const currentYear = options?.currentYear ?? new Date().getUTCFullYear();
     if (input.programmeId === null || input.entryYear === null || input.entryRoute === null) {
@@ -231,6 +233,13 @@ export function estimateGraduationYear(
     const programme = reference.programmes.find((candidate) => candidate.programmeId === input.programmeId);
     if (!programme) {
         return { state: 'unavailable', reason: 'unknown_programme' };
+    }
+    // A bound student's server institution country must match the programme's
+    // own country: one national system's rules never estimate another
+    // country's programme. Null (unbound or unmapped) imposes no constraint.
+    if (options?.expectedCountryCode !== undefined && options.expectedCountryCode !== null
+        && programme.countryCode !== options.expectedCountryCode) {
+        return { state: 'unavailable', reason: 'unsupported_country' };
     }
     if (!ESTIMATE_SUPPORTED_COUNTRY_CODES.includes(programme.countryCode)) {
         return { state: 'unavailable', reason: 'unsupported_country' };
@@ -294,16 +303,7 @@ export function parseCatalogueQuery(raw: unknown): CatalogueQuery {
     return { q: parsed.q.trim(), cursor: parsed.cursor ?? null, limit: parsed.limit };
 }
 
-const COUNTRY_NAME_TO_CODE: Readonly<Record<string, string>> = {
-    NIGERIA: 'NG',
-    GHANA: 'GH',
-};
-
-/** Explicit catalogue country mapping. Unmapped countries resolve to null, never a guess. */
-export function countryNameToCode(country: string | null | undefined): string | null {
-    if (typeof country !== 'string') return null;
-    return COUNTRY_NAME_TO_CODE[country.trim().toUpperCase()] ?? null;
-}
+export { boundInstitutionCountryCode, countryNameToCode } from './academic-profile.types.js';
 
 export type ProgrammeSearchQuery = CatalogueQuery & { countryCode?: string | null };
 
@@ -413,7 +413,7 @@ export async function searchProgrammesForStudent(
 ): Promise<CataloguePage<ProgrammeCatalogueItem>> {
     const parsed = parseCatalogueQuery(rawQuery);
     return withLockedCatalogueContext(pool, userId, async (_tx, ctx) => {
-        const countryCode = ctx.universityId === null ? null : countryNameToCode(ctx.institutionCountry);
+        const countryCode = boundInstitutionCountryCode(ctx.universityId, ctx.institutionCountry);
         const reference = options?.reference ?? loadProgrammeReference();
         return searchProgrammes(reference, { ...parsed, countryCode });
     });
@@ -431,9 +431,10 @@ export async function estimateGraduationYearForStudent(
     options?: { reference?: ProgrammeReference; currentYear?: number },
 ): Promise<EstimateResult> {
     const parsed = estimateInputSchema.parse(rawInput);
-    return withLockedCatalogueContext(pool, userId, async () => {
+    return withLockedCatalogueContext(pool, userId, async (_tx, ctx) => {
         const reference = options?.reference ?? loadProgrammeReference();
         const currentYear = options?.currentYear ?? new Date().getUTCFullYear();
-        return estimateGraduationYear(parsed, reference, { currentYear });
+        const expectedCountryCode = boundInstitutionCountryCode(ctx.universityId, ctx.institutionCountry);
+        return estimateGraduationYear(parsed, reference, { currentYear, expectedCountryCode });
     });
 }

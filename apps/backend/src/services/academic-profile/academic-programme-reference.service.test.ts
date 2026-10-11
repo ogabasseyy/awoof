@@ -133,6 +133,22 @@ test('estimate never applies a rule from another national system', () => {
     assert.deepEqual(result, { state: 'unavailable', reason: 'unsupported_country' });
 });
 
+test('estimate rejects a programme from outside the bound institution country', () => {
+    const reference = syntheticReference();
+    assert.deepEqual(
+        estimateGraduationYear(input({ programmeId: 'SYN-ENG' }), reference, { currentYear: CURRENT_YEAR, expectedCountryCode: 'GH' }),
+        { state: 'unavailable', reason: 'unsupported_country' },
+    );
+    assert.deepEqual(
+        estimateGraduationYear(input({ programmeId: 'SYN-ENG' }), reference, { currentYear: CURRENT_YEAR, expectedCountryCode: 'NG' }),
+        { state: 'available', year: 2026, ruleId: 'SYN-ENG:utme', sourceVersion: SOURCE_VERSION },
+    );
+    assert.deepEqual(
+        estimateGraduationYear(input({ programmeId: 'SYN-ENG' }), reference, { currentYear: CURRENT_YEAR, expectedCountryCode: null }),
+        { state: 'available', year: 2026, ruleId: 'SYN-ENG:utme', sourceVersion: SOURCE_VERSION },
+    );
+});
+
 test('transfer route is unavailable without an explicit reviewed rule', () => {
     const reference = syntheticReference();
     assert.deepEqual(
@@ -467,7 +483,7 @@ function createCataloguePool(fixture: CatalogueFixture): { connect: () => Promis
             if (normalized.includes('FROM students')) {
                 return { rows: [fixture.student], rowCount: 1 };
             }
-            if (normalized.includes('FROM universities') && normalized.includes('FOR UPDATE')) {
+            if (normalized.includes('FROM universities') && normalized.includes('FOR KEY SHARE')) {
                 return { rows: fixture.university ? [fixture.university] : [], rowCount: fixture.university ? 1 : 0 };
             }
             if (normalized.includes('FROM universities')) {
@@ -509,7 +525,7 @@ test('unbound students search the general institution catalogue with display fie
 test('institution search uses parameterized SQL and escapes LIKE wildcards', async () => {
     const pool = createCataloguePool(catalogueFixture());
     await searchInstitutionsForStudent(pool, USER_ID, { q: '100%_\\', limit: 5 });
-    const catalogue = pool.statements.filter((statement) => statement.text.includes('FROM universities') && !statement.text.includes('FOR UPDATE'));
+    const catalogue = pool.statements.filter((statement) => statement.text.includes('FROM universities') && !statement.text.includes('FOR KEY SHARE'));
     assert.equal(catalogue.length, 1);
     const statement = catalogue[0];
     assert.ok(statement && !statement.text.includes('100%_\\'), 'query text must stay in bound params');
@@ -526,7 +542,7 @@ test('bound students see only their server-bound institution; scope never comes 
     const page = await searchInstitutionsForStudent(pool, USER_ID, { q: '', limit: 20 });
     assert.deepEqual(page.items, [{ name: 'Fixture University Alpha', countryCode: 'NG' }]);
     assert.equal(page.nextCursor, null);
-    const scoped = pool.statements.filter((statement) => statement.text.includes('FROM universities') && !statement.text.includes('FOR UPDATE'));
+    const scoped = pool.statements.filter((statement) => statement.text.includes('FROM universities') && !statement.text.includes('FOR KEY SHARE'));
     assert.ok(scoped[0]?.params.includes(UNIVERSITY_ID), 'bound scope must be server-resolved');
     await assert.rejects(searchInstitutionsForStudent(pool, USER_ID, { q: '', institutionId: UNIVERSITY_ID }), ZodError);
 });
@@ -572,5 +588,34 @@ test('student estimate locks the server context, computes, and never writes', as
     await assert.rejects(
         estimateGraduationYearForStudent(deleted, USER_ID, { programmeId: 'SYN-ENG', entryYear: 2022, entryRoute: 'utme' }),
         NotFoundError,
+    );
+});
+
+test('student estimate enforces the bound institution country', async () => {
+    const ghanaBound = createCataloguePool(catalogueFixture({
+        student: { id: STUDENT_ID, university_id: UNIVERSITY_ID, identity_version: 1, status: 'active', registration_number: null },
+        university: { id: UNIVERSITY_ID, name: 'Fixture University Accra', country: 'Ghana', shortcode: 'accra' },
+    }));
+    assert.deepEqual(
+        await estimateGraduationYearForStudent(
+            ghanaBound,
+            USER_ID,
+            { programmeId: 'SYN-ENG', entryYear: 2022, entryRoute: 'utme' },
+            { reference: syntheticReference(), currentYear: CURRENT_YEAR },
+        ),
+        { state: 'unavailable', reason: 'unsupported_country' },
+    );
+    const nigeriaBound = createCataloguePool(catalogueFixture({
+        student: { id: STUDENT_ID, university_id: UNIVERSITY_ID, identity_version: 1, status: 'active', registration_number: null },
+        university: { id: UNIVERSITY_ID, name: 'Fixture University Alpha', country: 'Nigeria', shortcode: 'alpha' },
+    }));
+    assert.deepEqual(
+        await estimateGraduationYearForStudent(
+            nigeriaBound,
+            USER_ID,
+            { programmeId: 'SYN-ENG', entryYear: 2022, entryRoute: 'utme' },
+            { reference: syntheticReference(), currentYear: CURRENT_YEAR },
+        ),
+        { state: 'available', year: 2026, ruleId: 'SYN-ENG:utme', sourceVersion: SOURCE_VERSION },
     );
 });
