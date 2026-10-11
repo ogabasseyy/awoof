@@ -471,6 +471,22 @@ test('post-auth navigation fails open to the safe destination', async () => {
     }
 });
 
+test('post-auth navigation fails open when the projection read hangs', async () => {
+    const storage = memoryStorage();
+    const session = snapshot(uniqueSessionId('nav-hung-read'));
+    const destination = await resolveStudentPostAuthNavigation({
+        accountId: ACCOUNT_ID,
+        sessionSnapshot: session,
+        safeDestination: '/marketplace',
+        explicitContinuation: false,
+        storage,
+        readProjection: () => new Promise<{ promptDecision: 'complete_profile' | 'continue' }>(() => undefined),
+        readActiveSnapshot: () => session,
+        projectionTimeoutMs: 20,
+    });
+    assert.equal(destination, '/marketplace');
+});
+
 test('post-auth navigation honors deferral and session replacement without prompting', async () => {
     const storage = memoryStorage();
     const session = snapshot(uniqueSessionId('nav-deferred'));

@@ -50,7 +50,7 @@ test('exposes an optional validated student profile name', () => {
 });
 
 test('keeps password and SSO authentication valid when the profile name is absent or blank', () => {
-  for (const profile of [undefined, {}, { name: '' }, { name: '   ' }]) {
+  for (const profile of [undefined, null, {}, { name: '' }, { name: '   ' }]) {
     const user: Record<string, unknown> = { id: 'student-id', email: 'student@approved.test', role: 'student' };
     if (profile !== undefined) user.profile = profile;
     const parsed = parseAuthenticationResponse({
@@ -62,6 +62,17 @@ test('keeps password and SSO authentication valid when the profile name is absen
   assert.deepEqual(parseCurrentAccountResponse({
     success: true,
     data: { id: 'student-id', email: 'student@approved.test', role: 'student' },
+  }), { id: 'student-id', email: 'student@approved.test', role: 'student' });
+});
+
+test('accepts a null profile on the current-account response without clearing the session', () => {
+  assert.deepEqual(parseCurrentAccountResponse({
+    success: true,
+    data: { id: 'admin-id', email: 'admin@example.invalid', role: 'admin', profile: null },
+  }), { id: 'admin-id', email: 'admin@example.invalid', role: 'admin' });
+  assert.deepEqual(parseCurrentAccountResponse({
+    success: true,
+    data: { id: 'student-id', email: 'student@approved.test', role: 'student', profile: null },
   }), { id: 'student-id', email: 'student@approved.test', role: 'student' });
 });
 

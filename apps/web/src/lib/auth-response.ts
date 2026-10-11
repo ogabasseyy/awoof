@@ -18,11 +18,12 @@ function isRole(value: unknown): value is User['role'] {
 
 /**
  * Narrowly validate the optional stored profile name. Returns undefined when
- * the server omits the profile, a stripped `{ name? }` object when present,
- * and null when the shape is malformed.
+ * the server omits the profile or sends null (admin accounts and missing
+ * child rows), a stripped `{ name? }` object when present, and null when the
+ * shape is malformed.
  */
 function toProfile(value: unknown): { name?: string } | undefined | null {
-    if (value === undefined) return undefined;
+    if (value === undefined || value === null) return undefined;
     const profile = asRecord(value);
     if (!profile) return null;
     if (profile.name !== undefined && typeof profile.name !== 'string') return null;

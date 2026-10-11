@@ -214,6 +214,9 @@ export function subscribeProfileDeferralChanges(
 /** The only projection field post-auth routing consumes. */
 export type PostAuthProjection = Pick<AcademicProfileView, 'promptDecision'>;
 
+/** Upper bound for the post-auth projection read before failing open. */
+export const POST_AUTH_PROJECTION_TIMEOUT_MS = 3_000;
+
 export type PostAuthNavigationInput = {
     /** Null when the account is unknown; no deferral can bind, so no suppression. */
     accountId: string | null;
@@ -226,14 +229,26 @@ export type PostAuthNavigationInput = {
     storage: DeferralStorage | null;
     readProjection: () => Promise<PostAuthProjection>;
     readActiveSnapshot?: () => SessionSnapshot;
+    /** Override for the projection-read timeout; defaults to POST_AUTH_PROJECTION_TIMEOUT_MS. */
+    projectionTimeoutMs?: number;
 };
+
+function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
+    return new Promise<T>((resolve, reject) => {
+        const timer = setTimeout(() => reject(new Error('Post-auth projection read timed out')), ms);
+        promise.then(
+            (value) => { clearTimeout(timer); resolve(value); },
+            (error: unknown) => { clearTimeout(timer); reject(error); },
+        );
+    });
+}
 
 /**
  * Resolve one post-auth navigation. Non-marketplace destinations return
  * without a projection read; marketplace browse reads the projection once
  * and prompts only for an eligible, non-deferred session. Read failures,
- * malformed decisions, and session replacement all fail open to the safe
- * destination without blocking login or clearing the session.
+ * read timeouts, malformed decisions, and session replacement all fail open
+ * to the safe destination without blocking login or clearing the session.
  */
 export async function resolveStudentPostAuthNavigation(
     input: PostAuthNavigationInput,
@@ -243,7 +258,7 @@ export async function resolveStudentPostAuthNavigation(
     if (!committedSessionId) return input.safeDestination;
     let promptDecision: ProfilePromptDecision;
     try {
-        promptDecision = (await input.readProjection()).promptDecision;
+        promptDecision = (await withTimeout(input.readProjection(), input.projectionTimeoutMs ?? POST_AUTH_PROJECTION_TIMEOUT_MS)).promptDecision;
     } catch {
         return input.safeDestination;
     }
