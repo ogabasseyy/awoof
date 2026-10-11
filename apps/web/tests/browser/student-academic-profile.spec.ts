@@ -747,3 +747,67 @@ test('emits noindex robots metadata', async ({ page }) => {
     await expect(page.getByRole('heading', { level: 1 })).toBeVisible();
     await expect(page.locator('meta[name="robots"]')).toHaveAttribute('content', 'noindex, nofollow');
 });
+
+test('displays the saved catalogue label and keeps the selection on save', async ({ page }) => {
+    const fixture = await openComplete(page, projection({
+        fields: baseFields({
+            programme: { state: 'supplied', value: { programmeId: 'SYN-ENG', courseLabel: null } },
+        }),
+        programmeLabel: 'Stylised Engineering',
+    }));
+    await expect(page.getByRole('combobox', { name: 'Programme or course' })).toHaveValue('Stylised Engineering');
+    await page.getByRole('textbox', { name: 'Entry year' }).fill('2022');
+    await page.getByRole('button', { name: 'Save and continue' }).click();
+    await expect(page).toHaveURL(/\/marketplace/, { timeout: 30000 });
+    expect(fixture.puts).toHaveLength(1);
+    expect(fixture.puts[0]).toEqual({ expectedRevision: 3, entryYear: { state: 'supplied', value: 2022 } });
+});
+
+test('ignores a stale estimate response after inputs change', async ({ page }) => {
+    const fixture = await openComplete(page, projection());
+    fixture.estimateResult = { state: 'available', year: 2025, ruleId: 'SYN-R1', sourceVersion: 'nuc-v2' };
+    await page.getByRole('combobox', { name: 'Programme or course' }).fill('Some Course');
+    await page.getByRole('textbox', { name: 'Entry year' }).fill('2021');
+    await page.getByRole('radio', { name: 'UTME / first-year entry' }).check();
+    await page.route(`${apiOrigin}/api/students/academic-profile/estimate`, async (route: Route) => {
+        await new Promise((resolve) => setTimeout(resolve, 300));
+        await route.fulfill({ json: { success: true, data: fixture.estimateResult }, headers: CORS });
+    });
+    await page.getByRole('button', { name: 'Get estimated year' }).click();
+    await page.getByRole('textbox', { name: 'Entry year' }).fill('2022');
+    await expect(page.getByText('Estimated graduation year:')).toBeHidden({ timeout: 2000 });
+});
+
+test('locks the draft while a save is in flight', async ({ page }) => {
+    await openComplete(page, projection());
+    await page.getByRole('textbox', { name: 'Entry year' }).fill('2022');
+    await page.route(`${apiOrigin}/api/students/academic-profile`, async (route: Route) => {
+        if (route.request().method() !== 'PUT') {
+            await route.fallback();
+            return;
+        }
+        await new Promise((resolve) => setTimeout(resolve, 500));
+        await route.fallback();
+    });
+    await page.getByRole('button', { name: 'Save and continue' }).click();
+    await expect(page.getByRole('textbox', { name: 'Entry year' })).toBeDisabled();
+    await expect(page).toHaveURL(/\/marketplace/, { timeout: 30000 });
+});
+
+test('traps keyboard focus in the leave confirmation and restores it on close', async ({ page }) => {
+    await openComplete(page, projection());
+    await page.getByRole('textbox', { name: 'Entry year' }).fill('2022');
+    await page.getByRole('button', { name: 'Complete later' }).click();
+    const dialog = page.getByRole('alertdialog');
+    await expect(dialog).toBeVisible();
+    const stay = dialog.getByRole('button', { name: 'Stay on this page' });
+    const save = dialog.getByRole('button', { name: 'Save and continue' });
+    await expect(stay).toBeFocused();
+    await page.keyboard.press('Tab');
+    await expect(save).toBeFocused();
+    await page.keyboard.press('Shift+Tab');
+    await expect(stay).toBeFocused();
+    await page.keyboard.press('Escape');
+    await expect(dialog).toBeHidden();
+    await expect(page.getByRole('button', { name: 'Complete later' })).toBeFocused();
+});

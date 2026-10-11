@@ -296,6 +296,21 @@ function CompletionForm() {
     const [leaveDialog, setLeaveDialog] = useState(false);
     const [saving, setSaving] = useState(false);
     const [announce, setAnnounce] = useState('');
+    const estimateRequestId = useRef(0);
+    const leaveDialogRef = useRef<HTMLDivElement | null>(null);
+    const completeLaterRef = useRef<HTMLButtonElement | null>(null);
+    const leaveDialogWasOpen = useRef(false);
+
+    // Return keyboard focus to the dialog trigger when the leave dialog
+    // closes, so keyboard users are not dropped at the top of the page.
+    useEffect(() => {
+        if (leaveDialog) {
+            leaveDialogWasOpen.current = true;
+        } else if (leaveDialogWasOpen.current) {
+            leaveDialogWasOpen.current = false;
+            completeLaterRef.current?.focus();
+        }
+    }, [leaveDialog]);
 
     const [institutionName, setInstitutionName] = useState('');
     const [institutionCountry, setInstitutionCountry] = useState('');
@@ -328,7 +343,7 @@ function CompletionForm() {
         setProgrammeText(
             savedProgramme.state === 'supplied'
                 ? savedProgramme.value.programmeId !== null
-                    ? savedProgramme.value.programmeId
+                    ? (profile.programmeLabel ?? savedProgramme.value.programmeId)
                     : savedProgramme.value.courseLabel
                 : '',
         );
@@ -439,6 +454,9 @@ function CompletionForm() {
         && entryYearMarked === null;
 
     const handleInputsChanged = () => {
+        // Invalidate any in-flight estimate so a late response for the
+        // previous inputs cannot overwrite the reset UI or accepted state.
+        estimateRequestId.current += 1;
         setEstimateUi({ status: 'idle' });
         if (graduation.mode === 'accept') {
             setGraduation({ mode: 'pristine' });
@@ -670,6 +688,7 @@ function CompletionForm() {
             return;
         }
         const snapshot = getSessionSnapshot();
+        const requestId = ++estimateRequestId.current;
         setEstimateUi({ status: 'loading' });
         try {
             const result = await requestGraduationEstimate({
@@ -677,13 +696,13 @@ function CompletionForm() {
                 entryYear: effectiveEntryYear,
                 entryRoute: effectiveEntryRoute,
             });
-            if (!isCurrentSession(snapshot)) return;
+            if (!isCurrentSession(snapshot) || requestId !== estimateRequestId.current) return;
             setEstimateUi({ status: 'ready', result });
             setAnnounce(result.state === 'available'
                 ? `Estimated graduation year ${result.year}.`
                 : 'No estimate is available. You can still enter your expected year.');
         } catch {
-            if (!isCurrentSession(snapshot)) return;
+            if (!isCurrentSession(snapshot) || requestId !== estimateRequestId.current) return;
             setEstimateUi({ status: 'error' });
         }
     };
@@ -915,399 +934,405 @@ function CompletionForm() {
                     void handleSaveAndContinue();
                 }}
             >
-                <section id={FIELD_ANCHORS.claimedInstitution} aria-labelledby="field-institution-heading" className="scroll-mt-24 rounded-2xl border border-slate-200 bg-white p-4">
-                    <h2 id="field-institution-heading" className="text-lg font-semibold text-slate-900">Institution</h2>
-                    {!editableInstitution ? (
-                        <div className="mt-2">
-                            <p className="text-sm text-slate-700">{view.institution.displayName ?? 'Your institution is bound to your school identity.'}</p>
-                            <p className="mt-1 text-sm text-slate-500">This is bound to your school identity and cannot be changed here.</p>
-                            <Link href="/student/profile/support" className="mt-2 inline-flex min-h-[44px] items-center text-sm font-semibold text-[#1D4ED8] underline">
-                                My institution is incorrect
-                            </Link>
-                        </div>
-                    ) : (
-                        <div className="mt-2 space-y-3">
-                            <SearchCombobox<InstitutionCatalogueItem>
-                                id="institution-name"
-                                label="Institution name"
-                                value={institutionName}
-                                placeholder="Start typing your institution"
-                                onValueChange={(value) => {
-                                    setInstitutionName(value);
-                                    setInstitutionMarked(null);
-                                    markDirty('claimedInstitution');
-                                }}
-                                items={institutionSearch.results}
-                                itemKey={(item) => `${item.name}|${item.countryCode ?? ''}`}
-                                itemLabel={(item) => item.name}
-                                itemHint={(item) => (item.countryCode ? `Country: ${item.countryCode}` : null)}
-                                status={institutionSearch.status}
-                                onSelect={(item) => {
-                                    setInstitutionName(item.name);
-                                    if (item.countryCode) setInstitutionCountry(item.countryCode);
-                                    setInstitutionMarked(null);
-                                    markDirty('claimedInstitution');
-                                }}
-                                describedBy={fieldErrors.institution ? 'institution-error' : undefined}
-                                emptyText="No matches. Your entry will be saved as written."
-                            />
-                            <p className="text-sm text-slate-600">
-                                <button
-                                    type="button"
-                                    onClick={() => document.getElementById('institution-name')?.focus()}
-                                    className="font-semibold text-[#1D4ED8] underline"
-                                >
-                                    Can&apos;t find your institution? Add its name
-                                </button>
-                            </p>
-                            <div>
-                                <label htmlFor="institution-country" className="block text-sm font-semibold text-slate-900">Country (2-letter code)</label>
-                                <input
-                                    id="institution-country"
-                                    autoComplete="off"
-                                    maxLength={2}
-                                    className="mt-1 block w-32 rounded-lg border border-slate-300 bg-white px-3 py-2 uppercase text-slate-900 focus:border-[#1D4ED8] focus:outline-2 focus:outline-[#1D4ED8]"
-                                    value={institutionCountry}
-                                    onChange={(event) => {
-                                        setInstitutionCountry(event.target.value);
+                {/* Lock the whole draft while a save is in flight: edits typed
+                    after submission would otherwise be discarded when the
+                    response resets the draft to the submitted snapshot. */}
+                <fieldset disabled={saving} className="m-0 min-w-0 border-0 p-0">
+                    <section id={FIELD_ANCHORS.claimedInstitution} aria-labelledby="field-institution-heading" className="scroll-mt-24 rounded-2xl border border-slate-200 bg-white p-4">
+                        <h2 id="field-institution-heading" className="text-lg font-semibold text-slate-900">Institution</h2>
+                        {!editableInstitution ? (
+                            <div className="mt-2">
+                                <p className="text-sm text-slate-700">{view.institution.displayName ?? 'Your institution is bound to your school identity.'}</p>
+                                <p className="mt-1 text-sm text-slate-500">This is bound to your school identity and cannot be changed here.</p>
+                                <Link href="/student/profile/support" className="mt-2 inline-flex min-h-[44px] items-center text-sm font-semibold text-[#1D4ED8] underline">
+                                    My institution is incorrect
+                                </Link>
+                            </div>
+                        ) : (
+                            <div className="mt-2 space-y-3">
+                                <SearchCombobox<InstitutionCatalogueItem>
+                                    id="institution-name"
+                                    label="Institution name"
+                                    value={institutionName}
+                                    placeholder="Start typing your institution"
+                                    onValueChange={(value) => {
+                                        setInstitutionName(value);
                                         setInstitutionMarked(null);
                                         markDirty('claimedInstitution');
                                     }}
-                                    aria-describedby={fieldErrors.institution ? 'institution-error' : undefined}
+                                    items={institutionSearch.results}
+                                    itemKey={(item) => `${item.name}|${item.countryCode ?? ''}`}
+                                    itemLabel={(item) => item.name}
+                                    itemHint={(item) => (item.countryCode ? `Country: ${item.countryCode}` : null)}
+                                    status={institutionSearch.status}
+                                    onSelect={(item) => {
+                                        setInstitutionName(item.name);
+                                        if (item.countryCode) setInstitutionCountry(item.countryCode);
+                                        setInstitutionMarked(null);
+                                        markDirty('claimedInstitution');
+                                    }}
+                                    describedBy={fieldErrors.institution ? 'institution-error' : undefined}
+                                    emptyText="No matches. Your entry will be saved as written."
+                                />
+                                <p className="text-sm text-slate-600">
+                                    <button
+                                        type="button"
+                                        onClick={() => document.getElementById('institution-name')?.focus()}
+                                        className="font-semibold text-[#1D4ED8] underline"
+                                    >
+                                        Can&apos;t find your institution? Add its name
+                                    </button>
+                                </p>
+                                <div>
+                                    <label htmlFor="institution-country" className="block text-sm font-semibold text-slate-900">Country (2-letter code)</label>
+                                    <input
+                                        id="institution-country"
+                                        autoComplete="off"
+                                        maxLength={2}
+                                        className="mt-1 block w-32 rounded-lg border border-slate-300 bg-white px-3 py-2 uppercase text-slate-900 focus:border-[#1D4ED8] focus:outline-2 focus:outline-[#1D4ED8]"
+                                        value={institutionCountry}
+                                        onChange={(event) => {
+                                            setInstitutionCountry(event.target.value);
+                                            setInstitutionMarked(null);
+                                            markDirty('claimedInstitution');
+                                        }}
+                                        aria-describedby={fieldErrors.institution ? 'institution-error' : undefined}
+                                    />
+                                </div>
+                                {institutionMarked && <MarkedBadge marked={institutionMarked} />}
+                                {fieldErrors.institution && <p role="alert" id="institution-error" className="text-sm text-red-700">{fieldErrors.institution}</p>}
+                                <MarkButtons
+                                    field="Institution"
+                                    marked={institutionMarked}
+                                    onMark={(state) => toggleMark('claimedInstitution', institutionMarked, setInstitutionMarked, () => {
+                                        setInstitutionName('');
+                                        setInstitutionCountry('');
+                                    }, state)}
                                 />
                             </div>
-                            {institutionMarked && <MarkedBadge marked={institutionMarked} />}
-                            {fieldErrors.institution && <p role="alert" id="institution-error" className="text-sm text-red-700">{fieldErrors.institution}</p>}
+                        )}
+                    </section>
+
+                    <section id={FIELD_ANCHORS.programme} aria-labelledby="field-programme-heading" className="scroll-mt-24 rounded-2xl border border-slate-200 bg-white p-4">
+                        <h2 id="field-programme-heading" className="text-lg font-semibold text-slate-900">Programme or course</h2>
+                        <div className="mt-2">
+                            <SearchCombobox<ProgrammeCatalogueItem>
+                                id="programme"
+                                label="Programme or course"
+                                value={programmeText}
+                                placeholder="Start typing your programme or course"
+                                onValueChange={(value) => {
+                                    setProgrammeText(value);
+                                    setProgrammeSelectedId(null);
+                                    setProgrammeMarked(null);
+                                    markDirty('programme');
+                                    handleInputsChanged();
+                                }}
+                                items={programmeSearch.results}
+                                itemKey={(item) => item.programmeId}
+                                itemLabel={(item) => item.label}
+                                itemHint={(item) => item.award}
+                                status={programmeSearch.status}
+                                onSelect={(item) => {
+                                    setProgrammeText(item.label);
+                                    setProgrammeSelectedId(item.programmeId);
+                                    setProgrammeMarked(null);
+                                    markDirty('programme');
+                                    handleInputsChanged();
+                                }}
+                                emptyText="No matches. Your entry will be saved as written."
+                            />
+                            <p className="mt-2 text-xs text-slate-500">Suggestions are programme names, not a confirmed list of courses offered by your institution. You can also type your course as written.</p>
+                            {programmeMarked && <MarkedBadge marked={programmeMarked} />}
                             <MarkButtons
-                                field="Institution"
-                                marked={institutionMarked}
-                                onMark={(state) => toggleMark('claimedInstitution', institutionMarked, setInstitutionMarked, () => {
-                                    setInstitutionName('');
-                                    setInstitutionCountry('');
+                                field="Programme or course"
+                                marked={programmeMarked}
+                                onMark={(state) => toggleMark('programme', programmeMarked, setProgrammeMarked, () => {
+                                    setProgrammeText('');
+                                    setProgrammeSelectedId(null);
                                 }, state)}
                             />
                         </div>
-                    )}
-                </section>
+                    </section>
 
-                <section id={FIELD_ANCHORS.programme} aria-labelledby="field-programme-heading" className="scroll-mt-24 rounded-2xl border border-slate-200 bg-white p-4">
-                    <h2 id="field-programme-heading" className="text-lg font-semibold text-slate-900">Programme or course</h2>
-                    <div className="mt-2">
-                        <SearchCombobox<ProgrammeCatalogueItem>
-                            id="programme"
-                            label="Programme or course"
-                            value={programmeText}
-                            placeholder="Start typing your programme or course"
-                            onValueChange={(value) => {
-                                setProgrammeText(value);
-                                setProgrammeSelectedId(null);
-                                setProgrammeMarked(null);
-                                markDirty('programme');
-                                handleInputsChanged();
-                            }}
-                            items={programmeSearch.results}
-                            itemKey={(item) => item.programmeId}
-                            itemLabel={(item) => item.label}
-                            itemHint={(item) => item.award}
-                            status={programmeSearch.status}
-                            onSelect={(item) => {
-                                setProgrammeText(item.label);
-                                setProgrammeSelectedId(item.programmeId);
-                                setProgrammeMarked(null);
-                                markDirty('programme');
-                                handleInputsChanged();
-                            }}
-                            emptyText="No matches. Your entry will be saved as written."
-                        />
-                        <p className="mt-2 text-xs text-slate-500">Suggestions are programme names, not a confirmed list of courses offered by your institution. You can also type your course as written.</p>
-                        {programmeMarked && <MarkedBadge marked={programmeMarked} />}
-                        <MarkButtons
-                            field="Programme or course"
-                            marked={programmeMarked}
-                            onMark={(state) => toggleMark('programme', programmeMarked, setProgrammeMarked, () => {
-                                setProgrammeText('');
-                                setProgrammeSelectedId(null);
-                            }, state)}
-                        />
-                    </div>
-                </section>
-
-                <section id={FIELD_ANCHORS.entryYear} aria-labelledby="field-entry-year-heading" className="scroll-mt-24 rounded-2xl border border-slate-200 bg-white p-4">
-                    <h2 id="field-entry-year-heading" className="text-lg font-semibold text-slate-900">Entry year</h2>
-                    {showSuggestion && suggestion?.state === 'suggested' && (
-                        <div className="mt-2 rounded-lg border border-[#1D4ED8]/30 bg-[#EEF2FF] p-3">
-                            <p className="text-sm text-slate-800">Your school record suggests you started in <strong>{suggestion.year}</strong>.</p>
-                            <div className="mt-2 flex flex-wrap gap-2">
-                                <button
-                                    type="button"
-                                    onClick={() => {
-                                        setEntryYearText(String(suggestion.year));
-                                        setEntryYearMarked(null);
-                                        setSuggestionDismissed(true);
-                                        markDirty('entryYear');
-                                        handleInputsChanged();
-                                    }}
-                                    className="inline-flex min-h-[44px] items-center rounded-full bg-[#1D4ED8] px-4 text-sm font-bold text-white hover:bg-[#1E40AF]"
-                                >
-                                    Use suggested year
-                                </button>
-                                <button
-                                    type="button"
-                                    onClick={() => setSuggestionDismissed(true)}
-                                    className="inline-flex min-h-[44px] items-center rounded-full border border-slate-300 bg-white px-4 text-sm font-semibold text-slate-700 hover:bg-slate-50"
-                                >
-                                    Dismiss suggestion
-                                </button>
-                            </div>
-                            <p className="mt-2 text-xs text-slate-600">You can also edit the year before saving. Dismissing keeps your current value.</p>
-                        </div>
-                    )}
-                    <div className="mt-2">
-                        <label htmlFor="entry-year" className="block text-sm font-semibold text-slate-900">Entry year</label>
-                        <input
-                            id="entry-year"
-                            inputMode="numeric"
-                            autoComplete="off"
-                            placeholder="For example 2021"
-                            className="mt-1 block w-48 rounded-lg border border-slate-300 bg-white px-3 py-2 text-slate-900 focus:border-[#1D4ED8] focus:outline-2 focus:outline-[#1D4ED8]"
-                            value={entryYearText}
-                            onChange={(event) => {
-                                setEntryYearText(event.target.value);
-                                setEntryYearMarked(null);
-                                markDirty('entryYear');
-                                handleInputsChanged();
-                            }}
-                            aria-describedby={fieldErrors.entryYear ? 'entry-year-error' : undefined}
-                        />
-                        {entryYearMarked && <MarkedBadge marked={entryYearMarked} />}
-                        {fieldErrors.entryYear && <p role="alert" id="entry-year-error" className="mt-1 text-sm text-red-700">{fieldErrors.entryYear}</p>}
-                        <MarkButtons
-                            field="Entry year"
-                            marked={entryYearMarked}
-                            onMark={(state) => toggleMark('entryYear', entryYearMarked, setEntryYearMarked, () => setEntryYearText(''), state)}
-                        />
-                    </div>
-                </section>
-
-                <section id={FIELD_ANCHORS.entryRoute} aria-labelledby="field-entry-route-heading" className="scroll-mt-24 rounded-2xl border border-slate-200 bg-white p-4">
-                    <h2 id="field-entry-route-heading" className="text-lg font-semibold text-slate-900">Entry route</h2>
-                    <fieldset className="mt-2">
-                        <legend className="sr-only">Entry route</legend>
-                        <div className="space-y-2">
-                            {ENTRY_ROUTE_OPTIONS.map((option) => (
-                                <label key={option} htmlFor={`entry-route-${option}`} className="flex min-h-[44px] cursor-pointer items-center gap-3 rounded-lg border border-slate-200 px-3 py-2 has-checked:border-[#1D4ED8] has-checked:bg-[#EEF2FF]">
-                                    <input
-                                        id={`entry-route-${option}`}
-                                        type="radio"
-                                        name="entry-route"
-                                        value={option}
-                                        checked={entryRouteMarked === null && entryRouteSel === option}
-                                        onChange={() => {
-                                            setEntryRouteSel(option);
-                                            setEntryRouteMarked(null);
-                                            markDirty('entryRoute');
+                    <section id={FIELD_ANCHORS.entryYear} aria-labelledby="field-entry-year-heading" className="scroll-mt-24 rounded-2xl border border-slate-200 bg-white p-4">
+                        <h2 id="field-entry-year-heading" className="text-lg font-semibold text-slate-900">Entry year</h2>
+                        {showSuggestion && suggestion?.state === 'suggested' && (
+                            <div className="mt-2 rounded-lg border border-[#1D4ED8]/30 bg-[#EEF2FF] p-3">
+                                <p className="text-sm text-slate-800">Your school record suggests you started in <strong>{suggestion.year}</strong>.</p>
+                                <div className="mt-2 flex flex-wrap gap-2">
+                                    <button
+                                        type="button"
+                                        onClick={() => {
+                                            setEntryYearText(String(suggestion.year));
+                                            setEntryYearMarked(null);
+                                            setSuggestionDismissed(true);
+                                            markDirty('entryYear');
                                             handleInputsChanged();
                                         }}
-                                        className="h-5 w-5 accent-[#1D4ED8]"
-                                    />
-                                    <span className="text-sm font-medium text-slate-800">{entryRouteLabel(option)}</span>
-                                </label>
-                            ))}
-                        </div>
-                    </fieldset>
-                    {entryRouteMarked && <MarkedBadge marked={entryRouteMarked} />}
-                    {entryRouteMarked === null && entryRouteSel !== null && (
-                        <button
-                            type="button"
-                            onClick={() => {
-                                setEntryRouteSel(null);
-                                markDirty('entryRoute');
-                                handleInputsChanged();
-                            }}
-                            className="mt-2 inline-flex min-h-[44px] items-center text-sm font-semibold text-slate-600 underline"
-                        >
-                            Clear answer
-                        </button>
-                    )}
-                    <MarkButtons
-                        field="Entry route"
-                        marked={entryRouteMarked}
-                        onMark={(state) => toggleMark('entryRoute', entryRouteMarked, setEntryRouteMarked, () => setEntryRouteSel(null), state)}
-                    />
-                </section>
-
-                <section id={FIELD_ANCHORS.expectedGraduationYear} aria-labelledby="field-graduation-year-heading" className="scroll-mt-24 rounded-2xl border border-slate-200 bg-white p-4">
-                    <h2 id="field-graduation-year-heading" className="text-lg font-semibold text-slate-900">Expected graduation year</h2>
-                    {institutionConfirmed !== null ? (
+                                        className="inline-flex min-h-[44px] items-center rounded-full bg-[#1D4ED8] px-4 text-sm font-bold text-white hover:bg-[#1E40AF]"
+                                    >
+                                        Use suggested year
+                                    </button>
+                                    <button
+                                        type="button"
+                                        onClick={() => setSuggestionDismissed(true)}
+                                        className="inline-flex min-h-[44px] items-center rounded-full border border-slate-300 bg-white px-4 text-sm font-semibold text-slate-700 hover:bg-slate-50"
+                                    >
+                                        Dismiss suggestion
+                                    </button>
+                                </div>
+                                <p className="mt-2 text-xs text-slate-600">You can also edit the year before saving. Dismissing keeps your current value.</p>
+                            </div>
+                        )}
                         <div className="mt-2">
-                            <p className="text-sm text-slate-700">
-                                Graduation year confirmed by your institution: <strong>{institutionConfirmed.year}</strong>
-                                {' '}(observed {new Date(institutionConfirmed.observedAt).toLocaleDateString()}).
-                            </p>
-                            <p className="mt-1 text-sm text-slate-600">
-                                This value is read-only here. If this year is wrong,{' '}
-                                <Link href="/student/verification" className="font-semibold text-[#1D4ED8] underline">continue verification</Link>
-                                {' '}to correct it.
-                            </p>
+                            <label htmlFor="entry-year" className="block text-sm font-semibold text-slate-900">Entry year</label>
+                            <input
+                                id="entry-year"
+                                inputMode="numeric"
+                                autoComplete="off"
+                                placeholder="For example 2021"
+                                className="mt-1 block w-48 rounded-lg border border-slate-300 bg-white px-3 py-2 text-slate-900 focus:border-[#1D4ED8] focus:outline-2 focus:outline-[#1D4ED8]"
+                                value={entryYearText}
+                                onChange={(event) => {
+                                    setEntryYearText(event.target.value);
+                                    setEntryYearMarked(null);
+                                    markDirty('entryYear');
+                                    handleInputsChanged();
+                                }}
+                                aria-describedby={fieldErrors.entryYear ? 'entry-year-error' : undefined}
+                            />
+                            {entryYearMarked && <MarkedBadge marked={entryYearMarked} />}
+                            {fieldErrors.entryYear && <p role="alert" id="entry-year-error" className="mt-1 text-sm text-red-700">{fieldErrors.entryYear}</p>}
+                            <MarkButtons
+                                field="Entry year"
+                                marked={entryYearMarked}
+                                onMark={(state) => toggleMark('entryYear', entryYearMarked, setEntryYearMarked, () => setEntryYearText(''), state)}
+                            />
                         </div>
-                    ) : (
-                        <div className="mt-2 space-y-3">
-                            {savedGraduation.state === 'supplied' && graduation.mode === 'pristine' && (
+                    </section>
+
+                    <section id={FIELD_ANCHORS.entryRoute} aria-labelledby="field-entry-route-heading" className="scroll-mt-24 rounded-2xl border border-slate-200 bg-white p-4">
+                        <h2 id="field-entry-route-heading" className="text-lg font-semibold text-slate-900">Entry route</h2>
+                        <fieldset className="mt-2">
+                            <legend className="sr-only">Entry route</legend>
+                            <div className="space-y-2">
+                                {ENTRY_ROUTE_OPTIONS.map((option) => (
+                                    <label key={option} htmlFor={`entry-route-${option}`} className="flex min-h-[44px] cursor-pointer items-center gap-3 rounded-lg border border-slate-200 px-3 py-2 has-checked:border-[#1D4ED8] has-checked:bg-[#EEF2FF]">
+                                        <input
+                                            id={`entry-route-${option}`}
+                                            type="radio"
+                                            name="entry-route"
+                                            value={option}
+                                            checked={entryRouteMarked === null && entryRouteSel === option}
+                                            onChange={() => {
+                                                setEntryRouteSel(option);
+                                                setEntryRouteMarked(null);
+                                                markDirty('entryRoute');
+                                                handleInputsChanged();
+                                            }}
+                                            className="h-5 w-5 accent-[#1D4ED8]"
+                                        />
+                                        <span className="text-sm font-medium text-slate-800">{entryRouteLabel(option)}</span>
+                                    </label>
+                                ))}
+                            </div>
+                        </fieldset>
+                        {entryRouteMarked && <MarkedBadge marked={entryRouteMarked} />}
+                        {entryRouteMarked === null && entryRouteSel !== null && (
+                            <button
+                                type="button"
+                                onClick={() => {
+                                    setEntryRouteSel(null);
+                                    markDirty('entryRoute');
+                                    handleInputsChanged();
+                                }}
+                                className="mt-2 inline-flex min-h-[44px] items-center text-sm font-semibold text-slate-600 underline"
+                            >
+                                Clear answer
+                            </button>
+                        )}
+                        <MarkButtons
+                            field="Entry route"
+                            marked={entryRouteMarked}
+                            onMark={(state) => toggleMark('entryRoute', entryRouteMarked, setEntryRouteMarked, () => setEntryRouteSel(null), state)}
+                        />
+                    </section>
+
+                    <section id={FIELD_ANCHORS.expectedGraduationYear} aria-labelledby="field-graduation-year-heading" className="scroll-mt-24 rounded-2xl border border-slate-200 bg-white p-4">
+                        <h2 id="field-graduation-year-heading" className="text-lg font-semibold text-slate-900">Expected graduation year</h2>
+                        {institutionConfirmed !== null ? (
+                            <div className="mt-2">
                                 <p className="text-sm text-slate-700">
-                                    Saved: <strong>{savedGraduation.value}</strong>
-                                    {view.fields.graduationYearOrigin === 'calculated' ? ' (calculated estimate)' : ' (saved year)'}
+                                    Graduation year confirmed by your institution: <strong>{institutionConfirmed.year}</strong>
+                                    {' '}(observed {new Date(institutionConfirmed.observedAt).toLocaleDateString()}).
                                 </p>
-                            )}
-                            {savedGraduation.state !== 'supplied' && graduation.mode === 'pristine' && (
-                                <p className="text-sm text-slate-500">Not answered yet.</p>
-                            )}
-                            {calculatedStale && (
-                                <p role="alert" className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-900">
-                                    Your course, entry year, or entry route changed, so your saved graduation year may be out of date. Confirm a new year below.
+                                <p className="mt-1 text-sm text-slate-600">
+                                    This value is read-only here. If this year is wrong,{' '}
+                                    <Link href="/student/verification" className="font-semibold text-[#1D4ED8] underline">continue verification</Link>
+                                    {' '}to correct it.
                                 </p>
-                            )}
-                            {projectionEstimate && (
-                                <div className="rounded-lg border border-[#1D4ED8]/30 bg-[#EEF2FF] p-3">
-                                    <p className="text-sm text-slate-800">Estimated graduation year: <strong>{projectionEstimate.year}</strong></p>
-                                    <p className="mt-1 text-xs text-slate-600">
-                                        Calculated from your saved details using reviewed programme durations
-                                        {view.referenceVersion ? ` (${view.referenceVersion})` : ''}. Estimates are advisory and do not verify your enrollment.
+                            </div>
+                        ) : (
+                            <div className="mt-2 space-y-3">
+                                {savedGraduation.state === 'supplied' && graduation.mode === 'pristine' && (
+                                    <p className="text-sm text-slate-700">
+                                        Saved: <strong>{savedGraduation.value}</strong>
+                                        {view.fields.graduationYearOrigin === 'calculated' ? ' (calculated estimate)' : ' (saved year)'}
                                     </p>
-                                    <div className="mt-2 flex flex-wrap gap-2">
+                                )}
+                                {savedGraduation.state !== 'supplied' && graduation.mode === 'pristine' && (
+                                    <p className="text-sm text-slate-500">Not answered yet.</p>
+                                )}
+                                {calculatedStale && (
+                                    <p role="alert" className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-900">
+                                        Your course, entry year, or entry route changed, so your saved graduation year may be out of date. Confirm a new year below.
+                                    </p>
+                                )}
+                                {projectionEstimate && (
+                                    <div className="rounded-lg border border-[#1D4ED8]/30 bg-[#EEF2FF] p-3">
+                                        <p className="text-sm text-slate-800">Estimated graduation year: <strong>{projectionEstimate.year}</strong></p>
+                                        <p className="mt-1 text-xs text-slate-600">
+                                            Calculated from your saved details using reviewed programme durations
+                                            {view.referenceVersion ? ` (${view.referenceVersion})` : ''}. Estimates are advisory and do not verify your enrollment.
+                                        </p>
+                                        <div className="mt-2 flex flex-wrap gap-2">
+                                            <button
+                                                type="button"
+                                                onClick={() => applyEstimate(projectionEstimate.year)}
+                                                className="inline-flex min-h-[44px] items-center rounded-full bg-[#1D4ED8] px-4 text-sm font-bold text-white hover:bg-[#1E40AF]"
+                                            >
+                                                Use estimated year
+                                            </button>
+                                            <button
+                                                type="button"
+                                                onClick={enterDifferentYear}
+                                                className="inline-flex min-h-[44px] items-center rounded-full border border-slate-300 bg-white px-4 text-sm font-semibold text-slate-700 hover:bg-slate-50"
+                                            >
+                                                Enter a different year
+                                            </button>
+                                        </div>
+                                    </div>
+                                )}
+                                {!projectionEstimate && (
+                                    <div>
                                         <button
                                             type="button"
-                                            onClick={() => applyEstimate(projectionEstimate.year)}
-                                            className="inline-flex min-h-[44px] items-center rounded-full bg-[#1D4ED8] px-4 text-sm font-bold text-white hover:bg-[#1E40AF]"
+                                            onClick={() => void handleGetEstimate()}
+                                            disabled={estimateUi.status === 'loading'}
+                                            className="inline-flex min-h-[44px] items-center rounded-full border border-[#1D4ED8] px-4 text-sm font-bold text-[#1D4ED8] hover:bg-[#EEF2FF] disabled:opacity-50"
                                         >
-                                            Use estimated year
+                                            {estimateUi.status === 'loading' ? 'Checking…' : 'Get estimated year'}
                                         </button>
+                                        {estimateUi.status === 'ready' && estimateUi.result.state === 'available' && (
+                                            <div className="mt-2 rounded-lg border border-[#1D4ED8]/30 bg-[#EEF2FF] p-3">
+                                                <p className="text-sm text-slate-800">Estimated graduation year: <strong>{estimateUi.result.year}</strong></p>
+                                                <p className="mt-1 text-xs text-slate-600">
+                                                    {effectiveEntryRoute && effectiveEntryYear
+                                                        ? `Calculated from ${entryRouteLabel(effectiveEntryRoute)} entry in ${effectiveEntryYear} using reviewed programme durations (${estimateUi.result.sourceVersion}). `
+                                                        : `Calculated using reviewed programme durations (${estimateUi.result.sourceVersion}). `}
+                                                    Estimates are advisory and do not verify your enrollment.
+                                                </p>
+                                                <div className="mt-2 flex flex-wrap gap-2">
+                                                    <button
+                                                        type="button"
+                                                        onClick={() => {
+                                                            if (estimateUi.status === 'ready' && estimateUi.result.state === 'available') applyEstimate(estimateUi.result.year);
+                                                        }}
+                                                        className="inline-flex min-h-[44px] items-center rounded-full bg-[#1D4ED8] px-4 text-sm font-bold text-white hover:bg-[#1E40AF]"
+                                                    >
+                                                        Use estimated year
+                                                    </button>
+                                                    <button
+                                                        type="button"
+                                                        onClick={enterDifferentYear}
+                                                        className="inline-flex min-h-[44px] items-center rounded-full border border-slate-300 bg-white px-4 text-sm font-semibold text-slate-700 hover:bg-slate-50"
+                                                    >
+                                                        Enter a different year
+                                                    </button>
+                                                </div>
+                                            </div>
+                                        )}
+                                        {estimateUi.status === 'ready' && estimateUi.result.state === 'unavailable' && (
+                                            <p className="mt-2 text-sm text-slate-600">{estimateUnavailableMessage(estimateUi.result.reason)}</p>
+                                        )}
+                                        {estimateUi.status === 'error' && (
+                                            <p role="alert" className="mt-2 text-sm text-red-700">We could not load an estimate. Try again.</p>
+                                        )}
+                                    </div>
+                                )}
+                                {graduation.mode === 'accept' && (
+                                    <div className="rounded-lg border border-emerald-200 bg-emerald-50 p-3">
+                                        <p className="text-sm text-emerald-900">Using estimated year <strong>{graduation.year}</strong>. Save to confirm it.</p>
                                         <button
                                             type="button"
                                             onClick={enterDifferentYear}
-                                            className="inline-flex min-h-[44px] items-center rounded-full border border-slate-300 bg-white px-4 text-sm font-semibold text-slate-700 hover:bg-slate-50"
+                                            className="mt-2 inline-flex min-h-[44px] items-center rounded-full border border-slate-300 bg-white px-4 text-sm font-semibold text-slate-700 hover:bg-slate-50"
                                         >
                                             Enter a different year
                                         </button>
                                     </div>
-                                </div>
-                            )}
-                            {!projectionEstimate && (
-                                <div>
-                                    <button
-                                        type="button"
-                                        onClick={() => void handleGetEstimate()}
-                                        disabled={estimateUi.status === 'loading'}
-                                        className="inline-flex min-h-[44px] items-center rounded-full border border-[#1D4ED8] px-4 text-sm font-bold text-[#1D4ED8] hover:bg-[#EEF2FF] disabled:opacity-50"
-                                    >
-                                        {estimateUi.status === 'loading' ? 'Checking…' : 'Get estimated year'}
-                                    </button>
-                                    {estimateUi.status === 'ready' && estimateUi.result.state === 'available' && (
-                                        <div className="mt-2 rounded-lg border border-[#1D4ED8]/30 bg-[#EEF2FF] p-3">
-                                            <p className="text-sm text-slate-800">Estimated graduation year: <strong>{estimateUi.result.year}</strong></p>
-                                            <p className="mt-1 text-xs text-slate-600">
-                                                {effectiveEntryRoute && effectiveEntryYear
-                                                    ? `Calculated from ${entryRouteLabel(effectiveEntryRoute)} entry in ${effectiveEntryYear} using reviewed programme durations (${estimateUi.result.sourceVersion}). `
-                                                    : `Calculated using reviewed programme durations (${estimateUi.result.sourceVersion}). `}
-                                                Estimates are advisory and do not verify your enrollment.
-                                            </p>
-                                            <div className="mt-2 flex flex-wrap gap-2">
-                                                <button
-                                                    type="button"
-                                                    onClick={() => {
-                                                        if (estimateUi.status === 'ready' && estimateUi.result.state === 'available') applyEstimate(estimateUi.result.year);
-                                                    }}
-                                                    className="inline-flex min-h-[44px] items-center rounded-full bg-[#1D4ED8] px-4 text-sm font-bold text-white hover:bg-[#1E40AF]"
-                                                >
-                                                    Use estimated year
-                                                </button>
-                                                <button
-                                                    type="button"
-                                                    onClick={enterDifferentYear}
-                                                    className="inline-flex min-h-[44px] items-center rounded-full border border-slate-300 bg-white px-4 text-sm font-semibold text-slate-700 hover:bg-slate-50"
-                                                >
-                                                    Enter a different year
-                                                </button>
-                                            </div>
-                                        </div>
-                                    )}
-                                    {estimateUi.status === 'ready' && estimateUi.result.state === 'unavailable' && (
-                                        <p className="mt-2 text-sm text-slate-600">{estimateUnavailableMessage(estimateUi.result.reason)}</p>
-                                    )}
-                                    {estimateUi.status === 'error' && (
-                                        <p role="alert" className="mt-2 text-sm text-red-700">We could not load an estimate. Try again.</p>
-                                    )}
-                                </div>
-                            )}
-                            {graduation.mode === 'accept' && (
-                                <div className="rounded-lg border border-emerald-200 bg-emerald-50 p-3">
-                                    <p className="text-sm text-emerald-900">Using estimated year <strong>{graduation.year}</strong>. Save to confirm it.</p>
-                                    <button
-                                        type="button"
-                                        onClick={enterDifferentYear}
-                                        className="mt-2 inline-flex min-h-[44px] items-center rounded-full border border-slate-300 bg-white px-4 text-sm font-semibold text-slate-700 hover:bg-slate-50"
-                                    >
-                                        Enter a different year
-                                    </button>
-                                </div>
-                            )}
-                            {graduation.mode !== 'accept' && (
-                                <div>
-                                    <label htmlFor="graduation-year" className="block text-sm font-semibold text-slate-900">Expected graduation year</label>
-                                    <input
-                                        id="graduation-year"
-                                        inputMode="numeric"
-                                        autoComplete="off"
-                                        placeholder="For example 2025"
-                                        className="mt-1 block w-48 rounded-lg border border-slate-300 bg-white px-3 py-2 text-slate-900 focus:border-[#1D4ED8] focus:outline-2 focus:outline-[#1D4ED8]"
-                                        value={graduation.mode === 'self' ? graduation.text : ''}
-                                        onChange={(event) => {
-                                            setGraduation({ mode: 'self', text: event.target.value });
-                                            markDirty('expectedGraduationYear');
-                                        }}
-                                        aria-describedby={fieldErrors.graduation ? 'graduation-error' : undefined}
-                                    />
-                                    {savedGraduation.state === 'supplied' && view.fields.graduationYearOrigin === 'self_reported' && graduation.mode === 'self' && (
-                                        <p className="mt-1 text-xs text-slate-500">You entered this year.</p>
-                                    )}
-                                </div>
-                            )}
-                            {graduation.mode === 'marked' && <MarkedBadge marked={graduation.state} />}
-                            {fieldErrors.graduation && <p role="alert" id="graduation-error" className="mt-1 text-sm text-red-700">{fieldErrors.graduation}</p>}
-                            {view.referenceVersion && (
-                                <p className="text-xs text-slate-500">Programme reference: {view.referenceVersion}</p>
-                            )}
-                            <MarkButtons
-                                field="Expected graduation year"
-                                marked={graduation.mode === 'marked' ? graduation.state : null}
-                                onMark={(state) => toggleMark(
-                                    'expectedGraduationYear',
-                                    graduation.mode === 'marked' ? graduation.state : null,
-                                    (marked) => setGraduation(marked ? { mode: 'marked', state: marked } : { mode: 'pristine' }),
-                                    () => undefined,
-                                    state,
                                 )}
-                            />
-                        </div>
-                    )}
-                </section>
+                                {graduation.mode !== 'accept' && (
+                                    <div>
+                                        <label htmlFor="graduation-year" className="block text-sm font-semibold text-slate-900">Expected graduation year</label>
+                                        <input
+                                            id="graduation-year"
+                                            inputMode="numeric"
+                                            autoComplete="off"
+                                            placeholder="For example 2025"
+                                            className="mt-1 block w-48 rounded-lg border border-slate-300 bg-white px-3 py-2 text-slate-900 focus:border-[#1D4ED8] focus:outline-2 focus:outline-[#1D4ED8]"
+                                            value={graduation.mode === 'self' ? graduation.text : ''}
+                                            onChange={(event) => {
+                                                setGraduation({ mode: 'self', text: event.target.value });
+                                                markDirty('expectedGraduationYear');
+                                            }}
+                                            aria-describedby={fieldErrors.graduation ? 'graduation-error' : undefined}
+                                        />
+                                        {savedGraduation.state === 'supplied' && view.fields.graduationYearOrigin === 'self_reported' && graduation.mode === 'self' && (
+                                            <p className="mt-1 text-xs text-slate-500">You entered this year.</p>
+                                        )}
+                                    </div>
+                                )}
+                                {graduation.mode === 'marked' && <MarkedBadge marked={graduation.state} />}
+                                {fieldErrors.graduation && <p role="alert" id="graduation-error" className="mt-1 text-sm text-red-700">{fieldErrors.graduation}</p>}
+                                {view.referenceVersion && (
+                                    <p className="text-xs text-slate-500">Programme reference: {view.referenceVersion}</p>
+                                )}
+                                <MarkButtons
+                                    field="Expected graduation year"
+                                    marked={graduation.mode === 'marked' ? graduation.state : null}
+                                    onMark={(state) => toggleMark(
+                                        'expectedGraduationYear',
+                                        graduation.mode === 'marked' ? graduation.state : null,
+                                        (marked) => setGraduation(marked ? { mode: 'marked', state: marked } : { mode: 'pristine' }),
+                                        () => undefined,
+                                        state,
+                                    )}
+                                />
+                            </div>
+                        )}
+                    </section>
 
-                <div className="flex flex-col gap-3 sm:flex-row">
-                    <button
-                        type="submit"
-                        disabled={saving}
-                        className="inline-flex min-h-[44px] items-center justify-center rounded-full bg-[#1D4ED8] px-5 text-sm font-bold text-white hover:bg-[#1E40AF] disabled:opacity-50"
-                    >
-                        {saving ? 'Saving…' : 'Save and continue'}
-                    </button>
-                    <button
-                        type="button"
-                        onClick={handleCompleteLater}
-                        disabled={saving}
-                        className="inline-flex min-h-[44px] items-center justify-center rounded-full border border-slate-300 bg-white px-5 text-sm font-bold text-slate-700 hover:bg-slate-50 disabled:opacity-50"
-                    >
-                        Complete later
-                    </button>
-                </div>
+                    <div className="flex flex-col gap-3 sm:flex-row">
+                        <button
+                            type="submit"
+                            disabled={saving}
+                            className="inline-flex min-h-[44px] items-center justify-center rounded-full bg-[#1D4ED8] px-5 text-sm font-bold text-white hover:bg-[#1E40AF] disabled:opacity-50"
+                        >
+                            {saving ? 'Saving…' : 'Save and continue'}
+                        </button>
+                        <button
+                            type="button"
+                            onClick={handleCompleteLater}
+                            disabled={saving}
+                            ref={completeLaterRef}
+                            className="inline-flex min-h-[44px] items-center justify-center rounded-full border border-slate-300 bg-white px-5 text-sm font-bold text-slate-700 hover:bg-slate-50 disabled:opacity-50"
+                        >
+                            Complete later
+                        </button>
+                    </div>
+                </fieldset>
             </form>
 
             {leaveDialog && (
@@ -1316,9 +1341,30 @@ function CompletionForm() {
                     aria-modal="true"
                     aria-labelledby="leave-title"
                     aria-describedby="leave-desc"
+                    ref={leaveDialogRef}
                     className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/50 p-4"
                     onKeyDown={(event) => {
-                        if (event.key === 'Escape') setLeaveDialog(false);
+                        if (event.key === 'Escape') {
+                            setLeaveDialog(false);
+                            return;
+                        }
+                        // Keep keyboard focus inside the modal: Tab cycles
+                        // across the dialog buttons instead of escaping to
+                        // the page behind it.
+                        if (event.key !== 'Tab') return;
+                        const root = leaveDialogRef.current;
+                        if (!root) return;
+                        const focusable = Array.from(root.querySelectorAll('button:not([disabled])')) as HTMLButtonElement[];
+                        if (focusable.length === 0) return;
+                        const first = focusable[0] as HTMLButtonElement;
+                        const last = focusable[focusable.length - 1] as HTMLButtonElement;
+                        if (event.shiftKey && document.activeElement === first) {
+                            event.preventDefault();
+                            last.focus();
+                        } else if (!event.shiftKey && document.activeElement === last) {
+                            event.preventDefault();
+                            first.focus();
+                        }
                     }}
                 >
                     <div className="w-full max-w-md rounded-2xl bg-white p-6 shadow-xl">

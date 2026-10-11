@@ -69,6 +69,14 @@ function untouchedForm(): AcademicProfileForm {
     };
 }
 
+test('parses the saved programme label and tolerates its absence', () => {
+    const labelled = parseAcademicProfileResponse(envelope(validProjection({ programmeLabel: 'Stylised Physics' })));
+    assert.equal(labelled?.programmeLabel, 'Stylised Physics');
+    const missing = parseAcademicProfileResponse(envelope(validProjection()));
+    assert.equal(missing?.programmeLabel, null);
+    assert.equal(parseAcademicProfileResponse(envelope(validProjection({ programmeLabel: 42 }))), null);
+});
+
 test('parses a valid profile projection with a suggested entry year', () => {
     const parsed = parseAcademicProfileResponse(envelope(validProjection({
         entryYearSuggestion: {

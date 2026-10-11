@@ -95,6 +95,7 @@ export type AcademicProfileView = {
     assurance: StudentAssurance | null;
     referenceVersion: string | null;
     estimate: { year: number; ruleId: string; sourceVersion: string } | null;
+    programmeLabel: string | null;
     featureEnabled: boolean;
     promptDecision: 'complete_profile' | 'continue';
 };
@@ -389,6 +390,7 @@ export function parseAcademicProfileResponse(value: unknown): AcademicProfileVie
     if (projection.referenceVersion !== null && typeof projection.referenceVersion !== 'string') return null;
     const estimate = projection.estimate === undefined ? null : parseEstimate(projection.estimate);
     if (projection.estimate !== undefined && projection.estimate !== null && !estimate) return null;
+    if (projection.programmeLabel !== undefined && projection.programmeLabel !== null && typeof projection.programmeLabel !== 'string') return null;
     if (typeof projection.featureEnabled !== 'boolean') return null;
     if (projection.promptDecision !== 'complete_profile' && projection.promptDecision !== 'continue') return null;
     return {
@@ -405,6 +407,7 @@ export function parseAcademicProfileResponse(value: unknown): AcademicProfileVie
         assurance,
         referenceVersion: projection.referenceVersion,
         estimate,
+        programmeLabel: typeof projection.programmeLabel === 'string' ? projection.programmeLabel : null,
         featureEnabled: projection.featureEnabled,
         promptDecision: projection.promptDecision,
     };
