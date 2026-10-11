@@ -98,6 +98,7 @@ export type AcademicProfileView = {
     estimate: { year: number; ruleId: string; sourceVersion: string } | null;
     programmeLabel: string | null;
     featureEnabled: boolean;
+    writeAvailable: boolean;
     promptDecision: 'complete_profile' | 'continue';
 };
 
@@ -393,6 +394,7 @@ export function parseAcademicProfileResponse(value: unknown): AcademicProfileVie
     if (projection.estimate !== undefined && projection.estimate !== null && !estimate) return null;
     if (projection.programmeLabel !== undefined && projection.programmeLabel !== null && typeof projection.programmeLabel !== 'string') return null;
     if (typeof projection.featureEnabled !== 'boolean') return null;
+    if (typeof projection.writeAvailable !== 'boolean') return null;
     if (projection.promptDecision !== 'complete_profile' && projection.promptDecision !== 'continue') return null;
     return {
         revision: projection.revision,
@@ -410,6 +412,7 @@ export function parseAcademicProfileResponse(value: unknown): AcademicProfileVie
         estimate,
         programmeLabel: typeof projection.programmeLabel === 'string' ? projection.programmeLabel : null,
         featureEnabled: projection.featureEnabled,
+        writeAvailable: projection.writeAvailable,
         promptDecision: projection.promptDecision,
     };
 }
@@ -569,6 +572,52 @@ export function parseInstitutionChangedConflict(error: unknown): { revision: num
     const revision = details['revision'];
     if (typeof revision !== 'number' || !Number.isInteger(revision) || revision < 0) return null;
     return { revision };
+}
+
+export const ACADEMIC_PROFILE_CLAIM_CHANGED = 'ACADEMIC_PROFILE_CLAIM_CHANGED';
+
+/**
+ * Parse a claimed-school reconfirmation conflict: the server wrote nothing
+ * and reports the unchanged revision. Unlike institution drift this must
+ * not be retried blindly — the caller offers to resubmit the saved scoped
+ * answers under the new school. Strict shape, mirroring the drift parser.
+ */
+export function parseClaimChangedConflict(error: unknown): { revision: number } | null {
+    const response = asRecord(asRecord(error)?.['response']);
+    if (!response || response['status'] !== 409) return null;
+    const details = asRecord(asRecord(asRecord(response['data'])?.['error'])?.['details']);
+    if (!details || details['code'] !== ACADEMIC_PROFILE_CLAIM_CHANGED) return null;
+    const revision = details['revision'];
+    if (typeof revision !== 'number' || !Number.isInteger(revision) || revision < 0) return null;
+    return { revision };
+}
+
+/**
+ * Extend a claim-change patch with the saved supplied scoped answers it
+ * omitted, so one explicit reconfirmation resubmits everything the new
+ * school requires. Dirty fields in the patch win; a saved calculated year
+ * re-submits as an estimate acceptance the server revalidates under the
+ * new school, and may be rejected with a clear message when the new
+ * school's reference has no matching rule.
+ */
+export function buildClaimReconfirmPatch(patch: AcademicProfileInput, view: AcademicProfileView): AcademicProfileInput {
+    const next: AcademicProfileInput = { ...patch };
+    if (next.programme === undefined && view.fields.programme.state === 'supplied') {
+        next.programme = { state: 'supplied', value: view.fields.programme.value };
+    }
+    if (next.entryYear === undefined && view.fields.entryYear.state === 'supplied') {
+        next.entryYear = { state: 'supplied', value: view.fields.entryYear.value };
+    }
+    if (next.entryRoute === undefined && view.fields.entryRoute.state === 'supplied') {
+        next.entryRoute = { state: 'supplied', value: view.fields.entryRoute.value };
+    }
+    if (next.expectedGraduationYear === undefined && view.fields.expectedGraduationYear.state === 'supplied') {
+        const year = view.fields.expectedGraduationYear.value;
+        next.expectedGraduationYear = view.fields.graduationYearOrigin === 'calculated'
+            ? { state: 'supplied', value: { kind: 'accept_estimate', year } }
+            : { state: 'supplied', value: { kind: 'self_reported', year } };
+    }
+    return next;
 }
 
 /** True when the draft stages at least one change. */

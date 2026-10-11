@@ -3,9 +3,11 @@ import { test } from 'node:test';
 import {
     academicProfileGreeting,
     buildAcademicProfilePatch,
+    buildClaimReconfirmPatch,
     estimateUnavailableMessage,
     isFormDirty,
     parseAcademicProfileResponse,
+    parseClaimChangedConflict,
     parseEstimateResult,
     parseInstitutionChangedConflict,
     parseInstitutionCataloguePage,
@@ -51,6 +53,7 @@ function validProjection(overrides: Record<string, unknown> = {}): Record<string
         referenceVersion: 'nuc-v2',
         estimate: null,
         featureEnabled: true,
+        writeAvailable: true,
         promptDecision: 'continue',
         ...overrides,
     };
@@ -95,6 +98,84 @@ test('parses an institution-change conflict with its retry revision', () => {
     }
 });
 
+test('parses a claim-change conflict without confusing it with drift', () => {
+    const conflict = (details: unknown, status = 409) => ({
+        response: { status, data: { success: false, error: { message: 'changed', code: 'CONFLICT', details } } },
+    });
+    assert.deepEqual(
+        parseClaimChangedConflict(conflict({ code: 'ACADEMIC_PROFILE_CLAIM_CHANGED', revision: 3 })),
+        { revision: 3 },
+    );
+    for (const error of [
+        conflict({ code: 'ACADEMIC_PROFILE_INSTITUTION_CHANGED', revision: 3 }),
+        conflict({ code: 'ACADEMIC_PROFILE_CLAIM_CHANGED', revision: 3 }, 500),
+        conflict({ code: 'ACADEMIC_PROFILE_CLAIM_CHANGED' }),
+        conflict({ code: 'ACADEMIC_PROFILE_CLAIM_CHANGED', revision: 2.5 }),
+        conflict({ code: 'ACADEMIC_PROFILE_CLAIM_CHANGED', revision: -1 }),
+        conflict({ code: 'ACADEMIC_PROFILE_CLAIM_CHANGED', revision: '3' }),
+        conflict(null),
+        { response: { status: 409, data: null } },
+        { response: null },
+        null,
+        undefined,
+    ]) {
+        assert.equal(parseClaimChangedConflict(error), null);
+    }
+});
+
+test('rebuilds a claim-change patch with the saved supplied answers', () => {
+    const view = parseAcademicProfileResponse(envelope(validProjection({
+        fields: {
+            claimedInstitution: { state: 'supplied', value: { name: 'Old School', countryCode: 'NG' } },
+            programme: { state: 'supplied', value: { programmeId: 'SYN-P1', courseLabel: null } },
+            entryYear: { state: 'supplied', value: 2021 },
+            entryRoute: { state: 'unanswered' },
+            expectedGraduationYear: { state: 'supplied', value: 2025 },
+            graduationYearOrigin: 'calculated',
+            estimateBasis: { programmeId: 'SYN-P1', entryYear: 2021, entryRoute: 'utme', ruleId: 'SYN-R1', sourceVersion: 'nuc-v2' },
+            estimateStale: false,
+        },
+    })));
+    assert.notEqual(view, null);
+    const patch: AcademicProfileInput = {
+        expectedRevision: 3,
+        claimedInstitution: { state: 'supplied', value: { name: 'New School', countryCode: 'GH' } },
+        entryYear: { state: 'supplied', value: 2022 },
+    };
+    assert.deepEqual(buildClaimReconfirmPatch(patch, view!), {
+        expectedRevision: 3,
+        claimedInstitution: { state: 'supplied', value: { name: 'New School', countryCode: 'GH' } },
+        entryYear: { state: 'supplied', value: 2022 },
+        programme: { state: 'supplied', value: { programmeId: 'SYN-P1', courseLabel: null } },
+        expectedGraduationYear: { state: 'supplied', value: { kind: 'accept_estimate', year: 2025 } },
+    });
+});
+
+test('restates a saved self-reported year as self-reported', () => {
+    const view = parseAcademicProfileResponse(envelope(validProjection({
+        fields: {
+            claimedInstitution: { state: 'supplied', value: { name: 'Old School', countryCode: 'NG' } },
+            programme: { state: 'unanswered' },
+            entryYear: { state: 'unanswered' },
+            entryRoute: { state: 'unanswered' },
+            expectedGraduationYear: { state: 'supplied', value: 2026 },
+            graduationYearOrigin: 'self_reported',
+            estimateBasis: null,
+            estimateStale: false,
+        },
+    })));
+    assert.notEqual(view, null);
+    const patch: AcademicProfileInput = {
+        expectedRevision: 3,
+        claimedInstitution: { state: 'supplied', value: { name: 'New School', countryCode: 'GH' } },
+    };
+    assert.deepEqual(buildClaimReconfirmPatch(patch, view!), {
+        expectedRevision: 3,
+        claimedInstitution: { state: 'supplied', value: { name: 'New School', countryCode: 'GH' } },
+        expectedGraduationYear: { state: 'supplied', value: { kind: 'self_reported', year: 2026 } },
+    });
+});
+
 test('parses the saved programme label and tolerates its absence', () => {
     const labelled = parseAcademicProfileResponse(envelope(validProjection({ programmeLabel: 'Stylised Physics' })));
     assert.equal(labelled?.programmeLabel, 'Stylised Physics');
@@ -117,6 +198,7 @@ test('parses a valid profile projection with a suggested entry year', () => {
     });
     assert.equal(parsed?.assurance?.studentStatus, 'pending');
     assert.equal(parsed?.featureEnabled, true);
+    assert.equal(parsed?.writeAvailable, true);
 });
 
 test('accepts a bare projection without the response envelope', () => {
@@ -137,6 +219,8 @@ test('rejects invalid payloads safely', () => {
     assert.equal(parseAcademicProfileResponse(envelope(validProjection({ revision: 1.5 }))), null);
     assert.equal(parseAcademicProfileResponse(envelope(validProjection({ fields: null }))), null);
     assert.equal(parseAcademicProfileResponse(envelope(validProjection({ featureEnabled: 'yes' }))), null);
+    assert.equal(parseAcademicProfileResponse(envelope(validProjection({ writeAvailable: 'yes' }))), null);
+    assert.equal(parseAcademicProfileResponse(envelope(validProjection({ writeAvailable: undefined }))), null);
     assert.equal(parseAcademicProfileResponse(envelope(validProjection({ promptDecision: 'maybe' }))), null);
     assert.equal(parseAcademicProfileResponse(envelope(validProjection({
         fields: {

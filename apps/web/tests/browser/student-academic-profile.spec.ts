@@ -51,6 +51,7 @@ function projection(overrides: Record<string, unknown> = {}): Record<string, unk
         referenceVersion: 'nuc-v2',
         estimate: null,
         featureEnabled: true,
+        writeAvailable: true,
         promptDecision: 'continue',
         ...overrides,
     };
@@ -83,7 +84,7 @@ type AcademicFixture = {
     puts: unknown[];
     getCalls: number;
     current: unknown;
-    putBehavior: 'echo' | 'conflict' | 'error' | 'abort-once' | 'institution-changed-once' | 'institution-changed-always' | 'defer-once';
+    putBehavior: 'echo' | 'conflict' | 'error' | 'abort-once' | 'institution-changed-once' | 'institution-changed-always' | 'claim-changed-once' | 'defer-once';
     releaseDeferredPut: () => void;
     estimateResult: unknown;
     estimateCalls: unknown[];
@@ -130,6 +131,22 @@ async function installAcademicApi(page: Page, initial: unknown): Promise<Academi
                             message: 'Academic profile institution changed; replacement answers were not saved',
                             code: 'CONFLICT',
                             details: { code: 'ACADEMIC_PROFILE_INSTITUTION_CHANGED', revision },
+                        },
+                    },
+                    headers: CORS,
+                });
+                return;
+            }
+            if (fixture.putBehavior === 'claim-changed-once' && fixture.puts.length === 1) {
+                const revision = (fixture.current as Record<string, unknown>).revision as number;
+                await route.fulfill({
+                    status: 409,
+                    json: {
+                        success: false,
+                        error: {
+                            message: 'Claimed institution changed; reconfirm the saved answers under the current school',
+                            code: 'CONFLICT',
+                            details: { code: 'ACADEMIC_PROFILE_CLAIM_CHANGED', revision },
                         },
                     },
                     headers: CORS,
@@ -314,6 +331,23 @@ test('renders no collection controls when the feature is disabled', async ({ pag
     await expect(page.getByRole('radio')).toHaveCount(0);
     await expect(page.getByRole('button', { name: 'Save and continue' })).toHaveCount(0);
     await expect(page.getByText('Entry year:')).toBeVisible();
+    await page.getByRole('button', { name: 'Complete later' }).click();
+    await expect(page).toHaveURL(/\/marketplace/, { timeout: 30000 });
+    expect(fixture.puts).toHaveLength(0);
+});
+
+test('renders saved answers read-only when writes are unavailable', async ({ page }) => {
+    const fixture = await openComplete(page, projection({
+        writeAvailable: false,
+        fields: baseFields({ entryYear: { state: 'supplied', value: 2021 } }),
+    }));
+    await expect(page.getByText('Your student record is not active, so your saved answers are read-only for now.')).toBeVisible();
+    await expect(page.getByRole('heading', { name: 'Your saved answers' })).toBeVisible();
+    await expect(page.getByText('2021')).toBeVisible();
+    await expect(page.getByRole('textbox')).toHaveCount(0);
+    await expect(page.getByRole('combobox')).toHaveCount(0);
+    await expect(page.getByRole('radio')).toHaveCount(0);
+    await expect(page.getByRole('button', { name: 'Save and continue' })).toHaveCount(0);
     await page.getByRole('button', { name: 'Complete later' }).click();
     await expect(page).toHaveURL(/\/marketplace/, { timeout: 30000 });
     expect(fixture.puts).toHaveLength(0);
@@ -579,6 +613,22 @@ test('requires reconfirmation when inputs invalidate a calculated year', async (
     });
 });
 
+test('attributes a stale calculated year to answers or the programme reference', async ({ page }) => {
+    await openComplete(page, projection({
+        fields: baseFields({
+            programme: { state: 'supplied', value: { programmeId: 'SYN-P1', courseLabel: null } },
+            entryYear: { state: 'supplied', value: 2021 },
+            entryRoute: { state: 'supplied', value: 'utme' },
+            expectedGraduationYear: { state: 'supplied', value: 2025 },
+            graduationYearOrigin: 'calculated',
+            estimateBasis: { programmeId: 'SYN-P1', entryYear: 2021, entryRoute: 'utme', ruleId: 'SYN-R1', sourceVersion: 'nuc-v1' },
+            estimateStale: true,
+        }),
+        referenceVersion: 'nuc-v2',
+    }));
+    await expect(page.getByText('Your saved graduation year may be out of date because your answers or the programme reference changed. Confirm a new year below.')).toBeVisible();
+});
+
 test('preserves a self-reported override when inputs change', async ({ page }) => {
     const fixture = await openComplete(page, projection({
         fields: baseFields({
@@ -680,6 +730,36 @@ test('retries a save once after an institution-change conflict', async ({ page }
     expect(fixture.puts[0]).toMatchObject({ expectedRevision: 3 });
     expect(fixture.puts[1]).toMatchObject({ expectedRevision: 4, entryYear: { state: 'supplied', value: 2022 } });
     await expect(page.getByText('Your profile changed since it was read.')).toHaveCount(0);
+});
+
+test('reconfirms saved answers after a claim-change conflict without losing the draft', async ({ page }) => {
+    const fixture = await openComplete(page, projection({
+        fields: baseFields({
+            claimedInstitution: { state: 'supplied', value: { name: 'Old School', countryCode: 'NG' } },
+            programme: { state: 'supplied', value: { programmeId: 'SYN-P1', courseLabel: null } },
+            entryYear: { state: 'supplied', value: 2021 },
+        }),
+    }));
+    fixture.putBehavior = 'claim-changed-once';
+    await page.getByRole('combobox', { name: 'Institution name' }).fill('New School');
+    await page.getByRole('textbox', { name: 'Country (2-letter code)' }).fill('GH');
+    await page.getByRole('button', { name: 'Save and continue' }).click();
+    await expect(page.getByText('Your school changed to New School. Resubmit your saved answers under the new school?')).toBeVisible();
+    await expect(page.getByRole('combobox', { name: 'Institution name' })).toHaveValue('New School');
+    await expect(page.getByText('Your profile changed since it was read.')).toHaveCount(0);
+    await page.getByRole('button', { name: 'Reconfirm saved answers' }).click();
+    await expect(page).toHaveURL(/\/marketplace/, { timeout: 30000 });
+    expect(fixture.puts).toHaveLength(2);
+    expect(fixture.puts[0]).toMatchObject({
+        expectedRevision: 3,
+        claimedInstitution: { state: 'supplied', value: { name: 'New School', countryCode: 'GH' } },
+    });
+    expect(fixture.puts[1]).toMatchObject({
+        expectedRevision: 3,
+        claimedInstitution: { state: 'supplied', value: { name: 'New School', countryCode: 'GH' } },
+        programme: { state: 'supplied', value: { programmeId: 'SYN-P1', courseLabel: null } },
+        entryYear: { state: 'supplied', value: 2021 },
+    });
 });
 
 test('surfaces the conflict UI when the drift retry also conflicts', async ({ page }) => {

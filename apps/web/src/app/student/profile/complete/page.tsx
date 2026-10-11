@@ -22,9 +22,11 @@ import { schoolAccountLabel, studentStatusLabel } from '@/lib/student-assurance'
 import {
     academicProfileGreeting,
     buildAcademicProfilePatch,
+    buildClaimReconfirmPatch,
     entryRouteLabel,
     estimateUnavailableMessage,
     fetchAcademicProfile,
+    parseClaimChangedConflict,
     parseInstitutionChangedConflict,
     patchMatchesProjection,
     requestGraduationEstimate,
@@ -322,6 +324,7 @@ function CompletionForm() {
     const [fieldErrors, setFieldErrors] = useState<Record<string, string>>({});
     const [saveError, setSaveError] = useState<string | null>(null);
     const [conflict, setConflict] = useState<string | null>(null);
+    const [claimReconfirm, setClaimReconfirm] = useState<{ schoolName: string | null } | null>(null);
     const [saveOutcome, setSaveOutcome] = useState<'saved' | null>(null);
     const [navFailed, setNavFailed] = useState(false);
     const [leaveDialog, setLeaveDialog] = useState(false);
@@ -427,6 +430,9 @@ function CompletionForm() {
 
     const markDirty = (field: AcademicField) => {
         setDirtyFields((previous) => (previous.includes(field) ? previous : [...previous, field]));
+        // Further edits supersede the reconfirmation offer: the next save
+        // carries the current draft instead.
+        setClaimReconfirm(null);
     };
 
     const resetDraft = (profile: AcademicProfileView) => {
@@ -464,6 +470,7 @@ function CompletionForm() {
         setFieldErrors({});
         setSaveError(null);
         setConflict(null);
+        setClaimReconfirm(null);
         setSaveOutcome(null);
         setNavFailed(false);
         setLeaveDialog(false);
@@ -711,6 +718,7 @@ function CompletionForm() {
         setSaving(true);
         setSaveError(null);
         setConflict(null);
+        setClaimReconfirm(null);
         // An institution-change conflict carries the post-invalidation
         // revision: the replacement entries were staged against blank
         // fields, so one transparent retry preserves them instead of
@@ -736,6 +744,18 @@ function CompletionForm() {
                                 patch = buildAcademicProfilePatch(validated.form, drift.revision);
                                 setAnnounce('Your institution changed. Retrying your save against the new profile.');
                                 continue;
+                            }
+                            const claimChange = parseClaimChangedConflict(error);
+                            if (claimChange) {
+                                // Nothing was written: offer to resubmit the
+                                // saved answers under the new school instead
+                                // of discarding the claim draft on reload.
+                                const attempted = patch.claimedInstitution;
+                                setClaimReconfirm({
+                                    schoolName: attempted?.state === 'supplied' ? attempted.value.name : null,
+                                });
+                                setAnnounce('Your school changed. Confirm your saved answers to keep them under the new school.');
+                                return 'failed';
                             }
                             setConflict('Your profile changed since it was read. Reload the latest values before saving again.');
                             return 'failed';
@@ -764,6 +784,45 @@ function CompletionForm() {
                     }
                 }
             }
+        } finally {
+            if (isCurrentSession(snapshot)) setSaving(false);
+        }
+    };
+
+    const handleClaimReconfirm = async () => {
+        if (!view || !claimReconfirm || saving) return;
+        // Rebuild from the current draft (claim edits after the conflict
+        // clear this offer via markDirty) and restate the saved supplied
+        // answers the claim change requires.
+        const validated = validateAndBuild();
+        if ('errors' in validated) {
+            setFieldErrors(validated.errors);
+            setAnnounce('Check the highlighted fields before saving.');
+            return;
+        }
+        const patch = buildClaimReconfirmPatch(buildAcademicProfilePatch(validated.form, view.revision), view);
+        const snapshot = getSessionSnapshot();
+        setSaving(true);
+        setSaveError(null);
+        try {
+            const committed = await saveAcademicProfile(patch);
+            if (!isCurrentSession(snapshot)) return;
+            setView(committed);
+            resetDraft(committed);
+            setSaveOutcome('saved');
+            setAnnounce('Profile saved under the new school.');
+            navigateToExit();
+        } catch (error: unknown) {
+            if (!isCurrentSession(snapshot)) return;
+            setClaimReconfirm(null);
+            // The draft is intact: a revision race falls back to the reload
+            // path, while a rejection (for example an estimate the new
+            // school cannot support) surfaces the server message for edits.
+            if (axios.isAxiosError(error) && error.response?.status === 409) {
+                setConflict('Your profile changed since it was read. Reload the latest values before saving again.');
+                return;
+            }
+            setSaveError(serverMessage(error) ?? 'We could not save your profile. Check your answers and try again.');
         } finally {
             if (isCurrentSession(snapshot)) setSaving(false);
         }
@@ -917,7 +976,7 @@ function CompletionForm() {
         );
     }
 
-    if (!view.featureEnabled) {
+    if (!view.featureEnabled || !view.writeAvailable) {
         const saved = view.fields;
         // Marker answers are persisted choices too: a rollback view that
         // only counts supplied values would misreport skipped/unknown
@@ -935,7 +994,9 @@ function CompletionForm() {
                 <h1 className="text-2xl font-bold text-slate-900">{greeting}</h1>
                 <p className="mt-1 font-semibold text-slate-900">Complete your student profile</p>
                 <p className="mt-2 text-slate-600">
-                    Academic profile collection is not currently available. Your account is unaffected, and you can keep browsing.
+                    {!view.featureEnabled
+                        ? 'Academic profile collection is not currently available. Your account is unaffected, and you can keep browsing.'
+                        : 'Your student record is not active, so your saved answers are read-only for now. Contact support if this is unexpected.'}
                 </p>
                 {view.assurance ? (
                     <dl className="mt-3 space-y-1 text-sm text-slate-700">
@@ -1066,6 +1127,34 @@ function CompletionForm() {
                     >
                         Reload profile
                     </button>
+                </div>
+            )}
+            {claimReconfirm && (
+                <div role="alert" className="mt-4 rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900">
+                    <p>
+                        {claimReconfirm.schoolName
+                            ? `Your school changed to ${claimReconfirm.schoolName}. Resubmit your saved answers under the new school?`
+                            : 'Your school changed. Resubmit your saved answers under the current school?'}
+                        {' '}Nothing was saved yet.
+                    </p>
+                    <div className="mt-2 flex flex-wrap gap-2">
+                        <button
+                            type="button"
+                            onClick={() => void handleClaimReconfirm()}
+                            disabled={saving}
+                            className="inline-flex min-h-[44px] items-center rounded-full bg-[#1D4ED8] px-5 text-sm font-bold text-white hover:bg-[#1E40AF] disabled:opacity-50"
+                        >
+                            Reconfirm saved answers
+                        </button>
+                        <button
+                            type="button"
+                            onClick={() => setClaimReconfirm(null)}
+                            disabled={saving}
+                            className="inline-flex min-h-[44px] items-center rounded-full border border-slate-300 px-5 text-sm font-bold text-slate-700 hover:bg-slate-50 disabled:opacity-50"
+                        >
+                            Keep editing
+                        </button>
+                    </div>
                 </div>
             )}
             {navFailed && (
@@ -1389,7 +1478,7 @@ function CompletionForm() {
                                 )}
                                 {calculatedStale && (
                                     <p role="alert" className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-900">
-                                        Your course, entry year, or entry route changed, so your saved graduation year may be out of date. Confirm a new year below.
+                                        Your saved graduation year may be out of date because your answers or the programme reference changed. Confirm a new year below.
                                     </p>
                                 )}
                                 {projectionEstimate && (

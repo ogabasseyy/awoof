@@ -947,6 +947,7 @@ export async function installSyntheticApi(page: Page, options: ApiFixtureOptions
           referenceVersion: null,
           estimate: null,
           featureEnabled: false,
+          writeAvailable: false,
           promptDecision: 'continue',
         },
       });

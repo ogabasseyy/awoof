@@ -63,6 +63,7 @@ function projection(overrides: Record<string, unknown> = {}): Record<string, unk
         referenceVersion: 'nuc-v2',
         estimate: null,
         featureEnabled: true,
+        writeAvailable: true,
         promptDecision: 'complete_profile',
         ...overrides,
     };
