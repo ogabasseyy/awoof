@@ -902,4 +902,3 @@ export async function purgeAcademicProfileForUser(tx: PoolClient, userId: string
     const deleted = await tx.query(`DELETE FROM student_academic_profiles WHERE user_id = $1`, [userId]);
     return { deleted: (deleted.rowCount ?? 0) > 0 };
 }
-

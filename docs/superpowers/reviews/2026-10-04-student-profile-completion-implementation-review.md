@@ -454,4 +454,3 @@ by rollback because nothing in the release deletes on disable.
   sitemap already excludes the route; root layout sets no competing robots
   tag.
 - Gates 1–4 and 6 remain with the owner; no merge, deploy, or enable performed.
-
