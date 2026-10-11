@@ -1,5 +1,5 @@
 import { expect, test, type Page, type Route } from '@playwright/test';
-import { apiOrigin, appOrigin, installSyntheticApi, seedSession } from './fixtures';
+import { apiOrigin, appOrigin, installSyntheticApi, replaceSession, seedSession } from './fixtures';
 
 const COMPLETE_PATH = '/student/profile/complete';
 const STUDENT_ID = '00000000-0000-4000-8000-000000000001';
@@ -458,6 +458,19 @@ test('SSO signup continues from the recovery warning to completion when eligible
     await page.waitForURL('**/student/profile/complete?redirect=%2Fmarketplace');
     await expect(page.getByRole('heading', { level: 1 })).toHaveText('Hi there');
     expect(prompt.getCalls).toBeGreaterThanOrEqual(1);
+});
+
+test('SSO signup suppresses continuation after the fresh session is replaced', async ({ page }) => {
+    await installSyntheticApi(page);
+    await mockCurrentUser(page);
+    const prompt = await installPromptApi(page, okProjection(projection()));
+    await driveSignupToRecoveryNotice(page, '/marketplace');
+    await replaceSession(page, 'student', 'intruder-session');
+    await page.getByRole('button', { name: 'Continue' }).click();
+    await expect.poll(() => prompt.getCalls).toBeGreaterThanOrEqual(1);
+    await page.waitForTimeout(500);
+    await expect(page).toHaveURL(/\/auth\/student\/sso\/onboarding/);
+    await expect(page.getByText('This tab changed accounts. Start Microsoft sign-in again.')).toBeVisible();
 });
 
 test('SSO signup continues from the recovery warning to an explicit destination', async ({ page }) => {

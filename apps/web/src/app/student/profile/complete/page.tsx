@@ -852,7 +852,7 @@ function CompletionForm() {
                                 <div className="flex flex-wrap gap-x-1.5"><dt className="font-semibold">Institution:</dt><dd>{saved.claimedInstitution.value.name} ({saved.claimedInstitution.value.countryCode})</dd></div>
                             )}
                             {saved.programme.state === 'supplied' && (
-                                <div className="flex flex-wrap gap-x-1.5"><dt className="font-semibold">Programme or course:</dt><dd>{saved.programme.value.programmeId ?? saved.programme.value.courseLabel}</dd></div>
+                                <div className="flex flex-wrap gap-x-1.5"><dt className="font-semibold">Programme or course:</dt><dd>{saved.programme.value.programmeId === null ? saved.programme.value.courseLabel : (view.programmeLabel ?? saved.programme.value.programmeId)}</dd></div>
                             )}
                             {saved.entryYear.state === 'supplied' && (
                                 <div className="flex flex-wrap gap-x-1.5"><dt className="font-semibold">Entry year:</dt><dd>{saved.entryYear.value}</dd></div>

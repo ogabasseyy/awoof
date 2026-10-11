@@ -247,6 +247,19 @@ test('falls back to Hi there with a blank profile name', async ({ page }) => {
     await expect(page.getByRole('heading', { level: 1 })).toHaveText('Hi there');
 });
 
+test('renders the catalogue label for saved selections when the feature is disabled', async ({ page }) => {
+    await openComplete(page, projection({
+        featureEnabled: false,
+        programmeLabel: 'Synthetic Crop Science',
+        fields: baseFields({
+            programme: { state: 'supplied', value: { programmeId: 'SYN-001', courseLabel: null } },
+        }),
+    }));
+    await expect(page.getByText('Academic profile collection is not currently available.')).toBeVisible();
+    await expect(page.getByText('Synthetic Crop Science')).toBeVisible();
+    await expect(page.getByText('SYN-001')).toHaveCount(0);
+});
+
 test('renders no collection controls when the feature is disabled', async ({ page }) => {
     const fixture = await openComplete(page, projection({
         featureEnabled: false,

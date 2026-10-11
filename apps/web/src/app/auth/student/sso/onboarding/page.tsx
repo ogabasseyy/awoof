@@ -283,6 +283,15 @@ function SignupOnboarding() {
         // only ordinary marketplace browse consults the profile projection,
         // and failures fail open to the validated continuation.
         const fallback = createdDestination;
+        const committedSessionId = createdSessionId.current;
+        const navigateIfCurrent = (destination: string): void => {
+            // Another tab may have replaced or cleared the fresh signup
+            // session while the projection read was pending: a superseded
+            // continuation navigates nowhere instead of carrying the new
+            // session to the obsolete destination.
+            if (!committedSessionId || getSessionSnapshot().browserSessionId !== committedSessionId) return;
+            window.location.href = destination;
+        };
         void resolveStudentPostAuthNavigation({
             accountId: getUserFromToken()?.id ?? null,
             sessionSnapshot: getSessionSnapshot(),
@@ -291,8 +300,8 @@ function SignupOnboarding() {
             storage: deferralStorage(),
             readProjection: fetchAcademicProfile,
         }).then(
-            (destination) => { window.location.href = destination; },
-            () => { window.location.href = fallback; },
+            (destination) => navigateIfCurrent(destination),
+            () => navigateIfCurrent(fallback),
         );
     };
     if (createdDestination !== null) return <AuthShell role="student" title="Account created" subtitle="Your passwordless account is ready." footer={null}><p role="status" className="text-left text-sm">Recovery is not configured, and losing your school sign-in may prevent account access. Save a recovery code so you can recover with your school mailbox.</p><div className="mt-5 space-y-2"><Button className="w-full rounded-full" asChild><Link href="/student/security">Save your recovery code</Link></Button><Button variant="outline" className="w-full rounded-full" onClick={continueAfterRecoveryWarning} disabled={continuing}>{continuing ? 'Continuing…' : 'Continue'}</Button></div></AuthShell>;
