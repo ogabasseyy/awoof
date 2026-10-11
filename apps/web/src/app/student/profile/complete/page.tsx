@@ -107,16 +107,25 @@ function useCatalogueSearch<T>(
     const [results, setResults] = useState<T[]>([]);
     const [status, setStatus] = useState<SearchStatus>('idle');
     const requestId = useRef(0);
+    const cleared = !enabled || query.trim().length === 0;
+    const searchKey = `${enabled ? '1' : '0'}:${query}`;
+    const [prevSearchKey, setPrevSearchKey] = useState(searchKey);
+    if (searchKey !== prevSearchKey) {
+        setPrevSearchKey(searchKey);
+        if (cleared) {
+            setResults([]);
+            setStatus('idle');
+        } else {
+            setStatus('loading');
+        }
+    }
     useEffect(() => {
         if (!enabled || query.trim().length === 0) {
             requestId.current += 1;
-            setResults([]);
-            setStatus('idle');
             return;
         }
         const snapshot = getSessionSnapshot();
         const id = ++requestId.current;
-        setStatus('loading');
         const timer = setTimeout(() => {
             fetcher(query.trim()).then((page) => {
                 if (id !== requestId.current || !isCurrentSession(snapshot)) return;
