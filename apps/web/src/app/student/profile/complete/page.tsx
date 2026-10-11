@@ -98,7 +98,9 @@ function shouldInterceptLinkClick(event: ReactMouseEvent<HTMLAnchorElement>): bo
 }
 
 function currentYear(): number {
-    return new Date().getFullYear();
+    // Match the API's UTC year boundary so entry and graduation validation
+    // agrees with the server across timezones around New Year.
+    return new Date().getUTCFullYear();
 }
 
 function exitDestination(): string {

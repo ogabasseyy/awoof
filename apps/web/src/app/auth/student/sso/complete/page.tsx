@@ -586,14 +586,23 @@ function StudentSsoCompleteInner() {
             // a projection read, and failures fail open to the base
             // destination. The attempt's return path is already resolved,
             // so destination priority is encoded in the base destination.
-            window.location.href = await resolveStudentPostAuthNavigation({
+            const committedSession = getSessionSnapshot();
+            const destination = await resolveStudentPostAuthNavigation({
                 accountId: finished.user.id,
-                sessionSnapshot: getSessionSnapshot(),
+                sessionSnapshot: committedSession,
                 safeDestination: baseDestination,
                 explicitContinuation: false,
                 storage: deferralStorage(),
                 readProjection: fetchAcademicProfile,
             });
+            // Another tab may have replaced or cleared the session while
+            // the projection read was pending: a superseded completion
+            // navigates nowhere, like the password-login navigate guard.
+            if (getSessionSnapshot().generation !== committedSession.generation) {
+                setView({ kind: 'discarded' });
+                return;
+            }
+            window.location.href = destination;
             } finally {
                 finishInFlight.current = false;
             }

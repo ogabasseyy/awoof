@@ -256,6 +256,23 @@ test('password login routes eligible pending browse to the completion screen', a
     expect(prompt.getCalls).toBeGreaterThanOrEqual(1);
 });
 
+test('password login shows the stored name on first paint without a reload', async ({ page }) => {
+    await installSyntheticApi(page);
+    const prompt = await installPromptApi(page, okProjection(projection()));
+    await mockPasswordLogin(page);
+    // The login response carries no profile; post-login navigation is a
+    // full reload, so the completion screen boots from /auth/me instead.
+    await page.route(`${apiOrigin}/api/auth/me`, (route) => route.fulfill({
+        json: { success: true, data: { id: STUDENT_ID, email: 'student@approved.test', role: 'student', profile: { name: 'Adaeze Obi' } } },
+        headers: CORS,
+    }));
+    await submitPasswordLogin(page, null);
+    await page.waitForURL('**/student/profile/complete?redirect=%2Fmarketplace');
+    await expect(page.getByRole('heading', { level: 1 })).toHaveText('Hi, Adaeze');
+    await expect(page.getByText('Complete your student profile').first()).toBeVisible();
+    expect(prompt.getCalls).toBeGreaterThanOrEqual(1);
+});
+
 test('password login with an explicit profile continuation skips the projection read', async ({ page }) => {
     await installSyntheticApi(page);
     const prompt = await installPromptApi(page, okProjection(projection()));

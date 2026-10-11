@@ -283,6 +283,59 @@ test('an enrolled student completes SSO at the requested page', async ({ page })
     api.assertNoUnexpectedRequests();
 });
 
+test('a session replaced mid-completion discards SSO navigation', async ({ page }) => {
+    await installSyntheticApi(page);
+    await page.route(`${apiOrigin}/api/auth/student/sso/finish`, async (route) => {
+        await route.fulfill({
+            json: {
+                success: true,
+                data: {
+                    outcome: 'authenticated',
+                    user: { id: 'student-1', email: 'student@school.example', role: 'student' },
+                    tokens: { accessToken: 'student-access', refreshToken: 'student-refresh' },
+                    studentAssurance: enrolledAssurance(),
+                    assuranceStatus: 'available',
+                },
+            },
+            headers: ssoHeaders,
+        });
+    });
+    let releaseProjection!: () => void;
+    const projectionGate = new Promise<void>((resolve) => { releaseProjection = resolve; });
+    let projectionHeld = false;
+    await page.route(`${apiOrigin}/api/students/academic-profile**`, async (route) => {
+        const url = new URL(route.request().url());
+        if (url.pathname === '/api/students/academic-profile' && route.request().method() === 'GET' && !projectionHeld) {
+            projectionHeld = true;
+            await projectionGate;
+        }
+        await route.fallback();
+    });
+
+    await page.goto('/auth/student/login');
+    await seedTabAttempt(page, {
+        attemptId: ATTEMPT_ID,
+        finishSecret: 'synthetic-finish-secret',
+        expiresAt: liveExpiry(),
+        generation: 0,
+        // The exact browse path forces the post-commit projection read, so
+        // the test can replace the session while it is pending.
+        returnPath: '/marketplace',
+    });
+    await page.goto(`/auth/student/sso/complete?attempt=${ATTEMPT_ID}`);
+    await expect.poll(() => readSessionEnvelope(page)).toContain('"state":"active"');
+    await expect.poll(() => projectionHeld).toBe(true);
+
+    const second = await page.context().newPage();
+    await second.goto('/auth/student/login');
+    await replaceSession(second, 'student', 'intruder-session');
+    releaseProjection();
+
+    await expect(page.getByRole('heading', { name: 'Sign-in discarded' })).toBeVisible();
+    await expect(page).toHaveURL(/\/auth\/student\/sso\/complete/);
+    await second.close();
+});
+
 test('a still-redeeming login waits and completes instead of failing', async ({ page }) => {
     const finishBodies: unknown[] = [];
     let finishCalls = 0;
