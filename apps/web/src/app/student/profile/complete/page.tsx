@@ -65,6 +65,9 @@ const FIELD_ANCHORS: Record<AcademicField, string> = {
 
 const ENTRY_ROUTE_OPTIONS: readonly EntryRoute[] = ['utme', 'de_200', 'de_300', 'transfer_other'];
 
+/** Storage mirror of the API's 255-character free-text limit for institution names and course labels. */
+const FREE_TEXT_MAX_LENGTH = 255;
+
 type MarkedState = 'unknown' | 'skipped' | null;
 
 type GraduationDraft =
@@ -173,6 +176,7 @@ type ComboboxProps<T> = {
     label: string;
     value: string;
     placeholder?: string;
+    maxLength?: number;
     onValueChange: (value: string) => void;
     items: readonly T[];
     itemKey: (item: T) => string;
@@ -185,7 +189,7 @@ type ComboboxProps<T> = {
 };
 
 function SearchCombobox<T>({
-    id, label, value, placeholder, onValueChange, items, itemKey, itemLabel, itemHint, status, onSelect, describedBy, emptyText,
+    id, label, value, placeholder, maxLength, onValueChange, items, itemKey, itemLabel, itemHint, status, onSelect, describedBy, emptyText,
 }: ComboboxProps<T>) {
     const [open, setOpen] = useState(false);
     const [activeIndex, setActiveIndex] = useState(-1);
@@ -205,6 +209,7 @@ function SearchCombobox<T>({
                 className="mt-1 block w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-slate-900 focus:border-[#1D4ED8] focus:outline-2 focus:outline-[#1D4ED8]"
                 value={value}
                 placeholder={placeholder}
+                maxLength={maxLength}
                 onChange={(event) => {
                     onValueChange(event.target.value);
                     setOpen(true);
@@ -322,6 +327,10 @@ function CompletionForm() {
     const [leaveDialog, setLeaveDialog] = useState(false);
     const [pendingLeave, setPendingLeave] = useState<PendingLeave | null>(null);
     const [saving, setSaving] = useState(false);
+    const savingRef = useRef(false);
+    useEffect(() => {
+        savingRef.current = saving;
+    }, [saving]);
     const [announce, setAnnounce] = useState('');
     const estimateRequestId = useRef(0);
     const leaveDialogRef = useRef<HTMLDivElement | null>(null);
@@ -399,7 +408,11 @@ function CompletionForm() {
         }
         const onPopState = () => {
             window.history.pushState({ awoofLeaveGuard: true }, '', window.location.href);
-            if (leaveDialogOpenRef.current) return;
+            // A save already in flight owns the exit decision: opening a
+            // second dialog now would be orphaned when the save resolves
+            // and navigates. The traversal stays cancelled either way, so
+            // Back pressed again after a failed save still confirms.
+            if (leaveDialogOpenRef.current || savingRef.current) return;
             // Browser chrome triggered the dialog, so focus restores to
             // the Complete-later button on close.
             leaveTriggerRef.current = null;
@@ -585,6 +598,8 @@ function CompletionForm() {
                 form.claimedInstitution = { state: 'unanswered' };
             } else if (institutionName.trim() === '' || !/^[A-Za-z]{2}$/.test(institutionCountry.trim())) {
                 errors.institution = 'Enter the institution name and its 2-letter country code, or choose Not sure or Skip this detail.';
+            } else if (institutionName.trim().length > FREE_TEXT_MAX_LENGTH) {
+                errors.institution = `Keep the institution name to ${FREE_TEXT_MAX_LENGTH} characters or fewer, or choose Not sure or Skip this detail.`;
             } else {
                 form.claimedInstitution = {
                     state: 'supplied',
@@ -599,6 +614,8 @@ function CompletionForm() {
                 form.programme = { state: 'unanswered' };
             } else if (programmeSelectedId !== null) {
                 form.programme = { state: 'supplied', value: { programmeId: programmeSelectedId, courseLabel: null } };
+            } else if (programmeText.trim().length > FREE_TEXT_MAX_LENGTH) {
+                errors.programme = `Keep the course name to ${FREE_TEXT_MAX_LENGTH} characters or fewer, or choose Not sure or Skip this detail.`;
             } else {
                 form.programme = { state: 'supplied', value: { programmeId: null, courseLabel: programmeText.trim() } };
             }
@@ -789,6 +806,10 @@ function CompletionForm() {
     };
 
     const requestLeave = (href: string | null, defer: boolean) => {
+        // A save already in flight owns the exit decision: opening the
+        // dialog now would let Discard navigate while the submitted
+        // request can still commit, so leave actions wait for it.
+        if (saving) return;
         if (!dirty) {
             if (defer) writeCompleteLaterDeferral();
             navigateToPendingLeave({ kind: 'exit', href, defer });
@@ -984,6 +1005,7 @@ function CompletionForm() {
         : null;
     const errorSummary: Array<{ key: string; anchor: string; message: string }> = [];
     if (fieldErrors.institution) errorSummary.push({ key: 'institution', anchor: FIELD_ANCHORS.claimedInstitution, message: fieldErrors.institution });
+    if (fieldErrors.programme) errorSummary.push({ key: 'programme', anchor: FIELD_ANCHORS.programme, message: fieldErrors.programme });
     if (fieldErrors.entryYear) errorSummary.push({ key: 'entryYear', anchor: FIELD_ANCHORS.entryYear, message: fieldErrors.entryYear });
     if (fieldErrors.graduation) errorSummary.push({ key: 'graduation', anchor: FIELD_ANCHORS.expectedGraduationYear, message: fieldErrors.graduation });
 
@@ -1122,6 +1144,7 @@ function CompletionForm() {
                                 <SearchCombobox<InstitutionCatalogueItem>
                                     id="institution-name"
                                     label="Institution name"
+                                    maxLength={FREE_TEXT_MAX_LENGTH}
                                     value={institutionName}
                                     placeholder="Start typing your institution"
                                     onValueChange={(value) => {
@@ -1190,6 +1213,7 @@ function CompletionForm() {
                                 label="Programme or course"
                                 value={programmeText}
                                 placeholder="Start typing your programme or course"
+                                maxLength={FREE_TEXT_MAX_LENGTH}
                                 onValueChange={(value) => {
                                     setProgrammeText(value);
                                     setProgrammeSelectedId(null);
@@ -1209,8 +1233,10 @@ function CompletionForm() {
                                     markDirty('programme');
                                     handleInputsChanged();
                                 }}
+                                describedBy={fieldErrors.programme ? 'programme-error' : undefined}
                                 emptyText="No matches. Your entry will be saved as written."
                             />
+                            {fieldErrors.programme && <p role="alert" id="programme-error" className="mt-1 text-sm text-red-700">{fieldErrors.programme}</p>}
                             <p className="mt-2 text-xs text-slate-500">Suggestions are programme names, not a confirmed list of courses offered by your institution. You can also type your course as written.</p>
                             {programmeMarked && <MarkedBadge marked={programmeMarked} />}
                             <MarkButtons

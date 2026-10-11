@@ -83,7 +83,8 @@ type AcademicFixture = {
     puts: unknown[];
     getCalls: number;
     current: unknown;
-    putBehavior: 'echo' | 'conflict' | 'error' | 'abort-once' | 'institution-changed-once' | 'institution-changed-always';
+    putBehavior: 'echo' | 'conflict' | 'error' | 'abort-once' | 'institution-changed-once' | 'institution-changed-always' | 'defer-once';
+    releaseDeferredPut: () => void;
     estimateResult: unknown;
     estimateCalls: unknown[];
     programmeItems: unknown[];
@@ -96,12 +97,14 @@ async function installAcademicApi(page: Page, initial: unknown): Promise<Academi
         getCalls: 0,
         current: initial,
         putBehavior: 'echo',
+        releaseDeferredPut: () => {},
         estimateResult: { state: 'unavailable', reason: 'missing_input' },
         estimateCalls: [],
         programmeItems: [],
         institutionItems: [],
     };
     let aborted = false;
+    let putDeferred = false;
     await page.route(`${apiOrigin}/api/students/academic-profile**`, async (route: Route) => {
         const path = new URL(route.request().url()).pathname;
         if (path === '/api/students/academic-profile' && route.request().method() === 'GET') {
@@ -142,6 +145,12 @@ async function installAcademicApi(page: Page, initial: unknown): Promise<Academi
                 fixture.current = applyPatch(fixture.current, body);
                 await route.abort('failed');
                 return;
+            }
+            if (fixture.putBehavior === 'defer-once' && !putDeferred) {
+                putDeferred = true;
+                await new Promise<void>((resolve) => {
+                    fixture.releaseDeferredPut = resolve;
+                });
             }
             fixture.current = applyPatch(fixture.current, body);
             await route.fulfill({ json: { success: true, data: fixture.current }, headers: CORS });
@@ -828,6 +837,61 @@ test('routes browser Back through the leave confirmation', async ({ page }) => {
     await page.getByRole('alertdialog').getByRole('button', { name: 'Discard and continue' }).click();
     await expect(page).toHaveURL(/\/auth\/student\/login/);
     expect(fixture.puts).toHaveLength(0);
+});
+
+test('ignores Back presses while a dialog save is in flight', async ({ page }) => {
+    const fixture = await openComplete(page, projection());
+    fixture.putBehavior = 'defer-once';
+    await page.getByRole('textbox', { name: 'Entry year' }).fill('2022');
+    await page.getByRole('button', { name: 'Complete later' }).click();
+    const dialog = page.getByRole('alertdialog');
+    await expect(dialog).toBeVisible();
+    await dialog.getByRole('button', { name: 'Save and continue' }).click();
+    await expect(dialog).toBeHidden();
+    await expect.poll(() => fixture.puts.length).toBe(1);
+    await page.goBack();
+    await expect(page.getByRole('alertdialog')).toHaveCount(0);
+    fixture.releaseDeferredPut();
+    await expect(page).toHaveURL(/\/marketplace/, { timeout: 30000 });
+    expect(fixture.puts).toHaveLength(1);
+});
+
+test('ignores leave actions while a main save is in flight', async ({ page }) => {
+    const fixture = await openComplete(page, projection());
+    fixture.putBehavior = 'defer-once';
+    await page.getByRole('textbox', { name: 'Entry year' }).fill('2022');
+    await page.getByRole('button', { name: 'Save and continue' }).click();
+    await expect.poll(() => fixture.puts.length).toBe(1);
+    await page.getByRole('link', { name: 'Marketplace' }).click();
+    await expect(page.getByRole('alertdialog')).toHaveCount(0);
+    await page.goBack();
+    await expect(page.getByRole('alertdialog')).toHaveCount(0);
+    fixture.releaseDeferredPut();
+    await expect(page).toHaveURL(/\/marketplace/, { timeout: 30000 });
+    expect(fixture.puts).toHaveLength(1);
+});
+
+test('rejects free-text entries longer than the API limit before submitting', async ({ page }) => {
+    const fixture = await openComplete(page, projection());
+    await expect(page.getByRole('combobox', { name: 'Programme or course' })).toHaveAttribute('maxlength', '255');
+    await expect(page.getByRole('combobox', { name: 'Institution name' })).toHaveAttribute('maxlength', '255');
+    await page.getByRole('combobox', { name: 'Programme or course' }).evaluate((node) => node.removeAttribute('maxlength'));
+    await page.getByRole('combobox', { name: 'Programme or course' }).fill('c'.repeat(256));
+    await page.getByRole('button', { name: 'Save and continue' }).click();
+    await expect(page.locator('#programme-error')).toHaveText('Keep the course name to 255 characters or fewer, or choose Not sure or Skip this detail.');
+    expect(fixture.puts).toHaveLength(0);
+    await expect(page).toHaveURL(/\/student\/profile\/complete/);
+});
+
+test('rejects institution names longer than the API limit before submitting', async ({ page }) => {
+    const fixture = await openComplete(page, projection());
+    await page.getByRole('combobox', { name: 'Institution name' }).evaluate((node) => node.removeAttribute('maxlength'));
+    await page.getByRole('combobox', { name: 'Institution name' }).fill('u'.repeat(256));
+    await page.getByRole('textbox', { name: 'Country (2-letter code)' }).fill('NG');
+    await page.getByRole('button', { name: 'Save and continue' }).click();
+    await expect(page.locator('#institution-error')).toHaveText('Keep the institution name to 255 characters or fewer, or choose Not sure or Skip this detail.');
+    expect(fixture.puts).toHaveLength(0);
+    await expect(page).toHaveURL(/\/student\/profile\/complete/);
 });
 
 test('does not prompt on unload after a successful save', async ({ page }) => {
