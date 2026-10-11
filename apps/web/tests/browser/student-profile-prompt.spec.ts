@@ -279,8 +279,10 @@ test('password login with an explicit profile continuation skips the projection 
     await mockPasswordLogin(page);
     await submitPasswordLogin(page, '%2Fstudent%2Fprofile');
     await page.waitForURL('**/student/profile');
-    expect(prompt.getCalls).toBe(0);
+    // Login issues no prompt read; the single read is the hub's own
+    // completion-CTA gate resolving the server-projected feature state.
     await expect(page.getByRole('link', { name: 'Complete your student profile' })).toBeVisible();
+    expect(prompt.getCalls).toBe(1);
 });
 
 test('password login bypasses completion for verified enrollment', async ({ page }) => {
@@ -372,11 +374,20 @@ test('merchant, verification, security, and consent continuations bypass complet
         { redirect: '%2Fstudent%2Fsecurity', url: '**/student/security' },
         { redirect: '%2Fstudent%2Fprofile', url: '**/student/profile' },
     ];
-    for (const destination of destinations) {
+    for (const [index, destination] of destinations.entries()) {
         await submitPasswordLogin(page, destination.redirect);
         await page.waitForURL(destination.url);
+        // The first destination carries no CTA gate, so this pins the login
+        // contract purely: explicit continuations issue no prompt reads.
+        if (index === 0) expect(prompt.getCalls).toBe(0);
+        if (destination.url === '**/student/verification') {
+            await expect(page.getByRole('link', { name: 'Complete your student profile (optional)' })).toBeVisible();
+        }
     }
-    expect(prompt.getCalls).toBe(0);
+    // Each gated page performs its own CTA read; later logins can remount
+    // the verification form and re-read, so the total is a lower bound.
+    await expect(page.getByRole('link', { name: 'Complete your student profile' })).toBeVisible();
+    expect(prompt.getCalls).toBeGreaterThanOrEqual(2);
 });
 
 test('the onboarding link continuation is preserved without a projection read', async ({ page }) => {
@@ -433,7 +444,10 @@ test('SSO re-login keeps an explicit continuation without a projection read', as
     await seedSsoAttempt(page, '/student/profile');
     await page.goto(`/auth/student/sso/complete?attempt=${ATTEMPT_ID}`);
     await page.waitForURL('**/student/profile');
-    expect(prompt.getCalls).toBe(0);
+    // SSO issues no prompt read; the single read is the hub's own
+    // completion-CTA gate resolving the server-projected feature state.
+    await expect(page.getByRole('link', { name: 'Complete your student profile' })).toBeVisible();
+    expect(prompt.getCalls).toBe(1);
 });
 
 test('SSO re-login sends pending enrollment to verification, not completion', async ({ page }) => {
@@ -445,7 +459,10 @@ test('SSO re-login sends pending enrollment to verification, not completion', as
     await seedSsoAttempt(page, '/marketplace');
     await page.goto(`/auth/student/sso/complete?attempt=${ATTEMPT_ID}`);
     await page.waitForURL('**/student/verification');
-    expect(prompt.getCalls).toBe(0);
+    // SSO issues no prompt read; the single read is the verification page's
+    // own completion-CTA gate resolving the server-projected feature state.
+    await expect(page.getByRole('link', { name: 'Complete your student profile (optional)' })).toBeVisible();
+    expect(prompt.getCalls).toBe(1);
 });
 
 test('SSO signup continues from the recovery warning to completion when eligible', async ({ page }) => {
@@ -484,7 +501,10 @@ test('SSO signup continues from the recovery warning to an explicit destination'
     await driveSignupToRecoveryNotice(page, '/student/profile');
     await page.getByRole('button', { name: 'Continue' }).click();
     await page.waitForURL('**/student/profile');
-    expect(prompt.getCalls).toBe(0);
+    // Signup issues no prompt read; the single read is the hub's own
+    // completion-CTA gate resolving the server-projected feature state.
+    await expect(page.getByRole('link', { name: 'Complete your student profile' })).toBeVisible();
+    expect(prompt.getCalls).toBe(1);
 });
 
 test('a verified status on fresh load keeps the voluntary experience after routing', async ({ page }) => {

@@ -28,6 +28,7 @@ import { useConfirm } from '@/components/ui/ConfirmDialog';
 import { StudentHeaderActions } from '@/components/student/StudentHeaderActions';
 import apiClient from '@/lib/api-client';
 import { isStudentVerified, parseStudentAssurance, schoolAccountLabel, studentStatusLabel, type StudentAssurance } from '@/lib/student-assurance';
+import { useAcademicProfileCompletionCta } from '@/lib/student-academic-profile';
 
 type MenuItem = {
     href?: string;
@@ -112,8 +113,11 @@ export default function StudentProfilePage() {
         }
     };
 
+    const completionCta = useAcademicProfileCompletionCta();
     const generalItems: MenuItem[] = [
-        { href: '/student/profile/complete?redirect=%2Fstudent%2Fprofile', label: 'Complete your student profile', icon: GraduationCap },
+        ...(completionCta === true
+            ? [{ href: '/student/profile/complete?redirect=%2Fstudent%2Fprofile', label: 'Complete your student profile', icon: GraduationCap }]
+            : []),
         { href: '/student/verification', label: 'Student verification', icon: ShieldCheck },
         { href: '/student/security', label: 'Account security', icon: KeyRound },
         { href: '/student/profile/notifications', label: 'Notifications', icon: Bell },

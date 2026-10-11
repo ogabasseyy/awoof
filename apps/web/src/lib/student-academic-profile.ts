@@ -8,6 +8,7 @@
  * rejected outright because profile answers are never eligibility evidence.
  */
 
+import { useEffect, useState } from 'react';
 import apiClient from './api-client';
 import type { User } from './auth';
 import { parseStudentAssurance, type StudentAssurance } from './student-assurance';
@@ -645,6 +646,41 @@ export async function fetchAcademicProfile(): Promise<AcademicProfileView> {
     const parsed = parseAcademicProfileResponse(response.data);
     if (!parsed) throw invalidProfileError();
     return parsed;
+}
+
+let inflightCompletionCtaRead: Promise<AcademicProfileView> | null = null;
+
+/**
+ * One shared in-flight projection read for the completion CTA gate, so
+ * StrictMode double-effects issue a single request. Cleared on settle:
+ * sequential mounts always re-read, never a stale flag.
+ */
+function readCompletionCtaProjection(): Promise<AcademicProfileView> {
+    if (!inflightCompletionCtaRead) {
+        inflightCompletionCtaRead = fetchAcademicProfile().finally(() => {
+            inflightCompletionCtaRead = null;
+        });
+    }
+    return inflightCompletionCtaRead;
+}
+
+/**
+ * Whether the profile-completion call to action renders on the profile hub
+ * and verification pages. Null while the server projection loads; false
+ * only when the server reports collection disabled. Read failures fail
+ * open to true so a projection outage never removes the pre-rollout
+ * journey — the completion page reports its own read errors.
+ */
+export function useAcademicProfileCompletionCta(): boolean | null {
+    const [visible, setVisible] = useState<boolean | null>(null);
+    useEffect(() => {
+        let cancelled = false;
+        readCompletionCtaProjection()
+            .then((view) => { if (!cancelled) setVisible(view.featureEnabled); })
+            .catch(() => { if (!cancelled) setVisible(true); });
+        return () => { cancelled = true; };
+    }, []);
+    return visible;
 }
 
 /** Save a partial patch and return the recalculated projection. */

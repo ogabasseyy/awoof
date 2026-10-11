@@ -8,6 +8,7 @@ import apiClient from '@/lib/api-client';
 import { useAuth } from '@/contexts/AuthContext';
 import { getSessionSnapshot, isCurrentSession, subscribeSessionChanges } from '@/lib/auth';
 import { parseStudentAssurance, schoolAccountLabel, studentStatusLabel } from '@/lib/student-assurance';
+import { useAcademicProfileCompletionCta } from '@/lib/student-academic-profile';
 import MicrosoftVerificationCard from './MicrosoftVerificationCard';
 
 type Consent = { id: string; kind: 'processing' | 'disclosure'; acceptedAt: string; withdrawnAt: string | null; origin?: string | null; purpose?: string | null };
@@ -53,6 +54,7 @@ function VerificationForm() {
     const [error, setError] = useState('');
     const [message, setMessage] = useState('');
     const [retryAt, setRetryAt] = useState(0);
+    const completionCta = useAcademicProfileCompletionCta();
     async function loadConsents(cursor?: string) {
         const read = ++consentRead.current;
         try {
@@ -146,8 +148,10 @@ function VerificationForm() {
     return <main className="mx-auto max-w-lg space-y-5 p-6">
         <Link href="/student/profile" className="underline">Back to profile</Link>
         <h1 className="text-2xl font-semibold">Student verification</h1>
-        <p><Link href="/student/profile/complete?redirect=%2Fstudent%2Fverification" className="underline">Complete your student profile (optional)</Link></p>
-        <p>Optional details never change your verification status.</p>
+        {completionCta === true && <>
+            <p><Link href="/student/profile/complete?redirect=%2Fstudent%2Fverification" className="underline">Complete your student profile (optional)</Link></p>
+            <p>Optional details never change your verification status.</p>
+        </>}
         {error && <p role="alert" className="text-red-700">{error}</p>}
         {!status && error && <button type="button" className="underline" onClick={() => void retryStatus()}>Retry</button>}
         {message && <p role="status">{message}</p>}

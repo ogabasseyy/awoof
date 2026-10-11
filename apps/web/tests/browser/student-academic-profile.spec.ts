@@ -984,6 +984,21 @@ test('links from the profile hub and verification page carry fixed return paths'
     await expect(page).toHaveURL(/\/student\/profile\/complete\?redirect=%2Fstudent%2Fverification/);
 });
 
+test('hides completion calls to action while collection is disabled', async ({ page }) => {
+    await installSyntheticApi(page);
+    const fixture = await installAcademicApi(page, projection({ featureEnabled: false }));
+    await mockCurrentUser(page);
+    await mockQuietVerification(page, 'pending');
+    await seedSession(page, 'student');
+    await page.goto('/student/profile');
+    await expect.poll(() => fixture.getCalls).toBeGreaterThanOrEqual(1);
+    await expect(page.getByRole('link', { name: 'Complete your student profile' })).toHaveCount(0);
+    await page.goto('/student/verification');
+    await expect.poll(() => fixture.getCalls).toBeGreaterThanOrEqual(2);
+    await expect(page.getByRole('link', { name: 'Complete your student profile (optional)' })).toHaveCount(0);
+    await expect(page.getByText('Optional details never change your verification status.')).toHaveCount(0);
+});
+
 test('fits a 320px viewport without horizontal scrolling', async ({ page }) => {
     await page.setViewportSize({ width: 320, height: 800 });
     await openComplete(page, projection());
