@@ -216,6 +216,8 @@ test('suspended students keep read access but cannot save', async () => {
 
         const read = await readAcademicProfile(pool, fixture.userId, enabled);
         assert.equal(read.revision, 1);
+        assert.equal(read.featureEnabled, true);
+        assert.equal(read.writeAvailable, false);
         await assert.rejects(
             saveAcademicProfile(pool, fixture.userId, { expectedRevision: 1 }, enabled),
             ForbiddenError,

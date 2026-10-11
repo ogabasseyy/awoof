@@ -574,6 +574,7 @@ export type AcademicProfileContext = {
     registrationNumber: string | null;
     institutionShortcode: string | null;
     institutionCountry: string | null;
+    status: string;
 };
 
 async function defaultReadAssurance(tx: PoolClient, userId: string): Promise<StudentAssurance> {
@@ -661,6 +662,7 @@ export async function lockAcademicProfileContext(
         registrationNumber: student.registration_number ?? null,
         institutionShortcode,
         institutionCountry,
+        status: student.status,
     };
 }
 
@@ -904,6 +906,11 @@ async function buildProjection(input: {
             ? reference.findProgrammeLabel(fields.programme.value.programmeId)
             : null,
         featureEnabled: input.featureEnabled,
+        // Actor-level write availability: saves require both the global
+        // collection gate and an active student record, so suspended
+        // students see the supported read-only state instead of building
+        // a draft that every save rejects.
+        writeAvailable: input.featureEnabled && ctx.status === 'active',
         promptDecision: computePromptDecision({
             featureEnabled: input.featureEnabled,
             assuranceState,

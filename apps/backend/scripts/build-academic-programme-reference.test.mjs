@@ -6,6 +6,7 @@ import test from 'node:test';
 import { fileURLToPath } from 'node:url';
 import {
     ARTIFACT_VERSION,
+    INCLUDED_EVIDENCE,
     KNOWN_EVIDENCE,
     KNOWN_ROUTES,
     MAX_ESTIMABLE_PROGRAMME_ID_LENGTH,
@@ -552,4 +553,33 @@ test('runtime lookups refuse pending routes even when estimable is hand-set', ()
     rule.estimable = true;
     assert.equal(rule.pending, true);
     assert.equal(getEstimableRouteRule(artifact, 'syn-001', 'de_200'), null);
+});
+
+test('included evidence matches the importer classification exactly', () => {
+    for (const evidence of KNOWN_EVIDENCE) {
+        const { disposition } = classifyRow(baseRow({ evidence }), { redistribution: 'allowed' });
+        assert.equal(disposition === 'included', INCLUDED_EVIDENCE.includes(evidence), `evidence ${evidence}`);
+    }
+    assert.deepEqual([...INCLUDED_EVIDENCE].sort(), ['G', 'P', 'P/G', 'P/U']);
+});
+
+test('reference verification rejects importer-excluded evidence in programmes', () => {
+    for (const evidence of ['G', 'P', 'P/G']) {
+        const honest = build([baseRow({ evidence })]);
+        withTempArtifact(honest, (file) => {
+            assert.deepEqual(verifyProgrammeReferenceArtifact(file), honest, `evidence ${evidence}`);
+        });
+    }
+    const honestPending = build([pendingEvidenceRow()]);
+    withTempArtifact(honestPending, (file) => {
+        assert.deepEqual(verifyProgrammeReferenceArtifact(file), honestPending, 'evidence P/U');
+    });
+    for (const evidence of ['C', 'L', 'P/R', 'V', 'U']) {
+        const artifact = build([baseRow()]);
+        artifact.programmes[0].evidence = evidence;
+        reseal(artifact);
+        withTempArtifact(artifact, (file) => {
+            assert.throws(() => verifyProgrammeReferenceArtifact(file), /always excluded by the importer/, `evidence ${evidence}`);
+        });
+    }
 });

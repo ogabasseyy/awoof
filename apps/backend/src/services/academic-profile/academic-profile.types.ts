@@ -100,6 +100,8 @@ export type AcademicProfileProjection = {
     /** Display label for a saved catalogue programme selection; null for free text or unresolvable ids. */
     programmeLabel: string | null;
     featureEnabled: boolean;
+    /** True when the requesting actor may save: collection enabled and the student record active. */
+    writeAvailable: boolean;
     promptDecision: 'complete_profile' | 'continue';
 };
 

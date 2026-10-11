@@ -20,6 +20,13 @@ import { fileURLToPath } from 'node:url';
 export const ARTIFACT_VERSION = 1;
 export const KNOWN_ROUTES = ['utme', 'de_200', 'de_300'];
 export const KNOWN_EVIDENCE = ['G', 'P', 'P/G', 'P/R', 'V', 'C', 'L', 'P/U', 'U'];
+/**
+ * Evidence classes the importer can include in `programmes`. Mirrors
+ * classifyRow: C (conflicting text), L (legacy pathway), P/R (derived
+ * value), V (variant unresolved), and U (unresolved pending) are always
+ * excluded, so a staged programme carrying one is a hand edit.
+ */
+export const INCLUDED_EVIDENCE = ['G', 'P', 'P/G', 'P/U'];
 export const REDISTRIBUTION_FLAGS = ['allowed', 'blocked'];
 
 const KNOWN_EXTRACT_FIELDS = ['sourceVersion', 'sourceChecksumSha256', 'rows'];
@@ -460,6 +467,9 @@ function verifyArtifactProgramme(entry, label, calculationsEnabled) {
     verifyArtifactLocator(entry.locator, label);
     if (typeof entry.evidence !== 'string' || !KNOWN_EVIDENCE.includes(entry.evidence)) {
         throw new Error(`invalid programme reference '${label}': unknown evidence code`);
+    }
+    if (!INCLUDED_EVIDENCE.includes(entry.evidence)) {
+        throw new Error(`invalid programme reference '${label}': evidence '${entry.evidence}' is always excluded by the importer`);
     }
     if (entry.exceptionNotes !== null && typeof entry.exceptionNotes !== 'string') {
         throw new Error(`invalid programme reference '${label}': exception notes must be a string or null`);

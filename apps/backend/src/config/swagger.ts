@@ -613,7 +613,7 @@ Access tokens expire in 15 minutes. Use the refresh token endpoint to get a new 
                 },
                 AcademicProfileProjection: {
                     type: 'object',
-                    required: ['revision', 'fields', 'institution', 'institutionConfirmedGraduationYear', 'entryYearSuggestion', 'optionalUnansweredFields', 'attentionFields', 'verificationRequirements', 'verificationContinuationAvailable', 'assuranceState', 'assurance', 'referenceVersion', 'estimate', 'programmeLabel', 'featureEnabled', 'promptDecision'],
+                    required: ['revision', 'fields', 'institution', 'institutionConfirmedGraduationYear', 'entryYearSuggestion', 'optionalUnansweredFields', 'attentionFields', 'verificationRequirements', 'verificationContinuationAvailable', 'assuranceState', 'assurance', 'referenceVersion', 'estimate', 'programmeLabel', 'featureEnabled', 'writeAvailable', 'promptDecision'],
                     properties: {
                         revision: { type: 'integer', minimum: 0 },
                         fields: { $ref: '#/components/schemas/AcademicProfileFields' },
@@ -630,6 +630,7 @@ Access tokens expire in 15 minutes. Use the refresh token endpoint to get a new 
                         estimate: { nullable: true, type: 'object', additionalProperties: false, required: ['year', 'ruleId', 'sourceVersion'], properties: { year: { type: 'integer' }, ruleId: { type: 'string' }, sourceVersion: { type: 'string' } } },
                         programmeLabel: { type: 'string', nullable: true, description: 'Display label for a saved catalogue programme selection; null for free text or unresolvable ids. Never submitted by the browser.' },
                         featureEnabled: { type: 'boolean' },
+                        writeAvailable: { type: 'boolean', description: 'Whether the requesting actor may save: collection enabled and the student record active. Suspended students read their saved data but cannot change it.' },
                         promptDecision: { type: 'string', enum: ['complete_profile', 'continue'], description: 'Eligibility to be offered the profile, not a navigation order or authorization change.' },
                     },
                 },

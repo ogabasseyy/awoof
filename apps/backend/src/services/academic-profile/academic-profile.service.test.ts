@@ -1579,6 +1579,20 @@ test('suspended students keep read access but cannot save', async () => {
     );
 });
 
+test('projection reports write availability for the requesting actor', async () => {
+    const active = await readAcademicProfile(createFakePool(fakeState()) as never, USER_ID, serviceDeps());
+    assert.equal(active.featureEnabled, true);
+    assert.equal(active.writeAvailable, true);
+    const suspended = fakeState();
+    suspended.student = { id: STUDENT_ID, university_id: null, identity_version: 1, status: 'suspended' };
+    const readOnly = await readAcademicProfile(createFakePool(suspended) as never, USER_ID, serviceDeps());
+    assert.equal(readOnly.featureEnabled, true);
+    assert.equal(readOnly.writeAvailable, false);
+    const disabled = await readAcademicProfile(createFakePool(fakeState()) as never, USER_ID, serviceDeps({ featureEnabled: false }));
+    assert.equal(disabled.featureEnabled, false);
+    assert.equal(disabled.writeAvailable, false);
+});
+
 test('non-student roles and deleted students are denied', async () => {
     const vendor = fakeState();
     vendor.user = { id: USER_ID, email: 'vendor@example.invalid', role: 'vendor', deleted_at: null };
