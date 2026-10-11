@@ -688,6 +688,68 @@ test('completes later without saving when clean', async ({ page }) => {
     expect(fixture.puts).toHaveLength(0);
 });
 
+test('routes header exits through the leave confirmation without deferring', async ({ page }) => {
+    const fixture = await openComplete(page, projection());
+    await page.getByRole('textbox', { name: 'Entry year' }).fill('2022');
+    await page.getByRole('link', { name: 'Marketplace' }).click();
+    const dialog = page.getByRole('alertdialog');
+    await expect(dialog).toBeVisible();
+    await dialog.getByRole('button', { name: 'Stay on this page' }).click();
+    await expect(dialog).toBeHidden();
+    await expect(page.getByRole('link', { name: 'Marketplace' })).toBeFocused();
+    await expect(page.getByRole('textbox', { name: 'Entry year' })).toHaveValue('2022');
+    await page.getByRole('link', { name: 'Marketplace' }).click();
+    await page.getByRole('alertdialog').getByRole('button', { name: 'Discard and continue' }).click();
+    await expect(page).toHaveURL(/\/marketplace/, { timeout: 30000 });
+    expect(fixture.puts).toHaveLength(0);
+    const deferrals = await page.evaluate((prefix) => {
+        const keys: string[] = [];
+        for (let index = 0; index < localStorage.length; index += 1) {
+            const key = localStorage.key(index);
+            if (key && key.startsWith(prefix)) keys.push(key);
+        }
+        return keys;
+    }, 'awoof.profile.defer-prompt.v1.');
+    expect(deferrals).toEqual([]);
+});
+
+test('follows header exits directly when clean', async ({ page }) => {
+    await openComplete(page, projection());
+    await page.getByRole('link', { name: 'Marketplace' }).click();
+    await expect(page).toHaveURL(/\/marketplace/, { timeout: 30000 });
+    await expect(page.getByRole('alertdialog')).toHaveCount(0);
+});
+
+test('clears the country when the selected institution has none', async ({ page }) => {
+    const fixture = await openComplete(page, projection());
+    fixture.institutionItems = [{ name: 'Mapped University', countryCode: 'NG' }];
+    const input = page.getByRole('combobox', { name: 'Institution name' });
+    await input.click();
+    await input.fill('Mapped');
+    await expect(page.getByRole('option').first()).toBeVisible();
+    await page.getByRole('option').first().click();
+    await expect(page.getByRole('textbox', { name: 'Country (2-letter code)' })).toHaveValue('NG');
+    fixture.institutionItems = [{ name: 'Unmapped College', countryCode: null }];
+    await input.click();
+    await input.fill('Unmapped');
+    await expect(page.getByRole('option').first()).toBeVisible();
+    await page.getByRole('option').first().click();
+    await expect(input).toHaveValue('Unmapped College');
+    await expect(page.getByRole('textbox', { name: 'Country (2-letter code)' })).toHaveValue('');
+});
+
+test('saves an unanswered graduation year after the marker is toggled off', async ({ page }) => {
+    const fixture = await openComplete(page, projection());
+    const skip = page.locator('#field-graduation-year').getByRole('button', { name: 'Skip this detail' });
+    await skip.click();
+    await expect(page.getByText('You skipped this detail.')).toBeVisible();
+    await skip.click();
+    await page.getByRole('button', { name: 'Save and continue' }).click();
+    await expect(page).toHaveURL(/\/marketplace/, { timeout: 30000 });
+    expect(fixture.puts).toHaveLength(1);
+    expect(fixture.puts[0]).toEqual({ expectedRevision: 3, expectedGraduationYear: { state: 'unanswered' } });
+});
+
 test('follows the validated redirect after saving', async ({ page }) => {
     await installSyntheticApi(page);
     const fixture = await installAcademicApi(page, projection());

@@ -9,7 +9,7 @@
 
 'use client';
 
-import { useEffect, useRef, useState, useSyncExternalStore, type ReactNode } from 'react';
+import { useEffect, useRef, useState, useSyncExternalStore, type MouseEvent as ReactMouseEvent, type ReactNode } from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import axios from 'axios';
@@ -78,6 +78,24 @@ type EstimateUiState =
     | { status: 'error' };
 
 type SearchStatus = 'idle' | 'loading' | 'ready' | 'error';
+
+/**
+ * Where the leave dialog should take the student after Save or Discard.
+ * A null href means the normal completion exit; defer records whether the
+ * exit writes a complete-later deferral (only the Complete-later button
+ * does — header and correction links never suppress the next prompt).
+ */
+type PendingLeave = { href: string | null; defer: boolean };
+
+const COMPLETE_LATER_LEAVE: PendingLeave = { href: null, defer: true };
+
+/**
+ * Plain left clicks are intercepted for the dirty-form check; modified
+ * clicks and middle clicks keep native new-tab behavior untouched.
+ */
+function shouldInterceptLinkClick(event: ReactMouseEvent<HTMLAnchorElement>): boolean {
+    return !event.metaKey && !event.ctrlKey && !event.shiftKey && !event.altKey && event.button === 0;
+}
 
 function currentYear(): number {
     return new Date().getFullYear();
@@ -294,12 +312,14 @@ function CompletionForm() {
     const [saveOutcome, setSaveOutcome] = useState<'saved' | null>(null);
     const [navFailed, setNavFailed] = useState(false);
     const [leaveDialog, setLeaveDialog] = useState(false);
+    const [pendingLeave, setPendingLeave] = useState<PendingLeave | null>(null);
     const [saving, setSaving] = useState(false);
     const [announce, setAnnounce] = useState('');
     const estimateRequestId = useRef(0);
     const leaveDialogRef = useRef<HTMLDivElement | null>(null);
     const completeLaterRef = useRef<HTMLButtonElement | null>(null);
     const leaveDialogWasOpen = useRef(false);
+    const leaveTriggerRef = useRef<HTMLElement | null>(null);
 
     // Return keyboard focus to the dialog trigger when the leave dialog
     // closes, so keyboard users are not dropped at the top of the page.
@@ -308,7 +328,7 @@ function CompletionForm() {
             leaveDialogWasOpen.current = true;
         } else if (leaveDialogWasOpen.current) {
             leaveDialogWasOpen.current = false;
-            completeLaterRef.current?.focus();
+            (leaveTriggerRef.current ?? completeLaterRef.current)?.focus();
         }
     }, [leaveDialog]);
 
@@ -327,6 +347,24 @@ function CompletionForm() {
     const [estimateUi, setEstimateUi] = useState<EstimateUiState>({ status: 'idle' });
 
     const dirty = dirtyFields.length > 0;
+
+    // Refresh and tab-close bypass in-app navigation, so the browser's own
+    // unload prompt guards the dirty draft on those paths. Programmatic
+    // exits set the suppression flag first: they only run after a confirmed
+    // save or discard, while React state may not have flushed yet.
+    const suppressUnloadGuard = useRef(false);
+    useEffect(() => {
+        if (!dirty) return;
+        // A failed programmatic exit can leave suppression set on a clean
+        // form; the next edit re-arms the guard from scratch.
+        suppressUnloadGuard.current = false;
+        const guard = (event: BeforeUnloadEvent) => {
+            if (suppressUnloadGuard.current) return;
+            event.preventDefault();
+        };
+        window.addEventListener('beforeunload', guard);
+        return () => window.removeEventListener('beforeunload', guard);
+    }, [dirty]);
     const editableInstitution = view !== null && view.institution.binding !== 'server_bound';
     const institutionConfirmed = view?.institutionConfirmedGraduationYear ?? null;
 
@@ -668,13 +706,31 @@ function CompletionForm() {
         writeDeferral(deferralStorage(), getSessionSnapshot(), accountId);
     };
 
-    const handleCompleteLater = () => {
-        if (!dirty) {
-            writeCompleteLaterDeferral();
+    const navigateToPendingLeave = (pending: PendingLeave) => {
+        // A confirmed leave must never trip the unload guard: the draft
+        // was saved or explicitly discarded to reach this point, while
+        // React state may not have flushed yet. The next edit re-arms.
+        suppressUnloadGuard.current = true;
+        if (pending.href === null) {
             navigateToExit();
             return;
         }
+        window.location.assign(pending.href);
+    };
+
+    const requestLeave = (href: string | null, defer: boolean) => {
+        if (!dirty) {
+            if (defer) writeCompleteLaterDeferral();
+            navigateToPendingLeave({ href, defer });
+            return;
+        }
+        leaveTriggerRef.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+        setPendingLeave({ href, defer });
         setLeaveDialog(true);
+    };
+
+    const handleCompleteLater = () => {
+        requestLeave(COMPLETE_LATER_LEAVE.href, COMPLETE_LATER_LEAVE.defer);
     };
 
     const handleGetEstimate = async () => {
@@ -845,7 +901,7 @@ function CompletionForm() {
     };
 
     return (
-        <Shell>
+        <Shell onRequestLeave={(href) => requestLeave(href, false)}>
             <h1 className="text-2xl font-bold text-slate-900">{greeting}</h1>
             <p className="mt-1 font-semibold text-slate-900">{isVerified ? 'Add optional academic details' : 'Complete your student profile'}</p>
             <p className="mt-2 text-slate-600">
@@ -860,7 +916,15 @@ function CompletionForm() {
                 <p className="mt-3 text-sm text-slate-600">Verification status is temporarily unavailable.</p>
             )}
             {view.verificationContinuationAvailable ? (
-                <Link href="/student/verification" className="mt-3 inline-flex min-h-[44px] items-center font-semibold text-[#1D4ED8] underline">
+                <Link
+                    href="/student/verification"
+                    onClick={(event) => {
+                        if (!shouldInterceptLinkClick(event)) return;
+                        event.preventDefault();
+                        requestLeave('/student/verification', false);
+                    }}
+                    className="mt-3 inline-flex min-h-[44px] items-center font-semibold text-[#1D4ED8] underline"
+                >
                     Continue verification
                 </Link>
             ) : assuranceStatus === 'pending' ? (
@@ -944,7 +1008,15 @@ function CompletionForm() {
                             <div className="mt-2">
                                 <p className="text-sm text-slate-700">{view.institution.displayName ?? 'Your institution is bound to your school identity.'}</p>
                                 <p className="mt-1 text-sm text-slate-500">This is bound to your school identity and cannot be changed here.</p>
-                                <Link href="/student/profile/support" className="mt-2 inline-flex min-h-[44px] items-center text-sm font-semibold text-[#1D4ED8] underline">
+                                <Link
+                                    href="/student/profile/support"
+                                    onClick={(event) => {
+                                        if (!shouldInterceptLinkClick(event)) return;
+                                        event.preventDefault();
+                                        requestLeave('/student/profile/support', false);
+                                    }}
+                                    className="mt-2 inline-flex min-h-[44px] items-center text-sm font-semibold text-[#1D4ED8] underline"
+                                >
                                     My institution is incorrect
                                 </Link>
                             </div>
@@ -967,7 +1039,7 @@ function CompletionForm() {
                                     status={institutionSearch.status}
                                     onSelect={(item) => {
                                         setInstitutionName(item.name);
-                                        if (item.countryCode) setInstitutionCountry(item.countryCode);
+                                        setInstitutionCountry(item.countryCode ?? '');
                                         setInstitutionMarked(null);
                                         markDirty('claimedInstitution');
                                     }}
@@ -1169,7 +1241,15 @@ function CompletionForm() {
                                 </p>
                                 <p className="mt-1 text-sm text-slate-600">
                                     This value is read-only here. If this year is wrong,{' '}
-                                    <Link href="/student/verification" className="font-semibold text-[#1D4ED8] underline">continue verification</Link>
+                                    <Link
+                                        href="/student/verification"
+                                        onClick={(event) => {
+                                            if (!shouldInterceptLinkClick(event)) return;
+                                            event.preventDefault();
+                                            requestLeave('/student/verification', false);
+                                        }}
+                                        className="font-semibold text-[#1D4ED8] underline"
+                                    >continue verification</Link>
                                     {' '}to correct it.
                                 </p>
                             </div>
@@ -1305,7 +1385,7 @@ function CompletionForm() {
                                     onMark={(state) => toggleMark(
                                         'expectedGraduationYear',
                                         graduation.mode === 'marked' ? graduation.state : null,
-                                        (marked) => setGraduation(marked ? { mode: 'marked', state: marked } : { mode: 'pristine' }),
+                                        (marked) => setGraduation(marked ? { mode: 'marked', state: marked } : { mode: 'self', text: '' }),
                                         () => undefined,
                                         state,
                                     )}
@@ -1345,6 +1425,7 @@ function CompletionForm() {
                     className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/50 p-4"
                     onKeyDown={(event) => {
                         if (event.key === 'Escape') {
+                            setPendingLeave(null);
                             setLeaveDialog(false);
                             return;
                         }
@@ -1377,14 +1458,16 @@ function CompletionForm() {
                                 type="button"
                                 disabled={saving}
                                 onClick={() => {
+                                    const pending = pendingLeave ?? COMPLETE_LATER_LEAVE;
+                                    setPendingLeave(null);
                                     setLeaveDialog(false);
                                     void saveDraft().then((outcome) => {
                                         // Defer only after the save is
                                         // confirmed or reconciled; a failed
                                         // save stays on the form instead.
                                         if (outcome === 'saved') {
-                                            writeCompleteLaterDeferral();
-                                            navigateToExit();
+                                            if (pending.defer) writeCompleteLaterDeferral();
+                                            navigateToPendingLeave(pending);
                                         }
                                     });
                                 }}
@@ -1398,10 +1481,12 @@ function CompletionForm() {
                                     // Confirmed discard clears only this
                                     // page's unsaved local draft; saved
                                     // answers are untouched.
+                                    const pending = pendingLeave ?? COMPLETE_LATER_LEAVE;
                                     if (view) resetDraft(view);
+                                    setPendingLeave(null);
                                     setLeaveDialog(false);
-                                    writeCompleteLaterDeferral();
-                                    navigateToExit();
+                                    if (pending.defer) writeCompleteLaterDeferral();
+                                    navigateToPendingLeave(pending);
                                 }}
                                 className="inline-flex min-h-[44px] items-center justify-center rounded-full border border-slate-300 px-5 text-sm font-bold text-slate-700 hover:bg-slate-50"
                             >
@@ -1410,7 +1495,10 @@ function CompletionForm() {
                             <button
                                 type="button"
                                 autoFocus
-                                onClick={() => setLeaveDialog(false)}
+                                onClick={() => {
+                                    setPendingLeave(null);
+                                    setLeaveDialog(false);
+                                }}
                                 className="inline-flex min-h-[44px] items-center justify-center rounded-full px-5 text-sm font-semibold text-slate-600 underline"
                             >
                                 Stay on this page
@@ -1423,15 +1511,20 @@ function CompletionForm() {
     );
 }
 
-function Shell({ children }: { children: ReactNode }) {
+function Shell({ children, onRequestLeave }: { children: ReactNode; onRequestLeave?: (href: string) => void }) {
+    const guardedClick = (href: string) => (event: ReactMouseEvent<HTMLAnchorElement>) => {
+        if (!onRequestLeave || !shouldInterceptLinkClick(event)) return;
+        event.preventDefault();
+        onRequestLeave(href);
+    };
     return (
         <div className="min-h-screen bg-[#F4F7FD] text-slate-900">
             <header className="sticky top-0 z-30 border-b border-slate-200/80 bg-white/80 backdrop-blur-md">
                 <div className="mx-auto flex max-w-3xl items-center justify-between gap-3 px-4 py-3">
-                    <Link href="/marketplace" className="text-sm font-semibold text-slate-600 hover:text-[#1D4ED8]">
+                    <Link href="/marketplace" onClick={guardedClick('/marketplace')} className="text-sm font-semibold text-slate-600 hover:text-[#1D4ED8]">
                         Marketplace
                     </Link>
-                    <Link href="/marketplace" aria-label="Awoof home">
+                    <Link href="/marketplace" onClick={guardedClick('/marketplace')} aria-label="Awoof home">
                         <Logo width={100} height={32} />
                     </Link>
                     <span className="w-16 text-right text-sm font-bold text-slate-900">Profile</span>
