@@ -56,7 +56,7 @@ test('purge removes due soft-deleted academic rows and keeps all other data', as
         const recent = await createProfile(client, new Date(now.getTime() - DAY_MS));
         const active = await createProfile(client, null);
 
-        const summary = await purgeSoftDeletedAcademicProfiles(db.getPool(), RETENTION_DAYS, now);
+        const summary = await purgeSoftDeletedAcademicProfiles(db.getPool(), RETENTION_DAYS);
         assert.equal(summary.deletedProfiles >= 1, true);
         assert.deepEqual(Object.keys(summary).sort(), ['cutoff', 'deletedProfiles']);
 
@@ -75,7 +75,7 @@ test('purge removes due soft-deleted academic rows and keeps all other data', as
         );
         assert.equal(Number(students.rows[0]?.count ?? '0'), 3);
 
-        const rerun = await purgeSoftDeletedAcademicProfiles(db.getPool(), RETENTION_DAYS, now);
+        const rerun = await purgeSoftDeletedAcademicProfiles(db.getPool(), RETENTION_DAYS);
         assert.equal(rerun.deletedProfiles, 0);
     });
 });
@@ -86,7 +86,7 @@ test('purge refuses to run without an approved positive retention window', async
         const due = await createProfile(client, new Date(now.getTime() - 100 * DAY_MS));
         try {
             assert.throws(() => resolveAcademicProfileRetentionDays(null), /not configured/);
-            await assert.rejects(purgeSoftDeletedAcademicProfiles(db.getPool(), 0, now), /positive integer/);
+            await assert.rejects(purgeSoftDeletedAcademicProfiles(db.getPool(), 0), /positive integer/);
             assert.equal(await profileCount(client, due.userId), 1);
         } finally {
             await client.query(`UPDATE users SET deleted_at = NULL WHERE id = $1`, [due.userId]);
@@ -103,7 +103,7 @@ test('soft-deleted users without academic rows contribute nothing to the purge',
             [`academic-retention-empty-${label}@example.invalid`, new Date(now.getTime() - 100 * DAY_MS)],
         )).rows[0]?.id;
         assert.ok(userId);
-        const summary = await purgeSoftDeletedAcademicProfiles(db.getPool(), RETENTION_DAYS, now);
+        const summary = await purgeSoftDeletedAcademicProfiles(db.getPool(), RETENTION_DAYS);
         assert.deepEqual(Object.keys(summary).sort(), ['cutoff', 'deletedProfiles']);
         const users = await client.query<{ count: string }>(`SELECT COUNT(*) AS count FROM users WHERE id = $1`, [userId]);
         assert.equal(Number(users.rows[0]?.count ?? '0'), 1);

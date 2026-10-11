@@ -58,7 +58,7 @@ async function main(): Promise<void> {
         // pg can surface an idle client error outside a query promise. Never
         // forward that object because it may include a connection URL/value.
         pool.on('error', () => fail('academic profile purge failed'));
-        const summary = await purgeSoftDeletedAcademicProfiles(pool, retentionDays, new Date());
+        const summary = await purgeSoftDeletedAcademicProfiles(pool, retentionDays);
         process.stdout.write(
             `academic profile purge complete: deletedProfiles=${summary.deletedProfiles} cutoff=${summary.cutoff}\n`,
         );

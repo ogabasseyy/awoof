@@ -433,7 +433,7 @@ function verifyArtifactLocator(locator, label) {
     }
 }
 
-function verifyArtifactProgramme(entry, label) {
+function verifyArtifactProgramme(entry, label, calculationsEnabled) {
     if (!isPlainObject(entry)) throw new Error(`invalid programme reference '${label}': programme entries must be objects`);
     assertKnownFields(entry, KNOWN_ARTIFACT_PROGRAMME_FIELDS, 'artifact programme');
     if (typeof entry.programmeId !== 'string' || !PROGRAMME_ID_PATTERN.test(entry.programmeId)) {
@@ -465,6 +465,11 @@ function verifyArtifactProgramme(entry, label) {
         throw new Error(`invalid programme reference '${label}': exception notes must be a string or null`);
     }
     if (!isPlainObject(entry.routes)) throw new Error(`invalid programme reference '${label}': routes must be an object`);
+    // Flag types alone cannot catch a hand edit that keeps the booleans but
+    // breaks their importer-defined relationships, so pending is rederived
+    // from the programme's evidence code and estimable must equal the exact
+    // equation the builder writes.
+    const expectedPendingRoutes = pendingRoutesForEvidence(entry.evidence);
     for (const [routeName, route] of Object.entries(entry.routes)) {
         if (!KNOWN_ROUTES.includes(routeName)) {
             throw new Error(`invalid programme reference '${label}': unknown route '${routeName}'`);
@@ -479,6 +484,14 @@ function verifyArtifactProgramme(entry, label) {
             if (typeof value !== 'boolean') {
                 throw new Error(`invalid programme reference '${label}': route '${routeName}' flag '${flag}' must be a boolean`);
             }
+        }
+        const expectedPending = expectedPendingRoutes.has(routeName);
+        if (pending !== expectedPending) {
+            throw new Error(`invalid programme reference '${label}': route '${routeName}' pending flag does not match evidence '${entry.evidence}'`);
+        }
+        const expectedEstimable = calculationsEnabled && !expectedPending && reviewed && applicable && durationYears !== null;
+        if (estimable !== expectedEstimable) {
+            throw new Error(`invalid programme reference '${label}': route '${routeName}' estimable flag does not match the importer invariant`);
         }
     }
 }
@@ -543,7 +556,7 @@ export function verifyProgrammeReferenceArtifact(filePath) {
         || artifact.counts.total !== artifact.programmes.length + artifact.excluded.length + artifact.blocked.length) {
         throw new Error(`invalid programme reference '${label}': counts do not match the disposition arrays`);
     }
-    for (const entry of artifact.programmes) verifyArtifactProgramme(entry, label);
+    for (const entry of artifact.programmes) verifyArtifactProgramme(entry, label, artifact.calculationsEnabled);
     for (const entry of artifact.excluded) verifyArtifactDisposition(entry, label);
     for (const entry of artifact.blocked) verifyArtifactDisposition(entry, label);
     const { checksum, ...payload } = artifact;
@@ -566,7 +579,7 @@ export function getEstimableRouteRule(artifact, programmeId, route) {
         const programme = artifact.programmes.find((entry) => isPlainObject(entry) && entry.programmeId === programmeId);
         if (!programme || !isPlainObject(programme.routes)) return null;
         const rule = programme.routes[route];
-        if (!isPlainObject(rule) || rule.estimable !== true || typeof rule.durationYears !== 'number') return null;
+        if (!isPlainObject(rule) || rule.estimable !== true || rule.pending === true || typeof rule.durationYears !== 'number') return null;
         return { durationYears: rule.durationYears, ruleId: `${programme.programmeId}:${route}`, sourceVersion: artifact.sourceVersion };
     } catch {
         return null;

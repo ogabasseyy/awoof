@@ -3,8 +3,9 @@
  *
  * Bounded catalogue search and graduation-year estimates over the Task 1
  * reviewed programme-duration reference. Estimates consume only route rules
- * explicitly marked reviewed, applicable, and estimable; imported labels and
- * bare numbers are never approval. Country is resolved from the
+ * explicitly marked reviewed, applicable, and estimable, and never routes
+ * still marked pending; imported labels and bare numbers are never
+ * approval. Country is resolved from the
  * server-owned reference — the client cannot override it to apply one
  * national system's rules to another country's programme.
  *
@@ -85,6 +86,7 @@ export type ReferenceRouteRule = {
     applicable: boolean;
     estimable: boolean;
     conflicting?: boolean;
+    pending?: boolean;
 };
 
 export type ReferenceProgramme = {
@@ -112,6 +114,7 @@ type ArtifactRoute = {
     applicable: unknown;
     estimable: unknown;
     conflicting?: unknown;
+    pending?: unknown;
 };
 
 function parseArtifactRoute(value: unknown): ReferenceRouteRule | null {
@@ -129,6 +132,7 @@ function parseArtifactRoute(value: unknown): ReferenceRouteRule | null {
         estimable: route.estimable,
     };
     if (route.conflicting === true) rule.conflicting = true;
+    if (route.pending === true) rule.pending = true;
     return rule;
 }
 
@@ -257,6 +261,12 @@ export function estimateGraduationYear(
     }
     if (rule.conflicting === true) {
         return { state: 'unavailable', reason: 'conflicting_rule' };
+    }
+    // An explicitly pending (evidence-unresolved) route never estimates even
+    // when a hand edit also flips estimable; staging verification rejects
+    // such artifacts, and this is the runtime backstop.
+    if (rule.pending === true) {
+        return { state: 'unavailable', reason: 'unreviewed_rule' };
     }
     if (rule.estimable !== true || rule.reviewed !== true || rule.applicable !== true
         || typeof rule.durationYears !== 'number' || !Number.isInteger(rule.durationYears)

@@ -106,6 +106,7 @@ export default createStudentAcademicProfileRouter();
  *         description: Academic profile projection for the authenticated student
  *         content: { application/json: { schema: { $ref: '#/components/schemas/AcademicProfileProjectionResponse' } } }
  *       401: { $ref: '#/components/responses/Unauthorized' }
+ *       403: { $ref: '#/components/responses/Unauthorized' }
  *       404: { $ref: '#/components/responses/BadRequest' }
  *   put:
  *     summary: Save the authenticated student's academic profile patch
@@ -126,7 +127,7 @@ export default createStudentAcademicProfileRouter();
  *       403: { $ref: '#/components/responses/Unauthorized' }
  *       404: { $ref: '#/components/responses/BadRequest' }
  *       409:
- *         description: Stale revision or institution drift; reload before retrying
+ *         description: Stale revision, institution drift, or a changed school claim; reload and reconfirm before retrying
  *         content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } }
  *       422: { $ref: '#/components/responses/BadRequest' }
  * /api/students/academic-profile/institutions:

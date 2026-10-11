@@ -502,3 +502,54 @@ test('reference verification rejects checksum mismatches on semantically valid e
         assert.throws(() => verifyProgrammeReferenceArtifact(file), /checksum mismatch/);
     });
 });
+
+function pendingEvidenceRow() {
+    return baseRow({
+        evidence: 'P/U',
+        aliases: [],
+        routes: {
+            utme: { durationYears: 4, reviewed: true, applicable: true },
+            de_200: { durationYears: 3, reviewed: false, applicable: true },
+            de_300: { durationYears: null, reviewed: false, applicable: false },
+        },
+    });
+}
+
+function reseal(artifact) {
+    const { checksum: _ignored, ...payload } = artifact;
+    artifact.checksum = computeArtifactChecksum(payload);
+    return artifact;
+}
+
+test('reference verification rechecks pending routes and the estimable invariant', () => {
+    const honest = build([pendingEvidenceRow()]);
+    withTempArtifact(honest, (file) => {
+        assert.deepEqual(verifyProgrammeReferenceArtifact(file), honest);
+    });
+    const cases = [
+        ['pending flipped on an evidence-pending route', (route) => { route.pending = false; }, /pending flag does not match evidence/],
+        ['pending set on an evidence-settled route', (route) => { route.pending = true; }, /pending flag does not match evidence/],
+        ['estimable flipped on a pending route', (route) => { route.estimable = true; }, /importer invariant/],
+        ['estimable flipped on an unreviewed route', (route) => { route.estimable = true; }, /importer invariant/],
+        ['estimable cleared on an estimable route', (route) => { route.estimable = false; }, /importer invariant/],
+    ];
+    const targets = ['de_200', 'utme', 'de_200', 'de_300', 'utme'];
+    cases.forEach(([label, mutate, pattern], index) => {
+        const artifact = build([pendingEvidenceRow()]);
+        mutate(artifact.programmes[0].routes[targets[index]]);
+        reseal(artifact);
+        withTempArtifact(artifact, (file) => {
+            assert.throws(() => verifyProgrammeReferenceArtifact(file), pattern, label);
+        });
+    });
+});
+
+test('runtime lookups refuse pending routes even when estimable is hand-set', () => {
+    const artifact = build([pendingEvidenceRow()]);
+    const rule = artifact.programmes[0].routes.de_200;
+    rule.reviewed = true;
+    rule.applicable = true;
+    rule.estimable = true;
+    assert.equal(rule.pending, true);
+    assert.equal(getEstimableRouteRule(artifact, 'syn-001', 'de_200'), null);
+});

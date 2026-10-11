@@ -70,18 +70,22 @@ export function resolveAcademicProfileRetentionDays(value: unknown): number {
 export async function purgeSoftDeletedAcademicProfiles(
     pool: Pick<Pool, 'connect'>,
     retentionDays: number,
-    now: Date,
 ): Promise<PurgeSummary> {
     const days = resolveAcademicProfileRetentionDays(retentionDays);
-    if (!(now instanceof Date) || Number.isNaN(now.getTime())) {
-        throw new Error('Academic profile purge requires a valid reference time');
-    }
-    const cutoff = new Date(now.getTime() - days * DAY_MS);
-    if (!retentionWindowProducesValidCutoff(days, now)) {
-        throw new Error(`Academic profile retention window does not produce a valid cutoff (${ACADEMIC_PROFILE_RETENTION_ENV_VAR})`);
-    }
     const client = await pool.connect();
     try {
+        // deleted_at is written from PostgreSQL timestamps: deriving the
+        // cutoff from the database clock on this same connection means a
+        // scheduler host running ahead can never delete rows early.
+        const clock = await client.query<{ now: Date }>('SELECT clock_timestamp() AS now');
+        const dbNow = clock.rows[0]?.now;
+        if (!(dbNow instanceof Date) || Number.isNaN(dbNow.getTime())) {
+            throw new Error('Academic profile purge requires a valid database clock reading');
+        }
+        const cutoff = new Date(dbNow.getTime() - days * DAY_MS);
+        if (!retentionWindowProducesValidCutoff(days, dbNow)) {
+            throw new Error(`Academic profile retention window does not produce a valid cutoff (${ACADEMIC_PROFILE_RETENTION_ENV_VAR})`);
+        }
         const deleted = await client.query(
             `DELETE FROM student_academic_profiles
              WHERE user_id IN (

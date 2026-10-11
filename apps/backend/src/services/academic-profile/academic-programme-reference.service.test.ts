@@ -276,6 +276,13 @@ test('estimate reports unreviewed, pending, and conflicting rules without guessi
         estimateGraduationYear(input(), syntheticReference({ calculationsEnabled: false }), { currentYear: CURRENT_YEAR }),
         { state: 'unavailable', reason: 'unreviewed_rule' },
     );
+    const tampered = syntheticReference({
+        programmes: [programme({ programmeId: 'SYN-ENG', routes: { utme: rule({ pending: true }) } })],
+    });
+    assert.deepEqual(
+        estimateGraduationYear(input(), tampered, { currentYear: CURRENT_YEAR }),
+        { state: 'unavailable', reason: 'unreviewed_rule' },
+    );
 });
 
 test('estimate reports out-of-range years instead of fabricating a value', () => {
@@ -486,6 +493,18 @@ test('reference loader maps the Task 1 artifact and defaults it to the Nigerian 
     assert.deepEqual(
         estimateGraduationYear(input(), reference, { currentYear: CURRENT_YEAR }),
         { state: 'available', year: 2026, ruleId: 'SYN-ENG:utme', sourceVersion: SOURCE_VERSION },
+    );
+});
+
+test('reference loader carries pending flags so tampered routes cannot estimate', () => {
+    const artifact = syntheticArtifact();
+    const routes = ((artifact['programmes'] as Array<Record<string, unknown>>)[0]!['routes'] as Record<string, Record<string, unknown>>);
+    routes['utme'] = { durationYears: 4, reviewed: true, applicable: true, pending: true, estimable: true };
+    const reference = loadProgrammeReference(artifact);
+    assert.equal(reference.programmes[0]?.routes['utme']?.pending, true);
+    assert.deepEqual(
+        estimateGraduationYear(input(), reference, { currentYear: CURRENT_YEAR }),
+        { state: 'unavailable', reason: 'unreviewed_rule' },
     );
 });
 

@@ -56,6 +56,7 @@ import {
 
 export const ACADEMIC_PROFILE_REVISION_CONFLICT = 'ACADEMIC_PROFILE_REVISION_CONFLICT';
 export const ACADEMIC_PROFILE_INSTITUTION_CHANGED = 'ACADEMIC_PROFILE_INSTITUTION_CHANGED';
+export const ACADEMIC_PROFILE_CLAIM_CHANGED = 'ACADEMIC_PROFILE_CLAIM_CHANGED';
 
 const ESTIMABLE_ROUTES: readonly string[] = ['utme', 'de_200', 'de_300'];
 
@@ -74,7 +75,7 @@ export function labelFromArtifact(programmes: ReferenceArtifactProgramme[], prog
     if (!programme || typeof programme.label !== 'string' || programme.label.trim() === '') return null;
     return programme.label.trim();
 }
-export type ReferenceArtifactRoute = { durationYears: unknown; reviewed: unknown; applicable: unknown; estimable: unknown };
+export type ReferenceArtifactRoute = { durationYears: unknown; reviewed: unknown; applicable: unknown; estimable: unknown; pending?: unknown };
 
 export function ruleFromArtifact(
     programmes: ReferenceArtifactProgramme[],
@@ -97,6 +98,10 @@ export function ruleFromArtifact(
     if (!rule || typeof rule !== 'object') return null;
     // Fail closed: require the builder's explicit estimable flag plus every
     // input behind it. Imported labels and bare numbers are never approval.
+    // An explicitly pending (evidence-unresolved) route never estimates even
+    // when a hand edit also flips estimable; staging verification rejects
+    // such artifacts, and this is the runtime backstop.
+    if (rule.pending === true) return null;
     if (rule.estimable !== true || rule.reviewed !== true || rule.applicable !== true) return null;
     if (typeof rule.durationYears !== 'number' || !Number.isInteger(rule.durationYears)
         || rule.durationYears < 1 || rule.durationYears > MAX_REVIEWED_DURATION_YEARS) return null;
@@ -294,6 +299,24 @@ function storedOrEmpty(row: AcademicProfileRow | null): StoredAcademicProfile {
     return rowToStoredProfile(row);
 }
 
+/**
+ * Country scope for estimate lookups. Server-bound profiles narrow to the
+ * bound institution's country (null when unmapped fails closed downstream);
+ * unbound profiles narrow to the merged claimed country once a school is
+ * claimed, and stay unconstrained only while no school is claimed. The save
+ * path and the projection preview must agree, or GET would advertise an
+ * estimate the save rejects.
+ */
+export function effectiveEstimateCountryCode(input: {
+    serverBound: boolean;
+    bindingCountryCode?: string | null | undefined;
+    fields: AcademicProfileFields;
+}): string | null | undefined {
+    if (input.serverBound) return input.bindingCountryCode;
+    const claimed = input.fields.claimedInstitution;
+    return claimed.state === 'supplied' ? claimed.value.countryCode : undefined;
+}
+
 export function estimateFromFields(
     fields: AcademicProfileFields,
     reference: AcademicProgrammeReference,
@@ -440,7 +463,11 @@ export function validateAndMergePatch(input: {
             merged.estimateBasis = null;
             merged.estimateStale = false;
         } else {
-            const estimate = estimateFromFields(merged, reference, expectedCountryCode);
+            const estimate = estimateFromFields(merged, reference, effectiveEstimateCountryCode({
+                serverBound,
+                bindingCountryCode: expectedCountryCode,
+                fields: merged,
+            }));
             if (!estimate) {
                 throw new BadRequestError('No reviewed graduation estimate is available for these entries');
             }
@@ -484,6 +511,34 @@ export function validateAndMergePatch(input: {
         merged.estimateStale = true;
     }
     return merged;
+}
+
+/**
+ * True when the patch replaces the claimed school with a different one,
+ * clears a supplied claim, or asserts a first claim. Name-only edits count:
+ * the carried answers were confirmed under a different school.
+ */
+function claimedInstitutionChanged(stored: AcademicProfileFields, patch: ParsedAcademicProfileInput): boolean {
+    const update = patch.claimedInstitution;
+    if (update === undefined) return false;
+    const current = stored.claimedInstitution;
+    if (update.state === 'supplied') {
+        return current.state !== 'supplied'
+            || current.value.name !== update.value.name
+            || current.value.countryCode !== update.value.countryCode;
+    }
+    return current.state === 'supplied';
+}
+
+/**
+ * Institution-scoped answers a patch carries forward without re-supplying.
+ * Only supplied values count: explicit non-answers carry no school data.
+ */
+function hasCarriedInstitutionScopedAnswers(fields: AcademicProfileFields, patch: ParsedAcademicProfileInput): boolean {
+    return (fields.programme.state === 'supplied' && patch.programme === undefined)
+        || (fields.entryYear.state === 'supplied' && patch.entryYear === undefined)
+        || (fields.entryRoute.state === 'supplied' && patch.entryRoute === undefined)
+        || (fields.expectedGraduationYear.state === 'supplied' && patch.expectedGraduationYear === undefined);
 }
 
 /** Withhold institution-scoped values that can no longer satisfy the current binding. */
@@ -814,8 +869,13 @@ async function buildProjection(input: {
     const fields: AcademicProfileFields = { ...input.fields, estimateStale: isEstimateStale(input.fields, reference.sourceVersion) };
     const optionalUnansweredFields = computeOptionalUnansweredFields(fields, binding);
     const attentionFields = computeAttentionFields({ fields, binding, currentSourceVersion: reference.sourceVersion });
-    const expectedCountryCode = boundInstitutionCountryCode(ctx.universityId, ctx.institutionCountry);
-    const estimate = input.featureEnabled ? estimateFromFields(fields, reference, expectedCountryCode) : null;
+    const estimate = input.featureEnabled
+        ? estimateFromFields(fields, reference, effectiveEstimateCountryCode({
+            serverBound: ctx.universityId !== null,
+            bindingCountryCode: boundInstitutionCountryCode(ctx.universityId, ctx.institutionCountry),
+            fields,
+        }))
+        : null;
     const entryYearSuggestion = resolveEntryYearSuggestionForProjection(
         {
             featureEnabled: input.featureEnabled,
@@ -939,6 +999,22 @@ export async function saveAcademicProfile(
             throw new ConflictError('Institution changed since this profile was saved; reload to reconfirm academic details', {
                 code: ACADEMIC_PROFILE_INSTITUTION_CHANGED,
                 revision,
+            });
+        }
+        if (ctx.universityId === null
+            && claimedInstitutionChanged(stored.fields, patch)
+            && hasCarriedInstitutionScopedAnswers(stored.fields, patch)) {
+            // The claimed school was replaced, cleared, or first asserted
+            // above previously saved school-scoped answers: a carried
+            // programme or calculated estimate may belong to another
+            // school's system, so reconfirm instead of persisting the mix.
+            // Nothing is written; the caller reloads and resubmits the
+            // claim together with reconfirmed answers. A distinct code from
+            // institution drift: no invalidation was committed, so the
+            // identical patch must not be retried.
+            throw new ConflictError('Claimed institution changed since these academic details were saved; reconfirm them under the current school', {
+                code: ACADEMIC_PROFILE_CLAIM_CHANGED,
+                revision: stored.revision,
             });
         }
         const merged = validateAndMergePatch({

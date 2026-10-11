@@ -16,11 +16,13 @@ import {
     type AcademicProfileInput,
 } from './academic-profile.types.js';
 import {
+    ACADEMIC_PROFILE_CLAIM_CHANGED,
     ACADEMIC_PROFILE_INSTITUTION_CHANGED,
     ACADEMIC_PROFILE_REVISION_CONFLICT,
     computeAttentionFields,
     computeOptionalUnansweredFields,
     computePromptDecision,
+    effectiveEstimateCountryCode,
     isAcademicProfileCollectionEnabled,
     isEstimateStale,
     labelFromArtifact,
@@ -576,6 +578,24 @@ test('artifact rules reject durations above the reviewed maximum', () => {
     );
 });
 
+test('artifact rules refuse pending routes even when estimable is hand-set', () => {
+    const programmes = [{
+        programmeId: 'P-001',
+        countryCode: 'NG',
+        routes: { de_200: { durationYears: 3, reviewed: true, applicable: true, estimable: true, pending: true } },
+    }];
+    assert.deepEqual(ruleFromArtifact(programmes, 'TEST-REF-v1', 'P-001', 'de_200'), null);
+    const settled = [{
+        programmeId: 'P-001',
+        countryCode: 'NG',
+        routes: { utme: { durationYears: 4, reviewed: true, applicable: true, estimable: true, pending: false } },
+    }];
+    assert.deepEqual(
+        ruleFromArtifact(settled, 'TEST-REF-v1', 'P-001', 'utme'),
+        { durationYears: 4, ruleId: 'P-001:utme', sourceVersion: 'TEST-REF-v1' },
+    );
+});
+
 test('artifact rules reject source versions that overflow estimate storage', () => {
     const programmes = [{
         programmeId: 'P-001',
@@ -626,6 +646,68 @@ test('merge rejects an accepted estimate from outside the bound country', () => 
         expectedCountryCode: 'NG',
     });
     assert.deepEqual(merged.expectedGraduationYear, { state: 'supplied', value: 2026 });
+});
+
+test('effective estimate country prefers the binding, then the claimed school', () => {
+    const claimed = {
+        ...emptyStored().fields,
+        claimedInstitution: { state: 'supplied' as const, value: { name: 'Example University', countryCode: 'NG' } },
+    };
+    const unclaimed = emptyStored().fields;
+    assert.equal(effectiveEstimateCountryCode({ serverBound: true, bindingCountryCode: 'GH', fields: claimed }), 'GH');
+    assert.equal(effectiveEstimateCountryCode({ serverBound: true, bindingCountryCode: null, fields: claimed }), null);
+    assert.equal(effectiveEstimateCountryCode({ serverBound: false, fields: claimed }), 'NG');
+    assert.equal(effectiveEstimateCountryCode({ serverBound: false, fields: unclaimed }), undefined);
+});
+
+test('merge scopes unbound estimates to the claimed country once a school is claimed', () => {
+    const inputs = {
+        programme: { state: 'supplied' as const, value: { programmeId: 'P-001', courseLabel: null } },
+        entryYear: { state: 'supplied' as const, value: 2022 },
+        entryRoute: { state: 'supplied' as const, value: 'utme' as const },
+    };
+    const countryAwareReference: AcademicProgrammeReference = {
+        sourceVersion: 'TEST-REF-v1',
+        findProgrammeLabel: () => null,
+        findReviewedRule: (programmeId, route, expectedCountryCode) => {
+            if (expectedCountryCode !== undefined && expectedCountryCode !== 'NG') return null;
+            return reviewedReference.findReviewedRule(programmeId, route);
+        },
+    };
+    const accept = { expectedRevision: 0, expectedGraduationYear: { state: 'supplied', value: { kind: 'accept_estimate', year: 2026 } } };
+    const claimedNg = emptyStored({
+        fields: {
+            ...emptyStored().fields,
+            ...inputs,
+            claimedInstitution: { state: 'supplied', value: { name: 'Example University', countryCode: 'NG' } },
+        },
+    });
+    const merged = validateAndMergePatch({
+        stored: claimedNg,
+        patch: parsePatch(accept),
+        serverBound: false,
+        reference: countryAwareReference,
+        currentYear: CURRENT_YEAR,
+    });
+    assert.deepEqual(merged.expectedGraduationYear, { state: 'supplied', value: 2026 });
+    assert.throws(() => validateAndMergePatch({
+        stored: claimedNg,
+        patch: parsePatch({
+            ...accept,
+            claimedInstitution: { state: 'supplied', value: { name: 'Other School', countryCode: 'GH' } },
+        }),
+        serverBound: false,
+        reference: countryAwareReference,
+        currentYear: CURRENT_YEAR,
+    }), BadRequestError);
+    const unclaimed = validateAndMergePatch({
+        stored: emptyStored({ fields: { ...emptyStored().fields, ...inputs } }),
+        patch: parsePatch(accept),
+        serverBound: false,
+        reference: countryAwareReference,
+        currentYear: CURRENT_YEAR,
+    });
+    assert.deepEqual(unclaimed.expectedGraduationYear, { state: 'supplied', value: 2026 });
 });
 
 test('bound institution country distinguishes unbound from unmapped', () => {
@@ -1179,6 +1261,202 @@ test('save conflicts on institution drift and commits only the invalidation', as
     );
     assert.equal(retry.revision, 4);
     assert.deepEqual(retry.fields.entryRoute, { state: 'supplied', value: 'utme' });
+});
+
+test('save previews unbound estimates under the claimed country', async () => {
+    const countryAwareReference: AcademicProgrammeReference = {
+        sourceVersion: 'TEST-REF-v1',
+        findProgrammeLabel: () => null,
+        findReviewedRule: (programmeId, route, expectedCountryCode) => {
+            if (expectedCountryCode !== undefined && expectedCountryCode !== 'NG') return null;
+            return reviewedReference.findReviewedRule(programmeId, route);
+        },
+    };
+    const inputs = {
+        expectedRevision: 0,
+        programme: { state: 'supplied', value: { programmeId: 'P-001', courseLabel: null } },
+        entryYear: { state: 'supplied', value: 2022 },
+        entryRoute: { state: 'supplied', value: 'utme' },
+    } as const;
+    const mismatched = await saveAcademicProfile(
+        createFakePool(fakeState()) as never,
+        USER_ID,
+        { ...inputs, claimedInstitution: { state: 'supplied', value: { name: 'Other School', countryCode: 'GH' } } },
+        serviceDeps({ reference: countryAwareReference }),
+    );
+    assert.equal(mismatched.estimate, null);
+    const matched = await saveAcademicProfile(
+        createFakePool(fakeState()) as never,
+        USER_ID,
+        { ...inputs, claimedInstitution: { state: 'supplied', value: { name: 'Example University', countryCode: 'NG' } } },
+        serviceDeps({ reference: countryAwareReference }),
+    );
+    assert.deepEqual(matched.estimate, { year: 2026, ruleId: 'P-001:utme', sourceVersion: 'TEST-REF-v1' });
+});
+
+test('save conflicts when the claimed school moves under carried catalogue answers', async () => {
+    const state = fakeState({
+        profile: profileRow({
+            revision: 1,
+            claimed_institution_state: 'supplied',
+            claimed_institution_name: 'Old School',
+            claimed_institution_country: 'NG',
+            programme_state: 'supplied',
+            programme_id: 'P-001',
+            entry_year_state: 'supplied',
+            entry_year: 2022,
+            entry_route_state: 'supplied',
+            entry_route: 'utme',
+        }),
+    });
+    await assert.rejects(
+        saveAcademicProfile(
+            createFakePool(state) as never,
+            USER_ID,
+            { expectedRevision: 1, claimedInstitution: { state: 'supplied', value: { name: 'New School', countryCode: 'GH' } } },
+            serviceDeps(),
+        ),
+        (error: unknown) => {
+            assert.ok(error instanceof ConflictError);
+            assert.deepEqual(error.details, { code: ACADEMIC_PROFILE_CLAIM_CHANGED, revision: 1 });
+            return true;
+        },
+    );
+    assert.equal(state.writes.length, 0);
+    assert.equal(state.profile?.['revision'], 1);
+    assert.equal(state.profile?.['claimed_institution_country'], 'NG');
+
+    const retry = await saveAcademicProfile(
+        createFakePool(state) as never,
+        USER_ID,
+        {
+            expectedRevision: 1,
+            claimedInstitution: { state: 'supplied', value: { name: 'New School', countryCode: 'GH' } },
+            programme: { state: 'supplied', value: { programmeId: 'P-001', courseLabel: null } },
+            entryYear: { state: 'supplied', value: 2022 },
+            entryRoute: { state: 'supplied', value: 'utme' },
+        },
+        serviceDeps(),
+    );
+    assert.equal(retry.revision, 2);
+    assert.deepEqual(retry.fields.claimedInstitution, { state: 'supplied', value: { name: 'New School', countryCode: 'GH' } });
+});
+
+test('save conflicts when a school is first claimed above a carried calculated estimate', async () => {
+    const state = fakeState({
+        profile: profileRow({
+            revision: 1,
+            programme_state: 'supplied',
+            programme_id: 'P-001',
+            entry_year_state: 'supplied',
+            entry_year: 2022,
+            entry_route_state: 'supplied',
+            entry_route: 'utme',
+            expected_graduation_year_state: 'supplied',
+            expected_graduation_year: 2026,
+            graduation_year_origin: 'calculated',
+            estimate_basis_programme_id: 'P-001',
+            estimate_basis_entry_year: 2022,
+            estimate_basis_entry_route: 'utme',
+            estimate_basis_rule_id: 'P-001:utme',
+            estimate_basis_source_version: 'TEST-REF-v1',
+        }),
+    });
+    await assert.rejects(
+        saveAcademicProfile(
+            createFakePool(state) as never,
+            USER_ID,
+            { expectedRevision: 1, claimedInstitution: { state: 'supplied', value: { name: 'New School', countryCode: 'GH' } } },
+            serviceDeps(),
+        ),
+        (error: unknown) => {
+            assert.ok(error instanceof ConflictError);
+            assert.deepEqual(error.details, { code: ACADEMIC_PROFILE_CLAIM_CHANGED, revision: 1 });
+            return true;
+        },
+    );
+    assert.equal(state.writes.length, 0);
+
+    const retry = await saveAcademicProfile(
+        createFakePool(state) as never,
+        USER_ID,
+        {
+            expectedRevision: 1,
+            claimedInstitution: { state: 'supplied', value: { name: 'New School', countryCode: 'GH' } },
+            programme: { state: 'supplied', value: { programmeId: 'P-001', courseLabel: null } },
+            entryYear: { state: 'supplied', value: 2022 },
+            entryRoute: { state: 'supplied', value: 'utme' },
+            expectedGraduationYear: { state: 'unanswered' },
+        },
+        serviceDeps(),
+    );
+    assert.equal(retry.revision, 2);
+    assert.equal(retry.fields.graduationYearOrigin, null);
+});
+
+test('save conflicts on claim renames and clears above carried answers', async () => {
+    const carried = {
+        revision: 1,
+        claimed_institution_state: 'supplied',
+        claimed_institution_name: 'Old School',
+        claimed_institution_country: 'NG',
+        programme_state: 'supplied',
+        programme_id: 'P-001',
+    };
+    for (const claimedInstitution of [
+        { state: 'supplied', value: { name: 'Renamed School', countryCode: 'NG' } },
+        { state: 'unanswered' },
+        { state: 'unknown' },
+    ] as const) {
+        const state = fakeState({ profile: profileRow({ ...carried }) });
+        await assert.rejects(
+            saveAcademicProfile(
+                createFakePool(state) as never,
+                USER_ID,
+                { expectedRevision: 1, claimedInstitution },
+                serviceDeps(),
+            ),
+            (error: unknown) => {
+                assert.ok(error instanceof ConflictError);
+                assert.deepEqual(error.details, { code: ACADEMIC_PROFILE_CLAIM_CHANGED, revision: 1 });
+                return true;
+            },
+        );
+        assert.equal(state.writes.length, 0);
+    }
+});
+
+test('save allows claim changes that carry no supplied school answers', async () => {
+    const claimOnly = await saveAcademicProfile(
+        createFakePool(fakeState({
+            profile: profileRow({
+                revision: 1,
+                claimed_institution_state: 'supplied',
+                claimed_institution_name: 'Old School',
+                claimed_institution_country: 'NG',
+                entry_year_state: 'unknown',
+            }),
+        })) as never,
+        USER_ID,
+        { expectedRevision: 1, claimedInstitution: { state: 'supplied', value: { name: 'New School', countryCode: 'GH' } } },
+        serviceDeps(),
+    );
+    assert.equal(claimOnly.revision, 2);
+
+    const cleared = await saveAcademicProfile(
+        createFakePool(fakeState({
+            profile: profileRow({
+                revision: 1,
+                claimed_institution_state: 'supplied',
+                claimed_institution_name: 'Old School',
+                claimed_institution_country: 'NG',
+            }),
+        })) as never,
+        USER_ID,
+        { expectedRevision: 1, claimedInstitution: { state: 'unanswered' } },
+        serviceDeps(),
+    );
+    assert.equal(cleared.revision, 2);
 });
 
 test('save preserves values across identity-version changes without touching identity', async () => {
