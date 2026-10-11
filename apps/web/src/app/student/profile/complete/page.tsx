@@ -25,6 +25,7 @@ import {
     entryRouteLabel,
     estimateUnavailableMessage,
     fetchAcademicProfile,
+    parseInstitutionChangedConflict,
     patchMatchesProjection,
     requestGraduationEstimate,
     resolveCompletionExit,
@@ -39,6 +40,7 @@ import {
     type EntryRoute,
     type EstimateResult,
     type InstitutionCatalogueItem,
+    type ProfileFieldState,
     type ProgrammeCatalogueItem,
 } from '@/lib/student-academic-profile';
 
@@ -81,13 +83,17 @@ type SearchStatus = 'idle' | 'loading' | 'ready' | 'error';
 
 /**
  * Where the leave dialog should take the student after Save or Discard.
- * A null href means the normal completion exit; defer records whether the
- * exit writes a complete-later deferral (only the Complete-later button
- * does — header and correction links never suppress the next prompt).
+ * An exit href of null means the normal completion exit; defer records
+ * whether the exit writes a complete-later deferral (only the
+ * Complete-later button does — header and correction links never suppress
+ * the next prompt). A history leave replays the Back traversal that opened
+ * the dialog.
  */
-type PendingLeave = { href: string | null; defer: boolean };
+type PendingLeave =
+    | { kind: 'exit'; href: string | null; defer: boolean }
+    | { kind: 'history' };
 
-const COMPLETE_LATER_LEAVE: PendingLeave = { href: null, defer: true };
+const COMPLETE_LATER_LEAVE: PendingLeave = { kind: 'exit', href: null, defer: true };
 
 /**
  * Plain left clicks are intercepted for the dirty-form check; modified
@@ -322,10 +328,12 @@ function CompletionForm() {
     const completeLaterRef = useRef<HTMLButtonElement | null>(null);
     const leaveDialogWasOpen = useRef(false);
     const leaveTriggerRef = useRef<HTMLElement | null>(null);
+    const leaveDialogOpenRef = useRef(false);
 
     // Return keyboard focus to the dialog trigger when the leave dialog
     // closes, so keyboard users are not dropped at the top of the page.
     useEffect(() => {
+        leaveDialogOpenRef.current = leaveDialog;
         if (leaveDialog) {
             leaveDialogWasOpen.current = true;
         } else if (leaveDialogWasOpen.current) {
@@ -366,6 +374,40 @@ function CompletionForm() {
         };
         window.addEventListener('beforeunload', guard);
         return () => window.removeEventListener('beforeunload', guard);
+    }, [dirty]);
+
+    // Browser Back/Forward runs as a client-side transition that skips
+    // beforeunload, so a dirty draft pushes a guard entry and cancels the
+    // traversal into the same save/discard/stay confirmation instead. The
+    // entry is intentionally left behind: removing it would race the very
+    // navigation the dialog confirms, and the leftover entry is a same-URL
+    // no-op Back press once the draft is clean. Repeated clean/dirty cycles
+    // can stack entries; confirmation then lands same-URL instead of one
+    // page further back, but never loses a confirmed draft.
+    const guardEntryPushed = useRef(false);
+    useEffect(() => {
+        if (!dirty) {
+            guardEntryPushed.current = false;
+            return;
+        }
+        // Pushed once per dirty transition: StrictMode remounts the effect
+        // without a clean transition, and each extra entry would skew the
+        // two-step replay further from the previous page.
+        if (!guardEntryPushed.current) {
+            guardEntryPushed.current = true;
+            window.history.pushState({ awoofLeaveGuard: true }, '', window.location.href);
+        }
+        const onPopState = () => {
+            window.history.pushState({ awoofLeaveGuard: true }, '', window.location.href);
+            if (leaveDialogOpenRef.current) return;
+            // Browser chrome triggered the dialog, so focus restores to
+            // the Complete-later button on close.
+            leaveTriggerRef.current = null;
+            setPendingLeave({ kind: 'history' });
+            setLeaveDialog(true);
+        };
+        window.addEventListener('popstate', onPopState);
+        return () => window.removeEventListener('popstate', onPopState);
     }, [dirty]);
     const editableInstitution = view !== null && view.institution.binding !== 'server_bound';
     const institutionConfirmed = view?.institutionConfirmedGraduationYear ?? null;
@@ -621,6 +663,10 @@ function CompletionForm() {
     };
 
     const navigateToExit = () => {
+        // Every exit below runs after a confirmed save or an explicit
+        // no-change continuation, so it must never trip the unload guard:
+        // React state may not have flushed the dirty reset yet.
+        suppressUnloadGuard.current = true;
         try {
             // Fault-injection seam for browser tests; no production caller sets it.
             const hook = window as Window & { __awoofFailNextExitNavigation?: boolean };
@@ -643,47 +689,63 @@ function CompletionForm() {
             setAnnounce('Check the highlighted fields before saving.');
             return 'invalid';
         }
-        const patch: AcademicProfileInput = buildAcademicProfilePatch(validated.form, view.revision);
+        let patch: AcademicProfileInput = buildAcademicProfilePatch(validated.form, view.revision);
         const snapshot = getSessionSnapshot();
         setSaving(true);
         setSaveError(null);
         setConflict(null);
+        // An institution-change conflict carries the post-invalidation
+        // revision: the replacement entries were staged against blank
+        // fields, so one transparent retry preserves them instead of
+        // forcing a reload that discards the draft.
+        let retriedDrift = false;
         try {
-            const committed = await saveAcademicProfile(patch);
-            if (!isCurrentSession(snapshot)) return 'failed';
-            setView(committed);
-            resetDraft(committed);
-            setSaveOutcome('saved');
-            setAnnounce('Profile saved.');
-            return 'saved';
-        } catch (error: unknown) {
-            if (!isCurrentSession(snapshot)) return 'failed';
-            if (axios.isAxiosError(error) && error.response) {
-                if (error.response.status === 409) {
-                    setConflict('Your profile changed since it was read. Reload the latest values before saving again.');
-                    return 'failed';
-                }
-                setSaveError(serverMessage(error) ?? 'We could not save your profile. Check your answers and try again.');
-                return 'failed';
-            }
-            // A lost response is an unknown outcome: read back before retrying.
-            try {
-                const fresh = await fetchAcademicProfile();
-                if (!isCurrentSession(snapshot)) return 'failed';
-                if (patchMatchesProjection(patch, fresh)) {
-                    setView(fresh);
-                    resetDraft(fresh);
+            for (;;) {
+                try {
+                    const committed = await saveAcademicProfile(patch);
+                    if (!isCurrentSession(snapshot)) return 'failed';
+                    setView(committed);
+                    resetDraft(committed);
                     setSaveOutcome('saved');
                     setAnnounce('Profile saved.');
                     return 'saved';
+                } catch (error: unknown) {
+                    if (!isCurrentSession(snapshot)) return 'failed';
+                    if (axios.isAxiosError(error) && error.response) {
+                        if (error.response.status === 409) {
+                            const drift = retriedDrift ? null : parseInstitutionChangedConflict(error);
+                            if (drift) {
+                                retriedDrift = true;
+                                patch = buildAcademicProfilePatch(validated.form, drift.revision);
+                                setAnnounce('Your institution changed. Retrying your save against the new profile.');
+                                continue;
+                            }
+                            setConflict('Your profile changed since it was read. Reload the latest values before saving again.');
+                            return 'failed';
+                        }
+                        setSaveError(serverMessage(error) ?? 'We could not save your profile. Check your answers and try again.');
+                        return 'failed';
+                    }
+                    // A lost response is an unknown outcome: read back before retrying.
+                    try {
+                        const fresh = await fetchAcademicProfile();
+                        if (!isCurrentSession(snapshot)) return 'failed';
+                        if (patchMatchesProjection(patch, fresh)) {
+                            setView(fresh);
+                            resetDraft(fresh);
+                            setSaveOutcome('saved');
+                            setAnnounce('Profile saved.');
+                            return 'saved';
+                        }
+                        setConflict('We could not confirm your save because the profile changed. Reload the latest values before trying again.');
+                        return 'failed';
+                    } catch {
+                        if (!isCurrentSession(snapshot)) return 'failed';
+                        setSaveError('We could not confirm whether your changes were saved. Check your connection, then reload and try again.');
+                        setConflict('We could not confirm whether your changes were saved. Reload the latest values before trying again.');
+                        return 'failed';
+                    }
                 }
-                setConflict('We could not confirm your save because the profile changed. Reload the latest values before trying again.');
-                return 'failed';
-            } catch {
-                if (!isCurrentSession(snapshot)) return 'failed';
-                setSaveError('We could not confirm whether your changes were saved. Check your connection, then reload and try again.');
-                setConflict('We could not confirm whether your changes were saved. Reload the latest values before trying again.');
-                return 'failed';
             }
         } finally {
             if (isCurrentSession(snapshot)) setSaving(false);
@@ -713,6 +775,12 @@ function CompletionForm() {
         // was saved or explicitly discarded to reach this point, while
         // React state may not have flushed yet. The next edit re-arms.
         suppressUnloadGuard.current = true;
+        if (pending.kind === 'history') {
+            // The stack holds [previous, page, guard entry]: stepping back
+            // twice replays the Back traversal the dialog interrupted.
+            window.history.go(-2);
+            return;
+        }
         if (pending.href === null) {
             navigateToExit();
             return;
@@ -723,26 +791,32 @@ function CompletionForm() {
     const requestLeave = (href: string | null, defer: boolean) => {
         if (!dirty) {
             if (defer) writeCompleteLaterDeferral();
-            navigateToPendingLeave({ href, defer });
+            navigateToPendingLeave({ kind: 'exit', href, defer });
             return;
         }
         leaveTriggerRef.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
-        setPendingLeave({ href, defer });
+        setPendingLeave({ kind: 'exit', href, defer });
         setLeaveDialog(true);
     };
 
     const handleCompleteLater = () => {
-        requestLeave(COMPLETE_LATER_LEAVE.href, COMPLETE_LATER_LEAVE.defer);
+        requestLeave(null, true);
     };
 
     const handleGetEstimate = async () => {
-        // A free-text course has no catalogue ID but is still an answered
-        // input the server reasons about; only truly missing inputs short-circuit.
         const programmeAnswered = programmeMarked === null && programmeText.trim() !== '';
         const entryYearAnswered = entryYearMarked === null && parsedEntryYearText !== null;
         const entryRouteAnswered = entryRouteMarked === null && entryRouteSel !== null;
         if (!programmeAnswered || !entryYearAnswered || !entryRouteAnswered) {
             setEstimateUi({ status: 'ready', result: { state: 'unavailable', reason: 'missing_input' } });
+            return;
+        }
+        // A free-text course is answered but has no catalogue rule, so the
+        // server could only return missing_input for its null ID. Say so
+        // locally instead of asking the student to add fields they completed.
+        if (effectiveProgrammeId === null) {
+            setEstimateUi({ status: 'ready', result: { state: 'unavailable', reason: 'unknown_programme' } });
+            setAnnounce('No estimate is available. You can still enter your expected year.');
             return;
         }
         const snapshot = getSessionSnapshot();
@@ -824,11 +898,17 @@ function CompletionForm() {
 
     if (!view.featureEnabled) {
         const saved = view.fields;
-        const hasSaved = saved.claimedInstitution.state === 'supplied'
-            || saved.programme.state === 'supplied'
-            || saved.entryYear.state === 'supplied'
-            || saved.entryRoute.state === 'supplied'
-            || saved.expectedGraduationYear.state === 'supplied';
+        // Marker answers are persisted choices too: a rollback view that
+        // only counts supplied values would misreport skipped/unknown
+        // profiles as never answered.
+        const hasSaved = saved.claimedInstitution.state !== 'unanswered'
+            || saved.programme.state !== 'unanswered'
+            || saved.entryYear.state !== 'unanswered'
+            || saved.entryRoute.state !== 'unanswered'
+            || saved.expectedGraduationYear.state !== 'unanswered';
+        const markerLabel = (state: ProfileFieldState): string | null => (
+            state === 'unknown' ? 'Not sure' : state === 'skipped' ? 'Skipped' : null
+        );
         return (
             <Shell>
                 <h1 className="text-2xl font-bold text-slate-900">{greeting}</h1>
@@ -851,17 +931,32 @@ function CompletionForm() {
                             {saved.claimedInstitution.state === 'supplied' && (
                                 <div className="flex flex-wrap gap-x-1.5"><dt className="font-semibold">Institution:</dt><dd>{saved.claimedInstitution.value.name} ({saved.claimedInstitution.value.countryCode})</dd></div>
                             )}
+                            {markerLabel(saved.claimedInstitution.state) !== null && (
+                                <div className="flex flex-wrap gap-x-1.5"><dt className="font-semibold">Institution:</dt><dd>{markerLabel(saved.claimedInstitution.state)}</dd></div>
+                            )}
                             {saved.programme.state === 'supplied' && (
                                 <div className="flex flex-wrap gap-x-1.5"><dt className="font-semibold">Programme or course:</dt><dd>{saved.programme.value.programmeId === null ? saved.programme.value.courseLabel : (view.programmeLabel ?? saved.programme.value.programmeId)}</dd></div>
+                            )}
+                            {markerLabel(saved.programme.state) !== null && (
+                                <div className="flex flex-wrap gap-x-1.5"><dt className="font-semibold">Programme or course:</dt><dd>{markerLabel(saved.programme.state)}</dd></div>
                             )}
                             {saved.entryYear.state === 'supplied' && (
                                 <div className="flex flex-wrap gap-x-1.5"><dt className="font-semibold">Entry year:</dt><dd>{saved.entryYear.value}</dd></div>
                             )}
+                            {markerLabel(saved.entryYear.state) !== null && (
+                                <div className="flex flex-wrap gap-x-1.5"><dt className="font-semibold">Entry year:</dt><dd>{markerLabel(saved.entryYear.state)}</dd></div>
+                            )}
                             {saved.entryRoute.state === 'supplied' && (
                                 <div className="flex flex-wrap gap-x-1.5"><dt className="font-semibold">Entry route:</dt><dd>{entryRouteLabel(saved.entryRoute.value)}</dd></div>
                             )}
+                            {markerLabel(saved.entryRoute.state) !== null && (
+                                <div className="flex flex-wrap gap-x-1.5"><dt className="font-semibold">Entry route:</dt><dd>{markerLabel(saved.entryRoute.state)}</dd></div>
+                            )}
                             {saved.expectedGraduationYear.state === 'supplied' && (
                                 <div className="flex flex-wrap gap-x-1.5"><dt className="font-semibold">Expected graduation year:</dt><dd>{saved.expectedGraduationYear.value}</dd></div>
+                            )}
+                            {markerLabel(saved.expectedGraduationYear.state) !== null && (
+                                <div className="flex flex-wrap gap-x-1.5"><dt className="font-semibold">Expected graduation year:</dt><dd>{markerLabel(saved.expectedGraduationYear.state)}</dd></div>
                             )}
                         </dl>
                     ) : (
@@ -1468,7 +1563,7 @@ function CompletionForm() {
                                         // confirmed or reconciled; a failed
                                         // save stays on the form instead.
                                         if (outcome === 'saved') {
-                                            if (pending.defer) writeCompleteLaterDeferral();
+                                            if (pending.kind === 'exit' && pending.defer) writeCompleteLaterDeferral();
                                             navigateToPendingLeave(pending);
                                         }
                                     });
@@ -1487,7 +1582,7 @@ function CompletionForm() {
                                     if (view) resetDraft(view);
                                     setPendingLeave(null);
                                     setLeaveDialog(false);
-                                    if (pending.defer) writeCompleteLaterDeferral();
+                                    if (pending.kind === 'exit' && pending.defer) writeCompleteLaterDeferral();
                                     navigateToPendingLeave(pending);
                                 }}
                                 className="inline-flex min-h-[44px] items-center justify-center rounded-full border border-slate-300 px-5 text-sm font-bold text-slate-700 hover:bg-slate-50"

@@ -289,7 +289,11 @@ function SignupOnboarding() {
             // session while the projection read was pending: a superseded
             // continuation navigates nowhere instead of carrying the new
             // session to the obsolete destination.
-            if (!committedSessionId || getSessionSnapshot().browserSessionId !== committedSessionId) return;
+            if (!committedSessionId || getSessionSnapshot().browserSessionId !== committedSessionId) {
+                // Fault-injection seam for browser tests; no production caller reads it.
+                (window as Window & { __awoofSuppressedContinuation?: boolean }).__awoofSuppressedContinuation = true;
+                return;
+            }
             window.location.href = destination;
         };
         void resolveStudentPostAuthNavigation({

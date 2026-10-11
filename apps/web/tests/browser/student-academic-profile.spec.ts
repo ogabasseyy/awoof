@@ -83,7 +83,7 @@ type AcademicFixture = {
     puts: unknown[];
     getCalls: number;
     current: unknown;
-    putBehavior: 'echo' | 'conflict' | 'error' | 'abort-once';
+    putBehavior: 'echo' | 'conflict' | 'error' | 'abort-once' | 'institution-changed-once' | 'institution-changed-always';
     estimateResult: unknown;
     estimateCalls: unknown[];
     programmeItems: unknown[];
@@ -114,6 +114,23 @@ async function installAcademicApi(page: Page, initial: unknown): Promise<Academi
             fixture.puts.push(body);
             if (fixture.putBehavior === 'conflict') {
                 await route.fulfill({ status: 409, json: { success: false, error: { message: 'Academic profile changed since it was read; reload and retry' } }, headers: CORS });
+                return;
+            }
+            if ((fixture.putBehavior === 'institution-changed-once' && fixture.puts.length === 1)
+                || fixture.putBehavior === 'institution-changed-always') {
+                const revision = ((fixture.current as Record<string, unknown>).revision as number) + 1;
+                await route.fulfill({
+                    status: 409,
+                    json: {
+                        success: false,
+                        error: {
+                            message: 'Academic profile institution changed; replacement answers were not saved',
+                            code: 'CONFLICT',
+                            details: { code: 'ACADEMIC_PROFILE_INSTITUTION_CHANGED', revision },
+                        },
+                    },
+                    headers: CORS,
+                });
                 return;
             }
             if (fixture.putBehavior === 'error') {
@@ -258,6 +275,23 @@ test('renders the catalogue label for saved selections when the feature is disab
     await expect(page.getByText('Academic profile collection is not currently available.')).toBeVisible();
     await expect(page.getByText('Synthetic Crop Science')).toBeVisible();
     await expect(page.getByText('SYN-001')).toHaveCount(0);
+});
+
+test('renders saved marker answers when the feature is disabled', async ({ page }) => {
+    await openComplete(page, projection({
+        featureEnabled: false,
+        fields: baseFields({
+            claimedInstitution: { state: 'unknown' },
+            programme: { state: 'skipped' },
+            entryYear: { state: 'supplied', value: 2021 },
+        }),
+    }));
+    await expect(page.getByText('Academic profile collection is not currently available.')).toBeVisible();
+    await expect(page.getByRole('heading', { name: 'Your saved answers' })).toBeVisible();
+    await expect(page.getByText('Not sure')).toBeVisible();
+    await expect(page.getByText('Skipped')).toBeVisible();
+    await expect(page.getByText('2021')).toBeVisible();
+    await expect(page.getByText('No academic details saved yet.')).toHaveCount(0);
 });
 
 test('renders no collection controls when the feature is disabled', async ({ page }) => {
@@ -447,22 +481,28 @@ test('enters a self-reported graduation year', async ({ page }) => {
     });
 });
 
-test('fetches an estimate for typed inputs and accepts the recomputed year', async ({ page }) => {
+test('fetches an estimate for a catalogue selection and accepts the recomputed year', async ({ page }) => {
     const fixture = await openComplete(page, projection());
     fixture.estimateResult = { state: 'available', year: 2025, ruleId: 'SYN-R1', sourceVersion: 'nuc-v2' };
-    await page.getByRole('combobox', { name: 'Programme or course' }).fill('Some Course');
+    fixture.programmeItems = [{ programmeId: 'SYN-P1', label: 'Synthetic Programme One', award: 'B.Sc.' }];
+    const input = page.getByRole('combobox', { name: 'Programme or course' });
+    await input.click();
+    await input.fill('syn');
+    await expect(page.getByRole('option').first()).toBeVisible();
+    await page.getByRole('option').first().click();
+    await expect(input).toHaveValue('Synthetic Programme One');
     await page.getByRole('textbox', { name: 'Entry year' }).fill('2021');
     await page.getByRole('radio', { name: 'UTME / first-year entry' }).check();
     await page.getByRole('button', { name: 'Get estimated year' }).click();
     await expect(page.getByText('Estimated graduation year:')).toBeVisible();
-    expect(fixture.estimateCalls).toEqual([{ programmeId: null, entryYear: 2021, entryRoute: 'utme' }]);
+    expect(fixture.estimateCalls).toEqual([{ programmeId: 'SYN-P1', entryYear: 2021, entryRoute: 'utme' }]);
     await page.getByRole('button', { name: 'Use estimated year' }).click();
     await page.getByRole('button', { name: 'Save and continue' }).click();
     await expect(page).toHaveURL(/\/marketplace/, { timeout: 30000 });
     expect(fixture.puts).toHaveLength(1);
     expect(fixture.puts[0]).toEqual({
         expectedRevision: 3,
-        programme: { state: 'supplied', value: { programmeId: null, courseLabel: 'Some Course' } },
+        programme: { state: 'supplied', value: { programmeId: 'SYN-P1', courseLabel: null } },
         entryYear: { state: 'supplied', value: 2021 },
         entryRoute: { state: 'supplied', value: 'utme' },
         expectedGraduationYear: { state: 'supplied', value: { kind: 'accept_estimate', year: 2025 } },
@@ -475,12 +515,28 @@ test('explains unavailable estimates honestly', async ({ page }) => {
     await expect(page.getByText('Add a programme, entry year, and entry route to see an estimate.')).toBeVisible();
     expect(fixture.estimateCalls).toHaveLength(0);
     fixture.estimateResult = { state: 'unavailable', reason: 'unreviewed_rule' };
-    await page.getByRole('combobox', { name: 'Programme or course' }).fill('Some Course');
+    fixture.programmeItems = [{ programmeId: 'SYN-P1', label: 'Synthetic Programme One', award: 'B.Sc.' }];
+    const input = page.getByRole('combobox', { name: 'Programme or course' });
+    await input.click();
+    await input.fill('syn');
+    await expect(page.getByRole('option').first()).toBeVisible();
+    await page.getByRole('option').first().click();
+    await expect(input).toHaveValue('Synthetic Programme One');
     await page.getByRole('textbox', { name: 'Entry year' }).fill('2021');
     await page.getByRole('radio', { name: 'UTME / first-year entry' }).check();
     await page.getByRole('button', { name: 'Get estimated year' }).click();
     await expect(page.getByText('This programme duration has not been reviewed yet, so there is no estimate. You can still enter your expected year.')).toBeVisible();
     expect(fixture.estimateCalls).toHaveLength(1);
+});
+
+test('explains that free-text courses have no catalogue estimate without requesting', async ({ page }) => {
+    const fixture = await openComplete(page, projection());
+    await page.getByRole('combobox', { name: 'Programme or course' }).fill('Some Course');
+    await page.getByRole('textbox', { name: 'Entry year' }).fill('2021');
+    await page.getByRole('radio', { name: 'UTME / first-year entry' }).check();
+    await page.getByRole('button', { name: 'Get estimated year' }).click();
+    await expect(page.getByText('We do not recognize this programme for estimates. You can still enter your expected year.')).toBeVisible();
+    expect(fixture.estimateCalls).toHaveLength(0);
 });
 
 test('requires reconfirmation when inputs invalidate a calculated year', async ({ page }) => {
@@ -603,6 +659,28 @@ test('reconciles a lost save response without resubmitting', async ({ page }) =>
     await expect(page).toHaveURL(/\/marketplace/, { timeout: 30000 });
     expect(fixture.puts).toHaveLength(1);
     expect(fixture.getCalls).toBeGreaterThanOrEqual(2);
+});
+
+test('retries a save once after an institution-change conflict', async ({ page }) => {
+    const fixture = await openComplete(page, projection());
+    fixture.putBehavior = 'institution-changed-once';
+    await page.getByRole('textbox', { name: 'Entry year' }).fill('2022');
+    await page.getByRole('button', { name: 'Save and continue' }).click();
+    await expect(page).toHaveURL(/\/marketplace/, { timeout: 30000 });
+    expect(fixture.puts).toHaveLength(2);
+    expect(fixture.puts[0]).toMatchObject({ expectedRevision: 3 });
+    expect(fixture.puts[1]).toMatchObject({ expectedRevision: 4, entryYear: { state: 'supplied', value: 2022 } });
+    await expect(page.getByText('Your profile changed since it was read.')).toHaveCount(0);
+});
+
+test('surfaces the conflict UI when the drift retry also conflicts', async ({ page }) => {
+    const fixture = await openComplete(page, projection());
+    fixture.putBehavior = 'institution-changed-always';
+    await page.getByRole('textbox', { name: 'Entry year' }).fill('2022');
+    await page.getByRole('button', { name: 'Save and continue' }).click();
+    await expect(page.getByText('Your profile changed since it was read. Reload the latest values before saving again.')).toBeVisible();
+    expect(fixture.puts).toHaveLength(2);
+    await expect(page).toHaveURL(/\/student\/profile\/complete/);
 });
 
 test('shows a conflict with reload when the revision is stale', async ({ page }) => {
@@ -733,6 +811,39 @@ test('follows header exits directly when clean', async ({ page }) => {
     await expect(page.getByRole('alertdialog')).toHaveCount(0);
 });
 
+test('routes browser Back through the leave confirmation', async ({ page }) => {
+    const fixture = await openComplete(page, projection());
+    await page.goto('/auth/student/login');
+    await expect(page).toHaveURL(/\/auth\/student\/login/);
+    await page.goto(COMPLETE_PATH);
+    await expect(page.getByRole('textbox', { name: 'Entry year' })).toBeVisible();
+    await page.getByRole('textbox', { name: 'Entry year' }).fill('2022');
+    await page.goBack();
+    const dialog = page.getByRole('alertdialog');
+    await expect(dialog).toBeVisible();
+    await dialog.getByRole('button', { name: 'Stay on this page' }).click();
+    await expect(dialog).toBeHidden();
+    await expect(page.getByRole('textbox', { name: 'Entry year' })).toHaveValue('2022');
+    await page.goBack();
+    await page.getByRole('alertdialog').getByRole('button', { name: 'Discard and continue' }).click();
+    await expect(page).toHaveURL(/\/auth\/student\/login/);
+    expect(fixture.puts).toHaveLength(0);
+});
+
+test('does not prompt on unload after a successful save', async ({ page }) => {
+    const fixture = await openComplete(page, projection());
+    let dialogs = 0;
+    page.on('dialog', (dialog) => {
+        dialogs += 1;
+        void dialog.dismiss();
+    });
+    await page.getByRole('textbox', { name: 'Entry year' }).fill('2021');
+    await page.getByRole('button', { name: 'Save and continue' }).click();
+    await expect(page).toHaveURL(/\/marketplace/, { timeout: 30000 });
+    expect(dialogs).toBe(0);
+    expect(fixture.puts).toHaveLength(1);
+});
+
 test('clears the country when the selected institution has none', async ({ page }) => {
     const fixture = await openComplete(page, projection());
     fixture.institutionItems = [{ name: 'Mapped University', countryCode: 'NG' }];
@@ -841,7 +952,13 @@ test('displays the saved catalogue label and keeps the selection on save', async
 test('ignores a stale estimate response after inputs change', async ({ page }) => {
     const fixture = await openComplete(page, projection());
     fixture.estimateResult = { state: 'available', year: 2025, ruleId: 'SYN-R1', sourceVersion: 'nuc-v2' };
-    await page.getByRole('combobox', { name: 'Programme or course' }).fill('Some Course');
+    fixture.programmeItems = [{ programmeId: 'SYN-P1', label: 'Synthetic Programme One', award: 'B.Sc.' }];
+    const programmeInput = page.getByRole('combobox', { name: 'Programme or course' });
+    await programmeInput.click();
+    await programmeInput.fill('syn');
+    await expect(page.getByRole('option').first()).toBeVisible();
+    await page.getByRole('option').first().click();
+    await expect(programmeInput).toHaveValue('Synthetic Programme One');
     await page.getByRole('textbox', { name: 'Entry year' }).fill('2021');
     await page.getByRole('radio', { name: 'UTME / first-year entry' }).check();
     await page.route(`${apiOrigin}/api/students/academic-profile/estimate`, async (route: Route) => {

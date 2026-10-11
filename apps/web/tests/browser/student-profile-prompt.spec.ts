@@ -467,8 +467,12 @@ test('SSO signup suppresses continuation after the fresh session is replaced', a
     await driveSignupToRecoveryNotice(page, '/marketplace');
     await replaceSession(page, 'student', 'intruder-session');
     await page.getByRole('button', { name: 'Continue' }).click();
-    await expect.poll(() => prompt.getCalls).toBeGreaterThanOrEqual(1);
-    await page.waitForTimeout(500);
+    // Completion signal: the navigation decision ran and suppressed the
+    // continuation (no fixed delay — the projection round trip varies).
+    await expect.poll(() => page.evaluate(
+        () => (window as unknown as Record<string, unknown>).__awoofSuppressedContinuation === true,
+    )).toBe(true);
+    expect(prompt.getCalls).toBeGreaterThanOrEqual(1);
     await expect(page).toHaveURL(/\/auth\/student\/sso\/onboarding/);
     await expect(page.getByText('This tab changed accounts. Start Microsoft sign-in again.')).toBeVisible();
 });

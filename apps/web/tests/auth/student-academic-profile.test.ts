@@ -7,6 +7,7 @@ import {
     isFormDirty,
     parseAcademicProfileResponse,
     parseEstimateResult,
+    parseInstitutionChangedConflict,
     parseInstitutionCataloguePage,
     parseProgrammeCataloguePage,
     patchMatchesProjection,
@@ -68,6 +69,31 @@ function untouchedForm(): AcademicProfileForm {
         expectedGraduationYear: { state: 'unchanged' },
     };
 }
+
+test('parses an institution-change conflict with its retry revision', () => {
+    const conflict = (details: unknown, status = 409) => ({
+        response: { status, data: { success: false, error: { message: 'changed', code: 'CONFLICT', details } } },
+    });
+    assert.deepEqual(
+        parseInstitutionChangedConflict(conflict({ code: 'ACADEMIC_PROFILE_INSTITUTION_CHANGED', revision: 4 })),
+        { revision: 4 },
+    );
+    for (const error of [
+        conflict({ code: 'ACADEMIC_PROFILE_REVISION_CONFLICT', revision: 4 }),
+        conflict({ code: 'ACADEMIC_PROFILE_INSTITUTION_CHANGED', revision: 4 }, 500),
+        conflict({ code: 'ACADEMIC_PROFILE_INSTITUTION_CHANGED' }),
+        conflict({ code: 'ACADEMIC_PROFILE_INSTITUTION_CHANGED', revision: 4.5 }),
+        conflict({ code: 'ACADEMIC_PROFILE_INSTITUTION_CHANGED', revision: -1 }),
+        conflict({ code: 'ACADEMIC_PROFILE_INSTITUTION_CHANGED', revision: '4' }),
+        conflict(null),
+        { response: { status: 409, data: null } },
+        { response: null },
+        null,
+        undefined,
+    ]) {
+        assert.equal(parseInstitutionChangedConflict(error), null);
+    }
+});
 
 test('parses the saved programme label and tolerates its absence', () => {
     const labelled = parseAcademicProfileResponse(envelope(validProjection({ programmeLabel: 'Stylised Physics' })));

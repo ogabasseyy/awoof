@@ -552,6 +552,24 @@ export function buildAcademicProfilePatch(form: AcademicProfileForm, revision: n
     return patch;
 }
 
+export const ACADEMIC_PROFILE_INSTITUTION_CHANGED = 'ACADEMIC_PROFILE_INSTITUTION_CHANGED';
+
+/**
+ * Parse an institution-change save conflict: the server committed the
+ * invalidation and reports the revision to retry against. Strict shape —
+ * any other conflict (or malformed body) returns null for the generic
+ * reload path.
+ */
+export function parseInstitutionChangedConflict(error: unknown): { revision: number } | null {
+    const response = asRecord(asRecord(error)?.['response']);
+    if (!response || response['status'] !== 409) return null;
+    const details = asRecord(asRecord(asRecord(response['data'])?.['error'])?.['details']);
+    if (!details || details['code'] !== ACADEMIC_PROFILE_INSTITUTION_CHANGED) return null;
+    const revision = details['revision'];
+    if (typeof revision !== 'number' || !Number.isInteger(revision) || revision < 0) return null;
+    return { revision };
+}
+
 /** True when the draft stages at least one change. */
 export function isFormDirty(form: AcademicProfileForm): boolean {
     return ACADEMIC_FIELDS.some((field) => form[field].state !== 'unchanged');
