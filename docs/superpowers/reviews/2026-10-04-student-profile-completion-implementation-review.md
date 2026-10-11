@@ -1,7 +1,7 @@
 # Student profile completion — implementation review (Task 7)
 
 Date: 10 October 2026
-Branch: `feat/student-profile-completion` (worktree `/Users/mac/.codex/worktrees/awoof-student-profile/Awoof`)
+Branch: `feat/student-profile-completion`
 Design: `docs/superpowers/specs/2026-10-03-student-profile-completion-design.md` (Revision 10)
 Plan: `docs/superpowers/plans/2026-10-04-student-profile-completion.md`
 Reviewer: Task 7 audit agent (independent of Tasks 1–6)

@@ -14,7 +14,7 @@ decision. It does not modify the approved design.
 `apps/backend/src/config/env.ts`, and `ACADEMIC_PROFILE_RETENTION_DAYS`
 remains unset (`apps/backend/env.example` documents both as commented
 defaults). No configuration change in this task enables collection.
-At least five of the seven gates below lack evidence; the exact blockers
+Five of the seven gates below lack full evidence; the exact blockers
 are named per gate.
 
 ## Release gates
@@ -25,7 +25,7 @@ are named per gate.
 | Legal-approved collection purpose / disclosure | OPEN | New entry/course/graduation fields change personal-data collection and purpose. `apps/web/src/content/public/privacy-draft.ts` contains no academic-profile purpose (0 matches for academic/graduation/programme), and no legal review record approves one. Blocker: owner and legal review must approve the updated disclosure before activation; public copy in this task claims no new purpose. |
 | Approved retention schedule | OPEN | No owner/legal-approved retention period exists. `ACADEMIC_PROFILE_RETENTION_DAYS` is unset by design, which keeps collection disabled via `isAcademicProfileCollectionEnabled` and makes `cleanup-academic-profile-data.ts` refuse to run. Blocker: a single approved positive day value with owner/legal sign-off. No duration is invented here. |
 | Physical / soft-delete and backup handling | PARTIAL | Physical cascade and the narrow soft-deleted purge path are implemented and covered by unit plus disposable-Postgres integration tests (Tasks 2–3). Backup disposal handling is undocumented (0 mentions in the retention service and purge script) and there is no authorized legal-hold mechanism. Blocker: documented backup disposal within the approved schedule; soft-delete purge remains unrunnable until the retention gate passes. |
-| Operational owner and scheduled purge invocation | OPEN | The purge command exists only as the `academic-profile:purge` npm script with a DO-NOT-RUN header; no operational owner is assigned, no schedule is configured (no workflow or scheduler references the command), and it has never run operationally. Blocker: named owner plus a configured, monitored schedule. |
+| Operational owner and scheduled purge invocation | OPEN | The purge command exists as the `academic-profile:purge` (source checkout) and `academic-profile:purge:prod` (built artifact, `dist/scripts/cleanup-academic-profile-data.js`) npm scripts with a DO-NOT-RUN header; no operational owner is assigned, no schedule is configured (no workflow or scheduler references the command), and it has never run operationally. Blocker: named owner plus a configured, monitored schedule. |
 | Claim register evidence | DONE (this task) | New rows added to the claim register in `docs/public-trust-pages.md`; public copy is enforced by `apps/web/tests/auth/public-academic-profile-claims.test.ts` (11 tests) and a `public-information.spec.ts` render test. Publication of collection itself is not claimed. |
 | Accessibility / link review | DONE (this task) | New copy reuses the existing public-page shell (one h1, section headings, existing footer/sitemap links; no new routes). `public-information.spec.ts` renders `/help`, `/trust`, and `/developers` with the new copy; `test:browser:typecheck`, `lint`, and `build` results are recorded in Step 5. |
 

@@ -31,6 +31,7 @@
     "sso:cleanup": "./node_modules/.bin/tsx scripts/cleanup-student-sso.ts",
     "sso:cleanup:prod": "node dist/scripts/cleanup-student-sso.js",
     "academic-profile:purge": "./node_modules/.bin/tsx scripts/cleanup-academic-profile-data.ts",
+    "academic-profile:purge:prod": "node dist/scripts/cleanup-academic-profile-data.js",
     "admin:create": "tsx src/scripts/create-admin.ts",
     "admin:set-password": "tsx src/scripts/set-admin-password.ts"
   },
