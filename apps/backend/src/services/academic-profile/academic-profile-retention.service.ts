@@ -47,13 +47,14 @@ export function resolveAcademicProfileRetentionDays(value: unknown): number {
     if (value === null || value === undefined || (typeof value === 'string' && value.trim() === '')) {
         throw new Error(`Academic profile retention is not configured: set ${ACADEMIC_PROFILE_RETENTION_ENV_VAR} to an approved positive value`);
     }
-    // Mirror the startup schema's digit-string rule: Number() would also
-    // accept '1e3', '+30', or '0x10', letting the purge CLI delete rows on
-    // a value the application itself rejects as invalid.
-    if (typeof value === 'string' && !/^\d+$/.test(value.trim())) {
+    // Mirror the startup schema exactly: it validates the raw string, so
+    // whitespace-padded values like ' 30 ' are invalid there and must be
+    // invalid here too, or the purge CLI would delete rows on a value the
+    // application itself rejects.
+    if (typeof value === 'string' && !/^\d+$/.test(value)) {
         throw new Error(`Academic profile retention must be a positive integer number of days (${ACADEMIC_PROFILE_RETENTION_ENV_VAR})`);
     }
-    const days = typeof value === 'string' ? Number(value.trim()) : value;
+    const days = typeof value === 'string' ? Number(value) : value;
     if (typeof days !== 'number' || !Number.isInteger(days) || days <= 0) {
         throw new Error(`Academic profile retention must be a positive integer number of days (${ACADEMIC_PROFILE_RETENTION_ENV_VAR})`);
     }

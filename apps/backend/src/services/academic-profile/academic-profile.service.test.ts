@@ -94,6 +94,7 @@ type FakeState = {
     profile: Record<string, unknown> | null;
     writes: Array<{ text: string; params: unknown[] }>;
     readUserIds: unknown[];
+    statements: string[];
 };
 
 function profileRow(overrides: Record<string, unknown> = {}): Record<string, unknown> {
@@ -136,6 +137,7 @@ function fakeState(overrides: Partial<FakeState> = {}): FakeState {
         profile: null,
         writes: [],
         readUserIds: [],
+        statements: [],
         ...overrides,
     };
 }
@@ -151,6 +153,7 @@ function createFakePool(state: FakeState): { connect: () => Promise<unknown> } {
     const client = {
         query: async (text: string, params: unknown[] = []): Promise<{ rows: unknown[]; rowCount: number }> => {
             const normalized = text.replace(/\s+/g, ' ').trim();
+            state.statements.push(normalized);
             if (normalized === 'BEGIN' || normalized === 'COMMIT' || normalized === 'ROLLBACK') {
                 return { rows: [], rowCount: 0 };
             }
@@ -1029,6 +1032,22 @@ test('read hides soft-deleted accounts and unknown users', async () => {
     await assert.rejects(readAcademicProfile(createFakePool(deleted) as never, USER_ID, serviceDeps()), NotFoundError);
     const missing = fakeState({ user: null, student: null });
     await assert.rejects(readAcademicProfile(createFakePool(missing) as never, OTHER_USER_ID, serviceDeps()), NotFoundError);
+});
+
+test('saves lock the bound university against metadata races while reads share it', async () => {
+    const saved = boundState();
+    await saveAcademicProfile(
+        createFakePool(saved) as never,
+        USER_ID,
+        { expectedRevision: 0, entryYear: { state: 'supplied', value: 2022 } },
+        serviceDeps(),
+    );
+    const saveLock = saved.statements.find((text) => text.includes('FROM universities'));
+    assert.ok(saveLock?.endsWith('FOR SHARE'), saveLock);
+    const read = boundState();
+    await readAcademicProfile(createFakePool(read) as never, USER_ID, serviceDeps());
+    const readLock = read.statements.find((text) => text.includes('FROM universities'));
+    assert.ok(readLock?.endsWith('FOR KEY SHARE'), readLock);
 });
 
 test('save creates the first revision and binds the server-owned canonical institution', async () => {

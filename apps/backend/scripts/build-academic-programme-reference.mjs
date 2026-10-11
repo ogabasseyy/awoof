@@ -14,7 +14,7 @@
  */
 import { createHash } from 'node:crypto';
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
-import { dirname, resolve } from 'node:path';
+import { basename, dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 export const ARTIFACT_VERSION = 1;
@@ -41,7 +41,36 @@ const KNOWN_ROUTE_FIELDS = ['durationYears', 'reviewed', 'applicable'];
 const KNOWN_FLAG_FIELDS = ['legacy', 'derived', 'awardCaveat', 'numericConflict'];
 const CHECKSUM_PATTERN = /^[0-9a-f]{64}$/i;
 const PROGRAMME_ID_PATTERN = /^[a-z0-9][a-z0-9._-]*$/;
+const ISO_COUNTRY_CODE_PATTERN = /^[A-Z]{2}$/;
 const MAX_DURATION_YEARS = 20;
+const KNOWN_ARTIFACT_FIELDS = [
+    'artifactVersion',
+    'sourceVersion',
+    'sourceChecksumSha256',
+    'redistributionAllowed',
+    'calculationsEnabled',
+    'countryCode',
+    'programmes',
+    'excluded',
+    'blocked',
+    'counts',
+    'checksum',
+];
+const KNOWN_ARTIFACT_PROGRAMME_FIELDS = [
+    'programmeId',
+    'sourceId',
+    'label',
+    'award',
+    'aliases',
+    'discipline',
+    'locator',
+    'evidence',
+    'routes',
+    'exceptionNotes',
+];
+const KNOWN_ARTIFACT_ROUTE_FIELDS = ['durationYears', 'reviewed', 'applicable', 'pending', 'estimable'];
+const KNOWN_ARTIFACT_DISPOSITION_FIELDS = ['sourceId', 'reason', 'locator'];
+const KNOWN_ARTIFACT_COUNTS_FIELDS = ['total', 'included', 'excluded', 'blocked'];
 // Storage mirror of migration 085 `estimate_basis_rule_id VARCHAR(128)`:
 // every `${programmeId}:${route}` rule id must fit. The route list covers
 // every suffix any rule builder accepts (the runtime HTTP path also builds
@@ -391,6 +420,137 @@ export function buildReference({ extract, expectedChecksum, redistribution }) {
         counts: { total: validated.length, included: programmes.length, excluded: excluded.length, blocked: blocked.length },
     };
     return { ...payload, checksum: computeArtifactChecksum(payload) };
+}
+
+function verifyArtifactLocator(locator, label) {
+    if (!isPlainObject(locator)) throw new Error(`invalid programme reference '${label}': locator must be an object`);
+    assertKnownFields(locator, KNOWN_LOCATOR_FIELDS, 'artifact locator');
+    if (typeof locator.sheet !== 'string' || locator.sheet.trim() === '') {
+        throw new Error(`invalid programme reference '${label}': locator sheet must be a non-empty string`);
+    }
+    if (!Number.isInteger(locator.row) || locator.row <= 0) {
+        throw new Error(`invalid programme reference '${label}': locator row must be a positive integer`);
+    }
+}
+
+function verifyArtifactProgramme(entry, label) {
+    if (!isPlainObject(entry)) throw new Error(`invalid programme reference '${label}': programme entries must be objects`);
+    assertKnownFields(entry, KNOWN_ARTIFACT_PROGRAMME_FIELDS, 'artifact programme');
+    if (typeof entry.programmeId !== 'string' || !PROGRAMME_ID_PATTERN.test(entry.programmeId)) {
+        throw new Error(`invalid programme reference '${label}': programme id is malformed`);
+    }
+    if (entry.programmeId.length > MAX_ESTIMABLE_PROGRAMME_ID_LENGTH) {
+        throw new Error(`invalid programme reference '${label}': programme id exceeds the storable rule-id limit`);
+    }
+    if (typeof entry.sourceId !== 'string' || entry.sourceId.trim() === '') {
+        throw new Error(`invalid programme reference '${label}': source id must be a non-empty string`);
+    }
+    if (typeof entry.label !== 'string' || entry.label.trim() === '') {
+        throw new Error(`invalid programme reference '${label}': label must be a non-empty string`);
+    }
+    if (entry.award !== null && typeof entry.award !== 'string') {
+        throw new Error(`invalid programme reference '${label}': award must be a string or null`);
+    }
+    if (!Array.isArray(entry.aliases) || entry.aliases.some((alias) => typeof alias !== 'string')) {
+        throw new Error(`invalid programme reference '${label}': aliases must be an array of strings`);
+    }
+    if (entry.discipline !== null && typeof entry.discipline !== 'string') {
+        throw new Error(`invalid programme reference '${label}': discipline must be a string or null`);
+    }
+    verifyArtifactLocator(entry.locator, label);
+    if (typeof entry.evidence !== 'string' || !KNOWN_EVIDENCE.includes(entry.evidence)) {
+        throw new Error(`invalid programme reference '${label}': unknown evidence code`);
+    }
+    if (entry.exceptionNotes !== null && typeof entry.exceptionNotes !== 'string') {
+        throw new Error(`invalid programme reference '${label}': exception notes must be a string or null`);
+    }
+    if (!isPlainObject(entry.routes)) throw new Error(`invalid programme reference '${label}': routes must be an object`);
+    for (const [routeName, route] of Object.entries(entry.routes)) {
+        if (!KNOWN_ROUTES.includes(routeName)) {
+            throw new Error(`invalid programme reference '${label}': unknown route '${routeName}'`);
+        }
+        if (!isPlainObject(route)) throw new Error(`invalid programme reference '${label}': route '${routeName}' must be an object`);
+        assertKnownFields(route, KNOWN_ARTIFACT_ROUTE_FIELDS, 'artifact route');
+        const { durationYears, reviewed, applicable, pending, estimable } = route;
+        if (durationYears !== null && (!Number.isInteger(durationYears) || durationYears < 1 || durationYears > MAX_DURATION_YEARS)) {
+            throw new Error(`invalid programme reference '${label}': route '${routeName}' duration is out of range`);
+        }
+        for (const [flag, value] of [['reviewed', reviewed], ['applicable', applicable], ['pending', pending], ['estimable', estimable]]) {
+            if (typeof value !== 'boolean') {
+                throw new Error(`invalid programme reference '${label}': route '${routeName}' flag '${flag}' must be a boolean`);
+            }
+        }
+    }
+}
+
+function verifyArtifactDisposition(entry, label) {
+    if (!isPlainObject(entry)) throw new Error(`invalid programme reference '${label}': disposition entries must be objects`);
+    assertKnownFields(entry, KNOWN_ARTIFACT_DISPOSITION_FIELDS, 'artifact disposition');
+    if (typeof entry.sourceId !== 'string' || entry.sourceId.trim() === '') {
+        throw new Error(`invalid programme reference '${label}': disposition source id must be a non-empty string`);
+    }
+    if (typeof entry.reason !== 'string' || entry.reason.trim() === '') {
+        throw new Error(`invalid programme reference '${label}': disposition reason must be a non-empty string`);
+    }
+    verifyArtifactLocator(entry.locator, label);
+}
+
+/**
+ * Verify a checked-in reference artifact before staging: version, checksum,
+ * counts, and the semantic invariants the builder guarantees. Any manual
+ * edit that bypasses the deterministic importer fails the build here
+ * instead of silently altering graduation rules. Returns the parsed
+ * artifact.
+ */
+export function verifyProgrammeReferenceArtifact(filePath) {
+    const label = basename(filePath);
+    let artifact;
+    try {
+        artifact = JSON.parse(readFileSync(filePath, 'utf8'));
+    } catch {
+        throw new Error(`invalid programme reference '${label}': expected valid JSON`);
+    }
+    if (!isPlainObject(artifact)) throw new Error(`invalid programme reference '${label}': expected an object`);
+    assertKnownFields(artifact, KNOWN_ARTIFACT_FIELDS, 'artifact');
+    if (artifact.artifactVersion !== ARTIFACT_VERSION) {
+        throw new Error(`invalid programme reference '${label}': unsupported artifact version`);
+    }
+    if (typeof artifact.sourceVersion !== 'string' || artifact.sourceVersion.trim() === ''
+        || artifact.sourceVersion.trim().length > MAX_ESTIMATE_SOURCE_VERSION_LENGTH) {
+        throw new Error(`invalid programme reference '${label}': source version is missing or exceeds the storable limit`);
+    }
+    if (typeof artifact.sourceChecksumSha256 !== 'string' || !CHECKSUM_PATTERN.test(artifact.sourceChecksumSha256)) {
+        throw new Error(`invalid programme reference '${label}': source checksum must be 64 hex characters`);
+    }
+    if (typeof artifact.redistributionAllowed !== 'boolean' || typeof artifact.calculationsEnabled !== 'boolean') {
+        throw new Error(`invalid programme reference '${label}': redistribution and calculation flags must be booleans`);
+    }
+    if (artifact.calculationsEnabled !== artifact.redistributionAllowed) {
+        throw new Error(`invalid programme reference '${label}': calculations can only be enabled with redistribution allowed`);
+    }
+    if (artifact.countryCode !== undefined
+        && (typeof artifact.countryCode !== 'string' || !ISO_COUNTRY_CODE_PATTERN.test(artifact.countryCode))) {
+        throw new Error(`invalid programme reference '${label}': country code must be an ISO alpha-2 code`);
+    }
+    for (const key of ['programmes', 'excluded', 'blocked']) {
+        if (!Array.isArray(artifact[key])) throw new Error(`invalid programme reference '${label}': '${key}' must be an array`);
+    }
+    if (!isPlainObject(artifact.counts)) throw new Error(`invalid programme reference '${label}': counts must be an object`);
+    assertKnownFields(artifact.counts, KNOWN_ARTIFACT_COUNTS_FIELDS, 'artifact counts');
+    if (artifact.counts.included !== artifact.programmes.length
+        || artifact.counts.excluded !== artifact.excluded.length
+        || artifact.counts.blocked !== artifact.blocked.length
+        || artifact.counts.total !== artifact.programmes.length + artifact.excluded.length + artifact.blocked.length) {
+        throw new Error(`invalid programme reference '${label}': counts do not match the disposition arrays`);
+    }
+    for (const entry of artifact.programmes) verifyArtifactProgramme(entry, label);
+    for (const entry of artifact.excluded) verifyArtifactDisposition(entry, label);
+    for (const entry of artifact.blocked) verifyArtifactDisposition(entry, label);
+    const { checksum, ...payload } = artifact;
+    if (typeof checksum !== 'string' || computeArtifactChecksum(payload) !== checksum) {
+        throw new Error(`invalid programme reference '${label}': checksum mismatch — rebuild with the deterministic importer`);
+    }
+    return artifact;
 }
 
 /**

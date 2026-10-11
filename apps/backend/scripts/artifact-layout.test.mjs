@@ -5,6 +5,7 @@ import { join } from 'node:path';
 import test from 'node:test';
 import { ARTIFACT_ROOT_NAME, DISABLED_FALLBACK_SMOKE, assertCompiledArtifact, compiledTestSelection, stageMigrationSql, stageProgrammeReferenceJson } from './artifact-layout.mjs';
 import { validateArtifactManifest, writeArtifactManifest } from './artifact-manifest.mjs';
+import { buildReference } from './build-academic-programme-reference.mjs';
 
 function fixture() {
     const root = mkdtempSync(join(tmpdir(), 'awoof-artifact-layout-'));
@@ -33,7 +34,13 @@ function fixture() {
     writeFileSync(join(root, ARTIFACT_ROOT_NAME, 'scripts/cleanup-microsoft-attempts.js'), 'export {};\n');
     writeFileSync(join(root, ARTIFACT_ROOT_NAME, 'scripts/cleanup-student-sso.js'), 'export {};\n');
     writeFileSync(join(root, ARTIFACT_ROOT_NAME, 'scripts/cleanup-academic-profile-data.js'), 'export {};\n');
-    writeFileSync(join(sourceReference, 'nuc-v2.normalized.json'), '{"sourceVersion":"fixture"}\n');
+    const fixtureChecksum = 'a'.repeat(64);
+    const fixtureReference = buildReference({
+        extract: { sourceVersion: 'fixture-v1', sourceChecksumSha256: fixtureChecksum, rows: [] },
+        expectedChecksum: fixtureChecksum,
+        redistribution: 'blocked',
+    });
+    writeFileSync(join(sourceReference, 'nuc-v2.normalized.json'), `${JSON.stringify(fixtureReference, null, 2)}\n`);
     return root;
 }
 
@@ -63,7 +70,24 @@ test('stages exactly the source programme reference bytes, replacing stale JSON 
         writeFileSync(join(artifactReference, '999_stale.json'), 'stale');
         assert.equal(stageProgrammeReferenceJson(root), 1);
         assert.equal(existsSync(join(artifactReference, '999_stale.json')), false);
-        assert.deepEqual(readFileSync(join(artifactReference, 'nuc-v2.normalized.json')), Buffer.from('{"sourceVersion":"fixture"}\n'));
+        assert.deepEqual(
+            readFileSync(join(artifactReference, 'nuc-v2.normalized.json')),
+            readFileSync(join(root, 'src/data/academic-programmes/nuc-v2.normalized.json')),
+        );
+    } finally {
+        rmSync(root, { recursive: true, force: true });
+    }
+});
+
+test('staging rejects a reference that bypasses the deterministic importer', () => {
+    const root = fixture();
+    try {
+        const source = join(root, 'src/data/academic-programmes/nuc-v2.normalized.json');
+        const parsed = JSON.parse(readFileSync(source, 'utf8'));
+        parsed.calculationsEnabled = true;
+        writeFileSync(source, JSON.stringify(parsed));
+        assert.throws(() => stageProgrammeReferenceJson(root), /programme reference/);
+        assert.equal(existsSync(join(root, ARTIFACT_ROOT_NAME, 'data/academic-programmes/nuc-v2.normalized.json')), false);
     } finally {
         rmSync(root, { recursive: true, force: true });
     }

@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import test from 'node:test';
@@ -11,6 +11,7 @@ import {
     MAX_ESTIMABLE_PROGRAMME_ID_LENGTH,
     MAX_ESTIMATE_SOURCE_VERSION_LENGTH,
     buildReference,
+    verifyProgrammeReferenceArtifact,
     classifyRow,
     computeArtifactChecksum,
     getEstimableRouteRule,
@@ -444,4 +445,60 @@ test('importer accepts an explicit source path and hard-codes no developer path'
     assert.ok(!source.includes('Downloads'), 'importer must not reference a Downloads folder');
     assert.ok(!source.includes('/Users/'), 'importer must not hard-code a developer home path');
     assert.ok(!source.includes('.xlsx'), 'importer must not assume the original workbook path');
+});
+
+function writeTempArtifact(artifact) {
+    const directory = mkdtempSync(join(tmpdir(), 'awoof-ref-verify-'));
+    const file = join(directory, 'ref.json');
+    writeFileSync(file, JSON.stringify(artifact, null, 2));
+    return { directory, file };
+}
+
+function withTempArtifact(artifact, run) {
+    const { directory, file } = writeTempArtifact(artifact);
+    try {
+        return run(file);
+    } finally {
+        rmSync(directory, { recursive: true, force: true });
+    }
+}
+
+test('reference verification accepts deterministic builder output', () => {
+    const artifact = build([baseRow()]);
+    withTempArtifact(artifact, (file) => {
+        assert.deepEqual(verifyProgrammeReferenceArtifact(file), artifact);
+    });
+});
+
+test('reference verification rejects edits that bypass the importer', () => {
+    const blocked = build([baseRow()], { redistribution: 'blocked' });
+    assert.equal(blocked.calculationsEnabled, false);
+    blocked.calculationsEnabled = true;
+    withTempArtifact(blocked, (file) => {
+        assert.throws(() => verifyProgrammeReferenceArtifact(file), /only be enabled with redistribution/);
+    });
+    const cases = [
+        ['altered disposition content', (artifact) => { artifact.blocked.push({ sourceId: 'SYN-X', reason: 'synthetic', locator: { sheet: 'S', row: 1 } }); }, /counts do not match/],
+        ['altered programme label', (artifact) => { artifact.programmes.push({ programmeId: 'x', sourceId: 'y', label: 'z', award: null, aliases: [], discipline: null, locator: { sheet: 'S', row: 1 }, evidence: 'G', routes: {}, exceptionNotes: null }); }, /counts do not match/],
+        ['wrong artifact version', (artifact) => { artifact.artifactVersion = 2; }, /unsupported artifact version/],
+        ['unknown top-level field', (artifact) => { artifact.surprise = true; }, /unknown artifact field/],
+        ['over-long source version', (artifact) => { artifact.sourceVersion = 'v'.repeat(MAX_ESTIMATE_SOURCE_VERSION_LENGTH + 1); }, /exceeds the storable limit/],
+    ];
+    for (const [label, mutate, pattern] of cases) {
+        const artifact = build([baseRow()]);
+        mutate(artifact);
+        withTempArtifact(artifact, (file) => {
+            assert.throws(() => verifyProgrammeReferenceArtifact(file), pattern, label);
+        });
+    }
+});
+
+test('reference verification rejects checksum mismatches on semantically valid edits', () => {
+    const artifact = build([baseRow()]);
+    artifact.blocked.push({ sourceId: 'SYN-X', reason: 'synthetic', locator: { sheet: 'S', row: 1 } });
+    artifact.counts.blocked += 1;
+    artifact.counts.total += 1;
+    withTempArtifact(artifact, (file) => {
+        assert.throws(() => verifyProgrammeReferenceArtifact(file), /checksum mismatch/);
+    });
 });

@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { copyFileSync, existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, rmSync } from 'node:fs';
 import { basename, join, relative, resolve } from 'node:path';
 import { DISABLED_FALLBACK_SMOKE } from './artifact-manifest.mjs';
+import { verifyProgrammeReferenceArtifact } from './build-academic-programme-reference.mjs';
 
 export const ARTIFACT_ROOT_NAME = 'dist';
 export { DISABLED_FALLBACK_SMOKE } from './artifact-manifest.mjs';
@@ -59,6 +60,9 @@ export function stageProgrammeReferenceJson(backendRoot) {
     const artifactDirectory = join(backendRoot, ARTIFACT_ROOT_NAME, 'data/academic-programmes');
     const sourceFiles = programmeReferenceFiles(sourceDirectory);
     if (sourceFiles.length === 0) throw new Error('No source programme reference JSON files were found.');
+    // Provenance boundary: a shape-valid hand edit must never reach the
+    // artifact. Verification fails the build before anything is copied.
+    for (const sourceFile of sourceFiles) verifyProgrammeReferenceArtifact(sourceFile);
 
     mkdirSync(artifactDirectory, { recursive: true });
     for (const entry of readdirSync(artifactDirectory, { withFileTypes: true })) {

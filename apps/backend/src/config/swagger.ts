@@ -487,7 +487,7 @@ Access tokens expire in 15 minutes. Use the refresh token endpoint to get a new 
                     required: ['name', 'countryCode'],
                     properties: {
                         name: { type: 'string', minLength: 1, maxLength: 255 },
-                        countryCode: { type: 'string', pattern: '^[A-Z]{2}$', description: 'ISO 3166-1 alpha-2; lower case input is normalized.' },
+                        countryCode: { type: 'string', pattern: '^[A-Za-z]{2}$', description: 'ISO 3166-1 alpha-2; lower case input is normalized.' },
                     },
                 },
                 AcademicProfileProgrammeSelection: {

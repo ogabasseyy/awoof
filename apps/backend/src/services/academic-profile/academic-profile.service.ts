@@ -546,11 +546,13 @@ export async function lockAcademicProfileContext(
 ): Promise<AcademicProfileContext> {
     // Reads never modify rows: FOR SHARE still serializes against concurrent
     // writers without forcing concurrent readers of a shared university to
-    // queue behind each other. The universities row is only ever read here,
-    // so FOR KEY SHARE (existence + key stability) suffices in both modes;
-    // the write-mode students lock continues to serialize institution
-    // switches against saves.
+    // queue behind each other. Saves additionally need the bound country to
+    // stay stable: an admin metadata UPDATE (non-key columns like country)
+    // does not conflict with FOR KEY SHARE, so write mode takes FOR SHARE
+    // on the university row — concurrent FOR SHARE readers still proceed,
+    // but a racing country change blocks until the save commits.
     const rowLock = mode === 'write' ? 'FOR UPDATE' : 'FOR SHARE';
+    const universityLock = mode === 'write' ? 'FOR SHARE' : 'FOR KEY SHARE';
     const userResult = await tx.query<{ id: string; role: string; deleted_at: Date | null }>(
         `SELECT id, role, deleted_at FROM users WHERE id = $1 ${rowLock}`,
         [userId],
@@ -572,7 +574,7 @@ export async function lockAcademicProfileContext(
     let institutionCountry: string | null = null;
     if (student.university_id !== null) {
         const universityResult = await tx.query<{ id: string; name: string; shortcode: string | null; country: string | null }>(
-            `SELECT id, name, shortcode, country FROM universities WHERE id = $1 FOR KEY SHARE`,
+            `SELECT id, name, shortcode, country FROM universities WHERE id = $1 ${universityLock}`,
             [student.university_id],
         );
         const university = universityResult.rows[0];

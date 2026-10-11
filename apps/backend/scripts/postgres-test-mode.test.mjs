@@ -5,6 +5,7 @@ import { join } from 'node:path';
 import test from 'node:test';
 import { stageMigrationSql, stageProgrammeReferenceJson } from './artifact-layout.mjs';
 import { writeArtifactManifest } from './artifact-manifest.mjs';
+import { buildReference } from './build-academic-programme-reference.mjs';
 import { selectPostgresTestMode } from './postgres-test-mode.mjs';
 
 function fixture() {
@@ -25,7 +26,13 @@ function fixture() {
     writeFileSync(join(root, 'dist/scripts/cleanup-microsoft-attempts.js'), 'export {};\n');
     writeFileSync(join(root, 'dist/scripts/cleanup-student-sso.js'), 'export {};\n');
     writeFileSync(join(root, 'dist/scripts/cleanup-academic-profile-data.js'), 'export {};\n');
-    writeFileSync(join(root, 'src/data/academic-programmes/nuc-v2.normalized.json'), '{"sourceVersion":"fixture"}\n');
+    const fixtureChecksum = 'a'.repeat(64);
+    const fixtureReference = buildReference({
+        extract: { sourceVersion: 'fixture-v1', sourceChecksumSha256: fixtureChecksum, rows: [] },
+        expectedChecksum: fixtureChecksum,
+        redistribution: 'blocked',
+    });
+    writeFileSync(join(root, 'src/data/academic-programmes/nuc-v2.normalized.json'), `${JSON.stringify(fixtureReference, null, 2)}\n`);
     return root;
 }
 
