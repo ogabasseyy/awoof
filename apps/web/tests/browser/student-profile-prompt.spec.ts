@@ -501,8 +501,13 @@ test('an expired status on fresh load returns to the verification journey', asyn
     await submitPasswordLogin(page, null);
     await page.waitForURL('**/student/profile/complete**');
     await expect(page.getByText('Your verification needs attention before you continue.')).toBeVisible();
-    await page.getByRole('link', { name: 'Continue verification' }).click();
-    await page.waitForURL('**/student/verification');
+    // The page auto-redirects to verification concurrently: either the link
+    // click or the redirect may win the navigation. Await both so a lost
+    // click race cannot fail the journey assertion.
+    await Promise.all([
+        page.waitForURL('**/student/verification'),
+        page.getByRole('link', { name: 'Continue verification' }).click({ timeout: 10000 }).catch(() => undefined),
+    ]);
     expect(prompt.getCalls).toBeGreaterThanOrEqual(2);
 });
 

@@ -6,6 +6,7 @@ import type { StudentAssurance } from '../verification/student-assurance.types.j
 import type { VerificationMethodInfo } from '../verification/verification-orchestrator.service.js';
 import {
     academicProfileInputSchema,
+    normalizeArtifactCountryCode,
     type AcademicField,
     type AcademicProfileInput,
 } from './academic-profile.types.js';
@@ -822,6 +823,15 @@ test('read resolves the saved programme label for catalogue selections', async (
     const freeText = fakeState({ profile: profileRow({ programme_state: 'supplied', programme_id: null, course_label: 'Free text' }) });
     const free = await readAcademicProfile(createFakePool(freeText) as never, USER_ID, serviceDeps({ reference: reviewedReference }));
     assert.equal(free.programmeLabel, null);
+});
+
+test('artifact root country defaults once and rejects malformed values', () => {
+    assert.equal(normalizeArtifactCountryCode(undefined), 'NG');
+    assert.equal(normalizeArtifactCountryCode('GH'), 'GH');
+    assert.equal(normalizeArtifactCountryCode(null), null);
+    assert.equal(normalizeArtifactCountryCode(''), null);
+    assert.equal(normalizeArtifactCountryCode('ng'), null);
+    assert.equal(normalizeArtifactCountryCode(42), null);
 });
 
 test('artifact labels resolve display text and fail closed on malformed entries', () => {

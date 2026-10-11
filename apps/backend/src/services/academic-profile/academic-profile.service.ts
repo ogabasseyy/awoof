@@ -39,6 +39,7 @@ import {
     GRADUATION_HORIZON_YEARS,
     academicProfileInputSchema,
     boundInstitutionCountryCode,
+    normalizeArtifactCountryCode,
     type AcademicField,
     type AcademicProfileFields,
     type AcademicProfileInstitution,
@@ -112,14 +113,29 @@ export function loadAcademicProgrammeReference(): AcademicProgrammeReference {
         if (typeof parsed !== 'object' || parsed === null) {
             return { sourceVersion: null, findReviewedRule: () => null, findProgrammeLabel: () => null };
         }
-        const artifact = parsed as { calculationsEnabled?: unknown; sourceVersion?: unknown; programmes?: unknown };
+        const artifact = parsed as {
+            calculationsEnabled?: unknown;
+            sourceVersion?: unknown;
+            countryCode?: unknown;
+            programmes?: unknown;
+        };
         const sourceVersion = typeof artifact.sourceVersion === 'string' && artifact.sourceVersion.length > 0
             ? artifact.sourceVersion
             : null;
         if (artifact.calculationsEnabled !== true || !Array.isArray(artifact.programmes) || sourceVersion === null) {
             return { sourceVersion, findReviewedRule: () => null, findProgrammeLabel: () => null };
         }
-        const programmes = artifact.programmes as ReferenceArtifactProgramme[];
+        // Share the catalogue parser normalization: one national system per
+        // artifact, defaulting to NG when the root field is omitted, so the
+        // estimate route and the save path agree on programme country.
+        const countryCode = normalizeArtifactCountryCode(artifact.countryCode);
+        if (countryCode === null) {
+            return { sourceVersion, findReviewedRule: () => null, findProgrammeLabel: () => null };
+        }
+        const programmes = (artifact.programmes as ReferenceArtifactProgramme[]).map((programme) => ({
+            ...programme,
+            countryCode,
+        }));
         return {
             sourceVersion,
             findReviewedRule: (programmeId, route, expectedCountryCode) => ruleFromArtifact(programmes, sourceVersion, programmeId, route, expectedCountryCode),

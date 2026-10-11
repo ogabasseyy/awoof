@@ -23,6 +23,7 @@ import {
     GRADUATION_HORIZON_YEARS,
     boundInstitutionCountryCode,
     countryNameToCode,
+    normalizeArtifactCountryCode,
     type EntryRoute,
 } from './academic-profile.types.js';
 import { lockAcademicProfileContext } from './academic-profile.service.js';
@@ -37,8 +38,6 @@ const CATALOGUE_MAX_OFFSET = 100_000;
 export const ESTIMATE_SUPPORTED_COUNTRY_CODES: readonly string[] = ['NG'];
 
 /** The Task 1 artifact is the Nigerian NUC register; see the loader below. */
-const NUC_ARTIFACT_DEFAULT_COUNTRY_CODE = 'NG';
-
 export type CataloguePage<T> = { items: T[]; nextCursor: string | null };
 
 export type InstitutionCatalogueItem = { name: string; countryCode: string | null };
@@ -173,11 +172,10 @@ export function parseProgrammeReferenceArtifact(artifact: unknown): ProgrammeRef
         return closedReference();
     }
     const sourceVersion = (root['sourceVersion'] as string).trim();
-    const rawCountry = root['countryCode'];
-    if (rawCountry !== undefined && (typeof rawCountry !== 'string' || !/^[A-Z]{2}$/.test(rawCountry))) {
+    const countryCode = normalizeArtifactCountryCode(root['countryCode']);
+    if (countryCode === null) {
         return { sourceVersion, calculationsEnabled: false, programmes: [] };
     }
-    const countryCode = typeof rawCountry === 'string' ? rawCountry : NUC_ARTIFACT_DEFAULT_COUNTRY_CODE;
     if (!Array.isArray(root['programmes'])) return { sourceVersion, calculationsEnabled: false, programmes: [] };
     const programmes: ReferenceProgramme[] = [];
     for (const entry of root['programmes'] as unknown[]) {

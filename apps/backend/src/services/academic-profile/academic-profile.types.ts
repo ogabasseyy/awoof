@@ -170,3 +170,17 @@ export function boundInstitutionCountryCode(universityId: string | null, institu
     if (universityId === null) return null;
     return countryNameToCode(institutionCountry);
 }
+
+/** Default national system for programme artifacts whose root omits a country. */
+export const NUC_ARTIFACT_DEFAULT_COUNTRY_CODE = 'NG';
+
+/**
+ * Normalize an artifact root country identically for every consumer: omitted
+ * means the default national system; a present value must be an ISO code.
+ * Returns null when the root country is malformed (fail closed).
+ */
+export function normalizeArtifactCountryCode(rawCountry: unknown): string | null {
+    if (rawCountry === undefined) return NUC_ARTIFACT_DEFAULT_COUNTRY_CODE;
+    if (typeof rawCountry !== 'string' || !/^[A-Z]{2}$/.test(rawCountry)) return null;
+    return rawCountry;
+}
