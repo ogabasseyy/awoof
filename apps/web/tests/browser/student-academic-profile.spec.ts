@@ -741,3 +741,9 @@ test('fits a 320px viewport without horizontal scrolling', async ({ page }) => {
     const scrollWidth = await page.evaluate(() => document.documentElement.scrollWidth);
     expect(scrollWidth).toBeLessThanOrEqual(320);
 });
+
+test('emits noindex robots metadata', async ({ page }) => {
+    await openComplete(page, projection());
+    await expect(page.getByRole('heading', { level: 1 })).toBeVisible();
+    await expect(page.locator('meta[name="robots"]')).toHaveAttribute('content', 'noindex, nofollow');
+});
