@@ -405,10 +405,11 @@ by rollback because nothing in the release deletes on disable.
 
 ## Findings
 
-- F1 (minor, new): one net-new lint warning,
-  `apps/web/src/app/student/profile/complete/page.tsx:113`
-  (`setResults([])` synchronously in an effect). Same kind as pre-existing
-  warnings; `lint` still exits 0. Follow-up: restructure or record.
+- F1 (minor, new — resolved in `bc4e7b8`, see Addendum): one net-new lint
+  warning, `apps/web/src/app/student/profile/complete/page.tsx:113`
+  (`setResults([])` synchronously in an effect). Restructured to render-time
+  adjustment; the file lints clean and the repo total is back to the 52
+  pre-existing warnings.
 - F2 (report accuracy, no code impact): Task 5's "53 warnings, identical
   count on untouched base, zero new" is inaccurate — the base has 52. Task 3's
   "496" postgres figure included its since-deleted scratch file. Both are
@@ -416,8 +417,9 @@ by rollback because nothing in the release deletes on disable.
 - Accepted deviations (audited, no action): ID-less institution catalogue
   items (safer than spec text, matches plan); parser tests under
   `tests/auth/` per repo layout; deferral persistence owned by Task 5 with
-  `page.tsx`/`fixtures.ts` in its commit; no `noindex` (no such convention
-  on sibling private pages); feature-disabled read-only summary without a
+  `page.tsx`/`fixtures.ts` in its commit; server-rendered `noindex` added
+  11 October 2026 (see Addendum; supersedes the earlier no-`noindex`
+  deviation); feature-disabled read-only summary without a
   user erasure control (purge is ops-owned); catalogue/estimate service
   wrappers gated at the controller (no ungated HTTP path; rollout record
   notes the future-caller obligation).
@@ -428,7 +430,28 @@ by rollback because nothing in the release deletes on disable.
   feature-off and synthetic enabled-state probes run, gates recorded.
 - Do not merge or deploy. The feature branch stays unmerged with collection
   disabled; the next action is owner disposition of gates 1–4 and 6 above.
-- Uncommitted collateral intentionally left alone: `apps/web/package-lock.json`
-  and `apps/web/next-env.d.ts` (tool normalization from test/build runs),
-  `.build/`, and the pre-existing untracked plan/spec/research files.
+- Uncommitted collateral intentionally left alone: `.build/` and the untracked
+  `docs/research/2026-10-03-institution-providers/` reference copy. The
+  approved plan and design docs were committed with the owner-approval record
+  (`2f833c6`); `package-lock.json` and `next-env.d.ts` test/build
+  normalizations were reverted.
+
+## Addendum — 11 October 2026 (post-audit fixes)
+
+- F1 resolved in `bc4e7b8`: catalogue-search clearing/loading moved from the
+  effect body to render-time adjustment (React's documented pattern). Checks
+  actually run: eslint on `page.tsx` (clean), full `npm run lint` (52
+  warnings, 0 errors — the untouched-base count), `tsc --noEmit`,
+  `test:browser:typecheck`, `student-academic-profile.spec.ts` 42/42.
+- Server-rendered noindex for `/student/profile/complete` in `ed70d92`: new
+  server `layout.tsx` exporting `robots: { index: false, follow: false }`
+  (the page is a client component, so metadata lives in the layout), plus a
+  browser test asserting `meta[name="robots"]` renders `noindex, nofollow`.
+  Checks actually run: new test pass; `student-academic-profile.spec.ts`
+  43/43; `student-profile-prompt.spec.ts` 26/26; `test:auth` 180/180; eslint
+  clean on both touched files; `tsc --noEmit`; `test:browser:typecheck`;
+  `npm run build` exit 0 with the route present in the build manifest. The
+  sitemap already excludes the route; root layout sets no competing robots
+  tag.
+- Gates 1–4 and 6 remain with the owner; no merge, deploy, or enable performed.
 
