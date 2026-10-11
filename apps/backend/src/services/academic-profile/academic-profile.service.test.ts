@@ -754,6 +754,35 @@ test('merge preserves self-reported overrides across input changes', () => {
     assert.equal(merged.estimateStale, false);
 });
 
+test('merge revalidates a preserved self-reported year when the entry year moves under it', () => {
+    const reported = emptyStored({
+        fields: {
+            ...emptyStored().fields,
+            entryYear: { state: 'supplied', value: 2022 },
+            expectedGraduationYear: { state: 'supplied', value: 2025 },
+            graduationYearOrigin: 'self_reported',
+            estimateBasis: null,
+            estimateStale: false,
+        },
+    });
+    assert.throws(() => validateAndMergePatch({
+        stored: reported,
+        patch: parsePatch({ expectedRevision: 0, entryYear: { state: 'supplied', value: 2026 } }),
+        serverBound: false,
+        reference: reviewedReference,
+        currentYear: CURRENT_YEAR,
+    }), /outside the plausible range/);
+    const kept = validateAndMergePatch({
+        stored: reported,
+        patch: parsePatch({ expectedRevision: 0, entryYear: { state: 'supplied', value: 2021 } }),
+        serverBound: false,
+        reference: reviewedReference,
+        currentYear: CURRENT_YEAR,
+    });
+    assert.deepEqual(kept.expectedGraduationYear, { state: 'supplied', value: 2025 });
+    assert.equal(kept.graduationYearOrigin, 'self_reported');
+});
+
 test('merge clears server-owned origin and basis when the year is unanswered', () => {
     const calculated = emptyStored({
         fields: {

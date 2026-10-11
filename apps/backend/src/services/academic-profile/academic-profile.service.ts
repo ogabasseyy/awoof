@@ -465,6 +465,20 @@ export function validateAndMergePatch(input: {
     } else if (estimateInputsChanged && merged.graduationYearOrigin === 'calculated') {
         merged.estimateStale = true;
     }
+    // A preserved self-reported year must still satisfy the joint bounds
+    // when the entry year moves under it: without this, a partial patch
+    // changing only the entry year can leave a pair the same function
+    // rejects when both values are submitted together.
+    if (patch.expectedGraduationYear === undefined && patch.entryYear !== undefined
+        && merged.expectedGraduationYear.state === 'supplied' && merged.graduationYearOrigin === 'self_reported'
+        && merged.entryYear.state === 'supplied') {
+        const storedEntryYear = stored.fields.entryYear.state === 'supplied' ? stored.fields.entryYear.value : null;
+        if (storedEntryYear !== merged.entryYear.value
+            && (merged.expectedGraduationYear.value < merged.entryYear.value
+                || merged.expectedGraduationYear.value > currentYear + GRADUATION_HORIZON_YEARS)) {
+            throw new BadRequestError('Self-reported graduation year is outside the plausible range for the entry year');
+        }
+    }
     if (merged.graduationYearOrigin === 'calculated' && merged.estimateBasis
         && reference.sourceVersion !== null && merged.estimateBasis.sourceVersion !== reference.sourceVersion) {
         merged.estimateStale = true;
