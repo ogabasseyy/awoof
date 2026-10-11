@@ -89,6 +89,9 @@ test('purge refuses invalid windows and clocks without issuing a delete', async 
     const pool = createPurgePool({ rowCount: 5 });
     await assert.rejects(purgeSoftDeletedAcademicProfiles(pool, 90, new Date('invalid')), /valid/);
     assert.deepEqual(pool.statements, []);
+    const unrepresentable = createPurgePool({ rowCount: 5 });
+    await assert.rejects(purgeSoftDeletedAcademicProfiles(unrepresentable, 1e308, NOW), /valid cutoff/);
+    assert.deepEqual(unrepresentable.statements, []);
 });
 
 test('purge failures propagate so the scheduler retries; reruns are idempotent', async () => {

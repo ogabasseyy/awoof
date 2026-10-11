@@ -144,6 +144,11 @@ function createFakePool(state: FakeState): { connect: () => Promise<unknown> } {
             if (normalized === 'BEGIN' || normalized === 'COMMIT' || normalized === 'ROLLBACK') {
                 return { rows: [], rowCount: 0 };
             }
+            if (normalized === 'SAVEPOINT academic_profile_assurance'
+                || normalized === 'RELEASE SAVEPOINT academic_profile_assurance'
+                || normalized === 'ROLLBACK TO SAVEPOINT academic_profile_assurance') {
+                return { rows: [], rowCount: 0 };
+            }
             if (normalized.startsWith('INSERT INTO student_academic_profiles')) {
                 const match = normalized.match(/INSERT INTO student_academic_profiles \(([^)]+)\)/);
                 assert.ok(match?.[1], 'upsert must list explicit columns');
@@ -753,7 +758,8 @@ test('read derives verification requirements from operational method availabilit
         createFakePool(state) as never,
         USER_ID,
         serviceDeps({
-            listVerificationMethods: async (universityId) => {
+            listVerificationMethods: async (tx, universityId) => {
+                assert.ok(tx, 'method resolver receives the transaction client');
                 seen.push(universityId);
                 return registrationAvailable();
             },

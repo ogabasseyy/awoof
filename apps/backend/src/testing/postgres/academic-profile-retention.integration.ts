@@ -84,10 +84,13 @@ test('purge refuses to run without an approved positive retention window', async
     await withTestClient(async (client) => {
         const now = new Date();
         const due = await createProfile(client, new Date(now.getTime() - 100 * DAY_MS));
-        assert.throws(() => resolveAcademicProfileRetentionDays(null), /not configured/);
-        await assert.rejects(purgeSoftDeletedAcademicProfiles(db.getPool(), 0, now), /positive integer/);
-        assert.equal(await profileCount(client, due.userId), 1);
-        await client.query(`UPDATE users SET deleted_at = NULL WHERE id = $1`, [due.userId]);
+        try {
+            assert.throws(() => resolveAcademicProfileRetentionDays(null), /not configured/);
+            await assert.rejects(purgeSoftDeletedAcademicProfiles(db.getPool(), 0, now), /positive integer/);
+            assert.equal(await profileCount(client, due.userId), 1);
+        } finally {
+            await client.query(`UPDATE users SET deleted_at = NULL WHERE id = $1`, [due.userId]);
+        }
     });
 });
 

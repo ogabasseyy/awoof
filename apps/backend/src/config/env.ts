@@ -15,6 +15,15 @@ import { readStudentSsoConfiguration, retainedSsoAttemptKey, validateStudentSsoF
 dotenv.config({ override: false });
 
 /**
+ * An explicitly empty retention value behaves like an unset one: operators
+ * uncommenting `ACADEMIC_PROFILE_RETENTION_DAYS=` in env.example must not
+ * crash startup. Anything else must be a digit string.
+ */
+export const academicProfileRetentionDaysEnvSchema = z
+    .union([z.literal(''), z.string().regex(/^\d+$/)])
+    .transform((value) => (value === '' ? undefined : Number(value)));
+
+/**
  * Environment variable schema
  * Ensures all required variables are present and valid
  */
@@ -108,7 +117,7 @@ const envSchema = z.object({
     // disclosure, and rollout gates pass. Retention is unset until approved;
     // a missing value keeps collection disabled and makes purge refuse to run.
     ACADEMIC_PROFILE_ENABLED: z.enum(['true', 'false']).default('false'),
-    ACADEMIC_PROFILE_RETENTION_DAYS: z.string().regex(/^\d+$/).transform(Number).optional(),
+    ACADEMIC_PROFILE_RETENTION_DAYS: academicProfileRetentionDaysEnvSchema.optional(),
 });
 
 /**

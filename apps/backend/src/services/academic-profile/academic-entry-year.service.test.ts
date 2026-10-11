@@ -253,6 +253,11 @@ function createSuggestionPool(profile: Record<string, unknown> | null): { connec
             if (normalized === 'BEGIN' || normalized === 'COMMIT' || normalized === 'ROLLBACK') {
                 return { rows: [], rowCount: 0 };
             }
+            if (normalized === 'SAVEPOINT academic_profile_assurance'
+                || normalized === 'RELEASE SAVEPOINT academic_profile_assurance'
+                || normalized === 'ROLLBACK TO SAVEPOINT academic_profile_assurance') {
+                return { rows: [], rowCount: 0 };
+            }
             if (normalized.startsWith('INSERT INTO student_academic_profiles') || normalized.startsWith('UPDATE student_academic_profiles')) {
                 writes.push(normalized);
                 return { rows: [{ revision: 1 }], rowCount: 1 };

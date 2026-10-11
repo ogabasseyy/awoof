@@ -56,6 +56,9 @@ export async function purgeSoftDeletedAcademicProfiles(
         throw new Error('Academic profile purge requires a valid reference time');
     }
     const cutoff = new Date(now.getTime() - days * DAY_MS);
+    if (Number.isNaN(cutoff.getTime())) {
+        throw new Error(`Academic profile retention window does not produce a valid cutoff (${ACADEMIC_PROFILE_RETENTION_ENV_VAR})`);
+    }
     const client = await pool.connect();
     try {
         const deleted = await client.query(

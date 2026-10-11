@@ -1,6 +1,14 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { resolveRecoveryCodeKeys } from './env.js';
+import { academicProfileRetentionDaysEnvSchema, resolveRecoveryCodeKeys } from './env.js';
+
+test('empty academic-profile retention parses as unset without crashing startup', () => {
+    assert.equal(academicProfileRetentionDaysEnvSchema.parse(''), undefined);
+    assert.equal(academicProfileRetentionDaysEnvSchema.optional().parse(undefined), undefined);
+    assert.equal(academicProfileRetentionDaysEnvSchema.parse('30'), 30);
+    assert.throws(() => academicProfileRetentionDaysEnvSchema.parse('1e308'));
+    assert.throws(() => academicProfileRetentionDaysEnvSchema.parse('thirty'));
+});
 
 test('recovery-code keys retain the attempt key when adding the first dedicated key', () => {
     assert.deepEqual(

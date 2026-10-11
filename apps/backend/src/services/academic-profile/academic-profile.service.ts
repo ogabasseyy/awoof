@@ -445,7 +445,7 @@ export type AcademicProfileDeps = {
     reference?: AcademicProgrammeReference;
     now?: Date;
     readAssurance?: (tx: PoolClient, userId: string) => Promise<StudentAssurance>;
-    listVerificationMethods?: (universityId: string | null) => Promise<VerificationMethodInfo[]>;
+    listVerificationMethods?: (tx: PoolClient, universityId: string | null) => Promise<VerificationMethodInfo[]>;
     matricParsers?: readonly MatricParser[];
 };
 
@@ -464,16 +464,16 @@ async function defaultReadAssurance(tx: PoolClient, userId: string): Promise<Stu
     return readStudentAssurance(tx, userId);
 }
 
-async function defaultListVerificationMethods(universityId: string | null): Promise<VerificationMethodInfo[]> {
+async function defaultListVerificationMethods(tx: PoolClient, universityId: string | null): Promise<VerificationMethodInfo[]> {
     if (universityId === null) return [];
-    return getAvailableVerificationMethods(universityId);
+    return getAvailableVerificationMethods(universityId, tx);
 }
 
 function resolveDeps(deps: AcademicProfileDeps): {
     featureEnabled: boolean;
     reference: AcademicProgrammeReference;
     readAssurance: (tx: PoolClient, userId: string) => Promise<StudentAssurance>;
-    listVerificationMethods: (universityId: string | null) => Promise<VerificationMethodInfo[]>;
+    listVerificationMethods: (tx: PoolClient, universityId: string | null) => Promise<VerificationMethodInfo[]>;
     matricParsers: readonly MatricParser[];
     currentYear: number;
 } {
@@ -497,15 +497,22 @@ export async function lockAcademicProfileContext(
     userId: string,
     mode: 'read' | 'write',
 ): Promise<AcademicProfileContext> {
+    // Reads never modify rows: FOR SHARE still serializes against concurrent
+    // writers without forcing concurrent readers of a shared university to
+    // queue behind each other. The universities row is only ever read here,
+    // so FOR KEY SHARE (existence + key stability) suffices in both modes;
+    // the write-mode students lock continues to serialize institution
+    // switches against saves.
+    const rowLock = mode === 'write' ? 'FOR UPDATE' : 'FOR SHARE';
     const userResult = await tx.query<{ id: string; role: string; deleted_at: Date | null }>(
-        `SELECT id, role, deleted_at FROM users WHERE id = $1 FOR UPDATE`,
+        `SELECT id, role, deleted_at FROM users WHERE id = $1 ${rowLock}`,
         [userId],
     );
     const user = userResult.rows[0];
     if (!user || user.deleted_at !== null) throw new NotFoundError('Student user not found');
     if (user.role !== 'student') throw new ForbiddenError('Academic profiles are available to student accounts only');
     const studentResult = await tx.query<{ id: string; university_id: string | null; identity_version: number; status: string; registration_number: string | null }>(
-        `SELECT id, university_id, identity_version, status, registration_number FROM students WHERE user_id = $1 FOR UPDATE`,
+        `SELECT id, university_id, identity_version, status, registration_number FROM students WHERE user_id = $1 ${rowLock}`,
         [userId],
     );
     const student = studentResult.rows[0];
@@ -518,7 +525,7 @@ export async function lockAcademicProfileContext(
     let institutionCountry: string | null = null;
     if (student.university_id !== null) {
         const universityResult = await tx.query<{ id: string; name: string; shortcode: string | null; country: string | null }>(
-            `SELECT id, name, shortcode, country FROM universities WHERE id = $1 FOR UPDATE`,
+            `SELECT id, name, shortcode, country FROM universities WHERE id = $1 FOR KEY SHARE`,
             [student.university_id],
         );
         const university = universityResult.rows[0];
@@ -691,7 +698,7 @@ async function buildProjection(input: {
     reference: AcademicProgrammeReference;
     featureEnabled: boolean;
     readAssurance: (tx: PoolClient, userId: string) => Promise<StudentAssurance>;
-    listVerificationMethods: (universityId: string | null) => Promise<VerificationMethodInfo[]>;
+    listVerificationMethods: (tx: PoolClient, universityId: string | null) => Promise<VerificationMethodInfo[]>;
     matricParsers: readonly MatricParser[];
     currentYear: number;
 }): Promise<AcademicProfileProjection> {
@@ -710,17 +717,22 @@ async function buildProjection(input: {
             : { displayName: null, countryCode: null, binding: 'unbound' };
     let assurance: StudentAssurance | null = null;
     let assuranceState: 'available' | 'unavailable' = 'unavailable';
+    // A failing assurance query must not abort the save transaction: without
+    // this savepoint, PostgreSQL would roll back the already-run upsert at
+    // COMMIT while node-postgres still resolves, reporting a phantom
+    // revision as saved.
+    await input.tx.query('SAVEPOINT academic_profile_assurance');
     try {
         assurance = await input.readAssurance(input.tx, input.userId);
         assuranceState = 'available';
+        await input.tx.query('RELEASE SAVEPOINT academic_profile_assurance');
     } catch {
-        assurance = null;
-        assuranceState = 'unavailable';
+        await input.tx.query('ROLLBACK TO SAVEPOINT academic_profile_assurance');
     }
     let verificationContinuationAvailable: boolean;
     let verificationRequirements: VerificationRequirement[];
     try {
-        const methods = await input.listVerificationMethods(ctx.universityId);
+        const methods = await input.listVerificationMethods(input.tx, ctx.universityId);
         const available = methods.filter((method) => method.isAvailable);
         verificationContinuationAvailable = available.length > 0;
         verificationRequirements = [];
@@ -883,7 +895,6 @@ export async function saveAcademicProfile(
             currentYear: resolved.currentYear,
         });
         await client.query('COMMIT');
-        committed = true;
         return projection;
     } catch (error) {
         if (!committed) await client.query('ROLLBACK').catch(() => undefined);

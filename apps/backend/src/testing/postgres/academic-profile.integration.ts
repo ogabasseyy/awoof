@@ -106,6 +106,29 @@ test('unbound students save and read claimed institutions through real constrain
     });
 });
 
+test('a failing assurance query does not abort the profile save', async () => {
+    await withTestClient(async (client) => {
+        const fixture = await createStudent(client, null);
+        const pool = db.getPool();
+        const saved = await saveAcademicProfile(pool, fixture.userId, {
+            expectedRevision: 0,
+            programme: { state: 'supplied', value: { programmeId: null, courseLabel: 'Synthetic Physics' } },
+        }, {
+            ...enabled,
+            readAssurance: async (tx) => {
+                await tx.query('SELECT * FROM academic_profile_missing_relation');
+                throw new Error('unreachable: missing relation must fail first');
+            },
+        });
+        assert.equal(saved.assuranceState, 'unavailable');
+        assert.equal(saved.revision, 1);
+        assert.equal(await profileRowCount(client, fixture.userId), 1);
+        const reread = await readAcademicProfile(pool, fixture.userId, enabled);
+        assert.equal(reread.revision, 1);
+        assert.deepEqual(reread.fields.programme, { state: 'supplied', value: { programmeId: null, courseLabel: 'Synthetic Physics' } });
+    });
+});
+
 test('unrelated users cannot see or affect each other profiles', async () => {
     await withTestClient(async (client) => {
         const first = await createStudent(client, null);
