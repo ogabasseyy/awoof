@@ -447,6 +447,26 @@ test('selects a programme through keyboard typeahead and clears the selection on
     });
 });
 
+test('ignores stale catalogue options while a new search loads', async ({ page }) => {
+    const fixture = await openComplete(page, projection());
+    fixture.programmeItems = [{ programmeId: 'SYN-P1', label: 'Synthetic Programme One', award: 'B.Sc.' }];
+    const input = page.getByRole('combobox', { name: 'Programme or course' });
+    await input.click();
+    await input.fill('syn');
+    await expect(page.getByRole('option').first()).toBeVisible();
+    await page.route(`${apiOrigin}/api/students/academic-profile/programmes*`, async (route: Route) => {
+        await new Promise((resolve) => setTimeout(resolve, 300));
+        await route.fallback();
+    });
+    await input.fill('synx');
+    await input.press('ArrowDown');
+    await expect(input).not.toHaveAttribute('aria-activedescendant', /.+/);
+    await expect(page.getByRole('option').first()).toBeVisible();
+    await input.press('ArrowDown');
+    await input.press('Enter');
+    await expect(input).toHaveValue('Synthetic Programme One');
+});
+
 test('accepts a suggested entry year', async ({ page }) => {
     const fixture = await openComplete(page, projection({
         entryYearSuggestion: { state: 'suggested', year: 2021, parserId: 'synthetic-parser', parserVersion: 'v1', confidence: 'high' },
@@ -642,13 +662,22 @@ test('ignores an in-flight estimate response after the draft claim changes', asy
     await page.getByRole('option').first().click();
     await page.getByRole('textbox', { name: 'Entry year' }).fill('2021');
     await page.getByRole('radio', { name: 'UTME / first-year entry' }).check();
+    let releaseEstimate: () => void = () => undefined;
+    const estimateGate = new Promise<void>((resolve) => { releaseEstimate = resolve; });
+    const estimateRequested = page.waitForRequest((request) => request.url().includes('/api/students/academic-profile/estimate'));
     await page.route(`${apiOrigin}/api/students/academic-profile/estimate`, async (route: Route) => {
-        await new Promise((resolve) => setTimeout(resolve, 300));
+        await estimateGate;
         await route.fulfill({ json: { success: true, data: fixture.estimateResult }, headers: CORS });
     });
     await page.getByRole('button', { name: 'Get estimated year' }).click();
+    await expect(page.getByRole('button', { name: 'Checking…' })).toBeVisible();
+    await estimateRequested;
     await page.getByRole('textbox', { name: 'Country (2-letter code)' }).fill('GH');
-    await expect(page.getByText('Estimated graduation year:')).toBeHidden({ timeout: 2000 });
+    await expect(page.getByRole('button', { name: 'Get estimated year' })).toBeVisible();
+    releaseEstimate();
+    await page.waitForResponse((response) => response.url().includes('/api/students/academic-profile/estimate'));
+    await page.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+    await expect(page.getByText('Estimated graduation year:')).toHaveCount(0);
 });
 
 test('explains unavailable estimates honestly', async ({ page }) => {
@@ -1221,15 +1250,15 @@ test('links from the profile hub and verification page carry fixed return paths'
 
 test('hides completion calls to action while collection is disabled', async ({ page }) => {
     await installSyntheticApi(page);
-    const fixture = await installAcademicApi(page, projection({ featureEnabled: false, writeAvailable: false }));
+    await installAcademicApi(page, projection({ featureEnabled: false, writeAvailable: false }));
     await mockCurrentUser(page);
     await mockQuietVerification(page, 'pending');
     await seedSession(page, 'student');
     await page.goto('/student/profile');
-    await expect.poll(() => fixture.getCalls).toBeGreaterThanOrEqual(1);
+    await expect(page.locator('[data-completion-cta="hidden"]')).toBeAttached();
     await expect(page.getByRole('link', { name: 'Complete your student profile' })).toHaveCount(0);
     await page.goto('/student/verification');
-    await expect.poll(() => fixture.getCalls).toBeGreaterThanOrEqual(2);
+    await expect(page.locator('[data-completion-cta="hidden"]')).toBeAttached();
     await expect(page.getByRole('link', { name: 'Complete your student profile (optional)' })).toHaveCount(0);
     await expect(page.getByText('Optional details never change your verification status.')).toHaveCount(0);
 });
@@ -1275,13 +1304,22 @@ test('ignores a stale estimate response after inputs change', async ({ page }) =
     await expect(programmeInput).toHaveValue('Synthetic Programme One');
     await page.getByRole('textbox', { name: 'Entry year' }).fill('2021');
     await page.getByRole('radio', { name: 'UTME / first-year entry' }).check();
+    let releaseEstimate: () => void = () => undefined;
+    const estimateGate = new Promise<void>((resolve) => { releaseEstimate = resolve; });
+    const estimateRequested = page.waitForRequest((request) => request.url().includes('/api/students/academic-profile/estimate'));
     await page.route(`${apiOrigin}/api/students/academic-profile/estimate`, async (route: Route) => {
-        await new Promise((resolve) => setTimeout(resolve, 300));
+        await estimateGate;
         await route.fulfill({ json: { success: true, data: fixture.estimateResult }, headers: CORS });
     });
     await page.getByRole('button', { name: 'Get estimated year' }).click();
+    await expect(page.getByRole('button', { name: 'Checking…' })).toBeVisible();
+    await estimateRequested;
     await page.getByRole('textbox', { name: 'Entry year' }).fill('2022');
-    await expect(page.getByText('Estimated graduation year:')).toBeHidden({ timeout: 2000 });
+    await expect(page.getByRole('button', { name: 'Get estimated year' })).toBeVisible();
+    releaseEstimate();
+    await page.waitForResponse((response) => response.url().includes('/api/students/academic-profile/estimate'));
+    await page.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+    await expect(page.getByText('Estimated graduation year:')).toHaveCount(0);
 });
 
 test('locks the draft while a save is in flight', async ({ page }) => {

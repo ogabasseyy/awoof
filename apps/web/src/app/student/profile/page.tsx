@@ -321,7 +321,7 @@ export default function StudentProfilePage() {
                             <p className="text-xs font-semibold uppercase tracking-wider text-slate-500 mb-2 px-1">
                                 General
                             </p>
-                            <div className="rounded-2xl border border-slate-200/80 overflow-hidden divide-y divide-slate-100 shadow-sm">
+                            <div data-completion-cta={completionCta === null ? 'loading' : completionCta ? 'visible' : 'hidden'} className="rounded-2xl border border-slate-200/80 overflow-hidden divide-y divide-slate-100 shadow-sm">
                                 {generalItems.map(renderRow)}
                             </div>
                         </div>

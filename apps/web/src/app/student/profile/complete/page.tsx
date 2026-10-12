@@ -146,8 +146,11 @@ function useCatalogueSearch<T>(
     const [prevSearchKey, setPrevSearchKey] = useState(searchKey);
     if (searchKey !== prevSearchKey) {
         setPrevSearchKey(searchKey);
+        // Drop the previous query's results the moment the key changes:
+        // while the new search loads, the combobox keyboard handler must
+        // not navigate or select invisible stale options.
+        setResults([]);
         if (cleared) {
-            setResults([]);
             setStatus('idle');
         } else {
             setStatus('loading');

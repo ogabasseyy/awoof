@@ -145,7 +145,7 @@ function VerificationForm() {
             await loadConsents().catch(() => undefined);
         });
     }
-    return <main className="mx-auto max-w-lg space-y-5 p-6">
+    return <main data-completion-cta={completionCta === null ? 'loading' : completionCta ? 'visible' : 'hidden'} className="mx-auto max-w-lg space-y-5 p-6">
         <Link href="/student/profile" className="underline">Back to profile</Link>
         <h1 className="text-2xl font-semibold">Student verification</h1>
         {completionCta === true && <>

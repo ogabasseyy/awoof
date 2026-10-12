@@ -290,14 +290,11 @@ test('profile hub hides the completion CTA when the actor cannot save', async ({
     await installSyntheticApi(page);
     const prompt = await installPromptApi(page, okProjection(projection({ writeAvailable: false })));
     await mockPasswordLogin(page);
-    const gated = page.waitForResponse((response) => response.url().includes('/api/students/academic-profile') && response.request().method() === 'GET');
     await submitPasswordLogin(page, '%2Fstudent%2Fprofile');
     await page.waitForURL('**/student/profile');
-    await gated;
-    await expect(page.getByRole('link', { name: 'Student verification' })).toBeVisible();
-    // Two frames past the gate response, a fail-open regression would have
-    // committed the link; its absence proves the write gate resolved false.
-    await page.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+    // The gate-settled signal proves the hook committed before the absence
+    // assertion runs; a fail-open regression would settle to visible.
+    await expect(page.locator('[data-completion-cta="hidden"]')).toBeAttached();
     await expect(page.getByRole('link', { name: 'Complete your student profile' })).toHaveCount(0);
     expect(prompt.getCalls).toBe(1);
 });
@@ -306,12 +303,9 @@ test('profile hub hides the completion CTA when the gate cannot be read', async 
     await installSyntheticApi(page);
     const prompt = await installPromptApi(page, () => ({ status: 500, body: { success: false, error: { message: 'Synthetic outage' } } }));
     await mockPasswordLogin(page);
-    const gated = page.waitForResponse((response) => response.url().includes('/api/students/academic-profile') && response.request().method() === 'GET');
     await submitPasswordLogin(page, '%2Fstudent%2Fprofile');
     await page.waitForURL('**/student/profile');
-    await gated;
-    await expect(page.getByRole('link', { name: 'Student verification' })).toBeVisible();
-    await page.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+    await expect(page.locator('[data-completion-cta="hidden"]')).toBeAttached();
     await expect(page.getByRole('link', { name: 'Complete your student profile' })).toHaveCount(0);
     expect(prompt.getCalls).toBe(1);
 });
@@ -391,13 +385,8 @@ test('a projection read failure fails closed and hides the profile call to actio
     await submitPasswordLogin(page, null);
     await page.waitForURL('**/marketplace');
     expect(prompt.getCalls).toBe(1);
-    const gated = page.waitForResponse((response) => response.url().includes('/api/students/academic-profile') && response.request().method() === 'GET');
     await page.goto('/student/profile');
-    await gated;
-    await expect(page.getByRole('link', { name: 'Student verification' })).toBeVisible();
-    // Two frames past the failed gate read, a fail-open regression would
-    // have committed the link; its absence proves the failure closed it.
-    await page.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+    await expect(page.locator('[data-completion-cta="hidden"]')).toBeAttached();
     await expect(page.getByRole('link', { name: 'Complete your student profile' })).toHaveCount(0);
 });
 
