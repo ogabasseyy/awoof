@@ -838,6 +838,7 @@ SET canonical_institution_id = $1,
     revision = revision + 1,
     updated_at = clock_timestamp()
 WHERE user_id = $3
+    AND canonical_institution_id IS NOT DISTINCT FROM $4
 RETURNING revision`;
 
 /**
@@ -1000,18 +1001,32 @@ export async function readAcademicProfile(
             // Persist the drift invalidation instead of merely withholding
             // the values: without this, a student who never saves again
             // keeps the former institution's answers stored indefinitely,
-            // outside every cleanup path. Cleared values are idempotent;
-            // the revision advances once per drift. When the row vanished
+            // outside every cleanup path. The update is conditional on the
+            // observed binding so overlapping readers invalidate exactly
+            // once: a loser re-reads the winner's row (invalidated or
+            // freshly saved under the current binding) instead of
+            // double-incrementing the revision. When the row vanished
             // concurrently, fall back to withholding for this read.
             const invalidated = await client.query<{ revision: number }>(
                 INVALIDATE_SQL,
-                [ctx.universityId, ctx.identityVersion, userId],
+                [ctx.universityId, ctx.identityVersion, userId, stored.canonicalInstitutionId],
             );
             if (invalidated.rows[0]) {
                 revision = invalidated.rows[0].revision;
                 fields = storedOrEmpty(null).fields;
             } else {
-                fields = scopedUnanswered(stored.fields);
+                const reread = await client.query<AcademicProfileRow>(
+                    `SELECT ${PROFILE_COLUMNS} FROM student_academic_profiles WHERE user_id = $1`,
+                    [userId],
+                );
+                const current = reread.rows[0] ?? null;
+                if (current) {
+                    const fresh = storedOrEmpty(current);
+                    revision = fresh.revision;
+                    fields = fresh.fields;
+                } else {
+                    fields = scopedUnanswered(stored.fields);
+                }
             }
         }
         const projection = await buildProjection({
@@ -1073,7 +1088,7 @@ export async function saveAcademicProfile(
             // reconfirmation conflict with the revision to reload.
             const invalidated = await client.query<{ revision: number }>(
                 INVALIDATE_SQL,
-                [ctx.universityId, ctx.identityVersion, userId],
+                [ctx.universityId, ctx.identityVersion, userId, stored.canonicalInstitutionId],
             );
             const revision = invalidated.rows[0]?.revision ?? stored.revision + 1;
             await client.query('COMMIT');

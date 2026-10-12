@@ -97,6 +97,7 @@ type FakeState = {
     writes: Array<{ text: string; params: unknown[] }>;
     readUserIds: unknown[];
     statements: string[];
+    raceHook: (() => void) | null;
 };
 
 function profileRow(overrides: Record<string, unknown> = {}): Record<string, unknown> {
@@ -140,6 +141,7 @@ function fakeState(overrides: Partial<FakeState> = {}): FakeState {
         writes: [],
         readUserIds: [],
         statements: [],
+        raceHook: null,
         ...overrides,
     };
 }
@@ -182,6 +184,11 @@ function createFakePool(state: FakeState): { connect: () => Promise<unknown> } {
             }
             if (normalized.startsWith('UPDATE student_academic_profiles')) {
                 assert.ok(state.profile, 'invalidation requires an existing row');
+                // Mirror the conditional update: a loser whose observed
+                // binding no longer matches affects zero rows.
+                if (params[3] !== state.profile['canonical_institution_id']) {
+                    return { rows: [], rowCount: 0 };
+                }
                 const cleared: Record<string, unknown> = {
                     claimed_institution_state: 'unanswered',
                     claimed_institution_name: null,
@@ -220,7 +227,16 @@ function createFakePool(state: FakeState): { connect: () => Promise<unknown> } {
                 return { rows: [], rowCount: deleted ? 1 : 0 };
             }
             if (normalized.includes('FROM student_academic_profiles')) {
-                return { rows: state.profile ? [state.profile] : [], rowCount: state.profile ? 1 : 0 };
+                const observed = state.profile ? [state.profile] : [];
+                // A test-installed race winner commits between this read's
+                // SELECT and its conditional UPDATE; the SELECT still
+                // returns the pre-race row the reader observed.
+                if (state.raceHook) {
+                    const hook = state.raceHook;
+                    state.raceHook = null;
+                    hook();
+                }
+                return { rows: observed, rowCount: observed.length };
             }
             if (normalized.includes('FROM users')) {
                 state.readUserIds.push(params[0]);
@@ -1180,6 +1196,25 @@ test('read persists the invalidation after an institution change', async () => {
     assert.deepEqual(projection.fields.programme, { state: 'unanswered' });
     assert.deepEqual(projection.fields.entryYear, { state: 'unanswered' });
     assert.deepEqual(projection.institution.binding, 'server_bound');
+});
+
+test('overlapping drift reads invalidate exactly once and the loser re-reads', async () => {
+    const state = boundState({
+        profile: profileRow({
+            revision: 2,
+            canonical_institution_id: NEXT_UNIVERSITY_ID,
+            programme_state: 'supplied',
+            programme_id: 'P-001',
+        }),
+    });
+    state.raceHook = () => {
+        state.profile = profileRow({ revision: 3, canonical_institution_id: UNIVERSITY_ID });
+    };
+    const projection = await readAcademicProfile(createFakePool(state) as never, USER_ID, serviceDeps());
+    assert.equal(state.writes.length, 0);
+    assert.equal(state.profile?.['revision'], 3);
+    assert.equal(projection.revision, 3);
+    assert.deepEqual(projection.fields.programme, { state: 'unanswered' });
 });
 
 test('read hides soft-deleted accounts and unknown users', async () => {

@@ -1,11 +1,11 @@
 import assert from 'node:assert/strict';
 import { existsSync, mkdtempSync, mkdirSync, readFileSync, renameSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import test from 'node:test';
+import { fileURLToPath } from 'node:url';
 import { ARTIFACT_ROOT_NAME, DISABLED_FALLBACK_SMOKE, assertCompiledArtifact, compiledTestSelection, stageMigrationSql, stageProgrammeReferenceJson } from './artifact-layout.mjs';
 import { validateArtifactManifest, writeArtifactManifest } from './artifact-manifest.mjs';
-import { buildReference } from './build-academic-programme-reference.mjs';
 
 function fixture() {
     const root = mkdtempSync(join(tmpdir(), 'awoof-artifact-layout-'));
@@ -34,13 +34,12 @@ function fixture() {
     writeFileSync(join(root, ARTIFACT_ROOT_NAME, 'scripts/cleanup-microsoft-attempts.js'), 'export {};\n');
     writeFileSync(join(root, ARTIFACT_ROOT_NAME, 'scripts/cleanup-student-sso.js'), 'export {};\n');
     writeFileSync(join(root, ARTIFACT_ROOT_NAME, 'scripts/cleanup-academic-profile-data.js'), 'export {};\n');
-    const fixtureChecksum = 'a'.repeat(64);
-    const fixtureReference = buildReference({
-        extract: { sourceVersion: 'fixture-v1', sourceChecksumSha256: fixtureChecksum, rows: [] },
-        expectedChecksum: fixtureChecksum,
-        redistribution: 'blocked',
-    });
-    writeFileSync(join(sourceReference, 'nuc-v2.normalized.json'), `${JSON.stringify(fixtureReference, null, 2)}\n`);
+    // Staging fixtures carry the real production bytes: the production
+    // filename is pinned to its trusted digest, so a synthetic payload
+    // under that name must fail staging.
+    const scriptsDir = dirname(fileURLToPath(import.meta.url));
+    const productionReference = readFileSync(join(scriptsDir, '..', 'src/data/academic-programmes/nuc-v2.normalized.json'));
+    writeFileSync(join(sourceReference, 'nuc-v2.normalized.json'), productionReference);
     return root;
 }
 

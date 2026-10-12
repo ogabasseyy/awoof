@@ -61,7 +61,8 @@ export function stageProgrammeReferenceJson(backendRoot) {
     const sourceFiles = programmeReferenceFiles(sourceDirectory);
     if (sourceFiles.length === 0) throw new Error('No source programme reference JSON files were found.');
     // Provenance boundary: a shape-valid hand edit must never reach the
-    // artifact. Verification fails the build before anything is copied.
+    // artifact. Verification — semantic checks plus the trusted-digest pin
+    // for production filenames — fails the build before anything is copied.
     for (const sourceFile of sourceFiles) verifyProgrammeReferenceArtifact(sourceFile);
 
     mkdirSync(artifactDirectory, { recursive: true });

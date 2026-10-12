@@ -1,11 +1,11 @@
 import assert from 'node:assert/strict';
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import test from 'node:test';
+import { fileURLToPath } from 'node:url';
 import { stageMigrationSql, stageProgrammeReferenceJson } from './artifact-layout.mjs';
 import { writeArtifactManifest } from './artifact-manifest.mjs';
-import { buildReference } from './build-academic-programme-reference.mjs';
 import { selectPostgresTestMode } from './postgres-test-mode.mjs';
 
 function fixture() {
@@ -26,13 +26,12 @@ function fixture() {
     writeFileSync(join(root, 'dist/scripts/cleanup-microsoft-attempts.js'), 'export {};\n');
     writeFileSync(join(root, 'dist/scripts/cleanup-student-sso.js'), 'export {};\n');
     writeFileSync(join(root, 'dist/scripts/cleanup-academic-profile-data.js'), 'export {};\n');
-    const fixtureChecksum = 'a'.repeat(64);
-    const fixtureReference = buildReference({
-        extract: { sourceVersion: 'fixture-v1', sourceChecksumSha256: fixtureChecksum, rows: [] },
-        expectedChecksum: fixtureChecksum,
-        redistribution: 'blocked',
-    });
-    writeFileSync(join(root, 'src/data/academic-programmes/nuc-v2.normalized.json'), `${JSON.stringify(fixtureReference, null, 2)}\n`);
+    // Staging fixtures carry the real production bytes: the production
+    // filename is pinned to its trusted digest, so a synthetic payload
+    // under that name must fail staging.
+    const scriptsDir = dirname(fileURLToPath(import.meta.url));
+    const productionReference = readFileSync(join(scriptsDir, '..', 'src/data/academic-programmes/nuc-v2.normalized.json'));
+    writeFileSync(join(root, 'src/data/academic-programmes/nuc-v2.normalized.json'), productionReference);
     return root;
 }
 
