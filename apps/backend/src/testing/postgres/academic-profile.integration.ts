@@ -80,6 +80,7 @@ test('unbound students save and read claimed institutions through real constrain
         const pool = db.getPool();
         const saved = await saveAcademicProfile(pool, fixture.userId, {
             expectedRevision: 0,
+            expectedInstitution: { binding: 'unbound', displayName: null },
             claimedInstitution: { state: 'supplied', value: { name: 'Example University', countryCode: 'ng' } },
             programme: { state: 'supplied', value: { programmeId: null, courseLabel: 'Synthetic Physics' } },
             entryYear: { state: 'supplied', value: 2022 },
@@ -113,6 +114,7 @@ test('a failing assurance query does not abort the profile save', async () => {
         const pool = db.getPool();
         const saved = await saveAcademicProfile(pool, fixture.userId, {
             expectedRevision: 0,
+            expectedInstitution: { binding: 'unbound', displayName: null },
             programme: { state: 'supplied', value: { programmeId: null, courseLabel: 'Synthetic Physics' } },
         }, {
             ...enabled,
@@ -136,6 +138,7 @@ test('a failing verification-method lookup does not abort the profile save', asy
         const pool = db.getPool();
         const saved = await saveAcademicProfile(pool, fixture.userId, {
             expectedRevision: 0,
+            expectedInstitution: { binding: 'unbound', displayName: null },
             programme: { state: 'supplied', value: { programmeId: null, courseLabel: 'Synthetic Physics' } },
         }, {
             ...enabled,
@@ -158,6 +161,7 @@ test('unrelated users cannot see or affect each other profiles', async () => {
         const pool = db.getPool();
         await saveAcademicProfile(pool, first.userId, {
             expectedRevision: 0,
+            expectedInstitution: { binding: 'unbound', displayName: null },
             claimedInstitution: { state: 'supplied', value: { name: 'First School', countryCode: 'NG' } },
         }, enabled);
 
@@ -167,6 +171,7 @@ test('unrelated users cannot see or affect each other profiles', async () => {
 
         await saveAcademicProfile(pool, second.userId, {
             expectedRevision: 0,
+            expectedInstitution: { binding: 'unbound', displayName: null },
             entryYear: { state: 'supplied', value: 2021 },
         }, enabled);
         const reread = await readAcademicProfile(pool, first.userId, enabled);
@@ -182,6 +187,7 @@ test('soft-deleted accounts lose academic visibility while purge stays available
         const pool = db.getPool();
         await saveAcademicProfile(pool, fixture.userId, {
             expectedRevision: 0,
+            expectedInstitution: { binding: 'unbound', displayName: null },
             entryYear: { state: 'supplied', value: 2022 },
         }, enabled);
         await client.query(`UPDATE users SET deleted_at = clock_timestamp() WHERE id = $1`, [fixture.userId]);
@@ -210,6 +216,7 @@ test('suspended students keep read access but cannot save', async () => {
         const pool = db.getPool();
         await saveAcademicProfile(pool, fixture.userId, {
             expectedRevision: 0,
+            expectedInstitution: { binding: 'unbound', displayName: null },
             entryYear: { state: 'supplied', value: 2022 },
         }, enabled);
         await client.query(`UPDATE students SET status = 'suspended' WHERE id = $1`, [fixture.studentId]);
@@ -234,6 +241,7 @@ test('concurrent institution change conflicts without committing old-school valu
         const pool = db.getPool();
         await saveAcademicProfile(pool, fixture.userId, {
             expectedRevision: 0,
+            expectedInstitution: { binding: 'server_bound', displayName: `Academic Profile School first-${label}` },
             programme: { state: 'supplied', value: { programmeId: null, courseLabel: 'Synthetic Chemistry' } },
             entryYear: { state: 'supplied', value: 2022 },
         }, enabled);
@@ -273,6 +281,7 @@ test('optimistic revisions serialize concurrent saves', async () => {
         const pool = db.getPool();
         await saveAcademicProfile(pool, fixture.userId, {
             expectedRevision: 0,
+            expectedInstitution: { binding: 'unbound', displayName: null },
             entryYear: { state: 'supplied', value: 2022 },
         }, enabled);
         const outcomes = await Promise.allSettled([
@@ -298,7 +307,8 @@ test('optimistic revisions serialize concurrent saves', async () => {
 
 test('academic saves never touch identity or eligibility columns', async () => {
     await withTestClient(async (client) => {
-        const universityId = await createUniversity(client, uniqueLabel());
+        const schoolLabel = uniqueLabel();
+        const universityId = await createUniversity(client, schoolLabel);
         const fixture = await createStudent(client, universityId);
         const before = (await client.query(
             `SELECT identity_version, university_id, registration_number, university, name
@@ -308,6 +318,7 @@ test('academic saves never touch identity or eligibility columns', async () => {
         const pool = db.getPool();
         await saveAcademicProfile(pool, fixture.userId, {
             expectedRevision: 0,
+            expectedInstitution: { binding: 'server_bound', displayName: `Academic Profile School ${schoolLabel}` },
             programme: { state: 'supplied', value: { programmeId: null, courseLabel: 'Synthetic Biology' } },
             entryYear: { state: 'supplied', value: 2021 },
             entryRoute: { state: 'supplied', value: 'utme' },
@@ -331,6 +342,7 @@ test('feature-off rejects writes while reads and purge stay available', async ()
         const pool = db.getPool();
         await saveAcademicProfile(pool, fixture.userId, {
             expectedRevision: 0,
+            expectedInstitution: { binding: 'unbound', displayName: null },
             entryYear: { state: 'supplied', value: 2022 },
         }, enabled);
 
@@ -360,6 +372,7 @@ test('physical account deletion cascades to the academic row', async () => {
         const pool = db.getPool();
         await saveAcademicProfile(pool, fixture.userId, {
             expectedRevision: 0,
+            expectedInstitution: { binding: 'unbound', displayName: null },
             entryYear: { state: 'supplied', value: 2022 },
         }, enabled);
         assert.equal(await profileRowCount(client, fixture.userId), 1);
@@ -374,6 +387,7 @@ test('blocked programme reference rejects accepted estimates end to end', async 
         const pool = db.getPool();
         const saved = await saveAcademicProfile(pool, fixture.userId, {
             expectedRevision: 0,
+            expectedInstitution: { binding: 'unbound', displayName: null },
             programme: { state: 'supplied', value: { programmeId: 'INT-001', courseLabel: null } },
             entryYear: { state: 'supplied', value: 2022 },
             entryRoute: { state: 'supplied', value: 'utme' },
@@ -396,6 +410,7 @@ test('reviewed estimates persist calculated origin and basis end to end', async 
         const pool = db.getPool();
         const saved = await saveAcademicProfile(pool, fixture.userId, {
             expectedRevision: 0,
+            expectedInstitution: { binding: 'unbound', displayName: null },
             programme: { state: 'supplied', value: { programmeId: 'INT-001', courseLabel: null } },
             entryYear: { state: 'supplied', value: 2022 },
             entryRoute: { state: 'supplied', value: 'utme' },

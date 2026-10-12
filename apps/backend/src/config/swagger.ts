@@ -566,7 +566,7 @@ Access tokens expire in 15 minutes. Use the refresh token endpoint to get a new 
                             type: 'object',
                             additionalProperties: false,
                             required: ['binding', 'displayName'],
-                            description: 'Read-context token: the institution binding and name the GET showed. First saves conflict when the binding moved; never used to set the binding.',
+                            description: 'Read-context token: the institution binding and name the GET showed. Required when creating the profile; first saves conflict when the binding moved or the token is absent; never used to set the binding.',
                             properties: {
                                 binding: { type: 'string', enum: ['server_bound', 'student_claimed', 'unbound'] },
                                 displayName: { type: 'string', maxLength: 255, nullable: true },

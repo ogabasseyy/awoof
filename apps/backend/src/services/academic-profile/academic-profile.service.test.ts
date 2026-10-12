@@ -1231,7 +1231,7 @@ test('saves lock the bound university against metadata races while reads share i
     await saveAcademicProfile(
         createFakePool(saved) as never,
         USER_ID,
-        { expectedRevision: 0, entryYear: { state: 'supplied', value: 2022 } },
+        { expectedRevision: 0, expectedInstitution: { binding: 'server_bound', displayName: 'Fixture University' }, entryYear: { state: 'supplied', value: 2022 } },
         serviceDeps(),
     );
     const saveLock = saved.statements.find((text) => text.includes('FROM universities'));
@@ -1257,7 +1257,7 @@ test('assurance settles before any profile lock so shared locks never upgrade', 
             await saveAcademicProfile(
                 createFakePool(state) as never,
                 USER_ID,
-                { expectedRevision: 0, entryRoute: { state: 'skipped' } },
+                { expectedRevision: 0, expectedInstitution: { binding: 'server_bound', displayName: 'Fixture University' }, entryRoute: { state: 'skipped' } },
                 deps,
             );
         }
@@ -1274,6 +1274,7 @@ test('save creates the first revision and binds the server-owned canonical insti
         USER_ID,
         {
             expectedRevision: 0,
+            expectedInstitution: { binding: 'server_bound', displayName: 'Fixture University' },
             programme: { state: 'supplied', value: { programmeId: null, courseLabel: 'Physics' } },
             entryYear: { state: 'supplied', value: 2022 },
         },
@@ -1293,7 +1294,7 @@ test('save binds every statement to the authenticated user id', async () => {
     await saveAcademicProfile(
         createFakePool(state) as never,
         USER_ID,
-        { expectedRevision: 0, entryRoute: { state: 'skipped' } },
+        { expectedRevision: 0, expectedInstitution: { binding: 'unbound', displayName: null }, entryRoute: { state: 'skipped' } },
         serviceDeps(),
     );
     assert.deepEqual(state.readUserIds, [USER_ID]);
@@ -1367,6 +1368,28 @@ test('save conflicts on institution drift and commits only the invalidation', as
     );
     assert.equal(retry.revision, 4);
     assert.deepEqual(retry.fields.entryRoute, { state: 'supplied', value: 'utme' });
+});
+
+test('first save without the read token conflicts instead of inserting', async () => {
+    const state = boundState();
+    await assert.rejects(
+        saveAcademicProfile(
+            createFakePool(state) as never,
+            USER_ID,
+            {
+                expectedRevision: 0,
+                entryYear: { state: 'supplied', value: 2022 },
+            },
+            serviceDeps(),
+        ),
+        (error: unknown) => {
+            assert.ok(error instanceof ConflictError);
+            assert.deepEqual(error.details, { code: ACADEMIC_PROFILE_BINDING_CHANGED, revision: 0 });
+            return true;
+        },
+    );
+    assert.equal(state.writes.length, 0);
+    assert.equal(state.profile, null);
 });
 
 test('first save conflicts when the binding moved since the read', async () => {
@@ -1458,6 +1481,7 @@ test('save previews unbound estimates under the claimed country', async () => {
     };
     const inputs = {
         expectedRevision: 0,
+        expectedInstitution: { binding: 'unbound', displayName: null },
         programme: { state: 'supplied', value: { programmeId: 'P-001', courseLabel: null } },
         entryYear: { state: 'supplied', value: 2022 },
         entryRoute: { state: 'supplied', value: 'utme' },
@@ -1670,7 +1694,7 @@ test('save succeeds when assurance is unavailable and reports it explicitly', as
     const projection = await saveAcademicProfile(
         createFakePool(state) as never,
         USER_ID,
-        { expectedRevision: 0, entryRoute: { state: 'skipped' } },
+        { expectedRevision: 0, expectedInstitution: { binding: 'unbound', displayName: null }, entryRoute: { state: 'skipped' } },
         serviceDeps({ readAssurance: async () => { throw new Error('assurance down'); } }),
     );
     assert.equal(projection.revision, 1);
@@ -1685,6 +1709,7 @@ test('save surfaces the available estimate for reviewed inputs', async () => {
         USER_ID,
         {
             expectedRevision: 0,
+            expectedInstitution: { binding: 'unbound', displayName: null },
             programme: { state: 'supplied', value: { programmeId: 'P-001', courseLabel: null } },
             entryYear: { state: 'supplied', value: 2022 },
             entryRoute: { state: 'supplied', value: 'utme' },
@@ -1702,6 +1727,7 @@ test('save hides free-text programmes from estimates', async () => {
         USER_ID,
         {
             expectedRevision: 0,
+            expectedInstitution: { binding: 'unbound', displayName: null },
             programme: { state: 'supplied', value: { programmeId: null, courseLabel: 'Custom Course' } },
             entryYear: { state: 'supplied', value: 2022 },
             entryRoute: { state: 'supplied', value: 'utme' },

@@ -1114,6 +1114,16 @@ export async function saveAcademicProfile(
                 revision,
             });
         }
+        if (row === null && patch.expectedInstitution === undefined) {
+            // Row creation must prove freshness: without the read token
+            // the binding cannot be checked, so refuse rather than risk
+            // attaching stale answers to a new binding. The caller reloads
+            // and resubmits with the token from the fresh read.
+            throw new ConflictError('First save requires the expectedInstitution read token; reload the profile and resubmit', {
+                code: ACADEMIC_PROFILE_BINDING_CHANGED,
+                revision: stored.revision,
+            });
+        }
         if (row === null && patch.expectedInstitution !== undefined && expectedBindingChanged(patch.expectedInstitution, ctx)) {
             // First save against a binding that moved since the read: the
             // answers were entered in another school's context, so refuse
