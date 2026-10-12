@@ -31,7 +31,6 @@ import { resolveStudentReturn } from '@/lib/student-return';
 import { revokeLogoutSession } from '@/lib/logout-revocation';
 import { fetchAcademicProfile } from '@/lib/student-academic-profile';
 import {
-    clearDeferral,
     deferralStorage,
     resolveStudentPostAuthNavigation,
 } from '@/lib/student-profile-prompt';
@@ -405,9 +404,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         } finally {
             ownCommitRef.current = false;
         }
-        // Remove only the invalidated session's deferral marker; a delayed
-        // logout must never clear a newer session's choice.
-        clearDeferral(deferralStorage(), captured);
+        // Session-namespaced cleanup (deferral marker) runs centrally
+        // inside clearTokens; a delayed logout still clears only the
+        // invalidated session's key, never a newer session's choice.
         if (mountedRef.current) {
             setUser(null);
             setStudentAssurance(null);

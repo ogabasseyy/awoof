@@ -529,4 +529,24 @@ test('reconciles an unknown save outcome against the current projection', () => 
         expectedGraduationYear: { state: 'supplied', value: { kind: 'self_reported', year: 2025 } },
     }, view), false);
     assert.equal(patchMatchesProjection({ expectedRevision: 3 }, view), true);
+    const stale = parseAcademicProfileResponse(envelope(validProjection({
+        revision: 4,
+        fields: {
+            claimedInstitution: { state: 'unanswered' },
+            programme: { state: 'supplied', value: { programmeId: 'SYN-P1', courseLabel: null } },
+            entryYear: { state: 'supplied', value: 2021 },
+            entryRoute: { state: 'unanswered' },
+            expectedGraduationYear: { state: 'supplied', value: 2025 },
+            graduationYearOrigin: 'calculated',
+            estimateBasis: {
+                programmeId: 'SYN-P1', entryYear: 2021, entryRoute: 'utme', ruleId: 'SYN-R1', sourceVersion: 'nuc-v1',
+            },
+            estimateStale: true,
+        },
+    })));
+    assert.notEqual(stale, null);
+    if (!stale) return;
+    // Same numeric year and a calculated origin, but the basis is stale:
+    // the accept never reached the server, so reconciliation must fail.
+    assert.equal(patchMatchesProjection(committed, stale), false);
 });

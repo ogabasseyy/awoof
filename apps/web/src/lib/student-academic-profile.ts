@@ -8,9 +8,9 @@
  * rejected outright because profile answers are never eligibility evidence.
  */
 
-import { useEffect, useState } from 'react';
+import { useEffect, useState, useSyncExternalStore } from 'react';
 import apiClient from './api-client';
-import type { User } from './auth';
+import { getSessionSnapshot, isCurrentSession, subscribeSessionChanges, type SessionSnapshot, type User } from './auth';
 import { parseStudentAssurance, type StudentAssurance } from './student-assurance';
 import { resolveStudentReturn } from './student-return';
 
@@ -717,6 +717,11 @@ export function patchMatchesProjection(patch: AcademicProfileInput, view: Academ
             if (current.state !== 'supplied' || current.value !== choice.year || view.fields.graduationYearOrigin !== expectedOrigin) {
                 return false;
             }
+            // An accepted estimate reconciles only against a non-stale
+            // calculated projection: when the reference changed under a
+            // stale year, the same numeric year with a calculated origin
+            // would otherwise report a failed save as successful.
+            if (choice.kind === 'accept_estimate' && view.fields.estimateStale) return false;
         } else if (current.state !== patch.expectedGraduationYear.state) {
             return false;
         }
@@ -736,20 +741,31 @@ export async function fetchAcademicProfile(): Promise<AcademicProfileView> {
     return parsed;
 }
 
-let inflightCompletionCtaRead: Promise<AcademicProfileView> | null = null;
+let inflightCompletionCtaRead: { generation: number; promise: Promise<AcademicProfileView> } | null = null;
 
 /**
- * One shared in-flight projection read for the completion CTA gate, so
- * StrictMode double-effects issue a single request. Cleared on settle:
- * sequential mounts always re-read, never a stale flag.
+ * One shared in-flight projection read per browser session for the
+ * completion CTA gate, so StrictMode double-effects issue a single
+ * request. Keyed by session generation: a new session never inherits a
+ * request started with another account's token. Cleared on settle when
+ * still current, so sequential mounts always re-read, never a stale flag.
  */
-function readCompletionCtaProjection(): Promise<AcademicProfileView> {
-    if (!inflightCompletionCtaRead) {
-        inflightCompletionCtaRead = fetchAcademicProfile().finally(() => {
-            inflightCompletionCtaRead = null;
+function readCompletionCtaProjection(snapshot: SessionSnapshot): Promise<AcademicProfileView> {
+    if (!inflightCompletionCtaRead || inflightCompletionCtaRead.generation !== snapshot.generation) {
+        const request = fetchAcademicProfile().finally(() => {
+            if (inflightCompletionCtaRead?.promise === request) inflightCompletionCtaRead = null;
         });
+        inflightCompletionCtaRead = { generation: snapshot.generation, promise: request };
     }
-    return inflightCompletionCtaRead;
+    return inflightCompletionCtaRead.promise;
+}
+
+function completionCtaSessionGeneration(): number {
+    return getSessionSnapshot().generation;
+}
+
+function completionCtaServerGeneration(): number {
+    return -1;
 }
 
 /**
@@ -757,19 +773,29 @@ function readCompletionCtaProjection(): Promise<AcademicProfileView> {
  * and verification pages. Null while the server projection loads; the
  * actor-level write gate afterwards, so students who cannot save (for
  * example suspended accounts) are never invited to a read-only form.
+ * Session-scoped: an account change resets to loading and re-reads with
+ * the new session, and results from a superseded session are rejected.
  * Read failures fail closed: an unreadable gate must not advertise a
  * journey the server may have disabled for this actor.
  */
 export function useAcademicProfileCompletionCta(): boolean | null {
-    const [visible, setVisible] = useState<boolean | null>(null);
+    const [settled, setSettled] = useState<{ generation: number; visible: boolean } | null>(null);
+    const generation = useSyncExternalStore(subscribeSessionChanges, completionCtaSessionGeneration, completionCtaServerGeneration);
     useEffect(() => {
         let cancelled = false;
-        readCompletionCtaProjection()
-            .then((view) => { if (!cancelled) setVisible(view.writeAvailable); })
-            .catch(() => { if (!cancelled) setVisible(false); });
+        const snapshot = getSessionSnapshot();
+        readCompletionCtaProjection(snapshot)
+            .then((view) => {
+                if (!cancelled && isCurrentSession(snapshot)) setSettled({ generation: snapshot.generation, visible: view.writeAvailable });
+            })
+            .catch(() => {
+                if (!cancelled && isCurrentSession(snapshot)) setSettled({ generation: snapshot.generation, visible: false });
+            });
         return () => { cancelled = true; };
-    }, []);
-    return visible;
+    }, [generation]);
+    // A result committed for a superseded session never renders: only the
+    // current generation's gate is shown, loading otherwise.
+    return settled && settled.generation === generation ? settled.visible : null;
 }
 
 /** Save a partial patch and return the recalculated projection. */

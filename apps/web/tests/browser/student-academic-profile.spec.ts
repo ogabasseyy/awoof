@@ -1034,6 +1034,34 @@ test('saves a dirty draft from the leave confirmation', async ({ page }) => {
     expect(fixture.puts[0]).toEqual({ expectedRevision: 3, entryYear: { state: 'supplied', value: 2022 } });
 });
 
+test('completes a stashed leave after reconfirming a dialog save', async ({ page }) => {
+    const fixture = await openComplete(page, projection({
+        fields: baseFields({
+            claimedInstitution: { state: 'supplied', value: { name: 'Old School', countryCode: 'NG' } },
+            programme: { state: 'supplied', value: { programmeId: 'SYN-P1', courseLabel: null } },
+            entryYear: { state: 'supplied', value: 2021 },
+        }),
+    }));
+    fixture.putBehavior = 'claim-changed-once';
+    await page.getByRole('combobox', { name: 'Institution name' }).fill('New School');
+    await page.getByRole('textbox', { name: 'Country (2-letter code)' }).fill('GH');
+    await page.getByRole('button', { name: 'Complete later' }).click();
+    await page.getByRole('alertdialog').getByRole('button', { name: 'Save and continue' }).click();
+    await expect(page.getByText('Your school changed to New School. Resubmit your saved answers under the new school?')).toBeVisible();
+    await page.getByRole('button', { name: 'Reconfirm saved answers' }).click();
+    await expect(page).toHaveURL(/\/marketplace/, { timeout: 30000 });
+    expect(fixture.puts).toHaveLength(2);
+    const deferrals = await page.evaluate((prefix) => {
+        const keys: string[] = [];
+        for (let index = 0; index < localStorage.length; index += 1) {
+            const key = localStorage.key(index);
+            if (key && key.startsWith(prefix)) keys.push(key);
+        }
+        return keys;
+    }, 'awoof.profile.defer-prompt.v1.');
+    expect(deferrals).toHaveLength(1);
+});
+
 test('stays on the form when saving from the leave confirmation fails', async ({ page }) => {
     const fixture = await openComplete(page, projection());
     fixture.putBehavior = 'error';

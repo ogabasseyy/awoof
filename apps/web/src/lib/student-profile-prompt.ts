@@ -13,7 +13,7 @@
  * an older tab cannot erase a newer session's choice.
  */
 
-import { getSessionSnapshot, type SessionSnapshot } from './auth';
+import { getSessionSnapshot, subscribeSessionInvalidated, type SessionSnapshot } from './auth';
 import {
     isStudentProfileCompletionDestination,
     resolveStudentPostAuthDestination,
@@ -179,6 +179,14 @@ export function clearDeferral(
     removeStoredDeferral(storage, deferKey(sessionId));
     memoryDeferrals.delete(sessionId);
 }
+
+// Central invalidation cleanup: every local session clear (explicit
+// logout, 401 expiry, identity-unlink sign-out) removes only that
+// session's deferral marker. Clearing one namespaced key here instead
+// of at each call site keeps future invalidation paths covered.
+subscribeSessionInvalidated((invalidated) => {
+    clearDeferral(deferralStorage(), invalidated);
+});
 
 export type ProfileDeferralChange = {
     sessionId: string;

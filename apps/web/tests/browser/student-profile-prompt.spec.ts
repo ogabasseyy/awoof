@@ -1,5 +1,5 @@
 import { expect, test, type Page, type Route } from '@playwright/test';
-import { apiOrigin, appOrigin, installSyntheticApi, replaceSession, seedSession } from './fixtures';
+import { apiOrigin, appOrigin, installSyntheticApi, replaceSession, seedSession, storageTabPath } from './fixtures';
 
 const COMPLETE_PATH = '/student/profile/complete';
 const STUDENT_ID = '00000000-0000-4000-8000-000000000001';
@@ -299,6 +299,64 @@ test('profile hub hides the completion CTA when the actor cannot save', async ({
     expect(prompt.getCalls).toBe(1);
 });
 
+test('completion CTA re-resolves when the browser session changes accounts', async ({ page, context }) => {
+    await installSyntheticApi(page);
+    let calls = 0;
+    const prompt = await installPromptApi(page, () => {
+        calls += 1;
+        const gate = calls === 1 ? { writeAvailable: true } : { writeAvailable: false };
+        return { status: 200, body: { success: true, data: projection(gate) } };
+    });
+    await mockPasswordLogin(page);
+    await submitPasswordLogin(page, '%2Fstudent%2Fprofile');
+    await page.waitForURL('**/student/profile');
+    await expect(page.locator('[data-completion-cta="visible"]')).toBeAttached();
+    await expect(page.getByRole('link', { name: 'Complete your student profile' })).toBeVisible();
+    const other = await context.newPage();
+    await other.goto(`${appOrigin}${storageTabPath}`);
+    await replaceSession(other, 'student', 'session-b');
+    // The previous account's gate never lingers: the hook resets and
+    // re-reads with the new session instead.
+    await expect(page.locator('[data-completion-cta="hidden"]')).toBeAttached();
+    await expect(page.getByRole('link', { name: 'Complete your student profile' })).toHaveCount(0);
+    expect(prompt.getCalls).toBeGreaterThanOrEqual(2);
+    await other.close();
+});
+
+test('completion CTA starts a fresh read when the session changes mid-flight', async ({ page, context }) => {
+    await installSyntheticApi(page);
+    let releaseFirst: () => void = () => undefined;
+    const firstGate = new Promise<void>((resolve) => { releaseFirst = resolve; });
+    let intercepted = 0;
+    const prompt = await installPromptApi(page, okProjection(projection({ writeAvailable: false })));
+    await page.route(`${apiOrigin}/api/students/academic-profile`, async (route: Route) => {
+        if (route.request().method() === 'GET') {
+            intercepted += 1;
+            if (intercepted === 1) {
+                await firstGate;
+                await route.fulfill({ json: { success: true, data: projection({ writeAvailable: true }) }, headers: CORS });
+                return;
+            }
+        }
+        await route.fallback();
+    });
+    await mockPasswordLogin(page);
+    await submitPasswordLogin(page, '%2Fstudent%2Fprofile');
+    await page.waitForURL('**/student/profile');
+    await expect(page.locator('[data-completion-cta="loading"]')).toBeAttached();
+    await expect.poll(() => intercepted).toBe(1);
+    const other = await context.newPage();
+    await other.goto(`${appOrigin}${storageTabPath}`);
+    await replaceSession(other, 'student', 'session-b');
+    // The new session starts its own read while the old one is gated.
+    await expect.poll(() => intercepted).toBe(2);
+    releaseFirst();
+    await expect(page.locator('[data-completion-cta="hidden"]')).toBeAttached();
+    await expect(page.getByRole('link', { name: 'Complete your student profile' })).toHaveCount(0);
+    expect(prompt.getCalls).toBe(1);
+    await other.close();
+});
+
 test('profile hub hides the completion CTA when the gate cannot be read', async ({ page }) => {
     await installSyntheticApi(page);
     const prompt = await installPromptApi(page, () => ({ status: 500, body: { success: false, error: { message: 'Synthetic outage' } } }));
@@ -373,6 +431,29 @@ test('unavailable assurance fails open to browse without assuming pending', asyn
     await submitPasswordLogin(page, null);
     await page.waitForURL('**/marketplace');
     expect(prompt.getCalls).toBeGreaterThanOrEqual(1);
+});
+
+test('an expired session clears its deferral marker on the way to login', async ({ page }) => {
+    await installSyntheticApi(page);
+    let failReads = false;
+    const okResponder = okProjection(projection({ promptDecision: 'continue' }));
+    await installPromptApi(page, () => failReads
+        ? { status: 401, body: { success: false, error: { message: 'Synthetic expiry' } } }
+        : okResponder());
+    await mockPasswordLogin(page);
+    await submitPasswordLogin(page, null);
+    await page.waitForURL('**/marketplace');
+    const sessionId = await activeSessionId(page);
+    expect(sessionId).not.toBeNull();
+    await page.evaluate(({ prefix, session, account }) => {
+        localStorage.setItem(`${prefix}${session}`, account);
+    }, { prefix: DEFER_PREFIX, session: sessionId, account: STUDENT_ID });
+    expect(await deferEntries(page)).toEqual({ [`${DEFER_PREFIX}${sessionId}`]: STUDENT_ID });
+    failReads = true;
+    await page.route(`${apiOrigin}/api/auth/refresh`, (route) => route.fulfill({ status: 401, json: {} }));
+    await page.goto('/student/profile');
+    await page.waitForURL('**/auth/login**', { timeout: 30000 });
+    expect(await deferEntries(page)).toEqual({});
 });
 
 test('a projection read failure fails closed and hides the profile call to action', async ({ page }) => {

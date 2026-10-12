@@ -59,6 +59,8 @@ let generation = 0;
 let observed: ObservedSession = { v: 1, state: 'signed_out' };
 let quarantined = false;
 const listeners = new Set<() => void>();
+type SessionInvalidatedListener = (invalidated: SessionSnapshot) => void;
+const invalidatedListeners = new Set<SessionInvalidatedListener>();
 let storageListenerAttached = false;
 
 export class SessionStorageError extends Error {
@@ -324,8 +326,10 @@ export function replaceCurrentSessionTokens(snapshotAtStart: SessionSnapshot, to
 
 /** Clear local authority immediately and attempt a durable signed-out marker. */
 export function clearTokens(): void {
+    const invalidated = getSessionSnapshot();
     const storage = getStorage();
     quarantineSession();
+    notifySessionInvalidated(invalidated);
     if (!storage) return;
 
     let marker: SignedOutEnvelope;
@@ -376,6 +380,27 @@ export function subscribeSessionChanges(listener: () => void): () => void {
     attachStorageListener();
     listeners.add(listener);
     return () => listeners.delete(listener);
+}
+
+/**
+ * Subscribe to local session invalidations. Each listener receives the
+ * snapshot captured before the clear, so session-namespaced artifacts
+ * can remove exactly the invalidated session's entry after its ID is
+ * otherwise unavailable. Listener failures never break the clear.
+ */
+export function subscribeSessionInvalidated(listener: SessionInvalidatedListener): () => void {
+    invalidatedListeners.add(listener);
+    return () => { invalidatedListeners.delete(listener); };
+}
+
+function notifySessionInvalidated(invalidated: SessionSnapshot): void {
+    for (const listener of [...invalidatedListeners]) {
+        try {
+            listener(invalidated);
+        } catch {
+            // Session-namespaced cleanup must never break sign-out.
+        }
+    }
 }
 
 export function isSessionStorageQuarantined(): boolean {

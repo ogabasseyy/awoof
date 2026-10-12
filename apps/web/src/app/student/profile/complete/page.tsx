@@ -138,18 +138,20 @@ function useCatalogueSearch<T>(
     query: string,
     enabled: boolean,
 ): { results: T[]; status: SearchStatus } {
-    const [results, setResults] = useState<T[]>([]);
-    const [status, setStatus] = useState<SearchStatus>('idle');
-    const requestId = useRef(0);
     const cleared = !enabled || query.trim().length === 0;
     const searchKey = `${enabled ? '1' : '0'}:${query}`;
+    const [resultSnapshot, setResultSnapshot] = useState<{ searchKey: string; items: T[] }>({ searchKey, items: [] });
+    const [status, setStatus] = useState<SearchStatus>('idle');
+    const requestId = useRef(0);
     const [prevSearchKey, setPrevSearchKey] = useState(searchKey);
     if (searchKey !== prevSearchKey) {
         setPrevSearchKey(searchKey);
-        // Drop the previous query's results the moment the key changes:
-        // while the new search loads, the combobox keyboard handler must
-        // not navigate or select invisible stale options.
-        setResults([]);
+        // Rebind the snapshot to the new key with empty items: while the
+        // new search loads, the combobox keyboard handler must not
+        // navigate or select invisible stale options, and a late
+        // resolution for the previous key is ignored by the updater
+        // below even if it lands before the re-armed effect runs.
+        setResultSnapshot({ searchKey, items: [] });
         if (cleared) {
             setStatus('idle');
         } else {
@@ -165,18 +167,18 @@ function useCatalogueSearch<T>(
         const id = ++requestId.current;
         const timer = setTimeout(() => {
             fetcher(query.trim()).then((page) => {
-                if (id !== requestId.current || !isCurrentSession(snapshot)) return;
-                setResults(page.items);
-                setStatus('ready');
+                if (!isCurrentSession(snapshot)) return;
+                setResultSnapshot((prev) => (prev.searchKey === searchKey ? { searchKey, items: page.items } : prev));
+                if (id === requestId.current) setStatus('ready');
             }).catch(() => {
-                if (id !== requestId.current || !isCurrentSession(snapshot)) return;
-                setResults([]);
-                setStatus('error');
+                if (!isCurrentSession(snapshot)) return;
+                setResultSnapshot((prev) => (prev.searchKey === searchKey ? { searchKey, items: [] } : prev));
+                if (id === requestId.current) setStatus('error');
             });
         }, 200);
         return () => clearTimeout(timer);
-    }, [fetcher, query, enabled]);
-    return { results, status };
+    }, [fetcher, query, enabled, searchKey]);
+    return { results: resultSnapshot.items, status };
 }
 
 type ComboboxProps<T> = {
@@ -339,6 +341,13 @@ function CompletionForm() {
     const [navFailed, setNavFailed] = useState(false);
     const [leaveDialog, setLeaveDialog] = useState(false);
     const [pendingLeave, setPendingLeave] = useState<PendingLeave | null>(null);
+    // Leave to execute after a reconfirmed save. A leave-dialog save that
+    // meets a claim-change conflict stashes its pending leave here; the
+    // reconfirmation consumes it (deferral included) so the student lands
+    // where they were headed instead of the default exit. Live exactly
+    // while a dialog-save reconfirmation offer is pending: cleared with
+    // the offer and never set by the main save button.
+    const saveLeaveRef = useRef<PendingLeave | null>(null);
     const [saving, setSaving] = useState(false);
     const savingRef = useRef(false);
     useEffect(() => {
@@ -443,6 +452,7 @@ function CompletionForm() {
         // Further edits supersede the reconfirmation offer: the next save
         // carries the current draft instead.
         setClaimReconfirm(null);
+        saveLeaveRef.current = null;
     };
 
     const resetDraft = (profile: AcademicProfileView) => {
@@ -718,7 +728,7 @@ function CompletionForm() {
         }
     };
 
-    const saveDraft = async (): Promise<'saved' | 'invalid' | 'failed'> => {
+    const saveDraft = async (): Promise<'saved' | 'invalid' | 'failed' | 'claim-offer'> => {
         if (!view) return 'failed';
         const validated = validateAndBuild();
         if ('errors' in validated) {
@@ -732,6 +742,7 @@ function CompletionForm() {
         setSaveError(null);
         setConflict(null);
         setClaimReconfirm(null);
+        saveLeaveRef.current = null;
         // An institution-change conflict carries the post-invalidation
         // revision: the replacement entries were staged against blank
         // fields, so one transparent retry preserves them instead of
@@ -770,7 +781,7 @@ function CompletionForm() {
                                 }
                                 setClaimReconfirm(request);
                                 setAnnounce('Your school changed. Confirm your saved answers to keep them.');
-                                return 'failed';
+                                return 'claim-offer';
                             }
                             setConflict('Your profile changed since it was read. Reload the latest values before saving again.');
                             return 'failed';
@@ -826,10 +837,11 @@ function CompletionForm() {
             resetDraft(committed);
             setSaveOutcome('saved');
             setAnnounce('Profile saved under the new school.');
-            navigateToExit();
+            navigateAfterReconfirm();
         } catch (error: unknown) {
             if (!isCurrentSession(snapshot)) return;
             setClaimReconfirm(null);
+            saveLeaveRef.current = null;
             if (axios.isAxiosError(error) && error.response) {
                 // The draft is intact: a revision race falls back to the reload
                 // path, while a rejection (for example an estimate the new
@@ -853,7 +865,7 @@ function CompletionForm() {
                     resetDraft(fresh);
                     setSaveOutcome('saved');
                     setAnnounce('Profile saved under the new school.');
-                    navigateToExit();
+                    navigateAfterReconfirm();
                     return;
                 }
                 setConflict('We could not confirm your save because the profile changed. Reload the latest values before trying again.');
@@ -901,6 +913,20 @@ function CompletionForm() {
             return;
         }
         window.location.assign(pending.href);
+    };
+
+    const navigateAfterReconfirm = () => {
+        // A reconfirmed dialog-save completes the stashed leave
+        // (deferral included); a reconfirmed main save exits normally.
+        const pending = saveLeaveRef.current;
+        saveLeaveRef.current = null;
+        setClaimReconfirm(null);
+        if (pending) {
+            if (pending.kind === 'exit' && pending.defer) writeCompleteLaterDeferral();
+            navigateToPendingLeave(pending);
+            return;
+        }
+        navigateToExit();
     };
 
     const requestLeave = (href: string | null, defer: boolean) => {
@@ -1732,9 +1758,14 @@ function CompletionForm() {
                                         // Defer only after the save is
                                         // confirmed or reconciled; a failed
                                         // save stays on the form instead.
+                                        // A claim-change conflict stashes
+                                        // the leave for the reconfirmation
+                                        // to complete.
                                         if (outcome === 'saved') {
                                             if (pending.kind === 'exit' && pending.defer) writeCompleteLaterDeferral();
                                             navigateToPendingLeave(pending);
+                                        } else if (outcome === 'claim-offer') {
+                                            saveLeaveRef.current = pending;
                                         }
                                     });
                                 }}
