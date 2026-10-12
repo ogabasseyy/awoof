@@ -257,6 +257,44 @@ test('password login routes eligible pending browse to the completion screen', a
     expect(prompt.getCalls).toBeGreaterThanOrEqual(1);
 });
 
+test('password login stays pending until the prompt destination resolves', async ({ page }) => {
+    await installSyntheticApi(page);
+    const prompt = await installPromptApi(page, okProjection(projection()));
+    await mockPasswordLogin(page);
+    let observedResolve!: () => void;
+    const observed = new Promise<void>((resolve) => { observedResolve = resolve; });
+    let releaseResolve!: () => void;
+    const gate = new Promise<void>((resolve) => { releaseResolve = resolve; });
+    let gateOpen = false;
+    await page.route(`${apiOrigin}/api/students/academic-profile`, async (route: Route) => {
+        if (route.request().method() !== 'GET' || gateOpen) {
+            await route.fallback();
+            return;
+        }
+        observedResolve();
+        await gate;
+        gateOpen = true;
+        await route.fallback();
+    });
+    await page.goto('/auth/student/login');
+    await page.getByLabel('Email', { exact: true }).fill('student@approved.test');
+    await page.getByRole('button', { name: 'Continue', exact: true }).click();
+    await expect(page.getByLabel('Password', { exact: true })).toBeVisible();
+    await page.getByLabel('Password', { exact: true }).fill('Synthetic-Password1!');
+    const loginResponse = page.waitForResponse(`${apiOrigin}/api/auth/login`);
+    await page.getByRole('button', { name: 'Login', exact: true }).click();
+    // The session is committed and the prompt read is the only
+    // outstanding work; the form must stay pending behind the gate
+    // instead of re-enabling while the student is signed in.
+    await loginResponse;
+    await observed;
+    await page.waitForTimeout(500);
+    await expect(page.getByRole('button', { name: 'Signing in...' })).toBeVisible();
+    releaseResolve();
+    await page.waitForURL('**/student/profile/complete?redirect=%2Fmarketplace');
+    expect(prompt.getCalls).toBeGreaterThanOrEqual(1);
+});
+
 test('password login shows the stored name on first paint without a reload', async ({ page }) => {
     await installSyntheticApi(page);
     const prompt = await installPromptApi(page, okProjection(projection()));

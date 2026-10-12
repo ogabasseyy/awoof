@@ -274,14 +274,25 @@ export function AuthProvider({ children }: { children: ReactNode }) {
                 if (getSessionSnapshot().generation !== persisted.generation) return;
                 redirectAfterAuth(destination);
             };
-            void resolveStudentPostAuthNavigation({
-                accountId: account.id,
-                sessionSnapshot: persisted,
-                safeDestination,
-                explicitContinuation,
-                storage: deferralStorage(),
-                readProjection: fetchAcademicProfile,
-            }).then(navigate, () => navigate(safeDestination));
+            // Login stays pending until the destination resolves: the page
+            // clears its loading state only after navigation starts, so a
+            // slow projection read cannot re-enable the form while the new
+            // session is already committed. This mirrors the SSO completion
+            // path, which awaits the same resolver before navigating.
+            let destination: string;
+            try {
+                destination = await resolveStudentPostAuthNavigation({
+                    accountId: account.id,
+                    sessionSnapshot: persisted,
+                    safeDestination,
+                    explicitContinuation,
+                    storage: deferralStorage(),
+                    readProjection: fetchAcademicProfile,
+                });
+            } catch {
+                destination = safeDestination;
+            }
+            navigate(destination);
             return;
         }
         redirectAfterAuth(destinationFor(account));
@@ -522,6 +533,19 @@ export function AuthProvider({ children }: { children: ReactNode }) {
                     && current.accessToken === authentication.tokens.accessToken
                     && current.refreshToken === authentication.tokens.refreshToken;
             };
+            // Post-resolution navigation guard: unlike ownsAdoptedSession,
+            // this tolerates our own background reconcile, which owns the
+            // newest operation by design. Tokens and generation still prove
+            // no other tab or operation replaced the adopted session.
+            const adoptedSessionIntact = (): boolean => {
+                const current = getSessionSnapshot();
+                return mountedRef.current
+                    && !options.signal.aborted
+                    && !isSessionStorageQuarantined()
+                    && current.generation === adopted.generation
+                    && current.accessToken === authentication.tokens.accessToken
+                    && current.refreshToken === authentication.tokens.refreshToken;
+            };
             if (!ownsAdoptedSession()) return cancellation('created');
 
             setIsLoading(false);
@@ -532,7 +556,25 @@ export function AuthProvider({ children }: { children: ReactNode }) {
             // background read only reconciles the named server account after
             // persistence; it is intentionally not awaited before navigation.
             void loadCurrentUser(false);
-            redirectAfterAuth(returnPath);
+            // New password students take the same post-auth routing as
+            // password login: an eligible marketplace browse prompts for
+            // completion instead of bypassing the prompt. Signup stays
+            // pending until the destination resolves, mirroring login, and
+            // a session replaced mid-read navigates nowhere.
+            let destination: string;
+            try {
+                destination = await resolveStudentPostAuthNavigation({
+                    accountId: account.id,
+                    sessionSnapshot: adopted,
+                    safeDestination: returnPath,
+                    explicitContinuation: options.returnTo !== null && options.returnTo !== '',
+                    storage: deferralStorage(),
+                    readProjection: fetchAcademicProfile,
+                });
+            } catch {
+                destination = returnPath;
+            }
+            if (adoptedSessionIntact()) redirectAfterAuth(destination);
             return { kind: 'completed' };
         } catch (error: unknown) {
             const response = axios.isAxiosError(error) ? error.response : undefined;
