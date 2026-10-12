@@ -174,6 +174,12 @@ function useCatalogueSearch<T>(
             // request is still running) resolves to no commit.
             const settle = (page: CataloguePage<T> | null) => {
                 if (!isCurrentSession(snapshot)) return;
+                // Test-observable settlement signal: stale-search specs
+                // await this counter instead of the network response, so
+                // the preserved-options assertions can only run after the
+                // fetcher callback reached the snapshot updater.
+                const hook = window as Window & { __awoofCatalogueSettlements?: number };
+                hook.__awoofCatalogueSettlements = (hook.__awoofCatalogueSettlements ?? 0) + 1;
                 setResultSnapshot((prev) => {
                     const stale = id !== requestId.current || prev.searchKey !== searchKey;
                     const settled = resolveCatalogueSearch({ stale, page });

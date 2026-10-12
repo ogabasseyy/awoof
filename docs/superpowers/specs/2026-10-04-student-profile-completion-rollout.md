@@ -63,10 +63,22 @@ HTTP property. A future direct service caller must preserve the gate.
   integration. No endpoint, key, or pilot change.
 - `/trust` — CHANGED: one sentence in "What merchants learn" excluding
   academic answers. No security claim added.
-- `/privacy`, `/terms`, `/cookies`, `/legal/*` — NO CHANGE: owner-
-  approved legal text; this task adds no sharing purpose, retention
-  commitment, or legal basis, and collection stays off. Any future
-  purpose/retention change needs fresh legal/owner review.
+- `/privacy`, `/terms`, `/cookies`, `/legal/*` — NO COPY CHANGE NOW,
+  DISCLOSURE OWED AT ACTIVATION: owner-approved legal text, so no
+  legal wording changes in this task. The task does add one dormant
+  browser-storage purpose — the session-namespaced prompt-deferral
+  marker in `localStorage` (`writeDeferral` in
+  `apps/web/src/lib/student-profile-prompt.ts`), holding the
+  session's own account ID only, never transmitted, removed on
+  session change. It cannot write in the shipped configuration:
+  the server forces `promptDecision: 'continue'` while collection
+  is disabled (`academic-profile.service.ts`), and the
+  `/student/profile/complete` unavailable branch renders no
+  deferral-writing control. Before activation, owner/legal review
+  must approve and publish the `/cookies` (and `/privacy`, if
+  counsel requires) deferral-purpose disclosure; tracked under
+  activation precondition 2. Any future purpose/retention change
+  needs fresh legal/owner review.
 - `/contact`, `/partner` journey copy — NO CHANGE: support
   destinations, merchant/partner onboarding, and offer mechanics are
   untouched by this feature.
@@ -80,7 +92,8 @@ HTTP property. A future direct service caller must preserve the gate.
 ## Activation preconditions (all must hold)
 
 1. Licence/provenance clearance recorded; reviewed rows cleared.
-2. Owner/legal-approved collection disclosure published.
+2. Owner/legal-approved collection disclosure published, including
+   the prompt-deferral browser-storage purpose.
 3. Approved retention value configured with owner/legal sign-off.
 4. Backup disposal documented; purge owner and schedule operational.
 5. Full Task 7 audit green, including enabled-state checks in a

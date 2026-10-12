@@ -151,7 +151,7 @@ export default createStudentAcademicProfileRouter();
  *         description: Academic profile projection for the authenticated student
  *         content: { application/json: { schema: { $ref: '#/components/schemas/AcademicProfileProjectionResponse' } } }
  *       401: { $ref: '#/components/responses/Unauthorized' }
- *       403: { $ref: '#/components/responses/Unauthorized' }
+ *       403: { $ref: '#/components/responses/Forbidden' }
  *       404: { $ref: '#/components/responses/BadRequest' }
  *   put:
  *     summary: Save the authenticated student's academic profile patch
@@ -169,7 +169,7 @@ export default createStudentAcademicProfileRouter();
  *         content: { application/json: { schema: { $ref: '#/components/schemas/AcademicProfileProjectionResponse' } } }
  *       400: { $ref: '#/components/responses/BadRequest' }
  *       401: { $ref: '#/components/responses/Unauthorized' }
- *       403: { $ref: '#/components/responses/Unauthorized' }
+ *       403: { $ref: '#/components/responses/Forbidden' }
  *       404: { $ref: '#/components/responses/BadRequest' }
  *       409:
  *         description: Stale revision, institution drift, or a changed school claim; reload and reconfirm before retrying
@@ -191,7 +191,7 @@ export default createStudentAcademicProfileRouter();
  *         content: { application/json: { schema: { $ref: '#/components/schemas/AcademicProfileInstitutionCataloguePage' } } }
  *       400: { $ref: '#/components/responses/BadRequest' }
  *       401: { $ref: '#/components/responses/Unauthorized' }
- *       403: { $ref: '#/components/responses/Unauthorized' }
+ *       403: { $ref: '#/components/responses/Forbidden' }
  *       422: { $ref: '#/components/responses/BadRequest' }
  *       429: { description: Suggestion quota exhausted for this student; retry after the window resets }
  * /api/students/academic-profile/programmes:
@@ -210,7 +210,7 @@ export default createStudentAcademicProfileRouter();
  *         content: { application/json: { schema: { $ref: '#/components/schemas/AcademicProfileProgrammeCataloguePage' } } }
  *       400: { $ref: '#/components/responses/BadRequest' }
  *       401: { $ref: '#/components/responses/Unauthorized' }
- *       403: { $ref: '#/components/responses/Unauthorized' }
+ *       403: { $ref: '#/components/responses/Forbidden' }
  *       422: { $ref: '#/components/responses/BadRequest' }
  *       429: { description: Suggestion quota exhausted for this student; retry after the window resets }
  * /api/students/academic-profile/estimate:
@@ -230,7 +230,7 @@ export default createStudentAcademicProfileRouter();
  *         content: { application/json: { schema: { $ref: '#/components/schemas/AcademicProfileEstimateResult' } } }
  *       400: { $ref: '#/components/responses/BadRequest' }
  *       401: { $ref: '#/components/responses/Unauthorized' }
- *       403: { $ref: '#/components/responses/Unauthorized' }
+ *       403: { $ref: '#/components/responses/Forbidden' }
  *       404: { $ref: '#/components/responses/BadRequest' }
  *       422: { $ref: '#/components/responses/BadRequest' }
  *       429: { description: Suggestion quota exhausted for this student; retry after the window resets }

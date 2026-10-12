@@ -936,6 +936,16 @@ Access tokens expire in 15 minutes. Use the refresh token endpoint to get a new 
                         },
                     },
                 },
+                Forbidden: {
+                    description: 'Forbidden',
+                    content: {
+                        'application/json': {
+                            schema: {
+                                $ref: '#/components/schemas/Error',
+                            },
+                        },
+                    },
+                },
                 MicrosoftRequestError: {
                     description: 'Microsoft request rejected without provider or operation detail',
                     content: {

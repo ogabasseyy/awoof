@@ -5,6 +5,12 @@ const COMPLETE_PATH = '/student/profile/complete';
 const STUDENT_ID = '00000000-0000-4000-8000-000000000001';
 const CORS = { 'access-control-allow-origin': '*' };
 
+/** Catalogue search settlement signal: bumped only when a fetcher callback reaches the snapshot updater. */
+async function catalogueSettlements(page: Page): Promise<number> {
+    const count = await page.evaluate(() => (window as unknown as { __awoofCatalogueSettlements?: unknown }).__awoofCatalogueSettlements ?? 0);
+    return typeof count === 'number' ? count : 0;
+}
+
 function baseFields(overrides: Record<string, unknown> = {}): Record<string, unknown> {
     return {
         claimedInstitution: { state: 'unanswered' },
@@ -497,10 +503,9 @@ test('keeps current suggestions when a superseded search rejects late', async ({
     await expect(page.getByRole('option', { name: /Synthetic Programme Two/ })).toBeVisible();
     await input.fill('syn');
     await expect(page.getByRole('option', { name: /Synthetic Programme One/ })).toBeVisible();
-    const lateRejection = page.waitForResponse((response) => response.url().includes('/api/students/academic-profile/programmes') && response.status() === 500);
+    const settledBefore = await catalogueSettlements(page);
     releaseFirst();
-    await lateRejection;
-    await page.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+    await expect.poll(() => catalogueSettlements(page)).toBe(settledBefore + 1);
     await expect(page.getByRole('option', { name: /Synthetic Programme One/ })).toBeVisible();
     await expect(page.getByText('No matches found.')).toHaveCount(0);
 });
@@ -536,10 +541,9 @@ test('settles only the current catalogue key while a stale search resolves', asy
     await expect.poll(() => calls).toBe(2);
     // The superseded key settles while the current key still loads: the
     // stale snapshot must change neither the options nor the loading state.
-    const staleResponse = page.waitForResponse((response) => response.url().includes('/api/students/academic-profile/programmes'));
+    const settledBefore = await catalogueSettlements(page);
     releaseFirst();
-    await staleResponse;
-    await page.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+    await expect.poll(() => catalogueSettlements(page)).toBe(settledBefore + 1);
     await expect(page.getByText('Searching…')).toBeVisible();
     await expect(page.getByRole('option')).toHaveCount(0);
     await expect(page.getByText('No matches found.')).toHaveCount(0);
