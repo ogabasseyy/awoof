@@ -911,6 +911,10 @@ function CompletionForm() {
     };
 
     const writeCompleteLaterDeferral = () => {
+        // The marker only suppresses prompts, and prompts never fire
+        // while collection is disabled — so a disabled Complete-later
+        // click must not write storage.
+        if (view?.featureEnabled !== true) return;
         // The captured session fences the write: a late write from an
         // obsolete session removes only its own key and never suppresses
         // another login. Navigation proceeds regardless.
