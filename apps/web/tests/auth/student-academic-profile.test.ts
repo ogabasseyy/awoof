@@ -4,6 +4,7 @@ import {
     academicProfileGreeting,
     buildAcademicProfilePatch,
     buildClaimReconfirmPatch,
+    claimReconfirmRequest,
     estimateUnavailableMessage,
     isFormDirty,
     parseAcademicProfileResponse,
@@ -121,6 +122,23 @@ test('parses a claim-change conflict without confusing it with drift', () => {
     ]) {
         assert.equal(parseClaimChangedConflict(error), null);
     }
+});
+
+test('classifies claim updates for the reconfirmation prompt', () => {
+    assert.deepEqual(
+        claimReconfirmRequest({ expectedRevision: 3, claimedInstitution: { state: 'supplied', value: { name: 'New School', countryCode: 'GH' } } }),
+        { kind: 'supplied', schoolName: 'New School' },
+    );
+    assert.deepEqual(claimReconfirmRequest({ expectedRevision: 3, claimedInstitution: { state: 'unanswered' } }), { kind: 'cleared' });
+    assert.deepEqual(
+        claimReconfirmRequest({ expectedRevision: 3, claimedInstitution: { state: 'unknown' } }),
+        { kind: 'marked', marker: 'unknown' },
+    );
+    assert.deepEqual(
+        claimReconfirmRequest({ expectedRevision: 3, claimedInstitution: { state: 'skipped' } }),
+        { kind: 'marked', marker: 'skipped' },
+    );
+    assert.equal(claimReconfirmRequest({ expectedRevision: 3 }), null);
 });
 
 test('rebuilds a claim-change patch with the saved supplied answers', () => {

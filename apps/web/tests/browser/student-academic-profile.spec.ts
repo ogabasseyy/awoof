@@ -552,6 +552,24 @@ test('fetches an estimate for a catalogue selection and accepts the recomputed y
     });
 });
 
+test('scopes estimate previews by the draft claimed country', async ({ page }) => {
+    const fixture = await openComplete(page, projection());
+    fixture.estimateResult = { state: 'available', year: 2025, ruleId: 'SYN-R1', sourceVersion: 'nuc-v2' };
+    fixture.programmeItems = [{ programmeId: 'SYN-P1', label: 'Synthetic Programme One', award: 'B.Sc.' }];
+    await page.getByRole('combobox', { name: 'Institution name' }).fill('Draft School');
+    await page.getByRole('textbox', { name: 'Country (2-letter code)' }).fill('gh');
+    const input = page.getByRole('combobox', { name: 'Programme or course' });
+    await input.click();
+    await input.fill('syn');
+    await expect(page.getByRole('option').first()).toBeVisible();
+    await page.getByRole('option').first().click();
+    await page.getByRole('textbox', { name: 'Entry year' }).fill('2021');
+    await page.getByRole('radio', { name: 'UTME / first-year entry' }).check();
+    await page.getByRole('button', { name: 'Get estimated year' }).click();
+    await expect(page.getByText('Estimated graduation year:')).toBeVisible();
+    expect(fixture.estimateCalls).toEqual([{ programmeId: 'SYN-P1', entryYear: 2021, entryRoute: 'utme', claimedCountryCode: 'GH' }]);
+});
+
 test('explains unavailable estimates honestly', async ({ page }) => {
     const fixture = await openComplete(page, projection());
     await page.getByRole('button', { name: 'Get estimated year' }).click();
@@ -759,6 +777,28 @@ test('reconfirms saved answers after a claim-change conflict without losing the 
         claimedInstitution: { state: 'supplied', value: { name: 'New School', countryCode: 'GH' } },
         programme: { state: 'supplied', value: { programmeId: 'SYN-P1', courseLabel: null } },
         entryYear: { state: 'supplied', value: 2021 },
+    });
+});
+
+test('describes a removed school accurately when reconfirming', async ({ page }) => {
+    const fixture = await openComplete(page, projection({
+        fields: baseFields({
+            claimedInstitution: { state: 'supplied', value: { name: 'Old School', countryCode: 'NG' } },
+            programme: { state: 'supplied', value: { programmeId: 'SYN-P1', courseLabel: null } },
+        }),
+    }));
+    fixture.putBehavior = 'claim-changed-once';
+    await page.getByRole('combobox', { name: 'Institution name' }).fill('');
+    await page.getByRole('textbox', { name: 'Country (2-letter code)' }).fill('');
+    await page.getByRole('button', { name: 'Save and continue' }).click();
+    await expect(page.getByText('You removed your school. Resubmit your saved answers without a school?')).toBeVisible();
+    await page.getByRole('button', { name: 'Reconfirm saved answers' }).click();
+    await expect(page).toHaveURL(/\/marketplace/, { timeout: 30000 });
+    expect(fixture.puts).toHaveLength(2);
+    expect(fixture.puts[1]).toMatchObject({
+        expectedRevision: 3,
+        claimedInstitution: { state: 'unanswered' },
+        programme: { state: 'supplied', value: { programmeId: 'SYN-P1', courseLabel: null } },
     });
 });
 

@@ -23,6 +23,7 @@ import {
     academicProfileGreeting,
     buildAcademicProfilePatch,
     buildClaimReconfirmPatch,
+    claimReconfirmRequest,
     entryRouteLabel,
     estimateUnavailableMessage,
     fetchAcademicProfile,
@@ -39,6 +40,7 @@ import {
     type AcademicProfileInput,
     type AcademicProfileView,
     type CataloguePage,
+    type ClaimReconfirmRequest,
     type EntryRoute,
     type EstimateResult,
     type InstitutionCatalogueItem,
@@ -324,7 +326,7 @@ function CompletionForm() {
     const [fieldErrors, setFieldErrors] = useState<Record<string, string>>({});
     const [saveError, setSaveError] = useState<string | null>(null);
     const [conflict, setConflict] = useState<string | null>(null);
-    const [claimReconfirm, setClaimReconfirm] = useState<{ schoolName: string | null } | null>(null);
+    const [claimReconfirm, setClaimReconfirm] = useState<ClaimReconfirmRequest | null>(null);
     const [saveOutcome, setSaveOutcome] = useState<'saved' | null>(null);
     const [navFailed, setNavFailed] = useState(false);
     const [leaveDialog, setLeaveDialog] = useState(false);
@@ -748,13 +750,15 @@ function CompletionForm() {
                             const claimChange = parseClaimChangedConflict(error);
                             if (claimChange) {
                                 // Nothing was written: offer to resubmit the
-                                // saved answers under the new school instead
-                                // of discarding the claim draft on reload.
-                                const attempted = patch.claimedInstitution;
-                                setClaimReconfirm({
-                                    schoolName: attempted?.state === 'supplied' ? attempted.value.name : null,
-                                });
-                                setAnnounce('Your school changed. Confirm your saved answers to keep them under the new school.');
+                                // saved answers under the attempted claim
+                                // instead of discarding the draft on reload.
+                                const request = claimReconfirmRequest(patch);
+                                if (!request) {
+                                    setConflict('Your profile changed since it was read. Reload the latest values before saving again.');
+                                    return 'failed';
+                                }
+                                setClaimReconfirm(request);
+                                setAnnounce('Your school changed. Confirm your saved answers to keep them.');
                                 return 'failed';
                             }
                             setConflict('Your profile changed since it was read. Reload the latest values before saving again.');
@@ -899,6 +903,14 @@ function CompletionForm() {
             setAnnounce('No estimate is available. You can still enter your expected year.');
             return;
         }
+        // Scope the preview by the draft claim exactly as the save narrows by
+        // the merged claim; omitted (or invalid) drafts fall back to the
+        // stored claim server-side, so the preview never offers an estimate
+        // the save would reject.
+        const draftClaimCountry = editableInstitution && institutionMarked === null
+            && institutionName.trim() !== '' && /^[A-Za-z]{2}$/.test(institutionCountry.trim())
+            ? institutionCountry.trim().toUpperCase()
+            : undefined;
         const snapshot = getSessionSnapshot();
         const requestId = ++estimateRequestId.current;
         setEstimateUi({ status: 'loading' });
@@ -907,6 +919,7 @@ function CompletionForm() {
                 programmeId: effectiveProgrammeId,
                 entryYear: effectiveEntryYear,
                 entryRoute: effectiveEntryRoute,
+                ...(draftClaimCountry ? { claimedCountryCode: draftClaimCountry } : {}),
             });
             if (!isCurrentSession(snapshot) || requestId !== estimateRequestId.current) return;
             setEstimateUi({ status: 'ready', result });
@@ -1132,9 +1145,11 @@ function CompletionForm() {
             {claimReconfirm && (
                 <div role="alert" className="mt-4 rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900">
                     <p>
-                        {claimReconfirm.schoolName
+                        {claimReconfirm.kind === 'supplied'
                             ? `Your school changed to ${claimReconfirm.schoolName}. Resubmit your saved answers under the new school?`
-                            : 'Your school changed. Resubmit your saved answers under the current school?'}
+                            : claimReconfirm.kind === 'cleared'
+                                ? 'You removed your school. Resubmit your saved answers without a school?'
+                                : `You marked your school as ${claimReconfirm.marker === 'unknown' ? 'Not sure' : 'Skipped'}. Resubmit your saved answers without a confirmed school?`}
                         {' '}Nothing was saved yet.
                     </p>
                     <div className="mt-2 flex flex-wrap gap-2">

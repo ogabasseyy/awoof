@@ -112,6 +112,7 @@ export type EstimateInput = {
     programmeId: string | null;
     entryYear: number | null;
     entryRoute: EntryRoute | null;
+    claimedCountryCode?: string;
 };
 
 export type EstimateUnavailableReason =
@@ -590,6 +591,25 @@ export function parseClaimChangedConflict(error: unknown): { revision: number } 
     const revision = details['revision'];
     if (typeof revision !== 'number' || !Number.isInteger(revision) || revision < 0) return null;
     return { revision };
+}
+
+export type ClaimReconfirmRequest =
+    | { kind: 'supplied'; schoolName: string }
+    | { kind: 'cleared' }
+    | { kind: 'marked'; marker: 'unknown' | 'skipped' };
+
+/**
+ * Classify the claim update behind a reconfirmation conflict so the prompt
+ * describes what the student actually did: replacing the school differs
+ * from removing it or marking it Not sure/Skipped, and resubmitting
+ * answers without a school must say so explicitly.
+ */
+export function claimReconfirmRequest(patch: AcademicProfileInput): ClaimReconfirmRequest | null {
+    const update = patch.claimedInstitution;
+    if (update === undefined) return null;
+    if (update.state === 'supplied') return { kind: 'supplied', schoolName: update.value.name };
+    if (update.state === 'unanswered') return { kind: 'cleared' };
+    return { kind: 'marked', marker: update.state };
 }
 
 /**
