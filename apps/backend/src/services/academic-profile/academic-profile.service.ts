@@ -935,6 +935,13 @@ async function buildProjection(input: {
         },
         input.matricParsers,
     );
+    // Actor-level write availability: saves require both the global
+    // collection gate and an active student record, so suspended students
+    // see the supported read-only state instead of building a draft that
+    // every save rejects. The prompt decision uses the same gate so
+    // post-auth routing never sends a student who cannot save to a
+    // completion page where every field is read-only.
+    const writeAvailable = input.featureEnabled && ctx.status === 'active';
     return {
         revision: input.revision,
         fields,
@@ -953,13 +960,9 @@ async function buildProjection(input: {
             ? reference.findProgrammeLabel(fields.programme.value.programmeId)
             : null,
         featureEnabled: input.featureEnabled,
-        // Actor-level write availability: saves require both the global
-        // collection gate and an active student record, so suspended
-        // students see the supported read-only state instead of building
-        // a draft that every save rejects.
-        writeAvailable: input.featureEnabled && ctx.status === 'active',
+        writeAvailable,
         promptDecision: computePromptDecision({
-            featureEnabled: input.featureEnabled,
+            featureEnabled: writeAvailable,
             assuranceState,
             assurance,
             attentionFields,

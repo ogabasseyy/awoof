@@ -106,8 +106,10 @@ export class App {
     // Microsoft and student SSO OAuth callbacks skip this shared quota so a
     // provider return always reaches its bounded completion redirect; each
     // carries its own dedicated limiter on the route instead. The academic
-    // catalogue paths likewise carry a per-student limiter, so they skip
-    // the shared IP quota that one NAT address would otherwise exhaust.
+    // catalogue paths likewise skip the shared IP quota that one NAT
+    // address would otherwise exhaust, but stay quota-bound: a pre-auth
+    // flood ceiling caps unauthenticated traffic per IP, and a per-student
+    // limiter is the effective quota for authenticated use.
     this.app.use(rateLimit({
       windowMs: config.rateLimit.windowMs,
       max: config.rateLimit.maxRequests,

@@ -1653,14 +1653,17 @@ test('projection reports write availability for the requesting actor', async () 
     const active = await readAcademicProfile(createFakePool(fakeState()) as never, USER_ID, serviceDeps());
     assert.equal(active.featureEnabled, true);
     assert.equal(active.writeAvailable, true);
+    assert.equal(active.promptDecision, 'complete_profile');
     const suspended = fakeState();
     suspended.student = { id: STUDENT_ID, university_id: null, identity_version: 1, status: 'suspended' };
     const readOnly = await readAcademicProfile(createFakePool(suspended) as never, USER_ID, serviceDeps());
     assert.equal(readOnly.featureEnabled, true);
     assert.equal(readOnly.writeAvailable, false);
+    assert.equal(readOnly.promptDecision, 'continue');
     const disabled = await readAcademicProfile(createFakePool(fakeState()) as never, USER_ID, serviceDeps({ featureEnabled: false }));
     assert.equal(disabled.featureEnabled, false);
     assert.equal(disabled.writeAvailable, false);
+    assert.equal(disabled.promptDecision, 'continue');
 });
 
 test('reads flag saved estimates whose rule changed under an unchanged label', async () => {

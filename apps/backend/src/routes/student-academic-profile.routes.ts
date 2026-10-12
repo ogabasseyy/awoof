@@ -13,10 +13,11 @@ import { authenticate, requireRole } from '../middleware/auth.middleware.js';
 import { StudentAcademicProfileController } from '../controllers/student-academic-profile.controller.js';
 
 /**
- * Catalogue paths whose first applicable quota is the dedicated per-student
- * limiter above: the global IP-keyed limiter skips exactly these
- * method+path pairs so one NAT address cannot exhaust a shared budget
- * before the student quota matters.
+ * Catalogue paths that skip the shared global IP-keyed limiter so one NAT
+ * address cannot exhaust a shared budget before the student quota matters.
+ * They are still quota-bound: the pre-authentication flood ceiling below
+ * caps unauthenticated traffic per IP, and the per-student limiter remains
+ * the effective quota for authenticated use.
  */
 export function isAcademicCataloguePath(method: string, path: string): boolean {
     const normalizedPath = path.toLowerCase();
@@ -30,15 +31,34 @@ export function isAcademicCataloguePath(method: string, path: string): boolean {
     return false;
 }
 
+export type AcademicProfileRouterOptions = {
+    /** Test-only override for the pre-auth flood ceiling (production: 1000). */
+    floodCeilingMax?: number;
+};
+
 export function createStudentAcademicProfileRouter(
     controller: StudentAcademicProfileController = new StudentAcademicProfileController(),
+    options: AcademicProfileRouterOptions = {},
 ): Router {
     const router = Router();
     // Catalogue and estimate endpoints are suggestion-only and typeahead-hot.
-    // They skip the global IP-keyed limiter (see isAcademicCataloguePath):
-    // authentication runs before this limiter, so the per-student quota
-    // below is their first applicable limit and students behind one NAT
-    // address never spend each other's typeahead budget.
+    // Two limiters with two jobs (mirroring the Microsoft flood-ceiling
+    // precedent in microsoft-verification.routes.ts):
+    // - catalogueFloodCeiling (first): per-IP abuse backstop ahead of
+    //   authentication. These paths skip the global limiter, and
+    //   unauthenticated traffic never reaches the per-student limiter, so
+    //   without this ceiling invalid-token floods would hit JWT processing
+    //   unbounded. Successful responses never consume it, so legitimate
+    //   bursts behind one NAT pass while only failures accumulate.
+    // - catalogueLimiter (after auth): per-student quota, so students
+    //   behind one NAT address never spend each other's typeahead budget.
+    const catalogueFloodCeiling = rateLimit({
+        windowMs: 10 * 60 * 1000,
+        max: options.floodCeilingMax ?? 1000,
+        standardHeaders: true,
+        legacyHeaders: false,
+        skipSuccessfulRequests: true,
+    });
     const catalogueLimiter = rateLimit({
         windowMs: 60_000,
         max: 120,
@@ -78,6 +98,7 @@ export function createStudentAcademicProfileRouter(
      */
     router.get(
         '/academic-profile/institutions',
+        catalogueFloodCeiling,
         authenticate,
         requireRole('student'),
         catalogueLimiter,
@@ -91,6 +112,7 @@ export function createStudentAcademicProfileRouter(
      */
     router.get(
         '/academic-profile/programmes',
+        catalogueFloodCeiling,
         authenticate,
         requireRole('student'),
         catalogueLimiter,
@@ -104,6 +126,7 @@ export function createStudentAcademicProfileRouter(
      */
     router.post(
         '/academic-profile/estimate',
+        catalogueFloodCeiling,
         authenticate,
         requireRole('student'),
         catalogueLimiter,

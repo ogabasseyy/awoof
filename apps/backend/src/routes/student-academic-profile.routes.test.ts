@@ -369,3 +369,25 @@ test('global limiter skips exactly the per-student catalogue paths', () => {
         assert.equal(isAcademicCataloguePath(method, path), false, `${method} ${path}`);
     }
 });
+
+test('pre-auth flood ceiling caps unauthenticated catalogue traffic without taxing successes', async () => {
+    const controller = new StudentAcademicProfileController({
+        isCollectionEnabled: () => true,
+        searchProgrammes: async () => ({ items: [], nextCursor: null }),
+    });
+    await withServer(createStudentAcademicProfileRouter(controller, { floodCeilingMax: 2 }), async (baseUrl) => {
+        const headers = { authorization: `Bearer ${studentToken()}` };
+        for (let attempt = 0; attempt < 3; attempt += 1) {
+            const ok = await fetch(`${baseUrl}/academic-profile/programmes?q=eng`, { headers });
+            assert.equal(ok.status, 200, `success ${attempt}`);
+        }
+        // Successful responses never consume the ceiling, so the first two
+        // unauthenticated failures still have budget before the cap bites.
+        const first = await fetch(`${baseUrl}/academic-profile/programmes?q=eng`);
+        assert.equal(first.status, 401);
+        const second = await fetch(`${baseUrl}/academic-profile/programmes?q=eng`);
+        assert.equal(second.status, 401);
+        const capped = await fetch(`${baseUrl}/academic-profile/programmes?q=eng`);
+        assert.equal(capped.status, 429);
+    });
+});
