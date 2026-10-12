@@ -168,12 +168,18 @@ function useCatalogueSearch<T>(
         const timer = setTimeout(() => {
             fetcher(query.trim()).then((page) => {
                 if (!isCurrentSession(snapshot)) return;
-                setResultSnapshot((prev) => (prev.searchKey === searchKey ? { searchKey, items: page.items } : prev));
-                if (id === requestId.current) setStatus('ready');
+                // Both guards matter: the key drops late responses for
+                // superseded queries, and the request id drops stale
+                // responses when the student returns to a query whose
+                // earlier request is still running.
+                const current = id === requestId.current;
+                setResultSnapshot((prev) => (current && prev.searchKey === searchKey ? { searchKey, items: page.items } : prev));
+                if (current) setStatus('ready');
             }).catch(() => {
                 if (!isCurrentSession(snapshot)) return;
-                setResultSnapshot((prev) => (prev.searchKey === searchKey ? { searchKey, items: [] } : prev));
-                if (id === requestId.current) setStatus('error');
+                const current = id === requestId.current;
+                setResultSnapshot((prev) => (current && prev.searchKey === searchKey ? { searchKey, items: [] } : prev));
+                if (current) setStatus('error');
             });
         }, 200);
         return () => clearTimeout(timer);
@@ -453,6 +459,9 @@ function CompletionForm() {
         // carries the current draft instead.
         setClaimReconfirm(null);
         saveLeaveRef.current = null;
+        // New edits also retire the post-save navigation retry: it would
+        // otherwise bypass the leave guard and silently drop them.
+        setNavFailed(false);
     };
 
     const resetDraft = (profile: AcademicProfileView) => {
@@ -841,11 +850,11 @@ function CompletionForm() {
         } catch (error: unknown) {
             if (!isCurrentSession(snapshot)) return;
             setClaimReconfirm(null);
-            saveLeaveRef.current = null;
             if (axios.isAxiosError(error) && error.response) {
                 // The draft is intact: a revision race falls back to the reload
                 // path, while a rejection (for example an estimate the new
                 // school cannot support) surfaces the server message for edits.
+                saveLeaveRef.current = null;
                 if (error.response.status === 409) {
                     setConflict('Your profile changed since it was read. Reload the latest values before saving again.');
                     return;
@@ -856,7 +865,9 @@ function CompletionForm() {
             // A lost response is an unknown outcome: the reconfirmation may
             // have committed, so read back before presenting a failure, like
             // saveDraft. Without this, a retry 409s on the committed claim
-            // and forces a needless reload.
+            // and forces a needless reload. The stashed leave survives the
+            // readback: a reconciled save still completes the original
+            // leave, and only a confirmed mismatch abandons it.
             try {
                 const fresh = await fetchAcademicProfile();
                 if (!isCurrentSession(snapshot)) return;
@@ -868,9 +879,11 @@ function CompletionForm() {
                     navigateAfterReconfirm();
                     return;
                 }
+                saveLeaveRef.current = null;
                 setConflict('We could not confirm your save because the profile changed. Reload the latest values before trying again.');
             } catch {
                 if (!isCurrentSession(snapshot)) return;
+                saveLeaveRef.current = null;
                 setSaveError('We could not confirm whether your changes were saved. Check your connection, then reload and try again.');
                 setConflict('We could not confirm whether your changes were saved. Reload the latest values before trying again.');
             }

@@ -454,17 +454,55 @@ test('ignores stale catalogue options while a new search loads', async ({ page }
     await input.click();
     await input.fill('syn');
     await expect(page.getByRole('option').first()).toBeVisible();
+    let releaseSearch: () => void = () => undefined;
+    const searchGate = new Promise<void>((resolve) => { releaseSearch = resolve; });
     await page.route(`${apiOrigin}/api/students/academic-profile/programmes*`, async (route: Route) => {
-        await new Promise((resolve) => setTimeout(resolve, 300));
+        await searchGate;
         await route.fallback();
     });
     await input.fill('synx');
     await input.press('ArrowDown');
     await expect(input).not.toHaveAttribute('aria-activedescendant', /.+/);
+    releaseSearch();
     await expect(page.getByRole('option').first()).toBeVisible();
     await input.press('ArrowDown');
     await input.press('Enter');
     await expect(input).toHaveValue('Synthetic Programme One');
+});
+
+test('keeps current suggestions when a superseded search rejects late', async ({ page }) => {
+    await openComplete(page, projection());
+    let releaseFirst: () => void = () => undefined;
+    const firstGate = new Promise<void>((resolve) => { releaseFirst = resolve; });
+    let calls = 0;
+    await page.route(`${apiOrigin}/api/students/academic-profile/programmes*`, async (route: Route) => {
+        const q = new URL(route.request().url()).searchParams.get('q');
+        calls += 1;
+        if (calls === 1) {
+            await firstGate;
+            await route.fulfill({ status: 500, json: {}, headers: CORS });
+            return;
+        }
+        const label = q === 'synx' ? 'Synthetic Programme Two' : 'Synthetic Programme One';
+        await route.fulfill({
+            json: { success: true, data: { items: [{ programmeId: 'SYN-P1', label, award: 'B.Sc.' }], nextCursor: null } },
+            headers: CORS,
+        });
+    });
+    const input = page.getByRole('combobox', { name: 'Programme or course' });
+    await input.click();
+    await input.fill('syn');
+    await expect.poll(() => calls).toBe(1);
+    await input.fill('synx');
+    await expect(page.getByRole('option', { name: /Synthetic Programme Two/ })).toBeVisible();
+    await input.fill('syn');
+    await expect(page.getByRole('option', { name: /Synthetic Programme One/ })).toBeVisible();
+    const lateRejection = page.waitForResponse((response) => response.url().includes('/api/students/academic-profile/programmes') && response.status() === 500);
+    releaseFirst();
+    await lateRejection;
+    await page.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+    await expect(page.getByRole('option', { name: /Synthetic Programme One/ })).toBeVisible();
+    await expect(page.getByText('No matches found.')).toHaveCount(0);
 });
 
 test('accepts a suggested entry year', async ({ page }) => {
@@ -1002,6 +1040,19 @@ test('reports saved state and retries navigation without resubmitting', async ({
     expect(fixture.puts).toHaveLength(1);
 });
 
+test('retires the navigation retry once the saved form is edited again', async ({ page }) => {
+    await openComplete(page, projection());
+    await page.getByRole('textbox', { name: 'Entry year' }).fill('2021');
+    await page.evaluate(() => {
+        (window as unknown as Record<string, unknown>).__awoofFailNextExitNavigation = true;
+    });
+    await page.getByRole('button', { name: 'Save and continue' }).click();
+    await expect(page.getByText("We couldn't take you to the next page.")).toBeVisible();
+    await page.getByRole('textbox', { name: 'Entry year' }).fill('2022');
+    await expect(page.getByRole('button', { name: 'Try again' })).toHaveCount(0);
+    await expect(page).toHaveURL(/\/student\/profile\/complete/);
+});
+
 test('stays on a dirty form when leaving is cancelled', async ({ page }) => {
     const fixture = await openComplete(page, projection());
     await page.getByRole('textbox', { name: 'Entry year' }).fill('2022');
@@ -1043,6 +1094,34 @@ test('completes a stashed leave after reconfirming a dialog save', async ({ page
         }),
     }));
     fixture.putBehavior = 'claim-changed-once';
+    await page.getByRole('combobox', { name: 'Institution name' }).fill('New School');
+    await page.getByRole('textbox', { name: 'Country (2-letter code)' }).fill('GH');
+    await page.getByRole('button', { name: 'Complete later' }).click();
+    await page.getByRole('alertdialog').getByRole('button', { name: 'Save and continue' }).click();
+    await expect(page.getByText('Your school changed to New School. Resubmit your saved answers under the new school?')).toBeVisible();
+    await page.getByRole('button', { name: 'Reconfirm saved answers' }).click();
+    await expect(page).toHaveURL(/\/marketplace/, { timeout: 30000 });
+    expect(fixture.puts).toHaveLength(2);
+    const deferrals = await page.evaluate((prefix) => {
+        const keys: string[] = [];
+        for (let index = 0; index < localStorage.length; index += 1) {
+            const key = localStorage.key(index);
+            if (key && key.startsWith(prefix)) keys.push(key);
+        }
+        return keys;
+    }, 'awoof.profile.defer-prompt.v1.');
+    expect(deferrals).toHaveLength(1);
+});
+
+test('completes a stashed leave after reconciling a lost reconfirmation', async ({ page }) => {
+    const fixture = await openComplete(page, projection({
+        fields: baseFields({
+            claimedInstitution: { state: 'supplied', value: { name: 'Old School', countryCode: 'NG' } },
+            programme: { state: 'supplied', value: { programmeId: 'SYN-P1', courseLabel: null } },
+            entryYear: { state: 'supplied', value: 2021 },
+        }),
+    }));
+    fixture.putBehavior = 'claim-changed-then-abort';
     await page.getByRole('combobox', { name: 'Institution name' }).fill('New School');
     await page.getByRole('textbox', { name: 'Country (2-letter code)' }).fill('GH');
     await page.getByRole('button', { name: 'Complete later' }).click();
