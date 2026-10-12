@@ -363,6 +363,22 @@ test('writes no deferral marker when completing later while disabled', async ({ 
     expect(deferrals).toHaveLength(0);
 });
 
+test('writes no deferral marker when completing later while read-only', async ({ page }) => {
+    await openComplete(page, projection({ writeAvailable: false }));
+    await expect(page.getByText('Your student record is not active, so your saved answers are read-only for now.')).toBeVisible();
+    await page.getByRole('button', { name: 'Complete later' }).click();
+    await expect(page).toHaveURL(/\/marketplace/, { timeout: 30000 });
+    const deferrals = await page.evaluate((prefix) => {
+        const keys: string[] = [];
+        for (let index = 0; index < localStorage.length; index += 1) {
+            const key = localStorage.key(index);
+            if (key && key.startsWith(prefix)) keys.push(key);
+        }
+        return keys;
+    }, 'awoof.profile.defer-prompt.v1.');
+    expect(deferrals).toHaveLength(0);
+});
+
 test('renders saved answers read-only when writes are unavailable', async ({ page }) => {
     const fixture = await openComplete(page, projection({
         writeAvailable: false,

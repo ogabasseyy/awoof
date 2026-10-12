@@ -72,10 +72,11 @@ HTTP property. A future direct service caller must preserve the gate.
   session's own account ID only, never transmitted, removed on
   session change. It cannot write in the shipped configuration:
   the server forces `promptDecision: 'continue'` while collection
-  is disabled (`academic-profile.service.ts`), and disabled
-  Complete-later clicks skip the write (`writeCompleteLaterDeferral`
-  returns unless `featureEnabled`; navigation still proceeds).
-  Before activation, owner/legal review
+  is disabled (`academic-profile.service.ts`), and Complete-later
+  clicks while disabled or read-only skip the write
+  (`writeCompleteLaterDeferral` returns unless both `featureEnabled`
+  and `writeAvailable`; navigation still proceeds). Before
+  activation, owner/legal review
   must approve and publish the `/cookies` (and `/privacy`, if
   counsel requires) deferral-purpose disclosure; tracked under
   activation precondition 2. Any future purpose/retention change
