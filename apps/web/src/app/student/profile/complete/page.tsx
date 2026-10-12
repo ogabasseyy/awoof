@@ -24,6 +24,7 @@ import {
     buildAcademicProfilePatch,
     buildClaimReconfirmPatch,
     claimReconfirmRequest,
+    draftClaimScopeForEstimate,
     entryRouteLabel,
     estimateUnavailableMessage,
     fetchAcademicProfile,
@@ -668,12 +669,11 @@ function CompletionForm() {
                     form.expectedGraduationYear = { state: 'unanswered' };
                 } else {
                     const parsed = /^\d+$/.test(graduation.text.trim()) ? Number(graduation.text.trim()) : NaN;
-                    if (!Number.isInteger(parsed)
-                        || (confirmedEntryYear !== null && parsed < confirmedEntryYear)
-                        || parsed > year + 20) {
-                        errors.graduation = confirmedEntryYear !== null
-                            ? `Enter an expected year between ${confirmedEntryYear} and ${year + 20}, or choose Not sure or Skip this detail.`
-                            : `Enter an expected year no later than ${year + 20}, or choose Not sure or Skip this detail.`;
+                    // Mirror the server's self-reported bounds exactly: the
+                    // entry year when one is confirmed, else the 1900 floor.
+                    const graduationFloor = confirmedEntryYear ?? 1900;
+                    if (!Number.isInteger(parsed) || parsed < graduationFloor || parsed > year + 20) {
+                        errors.graduation = `Enter an expected year between ${graduationFloor} and ${year + 20}, or choose Not sure or Skip this detail.`;
                     } else {
                         form.expectedGraduationYear = { state: 'supplied', value: { kind: 'self_reported', year: parsed } };
                     }
@@ -819,14 +819,38 @@ function CompletionForm() {
         } catch (error: unknown) {
             if (!isCurrentSession(snapshot)) return;
             setClaimReconfirm(null);
-            // The draft is intact: a revision race falls back to the reload
-            // path, while a rejection (for example an estimate the new
-            // school cannot support) surfaces the server message for edits.
-            if (axios.isAxiosError(error) && error.response?.status === 409) {
-                setConflict('Your profile changed since it was read. Reload the latest values before saving again.');
+            if (axios.isAxiosError(error) && error.response) {
+                // The draft is intact: a revision race falls back to the reload
+                // path, while a rejection (for example an estimate the new
+                // school cannot support) surfaces the server message for edits.
+                if (error.response.status === 409) {
+                    setConflict('Your profile changed since it was read. Reload the latest values before saving again.');
+                    return;
+                }
+                setSaveError(serverMessage(error) ?? 'We could not save your profile. Check your answers and try again.');
                 return;
             }
-            setSaveError(serverMessage(error) ?? 'We could not save your profile. Check your answers and try again.');
+            // A lost response is an unknown outcome: the reconfirmation may
+            // have committed, so read back before presenting a failure, like
+            // saveDraft. Without this, a retry 409s on the committed claim
+            // and forces a needless reload.
+            try {
+                const fresh = await fetchAcademicProfile();
+                if (!isCurrentSession(snapshot)) return;
+                if (patchMatchesProjection(patch, fresh)) {
+                    setView(fresh);
+                    resetDraft(fresh);
+                    setSaveOutcome('saved');
+                    setAnnounce('Profile saved under the new school.');
+                    navigateToExit();
+                    return;
+                }
+                setConflict('We could not confirm your save because the profile changed. Reload the latest values before trying again.');
+            } catch {
+                if (!isCurrentSession(snapshot)) return;
+                setSaveError('We could not confirm whether your changes were saved. Check your connection, then reload and try again.');
+                setConflict('We could not confirm whether your changes were saved. Reload the latest values before trying again.');
+            }
         } finally {
             if (isCurrentSession(snapshot)) setSaving(false);
         }
@@ -904,13 +928,15 @@ function CompletionForm() {
             return;
         }
         // Scope the preview by the draft claim exactly as the save narrows by
-        // the merged claim; omitted (or invalid) drafts fall back to the
-        // stored claim server-side, so the preview never offers an estimate
-        // the save would reject.
-        const draftClaimCountry = editableInstitution && institutionMarked === null
-            && institutionName.trim() !== '' && /^[A-Za-z]{2}$/.test(institutionCountry.trim())
-            ? institutionCountry.trim().toUpperCase()
-            : undefined;
+        // the merged claim: a supplied draft sends its country, a removed or
+        // marked draft sends explicit null (unconstrained), and an untouched
+        // draft omits the field so the server falls back to the stored claim.
+        const draftClaimCountry = draftClaimScopeForEstimate({
+            dirty: editableInstitution && dirtyFields.includes('claimedInstitution'),
+            marked: institutionMarked,
+            name: institutionName,
+            country: institutionCountry,
+        });
         const snapshot = getSessionSnapshot();
         const requestId = ++estimateRequestId.current;
         setEstimateUi({ status: 'loading' });
@@ -919,7 +945,7 @@ function CompletionForm() {
                 programmeId: effectiveProgrammeId,
                 entryYear: effectiveEntryYear,
                 entryRoute: effectiveEntryRoute,
-                ...(draftClaimCountry ? { claimedCountryCode: draftClaimCountry } : {}),
+                ...(draftClaimCountry === undefined ? {} : { claimedCountryCode: draftClaimCountry }),
             });
             if (!isCurrentSession(snapshot) || requestId !== estimateRequestId.current) return;
             setEstimateUi({ status: 'ready', result });

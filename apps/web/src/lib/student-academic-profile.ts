@@ -112,8 +112,27 @@ export type EstimateInput = {
     programmeId: string | null;
     entryYear: number | null;
     entryRoute: EntryRoute | null;
-    claimedCountryCode?: string;
+    claimedCountryCode?: string | null;
 };
+
+/**
+ * Draft-claim scope for estimate previews: the claimed country when the
+ * draft asserts a school, explicit null when the draft removed or marked
+ * the claim (previews stop using the stored school, matching the save),
+ * undefined when the claim is untouched (the server falls back to the
+ * stored claim).
+ */
+export function draftClaimScopeForEstimate(input: {
+    dirty: boolean;
+    marked: 'unknown' | 'skipped' | null;
+    name: string;
+    country: string;
+}): string | null | undefined {
+    if (!input.dirty) return undefined;
+    if (input.marked !== null) return null;
+    if (input.name.trim() === '' || !/^[A-Za-z]{2}$/.test(input.country.trim())) return null;
+    return input.country.trim().toUpperCase();
+}
 
 export type EstimateUnavailableReason =
     | 'missing_input'

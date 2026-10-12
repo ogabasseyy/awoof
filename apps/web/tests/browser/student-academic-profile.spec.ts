@@ -84,7 +84,7 @@ type AcademicFixture = {
     puts: unknown[];
     getCalls: number;
     current: unknown;
-    putBehavior: 'echo' | 'conflict' | 'error' | 'abort-once' | 'institution-changed-once' | 'institution-changed-always' | 'claim-changed-once' | 'defer-once';
+    putBehavior: 'echo' | 'conflict' | 'error' | 'abort-once' | 'institution-changed-once' | 'institution-changed-always' | 'claim-changed-once' | 'claim-changed-then-abort' | 'defer-once';
     releaseDeferredPut: () => void;
     estimateResult: unknown;
     estimateCalls: unknown[];
@@ -137,7 +137,12 @@ async function installAcademicApi(page: Page, initial: unknown): Promise<Academi
                 });
                 return;
             }
-            if (fixture.putBehavior === 'claim-changed-once' && fixture.puts.length === 1) {
+            if (fixture.putBehavior === 'claim-changed-then-abort' && fixture.puts.length === 2) {
+                fixture.current = applyPatch(fixture.current, body);
+                await route.abort('failed');
+                return;
+            }
+            if ((fixture.putBehavior === 'claim-changed-once' || fixture.putBehavior === 'claim-changed-then-abort') && fixture.puts.length === 1) {
                 const revision = (fixture.current as Record<string, unknown>).revision as number;
                 await route.fulfill({
                     status: 409,
@@ -524,6 +529,14 @@ test('enters a self-reported graduation year', async ({ page }) => {
     });
 });
 
+test('applies the graduation-year floor without a confirmed entry year', async ({ page }) => {
+    const fixture = await openComplete(page, projection());
+    await page.getByRole('textbox', { name: 'Expected graduation year' }).fill('1800');
+    await page.getByRole('button', { name: 'Save and continue' }).click();
+    await expect(page.locator('#graduation-error')).toHaveText(/Enter an expected year between 1900 and \d{4}/);
+    expect(fixture.puts).toHaveLength(0);
+});
+
 test('fetches an estimate for a catalogue selection and accepts the recomputed year', async ({ page }) => {
     const fixture = await openComplete(page, projection());
     fixture.estimateResult = { state: 'available', year: 2025, ruleId: 'SYN-R1', sourceVersion: 'nuc-v2' };
@@ -568,6 +581,28 @@ test('scopes estimate previews by the draft claimed country', async ({ page }) =
     await page.getByRole('button', { name: 'Get estimated year' }).click();
     await expect(page.getByText('Estimated graduation year:')).toBeVisible();
     expect(fixture.estimateCalls).toEqual([{ programmeId: 'SYN-P1', entryYear: 2021, entryRoute: 'utme', claimedCountryCode: 'GH' }]);
+});
+
+test('unscopes estimate previews when the draft removes the saved claim', async ({ page }) => {
+    const fixture = await openComplete(page, projection({
+        fields: baseFields({
+            claimedInstitution: { state: 'supplied', value: { name: 'Saved School', countryCode: 'GH' } },
+        }),
+    }));
+    fixture.estimateResult = { state: 'available', year: 2025, ruleId: 'SYN-R1', sourceVersion: 'nuc-v2' };
+    fixture.programmeItems = [{ programmeId: 'SYN-P1', label: 'Synthetic Programme One', award: 'B.Sc.' }];
+    await page.getByRole('combobox', { name: 'Institution name' }).fill('');
+    await page.getByRole('textbox', { name: 'Country (2-letter code)' }).fill('');
+    const input = page.getByRole('combobox', { name: 'Programme or course' });
+    await input.click();
+    await input.fill('syn');
+    await expect(page.getByRole('option').first()).toBeVisible();
+    await page.getByRole('option').first().click();
+    await page.getByRole('textbox', { name: 'Entry year' }).fill('2021');
+    await page.getByRole('radio', { name: 'UTME / first-year entry' }).check();
+    await page.getByRole('button', { name: 'Get estimated year' }).click();
+    await expect(page.getByText('Estimated graduation year:')).toBeVisible();
+    expect(fixture.estimateCalls).toEqual([{ programmeId: 'SYN-P1', entryYear: 2021, entryRoute: 'utme', claimedCountryCode: null }]);
 });
 
 test('explains unavailable estimates honestly', async ({ page }) => {
@@ -778,6 +813,25 @@ test('reconfirms saved answers after a claim-change conflict without losing the 
         programme: { state: 'supplied', value: { programmeId: 'SYN-P1', courseLabel: null } },
         entryYear: { state: 'supplied', value: 2021 },
     });
+});
+
+test('reconciles a reconfirmation save with a lost response', async ({ page }) => {
+    const fixture = await openComplete(page, projection({
+        fields: baseFields({
+            claimedInstitution: { state: 'supplied', value: { name: 'Old School', countryCode: 'NG' } },
+            programme: { state: 'supplied', value: { programmeId: 'SYN-P1', courseLabel: null } },
+        }),
+    }));
+    fixture.putBehavior = 'claim-changed-then-abort';
+    await page.getByRole('combobox', { name: 'Institution name' }).fill('New School');
+    await page.getByRole('textbox', { name: 'Country (2-letter code)' }).fill('GH');
+    await page.getByRole('button', { name: 'Save and continue' }).click();
+    await expect(page.getByText('Your school changed to New School. Resubmit your saved answers under the new school?')).toBeVisible();
+    await page.getByRole('button', { name: 'Reconfirm saved answers' }).click();
+    await expect(page).toHaveURL(/\/marketplace/, { timeout: 30000 });
+    expect(fixture.puts).toHaveLength(2);
+    expect(fixture.getCalls).toBeGreaterThanOrEqual(2);
+    await expect(page.getByText('Your profile changed since it was read.')).toHaveCount(0);
 });
 
 test('describes a removed school accurately when reconfirming', async ({ page }) => {

@@ -5,6 +5,7 @@ import {
     buildAcademicProfilePatch,
     buildClaimReconfirmPatch,
     claimReconfirmRequest,
+    draftClaimScopeForEstimate,
     estimateUnavailableMessage,
     isFormDirty,
     parseAcademicProfileResponse,
@@ -139,6 +140,22 @@ test('classifies claim updates for the reconfirmation prompt', () => {
         { kind: 'marked', marker: 'skipped' },
     );
     assert.equal(claimReconfirmRequest({ expectedRevision: 3 }), null);
+});
+
+test('scopes estimate previews by the draft claim state', () => {
+    assert.equal(
+        draftClaimScopeForEstimate({ dirty: false, marked: null, name: 'Saved School', country: 'NG' }),
+        undefined,
+    );
+    assert.equal(
+        draftClaimScopeForEstimate({ dirty: true, marked: null, name: 'Draft School', country: 'gh' }),
+        'GH',
+    );
+    assert.equal(draftClaimScopeForEstimate({ dirty: true, marked: null, name: '', country: '' }), null);
+    assert.equal(draftClaimScopeForEstimate({ dirty: true, marked: 'unknown', name: '', country: '' }), null);
+    assert.equal(draftClaimScopeForEstimate({ dirty: true, marked: 'skipped', name: '', country: '' }), null);
+    assert.equal(draftClaimScopeForEstimate({ dirty: true, marked: null, name: 'Draft School', country: 'GHA' }), null);
+    assert.equal(draftClaimScopeForEstimate({ dirty: true, marked: null, name: '', country: 'NG' }), null);
 });
 
 test('rebuilds a claim-change patch with the saved supplied answers', () => {
