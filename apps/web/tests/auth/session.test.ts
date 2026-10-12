@@ -11,6 +11,7 @@ import {
   replaceCurrentSessionTokens,
   storeTokens,
   subscribeSessionChanges,
+  subscribeSessionInvalidated,
 } from '../../src/lib/auth';
 
 function withStorage(storage: Storage, run: () => void): void {
@@ -327,5 +328,43 @@ test('action id generation failure leaves clear quarantined until explicit recov
     assert.equal(isSessionStorageQuarantined(), false);
     assert.equal(getAccessToken(), null);
     assert.equal(typeof JSON.parse(window.localStorage.getItem('awoof.session.v1')!).actionId, 'string');
+  });
+});
+
+test('storing a session over an active one invalidates the displaced session', () => {
+  resetSessionState();
+  withStorage(memoryStorage(), () => {
+    storeTokens({ accessToken: 'access-a', refreshToken: 'refresh-a' });
+    const first = getSessionSnapshot();
+    assert.equal(first.browserSessionId !== null, true);
+    const invalidated: Array<string | null> = [];
+    const unsubscribe = subscribeSessionInvalidated((snapshot) => { invalidated.push(snapshot.browserSessionId); });
+    try {
+      storeTokens({ accessToken: 'access-b', refreshToken: 'refresh-b' });
+      assert.deepEqual(invalidated, [first.browserSessionId]);
+      assert.notEqual(getSessionSnapshot().browserSessionId, first.browserSessionId);
+    } finally {
+      unsubscribe();
+    }
+  });
+});
+
+test('storing the first session and rotating tokens notify no invalidation', () => {
+  resetSessionState();
+  withStorage(memoryStorage(), () => {
+    const invalidated: Array<string | null> = [];
+    const unsubscribe = subscribeSessionInvalidated((snapshot) => { invalidated.push(snapshot.browserSessionId); });
+    try {
+      storeTokens({ accessToken: 'access-a', refreshToken: 'refresh-a' });
+      assert.deepEqual(invalidated, []);
+      const beforeRefresh = getSessionSnapshot();
+      assert.equal(
+        replaceCurrentSessionTokens(beforeRefresh, { accessToken: 'access-a2', refreshToken: 'refresh-a' }),
+        true,
+      );
+      assert.deepEqual(invalidated, []);
+    } finally {
+      unsubscribe();
+    }
   });
 });

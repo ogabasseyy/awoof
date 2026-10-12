@@ -277,6 +277,15 @@ export function storeTokens(tokens: TokenPair): void {
     }
     const storage = getStorage();
     if (!storage) throw new SessionStorageError();
+    // Capture the displaced session first: a sign-in that replaces an
+    // active session without a prior logout must still release that
+    // session's namespaced artifacts (like its deferral marker), or they
+    // linger under an unreachable key. Rotation never passes through
+    // here, so any active previous session is genuinely replaced. Read
+    // the observed snapshot without reconciling: storage events already
+    // sync it cross-tab, and a reconcile here would emit a spurious
+    // lifecycle change on first login.
+    const previous = snapshot();
 
     let next: ActiveEnvelope;
     try {
@@ -297,6 +306,9 @@ export function storeTokens(tokens: TokenPair): void {
     }
     quarantined = false;
     observeActive(next, true);
+    if (previous.browserSessionId !== null && previous.browserSessionId !== next.sessionId) {
+        notifySessionInvalidated(previous);
+    }
 }
 
 /**

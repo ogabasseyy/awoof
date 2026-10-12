@@ -417,6 +417,24 @@ test('pre-auth flood ceiling ignores authenticated failures', async () => {
     });
 });
 
+test('per-token ceiling caps session work before authentication runs', async () => {
+    const controller = new StudentAcademicProfileController({
+        isCollectionEnabled: () => true,
+        searchProgrammes: async () => ({ items: [], nextCursor: null }),
+    });
+    await withServer(createStudentAcademicProfileRouter(controller, { tokenCeilingMax: 3 }), async (baseUrl) => {
+        // Every request costs a session lookup, so unlike the flood
+        // ceiling this cap counts successes too.
+        const headers = { authorization: `Bearer ${studentToken()}` };
+        for (let attempt = 0; attempt < 3; attempt += 1) {
+            const ok = await fetch(`${baseUrl}/academic-profile/programmes?q=eng`, { headers });
+            assert.equal(ok.status, 200, `success ${attempt}`);
+        }
+        const capped = await fetch(`${baseUrl}/academic-profile/programmes?q=eng`, { headers });
+        assert.equal(capped.status, 429);
+    });
+});
+
 test('pre-auth flood ceiling counts non-student role rejections', async () => {
     const controller = new StudentAcademicProfileController({
         isCollectionEnabled: () => true,

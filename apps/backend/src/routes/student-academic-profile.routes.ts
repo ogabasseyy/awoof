@@ -6,6 +6,7 @@
  * not contain one.
  */
 
+import { createHash } from 'node:crypto';
 import { Router } from 'express';
 import rateLimit from 'express-rate-limit';
 import { asyncHandler } from '../common/middleware/errorHandler.js';
@@ -34,7 +35,17 @@ export function isAcademicCataloguePath(method: string, path: string): boolean {
 export type AcademicProfileRouterOptions = {
     /** Test-only override for the pre-auth flood ceiling (production: 1000). */
     floodCeilingMax?: number;
+    /** Test-only override for the per-token session-work ceiling (production: 600). */
+    tokenCeilingMax?: number;
 };
+
+/**
+ * Stable bucket for one credential without storing or logging it. Only
+ * reached for requests carrying an authorization header (see skip below).
+ */
+function tokenBucketKey(authorization: string | undefined): string {
+    return createHash('sha256').update(authorization ?? '').digest('hex');
+}
 
 export function createStudentAcademicProfileRouter(
     controller: StudentAcademicProfileController = new StudentAcademicProfileController(),
@@ -42,7 +53,7 @@ export function createStudentAcademicProfileRouter(
 ): Router {
     const router = Router();
     // Catalogue and estimate endpoints are suggestion-only and typeahead-hot.
-    // Two limiters with two jobs (mirroring the Microsoft flood-ceiling
+    // Three limiters with three jobs (mirroring the Microsoft flood-ceiling
     // precedent in microsoft-verification.routes.ts):
     // - catalogueFloodCeiling (first): per-IP abuse backstop ahead of
     //   authentication. These paths skip the global limiter, and
@@ -54,6 +65,14 @@ export function createStudentAcademicProfileRouter(
     //   rejections here would let one student lock out a whole NAT —
     //   while vendor/admin tokens rejected before the per-student
     //   limiter must still spend this shared budget.
+    // - catalogueTokenCeiling (second): per-credential cap on the session
+    //   lookup every authenticated request performs. Over-quota student
+    //   requests still cost that database query before their 429, and the
+    //   flood ceiling refunds them, so without this a single valid or
+    //   compromised token could drive unbounded session queries. Keyed by
+    //   credential hash (never shared across a NAT) and deliberately far
+    //   above legitimate typeahead volume: it exists to cap floods, not
+    //   users. Headerless traffic skips it and stays purely IP-capped.
     // - catalogueLimiter (after auth): per-student quota, so students
     //   behind one NAT address never spend each other's typeahead budget.
     const catalogueFloodCeiling = rateLimit({
@@ -63,6 +82,14 @@ export function createStudentAcademicProfileRouter(
         legacyHeaders: false,
         skipSuccessfulRequests: true,
         requestWasSuccessful: (req, res) => res.statusCode < 400 || req.user?.role === 'student',
+    });
+    const catalogueTokenCeiling = rateLimit({
+        windowMs: 60_000,
+        max: options.tokenCeilingMax ?? 600,
+        standardHeaders: true,
+        legacyHeaders: false,
+        skip: (req) => req.headers.authorization === undefined,
+        keyGenerator: (req) => tokenBucketKey(req.headers.authorization),
     });
     const catalogueLimiter = rateLimit({
         windowMs: 60_000,
@@ -104,6 +131,7 @@ export function createStudentAcademicProfileRouter(
     router.get(
         '/academic-profile/institutions',
         catalogueFloodCeiling,
+        catalogueTokenCeiling,
         authenticate,
         requireRole('student'),
         catalogueLimiter,
@@ -118,6 +146,7 @@ export function createStudentAcademicProfileRouter(
     router.get(
         '/academic-profile/programmes',
         catalogueFloodCeiling,
+        catalogueTokenCeiling,
         authenticate,
         requireRole('student'),
         catalogueLimiter,
@@ -132,6 +161,7 @@ export function createStudentAcademicProfileRouter(
     router.post(
         '/academic-profile/estimate',
         catalogueFloodCeiling,
+        catalogueTokenCeiling,
         authenticate,
         requireRole('student'),
         catalogueLimiter,

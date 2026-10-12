@@ -1003,16 +1003,23 @@ test('reconciles a lost save response without resubmitting', async ({ page }) =>
     expect(fixture.getCalls).toBeGreaterThanOrEqual(2);
 });
 
-test('retries a save once after an institution-change conflict', async ({ page }) => {
+test('requires reconfirmation after an institution-change conflict', async ({ page }) => {
     const fixture = await openComplete(page, projection());
     fixture.putBehavior = 'institution-changed-once';
     await page.getByRole('textbox', { name: 'Entry year' }).fill('2022');
+    fixture.current = projection({ revision: 4 });
+    await page.getByRole('button', { name: 'Save and continue' }).click();
+    // No transparent resubmission: the draft stays for review and the
+    // student must explicitly save again under the new school.
+    await expect(page.getByText('Your school changed. Review your answers below and save again to confirm them.')).toBeVisible();
+    await expect(page.getByRole('textbox', { name: 'Entry year' })).toHaveValue('2022');
+    expect(fixture.puts).toHaveLength(1);
+    await expect(page).toHaveURL(/\/student\/profile\/complete/);
     await page.getByRole('button', { name: 'Save and continue' }).click();
     await expect(page).toHaveURL(/\/marketplace/, { timeout: 30000 });
     expect(fixture.puts).toHaveLength(2);
     expect(fixture.puts[0]).toMatchObject({ expectedRevision: 3 });
     expect(fixture.puts[1]).toMatchObject({ expectedRevision: 4, entryYear: { state: 'supplied', value: 2022 } });
-    await expect(page.getByText('Your profile changed since it was read.')).toHaveCount(0);
 });
 
 test('reconfirms saved answers after a claim-change conflict without losing the draft', async ({ page }) => {
@@ -1086,13 +1093,18 @@ test('describes a removed school accurately when reconfirming', async ({ page })
     });
 });
 
-test('surfaces the conflict UI when the drift retry also conflicts', async ({ page }) => {
+test('names the replacement school in the drift banner without resubmitting', async ({ page }) => {
     const fixture = await openComplete(page, projection());
     fixture.putBehavior = 'institution-changed-always';
     await page.getByRole('textbox', { name: 'Entry year' }).fill('2022');
+    fixture.current = projection({
+        revision: 4,
+        institution: { displayName: 'New University', countryCode: 'NG', binding: 'server_bound' },
+    });
     await page.getByRole('button', { name: 'Save and continue' }).click();
-    await expect(page.getByText('Your profile changed since it was read. Reload the latest values before saving again.')).toBeVisible();
-    expect(fixture.puts).toHaveLength(2);
+    await expect(page.getByText('Your school changed to New University. Review your answers below and save again to confirm them.')).toBeVisible();
+    await expect(page.getByRole('textbox', { name: 'Entry year' })).toHaveValue('2022');
+    expect(fixture.puts).toHaveLength(1);
     await expect(page).toHaveURL(/\/student\/profile\/complete/);
 });
 

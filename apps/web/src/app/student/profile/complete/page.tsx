@@ -759,79 +759,90 @@ function CompletionForm() {
             setAnnounce('Check the highlighted fields before saving.');
             return 'invalid';
         }
-        let patch: AcademicProfileInput = buildAcademicProfilePatch(validated.form, view.revision, view.institution);
+        const patch: AcademicProfileInput = buildAcademicProfilePatch(validated.form, view.revision, view.institution);
         const snapshot = getSessionSnapshot();
         setSaving(true);
         setSaveError(null);
         setConflict(null);
         setClaimReconfirm(null);
         saveLeaveRef.current = null;
-        // An institution-change conflict carries the post-invalidation
-        // revision: the replacement entries were staged against blank
-        // fields, so one transparent retry preserves them instead of
-        // forcing a reload that discards the draft.
-        let retriedDrift = false;
         try {
-            for (;;) {
-                try {
-                    const committed = await saveAcademicProfile(patch);
-                    if (!isCurrentSession(snapshot)) return 'failed';
-                    setView(committed);
-                    resetDraft(committed);
-                    setSaveOutcome('saved');
-                    setAnnounce('Profile saved.');
-                    return 'saved';
-                } catch (error: unknown) {
-                    if (!isCurrentSession(snapshot)) return 'failed';
-                    if (axios.isAxiosError(error) && error.response) {
-                        if (error.response.status === 409) {
-                            const drift = retriedDrift ? null : parseInstitutionChangedConflict(error);
-                            if (drift) {
-                                retriedDrift = true;
-                                patch = buildAcademicProfilePatch(validated.form, drift.revision, view.institution);
-                                setAnnounce('Your institution changed. Retrying your save against the new profile.');
-                                continue;
-                            }
-                            const claimChange = parseClaimChangedConflict(error);
-                            if (claimChange) {
-                                // Nothing was written: offer to resubmit the
-                                // saved answers under the attempted claim
-                                // instead of discarding the draft on reload.
-                                const request = claimReconfirmRequest(patch);
-                                if (!request) {
-                                    setConflict('Your profile changed since it was read. Reload the latest values before saving again.');
-                                    return 'failed';
-                                }
-                                setClaimReconfirm(request);
-                                setAnnounce('Your school changed. Confirm your saved answers to keep them.');
-                                return 'claim-offer';
-                            }
+            const committed = await saveAcademicProfile(patch);
+            if (!isCurrentSession(snapshot)) return 'failed';
+            setView(committed);
+            resetDraft(committed);
+            setSaveOutcome('saved');
+            setAnnounce('Profile saved.');
+            return 'saved';
+        } catch (error: unknown) {
+            if (!isCurrentSession(snapshot)) return 'failed';
+            if (axios.isAxiosError(error) && error.response) {
+                if (error.response.status === 409) {
+                    const drift = parseInstitutionChangedConflict(error);
+                    if (drift) {
+                        // No transparent retry: the draft was
+                        // entered under the former school, so
+                        // silently resubmitting it under the
+                        // replacement school would skip the
+                        // reconfirmation the invalidation exists to
+                        // force. Load the new projection, keep the
+                        // draft for review, and require an explicit
+                        // re-save.
+                        try {
+                            const fresh = await fetchAcademicProfile();
+                            if (!isCurrentSession(snapshot)) return 'failed';
+                            setView(fresh);
+                            setSaveOutcome(null);
+                            setNavFailed(false);
+                            const school = fresh.institution.binding === 'server_bound' && fresh.institution.displayName !== null
+                                ? ` to ${fresh.institution.displayName}` : '';
+                            setConflict(`Your school changed${school}. Review your answers below and save again to confirm them.`);
+                            setAnnounce('Your school changed. Review your answers and save again to confirm them.');
+                            return 'failed';
+                        } catch {
+                            if (!isCurrentSession(snapshot)) return 'failed';
                             setConflict('Your profile changed since it was read. Reload the latest values before saving again.');
                             return 'failed';
                         }
-                        setSaveError(serverMessage(error) ?? 'We could not save your profile. Check your answers and try again.');
-                        return 'failed';
                     }
-                    // A lost response is an unknown outcome: read back before retrying.
-                    try {
-                        const fresh = await fetchAcademicProfile();
-                        if (!isCurrentSession(snapshot)) return 'failed';
-                        if (patchMatchesProjection(patch, fresh)) {
-                            setView(fresh);
-                            resetDraft(fresh);
-                            setSaveOutcome('saved');
-                            setAnnounce('Profile saved.');
-                            return 'saved';
+                    const claimChange = parseClaimChangedConflict(error);
+                    if (claimChange) {
+                        // Nothing was written: offer to resubmit the
+                        // saved answers under the attempted claim
+                        // instead of discarding the draft on reload.
+                        const request = claimReconfirmRequest(patch);
+                        if (!request) {
+                            setConflict('Your profile changed since it was read. Reload the latest values before saving again.');
+                            return 'failed';
                         }
-                        setConflict('We could not confirm your save because the profile changed. Reload the latest values before trying again.');
-                        return 'failed';
-                    } catch {
-                        if (!isCurrentSession(snapshot)) return 'failed';
-                        setSaveError('We could not confirm whether your changes were saved. Check your connection, then reload and try again.');
-                        setConflict('We could not confirm whether your changes were saved. Reload the latest values before trying again.');
-                        return 'failed';
+                        setClaimReconfirm(request);
+                        setAnnounce('Your school changed. Confirm your saved answers to keep them.');
+                        return 'claim-offer';
                     }
+                    setConflict('Your profile changed since it was read. Reload the latest values before saving again.');
+                    return 'failed';
                 }
+                setSaveError(serverMessage(error) ?? 'We could not save your profile. Check your answers and try again.');
+                return 'failed';
+            }
+            // A lost response is an unknown outcome: read back before retrying.
+            try {
+                const fresh = await fetchAcademicProfile();
+                if (!isCurrentSession(snapshot)) return 'failed';
+                if (patchMatchesProjection(patch, fresh)) {
+                    setView(fresh);
+                    resetDraft(fresh);
+                    setSaveOutcome('saved');
+                    setAnnounce('Profile saved.');
+                    return 'saved';
+                }
+                setConflict('We could not confirm your save because the profile changed. Reload the latest values before trying again.');
+                return 'failed';
+            } catch {
+                if (!isCurrentSession(snapshot)) return 'failed';
+                setSaveError('We could not confirm whether your changes were saved. Check your connection, then reload and try again.');
+                setConflict('We could not confirm whether your changes were saved. Reload the latest values before trying again.');
+                return 'failed';
             }
         } finally {
             if (isCurrentSession(snapshot)) setSaving(false);
