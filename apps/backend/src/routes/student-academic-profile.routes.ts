@@ -48,10 +48,12 @@ export function createStudentAcademicProfileRouter(
     //   authentication. These paths skip the global limiter, and
     //   unauthenticated traffic never reaches the per-student limiter, so
     //   without this ceiling invalid-token floods would hit JWT processing
-    //   unbounded. Only authentication failures consume it: any request
-    //   that authenticated is already quota'd per student below, so
-    //   counting its validation failures or quota rejections here would
-    //   let one student lock out a whole NAT.
+    //   unbounded. Only authentication failures and non-student role
+    //   rejections consume it: student requests are already quota'd per
+    //   student below, so counting their validation failures or quota
+    //   rejections here would let one student lock out a whole NAT —
+    //   while vendor/admin tokens rejected before the per-student
+    //   limiter must still spend this shared budget.
     // - catalogueLimiter (after auth): per-student quota, so students
     //   behind one NAT address never spend each other's typeahead budget.
     const catalogueFloodCeiling = rateLimit({
@@ -60,7 +62,7 @@ export function createStudentAcademicProfileRouter(
         standardHeaders: true,
         legacyHeaders: false,
         skipSuccessfulRequests: true,
-        requestWasSuccessful: (req, res) => res.statusCode < 400 || req.user !== undefined,
+        requestWasSuccessful: (req, res) => res.statusCode < 400 || req.user?.role === 'student',
     });
     const catalogueLimiter = rateLimit({
         windowMs: 60_000,

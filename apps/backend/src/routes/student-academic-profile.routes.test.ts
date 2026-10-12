@@ -416,3 +416,21 @@ test('pre-auth flood ceiling ignores authenticated failures', async () => {
         assert.equal(capped.status, 429);
     });
 });
+
+test('pre-auth flood ceiling counts non-student role rejections', async () => {
+    const controller = new StudentAcademicProfileController({
+        isCollectionEnabled: () => true,
+        searchProgrammes: async () => ({ items: [], nextCursor: null }),
+    });
+    await withServer(createStudentAcademicProfileRouter(controller, { floodCeilingMax: 2 }), async (baseUrl) => {
+        // Vendor tokens are rejected before the per-student limiter, so
+        // unlike student requests they must spend the shared budget.
+        const headers = { authorization: `Bearer ${studentToken('vendor')}` };
+        const first = await fetch(`${baseUrl}/academic-profile/programmes?q=eng`, { headers });
+        assert.equal(first.status, 401);
+        const second = await fetch(`${baseUrl}/academic-profile/programmes?q=eng`, { headers });
+        assert.equal(second.status, 401);
+        const capped = await fetch(`${baseUrl}/academic-profile/programmes?q=eng`, { headers });
+        assert.equal(capped.status, 429);
+    });
+});
