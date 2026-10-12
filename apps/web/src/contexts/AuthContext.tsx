@@ -535,16 +535,18 @@ export function AuthProvider({ children }: { children: ReactNode }) {
             };
             // Post-resolution navigation guard: unlike ownsAdoptedSession,
             // this tolerates our own background reconcile, which owns the
-            // newest operation by design. Tokens and generation still prove
-            // no other tab or operation replaced the adopted session.
+            // newest operation by design. Identity is generation plus
+            // browser-session id, not token equality: same-session token
+            // rotation (for example a cross-tab refresh sync) must keep
+            // navigation allowed, while a replaced or cleared session
+            // still navigates nowhere.
             const adoptedSessionIntact = (): boolean => {
                 const current = getSessionSnapshot();
                 return mountedRef.current
                     && !options.signal.aborted
                     && !isSessionStorageQuarantined()
                     && current.generation === adopted.generation
-                    && current.accessToken === authentication.tokens.accessToken
-                    && current.refreshToken === authentication.tokens.refreshToken;
+                    && current.browserSessionId === adopted.browserSessionId;
             };
             if (!ownsAdoptedSession()) return cancellation('created');
 
