@@ -1022,6 +1022,31 @@ test('requires reconfirmation after an institution-change conflict', async ({ pa
     expect(fixture.puts[1]).toMatchObject({ expectedRevision: 4, entryYear: { state: 'supplied', value: 2022 } });
 });
 
+test('reconfirms retained answers after an institution-change conflict', async ({ page }) => {
+    const fixture = await openComplete(page, projection({
+        fields: baseFields({
+            programme: { state: 'supplied', value: { programmeId: null, courseLabel: 'Old Course' } },
+            entryRoute: { state: 'supplied', value: 'utme' },
+        }),
+    }));
+    fixture.putBehavior = 'institution-changed-once';
+    await page.getByRole('textbox', { name: 'Entry year' }).fill('2022');
+    fixture.current = projection({ revision: 4 });
+    await page.getByRole('button', { name: 'Save and continue' }).click();
+    await expect(page.getByText('Your school changed. Review your answers below and save again to confirm them.')).toBeVisible();
+    expect(fixture.puts).toHaveLength(1);
+    expect('programme' in (fixture.puts[0] as Record<string, unknown>)).toBe(false);
+    await page.getByRole('button', { name: 'Save and continue' }).click();
+    await expect(page).toHaveURL(/\/marketplace/, { timeout: 30000 });
+    expect(fixture.puts).toHaveLength(2);
+    expect(fixture.puts[1]).toMatchObject({
+        expectedRevision: 4,
+        programme: { state: 'supplied', value: { programmeId: null, courseLabel: 'Old Course' } },
+        entryYear: { state: 'supplied', value: 2022 },
+        entryRoute: { state: 'supplied', value: 'utme' },
+    });
+});
+
 test('reconfirms saved answers after a claim-change conflict without losing the draft', async ({ page }) => {
     const fixture = await openComplete(page, projection({
         fields: baseFields({
@@ -1570,6 +1595,36 @@ test('locks the draft while a save is in flight', async ({ page }) => {
     });
     await page.getByRole('button', { name: 'Save and continue' }).click();
     await expect(page.getByRole('textbox', { name: 'Entry year' })).toBeDisabled();
+    await expect(page).toHaveURL(/\/marketplace/, { timeout: 30000 });
+});
+
+test('locks the leave dialog actions while its save is in flight', async ({ page }) => {
+    await openComplete(page, projection());
+    await page.getByRole('textbox', { name: 'Entry year' }).fill('2022');
+    await page.getByRole('button', { name: 'Complete later' }).click();
+    const dialog = page.getByRole('alertdialog');
+    await expect(dialog).toBeVisible();
+    let releasePut: () => void = () => undefined;
+    const putGate = new Promise<void>((resolve) => { releasePut = resolve; });
+    await page.route(`${apiOrigin}/api/students/academic-profile`, async (route: Route) => {
+        if (route.request().method() !== 'PUT') {
+            await route.fallback();
+            return;
+        }
+        await putGate;
+        await route.fallback();
+    });
+    // Start the form save behind the open dialog: the same open-dialog
+    // plus in-flight-save state a Back press during the guard-sync gap
+    // reaches, held here deterministically behind the PUT gate.
+    await page.evaluate(() => {
+        const submit = document.querySelector('form button[type="submit"]');
+        if (submit instanceof HTMLButtonElement) submit.click();
+    });
+    await expect(dialog.getByRole('button', { name: 'Saving…' })).toBeDisabled();
+    await expect(dialog.getByRole('button', { name: 'Discard and continue' })).toBeDisabled();
+    await expect(dialog.getByRole('button', { name: 'Stay on this page' })).toBeEnabled();
+    releasePut();
     await expect(page).toHaveURL(/\/marketplace/, { timeout: 30000 });
 });
 

@@ -69,6 +69,9 @@ export class StudentAcademicProfileController {
             throw new UnauthorizedError('User not authenticated');
         }
         const projection = await this.readProfile(req.user.userId);
+        // Personal-data response: never retainable in private caches
+        // after logout or a database purge.
+        res.setHeader('Cache-Control', 'no-store');
         success(res, {
             message: 'Academic profile retrieved successfully',
             data: projection,
@@ -105,6 +108,9 @@ export class StudentAcademicProfileController {
         }
         this.requireCollection();
         const page = await this.searchInstitutions(req.user.userId, req.query);
+        // Query-keyed personal-data response: never retainable in
+        // browser or network caches.
+        res.setHeader('Cache-Control', 'no-store');
         success(res, {
             message: 'Academic institutions retrieved successfully',
             data: page,
@@ -120,6 +126,9 @@ export class StudentAcademicProfileController {
         }
         this.requireCollection();
         const page = await this.searchProgrammes(req.user.userId, req.query);
+        // Query-keyed personal-data response: never retainable in
+        // browser or network caches.
+        res.setHeader('Cache-Control', 'no-store');
         success(res, {
             message: 'Academic programmes retrieved successfully',
             data: page,

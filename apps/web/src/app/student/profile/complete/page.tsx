@@ -792,6 +792,20 @@ function CompletionForm() {
                             const fresh = await fetchAcademicProfile();
                             if (!isCurrentSession(snapshot)) return 'failed';
                             setView(fresh);
+                            // The invalidation wiped the stored answers, so
+                            // every retained draft value must join the
+                            // reconfirmation patch: resubmitting only the
+                            // originally dirty fields would leave the visible
+                            // retained answers blank and lose them on commit.
+                            // Retained content is server-valid (loaded) or
+                            // already dirty (typed), and untouched empties
+                            // resubmit as explicit unanswered no-ops, so
+                            // promotion cannot introduce validation errors
+                            // of its own.
+                            setDirtyFields((previous) => {
+                                const fields: AcademicField[] = ['claimedInstitution', 'programme', 'entryYear', 'entryRoute', 'expectedGraduationYear'];
+                                return [...previous, ...fields.filter((field) => !previous.includes(field))];
+                            });
                             setSaveOutcome(null);
                             setNavFailed(false);
                             const school = fresh.institution.binding === 'server_bound' && fresh.institution.displayName !== null
@@ -1817,6 +1831,13 @@ function CompletionForm() {
                             </button>
                             <button
                                 type="button"
+                                // Both leave actions lock while a save is in
+                                // flight: Discard must not navigate away from
+                                // a request that may still commit, and Save
+                                // must not double-submit it. Staying needs no
+                                // lock: closing the dialog leaves the save
+                                // running to its own outcome.
+                                disabled={saving}
                                 onClick={() => {
                                     // Confirmed discard clears only this
                                     // page's unsaved local draft; saved
@@ -1828,7 +1849,7 @@ function CompletionForm() {
                                     if (pending.kind === 'exit' && pending.defer) writeCompleteLaterDeferral();
                                     navigateToPendingLeave(pending);
                                 }}
-                                className="inline-flex min-h-[44px] items-center justify-center rounded-full border border-slate-300 px-5 text-sm font-bold text-slate-700 hover:bg-slate-50"
+                                className="inline-flex min-h-[44px] items-center justify-center rounded-full border border-slate-300 px-5 text-sm font-bold text-slate-700 hover:bg-slate-50 disabled:opacity-50"
                             >
                                 Discard and continue
                             </button>

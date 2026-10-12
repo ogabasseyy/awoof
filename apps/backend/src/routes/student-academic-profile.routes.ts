@@ -47,6 +47,11 @@ function tokenBucketKey(authorization: string | undefined): string {
     return createHash('sha256').update(authorization ?? '').digest('hex');
 }
 
+/** Marker the credential ceiling leaves when it rejects a request. */
+type TokenCeilingRejection = {
+    awoofTokenCeilingRejected?: boolean;
+};
+
 export function createStudentAcademicProfileRouter(
     controller: StudentAcademicProfileController = new StudentAcademicProfileController(),
     options: AcademicProfileRouterOptions = {},
@@ -81,7 +86,9 @@ export function createStudentAcademicProfileRouter(
         standardHeaders: true,
         legacyHeaders: false,
         skipSuccessfulRequests: true,
-        requestWasSuccessful: (req, res) => res.statusCode < 400 || req.user?.role === 'student',
+        requestWasSuccessful: (req, res) => res.statusCode < 400
+            || req.user?.role === 'student'
+            || (req as TokenCeilingRejection).awoofTokenCeilingRejected === true,
     });
     const catalogueTokenCeiling = rateLimit({
         windowMs: 60_000,
@@ -90,6 +97,14 @@ export function createStudentAcademicProfileRouter(
         legacyHeaders: false,
         skip: (req) => req.headers.authorization === undefined,
         keyGenerator: (req) => tokenBucketKey(req.headers.authorization),
+        handler: (req, res, _next, limiterOptions) => {
+            // This rejection lands before authentication, so req.user is
+            // unset and the outer flood ceiling would otherwise count it
+            // as an authentication failure. Mark it so one token's
+            // over-quota burst cannot spend the shared IP budget.
+            (req as TokenCeilingRejection).awoofTokenCeilingRejected = true;
+            res.status(limiterOptions.statusCode).send(limiterOptions.message);
+        },
     });
     const catalogueLimiter = rateLimit({
         windowMs: 60_000,

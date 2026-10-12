@@ -153,6 +153,23 @@ test('GET academic profile binds the read to the authenticated student', async (
     });
 });
 
+test('academic profile GET responses are never cacheable', async () => {
+    const controller = new StudentAcademicProfileController({
+        isCollectionEnabled: () => true,
+        readAcademicProfile: async () => fixtureProjection(),
+        searchInstitutions: async () => ({ items: [], nextCursor: null }),
+        searchProgrammes: async () => ({ items: [], nextCursor: null }),
+    });
+    await withServer(createStudentAcademicProfileRouter(controller), async (baseUrl) => {
+        const headers = { authorization: `Bearer ${studentToken()}` };
+        for (const path of ['/academic-profile', '/academic-profile/institutions?q=eng', '/academic-profile/programmes?q=eng']) {
+            const response = await fetch(`${baseUrl}${path}`, { headers });
+            assert.equal(response.status, 200, path);
+            assert.equal(response.headers.get('cache-control'), 'no-store', path);
+        }
+    });
+});
+
 test('PUT academic profile forwards the body and binds the save to the authenticated student', async () => {
     const seen: Array<{ userId: string; body: unknown }> = [];
     const controller = new StudentAcademicProfileController({
@@ -433,6 +450,35 @@ test('per-token ceiling caps session work before authentication runs', async () 
         const capped = await fetch(`${baseUrl}/academic-profile/programmes?q=eng`, { headers });
         assert.equal(capped.status, 429);
     });
+});
+
+test('pre-auth flood ceiling refunds the credential ceiling rejections', async () => {
+    const controller = new StudentAcademicProfileController({
+        isCollectionEnabled: () => true,
+        searchProgrammes: async () => ({ items: [], nextCursor: null }),
+    });
+    await withServer(
+        createStudentAcademicProfileRouter(controller, { floodCeilingMax: 2, tokenCeilingMax: 2 }),
+        async (baseUrl) => {
+            const headers = { authorization: `Bearer ${studentToken()}` };
+            for (let attempt = 0; attempt < 2; attempt += 1) {
+                const ok = await fetch(`${baseUrl}/academic-profile/programmes?q=eng`, { headers });
+                assert.equal(ok.status, 200, `success ${attempt}`);
+            }
+            // The token ceiling rejects pre-authentication (req.user
+            // unset), but those 429s must not spend the shared budget.
+            for (let attempt = 0; attempt < 2; attempt += 1) {
+                const capped = await fetch(`${baseUrl}/academic-profile/programmes?q=eng`, { headers });
+                assert.equal(capped.status, 429, `token-capped ${attempt}`);
+            }
+            const first = await fetch(`${baseUrl}/academic-profile/programmes?q=eng`);
+            assert.equal(first.status, 401);
+            const second = await fetch(`${baseUrl}/academic-profile/programmes?q=eng`);
+            assert.equal(second.status, 401);
+            const capped = await fetch(`${baseUrl}/academic-profile/programmes?q=eng`);
+            assert.equal(capped.status, 429);
+        },
+    );
 });
 
 test('pre-auth flood ceiling counts non-student role rejections', async () => {
