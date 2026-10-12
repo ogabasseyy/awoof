@@ -526,6 +526,15 @@ function verifyArtifactDisposition(entry, label) {
  * aliases span programmes because excluded/blocked entries stage neither.
  */
 function verifyArtifactUniqueness(artifact, label) {
+    // Programme IDs are derived, not independent: the builder always sets
+    // programmeId to sourceId.trim().toLowerCase(), so a staged id that
+    // breaks the derivation is a hand edit serving reviewed durations
+    // under a fabricated programme identity.
+    for (const entry of artifact.programmes) {
+        if (entry.programmeId !== normalizeProgrammeId(entry.sourceId)) {
+            throw new Error(`invalid programme reference '${label}': programme id '${entry.programmeId}' does not derive from source id '${entry.sourceId}'`);
+        }
+    }
     const seenSourceIds = new Set();
     for (const entry of [...artifact.programmes, ...artifact.excluded, ...artifact.blocked]) {
         if (seenSourceIds.has(entry.sourceId)) {

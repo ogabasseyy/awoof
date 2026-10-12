@@ -985,13 +985,31 @@ export async function readAcademicProfile(
         );
         const row = rowResult.rows[0] ?? null;
         const stored = storedOrEmpty(row);
-        const drifted = row !== null && stored.canonicalInstitutionId !== ctx.universityId;
-        const fields = drifted ? scopedUnanswered(stored.fields) : stored.fields;
+        let revision = stored.revision;
+        let fields = stored.fields;
+        if (row !== null && stored.canonicalInstitutionId !== ctx.universityId) {
+            // Persist the drift invalidation instead of merely withholding
+            // the values: without this, a student who never saves again
+            // keeps the former institution's answers stored indefinitely,
+            // outside every cleanup path. Cleared values are idempotent;
+            // the revision advances once per drift. When the row vanished
+            // concurrently, fall back to withholding for this read.
+            const invalidated = await client.query<{ revision: number }>(
+                INVALIDATE_SQL,
+                [ctx.universityId, ctx.identityVersion, userId],
+            );
+            if (invalidated.rows[0]) {
+                revision = invalidated.rows[0].revision;
+                fields = storedOrEmpty(null).fields;
+            } else {
+                fields = scopedUnanswered(stored.fields);
+            }
+        }
         const projection = await buildProjection({
             tx: client,
             ctx,
             fields,
-            revision: stored.revision,
+            revision,
             reference: resolved.reference,
             featureEnabled: resolved.featureEnabled,
             assurance,

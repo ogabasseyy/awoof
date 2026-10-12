@@ -1157,7 +1157,7 @@ test('read reports assurance unavailable instead of failing the projection', asy
     assert.equal(projection.promptDecision, 'continue');
 });
 
-test('read withholds superseded values after an institution change', async () => {
+test('read persists the invalidation after an institution change', async () => {
     const state = boundState({
         profile: profileRow({
             canonical_institution_id: NEXT_UNIVERSITY_ID,
@@ -1169,11 +1169,17 @@ test('read withholds superseded values after an institution change', async () =>
     });
     state.student = { id: STUDENT_ID, university_id: UNIVERSITY_ID, identity_version: 1, status: 'active' };
     const projection = await readAcademicProfile(createFakePool(state) as never, USER_ID, serviceDeps());
-    assert.equal(projection.revision, 1);
+    assert.equal(state.writes.length, 1);
+    assert.ok(state.writes[0].text.startsWith('UPDATE student_academic_profiles'));
+    assert.equal(state.profile?.['revision'], 2);
+    assert.equal(state.profile?.['canonical_institution_id'], UNIVERSITY_ID);
+    assert.equal(state.profile?.['programme_state'], 'unanswered');
+    assert.equal(state.profile?.['programme_id'], null);
+    assert.equal(state.profile?.['entry_year'], null);
+    assert.equal(projection.revision, 2);
     assert.deepEqual(projection.fields.programme, { state: 'unanswered' });
     assert.deepEqual(projection.fields.entryYear, { state: 'unanswered' });
     assert.deepEqual(projection.institution.binding, 'server_bound');
-    assert.equal(state.writes.length, 0);
 });
 
 test('read hides soft-deleted accounts and unknown users', async () => {

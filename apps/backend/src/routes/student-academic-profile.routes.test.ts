@@ -8,7 +8,7 @@ import { jwtService } from '../services/auth/jwt.service.js';
 import { db } from '../config/database.js';
 import { swaggerSpec } from '../config/swagger.js';
 import { StudentAcademicProfileController } from '../controllers/student-academic-profile.controller.js';
-import { createStudentAcademicProfileRouter } from './student-academic-profile.routes.js';
+import { createStudentAcademicProfileRouter, isAcademicCataloguePath } from './student-academic-profile.routes.js';
 import { academicProfileInputSchema, type AcademicProfileProjection } from '../services/academic-profile/academic-profile.types.js';
 import { estimateInputSchema, parseCatalogueQuery } from '../services/academic-profile/academic-programme-reference.service.js';
 
@@ -350,5 +350,22 @@ test('generated OpenAPI includes the catalogue and estimate contracts', () => {
         'AcademicProfileEstimateResult',
     ]) {
         assert.ok(spec.components?.schemas?.[schema], `OpenAPI must define ${schema}`);
+    }
+});
+
+test('global limiter skips exactly the per-student catalogue paths', () => {
+    assert.equal(isAcademicCataloguePath('GET', '/api/students/academic-profile/institutions'), true);
+    assert.equal(isAcademicCataloguePath('GET', '/api/students/academic-profile/programmes'), true);
+    assert.equal(isAcademicCataloguePath('POST', '/api/students/academic-profile/estimate'), true);
+    assert.equal(isAcademicCataloguePath('GET', '/API/STUDENTS/ACADEMIC-PROFILE/PROGRAMMES'), true);
+    for (const [method, path] of [
+        ['POST', '/api/students/academic-profile/institutions'],
+        ['GET', '/api/students/academic-profile/estimate'],
+        ['PUT', '/api/students/academic-profile'],
+        ['GET', '/api/students/academic-profile'],
+        ['GET', '/api/students/academic-profile/programmes/extra'],
+        ['GET', '/api/students'],
+    ] as const) {
+        assert.equal(isAcademicCataloguePath(method, path), false, `${method} ${path}`);
     }
 });

@@ -711,7 +711,7 @@ Access tokens expire in 15 minutes. Use the refresh token endpoint to get a new 
                         programmeId: { type: 'string', minLength: 1, maxLength: 128, nullable: true },
                         entryYear: { type: 'integer', nullable: true },
                         entryRoute: { type: 'string', enum: ['utme', 'de_200', 'de_300', 'transfer_other'], nullable: true },
-                        claimedCountryCode: { type: 'string', pattern: '^[A-Z]{2}$', description: 'Unsaved draft-claim country for unbound preview scoping; ignored for server-bound students.' },
+                        claimedCountryCode: { type: 'string', pattern: '^[A-Z]{2}$', nullable: true, description: 'Unsaved draft-claim country for unbound preview scoping; explicit null means the draft removed the claim (unconstrained), omitted falls back to the stored claim. Ignored for server-bound students.' },
                     },
                 },
                 AcademicProfileEstimateResult: {

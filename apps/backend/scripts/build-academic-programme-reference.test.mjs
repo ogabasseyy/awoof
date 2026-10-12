@@ -571,8 +571,8 @@ test('reference verification rejects duplicated staged identities', () => {
     });
     const duplicateProgramme = build([baseRow(), second()]);
     const forged = structuredClone(duplicateProgramme.programmes[1]);
-    forged.sourceId = 'SYN-FORGED';
-    forged.programmeId = duplicateProgramme.programmes[0].programmeId;
+    forged.sourceId = 'Syn-001';
+    forged.programmeId = 'syn-001';
     forged.routes.utme.durationYears = 6;
     duplicateProgramme.programmes.unshift(forged);
     duplicateProgramme.counts.included += 1;
@@ -583,6 +583,7 @@ test('reference verification rejects duplicated staged identities', () => {
     });
     const duplicateSource = build([baseRow(), second()]);
     duplicateSource.programmes[1].sourceId = duplicateSource.programmes[0].sourceId;
+    duplicateSource.programmes[1].programmeId = duplicateSource.programmes[0].programmeId;
     reseal(duplicateSource);
     withTempArtifact(duplicateSource, (file) => {
         assert.throws(() => verifyProgrammeReferenceArtifact(file), /duplicate source id/);
@@ -598,6 +599,15 @@ test('reference verification rejects duplicated staged identities', () => {
     reseal(collidingAlias);
     withTempArtifact(collidingAlias, (file) => {
         assert.throws(() => verifyProgrammeReferenceArtifact(file), /collides with a programme id/);
+    });
+    const swapped = build([baseRow(), second()]);
+    const [first, other] = swapped.programmes;
+    const held = first.programmeId;
+    first.programmeId = other.programmeId;
+    other.programmeId = held;
+    reseal(swapped);
+    withTempArtifact(swapped, (file) => {
+        assert.throws(() => verifyProgrammeReferenceArtifact(file), /does not derive from source id/);
     });
 });
 

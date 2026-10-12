@@ -12,14 +12,33 @@ import { asyncHandler } from '../common/middleware/errorHandler.js';
 import { authenticate, requireRole } from '../middleware/auth.middleware.js';
 import { StudentAcademicProfileController } from '../controllers/student-academic-profile.controller.js';
 
+/**
+ * Catalogue paths whose first applicable quota is the dedicated per-student
+ * limiter above: the global IP-keyed limiter skips exactly these
+ * method+path pairs so one NAT address cannot exhaust a shared budget
+ * before the student quota matters.
+ */
+export function isAcademicCataloguePath(method: string, path: string): boolean {
+    const normalizedPath = path.toLowerCase();
+    if (method === 'GET') {
+        return normalizedPath === '/api/students/academic-profile/institutions'
+            || normalizedPath === '/api/students/academic-profile/programmes';
+    }
+    if (method === 'POST') {
+        return normalizedPath === '/api/students/academic-profile/estimate';
+    }
+    return false;
+}
+
 export function createStudentAcademicProfileRouter(
     controller: StudentAcademicProfileController = new StudentAcademicProfileController(),
 ): Router {
     const router = Router();
-    // Catalogue and estimate endpoints are suggestion-only and typeahead-hot;
-    // bound them tighter than the global limiter without affecting reads.
-    // Authentication runs before this limiter, so key by student: students
-    // behind one NAT address must not spend each other's typeahead budget.
+    // Catalogue and estimate endpoints are suggestion-only and typeahead-hot.
+    // They skip the global IP-keyed limiter (see isAcademicCataloguePath):
+    // authentication runs before this limiter, so the per-student quota
+    // below is their first applicable limit and students behind one NAT
+    // address never spend each other's typeahead budget.
     const catalogueLimiter = rateLimit({
         windowMs: 60_000,
         max: 120,

@@ -358,13 +358,17 @@ test('estimate input schema scopes drafts by claimed country only', () => {
         estimateInputSchema.parse({ programmeId: 'SYN-ENG', entryYear: 2022, entryRoute: 'utme', claimedCountryCode: 'GH' }),
         { programmeId: 'SYN-ENG', entryYear: 2022, entryRoute: 'utme', claimedCountryCode: 'GH' },
     );
-    for (const claimedCountryCode of ['gh', 'GHA', 'G', 'G1', '', null]) {
+    for (const claimedCountryCode of ['gh', 'GHA', 'G', 'G1', '']) {
         assert.throws(
             () => estimateInputSchema.parse({ programmeId: 'SYN-ENG', entryYear: 2022, entryRoute: 'utme', claimedCountryCode }),
             ZodError,
             JSON.stringify(claimedCountryCode),
         );
     }
+    assert.deepEqual(
+        estimateInputSchema.parse({ programmeId: 'SYN-ENG', entryYear: 2022, entryRoute: 'utme', claimedCountryCode: null }),
+        { programmeId: 'SYN-ENG', entryYear: 2022, entryRoute: 'utme', claimedCountryCode: null },
+    );
 });
 
 test('catalogue query parsing bounds page size, query length, and keys', () => {
@@ -767,6 +771,10 @@ test('student estimate previews scope unbound lookups by the claim', async () =>
     assert.deepEqual(
         await estimateGraduationYearForStudent(nigeriaClaim, USER_ID, { ...input, claimedCountryCode: 'GH' }, options),
         { state: 'unavailable', reason: 'unsupported_country' },
+    );
+    assert.deepEqual(
+        await estimateGraduationYearForStudent(ghanaClaim, USER_ID, { ...input, claimedCountryCode: null }, options),
+        { state: 'available', year: 2026, ruleId: 'SYN-ENG:utme', sourceVersion: SOURCE_VERSION },
     );
     const unclaimed = createCataloguePool(catalogueFixture());
     assert.deepEqual(

@@ -82,8 +82,10 @@ export const estimateInputSchema = z.object({
     // exactly as the save path narrows by the merged claim, so a preview
     // can never offer an estimate the save would reject. This only ever
     // narrows (the rule must still match the programme's own country);
-    // server-bound students ignore it in favor of the binding.
-    claimedCountryCode: z.string().regex(/^[A-Z]{2}$/).optional(),
+    // server-bound students ignore it in favor of the binding. Explicit
+    // null means the draft removed or marked the claim (unconstrained);
+    // omitted means untouched (fall back to the stored claim).
+    claimedCountryCode: z.string().regex(/^[A-Z]{2}$/).nullable().optional(),
 }).strict();
 
 export type ReferenceRouteRule = {
@@ -472,7 +474,7 @@ export async function estimateGraduationYearForStudent(
         let expectedCountryCode = boundInstitutionCountryCode(ctx.universityId, ctx.institutionCountry);
         if (ctx.universityId === null) {
             if (parsed.claimedCountryCode !== undefined) {
-                expectedCountryCode = parsed.claimedCountryCode;
+                expectedCountryCode = parsed.claimedCountryCode ?? undefined;
             } else {
                 const stored = await tx.query<{ claimed_institution_state: unknown; claimed_institution_country: unknown }>(
                     `SELECT claimed_institution_state, claimed_institution_country
