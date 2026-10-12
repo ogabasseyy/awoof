@@ -1,7 +1,7 @@
 import type { PoolClient } from 'pg';
 import { config } from '../../config/env.js';
 import { BadRequestError, NotFoundError } from '../../common/errors/AppError.js';
-import { lockStudentContext } from './eligibility-context.service.js';
+import { lockStudentContext, type StudentContextLock } from './eligibility-context.service.js';
 import {
     canonicalWidgetOrigin,
     prepareMerchantDisclosure,
@@ -261,6 +261,7 @@ export async function getEffectiveEligibility(
     tx: PoolClient,
     userId: string,
     disclosure?: { vendorId: string; grantId: string; origin: string; purpose: string },
+    lockContext: StudentContextLock = lockStudentContext,
 ): Promise<EligibilityResult> {
     let merchant: MerchantDisclosureContext | undefined;
     let canonicalDisclosure: typeof disclosure;
@@ -284,7 +285,7 @@ export async function getEffectiveEligibility(
     }
     let context: StudentContext;
     try {
-        context = await lockStudentContext(tx, userId);
+        context = await lockContext(tx, userId);
     } catch (error) {
         if (error instanceof NotFoundError) return { eligible: false, reason: 'unverified' };
         throw error;

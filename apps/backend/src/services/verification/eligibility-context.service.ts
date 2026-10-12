@@ -61,6 +61,72 @@ async function lockUniversity(tx: PoolClient, universityId: string): Promise<Loc
     return university;
 }
 
+async function lockUserReadOnly(tx: PoolClient, userId: string): Promise<LockedUser> {
+    const result = await tx.query<LockedUser>(
+        `SELECT id, email, role, deleted_at
+         FROM users
+         WHERE id = $1
+         FOR SHARE`,
+        [userId],
+    );
+    const user = result.rows[0];
+    if (!user) throw new NotFoundError('Student user not found');
+    return user;
+}
+
+async function lockStudentReadOnly(tx: PoolClient, userId: string): Promise<LockedStudent> {
+    const result = await tx.query<LockedStudent>(
+        `SELECT id, university_id, identity_version, status
+         FROM students
+         WHERE user_id = $1
+         FOR SHARE`,
+        [userId],
+    );
+    const student = result.rows[0];
+    if (!student) throw new NotFoundError('Student profile not found');
+    return student;
+}
+
+async function lockUniversityReadOnly(tx: PoolClient, universityId: string): Promise<LockedUniversity> {
+    const result = await tx.query<LockedUniversity>(
+        `SELECT id, is_active, verification_policy_version
+         FROM universities
+         WHERE id = $1
+         FOR KEY SHARE`,
+        [universityId],
+    );
+    const university = result.rows[0];
+    if (!university) throw new NotFoundError('Canonical university not found');
+    return university;
+}
+
+/**
+ * Read-only sibling of lockStudentContext for projection GETs. Same rows,
+ * same validation, same table order — but shared locks, so concurrent
+ * readers of one university never queue behind each other while writers
+ * still serialize. Callers that write in the same transaction must keep
+ * the locking variant, which takes the strongest locks first; upgrading
+ * shared locks to exclusive ones can deadlock against concurrent readers.
+ */
+export async function lockStudentContextReadOnly(tx: PoolClient, userId: string): Promise<StudentContext> {
+    const user = await lockUserReadOnly(tx, userId);
+    const student = await lockStudentReadOnly(tx, userId);
+    if (!student.university_id) throw new NotFoundError('Student has no canonical university');
+    const university = await lockUniversityReadOnly(tx, student.university_id);
+
+    return {
+        userId: user.id,
+        studentId: student.id,
+        email: user.email.trim().toLowerCase(),
+        universityId: university.id,
+        identityVersion: student.identity_version,
+        policyVersion: university.verification_policy_version,
+        active: user.deleted_at === null && user.role === 'student' && student.status === 'active' && university.is_active,
+    };
+}
+
+export type StudentContextLock = (tx: PoolClient, userId: string) => Promise<StudentContext>;
+
 export async function lockStudentContext(tx: PoolClient, userId: string): Promise<StudentContext> {
     const user = await lockUser(tx, userId);
     const student = await lockStudent(tx, userId);

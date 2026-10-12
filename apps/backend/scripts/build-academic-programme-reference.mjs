@@ -607,6 +607,13 @@ export function verifyProgrammeReferenceArtifact(filePath) {
     for (const key of ['programmes', 'excluded', 'blocked']) {
         if (!Array.isArray(artifact[key])) throw new Error(`invalid programme reference '${label}': '${key}' must be an array`);
     }
+    // The builder routes every row away from programmes when redistribution
+    // is blocked, so any staged entry is a hand edit smuggling labels,
+    // aliases, and rules past the licence gate — even with every route
+    // flipped to non-estimable and a recomputed checksum.
+    if (artifact.redistributionAllowed === false && artifact.programmes.length !== 0) {
+        throw new Error(`invalid programme reference '${label}': redistribution-blocked artifacts must not stage programmes`);
+    }
     if (!isPlainObject(artifact.counts)) throw new Error(`invalid programme reference '${label}': counts must be an object`);
     assertKnownFields(artifact.counts, KNOWN_ARTIFACT_COUNTS_FIELDS, 'artifact counts');
     if (artifact.counts.included !== artifact.programmes.length

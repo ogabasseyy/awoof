@@ -395,6 +395,23 @@ test('blocked redistribution withholds every row and disables calculations', () 
     assert.ok(!stableStringify(artifact).includes('Synthetic Crop Science'));
 });
 
+test('reference verification rejects staged programmes when redistribution is blocked', () => {
+    const honest = build([baseRow()], { redistribution: 'blocked' });
+    withTempArtifact(honest, (file) => {
+        assert.deepEqual(verifyProgrammeReferenceArtifact(file), honest);
+    });
+    const smuggled = build([baseRow()]);
+    smuggled.redistributionAllowed = false;
+    smuggled.calculationsEnabled = false;
+    for (const entry of smuggled.programmes) {
+        for (const route of Object.values(entry.routes)) route.estimable = false;
+    }
+    reseal(smuggled);
+    withTempArtifact(smuggled, (file) => {
+        assert.throws(() => verifyProgrammeReferenceArtifact(file), /must not stage programmes/);
+    });
+});
+
 test('withheld rows are blocked without carrying source content', () => {
     const row = { sourceId: 'SYN-009', withheld: true, locator: { sheet: 'Synthetic Register', row: 10 } };
     assert.deepEqual(classifyRow(row, { redistribution: 'allowed' }), {

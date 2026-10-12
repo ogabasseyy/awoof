@@ -1,7 +1,7 @@
 import type { Pool, PoolClient } from 'pg';
 import { config } from '../../config/env.js';
 import { NotFoundError, ServiceUnavailableError } from '../../common/errors/AppError.js';
-import { lockStudentContext } from './eligibility-context.service.js';
+import { lockStudentContext, lockStudentContextReadOnly, type StudentContextLock } from './eligibility-context.service.js';
 import { getEffectiveEligibility } from './eligibility-read.service.js';
 import {
     ENROLLMENT_SOURCE,
@@ -453,10 +453,14 @@ async function readEnrollmentFlags(tx: PoolClient, context: StudentContext): Pro
 // behind the provider flags. Expiry, denial, and revocation take effect on
 // the next read: nothing here is cached in the session or JWT. A reader
 // failure is a retryable status error, never a fabricated positive result.
-export async function readStudentAssurance(tx: PoolClient, userId: string): Promise<StudentAssurance> {
+async function readStudentAssuranceWith(
+    tx: PoolClient,
+    userId: string,
+    lockContext: StudentContextLock,
+): Promise<StudentAssurance> {
     let context: StudentContext;
     try {
-        context = await lockStudentContext(tx, userId);
+        context = await lockContext(tx, userId);
     } catch (error) {
         // Absent institution/profile routes to pending; the verification page
         // adds incomplete-profile guidance alongside this payload.
@@ -476,7 +480,7 @@ export async function readStudentAssurance(tx: PoolClient, userId: string): Prom
     }
     try {
         const school = await readSchoolAccount(tx, userId, context);
-        const eligibility = await getEffectiveEligibility(tx, userId);
+        const eligibility = await getEffectiveEligibility(tx, userId, undefined, lockContext);
         if (eligibility.eligible) {
             const stored = await tx.query<{ source: string | null }>(
                 'SELECT source FROM eligibility_evidence WHERE id = $1',
@@ -500,6 +504,22 @@ export async function readStudentAssurance(tx: PoolClient, userId: string): Prom
         if (error instanceof NotFoundError) return pendingStudentAssurance();
         throw new ServiceUnavailableError('Student status is temporarily unavailable. Please retry.');
     }
+}
+
+export async function readStudentAssurance(tx: PoolClient, userId: string): Promise<StudentAssurance> {
+    return readStudentAssuranceWith(tx, userId, lockStudentContext);
+}
+
+/**
+ * Projection-GET sibling of readStudentAssurance: identical status
+ * semantics, but the identity context is taken under shared locks so
+ * concurrent readers of one university never serialize on the shared
+ * university row. Per-student evidence rows still take the shared
+ * eligibility reader's locks; Microsoft-evidence students may briefly
+ * contend on the shared provider-policy row inside that reader.
+ */
+export async function readStudentAssuranceReadOnly(tx: PoolClient, userId: string): Promise<StudentAssurance> {
+    return readStudentAssuranceWith(tx, userId, lockStudentContextReadOnly);
 }
 
 // Best-effort sibling for account surfaces (profile, login): a transient

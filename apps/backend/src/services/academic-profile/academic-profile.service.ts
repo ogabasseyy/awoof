@@ -20,7 +20,7 @@ import {
     InternalServerError,
     NotFoundError,
 } from '../../common/errors/AppError.js';
-import { readStudentAssurance } from '../verification/student-assurance.service.js';
+import { readStudentAssurance, readStudentAssuranceReadOnly } from '../verification/student-assurance.service.js';
 import type { StudentAssurance } from '../verification/student-assurance.types.js';
 import {
     REVIEWED_MATRIC_PARSERS,
@@ -606,6 +606,10 @@ async function defaultReadAssurance(tx: PoolClient, userId: string): Promise<Stu
     return readStudentAssurance(tx, userId);
 }
 
+async function defaultReadAssuranceReadOnly(tx: PoolClient, userId: string): Promise<StudentAssurance> {
+    return readStudentAssuranceReadOnly(tx, userId);
+}
+
 async function defaultListVerificationMethods(tx: PoolClient, universityId: string | null): Promise<VerificationMethodInfo[]> {
     if (universityId === null) return [];
     return getAvailableVerificationMethods(universityId, tx);
@@ -615,6 +619,7 @@ function resolveDeps(deps: AcademicProfileDeps): {
     featureEnabled: boolean;
     reference: AcademicProgrammeReference;
     readAssurance: (tx: PoolClient, userId: string) => Promise<StudentAssurance>;
+    readAssuranceReadOnly: (tx: PoolClient, userId: string) => Promise<StudentAssurance>;
     listVerificationMethods: (tx: PoolClient, universityId: string | null) => Promise<VerificationMethodInfo[]>;
     matricParsers: readonly MatricParser[];
     currentYear: number;
@@ -623,6 +628,7 @@ function resolveDeps(deps: AcademicProfileDeps): {
         featureEnabled: deps.featureEnabled ?? isAcademicProfileCollectionEnabled(config.academicProfile),
         reference: deps.reference ?? loadAcademicProgrammeReference(),
         readAssurance: deps.readAssurance ?? defaultReadAssurance,
+        readAssuranceReadOnly: deps.readAssurance ?? defaultReadAssuranceReadOnly,
         listVerificationMethods: deps.listVerificationMethods ?? defaultListVerificationMethods,
         matricParsers: deps.matricParsers ?? REVIEWED_MATRIC_PARSERS,
         currentYear: (deps.now ?? new Date()).getUTCFullYear(),
@@ -835,12 +841,12 @@ WHERE user_id = $3
 RETURNING revision`;
 
 /**
- * Read student assurance before any profile lock is taken. Assurance takes
- * row-level write locks on the same identity rows the profile context
- * locks for reading, so reading it afterwards would upgrade shared locks
- * and two concurrent readers could deadlock. Reading first takes the
- * strongest locks once; the context re-locks for free. Failures settle to
- * null (unavailable) inside a savepoint so a failing lookup neither aborts
+ * Read student assurance before any profile lock is taken. Reads use the
+ * shared-lock assurance path, so projection GETs for different students
+ * at one university never serialize on the shared university row; saves
+ * keep the locking path, which takes the strongest locks once so the
+ * profile context re-locks for free. Failures settle to null
+ * (unavailable) inside a savepoint so a failing lookup neither aborts
  * the operation nor poisons the transaction.
  */
 async function readAssuranceSettled(
@@ -980,7 +986,7 @@ export async function readAcademicProfile(
     const client = await pool.connect();
     try {
         await client.query('BEGIN');
-        const assurance = await readAssuranceSettled(client, resolved.readAssurance, userId);
+        const assurance = await readAssuranceSettled(client, resolved.readAssuranceReadOnly, userId);
         const ctx = await lockAcademicProfileContext(client, userId, 'read');
         const rowResult = await client.query<AcademicProfileRow>(
             `SELECT ${PROFILE_COLUMNS} FROM student_academic_profiles WHERE user_id = $1`,
