@@ -17,6 +17,7 @@ import {
     ChevronLeft,
     Sparkles,
     ShieldCheck,
+    GraduationCap,
 } from 'lucide-react';
 import ProtectedRoute from '@/components/ProtectedRoute';
 import { useAuth } from '@/contexts/AuthContext';
@@ -27,6 +28,7 @@ import { useConfirm } from '@/components/ui/ConfirmDialog';
 import { StudentHeaderActions } from '@/components/student/StudentHeaderActions';
 import apiClient from '@/lib/api-client';
 import { isStudentVerified, parseStudentAssurance, schoolAccountLabel, studentStatusLabel, type StudentAssurance } from '@/lib/student-assurance';
+import { useAcademicProfileCompletionCta } from '@/lib/student-academic-profile';
 
 type MenuItem = {
     href?: string;
@@ -111,7 +113,11 @@ export default function StudentProfilePage() {
         }
     };
 
+    const completionCta = useAcademicProfileCompletionCta();
     const generalItems: MenuItem[] = [
+        ...(completionCta === true
+            ? [{ href: '/student/profile/complete?redirect=%2Fstudent%2Fprofile', label: 'Complete your student profile', icon: GraduationCap }]
+            : []),
         { href: '/student/verification', label: 'Student verification', icon: ShieldCheck },
         { href: '/student/security', label: 'Account security', icon: KeyRound },
         { href: '/student/profile/notifications', label: 'Notifications', icon: Bell },
@@ -315,7 +321,7 @@ export default function StudentProfilePage() {
                             <p className="text-xs font-semibold uppercase tracking-wider text-slate-500 mb-2 px-1">
                                 General
                             </p>
-                            <div className="rounded-2xl border border-slate-200/80 overflow-hidden divide-y divide-slate-100 shadow-sm">
+                            <div data-completion-cta={completionCta === null ? 'loading' : completionCta ? 'visible' : 'hidden'} className="rounded-2xl border border-slate-200/80 overflow-hidden divide-y divide-slate-100 shadow-sm">
                                 {generalItems.map(renderRow)}
                             </div>
                         </div>

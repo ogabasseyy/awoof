@@ -1,9 +1,10 @@
 import assert from 'node:assert/strict';
 import { existsSync, mkdtempSync, mkdirSync, readFileSync, renameSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import test from 'node:test';
-import { ARTIFACT_ROOT_NAME, DISABLED_FALLBACK_SMOKE, assertCompiledArtifact, compiledTestSelection, stageMigrationSql } from './artifact-layout.mjs';
+import { fileURLToPath } from 'node:url';
+import { ARTIFACT_ROOT_NAME, DISABLED_FALLBACK_SMOKE, assertCompiledArtifact, compiledTestSelection, stageMigrationSql, stageProgrammeReferenceJson } from './artifact-layout.mjs';
 import { validateArtifactManifest, writeArtifactManifest } from './artifact-manifest.mjs';
 
 function fixture() {
@@ -12,10 +13,14 @@ function fixture() {
     const sourceTests = join(root, 'src/testing/postgres');
     const artifactMigrations = join(root, ARTIFACT_ROOT_NAME, 'database/migrations');
     const artifactTests = join(root, ARTIFACT_ROOT_NAME, 'testing/postgres');
+    const sourceReference = join(root, 'src/data/academic-programmes');
+    const artifactReference = join(root, ARTIFACT_ROOT_NAME, 'data/academic-programmes');
     mkdirSync(sourceMigrations, { recursive: true });
     mkdirSync(sourceTests, { recursive: true });
     mkdirSync(artifactMigrations, { recursive: true });
     mkdirSync(artifactTests, { recursive: true });
+    mkdirSync(sourceReference, { recursive: true });
+    mkdirSync(artifactReference, { recursive: true });
     mkdirSync(join(root, ARTIFACT_ROOT_NAME, 'config'), { recursive: true });
     mkdirSync(join(root, ARTIFACT_ROOT_NAME, 'scripts'), { recursive: true });
     writeFileSync(join(sourceMigrations, '001_initial.sql'), 'select 1;\n');
@@ -28,6 +33,13 @@ function fixture() {
     writeFileSync(join(root, ARTIFACT_ROOT_NAME, 'config/openapi.json'), '{"paths":{"/api/auth/login":{}}}\n');
     writeFileSync(join(root, ARTIFACT_ROOT_NAME, 'scripts/cleanup-microsoft-attempts.js'), 'export {};\n');
     writeFileSync(join(root, ARTIFACT_ROOT_NAME, 'scripts/cleanup-student-sso.js'), 'export {};\n');
+    writeFileSync(join(root, ARTIFACT_ROOT_NAME, 'scripts/cleanup-academic-profile-data.js'), 'export {};\n');
+    // Staging fixtures carry the real production bytes: the production
+    // filename is pinned to its trusted digest, so a synthetic payload
+    // under that name must fail staging.
+    const scriptsDir = dirname(fileURLToPath(import.meta.url));
+    const productionReference = readFileSync(join(scriptsDir, '..', 'src/data/academic-programmes/nuc-v2.normalized.json'));
+    writeFileSync(join(sourceReference, 'nuc-v2.normalized.json'), productionReference);
     return root;
 }
 
@@ -49,10 +61,42 @@ test('stages exactly the source migration names and bytes, replacing stale SQL o
     }
 });
 
+test('stages exactly the source programme reference bytes, replacing stale JSON only', () => {
+    const root = fixture();
+    try {
+        const artifactReference = join(root, ARTIFACT_ROOT_NAME, 'data/academic-programmes');
+        writeFileSync(join(artifactReference, 'nuc-v2.normalized.json'), 'stale');
+        writeFileSync(join(artifactReference, '999_stale.json'), 'stale');
+        assert.equal(stageProgrammeReferenceJson(root), 1);
+        assert.equal(existsSync(join(artifactReference, '999_stale.json')), false);
+        assert.deepEqual(
+            readFileSync(join(artifactReference, 'nuc-v2.normalized.json')),
+            readFileSync(join(root, 'src/data/academic-programmes/nuc-v2.normalized.json')),
+        );
+    } finally {
+        rmSync(root, { recursive: true, force: true });
+    }
+});
+
+test('staging rejects a reference that bypasses the deterministic importer', () => {
+    const root = fixture();
+    try {
+        const source = join(root, 'src/data/academic-programmes/nuc-v2.normalized.json');
+        const parsed = JSON.parse(readFileSync(source, 'utf8'));
+        parsed.calculationsEnabled = true;
+        writeFileSync(source, JSON.stringify(parsed));
+        assert.throws(() => stageProgrammeReferenceJson(root), /programme reference/);
+        assert.equal(existsSync(join(root, ARTIFACT_ROOT_NAME, 'data/academic-programmes/nuc-v2.normalized.json')), false);
+    } finally {
+        rmSync(root, { recursive: true, force: true });
+    }
+});
+
 test('runtime manifest rejects source presence, extra files, tampered bytes, and symlinks', () => {
     const root = fixture();
     try {
         stageMigrationSql(root);
+        stageProgrammeReferenceJson(root);
         writeFileSync(join(root, ARTIFACT_ROOT_NAME, DISABLED_FALLBACK_SMOKE), 'export {};\n');
         writeArtifactManifest(root);
         assert.throws(() => validateArtifactManifest(root), /containing src/);
@@ -79,6 +123,7 @@ test('compiled artifact rejects missing or stale integration outputs before a da
     const root = fixture();
     try {
         stageMigrationSql(root);
+        stageProgrammeReferenceJson(root);
         assert.equal(assertCompiledArtifact(root).tests.length, 2);
         writeFileSync(join(root, ARTIFACT_ROOT_NAME, 'testing/postgres/stale.integration.js'), 'export {};\n');
         assert.throws(() => assertCompiledArtifact(root), /compiled integration tests must exactly match/);
@@ -91,6 +136,7 @@ test('compiled fallback selector is constrained to the dedicated smoke and canno
     const root = fixture();
     try {
         stageMigrationSql(root);
+        stageProgrammeReferenceJson(root);
         const artifact = assertCompiledArtifact(root);
         assert.deepEqual(
             compiledTestSelection(artifact, DISABLED_FALLBACK_SMOKE),

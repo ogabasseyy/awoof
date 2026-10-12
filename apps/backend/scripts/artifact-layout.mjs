@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { copyFileSync, existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, rmSync } from 'node:fs';
 import { basename, join, relative, resolve } from 'node:path';
 import { DISABLED_FALLBACK_SMOKE } from './artifact-manifest.mjs';
+import { verifyProgrammeReferenceArtifact } from './build-academic-programme-reference.mjs';
 
 export const ARTIFACT_ROOT_NAME = 'dist';
 export { DISABLED_FALLBACK_SMOKE } from './artifact-manifest.mjs';
@@ -46,6 +47,49 @@ export function stageMigrationSql(backendRoot) {
     return sourceFiles.length;
 }
 
+export function programmeReferenceFiles(directory) {
+    if (!existsSync(directory)) throw new Error(`Programme reference directory is missing: ${directory}`);
+    return readdirSync(directory, { withFileTypes: true })
+        .filter((entry) => entry.isFile() && entry.name.endsWith('.json'))
+        .map((entry) => join(directory, entry.name))
+        .sort();
+}
+
+export function stageProgrammeReferenceJson(backendRoot) {
+    const sourceDirectory = join(backendRoot, 'src/data/academic-programmes');
+    const artifactDirectory = join(backendRoot, ARTIFACT_ROOT_NAME, 'data/academic-programmes');
+    const sourceFiles = programmeReferenceFiles(sourceDirectory);
+    if (sourceFiles.length === 0) throw new Error('No source programme reference JSON files were found.');
+    // Provenance boundary: a shape-valid hand edit must never reach the
+    // artifact. Verification — semantic checks plus the trusted-digest pin
+    // for production filenames — fails the build before anything is copied.
+    for (const sourceFile of sourceFiles) verifyProgrammeReferenceArtifact(sourceFile);
+
+    mkdirSync(artifactDirectory, { recursive: true });
+    for (const entry of readdirSync(artifactDirectory, { withFileTypes: true })) {
+        if (entry.name.endsWith('.json')) rmSync(join(artifactDirectory, entry.name), { recursive: true, force: true });
+    }
+    for (const sourceFile of sourceFiles) copyFileSync(sourceFile, join(artifactDirectory, basename(sourceFile)));
+    assertExactProgrammeReferenceJson(backendRoot);
+    return sourceFiles.length;
+}
+
+export function assertExactProgrammeReferenceJson(backendRoot) {
+    const sourceDirectory = join(backendRoot, 'src/data/academic-programmes');
+    const artifactDirectory = join(backendRoot, ARTIFACT_ROOT_NAME, 'data/academic-programmes');
+    const sourceFiles = programmeReferenceFiles(sourceDirectory);
+    const artifactFiles = programmeReferenceFiles(artifactDirectory);
+    const sourceNames = sourceFiles.map((path) => basename(path));
+    const artifactNames = artifactFiles.map((path) => basename(path));
+    assert.deepEqual(artifactNames, sourceNames, 'staged programme reference JSON filenames must exactly match source files');
+    for (const name of sourceNames) {
+        const sourceFile = join(sourceDirectory, name);
+        const artifactFile = join(artifactDirectory, name);
+        requireRegularFile(artifactFile, `Staged programme reference JSON is missing: ${name}`);
+        assert.deepEqual(readFileSync(artifactFile), readFileSync(sourceFile), `staged programme reference JSON differs from source: ${name}`);
+    }
+}
+
 export function assertExactMigrationSql(backendRoot) {
     const sourceDirectory = join(backendRoot, 'src/database/migrations');
     const artifactDirectory = join(backendRoot, ARTIFACT_ROOT_NAME, 'database/migrations');
@@ -69,7 +113,9 @@ export function assertCompiledArtifact(backendRoot) {
     requireRegularFile(join(artifactRoot, 'config/openapi.json'), 'Rendered OpenAPI document is missing: dist/config/openapi.json. Run npm run build:artifact first.');
     requireRegularFile(join(artifactRoot, 'scripts/cleanup-microsoft-attempts.js'), 'Compiled Microsoft retention cleanup CLI is missing: dist/scripts/cleanup-microsoft-attempts.js. Run npm run build:artifact first.');
     requireRegularFile(join(artifactRoot, 'scripts/cleanup-student-sso.js'), 'Compiled student SSO retention cleanup CLI is missing: dist/scripts/cleanup-student-sso.js. Run npm run build:artifact first.');
+    requireRegularFile(join(artifactRoot, 'scripts/cleanup-academic-profile-data.js'), 'Compiled academic-profile purge CLI is missing: dist/scripts/cleanup-academic-profile-data.js. Run npm run build:artifact first.');
     assertExactMigrationSql(backendRoot);
+    assertExactProgrammeReferenceJson(backendRoot);
 
     const sourceRoot = join(backendRoot, 'src');
     const expectedTests = integrationFiles(sourceRoot, '.integration.ts')

@@ -15,6 +15,15 @@ import { readStudentSsoConfiguration, retainedSsoAttemptKey, validateStudentSsoF
 dotenv.config({ override: false });
 
 /**
+ * An explicitly empty retention value behaves like an unset one: operators
+ * uncommenting `ACADEMIC_PROFILE_RETENTION_DAYS=` in env.example must not
+ * crash startup. Anything else must be a digit string.
+ */
+export const academicProfileRetentionDaysEnvSchema = z
+    .union([z.literal(''), z.string().regex(/^\d+$/)])
+    .transform((value) => (value === '' ? undefined : Number(value)));
+
+/**
  * Environment variable schema
  * Ensures all required variables are present and valid
  */
@@ -103,6 +112,12 @@ const envSchema = z.object({
     STUDENT_ACCOUNT_RECOVERY_OTP_PREVIOUS_ENCRYPTION_KEY: z.string().regex(/^[A-Za-z0-9+/]{43}=$/, 'Recovery OTP previous outbox key must be canonical base64 for 32 bytes').optional(),
     // Separate rollback gate: linked SSO login remains available when signup is off.
     PASSWORDLESS_STUDENT_SIGNUP_ENABLED: z.enum(['true', 'false']).default('false'),
+
+    // Academic profile collection stays off until source review, retention,
+    // disclosure, and rollout gates pass. Retention is unset until approved;
+    // a missing value keeps collection disabled and makes purge refuse to run.
+    ACADEMIC_PROFILE_ENABLED: z.enum(['true', 'false']).default('false'),
+    ACADEMIC_PROFILE_RETENTION_DAYS: academicProfileRetentionDaysEnvSchema.optional(),
 });
 
 /**
@@ -280,6 +295,10 @@ export const config = {
     microsoftOidc,
     studentSso,
     passwordlessStudentSignupEnabled: env.PASSWORDLESS_STUDENT_SIGNUP_ENABLED === 'true',
+    academicProfile: {
+        enabled: env.ACADEMIC_PROFILE_ENABLED === 'true',
+        retentionDays: env.ACADEMIC_PROFILE_RETENTION_DAYS ?? null,
+    },
     studentAccountRecovery: {
         // Recovery-code digests are versioned HMACs; see
         // resolveRecoveryCodeKeys for the rotation procedure. Never rotate

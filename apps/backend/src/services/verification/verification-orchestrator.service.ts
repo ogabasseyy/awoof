@@ -1,3 +1,4 @@
+import type { PoolClient } from 'pg';
 import { db } from '../../config/database.js';
 import { config } from '../../config/env.js';
 import { isEmailConfigured } from '../email/email.service.js';
@@ -46,8 +47,19 @@ function unavailable(methodType: VerificationMethod, priority: number, reason: s
  * supply a display priority; they cannot override an approved domain or
  * silently advertise an unimplemented method.
  */
-export async function getAvailableVerificationMethods(universityId: string): Promise<VerificationMethodInfo[]> {
-    const institutionResult = await db.query<InstitutionAvailability>(
+export async function getAvailableVerificationMethods(universityId: string, tx?: PoolClient): Promise<VerificationMethodInfo[]> {
+    // When a caller already holds a transaction, reuse its client: acquiring
+    // pooled connections mid-transaction can deadlock once every pool slot
+    // is held by a transaction waiting for another slot.
+    const runQuery = async <T>(text: string, params: unknown[]): Promise<T[]> => {
+        if (tx) {
+            const result = await tx.query(text, params);
+            return result.rows as T[];
+        }
+        const result = await db.query(text, params);
+        return result.rows as T[];
+    };
+    const institutionRows = await runQuery<InstitutionAvailability>(
         `SELECT institutions.is_active,
                 institutions.registration_normalization,
                 EXISTS (
@@ -68,16 +80,16 @@ export async function getAvailableVerificationMethods(universityId: string): Pro
          WHERE institutions.id = $1`,
         [universityId],
     );
-    const institution = institutionResult.rows[0];
-    const configured = await db.query<MethodPriority>(
+    const institution = institutionRows[0];
+    const configuredRows = await runQuery<MethodPriority>(
         `SELECT method_type, priority_order, is_active, api_endpoint, api_config
          FROM university_verification_methods
          WHERE university_id = $1
          ORDER BY priority_order ASC`,
         [universityId],
     );
-    const priorities = new Map(configured.rows.map((method) => [method.method_type, method.priority_order]));
-    const registrationMethods = configured.rows.filter((method) => method.method_type === 'registration');
+    const priorities = new Map(configuredRows.map((method) => [method.method_type, method.priority_order]));
+    const registrationMethods = configuredRows.filter((method) => method.method_type === 'registration');
     const registrationAdapter = registrationMethods.length === 1
         ? parseConfiguredEnrollmentAdapter({
             isActive: registrationMethods[0]!.is_active,

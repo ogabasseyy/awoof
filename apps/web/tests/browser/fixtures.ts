@@ -915,6 +915,45 @@ export async function installSyntheticApi(page: Page, options: ApiFixtureOptions
       return;
     }
 
+    if (path === '/students/academic-profile' && method === 'GET') {
+      // Default post-auth projection read for specs that predate the
+      // profile-prompt feature: collection unavailable, never prompting.
+      // Specs covering the prompt install their own page-level routes,
+      // which take precedence over this context-level default.
+      record('academic-profile', 1, route, 'feature-disabled');
+      await respond(route, 200, {
+        success: true,
+        data: {
+          revision: 0,
+          fields: {
+            claimedInstitution: { state: 'unanswered' },
+            programme: { state: 'unanswered' },
+            entryYear: { state: 'unanswered' },
+            entryRoute: { state: 'unanswered' },
+            expectedGraduationYear: { state: 'unanswered' },
+            graduationYearOrigin: null,
+            estimateBasis: null,
+            estimateStale: false,
+          },
+          institution: { displayName: null, countryCode: null, binding: 'unbound' },
+          institutionConfirmedGraduationYear: null,
+          entryYearSuggestion: null,
+          optionalUnansweredFields: [],
+          attentionFields: [],
+          verificationRequirements: [],
+          verificationContinuationAvailable: false,
+          assuranceState: 'unavailable',
+          assurance: null,
+          referenceVersion: null,
+          estimate: null,
+          featureEnabled: false,
+          writeAvailable: false,
+          promptDecision: 'continue',
+        },
+      });
+      return;
+    }
+
     fixture.unexpectedRequests.push(`${method} ${path}`);
     return route.abort('failed');
     });

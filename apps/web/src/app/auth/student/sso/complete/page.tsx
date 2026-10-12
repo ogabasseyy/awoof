@@ -18,6 +18,11 @@ import { Button } from '@/components/ui/button';
 import { useAuth } from '@/contexts/AuthContext';
 import { publicApiClient, studentSsoApiClient, studentSsoSessionApiClient } from '@/lib/api-client';
 import { clearTokens, getSessionSnapshot, subscribeSessionChanges } from '@/lib/auth';
+import { fetchAcademicProfile } from '@/lib/student-academic-profile';
+import {
+    deferralStorage,
+    resolveStudentPostAuthNavigation,
+} from '@/lib/student-profile-prompt';
 import { STUDENT_SSO_ONBOARDING_RETURN_PATH, resolveStudentReturn } from '@/lib/student-return';
 import {
     clearSsoAttempt,
@@ -570,12 +575,34 @@ function StudentSsoCompleteInner() {
                 setView({ kind: 'discarded' });
                 return;
             }
-            window.location.href = ssoPostLoginDestination({
+            const baseDestination = ssoPostLoginDestination({
                 studentAssurance: committed.studentAssurance,
                 assuranceStatus: committed.assuranceStatus,
                 returnPath: record.returnPath,
                 origin: window.location.origin,
             });
+            // Ordinary marketplace browse consults the profile projection
+            // once; verification and explicit continuations resolve without
+            // a projection read, and failures fail open to the base
+            // destination. The attempt's return path is already resolved,
+            // so destination priority is encoded in the base destination.
+            const committedSession = getSessionSnapshot();
+            const destination = await resolveStudentPostAuthNavigation({
+                accountId: finished.user.id,
+                sessionSnapshot: committedSession,
+                safeDestination: baseDestination,
+                explicitContinuation: false,
+                storage: deferralStorage(),
+                readProjection: fetchAcademicProfile,
+            });
+            // Another tab may have replaced or cleared the session while
+            // the projection read was pending: a superseded completion
+            // navigates nowhere, like the password-login navigate guard.
+            if (getSessionSnapshot().generation !== committedSession.generation) {
+                setView({ kind: 'discarded' });
+                return;
+            }
+            window.location.href = destination;
             } finally {
                 finishInFlight.current = false;
             }

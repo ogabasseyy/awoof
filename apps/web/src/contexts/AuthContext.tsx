@@ -29,6 +29,11 @@ import {
 } from '@/lib/auth-response';
 import { resolveStudentReturn } from '@/lib/student-return';
 import { revokeLogoutSession } from '@/lib/logout-revocation';
+import { fetchAcademicProfile } from '@/lib/student-academic-profile';
+import {
+    deferralStorage,
+    resolveStudentPostAuthNavigation,
+} from '@/lib/student-profile-prompt';
 import { parseStudentAssurance, type StudentAssurance } from '@/lib/student-assurance';
 import { parseSsoFinishResponse } from '@/lib/student-login-flow';
 import {
@@ -257,6 +262,39 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         setIsLoading(false);
         setUser(account);
         setStudentAssurance(studentAssuranceFrom(account, response.data));
+        if (account.role === 'student' && typeof window !== 'undefined') {
+            // Ordinary marketplace browse consults the profile projection
+            // once; explicit continuations resolve without a projection read
+            // and failures fail open to the validated destination.
+            const rawRedirect = new URLSearchParams(window.location.search).get('redirect');
+            const safeDestination = resolveStudentReturn(rawRedirect, window.location.origin);
+            const explicitContinuation = rawRedirect !== null && rawRedirect !== '';
+            const navigate = (destination: string): void => {
+                if (!mountedRef.current || operation !== operationRef.current) return;
+                if (getSessionSnapshot().generation !== persisted.generation) return;
+                redirectAfterAuth(destination);
+            };
+            // Login stays pending until the destination resolves: the page
+            // clears its loading state only after navigation starts, so a
+            // slow projection read cannot re-enable the form while the new
+            // session is already committed. This mirrors the SSO completion
+            // path, which awaits the same resolver before navigating.
+            let destination: string;
+            try {
+                destination = await resolveStudentPostAuthNavigation({
+                    accountId: account.id,
+                    sessionSnapshot: persisted,
+                    safeDestination,
+                    explicitContinuation,
+                    storage: deferralStorage(),
+                    readProjection: fetchAcademicProfile,
+                });
+            } catch {
+                destination = safeDestination;
+            }
+            navigate(destination);
+            return;
+        }
         redirectAfterAuth(destinationFor(account));
     }, [commitAuthenticatedResponse]);
 
@@ -377,6 +415,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         } finally {
             ownCommitRef.current = false;
         }
+        // Session-namespaced cleanup (deferral marker) runs centrally
+        // inside clearTokens; a delayed logout still clears only the
+        // invalidated session's key, never a newer session's choice.
         if (mountedRef.current) {
             setUser(null);
             setStudentAssurance(null);
@@ -492,6 +533,21 @@ export function AuthProvider({ children }: { children: ReactNode }) {
                     && current.accessToken === authentication.tokens.accessToken
                     && current.refreshToken === authentication.tokens.refreshToken;
             };
+            // Post-resolution navigation guard: unlike ownsAdoptedSession,
+            // this tolerates our own background reconcile, which owns the
+            // newest operation by design. Identity is generation plus
+            // browser-session id, not token equality: same-session token
+            // rotation (for example a cross-tab refresh sync) must keep
+            // navigation allowed, while a replaced or cleared session
+            // still navigates nowhere.
+            const adoptedSessionIntact = (): boolean => {
+                const current = getSessionSnapshot();
+                return mountedRef.current
+                    && !options.signal.aborted
+                    && !isSessionStorageQuarantined()
+                    && current.generation === adopted.generation
+                    && current.browserSessionId === adopted.browserSessionId;
+            };
             if (!ownsAdoptedSession()) return cancellation('created');
 
             setIsLoading(false);
@@ -502,7 +558,25 @@ export function AuthProvider({ children }: { children: ReactNode }) {
             // background read only reconciles the named server account after
             // persistence; it is intentionally not awaited before navigation.
             void loadCurrentUser(false);
-            redirectAfterAuth(returnPath);
+            // New password students take the same post-auth routing as
+            // password login: an eligible marketplace browse prompts for
+            // completion instead of bypassing the prompt. Signup stays
+            // pending until the destination resolves, mirroring login, and
+            // a session replaced mid-read navigates nowhere.
+            let destination: string;
+            try {
+                destination = await resolveStudentPostAuthNavigation({
+                    accountId: account.id,
+                    sessionSnapshot: adopted,
+                    safeDestination: returnPath,
+                    explicitContinuation: options.returnTo !== null && options.returnTo !== '',
+                    storage: deferralStorage(),
+                    readProjection: fetchAcademicProfile,
+                });
+            } catch {
+                destination = returnPath;
+            }
+            if (adoptedSessionIntact()) redirectAfterAuth(destination);
             return { kind: 'completed' };
         } catch (error: unknown) {
             const response = axios.isAxiosError(error) ? error.response : undefined;

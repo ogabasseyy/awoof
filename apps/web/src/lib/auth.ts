@@ -17,6 +17,12 @@ export interface User {
     verificationStatus?: 'unverified' | 'verified' | 'expired';
     /** True until a recovered student saves a replacement recovery code. Absent otherwise. */
     recoveryReenrollmentRequired?: boolean;
+    /**
+     * Validated student display name from `/auth/me`. Narrowly limited to the
+     * stored name; authentication responses may omit it, and a blank value
+     * falls back to a generic greeting instead of email guessing.
+     */
+    profile?: { name?: string };
 }
 
 export interface SessionSnapshot {
@@ -53,6 +59,8 @@ let generation = 0;
 let observed: ObservedSession = { v: 1, state: 'signed_out' };
 let quarantined = false;
 const listeners = new Set<() => void>();
+type SessionInvalidatedListener = (invalidated: SessionSnapshot) => void;
+const invalidatedListeners = new Set<SessionInvalidatedListener>();
 let storageListenerAttached = false;
 
 export class SessionStorageError extends Error {
@@ -269,6 +277,15 @@ export function storeTokens(tokens: TokenPair): void {
     }
     const storage = getStorage();
     if (!storage) throw new SessionStorageError();
+    // Capture the displaced session first: a sign-in that replaces an
+    // active session without a prior logout must still release that
+    // session's namespaced artifacts (like its deferral marker), or they
+    // linger under an unreachable key. Rotation never passes through
+    // here, so any active previous session is genuinely replaced. Read
+    // the observed snapshot without reconciling: storage events already
+    // sync it cross-tab, and a reconcile here would emit a spurious
+    // lifecycle change on first login.
+    const previous = snapshot();
 
     let next: ActiveEnvelope;
     try {
@@ -289,6 +306,9 @@ export function storeTokens(tokens: TokenPair): void {
     }
     quarantined = false;
     observeActive(next, true);
+    if (previous.browserSessionId !== null && previous.browserSessionId !== next.sessionId) {
+        notifySessionInvalidated(previous);
+    }
 }
 
 /**
@@ -318,8 +338,10 @@ export function replaceCurrentSessionTokens(snapshotAtStart: SessionSnapshot, to
 
 /** Clear local authority immediately and attempt a durable signed-out marker. */
 export function clearTokens(): void {
+    const invalidated = getSessionSnapshot();
     const storage = getStorage();
     quarantineSession();
+    notifySessionInvalidated(invalidated);
     if (!storage) return;
 
     let marker: SignedOutEnvelope;
@@ -370,6 +392,27 @@ export function subscribeSessionChanges(listener: () => void): () => void {
     attachStorageListener();
     listeners.add(listener);
     return () => listeners.delete(listener);
+}
+
+/**
+ * Subscribe to local session invalidations. Each listener receives the
+ * snapshot captured before the clear, so session-namespaced artifacts
+ * can remove exactly the invalidated session's entry after its ID is
+ * otherwise unavailable. Listener failures never break the clear.
+ */
+export function subscribeSessionInvalidated(listener: SessionInvalidatedListener): () => void {
+    invalidatedListeners.add(listener);
+    return () => { invalidatedListeners.delete(listener); };
+}
+
+function notifySessionInvalidated(invalidated: SessionSnapshot): void {
+    for (const listener of [...invalidatedListeners]) {
+        try {
+            listener(invalidated);
+        } catch {
+            // Session-namespaced cleanup must never break sign-out.
+        }
+    }
 }
 
 export function isSessionStorageQuarantined(): boolean {

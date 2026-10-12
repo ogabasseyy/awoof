@@ -477,6 +477,268 @@ Access tokens expire in 15 minutes. Use the refresh token endpoint to get a new 
                         },
                     },
                 },
+                AcademicProfileField: {
+                    type: 'string',
+                    enum: ['claimedInstitution', 'programme', 'entryYear', 'entryRoute', 'expectedGraduationYear'],
+                },
+                AcademicProfileClaimedInstitution: {
+                    type: 'object',
+                    additionalProperties: false,
+                    required: ['name', 'countryCode'],
+                    properties: {
+                        name: { type: 'string', minLength: 1, maxLength: 255 },
+                        countryCode: { type: 'string', pattern: '^[A-Za-z]{2}$', description: 'ISO 3166-1 alpha-2; lower case input is normalized.' },
+                    },
+                },
+                AcademicProfileProgrammeSelection: {
+                    oneOf: [
+                        {
+                            type: 'object',
+                            additionalProperties: false,
+                            required: ['programmeId', 'courseLabel'],
+                            properties: {
+                                programmeId: { type: 'string', minLength: 1, maxLength: 128 },
+                                courseLabel: { enum: [null], nullable: true, description: 'Must be null when programmeId is set.' },
+                            },
+                        },
+                        {
+                            type: 'object',
+                            additionalProperties: false,
+                            required: ['programmeId', 'courseLabel'],
+                            properties: {
+                                programmeId: { enum: [null], nullable: true, description: 'Must be null when courseLabel is set.' },
+                                courseLabel: { type: 'string', minLength: 1, maxLength: 255 },
+                            },
+                        },
+                    ],
+                    description: 'Exactly one of programmeId (catalogue selection) or courseLabel (free text) is set; the other is null.',
+                },
+                AcademicProfileGraduationYearChoice: {
+                    oneOf: [
+                        { type: 'object', additionalProperties: false, required: ['kind', 'year'], properties: { kind: { type: 'string', enum: ['accept_estimate'] }, year: { type: 'integer', description: 'Must equal the server-recomputed reviewed estimate.' } } },
+                        { type: 'object', additionalProperties: false, required: ['kind', 'year'], properties: { kind: { type: 'string', enum: ['self_reported'] }, year: { type: 'integer' } } },
+                    ],
+                    discriminator: { propertyName: 'kind' },
+                },
+                AcademicProfileClaimedInstitutionUpdate: {
+                    oneOf: [
+                        { type: 'object', additionalProperties: false, required: ['state', 'value'], properties: { state: { type: 'string', enum: ['supplied'] }, value: { $ref: '#/components/schemas/AcademicProfileClaimedInstitution' } } },
+                        { type: 'object', additionalProperties: false, required: ['state'], properties: { state: { type: 'string', enum: ['unanswered', 'unknown', 'skipped'] } } },
+                    ],
+                    discriminator: { propertyName: 'state' },
+                },
+                AcademicProfileProgrammeUpdate: {
+                    oneOf: [
+                        { type: 'object', additionalProperties: false, required: ['state', 'value'], properties: { state: { type: 'string', enum: ['supplied'] }, value: { $ref: '#/components/schemas/AcademicProfileProgrammeSelection' } } },
+                        { type: 'object', additionalProperties: false, required: ['state'], properties: { state: { type: 'string', enum: ['unanswered', 'unknown', 'skipped'] } } },
+                    ],
+                    discriminator: { propertyName: 'state' },
+                },
+                AcademicProfileEntryYearUpdate: {
+                    oneOf: [
+                        { type: 'object', additionalProperties: false, required: ['state', 'value'], properties: { state: { type: 'string', enum: ['supplied'] }, value: { type: 'integer', minimum: 1900, description: 'Four-digit year, 1900 through the current server year.' } } },
+                        { type: 'object', additionalProperties: false, required: ['state'], properties: { state: { type: 'string', enum: ['unanswered', 'unknown', 'skipped'] } } },
+                    ],
+                    discriminator: { propertyName: 'state' },
+                },
+                AcademicProfileEntryRouteUpdate: {
+                    oneOf: [
+                        { type: 'object', additionalProperties: false, required: ['state', 'value'], properties: { state: { type: 'string', enum: ['supplied'] }, value: { type: 'string', enum: ['utme', 'de_200', 'de_300', 'transfer_other'] } } },
+                        { type: 'object', additionalProperties: false, required: ['state'], properties: { state: { type: 'string', enum: ['unanswered', 'unknown', 'skipped'] } } },
+                    ],
+                    discriminator: { propertyName: 'state' },
+                },
+                AcademicProfileGraduationYearUpdate: {
+                    oneOf: [
+                        { type: 'object', additionalProperties: false, required: ['state', 'value'], properties: { state: { type: 'string', enum: ['supplied'] }, value: { $ref: '#/components/schemas/AcademicProfileGraduationYearChoice' } } },
+                        { type: 'object', additionalProperties: false, required: ['state'], properties: { state: { type: 'string', enum: ['unanswered', 'unknown', 'skipped'] } } },
+                    ],
+                    discriminator: { propertyName: 'state' },
+                },
+                AcademicProfileInput: {
+                    type: 'object',
+                    additionalProperties: false,
+                    required: ['expectedRevision'],
+                    description: 'Strict patch contract. Omitted fields stay unchanged; explicit unanswered clears. No student id, canonical institution id, origin, basis, rule, or review fields are accepted.',
+                    properties: {
+                        expectedRevision: { type: 'integer', minimum: 0 },
+                        expectedInstitution: {
+                            type: 'object',
+                            additionalProperties: false,
+                            required: ['binding', 'displayName'],
+                            description: 'Read-context token: the institution binding and name the GET showed. Required when creating the profile; first saves conflict when the binding moved or the token is absent; never used to set the binding.',
+                            properties: {
+                                binding: { type: 'string', enum: ['server_bound', 'student_claimed', 'unbound'] },
+                                displayName: { type: 'string', maxLength: 255, nullable: true },
+                            },
+                        },
+                        claimedInstitution: { $ref: '#/components/schemas/AcademicProfileClaimedInstitutionUpdate' },
+                        programme: { $ref: '#/components/schemas/AcademicProfileProgrammeUpdate' },
+                        entryYear: { $ref: '#/components/schemas/AcademicProfileEntryYearUpdate' },
+                        entryRoute: { $ref: '#/components/schemas/AcademicProfileEntryRouteUpdate' },
+                        expectedGraduationYear: { $ref: '#/components/schemas/AcademicProfileGraduationYearUpdate' },
+                    },
+                },
+                AcademicProfileFields: {
+                    type: 'object',
+                    required: ['claimedInstitution', 'programme', 'entryYear', 'entryRoute', 'expectedGraduationYear', 'graduationYearOrigin', 'estimateBasis', 'estimateStale'],
+                    properties: {
+                        claimedInstitution: { $ref: '#/components/schemas/AcademicProfileClaimedInstitutionUpdate' },
+                        programme: { $ref: '#/components/schemas/AcademicProfileProgrammeUpdate' },
+                        entryYear: { $ref: '#/components/schemas/AcademicProfileEntryYearUpdate' },
+                        entryRoute: { $ref: '#/components/schemas/AcademicProfileEntryRouteUpdate' },
+                        expectedGraduationYear: {
+                            oneOf: [
+                                { type: 'object', additionalProperties: false, required: ['state', 'value'], properties: { state: { type: 'string', enum: ['supplied'] }, value: { type: 'integer' } } },
+                                { type: 'object', additionalProperties: false, required: ['state'], properties: { state: { type: 'string', enum: ['unanswered', 'unknown', 'skipped'] } } },
+                            ],
+                            discriminator: { propertyName: 'state' },
+                        },
+                        graduationYearOrigin: { type: 'string', enum: ['calculated', 'self_reported'], nullable: true, description: 'Server-set; never submitted by the browser.' },
+                        estimateBasis: {
+                            nullable: true,
+                            type: 'object',
+                            additionalProperties: false,
+                            required: ['programmeId', 'entryYear', 'entryRoute', 'ruleId', 'sourceVersion'],
+                            properties: {
+                                programmeId: { type: 'string' },
+                                entryYear: { type: 'integer' },
+                                entryRoute: { type: 'string', enum: ['utme', 'de_200', 'de_300', 'transfer_other'] },
+                                ruleId: { type: 'string' },
+                                sourceVersion: { type: 'string' },
+                            },
+                        },
+                        estimateStale: { type: 'boolean' },
+                    },
+                },
+                AcademicProfileInstitution: {
+                    type: 'object',
+                    required: ['displayName', 'countryCode', 'binding'],
+                    description: 'Effective institution label. Never exposes a canonical institution id.',
+                    properties: {
+                        displayName: { type: 'string', nullable: true },
+                        countryCode: { type: 'string', nullable: true },
+                        binding: { type: 'string', enum: ['server_bound', 'student_claimed', 'unbound'] },
+                    },
+                },
+                AcademicProfileProjection: {
+                    type: 'object',
+                    required: ['revision', 'fields', 'institution', 'institutionConfirmedGraduationYear', 'entryYearSuggestion', 'optionalUnansweredFields', 'attentionFields', 'verificationRequirements', 'verificationContinuationAvailable', 'assuranceState', 'assurance', 'referenceVersion', 'estimate', 'programmeLabel', 'featureEnabled', 'writeAvailable', 'promptDecision'],
+                    properties: {
+                        revision: { type: 'integer', minimum: 0 },
+                        fields: { $ref: '#/components/schemas/AcademicProfileFields' },
+                        institution: { $ref: '#/components/schemas/AcademicProfileInstitution' },
+                        institutionConfirmedGraduationYear: { nullable: true, type: 'object', additionalProperties: false, required: ['year', 'observedAt'], properties: { year: { type: 'integer' }, observedAt: { type: 'string', format: 'date-time' } }, description: 'Read-only; null unless an existing approved source provides it. This feature adds no such source.' },
+                        entryYearSuggestion: { $ref: '#/components/schemas/AcademicProfileEntryYearSuggestion' },
+                        optionalUnansweredFields: { type: 'array', items: { $ref: '#/components/schemas/AcademicProfileField' } },
+                        attentionFields: { type: 'array', items: { $ref: '#/components/schemas/AcademicProfileField' } },
+                        verificationRequirements: { type: 'array', items: { type: 'string', enum: ['registration_number', 'processing_consent'] } },
+                        verificationContinuationAvailable: { type: 'boolean' },
+                        assuranceState: { type: 'string', enum: ['available', 'unavailable'] },
+                        assurance: { allOf: [{ $ref: '#/components/schemas/StudentAssurance' }], nullable: true },
+                        referenceVersion: { type: 'string', nullable: true },
+                        estimate: { nullable: true, type: 'object', additionalProperties: false, required: ['year', 'ruleId', 'sourceVersion'], properties: { year: { type: 'integer' }, ruleId: { type: 'string' }, sourceVersion: { type: 'string' } } },
+                        programmeLabel: { type: 'string', nullable: true, description: 'Display label for a saved catalogue programme selection; null for free text or unresolvable ids. Never submitted by the browser.' },
+                        featureEnabled: { type: 'boolean' },
+                        writeAvailable: { type: 'boolean', description: 'Whether the requesting actor may save: collection enabled and the student record active. Suspended students read their saved data but cannot change it.' },
+                        promptDecision: { type: 'string', enum: ['complete_profile', 'continue'], description: 'Eligibility to be offered the profile, not a navigation order or authorization change.' },
+                    },
+                },
+                AcademicProfileProjectionResponse: {
+                    type: 'object',
+                    required: ['success', 'data'],
+                    properties: {
+                        success: { type: 'boolean', enum: [true] },
+                        data: { $ref: '#/components/schemas/AcademicProfileProjection' },
+                    },
+                },
+                AcademicProfileEntryYearSuggestion: {
+                    nullable: true,
+                    oneOf: [
+                        { type: 'object', additionalProperties: false, required: ['state', 'year', 'parserId', 'parserVersion', 'confidence'], properties: { state: { type: 'string', enum: ['suggested'] }, year: { type: 'integer' }, parserId: { type: 'string' }, parserVersion: { type: 'string' }, confidence: { type: 'string', enum: ['high', 'medium', 'low'] } } },
+                        { type: 'object', additionalProperties: false, required: ['state', 'reason'], properties: { state: { type: 'string', enum: ['unavailable'] }, reason: { type: 'string', enum: ['no_registration_number', 'unsupported_institution', 'unrecognized_format', 'ambiguous_format'] } } },
+                    ],
+                    discriminator: { propertyName: 'state' },
+                    description: 'Null while the optional parser is not enabled for the current context. Suggestions are never stored values.',
+                },
+                AcademicProfileCatalogueInstitutionItem: {
+                    type: 'object',
+                    additionalProperties: false,
+                    required: ['name', 'countryCode'],
+                    description: 'Display projection only; catalogue membership is not a supported-institution claim.',
+                    properties: {
+                        name: { type: 'string' },
+                        countryCode: { type: 'string', pattern: '^[A-Z]{2}$', nullable: true },
+                    },
+                },
+                AcademicProfileCatalogueProgrammeItem: {
+                    type: 'object',
+                    additionalProperties: false,
+                    required: ['programmeId', 'label', 'award'],
+                    description: 'Programme-name suggestion, not a confirmed list of courses offered by an institution.',
+                    properties: {
+                        programmeId: { type: 'string' },
+                        label: { type: 'string' },
+                        award: { type: 'string', nullable: true },
+                    },
+                },
+                AcademicProfileInstitutionCataloguePage: {
+                    type: 'object',
+                    required: ['success', 'data'],
+                    properties: {
+                        success: { type: 'boolean', enum: [true] },
+                        data: {
+                            type: 'object',
+                            required: ['items', 'nextCursor'],
+                            properties: {
+                                items: { type: 'array', items: { $ref: '#/components/schemas/AcademicProfileCatalogueInstitutionItem' } },
+                                nextCursor: { type: 'string', nullable: true, description: 'Opaque cursor for the next page; null on the last page.' },
+                            },
+                        },
+                    },
+                },
+                AcademicProfileProgrammeCataloguePage: {
+                    type: 'object',
+                    required: ['success', 'data'],
+                    properties: {
+                        success: { type: 'boolean', enum: [true] },
+                        data: {
+                            type: 'object',
+                            required: ['items', 'nextCursor'],
+                            properties: {
+                                items: { type: 'array', items: { $ref: '#/components/schemas/AcademicProfileCatalogueProgrammeItem' } },
+                                nextCursor: { type: 'string', nullable: true, description: 'Opaque cursor for the next page; null on the last page.' },
+                            },
+                        },
+                    },
+                },
+                AcademicProfileEstimateInput: {
+                    type: 'object',
+                    additionalProperties: false,
+                    required: ['programmeId', 'entryYear', 'entryRoute'],
+                    description: 'Estimate inputs only. No country override, rule pick, or cross-user key is accepted; the optional claimed country only narrows unbound previews to match the save path.',
+                    properties: {
+                        programmeId: { type: 'string', minLength: 1, maxLength: 128, nullable: true },
+                        entryYear: { type: 'integer', nullable: true },
+                        entryRoute: { type: 'string', enum: ['utme', 'de_200', 'de_300', 'transfer_other'], nullable: true },
+                        claimedCountryCode: { type: 'string', pattern: '^[A-Z]{2}$', nullable: true, description: 'Unsaved draft-claim country for unbound preview scoping; explicit null means the draft removed the claim (unconstrained), omitted falls back to the stored claim. Ignored for server-bound students.' },
+                    },
+                },
+                AcademicProfileEstimateResult: {
+                    type: 'object',
+                    required: ['success', 'data'],
+                    properties: {
+                        success: { type: 'boolean', enum: [true] },
+                        data: {
+                            oneOf: [
+                                { type: 'object', additionalProperties: false, required: ['state', 'year', 'ruleId', 'sourceVersion'], properties: { state: { type: 'string', enum: ['available'] }, year: { type: 'integer' }, ruleId: { type: 'string' }, sourceVersion: { type: 'string' } } },
+                                { type: 'object', additionalProperties: false, required: ['state', 'reason'], properties: { state: { type: 'string', enum: ['unavailable'] }, reason: { type: 'string', enum: ['missing_input', 'unsupported_country', 'unsupported_route', 'unknown_programme', 'unreviewed_rule', 'conflicting_rule', 'out_of_range'] } } },
+                            ],
+                            discriminator: { propertyName: 'state' },
+                            description: 'Advisory only; an available estimate is stored only after the student confirms it.',
+                        },
+                    },
+                },
                 VerificationMethod: {
                     type: 'object',
                     properties: {
@@ -676,6 +938,26 @@ Access tokens expire in 15 minutes. Use the refresh token endpoint to get a new 
                 },
                 Unauthorized: {
                     description: 'Unauthorized',
+                    content: {
+                        'application/json': {
+                            schema: {
+                                $ref: '#/components/schemas/Error',
+                            },
+                        },
+                    },
+                },
+                Forbidden: {
+                    description: 'Forbidden',
+                    content: {
+                        'application/json': {
+                            schema: {
+                                $ref: '#/components/schemas/Error',
+                            },
+                        },
+                    },
+                },
+                NotFound: {
+                    description: 'Not found',
                     content: {
                         'application/json': {
                             schema: {

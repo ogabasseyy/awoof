@@ -27,6 +27,7 @@ import { hasRecoveryOtpOutboxKey, startRecoveryOtpOutboxDispatcher } from './ser
 import { swaggerSpec } from './config/swagger.js';
 import type { MicrosoftFlowService } from './services/verification/microsoft-flow.service.js';
 import { isStudentSsoCallbackPath, isStudentSsoRoute } from './routes/student-sso.routes.js';
+import { isAcademicCataloguePath } from './routes/student-academic-profile.routes.js';
 import type { StudentSsoFlowService } from './services/auth/student-sso-flow.service.js';
 import type { StudentSsoSignupService } from './services/auth/student-sso-signup.service.js';
 
@@ -104,13 +105,18 @@ export class App {
     // Throttle before dynamic CORS can consume a database connection. The
     // Microsoft and student SSO OAuth callbacks skip this shared quota so a
     // provider return always reaches its bounded completion redirect; each
-    // carries its own dedicated limiter on the route instead.
+    // carries its own dedicated limiter on the route instead. The academic
+    // catalogue paths likewise skip the shared IP quota that one NAT
+    // address would otherwise exhaust, but stay quota-bound: a pre-auth
+    // flood ceiling caps unauthenticated traffic per IP, and a per-student
+    // limiter is the effective quota for authenticated use.
     this.app.use(rateLimit({
       windowMs: config.rateLimit.windowMs,
       max: config.rateLimit.maxRequests,
       skip: (req) => skipCorsPreflight(req)
         || (req.method === 'GET' && isMicrosoftCallbackPath(req.path))
-        || (req.method === 'GET' && isStudentSsoCallbackPath(req.path)),
+        || (req.method === 'GET' && isStudentSsoCallbackPath(req.path))
+        || isAcademicCataloguePath(req.method, req.path),
       standardHeaders: true,
       legacyHeaders: false,
     }));
@@ -281,6 +287,15 @@ export class App {
       appLogger.info('Student routes registered');
     } catch (error) {
       appLogger.error('Failed to register student routes:', error);
+      throw error;
+    }
+
+    try {
+      const studentAcademicProfileRoutes = await import('./routes/student-academic-profile.routes.js');
+      this.app.use('/api/students', studentAcademicProfileRoutes.default);
+      appLogger.info('Student academic profile routes registered');
+    } catch (error) {
+      appLogger.error('Failed to register student academic profile routes:', error);
       throw error;
     }
 

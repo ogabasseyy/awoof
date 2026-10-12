@@ -1,6 +1,7 @@
 import { expect, test, type Page } from '@playwright/test';
 import { assertCleanFixture, collectBrowserFaults } from './browser-assertions';
 import {
+  apiOrigin,
   appOrigin,
   createGate,
   fixtureUniversities,
@@ -133,6 +134,44 @@ function requestBody(overrides: Partial<SignupRequestBody> = {}): SignupRequestB
 
 function confirmationBody(challenge = challengeId, proof = validOtp, overrides: Partial<SignupRequestBody> = {}) {
   return { ...requestBody(overrides), password, challengeId: challenge, otp: proof };
+}
+
+function eligibleCompletionProjection(): Record<string, unknown> {
+  return {
+    revision: 3,
+    fields: {
+      claimedInstitution: { state: 'unanswered' },
+      programme: { state: 'unanswered' },
+      entryYear: { state: 'unanswered' },
+      entryRoute: { state: 'unanswered' },
+      expectedGraduationYear: { state: 'unanswered' },
+      graduationYearOrigin: null,
+      estimateBasis: null,
+      estimateStale: false,
+    },
+    institution: { displayName: null, countryCode: null, binding: 'unbound' },
+    institutionConfirmedGraduationYear: null,
+    entryYearSuggestion: null,
+    optionalUnansweredFields: ['claimedInstitution', 'programme', 'entryYear', 'entryRoute', 'expectedGraduationYear'],
+    attentionFields: ['programme'],
+    verificationRequirements: [],
+    verificationContinuationAvailable: false,
+    assuranceState: 'available',
+    assurance: {
+      schoolAccountStatus: 'verified',
+      schoolAccountMethod: 'email_otp',
+      schoolAccountValidUntil: null,
+      studentStatus: 'pending',
+      enrollmentMethod: null,
+      studentValidUntil: null,
+      reason: 'awaiting_enrollment',
+    },
+    referenceVersion: 'nuc-v2',
+    estimate: null,
+    featureEnabled: true,
+    writeAvailable: true,
+    promptDecision: 'complete_profile',
+  };
 }
 
 function confirmationResponse() {
@@ -592,6 +631,32 @@ test('valid student completion follows only the safe requested return path', asy
   expect(await hasActiveSession(page)).toBe(true);
   expect(new URL(page.url()).search).toBe('?source=widget');
   expect(api.refreshCalls).toBe(0);
+  expectSafePublicRequests(api);
+  await assertCleanFixture(api, faults);
+});
+
+test('password signup routes eligible pending browse to the completion screen', async ({ page }) => {
+  const api = await installSyntheticApi(page, {
+    signup: {
+      preflight: [preflightResponse()],
+      request: [{ response: { status: 200, body: signupReceipt() }, expectedBody: requestBody() }],
+      confirm: [{ response: { status: 201, body: confirmationResponse() }, expectedBody: confirmationBody() }],
+    },
+  });
+  // Page-level prompt read takes precedence over the synthetic
+  // feature-disabled default, mirroring the prompt specs.
+  await page.route(`${apiOrigin}/api/students/academic-profile`, (route) => route.fulfill({
+    json: { success: true, data: eligibleCompletionProjection() },
+    headers: { 'access-control-allow-origin': '*' },
+  }));
+  const faults = collectBrowserFaults(page, api);
+  await gotoStudentSignup(page);
+  await enterOtp(page);
+  await page.getByLabel('Verification Code', { exact: true }).fill(validOtp);
+  await page.getByRole('button', { name: 'Create Account', exact: true }).click();
+  await expect(page).toHaveURL(/\/student\/profile\/complete\?redirect=%2Fmarketplace$/);
+  await expect(page.getByText('Complete your student profile').first()).toBeVisible();
+  expect(await hasActiveSession(page)).toBe(true);
   expectSafePublicRequests(api);
   await assertCleanFixture(api, faults);
 });
