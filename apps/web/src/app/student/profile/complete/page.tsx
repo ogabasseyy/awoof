@@ -9,7 +9,7 @@
 
 'use client';
 
-import { useEffect, useRef, useState, useSyncExternalStore, type MouseEvent as ReactMouseEvent, type ReactNode } from 'react';
+import { useEffect, useId, useRef, useState, useSyncExternalStore, type MouseEvent as ReactMouseEvent, type ReactNode } from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import axios from 'axios';
@@ -294,8 +294,12 @@ type MarkButtonsProps = {
 };
 
 function MarkButtons({ field, marked, onMark }: MarkButtonsProps) {
+    // Associate the field name with the marker pair: otherwise every
+    // field exposes identically named "Not sure" / "Skip this detail"
+    // buttons that screen-reader users cannot tell apart.
+    const groupLabelId = useId();
     return (
-        <div className="mt-2 flex flex-wrap gap-2">
+        <div role="group" aria-labelledby={groupLabelId} className="mt-2 flex flex-wrap gap-2">
             <button
                 type="button"
                 aria-pressed={marked === 'unknown'}
@@ -312,7 +316,7 @@ function MarkButtons({ field, marked, onMark }: MarkButtonsProps) {
             >
                 Skip this detail
             </button>
-            <span className="sr-only">{field}</span>
+            <span id={groupLabelId} className="sr-only">{field}</span>
         </div>
     );
 }

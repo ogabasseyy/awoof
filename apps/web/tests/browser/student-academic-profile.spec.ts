@@ -763,6 +763,21 @@ test('saves an explicit Not sure distinctly from a skip', async ({ page }) => {
     expect(fixture.puts[0]).toEqual({ expectedRevision: 3, programme: { state: 'unknown' } });
 });
 
+test('labels each marker pair with its academic field', async ({ page }) => {
+    await openComplete(page, projection());
+    for (const [fieldId, label] of [
+        ['#field-institution', 'Institution'],
+        ['#field-programme', 'Programme or course'],
+        ['#field-entry-year', 'Entry year'],
+        ['#field-entry-route', 'Entry route'],
+        ['#field-graduation-year', 'Expected graduation year'],
+    ] as const) {
+        const group = page.locator(fieldId).getByRole('group', { name: label });
+        await expect(group.getByRole('button', { name: 'Not sure' })).toBeVisible();
+        await expect(group.getByRole('button', { name: 'Skip this detail' })).toBeVisible();
+    }
+});
+
 test('reconciles a lost save response without resubmitting', async ({ page }) => {
     const fixture = await openComplete(page, projection());
     fixture.putBehavior = 'abort-once';
