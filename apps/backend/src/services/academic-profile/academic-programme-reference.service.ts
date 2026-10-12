@@ -78,6 +78,12 @@ export const estimateInputSchema = z.object({
     programmeId: z.string().trim().min(1).max(128).nullable(),
     entryYear: z.number().int().nullable(),
     entryRoute: z.enum(['utme', 'de_200', 'de_300', 'transfer_other']).nullable(),
+    // Draft-claim preview scope for unbound students: narrows the lookup
+    // exactly as the save path narrows by the merged claim, so a preview
+    // can never offer an estimate the save would reject. This only ever
+    // narrows (the rule must still match the programme's own country);
+    // server-bound students ignore it in favor of the binding.
+    claimedCountryCode: z.string().regex(/^[A-Z]{2}$/).optional(),
 }).strict();
 
 export type ReferenceRouteRule = {
@@ -455,10 +461,32 @@ export async function estimateGraduationYearForStudent(
     options?: { reference?: ProgrammeReference; currentYear?: number },
 ): Promise<EstimateResult> {
     const parsed = estimateInputSchema.parse(rawInput);
-    return withLockedCatalogueContext(pool, userId, async (_tx, ctx) => {
+    return withLockedCatalogueContext(pool, userId, async (tx, ctx) => {
         const reference = options?.reference ?? loadProgrammeReference();
         const currentYear = options?.currentYear ?? new Date().getUTCFullYear();
-        const expectedCountryCode = boundInstitutionCountryCode(ctx.universityId, ctx.institutionCountry);
+        // Mirror the save path's effective country: the binding wins when
+        // bound; unbound previews narrow to the draft claim when the UI
+        // sends one, else to the stored claim, else stay unconstrained.
+        // The claim read is lock-free and advisory — the save revalidates
+        // authoritatively under its own locks.
+        let expectedCountryCode = boundInstitutionCountryCode(ctx.universityId, ctx.institutionCountry);
+        if (ctx.universityId === null) {
+            if (parsed.claimedCountryCode !== undefined) {
+                expectedCountryCode = parsed.claimedCountryCode;
+            } else {
+                const stored = await tx.query<{ claimed_institution_state: unknown; claimed_institution_country: unknown }>(
+                    `SELECT claimed_institution_state, claimed_institution_country
+                     FROM student_academic_profiles WHERE user_id = $1`,
+                    [userId],
+                );
+                const row = stored.rows[0];
+                if (row?.claimed_institution_state === 'supplied'
+                    && typeof row.claimed_institution_country === 'string'
+                    && /^[A-Z]{2}$/.test(row.claimed_institution_country)) {
+                    expectedCountryCode = row.claimed_institution_country;
+                }
+            }
+        }
         return estimateGraduationYear(parsed, reference, { currentYear, expectedCountryCode });
     });
 }

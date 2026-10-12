@@ -519,6 +519,46 @@ function verifyArtifactDisposition(entry, label) {
 }
 
 /**
+ * Reapply the builder's identity-uniqueness checks to the staged arrays.
+ * Runtime lookup consumes the first programme-id match, so a duplicated
+ * id with internally consistent flags would otherwise serve a fabricated
+ * rule. Source ids span every disposition array; programme ids and
+ * aliases span programmes because excluded/blocked entries stage neither.
+ */
+function verifyArtifactUniqueness(artifact, label) {
+    const seenSourceIds = new Set();
+    for (const entry of [...artifact.programmes, ...artifact.excluded, ...artifact.blocked]) {
+        if (seenSourceIds.has(entry.sourceId)) {
+            throw new Error(`invalid programme reference '${label}': duplicate source id '${entry.sourceId}'`);
+        }
+        seenSourceIds.add(entry.sourceId);
+    }
+    const seenProgrammeIds = new Map();
+    for (const entry of artifact.programmes) {
+        const previous = seenProgrammeIds.get(entry.programmeId);
+        if (previous !== undefined) {
+            throw new Error(`invalid programme reference '${label}': duplicate programme id '${entry.programmeId}'`);
+        }
+        seenProgrammeIds.set(entry.programmeId, entry.sourceId);
+    }
+    const seenAliases = new Map();
+    for (const entry of artifact.programmes) {
+        for (const alias of entry.aliases) {
+            const normalized = normalizeAlias(alias);
+            const owner = seenAliases.get(normalized);
+            if (owner !== undefined) {
+                throw new Error(`invalid programme reference '${label}': duplicate alias '${alias}'`);
+            }
+            const colliding = seenProgrammeIds.get(normalized);
+            if (colliding !== undefined) {
+                throw new Error(`invalid programme reference '${label}': alias '${alias}' collides with a programme id`);
+            }
+            seenAliases.set(normalized, entry.sourceId);
+        }
+    }
+}
+
+/**
  * Verify a checked-in reference artifact before staging: version, checksum,
  * counts, and the semantic invariants the builder guarantees. Any manual
  * edit that bypasses the deterministic importer fails the build here
@@ -569,6 +609,7 @@ export function verifyProgrammeReferenceArtifact(filePath) {
     for (const entry of artifact.programmes) verifyArtifactProgramme(entry, label, artifact.calculationsEnabled);
     for (const entry of artifact.excluded) verifyArtifactDisposition(entry, label);
     for (const entry of artifact.blocked) verifyArtifactDisposition(entry, label);
+    verifyArtifactUniqueness(artifact, label);
     const { checksum, ...payload } = artifact;
     if (typeof checksum !== 'string' || computeArtifactChecksum(payload) !== checksum) {
         throw new Error(`invalid programme reference '${label}': checksum mismatch — rebuild with the deterministic importer`);

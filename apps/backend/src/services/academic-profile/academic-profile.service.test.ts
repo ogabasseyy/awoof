@@ -161,7 +161,10 @@ function createFakePool(state: FakeState): { connect: () => Promise<unknown> } {
             }
             if (normalized === 'SAVEPOINT academic_profile_assurance'
                 || normalized === 'RELEASE SAVEPOINT academic_profile_assurance'
-                || normalized === 'ROLLBACK TO SAVEPOINT academic_profile_assurance') {
+                || normalized === 'ROLLBACK TO SAVEPOINT academic_profile_assurance'
+                || normalized === 'SAVEPOINT academic_profile_methods'
+                || normalized === 'RELEASE SAVEPOINT academic_profile_methods'
+                || normalized === 'ROLLBACK TO SAVEPOINT academic_profile_methods') {
                 return { rows: [], rowCount: 0 };
             }
             if (normalized.startsWith('INSERT INTO student_academic_profiles')) {
@@ -964,6 +967,42 @@ test('stale detection covers stored flags, basis drift, and reference drift', ()
     assert.equal(isEstimateStale({ ...fresh, graduationYearOrigin: 'self_reported', estimateBasis: null }, 'TEST-REF-v2'), false);
 });
 
+test('stale detection revalidates the accepted rule when the label is unchanged', () => {
+    const fresh = {
+        ...emptyStored().fields,
+        claimedInstitution: { state: 'supplied' as const, value: { name: 'Example University', countryCode: 'NG' } },
+        programme: { state: 'supplied' as const, value: { programmeId: 'P-001', courseLabel: null } },
+        entryYear: { state: 'supplied' as const, value: 2022 },
+        entryRoute: { state: 'supplied' as const, value: 'utme' as const },
+        expectedGraduationYear: { state: 'supplied' as const, value: 2026 },
+        graduationYearOrigin: 'calculated' as const,
+        estimateBasis: { programmeId: 'P-001', entryYear: 2022, entryRoute: 'utme' as const, ruleId: 'P-001:utme', sourceVersion: 'TEST-REF-v1' },
+        estimateStale: false,
+    };
+    const unchanged = { reference: reviewedReference, expectedCountryCode: undefined };
+    assert.equal(isEstimateStale(fresh, 'TEST-REF-v1', unchanged), false);
+    const corrected: AcademicProgrammeReference = {
+        sourceVersion: 'TEST-REF-v1',
+        findProgrammeLabel: () => null,
+        findReviewedRule: () => ({ durationYears: 5, ruleId: 'P-001:utme', sourceVersion: 'TEST-REF-v1' }),
+    };
+    assert.equal(isEstimateStale(fresh, 'TEST-REF-v1', { reference: corrected, expectedCountryCode: undefined }), true);
+    assert.equal(isEstimateStale(fresh, 'TEST-REF-v1', { reference: blockedReference, expectedCountryCode: undefined }), true);
+    assert.deepEqual(
+        computeAttentionFields({ fields: fresh, binding: 'student_claimed', currentSourceVersion: 'TEST-REF-v1', current: unchanged }),
+        [],
+    );
+    assert.deepEqual(
+        computeAttentionFields({
+            fields: fresh,
+            binding: 'student_claimed',
+            currentSourceVersion: 'TEST-REF-v1',
+            current: { reference: corrected, expectedCountryCode: undefined },
+        }),
+        ['expectedGraduationYear'],
+    );
+});
+
 test('attention fields add stale calculated years to unanswered optionals', () => {
     const fields = {
         ...emptyStored().fields,
@@ -1159,6 +1198,31 @@ test('saves lock the bound university against metadata races while reads share i
     await readAcademicProfile(createFakePool(read) as never, USER_ID, serviceDeps());
     const readLock = read.statements.find((text) => text.includes('FROM universities'));
     assert.ok(readLock?.endsWith('FOR KEY SHARE'), readLock);
+});
+
+test('assurance settles before any profile lock so shared locks never upgrade', async () => {
+    for (const operation of ['read', 'save'] as const) {
+        const state = boundState();
+        const deps = serviceDeps({
+            readAssurance: async () => {
+                state.statements.push('ASSURANCE-READ');
+                return pendingAssurance;
+            },
+        });
+        if (operation === 'read') {
+            await readAcademicProfile(createFakePool(state) as never, USER_ID, deps);
+        } else {
+            await saveAcademicProfile(
+                createFakePool(state) as never,
+                USER_ID,
+                { expectedRevision: 0, entryRoute: { state: 'skipped' } },
+                deps,
+            );
+        }
+        const settled = state.statements.indexOf('ASSURANCE-READ');
+        const firstLock = state.statements.findIndex((text) => text.includes('FOR '));
+        assert.ok(settled !== -1 && firstLock !== -1 && settled < firstLock, `${operation}: ${state.statements.join(' | ')}`);
+    }
 });
 
 test('save creates the first revision and binds the server-owned canonical institution', async () => {
@@ -1591,6 +1655,48 @@ test('projection reports write availability for the requesting actor', async () 
     const disabled = await readAcademicProfile(createFakePool(fakeState()) as never, USER_ID, serviceDeps({ featureEnabled: false }));
     assert.equal(disabled.featureEnabled, false);
     assert.equal(disabled.writeAvailable, false);
+});
+
+test('reads flag saved estimates whose rule changed under an unchanged label', async () => {
+    const profile = profileRow({
+        revision: 1,
+        claimed_institution_state: 'supplied',
+        claimed_institution_name: 'Example University',
+        claimed_institution_country: 'NG',
+        programme_state: 'supplied',
+        programme_id: 'P-001',
+        entry_year_state: 'supplied',
+        entry_year: 2022,
+        entry_route_state: 'supplied',
+        entry_route: 'utme',
+        expected_graduation_year_state: 'supplied',
+        expected_graduation_year: 2026,
+        graduation_year_origin: 'calculated',
+        estimate_basis_programme_id: 'P-001',
+        estimate_basis_entry_year: 2022,
+        estimate_basis_entry_route: 'utme',
+        estimate_basis_rule_id: 'P-001:utme',
+        estimate_basis_source_version: 'TEST-REF-v1',
+    });
+    const fresh = await readAcademicProfile(
+        createFakePool(fakeState({ profile })) as never,
+        USER_ID,
+        serviceDeps({ reference: reviewedReference }),
+    );
+    assert.equal(fresh.fields.estimateStale, false);
+    assert.ok(!fresh.attentionFields.includes('expectedGraduationYear'));
+    const corrected: AcademicProgrammeReference = {
+        sourceVersion: 'TEST-REF-v1',
+        findProgrammeLabel: () => null,
+        findReviewedRule: () => ({ durationYears: 5, ruleId: 'P-001:utme', sourceVersion: 'TEST-REF-v1' }),
+    };
+    const stale = await readAcademicProfile(
+        createFakePool(fakeState({ profile })) as never,
+        USER_ID,
+        serviceDeps({ reference: corrected }),
+    );
+    assert.equal(stale.fields.estimateStale, true);
+    assert.deepEqual(stale.attentionFields, ['expectedGraduationYear']);
 });
 
 test('non-student roles and deleted students are denied', async () => {

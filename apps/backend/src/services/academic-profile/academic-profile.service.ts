@@ -330,7 +330,16 @@ export function estimateFromFields(
     return { year: fields.entryYear.value + rule.durationYears, ruleId: rule.ruleId, sourceVersion: rule.sourceVersion };
 }
 
-export function isEstimateStale(fields: AcademicProfileFields, currentSourceVersion: string | null): boolean {
+export type EstimateStalenessReference = {
+    reference: AcademicProgrammeReference;
+    expectedCountryCode: string | null | undefined;
+};
+
+export function isEstimateStale(
+    fields: AcademicProfileFields,
+    currentSourceVersion: string | null,
+    current?: EstimateStalenessReference,
+): boolean {
     if (fields.graduationYearOrigin !== 'calculated' || !fields.estimateBasis) return false;
     if (fields.estimateStale) return true;
     const basis = fields.estimateBasis;
@@ -338,7 +347,15 @@ export function isEstimateStale(fields: AcademicProfileFields, currentSourceVers
     if (fields.entryYear.state !== 'supplied' || fields.entryYear.value !== basis.entryYear) return true;
     if (fields.entryRoute.state !== 'supplied' || fields.entryRoute.value !== basis.entryRoute) return true;
     if (currentSourceVersion !== null && basis.sourceVersion !== currentSourceVersion) return true;
-    return false;
+    if (!current) return false;
+    // Same label, possibly changed contents: a regenerated reference may
+    // keep its source version while rules change, so re-resolve the
+    // accepted rule and result instead of trusting the label alone.
+    const saved = fields.expectedGraduationYear;
+    if (saved.state !== 'supplied') return true;
+    const rule = current.reference.findReviewedRule(basis.programmeId, basis.entryRoute, current.expectedCountryCode);
+    if (!rule) return true;
+    return basis.entryYear + rule.durationYears !== saved.value;
 }
 
 export function computeOptionalUnansweredFields(
@@ -355,10 +372,11 @@ export function computeAttentionFields(input: {
     fields: AcademicProfileFields;
     binding: AcademicProfileInstitution['binding'];
     currentSourceVersion: string | null;
+    current?: EstimateStalenessReference;
 }): AcademicField[] {
     const unanswered = computeOptionalUnansweredFields(input.fields, input.binding);
     if (input.fields.expectedGraduationYear.state === 'supplied'
-        && isEstimateStale(input.fields, input.currentSourceVersion)
+        && isEstimateStale(input.fields, input.currentSourceVersion, input.current)
         && !unanswered.includes('expectedGraduationYear')) {
         return [...unanswered, 'expectedGraduationYear'];
     }
@@ -507,7 +525,14 @@ export function validateAndMergePatch(input: {
         }
     }
     if (merged.graduationYearOrigin === 'calculated' && merged.estimateBasis
-        && reference.sourceVersion !== null && merged.estimateBasis.sourceVersion !== reference.sourceVersion) {
+        && isEstimateStale({ ...merged, estimateStale: false }, reference.sourceVersion, {
+            reference,
+            expectedCountryCode: effectiveEstimateCountryCode({
+                serverBound,
+                bindingCountryCode: expectedCountryCode,
+                fields: merged,
+            }),
+        })) {
         merged.estimateStale = true;
     }
     return merged;
@@ -809,15 +834,39 @@ SET canonical_institution_id = $1,
 WHERE user_id = $3
 RETURNING revision`;
 
+/**
+ * Read student assurance before any profile lock is taken. Assurance takes
+ * row-level write locks on the same identity rows the profile context
+ * locks for reading, so reading it afterwards would upgrade shared locks
+ * and two concurrent readers could deadlock. Reading first takes the
+ * strongest locks once; the context re-locks for free. Failures settle to
+ * null (unavailable) inside a savepoint so a failing lookup neither aborts
+ * the operation nor poisons the transaction.
+ */
+async function readAssuranceSettled(
+    client: PoolClient,
+    readAssurance: (tx: PoolClient, userId: string) => Promise<StudentAssurance>,
+    userId: string,
+): Promise<StudentAssurance | null> {
+    await client.query('SAVEPOINT academic_profile_assurance');
+    try {
+        const assurance = await readAssurance(client, userId);
+        await client.query('RELEASE SAVEPOINT academic_profile_assurance');
+        return assurance;
+    } catch {
+        await client.query('ROLLBACK TO SAVEPOINT academic_profile_assurance');
+        return null;
+    }
+}
+
 async function buildProjection(input: {
     tx: PoolClient;
-    userId: string;
     ctx: AcademicProfileContext;
     fields: AcademicProfileFields;
     revision: number;
     reference: AcademicProgrammeReference;
     featureEnabled: boolean;
-    readAssurance: (tx: PoolClient, userId: string) => Promise<StudentAssurance>;
+    assurance: StudentAssurance | null;
     listVerificationMethods: (tx: PoolClient, universityId: string | null) => Promise<VerificationMethodInfo[]>;
     matricParsers: readonly MatricParser[];
     currentYear: number;
@@ -835,20 +884,15 @@ async function buildProjection(input: {
                 binding: 'student_claimed',
             }
             : { displayName: null, countryCode: null, binding: 'unbound' };
-    let assurance: StudentAssurance | null = null;
-    let assuranceState: 'available' | 'unavailable' = 'unavailable';
-    // Failing projection lookups must not abort the save transaction: without
+    const assurance = input.assurance;
+    const assuranceState: 'available' | 'unavailable' = assurance === null ? 'unavailable' : 'available';
+    // A failing methods lookup must not abort the save transaction: without
     // this savepoint, PostgreSQL would roll back the already-run upsert at
     // COMMIT while node-postgres still resolves, reporting a phantom
-    // revision as saved. Both lookups below are side-effect-free reads, so a
+    // revision as saved. The lookup is a side-effect-free read, so a
     // rollback keeps the upsert while discarding nothing of value.
-    await input.tx.query('SAVEPOINT academic_profile_assurance');
-    try {
-        assurance = await input.readAssurance(input.tx, input.userId);
-        assuranceState = 'available';
-    } catch {
-        await input.tx.query('ROLLBACK TO SAVEPOINT academic_profile_assurance');
-    }
+    // (Assurance was settled before any profile lock; see above.)
+    await input.tx.query('SAVEPOINT academic_profile_methods');
     let verificationContinuationAvailable: boolean;
     let verificationRequirements: VerificationRequirement[];
     try {
@@ -860,24 +904,27 @@ async function buildProjection(input: {
             verificationRequirements.push('registration_number');
         }
         if (verificationContinuationAvailable) verificationRequirements.push('processing_consent');
-        await input.tx.query('RELEASE SAVEPOINT academic_profile_assurance');
+        await input.tx.query('RELEASE SAVEPOINT academic_profile_methods');
     } catch {
-        await input.tx.query('ROLLBACK TO SAVEPOINT academic_profile_assurance');
+        await input.tx.query('ROLLBACK TO SAVEPOINT academic_profile_methods');
         // Fail closed: an unknown resolver state must not trigger a profile
         // prompt that could overtake a verification continuation.
         verificationContinuationAvailable = true;
         verificationRequirements = [];
     }
-    const fields: AcademicProfileFields = { ...input.fields, estimateStale: isEstimateStale(input.fields, reference.sourceVersion) };
+    const estimateCountry = effectiveEstimateCountryCode({
+        serverBound: ctx.universityId !== null,
+        bindingCountryCode: boundInstitutionCountryCode(ctx.universityId, ctx.institutionCountry),
+        fields: input.fields,
+    });
+    const stalenessReference: EstimateStalenessReference = { reference, expectedCountryCode: estimateCountry };
+    const fields: AcademicProfileFields = {
+        ...input.fields,
+        estimateStale: isEstimateStale(input.fields, reference.sourceVersion, stalenessReference),
+    };
     const optionalUnansweredFields = computeOptionalUnansweredFields(fields, binding);
-    const attentionFields = computeAttentionFields({ fields, binding, currentSourceVersion: reference.sourceVersion });
-    const estimate = input.featureEnabled
-        ? estimateFromFields(fields, reference, effectiveEstimateCountryCode({
-            serverBound: ctx.universityId !== null,
-            bindingCountryCode: boundInstitutionCountryCode(ctx.universityId, ctx.institutionCountry),
-            fields,
-        }))
-        : null;
+    const attentionFields = computeAttentionFields({ fields, binding, currentSourceVersion: reference.sourceVersion, current: stalenessReference });
+    const estimate = input.featureEnabled ? estimateFromFields(fields, reference, estimateCountry) : null;
     const entryYearSuggestion = resolveEntryYearSuggestionForProjection(
         {
             featureEnabled: input.featureEnabled,
@@ -930,6 +977,7 @@ export async function readAcademicProfile(
     const client = await pool.connect();
     try {
         await client.query('BEGIN');
+        const assurance = await readAssuranceSettled(client, resolved.readAssurance, userId);
         const ctx = await lockAcademicProfileContext(client, userId, 'read');
         const rowResult = await client.query<AcademicProfileRow>(
             `SELECT ${PROFILE_COLUMNS} FROM student_academic_profiles WHERE user_id = $1`,
@@ -941,13 +989,12 @@ export async function readAcademicProfile(
         const fields = drifted ? scopedUnanswered(stored.fields) : stored.fields;
         const projection = await buildProjection({
             tx: client,
-            userId,
             ctx,
             fields,
             revision: stored.revision,
             reference: resolved.reference,
             featureEnabled: resolved.featureEnabled,
-            readAssurance: resolved.readAssurance,
+            assurance,
             listVerificationMethods: resolved.listVerificationMethods,
             matricParsers: resolved.matricParsers,
             currentYear: resolved.currentYear,
@@ -978,6 +1025,7 @@ export async function saveAcademicProfile(
     let committed = false;
     try {
         await client.query('BEGIN');
+        const assurance = await readAssuranceSettled(client, resolved.readAssurance, userId);
         const ctx = await lockAcademicProfileContext(client, userId, 'write');
         const rowResult = await client.query<AcademicProfileRow>(
             `SELECT ${PROFILE_COLUMNS} FROM student_academic_profiles WHERE user_id = $1 FOR UPDATE`,
@@ -1036,13 +1084,12 @@ export async function saveAcademicProfile(
         await client.query(UPSERT_SQL, upsertParams(ctx, revision, merged));
         const projection = await buildProjection({
             tx: client,
-            userId,
             ctx,
             fields: merged,
             revision,
             reference: resolved.reference,
             featureEnabled: resolved.featureEnabled,
-            readAssurance: resolved.readAssurance,
+            assurance,
             listVerificationMethods: resolved.listVerificationMethods,
             matricParsers: resolved.matricParsers,
             currentYear: resolved.currentYear,

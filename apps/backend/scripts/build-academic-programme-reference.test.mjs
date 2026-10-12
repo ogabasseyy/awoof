@@ -563,6 +563,44 @@ test('included evidence matches the importer classification exactly', () => {
     assert.deepEqual([...INCLUDED_EVIDENCE].sort(), ['G', 'P', 'P/G', 'P/U']);
 });
 
+test('reference verification rejects duplicated staged identities', () => {
+    const second = () => baseRow({ sourceId: 'SYN-002', aliases: ['Second Crop Sci'] });
+    const honest = build([baseRow(), second()]);
+    withTempArtifact(honest, (file) => {
+        assert.deepEqual(verifyProgrammeReferenceArtifact(file), honest);
+    });
+    const duplicateProgramme = build([baseRow(), second()]);
+    const forged = structuredClone(duplicateProgramme.programmes[1]);
+    forged.sourceId = 'SYN-FORGED';
+    forged.programmeId = duplicateProgramme.programmes[0].programmeId;
+    forged.routes.utme.durationYears = 6;
+    duplicateProgramme.programmes.unshift(forged);
+    duplicateProgramme.counts.included += 1;
+    duplicateProgramme.counts.total += 1;
+    reseal(duplicateProgramme);
+    withTempArtifact(duplicateProgramme, (file) => {
+        assert.throws(() => verifyProgrammeReferenceArtifact(file), /duplicate programme id/);
+    });
+    const duplicateSource = build([baseRow(), second()]);
+    duplicateSource.programmes[1].sourceId = duplicateSource.programmes[0].sourceId;
+    reseal(duplicateSource);
+    withTempArtifact(duplicateSource, (file) => {
+        assert.throws(() => verifyProgrammeReferenceArtifact(file), /duplicate source id/);
+    });
+    const duplicateAlias = build([baseRow({ aliases: ['shared-alias'] }), second()]);
+    duplicateAlias.programmes[1].aliases.push('Shared-Alias');
+    reseal(duplicateAlias);
+    withTempArtifact(duplicateAlias, (file) => {
+        assert.throws(() => verifyProgrammeReferenceArtifact(file), /duplicate alias/);
+    });
+    const collidingAlias = build([baseRow(), second()]);
+    collidingAlias.programmes[1].aliases.push(collidingAlias.programmes[0].programmeId.toUpperCase());
+    reseal(collidingAlias);
+    withTempArtifact(collidingAlias, (file) => {
+        assert.throws(() => verifyProgrammeReferenceArtifact(file), /collides with a programme id/);
+    });
+});
+
 test('reference verification rejects importer-excluded evidence in programmes', () => {
     for (const evidence of ['G', 'P', 'P/G']) {
         const honest = build([baseRow({ evidence })]);

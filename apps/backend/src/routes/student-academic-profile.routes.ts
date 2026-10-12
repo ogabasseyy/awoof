@@ -18,11 +18,14 @@ export function createStudentAcademicProfileRouter(
     const router = Router();
     // Catalogue and estimate endpoints are suggestion-only and typeahead-hot;
     // bound them tighter than the global limiter without affecting reads.
+    // Authentication runs before this limiter, so key by student: students
+    // behind one NAT address must not spend each other's typeahead budget.
     const catalogueLimiter = rateLimit({
         windowMs: 60_000,
         max: 120,
         standardHeaders: true,
         legacyHeaders: false,
+        keyGenerator: (req) => req.user?.id ?? req.ip ?? 'unknown',
     });
 
     /**
@@ -148,6 +151,7 @@ export default createStudentAcademicProfileRouter();
  *       401: { $ref: '#/components/responses/Unauthorized' }
  *       403: { $ref: '#/components/responses/Unauthorized' }
  *       422: { $ref: '#/components/responses/BadRequest' }
+ *       429: { description: Suggestion quota exhausted for this student; retry after the window resets }
  * /api/students/academic-profile/programmes:
  *   get:
  *     summary: Search the reviewed programme catalogue for the authenticated student
@@ -166,10 +170,11 @@ export default createStudentAcademicProfileRouter();
  *       401: { $ref: '#/components/responses/Unauthorized' }
  *       403: { $ref: '#/components/responses/Unauthorized' }
  *       422: { $ref: '#/components/responses/BadRequest' }
+ *       429: { description: Suggestion quota exhausted for this student; retry after the window resets }
  * /api/students/academic-profile/estimate:
  *   post:
  *     summary: Compute an advisory graduation-year estimate
- *     description: Computes from reviewed route rules only and never persists the result. Unreviewed, conflicting, or cross-country inputs return a reasoned unavailable outcome. Rejected while collection is disabled.
+ *     description: Computes from reviewed route rules only and never persists the result. Unreviewed, conflicting, or cross-country inputs return a reasoned unavailable outcome. Unbound previews narrow by the draft claim when supplied, else by the stored claim. Rejected while collection is disabled.
  *     tags: [Students]
  *     security: [{ bearerAuth: [] }]
  *     requestBody:
@@ -186,4 +191,5 @@ export default createStudentAcademicProfileRouter();
  *       403: { $ref: '#/components/responses/Unauthorized' }
  *       404: { $ref: '#/components/responses/BadRequest' }
  *       422: { $ref: '#/components/responses/BadRequest' }
+ *       429: { description: Suggestion quota exhausted for this student; retry after the window resets }
  */

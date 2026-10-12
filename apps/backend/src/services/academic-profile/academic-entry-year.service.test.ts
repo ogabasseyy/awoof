@@ -255,7 +255,10 @@ function createSuggestionPool(profile: Record<string, unknown> | null): { connec
             }
             if (normalized === 'SAVEPOINT academic_profile_assurance'
                 || normalized === 'RELEASE SAVEPOINT academic_profile_assurance'
-                || normalized === 'ROLLBACK TO SAVEPOINT academic_profile_assurance') {
+                || normalized === 'ROLLBACK TO SAVEPOINT academic_profile_assurance'
+                || normalized === 'SAVEPOINT academic_profile_methods'
+                || normalized === 'RELEASE SAVEPOINT academic_profile_methods'
+                || normalized === 'ROLLBACK TO SAVEPOINT academic_profile_methods') {
                 return { rows: [], rowCount: 0 };
             }
             if (normalized.startsWith('INSERT INTO student_academic_profiles') || normalized.startsWith('UPDATE student_academic_profiles')) {

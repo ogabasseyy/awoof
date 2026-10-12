@@ -706,11 +706,12 @@ Access tokens expire in 15 minutes. Use the refresh token endpoint to get a new 
                     type: 'object',
                     additionalProperties: false,
                     required: ['programmeId', 'entryYear', 'entryRoute'],
-                    description: 'Estimate inputs only. No country override, rule pick, or cross-user key is accepted.',
+                    description: 'Estimate inputs only. No country override, rule pick, or cross-user key is accepted; the optional claimed country only narrows unbound previews to match the save path.',
                     properties: {
                         programmeId: { type: 'string', minLength: 1, maxLength: 128, nullable: true },
                         entryYear: { type: 'integer', nullable: true },
                         entryRoute: { type: 'string', enum: ['utme', 'de_200', 'de_300', 'transfer_other'], nullable: true },
+                        claimedCountryCode: { type: 'string', pattern: '^[A-Z]{2}$', description: 'Unsaved draft-claim country for unbound preview scoping; ignored for server-bound students.' },
                     },
                 },
                 AcademicProfileEstimateResult: {

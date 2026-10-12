@@ -353,6 +353,20 @@ test('estimate input schema bounds identifiers and requires integer years', () =
     );
 });
 
+test('estimate input schema scopes drafts by claimed country only', () => {
+    assert.deepEqual(
+        estimateInputSchema.parse({ programmeId: 'SYN-ENG', entryYear: 2022, entryRoute: 'utme', claimedCountryCode: 'GH' }),
+        { programmeId: 'SYN-ENG', entryYear: 2022, entryRoute: 'utme', claimedCountryCode: 'GH' },
+    );
+    for (const claimedCountryCode of ['gh', 'GHA', 'G', 'G1', '', null]) {
+        assert.throws(
+            () => estimateInputSchema.parse({ programmeId: 'SYN-ENG', entryYear: 2022, entryRoute: 'utme', claimedCountryCode }),
+            ZodError,
+            JSON.stringify(claimedCountryCode),
+        );
+    }
+});
+
 test('catalogue query parsing bounds page size, query length, and keys', () => {
     assert.deepEqual(parseCatalogueQuery({}), { q: '', cursor: null, limit: CATALOGUE_DEFAULT_LIMIT });
     assert.deepEqual(
@@ -560,6 +574,7 @@ type CatalogueFixture = {
     student: { id: string; university_id: string | null; identity_version: number; status: string; registration_number: string | null };
     university: { id: string; name: string; country: string | null; shortcode: string | null } | null;
     catalogue: Array<{ name: string; country: string | null }>;
+    claim: { claimed_institution_state: string; claimed_institution_country: string | null } | null;
 };
 
 function catalogueFixture(overrides: Partial<CatalogueFixture> = {}): CatalogueFixture {
@@ -567,6 +582,7 @@ function catalogueFixture(overrides: Partial<CatalogueFixture> = {}): CatalogueF
         user: { id: USER_ID, role: 'student', deleted_at: null },
         student: { id: STUDENT_ID, university_id: null, identity_version: 1, status: 'active', registration_number: null },
         university: null,
+        claim: null,
         catalogue: [
             { name: 'Fixture University Alpha', country: 'Nigeria' },
             { name: 'Fixture University Beta', country: 'Ghana' },
@@ -606,6 +622,9 @@ function createCataloguePool(fixture: CatalogueFixture): { connect: () => Promis
                 }
                 const page = rows.slice(offset, offset + limit);
                 return { rows: page, rowCount: page.length };
+            }
+            if (normalized.includes('FROM student_academic_profiles')) {
+                return fixture.claim ? { rows: [fixture.claim], rowCount: 1 } : { rows: [], rowCount: 0 };
             }
             throw new Error(`Unexpected query: ${normalized}`);
         },
@@ -726,4 +745,48 @@ test('student estimate enforces the bound institution country', async () => {
         ),
         { state: 'available', year: 2026, ruleId: 'SYN-ENG:utme', sourceVersion: SOURCE_VERSION },
     );
+});
+
+test('student estimate previews scope unbound lookups by the claim', async () => {
+    const input = { programmeId: 'SYN-ENG', entryYear: 2022, entryRoute: 'utme' as const };
+    const options = { reference: syntheticReference(), currentYear: CURRENT_YEAR };
+    const ghanaClaim = createCataloguePool(catalogueFixture({
+        claim: { claimed_institution_state: 'supplied', claimed_institution_country: 'GH' },
+    }));
+    assert.deepEqual(
+        await estimateGraduationYearForStudent(ghanaClaim, USER_ID, input, options),
+        { state: 'unavailable', reason: 'unsupported_country' },
+    );
+    const nigeriaClaim = createCataloguePool(catalogueFixture({
+        claim: { claimed_institution_state: 'supplied', claimed_institution_country: 'NG' },
+    }));
+    assert.deepEqual(
+        await estimateGraduationYearForStudent(nigeriaClaim, USER_ID, input, options),
+        { state: 'available', year: 2026, ruleId: 'SYN-ENG:utme', sourceVersion: SOURCE_VERSION },
+    );
+    assert.deepEqual(
+        await estimateGraduationYearForStudent(nigeriaClaim, USER_ID, { ...input, claimedCountryCode: 'GH' }, options),
+        { state: 'unavailable', reason: 'unsupported_country' },
+    );
+    const unclaimed = createCataloguePool(catalogueFixture());
+    assert.deepEqual(
+        await estimateGraduationYearForStudent(unclaimed, USER_ID, { ...input, claimedCountryCode: 'GH' }, options),
+        { state: 'unavailable', reason: 'unsupported_country' },
+    );
+    assert.deepEqual(
+        await estimateGraduationYearForStudent(unclaimed, USER_ID, input, options),
+        { state: 'available', year: 2026, ruleId: 'SYN-ENG:utme', sourceVersion: SOURCE_VERSION },
+    );
+    const bound = createCataloguePool(catalogueFixture({
+        student: { id: STUDENT_ID, university_id: UNIVERSITY_ID, identity_version: 1, status: 'active', registration_number: null },
+        university: { id: UNIVERSITY_ID, name: 'Fixture University Alpha', country: 'Nigeria', shortcode: 'alpha' },
+    }));
+    assert.deepEqual(
+        await estimateGraduationYearForStudent(bound, USER_ID, { ...input, claimedCountryCode: 'GH' }, options),
+        { state: 'available', year: 2026, ruleId: 'SYN-ENG:utme', sourceVersion: SOURCE_VERSION },
+    );
+    const reads = ghanaClaim.statements.filter((statement) => statement.text.includes('FROM student_academic_profiles'));
+    assert.equal(reads.length, 1);
+    assert.ok(!reads[0]?.text.includes('FOR '), 'claim preview read takes no row lock');
+    assert.ok(!bound.statements.some((statement) => statement.text.includes('FROM student_academic_profiles')));
 });
