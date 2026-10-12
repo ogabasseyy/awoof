@@ -605,6 +605,52 @@ test('unscopes estimate previews when the draft removes the saved claim', async 
     expect(fixture.estimateCalls).toEqual([{ programmeId: 'SYN-P1', entryYear: 2021, entryRoute: 'utme', claimedCountryCode: null }]);
 });
 
+test('clears a displayed estimate when the draft claim changes', async ({ page }) => {
+    const fixture = await openComplete(page, projection({
+        fields: baseFields({
+            claimedInstitution: { state: 'supplied', value: { name: 'Saved School', countryCode: 'NG' } },
+        }),
+    }));
+    fixture.estimateResult = { state: 'available', year: 2025, ruleId: 'SYN-R1', sourceVersion: 'nuc-v2' };
+    fixture.programmeItems = [{ programmeId: 'SYN-P1', label: 'Synthetic Programme One', award: 'B.Sc.' }];
+    const input = page.getByRole('combobox', { name: 'Programme or course' });
+    await input.click();
+    await input.fill('syn');
+    await expect(page.getByRole('option').first()).toBeVisible();
+    await page.getByRole('option').first().click();
+    await page.getByRole('textbox', { name: 'Entry year' }).fill('2021');
+    await page.getByRole('radio', { name: 'UTME / first-year entry' }).check();
+    await page.getByRole('button', { name: 'Get estimated year' }).click();
+    await expect(page.getByText('Estimated graduation year:')).toBeVisible();
+    expect(fixture.estimateCalls).toEqual([{ programmeId: 'SYN-P1', entryYear: 2021, entryRoute: 'utme' }]);
+    await page.getByRole('textbox', { name: 'Country (2-letter code)' }).fill('GH');
+    await expect(page.getByText('Estimated graduation year:')).toHaveCount(0);
+});
+
+test('ignores an in-flight estimate response after the draft claim changes', async ({ page }) => {
+    const fixture = await openComplete(page, projection({
+        fields: baseFields({
+            claimedInstitution: { state: 'supplied', value: { name: 'Saved School', countryCode: 'NG' } },
+        }),
+    }));
+    fixture.estimateResult = { state: 'available', year: 2025, ruleId: 'SYN-R1', sourceVersion: 'nuc-v2' };
+    fixture.programmeItems = [{ programmeId: 'SYN-P1', label: 'Synthetic Programme One', award: 'B.Sc.' }];
+    const input = page.getByRole('combobox', { name: 'Programme or course' });
+    await input.click();
+    await input.fill('syn');
+    await expect(page.getByRole('option').first()).toBeVisible();
+    await page.getByRole('option').first().click();
+    await page.getByRole('textbox', { name: 'Entry year' }).fill('2021');
+    await page.getByRole('radio', { name: 'UTME / first-year entry' }).check();
+    await page.route(`${apiOrigin}/api/students/academic-profile/estimate`, async (route: Route) => {
+        await new Promise((resolve) => setTimeout(resolve, 300));
+        await route.fulfill({ json: { success: true, data: fixture.estimateResult }, headers: CORS });
+    });
+    await page.getByRole('button', { name: 'Get estimated year' }).click();
+    await page.getByRole('textbox', { name: 'Country (2-letter code)' }).fill('GH');
+    await expect(page.getByText('Estimated graduation year:')).toBeHidden({ timeout: 2000 });
+});
+
 test('explains unavailable estimates honestly', async ({ page }) => {
     const fixture = await openComplete(page, projection());
     await page.getByRole('button', { name: 'Get estimated year' }).click();
@@ -1175,7 +1221,7 @@ test('links from the profile hub and verification page carry fixed return paths'
 
 test('hides completion calls to action while collection is disabled', async ({ page }) => {
     await installSyntheticApi(page);
-    const fixture = await installAcademicApi(page, projection({ featureEnabled: false }));
+    const fixture = await installAcademicApi(page, projection({ featureEnabled: false, writeAvailable: false }));
     await mockCurrentUser(page);
     await mockQuietVerification(page, 'pending');
     await seedSession(page, 'student');

@@ -539,7 +539,11 @@ function CompletionForm() {
     const programmeInputsDirty = dirtyFields.includes('programme');
     const entryYearInputsDirty = dirtyFields.includes('entryYear');
     const entryRouteInputsDirty = dirtyFields.includes('entryRoute');
-    const estimateInputsPristine = !programmeInputsDirty && !entryYearInputsDirty && !entryRouteInputsDirty;
+    // The draft claim scopes unbound estimates exactly as the save narrows
+    // by the merged claim, so a changed or cleared claim invalidates a
+    // displayed or accepted estimate like any other estimate input.
+    const claimInputsDirty = dirtyFields.includes('claimedInstitution');
+    const estimateInputsPristine = !programmeInputsDirty && !entryYearInputsDirty && !entryRouteInputsDirty && !claimInputsDirty;
 
     const effectiveProgrammeId = programmeMarked !== null
         ? null
@@ -592,7 +596,7 @@ function CompletionForm() {
     };
 
     const handleInputsChangedIfNeeded = (field: AcademicField) => {
-        if (field === 'programme' || field === 'entryYear' || field === 'entryRoute') handleInputsChanged();
+        if (field === 'programme' || field === 'entryYear' || field === 'entryRoute' || field === 'claimedInstitution') handleInputsChanged();
     };
 
     const validateAndBuild = (): { form: AcademicProfileForm } | { errors: Record<string, string> } => {
@@ -1285,6 +1289,7 @@ function CompletionForm() {
                                         setInstitutionName(value);
                                         setInstitutionMarked(null);
                                         markDirty('claimedInstitution');
+                                        handleInputsChanged();
                                     }}
                                     items={institutionSearch.results}
                                     itemKey={(item) => `${item.name}|${item.countryCode ?? ''}`}
@@ -1296,6 +1301,7 @@ function CompletionForm() {
                                         setInstitutionCountry(item.countryCode ?? '');
                                         setInstitutionMarked(null);
                                         markDirty('claimedInstitution');
+                                        handleInputsChanged();
                                     }}
                                     describedBy={fieldErrors.institution ? 'institution-error' : undefined}
                                     emptyText="No matches. Your entry will be saved as written."
@@ -1321,6 +1327,7 @@ function CompletionForm() {
                                             setInstitutionCountry(event.target.value);
                                             setInstitutionMarked(null);
                                             markDirty('claimedInstitution');
+                                            handleInputsChanged();
                                         }}
                                         aria-describedby={fieldErrors.institution ? 'institution-error' : undefined}
                                     />

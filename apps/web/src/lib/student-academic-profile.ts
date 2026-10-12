@@ -754,18 +754,19 @@ function readCompletionCtaProjection(): Promise<AcademicProfileView> {
 
 /**
  * Whether the profile-completion call to action renders on the profile hub
- * and verification pages. Null while the server projection loads; false
- * only when the server reports collection disabled. Read failures fail
- * open to true so a projection outage never removes the pre-rollout
- * journey — the completion page reports its own read errors.
+ * and verification pages. Null while the server projection loads; the
+ * actor-level write gate afterwards, so students who cannot save (for
+ * example suspended accounts) are never invited to a read-only form.
+ * Read failures fail closed: an unreadable gate must not advertise a
+ * journey the server may have disabled for this actor.
  */
 export function useAcademicProfileCompletionCta(): boolean | null {
     const [visible, setVisible] = useState<boolean | null>(null);
     useEffect(() => {
         let cancelled = false;
         readCompletionCtaProjection()
-            .then((view) => { if (!cancelled) setVisible(view.featureEnabled); })
-            .catch(() => { if (!cancelled) setVisible(true); });
+            .then((view) => { if (!cancelled) setVisible(view.writeAvailable); })
+            .catch(() => { if (!cancelled) setVisible(false); });
         return () => { cancelled = true; };
     }, []);
     return visible;
