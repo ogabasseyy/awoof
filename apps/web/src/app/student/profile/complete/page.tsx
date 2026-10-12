@@ -32,6 +32,7 @@ import {
     parseInstitutionChangedConflict,
     patchMatchesProjection,
     requestGraduationEstimate,
+    resolveCatalogueSearch,
     resolveCompletionExit,
     saveAcademicProfile,
     searchAcademicInstitutions,
@@ -41,6 +42,8 @@ import {
     type AcademicProfileInput,
     type AcademicProfileView,
     type CataloguePage,
+    type CatalogueSearchSnapshot,
+    type CatalogueSearchStatus,
     type ClaimReconfirmRequest,
     type EntryRoute,
     type EstimateResult,
@@ -87,7 +90,7 @@ type EstimateUiState =
     | { status: 'ready'; result: EstimateResult }
     | { status: 'error' };
 
-type SearchStatus = 'idle' | 'loading' | 'ready' | 'error';
+type SearchStatus = CatalogueSearchStatus;
 
 /**
  * Where the leave dialog should take the student after Save or Discard.
@@ -140,8 +143,11 @@ function useCatalogueSearch<T>(
 ): { results: T[]; status: SearchStatus } {
     const cleared = !enabled || query.trim().length === 0;
     const searchKey = `${enabled ? '1' : '0'}:${query}`;
-    const [resultSnapshot, setResultSnapshot] = useState<{ searchKey: string; items: T[] }>({ searchKey, items: [] });
-    const [status, setStatus] = useState<SearchStatus>('idle');
+    const [resultSnapshot, setResultSnapshot] = useState<{ searchKey: string } & CatalogueSearchSnapshot<T>>({
+        searchKey,
+        items: [],
+        status: 'idle',
+    });
     const requestId = useRef(0);
     const [prevSearchKey, setPrevSearchKey] = useState(searchKey);
     if (searchKey !== prevSearchKey) {
@@ -151,12 +157,7 @@ function useCatalogueSearch<T>(
         // navigate or select invisible stale options, and a late
         // resolution for the previous key is ignored by the updater
         // below even if it lands before the re-armed effect runs.
-        setResultSnapshot({ searchKey, items: [] });
-        if (cleared) {
-            setStatus('idle');
-        } else {
-            setStatus('loading');
-        }
+        setResultSnapshot({ searchKey, items: [], status: cleared ? 'idle' : 'loading' });
     }
     useEffect(() => {
         if (!enabled || query.trim().length === 0) {
@@ -166,25 +167,24 @@ function useCatalogueSearch<T>(
         const snapshot = getSessionSnapshot();
         const id = ++requestId.current;
         const timer = setTimeout(() => {
-            fetcher(query.trim()).then((page) => {
+            // Results and status settle as one key-bound snapshot through
+            // the shared resolver: a superseded key can never rewrite the
+            // results or clear the new key's loading status, and a stale
+            // request id (student returned to a query whose earlier
+            // request is still running) resolves to no commit.
+            const settle = (page: CataloguePage<T> | null) => {
                 if (!isCurrentSession(snapshot)) return;
-                // Both guards matter: the key drops late responses for
-                // superseded queries, and the request id drops stale
-                // responses when the student returns to a query whose
-                // earlier request is still running.
-                const current = id === requestId.current;
-                setResultSnapshot((prev) => (current && prev.searchKey === searchKey ? { searchKey, items: page.items } : prev));
-                if (current) setStatus('ready');
-            }).catch(() => {
-                if (!isCurrentSession(snapshot)) return;
-                const current = id === requestId.current;
-                setResultSnapshot((prev) => (current && prev.searchKey === searchKey ? { searchKey, items: [] } : prev));
-                if (current) setStatus('error');
-            });
+                setResultSnapshot((prev) => {
+                    const stale = id !== requestId.current || prev.searchKey !== searchKey;
+                    const settled = resolveCatalogueSearch({ stale, page });
+                    return settled === null ? prev : { searchKey, ...settled };
+                });
+            };
+            fetcher(query.trim()).then(settle).catch(() => settle(null));
         }, 200);
         return () => clearTimeout(timer);
     }, [fetcher, query, enabled, searchKey]);
-    return { results: resultSnapshot.items, status };
+    return { results: resultSnapshot.items, status: resultSnapshot.status };
 }
 
 type ComboboxProps<T> = {
@@ -460,8 +460,11 @@ function CompletionForm() {
         setClaimReconfirm(null);
         saveLeaveRef.current = null;
         // New edits also retire the post-save navigation retry: it would
-        // otherwise bypass the leave guard and silently drop them.
+        // otherwise bypass the leave guard and silently drop them. The
+        // saved banner retires with it: the save confirmed the previous
+        // snapshot, so it must not claim the dirty draft.
         setNavFailed(false);
+        setSaveOutcome(null);
     };
 
     const resetDraft = (profile: AcademicProfileView) => {

@@ -15,6 +15,7 @@ import {
     parseInstitutionCataloguePage,
     parseProgrammeCataloguePage,
     patchMatchesProjection,
+    resolveCatalogueSearch,
     resolveCompletionExit,
     type AcademicProfileForm,
     type AcademicProfileInput,
@@ -549,4 +550,29 @@ test('reconciles an unknown save outcome against the current projection', () => 
     // Same numeric year and a calculated origin, but the basis is stale:
     // the accept never reached the server, so reconciliation must fail.
     assert.equal(patchMatchesProjection(committed, stale), false);
+});
+
+test('resolves a current catalogue page to a ready snapshot', () => {
+    assert.deepEqual(resolveCatalogueSearch({
+        stale: false,
+        page: { items: [{ name: 'Synthetic University', countryCode: 'NG' }], nextCursor: 'cursor' },
+    }), {
+        items: [{ name: 'Synthetic University', countryCode: 'NG' }],
+        status: 'ready',
+    });
+});
+
+test('resolves a failed catalogue fetch to the error snapshot', () => {
+    assert.deepEqual(resolveCatalogueSearch({ stale: false, page: null }), {
+        items: [],
+        status: 'error',
+    });
+});
+
+test('drops superseded catalogue settlements without touching the snapshot', () => {
+    assert.equal(resolveCatalogueSearch({
+        stale: true,
+        page: { items: [{ name: 'Stale University', countryCode: 'NG' }], nextCursor: null },
+    }), null);
+    assert.equal(resolveCatalogueSearch({ stale: true, page: null }), null);
 });

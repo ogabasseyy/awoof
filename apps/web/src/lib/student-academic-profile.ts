@@ -108,6 +108,29 @@ export type ProgrammeCatalogueItem = { programmeId: string; label: string; award
 
 export type CataloguePage<T> = { items: T[]; nextCursor: string | null };
 
+export type CatalogueSearchStatus = 'idle' | 'loading' | 'ready' | 'error';
+
+export type CatalogueSearchSnapshot<T> = {
+    items: T[];
+    status: CatalogueSearchStatus;
+};
+
+/**
+ * Pure resolver for key-bound catalogue search settlement: maps a settled
+ * fetch outcome to the snapshot to commit (success page to `ready`, a null
+ * page to the `error` snapshot), or null when the settling key is
+ * superseded — so a stale key can never rewrite the results OR their
+ * loading status.
+ */
+export function resolveCatalogueSearch<T>(input: {
+    stale: boolean;
+    page: CataloguePage<T> | null;
+}): CatalogueSearchSnapshot<T> | null {
+    if (input.stale) return null;
+    if (input.page === null) return { items: [], status: 'error' };
+    return { items: input.page.items, status: 'ready' };
+}
+
 export type EstimateInput = {
     programmeId: string | null;
     entryYear: number | null;

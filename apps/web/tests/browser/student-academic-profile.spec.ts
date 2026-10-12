@@ -505,6 +505,48 @@ test('keeps current suggestions when a superseded search rejects late', async ({
     await expect(page.getByText('No matches found.')).toHaveCount(0);
 });
 
+test('settles only the current catalogue key while a stale search resolves', async ({ page }) => {
+    await openComplete(page, projection());
+    let releaseFirst: () => void = () => undefined;
+    const firstGate = new Promise<void>((resolve) => { releaseFirst = resolve; });
+    let releaseSecond: () => void = () => undefined;
+    const secondGate = new Promise<void>((resolve) => { releaseSecond = resolve; });
+    let calls = 0;
+    await page.route(`${apiOrigin}/api/students/academic-profile/programmes*`, async (route: Route) => {
+        calls += 1;
+        if (calls === 1) {
+            await firstGate;
+            await route.fulfill({
+                json: { success: true, data: { items: [{ programmeId: 'SYN-OLD', label: 'Stale Programme', award: null }], nextCursor: null } },
+                headers: CORS,
+            });
+            return;
+        }
+        await secondGate;
+        await route.fulfill({
+            json: { success: true, data: { items: [{ programmeId: 'SYN-P1', label: 'Synthetic Programme One', award: 'B.Sc.' }], nextCursor: null } },
+            headers: CORS,
+        });
+    });
+    const input = page.getByRole('combobox', { name: 'Programme or course' });
+    await input.click();
+    await input.fill('syn');
+    await expect.poll(() => calls).toBe(1);
+    await input.fill('synx');
+    await expect.poll(() => calls).toBe(2);
+    // The superseded key settles while the current key still loads: the
+    // stale snapshot must change neither the options nor the loading state.
+    const staleResponse = page.waitForResponse((response) => response.url().includes('/api/students/academic-profile/programmes'));
+    releaseFirst();
+    await staleResponse;
+    await page.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+    await expect(page.getByText('Searching…')).toBeVisible();
+    await expect(page.getByRole('option')).toHaveCount(0);
+    await expect(page.getByText('No matches found.')).toHaveCount(0);
+    releaseSecond();
+    await expect(page.getByRole('option', { name: /Synthetic Programme One/ })).toBeVisible();
+});
+
 test('accepts a suggested entry year', async ({ page }) => {
     const fixture = await openComplete(page, projection({
         entryYearSuggestion: { state: 'suggested', year: 2021, parserId: 'synthetic-parser', parserVersion: 'v1', confidence: 'high' },
@@ -1050,6 +1092,20 @@ test('retires the navigation retry once the saved form is edited again', async (
     await expect(page.getByText("We couldn't take you to the next page.")).toBeVisible();
     await page.getByRole('textbox', { name: 'Entry year' }).fill('2022');
     await expect(page.getByRole('button', { name: 'Try again' })).toHaveCount(0);
+    await expect(page).toHaveURL(/\/student\/profile\/complete/);
+});
+
+test('retires the saved banner once the saved form is edited again', async ({ page }) => {
+    await openComplete(page, projection());
+    await page.getByRole('textbox', { name: 'Entry year' }).fill('2021');
+    await page.evaluate(() => {
+        (window as unknown as Record<string, unknown>).__awoofFailNextExitNavigation = true;
+    });
+    await page.getByRole('button', { name: 'Save and continue' }).click();
+    await expect(page.getByText("We couldn't take you to the next page.")).toBeVisible();
+    await expect(page.getByRole('status').filter({ hasText: /^Profile saved$/ })).toBeVisible();
+    await page.getByRole('textbox', { name: 'Entry year' }).fill('2022');
+    await expect(page.getByRole('status').filter({ hasText: /^Profile saved$/ })).toHaveCount(0);
     await expect(page).toHaveURL(/\/student\/profile\/complete/);
 });
 
