@@ -421,3 +421,39 @@ test('academic-profile operations describe collection-gate failures as forbidden
         assert.deepEqual(operation.responses['403'], { $ref: '#/components/responses/Forbidden' });
     }
 });
+
+test('academic-profile operations describe missing profiles as not found', () => {
+    type Operation = { responses: Record<string, { $ref?: string }> };
+    const spec = swaggerSpec as {
+        components: { responses: Record<string, { description?: string }> };
+        paths: Record<string, { get?: Operation; put?: Operation; post?: Operation }>;
+    };
+    assert.equal(spec.components.responses.NotFound?.description, 'Not found');
+    const operations: Operation[] = [
+        spec.paths['/api/students/academic-profile']?.get,
+        spec.paths['/api/students/academic-profile']?.put,
+        spec.paths['/api/students/academic-profile/institutions']?.get,
+        spec.paths['/api/students/academic-profile/programmes']?.get,
+        spec.paths['/api/students/academic-profile/estimate']?.post,
+    ].filter((operation): operation is Operation => operation !== undefined);
+    assert.equal(operations.length, 5);
+    for (const operation of operations) {
+        assert.deepEqual(operation.responses['404'], { $ref: '#/components/responses/NotFound' });
+    }
+});
+
+test('academic-profile input documents the read-institution token', () => {
+    const spec = swaggerSpec as {
+        components: {
+            schemas: Record<string, {
+                properties?: Record<string, {
+                    properties?: Record<string, { enum?: string[] }>;
+                    required?: string[];
+                }>;
+            }>;
+        };
+    };
+    const token = spec.components.schemas.AcademicProfileInput?.properties?.expectedInstitution;
+    assert.deepEqual(token?.required, ['binding', 'displayName']);
+    assert.deepEqual(token?.properties?.binding?.enum, ['server_bound', 'student_claimed', 'unbound']);
+});

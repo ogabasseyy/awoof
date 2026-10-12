@@ -48,8 +48,10 @@ export function createStudentAcademicProfileRouter(
     //   authentication. These paths skip the global limiter, and
     //   unauthenticated traffic never reaches the per-student limiter, so
     //   without this ceiling invalid-token floods would hit JWT processing
-    //   unbounded. Successful responses never consume it, so legitimate
-    //   bursts behind one NAT pass while only failures accumulate.
+    //   unbounded. Only authentication failures consume it: any request
+    //   that authenticated is already quota'd per student below, so
+    //   counting its validation failures or quota rejections here would
+    //   let one student lock out a whole NAT.
     // - catalogueLimiter (after auth): per-student quota, so students
     //   behind one NAT address never spend each other's typeahead budget.
     const catalogueFloodCeiling = rateLimit({
@@ -58,6 +60,7 @@ export function createStudentAcademicProfileRouter(
         standardHeaders: true,
         legacyHeaders: false,
         skipSuccessfulRequests: true,
+        requestWasSuccessful: (req, res) => res.statusCode < 400 || req.user !== undefined,
     });
     const catalogueLimiter = rateLimit({
         windowMs: 60_000,
@@ -152,7 +155,7 @@ export default createStudentAcademicProfileRouter();
  *         content: { application/json: { schema: { $ref: '#/components/schemas/AcademicProfileProjectionResponse' } } }
  *       401: { $ref: '#/components/responses/Unauthorized' }
  *       403: { $ref: '#/components/responses/Forbidden' }
- *       404: { $ref: '#/components/responses/BadRequest' }
+ *       404: { $ref: '#/components/responses/NotFound' }
  *   put:
  *     summary: Save the authenticated student's academic profile patch
  *     description: Commits a validated partial update with optimistic revisioning and returns the recalculated projection. Rejected while collection is disabled. Accepted estimates are recomputed server-side; the browser cannot set calculation origin, rule references, or provenance.
@@ -170,7 +173,7 @@ export default createStudentAcademicProfileRouter();
  *       400: { $ref: '#/components/responses/BadRequest' }
  *       401: { $ref: '#/components/responses/Unauthorized' }
  *       403: { $ref: '#/components/responses/Forbidden' }
- *       404: { $ref: '#/components/responses/BadRequest' }
+ *       404: { $ref: '#/components/responses/NotFound' }
  *       409:
  *         description: Stale revision, institution drift, or a changed school claim; reload and reconfirm before retrying
  *         content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } }
@@ -192,6 +195,7 @@ export default createStudentAcademicProfileRouter();
  *       400: { $ref: '#/components/responses/BadRequest' }
  *       401: { $ref: '#/components/responses/Unauthorized' }
  *       403: { $ref: '#/components/responses/Forbidden' }
+ *       404: { $ref: '#/components/responses/NotFound' }
  *       422: { $ref: '#/components/responses/BadRequest' }
  *       429: { description: Suggestion quota exhausted for this student; retry after the window resets }
  * /api/students/academic-profile/programmes:
@@ -211,6 +215,7 @@ export default createStudentAcademicProfileRouter();
  *       400: { $ref: '#/components/responses/BadRequest' }
  *       401: { $ref: '#/components/responses/Unauthorized' }
  *       403: { $ref: '#/components/responses/Forbidden' }
+ *       404: { $ref: '#/components/responses/NotFound' }
  *       422: { $ref: '#/components/responses/BadRequest' }
  *       429: { description: Suggestion quota exhausted for this student; retry after the window resets }
  * /api/students/academic-profile/estimate:
@@ -231,7 +236,7 @@ export default createStudentAcademicProfileRouter();
  *       400: { $ref: '#/components/responses/BadRequest' }
  *       401: { $ref: '#/components/responses/Unauthorized' }
  *       403: { $ref: '#/components/responses/Forbidden' }
- *       404: { $ref: '#/components/responses/BadRequest' }
+ *       404: { $ref: '#/components/responses/NotFound' }
  *       422: { $ref: '#/components/responses/BadRequest' }
  *       429: { description: Suggestion quota exhausted for this student; retry after the window resets }
  */

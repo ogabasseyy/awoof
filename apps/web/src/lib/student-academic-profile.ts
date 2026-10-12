@@ -42,8 +42,11 @@ export type GraduationYearChoice =
     | { kind: 'accept_estimate'; year: number }
     | { kind: 'self_reported'; year: number };
 
+export type ExpectedReadInstitution = Pick<AcademicProfileInstitution, 'binding' | 'displayName'>;
+
 export type AcademicProfileInput = {
     expectedRevision: number;
+    expectedInstitution?: ExpectedReadInstitution;
     claimedInstitution?: ProfileField<ClaimedInstitutionValue>;
     programme?: ProfileField<ProgrammeSelection>;
     entryYear?: ProfileField<number>;
@@ -586,11 +589,15 @@ export function resolveCompletionExit(candidate: string | null, origin: string):
 }
 
 /**
- * Build the narrow save patch: the expected revision plus only touched
- * fields. Untouched fields are omitted so partial saves never clear them.
+ * Build the narrow save patch: the expected revision, the read institution
+ * token, plus only touched fields. Untouched fields are omitted so partial
+ * saves never clear them. The token echoes the institution the GET showed
+ * so first saves conflict when the binding moved; the server never uses it
+ * to set the binding.
  */
-export function buildAcademicProfilePatch(form: AcademicProfileForm, revision: number): AcademicProfileInput {
+export function buildAcademicProfilePatch(form: AcademicProfileForm, revision: number, institution?: ExpectedReadInstitution): AcademicProfileInput {
     const patch: AcademicProfileInput = { expectedRevision: revision };
+    if (institution !== undefined) patch.expectedInstitution = { binding: institution.binding, displayName: institution.displayName };
     if (form.claimedInstitution.state !== 'unchanged') patch.claimedInstitution = form.claimedInstitution;
     if (form.programme.state !== 'unchanged') patch.programme = form.programme;
     if (form.entryYear.state !== 'unchanged') patch.entryYear = form.entryYear;

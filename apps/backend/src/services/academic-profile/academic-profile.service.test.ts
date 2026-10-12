@@ -16,6 +16,7 @@ import {
     type AcademicProfileInput,
 } from './academic-profile.types.js';
 import {
+    ACADEMIC_PROFILE_BINDING_CHANGED,
     ACADEMIC_PROFILE_CLAIM_CHANGED,
     ACADEMIC_PROFILE_INSTITUTION_CHANGED,
     ACADEMIC_PROFILE_REVISION_CONFLICT,
@@ -1366,6 +1367,84 @@ test('save conflicts on institution drift and commits only the invalidation', as
     );
     assert.equal(retry.revision, 4);
     assert.deepEqual(retry.fields.entryRoute, { state: 'supplied', value: 'utme' });
+});
+
+test('first save conflicts when the binding moved since the read', async () => {
+    const state = boundState();
+    await assert.rejects(
+        saveAcademicProfile(
+            createFakePool(state) as never,
+            USER_ID,
+            {
+                expectedRevision: 0,
+                expectedInstitution: { binding: 'unbound', displayName: null },
+                programme: { state: 'supplied', value: { programmeId: null, courseLabel: 'Physics' } },
+            },
+            serviceDeps(),
+        ),
+        (error: unknown) => {
+            assert.ok(error instanceof ConflictError);
+            assert.deepEqual(error.details, { code: ACADEMIC_PROFILE_BINDING_CHANGED, revision: 0 });
+            return true;
+        },
+    );
+    assert.equal(state.writes.length, 0);
+    assert.equal(state.profile, null);
+});
+
+test('first save conflicts when the bound school changed since the read', async () => {
+    const state = boundState();
+    await assert.rejects(
+        saveAcademicProfile(
+            createFakePool(state) as never,
+            USER_ID,
+            {
+                expectedRevision: 0,
+                expectedInstitution: { binding: 'server_bound', displayName: 'Former University' },
+                entryYear: { state: 'supplied', value: 2022 },
+            },
+            serviceDeps(),
+        ),
+        (error: unknown) => {
+            assert.ok(error instanceof ConflictError);
+            assert.deepEqual(error.details, { code: ACADEMIC_PROFILE_BINDING_CHANGED, revision: 0 });
+            return true;
+        },
+    );
+    assert.equal(state.writes.length, 0);
+});
+
+test('first save proceeds when the read token matches the binding', async () => {
+    const state = boundState();
+    const projection = await saveAcademicProfile(
+        createFakePool(state) as never,
+        USER_ID,
+        {
+            expectedRevision: 0,
+            expectedInstitution: { binding: 'server_bound', displayName: 'Fixture University' },
+            entryYear: { state: 'supplied', value: 2022 },
+        },
+        serviceDeps(),
+    );
+    assert.equal(projection.revision, 1);
+    assert.equal(state.writes.length, 1);
+    assert.equal(state.profile?.['canonical_institution_id'], UNIVERSITY_ID);
+});
+
+test('later saves ignore a stale read token and use the stored binding', async () => {
+    const state = boundState({ profile: profileRow({ revision: 1, canonical_institution_id: UNIVERSITY_ID }) });
+    const projection = await saveAcademicProfile(
+        createFakePool(state) as never,
+        USER_ID,
+        {
+            expectedRevision: 1,
+            expectedInstitution: { binding: 'unbound', displayName: null },
+            entryYear: { state: 'supplied', value: 2022 },
+        },
+        serviceDeps(),
+    );
+    assert.equal(projection.revision, 2);
+    assert.equal(state.writes.length, 1);
 });
 
 test('save previews unbound estimates under the claimed country', async () => {

@@ -255,6 +255,11 @@ function SearchCombobox<T>({
                             setOpen(false);
                             setActiveIndex(-1);
                         } else if (showList) {
+                            // The open list consumes Enter: without this
+                            // the keypress also submits the enclosing form,
+                            // persisting the raw query as free text before
+                            // the student picks a suggestion.
+                            event.preventDefault();
                             setOpen(false);
                             setActiveIndex(-1);
                         }
@@ -754,7 +759,7 @@ function CompletionForm() {
             setAnnounce('Check the highlighted fields before saving.');
             return 'invalid';
         }
-        let patch: AcademicProfileInput = buildAcademicProfilePatch(validated.form, view.revision);
+        let patch: AcademicProfileInput = buildAcademicProfilePatch(validated.form, view.revision, view.institution);
         const snapshot = getSessionSnapshot();
         setSaving(true);
         setSaveError(null);
@@ -783,7 +788,7 @@ function CompletionForm() {
                             const drift = retriedDrift ? null : parseInstitutionChangedConflict(error);
                             if (drift) {
                                 retriedDrift = true;
-                                patch = buildAcademicProfilePatch(validated.form, drift.revision);
+                                patch = buildAcademicProfilePatch(validated.form, drift.revision, view.institution);
                                 setAnnounce('Your institution changed. Retrying your save against the new profile.');
                                 continue;
                             }
@@ -844,7 +849,7 @@ function CompletionForm() {
             setAnnounce('Check the highlighted fields before saving.');
             return;
         }
-        const patch = buildClaimReconfirmPatch(buildAcademicProfilePatch(validated.form, view.revision), view);
+        const patch = buildClaimReconfirmPatch(buildAcademicProfilePatch(validated.form, view.revision, view.institution), view);
         const snapshot = getSessionSnapshot();
         setSaving(true);
         setSaveError(null);

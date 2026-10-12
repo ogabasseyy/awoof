@@ -391,3 +391,28 @@ test('pre-auth flood ceiling caps unauthenticated catalogue traffic without taxi
         assert.equal(capped.status, 429);
     });
 });
+
+test('pre-auth flood ceiling ignores authenticated failures', async () => {
+    const controller = new StudentAcademicProfileController({
+        isCollectionEnabled: () => true,
+        searchProgrammes: async (userId, query) => {
+            parseCatalogueQuery(query);
+            return { items: [], nextCursor: null };
+        },
+    });
+    await withServer(createStudentAcademicProfileRouter(controller, { floodCeilingMax: 2 }), async (baseUrl) => {
+        const headers = { authorization: `Bearer ${studentToken()}` };
+        // Authenticated validation failures are quota'd per student, so
+        // they must not consume the shared pre-auth budget.
+        for (let attempt = 0; attempt < 3; attempt += 1) {
+            const invalid = await fetch(`${baseUrl}/academic-profile/programmes?limit=500`, { headers });
+            assert.equal(invalid.status, 422, `invalid ${attempt}`);
+        }
+        const first = await fetch(`${baseUrl}/academic-profile/programmes?q=eng`);
+        assert.equal(first.status, 401);
+        const second = await fetch(`${baseUrl}/academic-profile/programmes?q=eng`);
+        assert.equal(second.status, 401);
+        const capped = await fetch(`${baseUrl}/academic-profile/programmes?q=eng`);
+        assert.equal(capped.status, 429);
+    });
+});

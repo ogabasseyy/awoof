@@ -403,7 +403,7 @@ test('reads back saved answers for editing on an explicit visit', async ({ page 
     await page.getByRole('button', { name: 'Save and continue' }).click();
     await expect(page).toHaveURL(/\/marketplace/, { timeout: 30000 });
     expect(fixture.puts).toHaveLength(1);
-    expect(fixture.puts[0]).toEqual({ expectedRevision: 3, entryYear: { state: 'supplied', value: 2022 } });
+    expect(fixture.puts[0]).toEqual({ expectedInstitution: { binding: 'unbound', displayName: null }, expectedRevision: 3, entryYear: { state: 'supplied', value: 2022 } });
 });
 
 test('keeps a server-bound institution read-only with a correction path', async ({ page }) => {
@@ -433,6 +433,7 @@ test('saves a claimed institution with its country', async ({ page }) => {
     expect(fixture.puts).toHaveLength(1);
     expect(fixture.puts[0]).toEqual({
         expectedRevision: 3,
+        expectedInstitution: { binding: 'unbound', displayName: null },
         claimedInstitution: { state: 'supplied', value: { name: 'Claimed College', countryCode: 'NG' } },
     });
 });
@@ -465,8 +466,25 @@ test('selects a programme through keyboard typeahead and clears the selection on
     expect(fixture.puts).toHaveLength(1);
     expect(fixture.puts[0]).toEqual({
         expectedRevision: 3,
+        expectedInstitution: { binding: 'unbound', displayName: null },
         programme: { state: 'supplied', value: { programmeId: null, courseLabel: 'syn X' } },
     });
+});
+
+test('does not submit the form when Enter closes an open suggestion list', async ({ page }) => {
+    const fixture = await openComplete(page, projection());
+    fixture.programmeItems = [{ programmeId: 'SYN-P1', label: 'Synthetic Programme One', award: 'B.Sc.' }];
+    const input = page.getByRole('combobox', { name: 'Programme or course' });
+    await input.click();
+    await input.fill('syn');
+    await expect(page.getByRole('option').first()).toBeVisible();
+    await input.press('Enter');
+    await expect(page.getByRole('listbox', { name: 'Programme or course suggestions' })).toBeHidden();
+    await expect(page).toHaveURL(/\/student\/profile\/complete/);
+    expect(fixture.puts).toHaveLength(0);
+    await input.press('Enter');
+    await expect(page).toHaveURL(/\/marketplace/, { timeout: 30000 });
+    expect(fixture.puts).toHaveLength(1);
 });
 
 test('ignores stale catalogue options while a new search loads', async ({ page }) => {
@@ -577,7 +595,7 @@ test('accepts a suggested entry year', async ({ page }) => {
     await page.getByRole('button', { name: 'Save and continue' }).click();
     await expect(page).toHaveURL(/\/marketplace/, { timeout: 30000 });
     expect(fixture.puts).toHaveLength(1);
-    expect(fixture.puts[0]).toEqual({ expectedRevision: 3, entryYear: { state: 'supplied', value: 2021 } });
+    expect(fixture.puts[0]).toEqual({ expectedInstitution: { binding: 'unbound', displayName: null }, expectedRevision: 3, entryYear: { state: 'supplied', value: 2021 } });
 });
 
 test('edits a suggested entry year before confirming', async ({ page }) => {
@@ -588,7 +606,7 @@ test('edits a suggested entry year before confirming', async ({ page }) => {
     await page.getByRole('button', { name: 'Save and continue' }).click();
     await expect(page).toHaveURL(/\/marketplace/, { timeout: 30000 });
     expect(fixture.puts).toHaveLength(1);
-    expect(fixture.puts[0]).toEqual({ expectedRevision: 3, entryYear: { state: 'supplied', value: 2020 } });
+    expect(fixture.puts[0]).toEqual({ expectedInstitution: { binding: 'unbound', displayName: null }, expectedRevision: 3, entryYear: { state: 'supplied', value: 2020 } });
 });
 
 test('dismisses a suggestion without writing or suppressing other fields', async ({ page }) => {
@@ -601,7 +619,7 @@ test('dismisses a suggestion without writing or suppressing other fields', async
     await page.getByRole('button', { name: 'Save and continue' }).click();
     await expect(page).toHaveURL(/\/marketplace/, { timeout: 30000 });
     expect(fixture.puts).toHaveLength(1);
-    expect(fixture.puts[0]).toEqual({ expectedRevision: 3, programme: { state: 'skipped' } });
+    expect(fixture.puts[0]).toEqual({ expectedInstitution: { binding: 'unbound', displayName: null }, expectedRevision: 3, programme: { state: 'skipped' } });
     expect('entryYear' in (fixture.puts[0] as Record<string, unknown>)).toBe(false);
 });
 
@@ -631,6 +649,7 @@ test('accepts a projected graduation estimate', async ({ page }) => {
     expect(fixture.puts).toHaveLength(1);
     expect(fixture.puts[0]).toEqual({
         expectedRevision: 3,
+        expectedInstitution: { binding: 'unbound', displayName: null },
         expectedGraduationYear: { state: 'supplied', value: { kind: 'accept_estimate', year: 2026 } },
     });
 });
@@ -645,6 +664,7 @@ test('enters a self-reported graduation year', async ({ page }) => {
     expect(fixture.puts).toHaveLength(1);
     expect(fixture.puts[0]).toEqual({
         expectedRevision: 3,
+        expectedInstitution: { binding: 'unbound', displayName: null },
         expectedGraduationYear: { state: 'supplied', value: { kind: 'self_reported', year: 2029 } },
     });
 });
@@ -678,6 +698,7 @@ test('fetches an estimate for a catalogue selection and accepts the recomputed y
     expect(fixture.puts).toHaveLength(1);
     expect(fixture.puts[0]).toEqual({
         expectedRevision: 3,
+        expectedInstitution: { binding: 'unbound', displayName: null },
         programme: { state: 'supplied', value: { programmeId: 'SYN-P1', courseLabel: null } },
         entryYear: { state: 'supplied', value: 2021 },
         entryRoute: { state: 'supplied', value: 'utme' },
@@ -836,6 +857,7 @@ test('requires reconfirmation when inputs invalidate a calculated year', async (
     expect(fixture.puts).toHaveLength(1);
     expect(fixture.puts[0]).toEqual({
         expectedRevision: 3,
+        expectedInstitution: { binding: 'unbound', displayName: null },
         entryRoute: { state: 'supplied', value: 'de_200' },
         expectedGraduationYear: { state: 'supplied', value: { kind: 'accept_estimate', year: 2027 } },
     });
@@ -876,6 +898,7 @@ test('preserves a self-reported override when inputs change', async ({ page }) =
     expect(fixture.puts).toHaveLength(1);
     expect(fixture.puts[0]).toEqual({
         expectedRevision: 3,
+        expectedInstitution: { binding: 'unbound', displayName: null },
         programme: { state: 'supplied', value: { programmeId: null, courseLabel: 'New Course' } },
     });
     expect('expectedGraduationYear' in (fixture.puts[0] as Record<string, unknown>)).toBe(false);
@@ -905,7 +928,7 @@ test('saves only touched fields', async ({ page }) => {
     await page.getByRole('button', { name: 'Save and continue' }).click();
     await expect(page).toHaveURL(/\/marketplace/, { timeout: 30000 });
     expect(fixture.puts).toHaveLength(1);
-    expect(fixture.puts[0]).toEqual({ expectedRevision: 3, entryRoute: { state: 'supplied', value: 'de_300' } });
+    expect(fixture.puts[0]).toEqual({ expectedInstitution: { binding: 'unbound', displayName: null }, expectedRevision: 3, entryRoute: { state: 'supplied', value: 'de_300' } });
 });
 
 test('saves every optional skip distinctly', async ({ page }) => {
@@ -920,6 +943,7 @@ test('saves every optional skip distinctly', async ({ page }) => {
     expect(fixture.puts).toHaveLength(1);
     expect(fixture.puts[0]).toEqual({
         expectedRevision: 3,
+        expectedInstitution: { binding: 'unbound', displayName: null },
         claimedInstitution: { state: 'skipped' },
         programme: { state: 'skipped' },
         entryYear: { state: 'skipped' },
@@ -935,7 +959,7 @@ test('saves an explicit Not sure distinctly from a skip', async ({ page }) => {
     await page.getByRole('button', { name: 'Save and continue' }).click();
     await expect(page).toHaveURL(/\/marketplace/, { timeout: 30000 });
     expect(fixture.puts).toHaveLength(1);
-    expect(fixture.puts[0]).toEqual({ expectedRevision: 3, programme: { state: 'unknown' } });
+    expect(fixture.puts[0]).toEqual({ expectedInstitution: { binding: 'unbound', displayName: null }, expectedRevision: 3, programme: { state: 'unknown' } });
 });
 
 test('labels each marker pair with its academic field', async ({ page }) => {
@@ -1158,7 +1182,7 @@ test('saves a dirty draft from the leave confirmation', async ({ page }) => {
     await page.getByRole('alertdialog').getByRole('button', { name: 'Save and continue' }).click();
     await expect(page).toHaveURL(/\/marketplace/, { timeout: 30000 });
     expect(fixture.puts).toHaveLength(1);
-    expect(fixture.puts[0]).toEqual({ expectedRevision: 3, entryYear: { state: 'supplied', value: 2022 } });
+    expect(fixture.puts[0]).toEqual({ expectedInstitution: { binding: 'unbound', displayName: null }, expectedRevision: 3, entryYear: { state: 'supplied', value: 2022 } });
 });
 
 test('completes a stashed leave after reconfirming a dialog save', async ({ page }) => {
@@ -1382,7 +1406,7 @@ test('saves an unanswered graduation year after the marker is toggled off', asyn
     await page.getByRole('button', { name: 'Save and continue' }).click();
     await expect(page).toHaveURL(/\/marketplace/, { timeout: 30000 });
     expect(fixture.puts).toHaveLength(1);
-    expect(fixture.puts[0]).toEqual({ expectedRevision: 3, expectedGraduationYear: { state: 'unanswered' } });
+    expect(fixture.puts[0]).toEqual({ expectedInstitution: { binding: 'unbound', displayName: null }, expectedRevision: 3, expectedGraduationYear: { state: 'unanswered' } });
 });
 
 test('follows the validated redirect after saving', async ({ page }) => {
@@ -1472,7 +1496,7 @@ test('displays the saved catalogue label and keeps the selection on save', async
     await page.getByRole('button', { name: 'Save and continue' }).click();
     await expect(page).toHaveURL(/\/marketplace/, { timeout: 30000 });
     expect(fixture.puts).toHaveLength(1);
-    expect(fixture.puts[0]).toEqual({ expectedRevision: 3, entryYear: { state: 'supplied', value: 2022 } });
+    expect(fixture.puts[0]).toEqual({ expectedInstitution: { binding: 'unbound', displayName: null }, expectedRevision: 3, entryYear: { state: 'supplied', value: 2022 } });
 });
 
 test('ignores a stale estimate response after inputs change', async ({ page }) => {

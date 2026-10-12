@@ -43,8 +43,14 @@ export type GraduationYearChoice =
     | { kind: 'accept_estimate'; year: number }
     | { kind: 'self_reported'; year: number };
 
+export type ExpectedReadInstitution = {
+    binding: 'server_bound' | 'student_claimed' | 'unbound';
+    displayName: string | null;
+};
+
 export type AcademicProfileInput = {
     expectedRevision: number;
+    expectedInstitution?: ExpectedReadInstitution;
     claimedInstitution?: FieldUpdate<ClaimedInstitutionValue>;
     programme?: FieldUpdate<ProgrammeSelection>;
     entryYear?: FieldUpdate<number>;
@@ -141,8 +147,14 @@ const graduationYearChoiceSchema = z.union([
  * inference under exactOptionalPropertyTypes); the manual contract above is
  * the narrower caller-facing shape. The assertion below keeps them aligned.
  */
+const expectedInstitutionSchema = z.object({
+    binding: z.enum(['server_bound', 'student_claimed', 'unbound']),
+    displayName: z.string().max(255).nullable(),
+}).strict();
+
 export const academicProfileInputSchema = z.object({
     expectedRevision: z.number().int().min(0),
+    expectedInstitution: expectedInstitutionSchema.optional(),
     claimedInstitution: fieldUpdateSchema(claimedInstitutionValueSchema).optional(),
     programme: fieldUpdateSchema(programmeSelectionSchema).optional(),
     entryYear: fieldUpdateSchema(z.number().int()).optional(),

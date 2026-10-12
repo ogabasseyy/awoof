@@ -48,6 +48,7 @@ import {
     type AcademicProfileInstitution,
     type AcademicProfileProjection,
     type EntryRoute,
+    type ExpectedReadInstitution,
     type ParsedAcademicProfileInput,
     type ProfileFieldState,
     type PurgeResult,
@@ -57,6 +58,7 @@ import {
 export const ACADEMIC_PROFILE_REVISION_CONFLICT = 'ACADEMIC_PROFILE_REVISION_CONFLICT';
 export const ACADEMIC_PROFILE_INSTITUTION_CHANGED = 'ACADEMIC_PROFILE_INSTITUTION_CHANGED';
 export const ACADEMIC_PROFILE_CLAIM_CHANGED = 'ACADEMIC_PROFILE_CLAIM_CHANGED';
+export const ACADEMIC_PROFILE_BINDING_CHANGED = 'ACADEMIC_PROFILE_BINDING_CHANGED';
 
 const ESTIMABLE_ROUTES: readonly string[] = ['utme', 'de_200', 'de_300'];
 
@@ -553,6 +555,20 @@ function claimedInstitutionChanged(stored: AcademicProfileFields, patch: ParsedA
             || current.value.countryCode !== update.value.countryCode;
     }
     return current.state === 'supplied';
+}
+
+/**
+ * True when the read-context token in a first save no longer matches the
+ * locked binding: bound-state flips either way, or a bound name change
+ * (university names are unique, so a rename or a school switch both
+ * surface here). The token is fail-closed comparison only — the server
+ * never adopts the echoed binding or name for any decision.
+ */
+function expectedBindingChanged(token: ExpectedReadInstitution, ctx: AcademicProfileContext): boolean {
+    const boundToken = token.binding === 'server_bound';
+    const boundCtx = ctx.universityId !== null;
+    if (boundToken !== boundCtx) return true;
+    return boundToken && token.displayName !== ctx.universityName;
 }
 
 /**
@@ -1096,6 +1112,18 @@ export async function saveAcademicProfile(
             throw new ConflictError('Institution changed since this profile was saved; reload to reconfirm academic details', {
                 code: ACADEMIC_PROFILE_INSTITUTION_CHANGED,
                 revision,
+            });
+        }
+        if (row === null && patch.expectedInstitution !== undefined && expectedBindingChanged(patch.expectedInstitution, ctx)) {
+            // First save against a binding that moved since the read: the
+            // answers were entered in another school's context, so refuse
+            // to attach them to the new binding. Nothing is stored, so
+            // unlike institution drift there is no invalidation to commit
+            // — the caller reloads and resubmits. A distinct code from
+            // drift: the retry loop must not resubmit the stale token.
+            throw new ConflictError('Institution binding changed before this profile was first saved; reload to review the current school', {
+                code: ACADEMIC_PROFILE_BINDING_CHANGED,
+                revision: stored.revision,
             });
         }
         if (ctx.universityId === null

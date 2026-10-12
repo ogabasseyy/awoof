@@ -414,6 +414,20 @@ test('builds a partial patch with only touched fields', () => {
     });
 });
 
+test('echoes the read institution token in the patch', () => {
+    const patch = buildAcademicProfilePatch({
+        ...untouchedForm(),
+        entryYear: { state: 'supplied', value: 2021 },
+    }, 0, { binding: 'server_bound', displayName: 'Bound University' });
+    assert.deepEqual(patch, {
+        expectedRevision: 0,
+        expectedInstitution: { binding: 'server_bound', displayName: 'Bound University' },
+        entryYear: { state: 'supplied', value: 2021 },
+    });
+    const legacy = buildAcademicProfilePatch({ ...untouchedForm() }, 0);
+    assert.equal(legacy.expectedInstitution, undefined);
+});
+
 test('keeps unknown, skipped, and cleared states distinct in the patch', () => {
     const patch = buildAcademicProfilePatch({
         ...untouchedForm(),

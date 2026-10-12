@@ -562,6 +562,16 @@ Access tokens expire in 15 minutes. Use the refresh token endpoint to get a new 
                     description: 'Strict patch contract. Omitted fields stay unchanged; explicit unanswered clears. No student id, canonical institution id, origin, basis, rule, or review fields are accepted.',
                     properties: {
                         expectedRevision: { type: 'integer', minimum: 0 },
+                        expectedInstitution: {
+                            type: 'object',
+                            additionalProperties: false,
+                            required: ['binding', 'displayName'],
+                            description: 'Read-context token: the institution binding and name the GET showed. First saves conflict when the binding moved; never used to set the binding.',
+                            properties: {
+                                binding: { type: 'string', enum: ['server_bound', 'student_claimed', 'unbound'] },
+                                displayName: { type: 'string', maxLength: 255, nullable: true },
+                            },
+                        },
                         claimedInstitution: { $ref: '#/components/schemas/AcademicProfileClaimedInstitutionUpdate' },
                         programme: { $ref: '#/components/schemas/AcademicProfileProgrammeUpdate' },
                         entryYear: { $ref: '#/components/schemas/AcademicProfileEntryYearUpdate' },
@@ -938,6 +948,16 @@ Access tokens expire in 15 minutes. Use the refresh token endpoint to get a new 
                 },
                 Forbidden: {
                     description: 'Forbidden',
+                    content: {
+                        'application/json': {
+                            schema: {
+                                $ref: '#/components/schemas/Error',
+                            },
+                        },
+                    },
+                },
+                NotFound: {
+                    description: 'Not found',
                     content: {
                         'application/json': {
                             schema: {
