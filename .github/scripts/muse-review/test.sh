@@ -462,6 +462,8 @@ if grep -q "Contributor mode" "${runbook_path}" 2>/dev/null; then got_doc="yes";
 assert_eq "docs-contributor-mode" "yes" "${got_doc}"
 if grep -q "only run model prompts" "${runbook_path}" "${SCRIPT_DIR}/../../workflows/muse-code-review.yml" 2>/dev/null; then got_doc="found"; else got_doc="absent"; fi
 assert_eq "docs-no-prompts-only-scope" "absent" "${got_doc}"
+if grep -q "MUSE_REVIEW_ENABLED" "${runbook_path}" 2>/dev/null && grep -q "MUSE_REVIEW_ENABLED" "${SCRIPT_DIR}/../../workflows/muse-code-review.yml" 2>/dev/null; then got_doc="yes"; else got_doc="no"; fi
+assert_eq "docs-rollout-gate" "yes" "${got_doc}"
 
 # --- schema.json ---
 if jq -e '.type == "object" and .additionalProperties == false and (.required | length) == 3' "${SCRIPT_DIR}/schema.json" >/dev/null 2>&1; then got_schema="yes"; else got_schema="no"; fi
@@ -496,6 +498,8 @@ assert_eq "protocol-yaml-agrees" "${MUSE_REVIEW_PROTOCOL:-<unset>}" "${yaml_prot
 gdir="$(mktemp -d)"
 mkdir -p "${gdir}/tmp" "${gdir}/ws"
 printf 'root rules\n' > "${gdir}/ws/AGENTS.md"
+mkdir -p "${gdir}/ws/.claude"
+printf 'root-alt-rule\n' > "${gdir}/ws/.claude/CLAUDE.md"
 {
   printf 'MUSE_STOP=0\n'
   printf 'MUSE_BASE_REF=main\n'
@@ -509,15 +513,20 @@ if (cd "${gdir}/ws" && RUNNER_TEMP="${gdir}/tmp" SCRIPT_DIR="${SCRIPT_DIR}" bash
 assert_eq "guidance-small-ok" "0" "${got_rc}"
 case "$(cat "${gdir}/tmp/muse-guidance.md" 2>/dev/null)" in *"root rules"*) got_g="yes";; *) got_g="no";; esac
 assert_eq "guidance-small-emits-root" "yes" "${got_g}"
-mkdir -p "${gdir}/ws/a/b"
+case "$(cat "${gdir}/tmp/muse-guidance.md" 2>/dev/null)" in *"root-alt-rule"*) got_g="yes";; *) got_g="no";; esac
+assert_eq "guidance-root-alt-location" "yes" "${got_g}"
+mkdir -p "${gdir}/ws/a/b" "${gdir}/ws/a/.agents"
 printf 'parent-rule\n' > "${gdir}/ws/a/AGENTS.md"
 printf 'child-rule\n' > "${gdir}/ws/a/b/AGENTS.md"
+printf 'scoped-alt-rule\n' > "${gdir}/ws/a/.agents/AGENTS.md"
 printf '[{"filename":"a/b/f.ts"}]' > "${gdir}/tmp/muse-files.json"
 (cd "${gdir}/ws" && RUNNER_TEMP="${gdir}/tmp" SCRIPT_DIR="${SCRIPT_DIR}" bash "${guidance_script}") >/dev/null 2>&1
 pline="$(grep -n 'parent-rule' "${gdir}/tmp/muse-guidance.md" 2>/dev/null | head -n 1 | cut -d: -f1)"
 cline="$(grep -n 'child-rule' "${gdir}/tmp/muse-guidance.md" 2>/dev/null | head -n 1 | cut -d: -f1)"
 if [[ -n "${pline}" && -n "${cline}" ]] && (( pline < cline )); then got_o="root-first"; else got_o="leaf-first"; fi
 assert_eq "guidance-root-first-order" "root-first" "${got_o}"
+case "$(cat "${gdir}/tmp/muse-guidance.md" 2>/dev/null)" in *"scoped-alt-rule"*) got_g="yes";; *) got_g="no";; esac
+assert_eq "guidance-scoped-alt-location" "yes" "${got_g}"
 python3 -c "import json; print(json.dumps([{'filename': 'd%03d/f.ts' % i} for i in range(300)]))" > "${gdir}/tmp/muse-files.json"
 if (cd "${gdir}/ws" && RUNNER_TEMP="${gdir}/tmp" SCRIPT_DIR="${SCRIPT_DIR}" bash "${guidance_script}") >/dev/null 2>&1; then got_rc="0"; else got_rc="nonzero"; fi
 assert_eq "guidance-cap-fails-closed" "nonzero" "${got_rc}"
@@ -674,6 +683,27 @@ print(json.dumps({'head': {'sha': '${chead}', 'ref': 'feat'}, 'base': {'ref': ba
 (cd "${cdir}/repo" && GH_STUB_PR_JSON="${cdir}/pr-main.json" PATH="${cdir}/bin:${PATH}" GH_TOKEN="fake" GITHUB_REPOSITORY="t/t" PR_NUMBER="1" HEAD_SHA_EVENT="${chead}" GITHUB_OUTPUT="${cdir}/tmp/out.txt" RUNNER_TEMP="${cdir}/tmp" SCRIPT_DIR="${SCRIPT_DIR}" bash "${collect_script}") >/dev/null 2>&1
 case "$(cat "${cdir}/tmp/out.txt")" in *"should_review=true"*) got_c="review";; *) got_c="skip";; esac
 assert_eq "collect-default-base-reviews" "review" "${got_c}"
+case "$(cat "${cdir}/tmp/muse-vars.env" 2>/dev/null)" in *"MUSE_FILES_FAILED=true"*) got_c="fallback";; *) got_c="complete";; esac
+assert_eq "collect-base-unavailable-fallback" "fallback" "${got_c}"
+mkdir -p "${cdir}/repo2"
+git -C "${cdir}/repo2" init -q 2>/dev/null
+printf 'base\n' > "${cdir}/repo2/f.txt"
+git -C "${cdir}/repo2" add f.txt 2>/dev/null
+git -C "${cdir}/repo2" -c user.email=t@t -c user.name=t commit -qm base 2>/dev/null
+cbase2="$(git -C "${cdir}/repo2" rev-parse HEAD 2>/dev/null)"
+printf 'head\n' >> "${cdir}/repo2/f.txt"
+git -C "${cdir}/repo2" add f.txt 2>/dev/null
+git -C "${cdir}/repo2" -c user.email=t@t -c user.name=t commit -qm head 2>/dev/null
+chead2="$(git -C "${cdir}/repo2" rev-parse HEAD 2>/dev/null)"
+git -C "${cdir}/repo2" remote add origin "file://${cdir}/repo2" 2>/dev/null
+python3 -c "
+import json
+print(json.dumps({'head': {'sha': '${chead2}', 'ref': 'feat'}, 'base': {'ref': 'main', 'sha': '${cbase2}', 'repo': {'default_branch': 'main'}}, 'state': 'open', 'title': 't', 'body': ''}))
+" > "${cdir}/pr-live.json"
+: > "${cdir}/tmp/out.txt"
+(cd "${cdir}/repo2" && GH_STUB_PR_JSON="${cdir}/pr-live.json" PATH="${cdir}/bin:${PATH}" GH_TOKEN="fake" GITHUB_REPOSITORY="t/t" PR_NUMBER="1" HEAD_SHA_EVENT="${chead2}" GITHUB_OUTPUT="${cdir}/tmp/out.txt" RUNNER_TEMP="${cdir}/tmp" SCRIPT_DIR="${SCRIPT_DIR}" bash "${collect_script}") >/dev/null 2>&1
+case "$(cat "${cdir}/tmp/muse-vars.env" 2>/dev/null)" in *"MUSE_BASE_AVAILABLE=true"*"MUSE_FILES_FAILED=false"*) got_c="complete";; *) got_c="fallback";; esac
+assert_eq "collect-base-available-complete" "complete" "${got_c}"
 rm -rf "${cdir}"
 
 # --- prompt.sh symlink cap fails closed (script level) ---

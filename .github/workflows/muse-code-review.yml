@@ -66,6 +66,11 @@
 #
 # Prerequisites per repo:
 #   - Secret META_API_KEY (repo Settings -> Secrets and variables -> Actions)
+#   - Repo variable MUSE_REVIEW_ENABLED=true (enforceable rollout gate:
+#     default/unset keeps every run skipped even with the secret present,
+#     so merging this workflow never activates it by itself — set it only
+#     after the runbook's credential, data-mode, and owner-approval
+#     requirements are met)
 #   - Optional repo variables: MUSE_MODEL, MUSE_REASONING_EFFORT
 name: Muse Code Review
 
@@ -152,8 +157,18 @@ jobs:
         id: prereq
         env:
           HAS_KEY: ${{ secrets.META_API_KEY != '' }}
+          REVIEW_ENABLED: ${{ vars.MUSE_REVIEW_ENABLED == 'true' }}
         run: |
           set -euo pipefail
+          # Enforceable rollout gate, checked first: merging this file (or
+          # a pre-set secret) must never activate reviews by itself. The
+          # variable is set only after the runbook's credential,
+          # data-mode, and owner-approval requirements are met.
+          if [[ "${REVIEW_ENABLED}" != "true" ]]; then
+            echo "should_run=false" >> "${GITHUB_OUTPUT}"
+            echo "::notice::Skipping Muse review: MUSE_REVIEW_ENABLED is not 'true' (rollout gate; see docs/runbooks/muse-code-review.md)."
+            exit 0
+          fi
           if [[ "${HAS_KEY}" != "true" ]]; then
             echo "should_run=false" >> "${GITHUB_OUTPUT}"
             echo "::notice::Skipping Muse review: META_API_KEY secret is not set."

@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
-# Collect repo guidance: root candidates plus scoped AGENTS.md/CLAUDE.md from
-# each changed file's ancestor dirs. Default-branch base versions are
+# Collect repo guidance: root candidates plus scoped instruction files from
+# each changed file's ancestor dirs (per directory, in Muse's
+# documented check order: AGENTS.md, CLAUDE.md, .agents/AGENTS.md,
+# .claude/CLAUDE.md). Default-branch base versions are
 # trusted; custom-base versions are still emitted from the captured base
 # SHA labeled UNTRUSTED (unreachable today — the job `if` admits only
 # default-base PRs; kept as defense in depth), as are all head fallbacks.
@@ -104,7 +106,7 @@ emit_guidance() {
   printf '%s\n' "${block}" >> "${guidance_file}"
 }
 seen_reset
-for candidate in AGENTS.md CLAUDE.md CONTRIBUTING.md .github/copilot-instructions.md; do
+for candidate in AGENTS.md CLAUDE.md .agents/AGENTS.md .claude/CLAUDE.md CONTRIBUTING.md .github/copilot-instructions.md; do
   seen_add "${candidate}"
 done
 # Ancestor walk with zero subprocesses (bash prefix removal, not dirname)
@@ -137,6 +139,8 @@ while IFS= read -r -d '' changed; do
     ci=$(( ci - 1 ))
     seen_add "${chain[${ci}]}/AGENTS.md"
     seen_add "${chain[${ci}]}/CLAUDE.md"
+    seen_add "${chain[${ci}]}/.agents/AGENTS.md"
+    seen_add "${chain[${ci}]}/.claude/CLAUDE.md"
   done
   if (( ${#MUSE_CANDIDATES[@]} >= candidate_cap )); then
     guidance_cap_hit=true
@@ -208,5 +212,5 @@ if [[ "${guidance_capped}" == "true" || "${guidance_truncated}" == "true" ]]; th
   exit 1
 fi
 if [[ ! -s "${guidance_file}" ]]; then
-  printf '(No AGENTS.md, CLAUDE.md, CONTRIBUTING.md, or copilot instructions found in this repo.)\n' > "${guidance_file}"
+  printf '(No AGENTS.md, CLAUDE.md (including .agents/.claude alternates), CONTRIBUTING.md, or copilot instructions found in this repo.)\n' > "${guidance_file}"
 fi

@@ -6,12 +6,15 @@ comment. Never blocks merges, never posts a commit status gate.
 
 ## Setup
 
-- Secret `META_API_KEY` (repo Settings -> Secrets and variables -> Actions).
-  Without it the workflow skips with a notice. Setting the secret is the
-  activation decision: it starts sending PR titles, descriptions, diffs,
-  and file context to Meta's API on every eligible PR. Do not set it until
-  the credential and data-mode requirements below are met and the
-  repository owner has approved activation (recorded in PR #55; this
+- Secret `META_API_KEY` (repo Settings -> Secrets and variables -> Actions)
+  plus the repo variable `MUSE_REVIEW_ENABLED=true`. Both are required;
+  without either, every run skips with a notice. The variable is an
+  enforceable rollout gate — merging the workflow (or a pre-set secret)
+  never activates reviews by itself. Setting the variable to `true` is
+  the activation decision: it starts sending PR titles, descriptions,
+  diffs, and file context to Meta's API on every eligible PR. Do not set
+  it until the credential and data-mode requirements below are met and
+  the repository owner has approved activation (recorded in PR #55; this
   runbook records the requirement, not that approval has been granted —
   legal/operational review of the disclosure is outstanding until the
   owner records it).
@@ -54,6 +57,11 @@ accepted blast radius accordingly:
 
 - Only the latest push per PR is reviewed (concurrency cancel-in-progress);
   manual reruns review their own head and skip when it moved.
+- Pushes to the base branch alone do not re-trigger reviews (no
+  `pull_request_target` activity fires for them). In-flight results for
+  the old base are discarded by the base-SHA guards, posted reviews name
+  their base SHA in the marker, and the next head-side event or manual
+  rerun re-reviews against the new base.
 - Skips without posting: drafts, closed/merged PRs, forks, stacked or
   custom-base PRs (only the default branch may supply the executed
   workflow revision under `pull_request_target`), title/body-only edits,

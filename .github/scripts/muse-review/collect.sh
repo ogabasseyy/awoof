@@ -187,6 +187,16 @@ if [[ "${local_diff}" == "true" ]]; then
   fi
 fi
 files_failed=false
+if [[ "${base_available}" != "true" ]]; then
+  # Without the fetched base commit there is no trusted base guidance:
+  # guidance.sh would consider head copies only, so a PR deleting or
+  # weakening an applicable AGENTS.md could erase the rules that governed
+  # the change and still earn a successful marker. Route to the explicit
+  # fallback (via files_failed, like inventory failures) instead of
+  # reviewing without the governing rules.
+  files_failed=true
+  echo "::warning::Base commit could not be fetched; trusted base guidance is unavailable, routing to the fallback review."
+fi
 if [[ "${local_diff}" != "true" ]]; then
   files_source="api"
   pages_file="${RUNNER_TEMP}/muse-files-pages.json"
