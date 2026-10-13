@@ -229,8 +229,14 @@ export function createMerchant({ origin, apiOrigin, webOrigin, privateKey, produ
         const settled = store.get(row.id);
         // Only `reported` is settled. A paid checkout held for
         // reconciliation must not look successful to response.ok callers:
-        // surface the upstream status (502 when none was recorded).
-        json(res, settled.state === 'reported' ? 200 : (settled.reconciliation?.httpStatus ?? 502), { state: settled.state }); return;
+        // surface the upstream status (502 when none was recorded). An
+        // upstream 401/403 means the AWOOF_PRIVATE_KEY was revoked, rotated
+        // or misconfigured — a retryable configuration outage (503), never
+        // a claim that this endpoint's own caller failed authentication.
+        const upstreamStatus = settled.reconciliation?.httpStatus;
+        const reportStatus = settled.state === 'reported' ? 200
+          : (upstreamStatus === 401 || upstreamStatus === 403) ? 503 : (upstreamStatus ?? 502);
+        json(res, reportStatus, { state: settled.state }); return;
       }
       if (req.method === 'POST' && url.pathname === '/webhooks/paystack') {
         if (synthetic || paymentGateway !== 'paystack_merchant' || !paystackSecret) throw fail('Independent merchant Paystack webhook unconfigured', 503);
@@ -242,14 +248,14 @@ export function createMerchant({ origin, apiOrigin, webOrigin, privateKey, produ
           // Retain a minimal deduplicated review record, never raw provider data.
           const reviewId = `provider-review:${createHash('sha256').update(bytes).digest('hex')}`;
           if (!store.get(reviewId)) store.put(reviewId, { id: reviewId, kind: 'provider_review', eventType: String(event.event ?? 'unknown').slice(0, 100), paymentReference: String(event.data?.transaction?.reference ?? event.data?.reference ?? '').slice(0, 200), receivedAt: new Date().toISOString(), state: 'reconciliation_required' });
-          json(res, 202, { accepted: true, reconciliation: 'Refund/dispute/reversal events recorded for merchant review; this example does not settle them.' }); return;
+          json(res, 200, { accepted: true, reconciliation: 'Refund/dispute/reversal events recorded for merchant review; this example does not settle them.' }); return;
         }
         const authorizationId = event.data?.metadata?.awoofBenefitAuthorizationId;
         if (typeof authorizationId !== 'string' || !authorizationId) {
           // The merchant account also processes non-Awoof charges. Their
           // signed events carry no Awoof binding: acknowledge them so the
           // provider stops retrying, and never settle them here.
-          json(res, 202, { accepted: true, ignored: 'Charge carries no Awoof benefit binding; not settled by this reference.' }); return;
+          json(res, 200, { accepted: true, ignored: 'Charge carries no Awoof benefit binding; not settled by this reference.' }); return;
         }
         const row = store.find(row => row.receipt?.benefitAuthorizationId === authorizationId);
         if (!row) throw fail('Unknown checkout', 404);

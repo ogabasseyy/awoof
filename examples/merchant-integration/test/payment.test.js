@@ -40,10 +40,10 @@ test('merchant test Paystack signature, verification, durable acceptance and exa
     const duplicateEvents = await Promise.all([webhook(signature), webhook(signature)]);
     assert.deepEqual(duplicateEvents.map(response => response.status), [200, 200]); assert.equal(reports, 2);
     const reversalBody = JSON.stringify({ event: 'refund.processed', data: {} }); const reversalSig = createHmac('sha512', secret).update(reversalBody).digest('hex');
-    assert.equal((await request('/webhooks/paystack', { method: 'POST', headers: { 'x-paystack-signature': reversalSig }, body: reversalBody })).status, 202); assert.equal(reports, 2);
+    assert.equal((await request('/webhooks/paystack', { method: 'POST', headers: { 'x-paystack-signature': reversalSig }, body: reversalBody })).status, 200); assert.equal(reports, 2);
     assert.equal(app.store.find(row => row.kind === 'provider_review').state, 'reconciliation_required');
     const noMetadataBody = JSON.stringify({ event: 'charge.success', data: { reference: 'payment' } }); const noMetadataSig = createHmac('sha512', secret).update(noMetadataBody).digest('hex');
-    assert.equal((await request('/webhooks/paystack', { method: 'POST', headers: { 'x-paystack-signature': noMetadataSig }, body: noMetadataBody })).status, 202); assert.equal(reports, 2);
+    assert.equal((await request('/webhooks/paystack', { method: 'POST', headers: { 'x-paystack-signature': noMetadataSig }, body: noMetadataBody })).status, 200); assert.equal(reports, 2);
     const malformedBody = 'not-json'; const malformedSig = createHmac('sha512', secret).update(malformedBody).digest('hex');
     assert.equal((await request('/webhooks/paystack', { method: 'POST', headers: { 'x-paystack-signature': malformedSig }, body: malformedBody })).status, 400); assert.equal(reports, 2);
   } finally { await new Promise(r => app.server.close(r)); app.store.close(); }
@@ -187,7 +187,7 @@ test('server report surfaces unconfirmed settlement as a non-success status', as
     const body = JSON.parse(init.body);
     if (url.endsWith('/claim-sessions')) { checkoutId = body.merchantCheckoutId; return Response.json({ success: true, data: { claimSessionId: 'session' } }); }
     if (url.endsWith('/exchange')) return Response.json({ success: true, data: { eligible: true, assuranceMethod: 'enrollment', campaignId: checkoutId, benefitAuthorizationId: 'benefit', validUntil: new Date(Date.now() + 600000).toISOString() } });
-    return Response.json({ success: false, error: 'temporarily unavailable' }, { status: 503 });
+    return Response.json({ success: false, error: 'key revoked' }, { status: 401 });
   } });
   await new Promise(r => app.server.listen(p, '127.0.0.1', r)); const request = (path, init = {}) => fetch(`http://127.0.0.1:${p}${path}`, { redirect: 'manual', ...init });
   try {

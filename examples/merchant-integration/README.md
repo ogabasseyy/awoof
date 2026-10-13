@@ -90,7 +90,7 @@ const metadata = merchantPaystackMetadata({
 
 Configure the independent merchant's Paystack test webhook to your HTTPS `/webhooks/paystack` path. The reference validates raw-body HMAC, verifies the payment with that merchant test secret, and checks exact reference, successful status, **test** domain, NGN, amount and all three metadata values before durably recording payment/reporting. Browser callbacks are not payment proof. A duplicate `charge.success` returns the same outcome without new reporting. Wrong signature/amount/binding fails without settlement.
 
-Non-`charge.success` signed events persist a minimal deduplicated `provider_review` record and return `202` with an explicit review requirement; refunds/disputes/reversals are not applied by this reference. Inspect those SQLite records and reconcile them in your merchant ledger and approved Awoof process. There is no automatic review worker or refund endpoint in this example. This is a test webhook example, not a complete production refunds or cashback service.
+Non-`charge.success` signed events persist a minimal deduplicated `provider_review` record and return `200` with an explicit review requirement (Paystack acknowledges only 200; other statuses are retried); refunds/disputes/reversals are not applied by this reference. Inspect those SQLite records and reconcile them in your merchant ledger and approved Awoof process. There is no automatic review worker or refund endpoint in this example. This is a test webhook example, not a complete production refunds or cashback service.
 
 ## Awoof-account Paystack and merchant-attested other
 

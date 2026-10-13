@@ -323,6 +323,17 @@ export class OrderController {
             if (validated.status === 'refunded' && order.status !== 'completed') {
                 throw new BadRequestError('Only completed orders can be refunded');
             }
+            // Settlement bookkeeping (savings credit + inventory consumption)
+            // happens atomically when an order completes and is reversed only
+            // by the completed -> refunded transition below. Every other move
+            // across the completed boundary would strand one side of that
+            // ledger, so it is rejected instead of silently desyncing it.
+            if (order.status === 'completed' && validated.status !== 'completed' && validated.status !== 'refunded') {
+                throw new BadRequestError('Completed orders can only move to refunded; other changes would strand recorded savings and consumed inventory');
+            }
+            if (validated.status === 'completed' && order.status !== 'completed') {
+                throw new BadRequestError('Orders can only complete through payment settlement, which records savings and consumes inventory atomically');
+            }
             if (validated.status === 'refunded' && order.recorded_savings_delta === null) {
                 throw new ConflictError('Savings reconciliation is required before refunding this legacy order',
                     { reason: 'savings_reconciliation_required', transactionId: order.id });

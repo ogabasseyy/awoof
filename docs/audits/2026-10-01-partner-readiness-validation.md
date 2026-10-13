@@ -18,7 +18,7 @@ Reviewed: 2026-10-01; revalidated 2026-10-13 after rebasing onto `origin/main` a
 | Fresh Node 24 dependencies | Backend and web `npm ci` completed in the isolated worktree. |
 | Backend unit suite | Rebased-tree `npm test`: 684 passed, zero failed or skipped. |
 | Backend compilation and artifacts | Typecheck, build, compiled OpenAPI parity and artifact runtime/source-absent checks passed. |
-| Disposable PostgreSQL suite | Full source-mode run on the rebased tree: 498 passed, 1 skipped, zero failed, including migration application through 087 and the merchant-benefit integration paths. CI still runs the full suite on the final head. |
+| Disposable PostgreSQL suite | Full source-mode run on the rebased tree: 499 passed, 1 skipped, zero failed, including migration application through 087 and the merchant-benefit integration paths. CI still runs the full suite on the final head. |
 | SDK and merchant reference | Four SDK and nineteen reference tests passed; mocked/local transports only, no provider or real Awoof calls. |
 | Download safeguard tests | Five tests passed for merchant API allowlisting, missing definitions, excluded credentials/state, symlink rejection, YAML-split null rejection and deterministic archive headers. |
 | Extracted public starter | Both package suites passed after HTTP download from the production build and extraction outside the repository. No installation required. |
