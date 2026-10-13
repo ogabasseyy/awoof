@@ -791,6 +791,184 @@
           }
         }
       }
+    },
+    "/api/vendors/orders/{id}": {
+      "get": {
+        "summary": "Read one merchant order's recorded state",
+        "description": "Requires a vendor JWT; private awoof_ reporting keys are not accepted. The active vendor must own the transaction. Use this read to confirm the recorded status after an ambiguous status-update response before deciding whether to retry; duplicate refunds never reverse twice.\n",
+        "tags": [
+          "Vendors"
+        ],
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "description": "Awoof transaction ID returned by reporting."
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Recorded order state for the owning vendor.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "success",
+                    "message",
+                    "data"
+                  ],
+                  "properties": {
+                    "success": {
+                      "type": "boolean",
+                      "enum": [
+                        true
+                      ]
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "data": {
+                      "type": "object",
+                      "required": [
+                        "order"
+                      ],
+                      "properties": {
+                        "order": {
+                          "type": "object",
+                          "required": [
+                            "id",
+                            "amount",
+                            "commission",
+                            "status",
+                            "managedPayment",
+                            "createdAt",
+                            "updatedAt",
+                            "product",
+                            "student"
+                          ],
+                          "properties": {
+                            "id": {
+                              "type": "string",
+                              "format": "uuid"
+                            },
+                            "amount": {
+                              "type": "number",
+                              "description": "Settled amount in NGN major units (naira)."
+                            },
+                            "commission": {
+                              "type": "number",
+                              "description": "Awoof commission in NGN major units (naira)."
+                            },
+                            "status": {
+                              "type": "string",
+                              "enum": [
+                                "pending",
+                                "completed",
+                                "failed",
+                                "refunded"
+                              ]
+                            },
+                            "paystackReference": {
+                              "type": "string",
+                              "nullable": true
+                            },
+                            "managedPayment": {
+                              "type": "boolean",
+                              "description": "True when Awoof collected this payment; vendor status changes are then unavailable."
+                            },
+                            "createdAt": {
+                              "type": "string",
+                              "format": "date-time"
+                            },
+                            "updatedAt": {
+                              "type": "string",
+                              "format": "date-time"
+                            },
+                            "product": {
+                              "type": "object",
+                              "required": [
+                                "id",
+                                "name",
+                                "price",
+                                "studentPrice"
+                              ],
+                              "properties": {
+                                "id": {
+                                  "type": "string",
+                                  "format": "uuid"
+                                },
+                                "name": {
+                                  "type": "string"
+                                },
+                                "description": {
+                                  "type": "string",
+                                  "nullable": true
+                                },
+                                "imageUrl": {
+                                  "type": "string",
+                                  "nullable": true
+                                },
+                                "price": {
+                                  "type": "number"
+                                },
+                                "studentPrice": {
+                                  "type": "number"
+                                }
+                              }
+                            },
+                            "student": {
+                              "type": "object",
+                              "required": [
+                                "id",
+                                "name",
+                                "email"
+                              ],
+                              "properties": {
+                                "id": {
+                                  "type": "string",
+                                  "format": "uuid"
+                                },
+                                "name": {
+                                  "type": "string"
+                                },
+                                "email": {
+                                  "type": "string",
+                                  "format": "email"
+                                },
+                                "phoneNumber": {
+                                  "type": "string",
+                                  "nullable": true
+                                }
+                              }
+                            }
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication required or caller is not a vendor"
+          },
+          "404": {
+            "description": "Order or vendor profile not found for this vendor"
+          }
+        }
+      }
     }
   },
   "components": {

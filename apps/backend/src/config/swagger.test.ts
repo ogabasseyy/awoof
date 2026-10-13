@@ -618,3 +618,20 @@ test('published merchant operations document request validation failures', () =>
         assert.ok(operation.responses['422'], `${method.toUpperCase()} ${path} documents 422 validation failures`);
     }
 });
+
+test('merchant order read is published for refund recovery', () => {
+    const spec = swaggerSpec as { paths: Record<string, Record<string, {
+        security?: Array<Record<string, string[]>>;
+        responses: Record<string, { description?: string; content?: { 'application/json': { schema: {
+            properties: { data: { properties: { order: { required: string[]; properties: Record<string, { enum?: string[] }> } } } };
+        } } } }>;
+    } >> };
+    const operation = spec.paths['/api/vendors/orders/{id}']?.get;
+    assert.ok(operation, 'order read is published in the merchant contract');
+    assert.deepEqual(operation.security, [{ bearerAuth: [] }]);
+    const order = operation.responses['200']?.content?.['application/json']?.schema?.properties?.data?.properties?.order;
+    assert.ok(order);
+    assert.deepEqual(order.properties.status.enum, ['pending', 'completed', 'failed', 'refunded']);
+    assert.ok(operation.responses['401']);
+    assert.ok(operation.responses['404']);
+});

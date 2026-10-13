@@ -15,6 +15,7 @@ export const partnerOperations = [
   ['/api/merchant-verification/product-claims', 'post'],
   ['/api/vendors/transactions/report', 'post'],
   ['/api/vendors/orders/{id}/status', 'put'],
+  ['/api/vendors/orders/{id}', 'get'],
 ];
 
 /** Publish only the implemented merchant flow and its reachable definitions. */

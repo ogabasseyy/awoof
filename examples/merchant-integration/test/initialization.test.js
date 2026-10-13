@@ -240,3 +240,30 @@ test('malformed success bodies hold the reference and expired benefits reconcile
     assert.equal(references.length, 1);
   } finally { await new Promise(r => app.server.close(r)); app.store.close(); }
 });
+test('a held reference already paid upstream settles instead of initializing again', async () => {
+  const port = await freePort(); const origin = `https://127.0.0.1:${port}`; let checkoutId; const references = []; let verifies = 0; let reports = 0; let lost = true;
+  const metadata = { awoofVendorId: 'vendor', awoofProductId: 'product', awoofBenefitAuthorizationId: 'benefit' };
+  const app = createMerchant({ origin, apiOrigin: 'https://api.test', webOrigin: 'https://awoof.test', privateKey: 'awoof_test', productId: 'product', vendorId: 'vendor', amountKobo: 80000, paymentGateway: 'paystack_merchant', paystackSecret: 'sk_test_fixture', dbPath: ':memory:', fetchImpl: async (url, init) => {
+    if (url.endsWith('/transaction/initialize')) { const reference = JSON.parse(init.body).reference; references.push(reference); if (lost) { lost = false; throw new Error('Ambiguous connection loss'); } throw new Error('settled checkout must not initialize again'); }
+    if (url.includes('/transaction/verify/')) { verifies++; return Response.json({ status: true, data: { reference: references[0], status: 'success', amount: 80000, currency: 'NGN', domain: 'test', metadata } }); }
+    const body = JSON.parse(init.body);
+    if (url.endsWith('/claim-sessions')) { checkoutId = body.merchantCheckoutId; return Response.json({ success: true, data: { claimSessionId: 'session' } }); }
+    if (url.endsWith('/exchange')) return Response.json({ success: true, data: { eligible: true, assuranceMethod: 'enrollment', campaignId: checkoutId, benefitAuthorizationId: 'benefit', validUntil: new Date(Date.now() + 600000).toISOString() } });
+    if (url.endsWith('/transactions/report')) { reports++; return Response.json({ success: true, data: { transactionId: 'settled' } }); }
+    throw new Error(`unexpected backend call ${url}`);
+  } });
+  await new Promise(r => app.server.listen(port, '127.0.0.1', r));
+  const request = (path, init = {}) => fetch(`http://127.0.0.1:${port}${path}`, { redirect: 'manual', ...init });
+  try {
+    const start = await request('/checkout', { method: 'POST', headers: { Origin: origin } }); const cookie = start.headers.get('set-cookie').split(';')[0];
+    await request('/awoof/student-claim?assertion=' + 'a'.repeat(43), { headers: { Cookie: cookie } });
+    const headers = { Origin: origin, Cookie: cookie }; const form = 'email=checkout%40example.test';
+    assert.equal((await request('/payments/paystack-initialize', { method: 'POST', headers, body: form })).status, 502);
+    const retry = await request('/payments/paystack-initialize', { method: 'POST', headers, body: form });
+    assert.equal(retry.status, 303); assert.equal(retry.headers.get('location'), '/checkout');
+    assert.equal(references.length, 1);
+    assert.equal(app.store.get(checkoutId).state, 'reported');
+    assert.equal(app.store.get(checkoutId).paymentReference, references[0]);
+    assert.equal(reports, 1); assert.ok(verifies >= 1);
+  } finally { await new Promise(r => app.server.close(r)); app.store.close(); }
+});

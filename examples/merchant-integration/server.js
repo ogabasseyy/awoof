@@ -75,10 +75,22 @@ export function createMerchant({ origin, apiOrigin, webOrigin, privateKey, produ
     }
     let body;
     try { body = await response.json(); } catch { body = undefined; }
-    if (response.status === 404 || (response.status === 400 && /not.?found/i.test(body?.message ?? ''))) return;
+    if (response.status === 404 || (response.status === 400 && /not.?found/i.test(body?.message ?? ''))) return false;
     const payment = body?.data;
     if (!response.ok || body?.status !== true || payment?.reference !== current.initializedReference) throw fail('Test payment initialization outcome still unknown; retry later', 502);
+    if (payment.status === 'success') {
+      // The shopper already paid this held reference: settle it through the
+      // same verified-report flow as a payment return instead of rotating
+      // the reference away (which would strand the paid charge upstream
+      // while initializing a second payment).
+      await verifiedPaystack(current.initializedReference, current);
+      current.paymentReference = current.initializedReference; delete current.initializedReference; delete current.paymentUrl;
+      current.state = 'paid_pending_report'; store.put(current.id, current);
+      await report(current);
+      return true;
+    }
     current.initializedReference = `awoof-${randomUUID()}`;
+    return false;
   }
   const server = createServer(async (req, res) => {
     try {
@@ -157,7 +169,7 @@ export function createMerchant({ origin, apiOrigin, webOrigin, privateKey, produ
           // it before posting, so an ambiguous retry never strands on a
           // duplicate or creates a second payment.
           if (current.initializedReference && !current.paymentUrl) {
-            await reconcileInitialization(current);
+            if (await reconcileInitialization(current)) return;
           }
           // Expiry gates only a FRESH initialization: a held reference is
           // reconciled above first, so an outage outlasting the benefit
@@ -211,7 +223,7 @@ export function createMerchant({ origin, apiOrigin, webOrigin, privateKey, produ
           if (destination.protocol !== 'https:' || destination.hostname !== 'checkout.paystack.com' || destination.port || destination.username || destination.password) throw fail('Unexpected payment checkout destination', 502);
           current.paymentUrl = destination.href; current.state = 'payment_initialized'; store.put(current.id, current);
         });
-        redirect(res, store.get(row.id).paymentUrl); return;
+        redirect(res, store.get(row.id).paymentUrl ?? '/checkout'); return;
       }
       if (req.method === 'GET' && url.pathname === '/payments/paystack-return') {
         const { row } = checkout(req); const reference = url.searchParams.get('reference');
