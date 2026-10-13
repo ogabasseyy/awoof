@@ -146,19 +146,28 @@ sweep_workspace_symlinks() {
 # test, yet their base-side target is review evidence too: when _base_ref and
 # _repo name the fetched base commit, mode-120000 base entries print as
 # `path -> target (base-side; deleted or replaced in head)` and count toward
-# _max like head lines. Empty ref/repo disables the base lookup (head-only);
-# the caller labels that absence explicitly.
+# _max like head lines. Rename sources (previous_filename) get the same
+# base lookup — querying the destination in the base cannot recover the
+# source target — labeled `(base-side; renamed away in head)`. Empty
+# ref/repo disables the base lookup (head-only); the caller labels that
+# absence explicitly.
 changed_symlinks() {
-  local _files="$1" _root="$2" _max="${3:-50}" _base_ref="${4:-}" _repo="${5:-}" _count=0 _f _t _suffix _entry
+  local _files="$1" _root="$2" _max="${3:-50}" _base_ref="${4:-}" _repo="${5:-}" _count=0 _rec _kind _f _t _suffix _entry
   jq -e 'type == "array"' "${_files}" >/dev/null 2>&1 || return 1
-  while IFS= read -r -d '' _f; do
+  while IFS= read -r -d '' _rec; do
+    _kind="${_rec%%$'\t'*}"
+    _f="${_rec#*$'\t'}"
     case "${_f}" in /*|..|../*|*/../*|*/..) continue ;; esac
-    if [[ -L "${_root}/${_f}" ]]; then
+    if [[ "${_kind}" == "F" && -L "${_root}/${_f}" ]]; then
       _t="$(readlink -- "${_root}/${_f}" 2>/dev/null || true)"
       _suffix=""
     else
       _t=""
-      _suffix=" (base-side; deleted or replaced in head)"
+      if [[ "${_kind}" == "P" ]]; then
+        _suffix=" (base-side; renamed away in head)"
+      else
+        _suffix=" (base-side; deleted or replaced in head)"
+      fi
       if [[ -n "${_base_ref}" && -n "${_repo}" ]]; then
         # --literal-pathspecs: _f is an untrusted PR filename. Read as a
         # pathspec, magic names (e.g. a file named ':(glob)*') make
@@ -176,7 +185,7 @@ changed_symlinks() {
     if (( _count > _max )); then return 2; fi
     _t="$(printf '%s' "${_t}" | trunc_bytes 500)"
     printf '%s -> %s%s\n' "${_f//$'\n'/\\n}" "${_t//$'\n'/\\n}" "${_suffix}"
-  done < <(jq -j '[.[] | .filename // empty] | map(select(type == "string"))[] + "\u0000"' "${_files}" 2>/dev/null)
+  done < <(jq -j '[.[] | {f: (.filename // empty), p: (.previous_filename // "")} | select(.f | type == "string") | ("F\t" + .f), (if (.p | type) == "string" and (.p | length) > 0 and .p != .f then ("P\t" + .p) else empty end)] | .[] + "\u0000"' "${_files}" 2>/dev/null)
 }
 
 # True when a head-tree candidate is safe to read: a regular file, not a

@@ -178,19 +178,21 @@ ln -s /etc/still "${basedir}/repo/still.txt"
 # Pathspec-magic filename: without --literal-pathspecs the base-side
 # ls-tree lookup errors on ':(glob)*' and the target is silently dropped.
 ln -s /etc/magic "${basedir}/repo/:(glob)*"
+ln -s /etc/before "${basedir}/repo/oldlink.txt"
 git -C "${basedir}/repo" add -A 2>/dev/null
 git -C "${basedir}/repo" -c user.email=t@t -c user.name=t commit -qm base 2>/dev/null
 base_sha="$(git -C "${basedir}/repo" rev-parse HEAD 2>/dev/null)"
 rm "${basedir}/repo/gone.txt"
 rm "${basedir}/repo/replaced.txt" && printf 'now a file' > "${basedir}/repo/replaced.txt"
 rm "${basedir}/repo/:(glob)*"
-printf '[{"filename":"gone.txt"},{"filename":"replaced.txt"},{"filename":":(glob)*"},{"filename":"still.txt"},{"filename":"keep.txt"}]' > "${basedir}/files.json"
+rm "${basedir}/repo/oldlink.txt" && ln -s /etc/after "${basedir}/repo/newlink.txt"
+printf '[{"filename":"gone.txt"},{"filename":"replaced.txt"},{"filename":":(glob)*"},{"filename":"still.txt"},{"filename":"keep.txt"},{"filename":"newlink.txt","previous_filename":"oldlink.txt"}]' > "${basedir}/files.json"
 got="$(changed_symlinks "${basedir}/files.json" "${basedir}/repo" 50 "${base_sha}" "${basedir}/repo")"
-assert_eq "symlinks-base-side" "$(printf 'gone.txt -> /etc/target (base-side; deleted or replaced in head)\nreplaced.txt -> /etc/old (base-side; deleted or replaced in head)\n:(glob)* -> /etc/magic (base-side; deleted or replaced in head)\nstill.txt -> /etc/still')" "${got}"
+assert_eq "symlinks-base-side" "$(printf 'gone.txt -> /etc/target (base-side; deleted or replaced in head)\nreplaced.txt -> /etc/old (base-side; deleted or replaced in head)\n:(glob)* -> /etc/magic (base-side; deleted or replaced in head)\nstill.txt -> /etc/still\nnewlink.txt -> /etc/after\noldlink.txt -> /etc/before (base-side; renamed away in head)')" "${got}"
 got="$(changed_symlinks "${basedir}/files.json" "${basedir}/repo" 50 "" "")"
-assert_eq "symlinks-no-base-head-only" "still.txt -> /etc/still" "${got}"
+assert_eq "symlinks-no-base-head-only" "$(printf 'still.txt -> /etc/still\nnewlink.txt -> /etc/after')" "${got}"
 got="$(changed_symlinks "${basedir}/files.json" "${basedir}/repo" 50 "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef" "${basedir}/repo" 2>/dev/null)"
-assert_eq "symlinks-bad-ref-head-only" "still.txt -> /etc/still" "${got}"
+assert_eq "symlinks-bad-ref-head-only" "$(printf 'still.txt -> /etc/still\nnewlink.txt -> /etc/after')" "${got}"
 got="$(changed_symlinks "${basedir}/files.json" "${basedir}/repo" 1 "${base_sha}" "${basedir}/repo" 2>/dev/null)"; got_rc=$?
 assert_eq "symlinks-base-counts-cap" "gone.txt -> /etc/target (base-side; deleted or replaced in head)" "${got}"
 assert_eq "symlinks-base-cap-rc" "2" "${got_rc}"
@@ -550,6 +552,26 @@ case "$(cat "${ddir}/tmp/muse-removed.txt" 2>/dev/null)" in *"removed_marker_lin
 assert_eq "diff-text-removed-lines" "yes" "${got_d}"
 case "$(cat "${ddir}/tmp/muse.diff" 2>/dev/null)" in *"Binary files"*) got_d="binary";; *"removed_marker_line"*) got_d="text";; *) got_d="other";; esac
 assert_eq "diff-text-not-binary" "text" "${got_d}"
+mkdir -p "${ddir}/repo2"
+git -C "${ddir}/repo2" init -q 2>/dev/null
+python3 -c "print('\n'.join('line%06d' % i for i in range(3000)))" > "${ddir}/repo2/big.txt"
+git -C "${ddir}/repo2" add big.txt 2>/dev/null
+git -C "${ddir}/repo2" -c user.email=t@t -c user.name=t commit -qm base 2>/dev/null
+dbase2="$(git -C "${ddir}/repo2" rev-parse HEAD 2>/dev/null)"
+rm "${ddir}/repo2/big.txt"
+git -C "${ddir}/repo2" add -A 2>/dev/null
+git -C "${ddir}/repo2" -c user.email=t@t -c user.name=t commit -qm head 2>/dev/null
+dhead2="$(git -C "${ddir}/repo2" rev-parse HEAD 2>/dev/null)"
+{
+  printf 'MUSE_STOP=0\n'
+  printf 'MUSE_FILES_FAILED=false\n'
+  printf 'MUSE_FILES_SOURCE=local\n'
+  printf 'MUSE_MERGE_BASE=%s\n' "${dbase2}"
+  printf 'MUSE_TOTAL_FILES=1\n'
+  printf 'MUSE_BASE_SHA=%s\n' "${dbase2}"
+} > "${ddir}/tmp/muse-vars.env"
+if (cd "${ddir}/repo2" && RUNNER_TEMP="${ddir}/tmp" SCRIPT_DIR="${SCRIPT_DIR}" GITHUB_OUTPUT="${ddir}/tmp/out.txt" HEAD_SHA_EVENT="${dhead2}" GITHUB_REPOSITORY="t/t" GH_TOKEN="fake" bash "${diff_script}") >/dev/null 2>&1; then got_rc="0"; else got_rc="nonzero"; fi
+assert_eq "diff-removed-cap-fails-closed" "nonzero" "${got_rc}"
 rm -rf "${ddir}"
 
 # --- post.sh over-budget fallback drops inline threads (script level) ---
@@ -572,7 +594,7 @@ case "${args}" in
     printf '{}\n'
     ;;
   *"/reviews"*) printf '[]\n' ;;
-  *) printf '%s\t%s\tfalse\topen\n' "${GH_STUB_HEAD}" "${GH_STUB_BASE}" ;;
+  *) printf '%s\t%s\tfalse\topen\t%s\t%s\n' "${GH_STUB_HEAD}" "${GH_STUB_BASE}" "${GH_STUB_BASEREF:-main}" "${GH_STUB_DEFAULT:-main}" ;;
 esac
 STUB
 chmod +x "${pdir}/bin/gh"
@@ -718,7 +740,7 @@ case "${args}" in
       printf '[]\n'
     fi
     ;;
-  *) printf '%s\t%s\tfalse\topen\n' "${GH_STUB_HEAD}" "${GH_STUB_BASE}" ;;
+  *) printf '%s\t%s\tfalse\topen\t%s\t%s\n' "${GH_STUB_HEAD}" "${GH_STUB_BASE}" "${GH_STUB_BASEREF:-main}" "${GH_STUB_DEFAULT:-main}" ;;
 esac
 STUB
 chmod +x "${rdir}/bin/gh"
@@ -755,7 +777,84 @@ REVIEW_FILE="${rdir}/tmp/review.json" RUN_URL="https://example.invalid/run" \
 RUNNER_TEMP="${rdir}/tmp" SCRIPT_DIR="${SCRIPT_DIR}" \
   bash "${post_script}" >/dev/null 2>&1
 assert_eq "post-retry-landed-no-double" "1" "$(cat "${rdir}/count" 2>/dev/null || echo missing)"
+rm -f "${rdir}/count" "${rdir}/posted" "${rdir}/capture.json"
+GH_STUB_COUNT="${rdir}/count" GH_STUB_POSTED="${rdir}/posted" GH_STUB_CAPTURE="${rdir}/capture.json" GH_STUB_HEAD="${rsha}" GH_STUB_BASE="${rbsha}" GH_STUB_FAIL_FIRST="" GH_STUB_LANDED="" GH_STUB_BASEREF="custom-base" GH_STUB_DEFAULT="main" \
+PATH="${rdir}/bin:${PATH}" \
+GH_TOKEN="fake" GITHUB_REPOSITORY="t/t" PR_NUMBER="1" \
+HEAD_SHA="${rsha}" BASE_SHA="${rbsha}" HEAD_SHA_EVENT="${rsha}" BASE_SHA_EVENT="${rbsha}" \
+MUSE_OUTCOME="success" DIFF_FAILED="false" DIFF_OUTCOME="success" \
+REVIEW_FILE="${rdir}/tmp/review.json" RUN_URL="https://example.invalid/run" \
+RUNNER_TEMP="${rdir}/tmp" SCRIPT_DIR="${SCRIPT_DIR}" \
+  bash "${post_script}" >/dev/null 2>&1
+if [[ -f "${rdir}/count" ]]; then got_r="posted"; else got_r="skipped"; fi
+assert_eq "post-retargeted-base-skips" "skipped" "${got_r}"
 rm -rf "${rdir}"
+
+# --- guard.sh live base-ref revalidation (script level) ---
+# Same-SHA retarget to a custom branch changes no SHA/draft/state; the
+# live base ref must still be the default branch or the run is stale.
+udir="$(mktemp -d)"
+mkdir -p "${udir}/bin"
+printf '#!/usr/bin/env bash\nprintf "%%s\\n" "${GH_STUB_TSV}"\n' > "${udir}/bin/gh"
+chmod +x "${udir}/bin/gh"
+uhead="aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+ubase="bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+guard_script="${SCRIPT_DIR}/guard.sh"
+: > "${udir}/out.txt"
+urow="$(printf '%s\t%s\tfalse\topen\tmain\tmain' "${uhead}" "${ubase}")"
+GH_STUB_TSV="${urow}" PATH="${udir}/bin:${PATH}" GH_TOKEN="fake" GITHUB_REPOSITORY="t/t" PR_NUMBER="1" HEAD_SHA="${uhead}" BASE_SHA="${ubase}" GITHUB_OUTPUT="${udir}/out.txt" bash "${guard_script}" >/dev/null 2>&1
+assert_eq "guard-default-base-fresh" "fresh=true" "$(cat "${udir}/out.txt")"
+: > "${udir}/out.txt"
+urow="$(printf '%s\t%s\tfalse\topen\tcustom-base\tmain' "${uhead}" "${ubase}")"
+GH_STUB_TSV="${urow}" PATH="${udir}/bin:${PATH}" GH_TOKEN="fake" GITHUB_REPOSITORY="t/t" PR_NUMBER="1" HEAD_SHA="${uhead}" BASE_SHA="${ubase}" GITHUB_OUTPUT="${udir}/out.txt" bash "${guard_script}" >/dev/null 2>&1
+assert_eq "guard-retargeted-base-stale" "fresh=false" "$(cat "${udir}/out.txt")"
+rm -rf "${udir}"
+
+# --- collect.sh private-fetch Basic auth header (script level) ---
+# Git Smart HTTP takes the token as a Basic password (x-access-token),
+# not REST-style Bearer; stub git logs argv, fails the anonymous fetch,
+# and lets the retry succeed so its header can be inspected.
+adir="$(mktemp -d)"
+mkdir -p "${adir}/tmp" "${adir}/bin"
+cat > "${adir}/bin/git" <<'STUB'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "${GIT_STUB_LOG}"
+n=0
+if [[ -f "${GIT_STUB_COUNT}" ]]; then n="$(cat "${GIT_STUB_COUNT}")"; fi
+n=$((n + 1))
+printf '%s' "${n}" > "${GIT_STUB_COUNT}"
+case " $* " in
+  *" fetch "*)
+    if [[ "${n}" == "1" ]]; then exit 1; fi
+    exit 0
+    ;;
+  *" merge-base "*) exit 1 ;;
+  *) exit 0 ;;
+esac
+STUB
+cat > "${adir}/bin/gh" <<'STUB'
+#!/usr/bin/env bash
+args=" $* "
+case "${args}" in
+  *"/files"*) printf '[]\n' ;;
+  *"/pulls/"*) cat "${GH_STUB_PR_JSON}" ;;
+  *) printf '{}\n' ;;
+esac
+STUB
+chmod +x "${adir}/bin/git" "${adir}/bin/gh"
+ahead="eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+abase="ffffffffffffffffffffffffffffffffffffffff"
+python3 -c "
+import json
+print(json.dumps({'head': {'sha': '${ahead}', 'ref': 'feat'}, 'base': {'ref': 'main', 'sha': '${abase}', 'repo': {'default_branch': 'main'}}, 'state': 'open', 'title': 't', 'body': ''}))
+" > "${adir}/pr.json"
+: > "${adir}/tmp/out.txt"
+collect_script="${SCRIPT_DIR}/collect.sh"
+GIT_STUB_LOG="${adir}/git.log" GIT_STUB_COUNT="${adir}/git.count" GH_STUB_PR_JSON="${adir}/pr.json" PATH="${adir}/bin:${PATH}" GH_TOKEN="faketoken123" GITHUB_REPOSITORY="t/t" PR_NUMBER="1" HEAD_SHA_EVENT="${ahead}" GITHUB_OUTPUT="${adir}/tmp/out.txt" RUNNER_TEMP="${adir}/tmp" SCRIPT_DIR="${SCRIPT_DIR}" bash "${collect_script}" >/dev/null 2>&1
+want_b64="$(python3 -c "import base64; print(base64.b64encode(b'x-access-token:faketoken123').decode())")"
+case "$(sed -n '2p' "${adir}/git.log" 2>/dev/null)" in *"Authorization: Basic ${want_b64}"*) got_a="basic";; *) got_a="wrong";; esac
+assert_eq "collect-fetch-basic-auth" "basic" "${got_a}"
+rm -rf "${adir}"
 
 printf '\npass=%d fail=%d%s\n' "${pass}" "${fail}" "${fail_names:+  failed:${fail_names}}"
 [[ "${fail}" == "0" ]]

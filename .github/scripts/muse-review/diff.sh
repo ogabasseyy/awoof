@@ -46,8 +46,8 @@ echo "diff_failed=${diff_failed}" >> "${GITHUB_OUTPUT}"
 # Removed-lines supplement, extracted from the FULL diff before any
 # truncation: beyond the diff cap, deleted base-side lines would be
 # invisible — the agent has no shell for `git show`, and checked-out head
-# files lack them. Per-file `+++` headers attribute each `-` line; the
-# sidecar has its own byte cap with an explicit marker.
+# files lack them. Per-file `+++` headers attribute each `-` line; past
+# the sidecar byte cap the phase fails closed (below), never partial.
 removed_file="${RUNNER_TEMP}/muse-removed.txt"
 removed_note=""
 if [[ "${diff_failed}" != "true" ]]; then
@@ -61,8 +61,13 @@ if [[ "${diff_failed}" != "true" ]]; then
   awk '/^diff --git / {in_hunk=0; print; next} /^@@ / {in_hunk=1; next} !in_hunk && /^--- / {print; next} !in_hunk && /^\+\+\+ / {print; next} in_hunk && /^-/ {print}' \
     "${diff_file}" 2>/dev/null > "${removed_file}" || : > "${removed_file}"
   if (( $(wc -c < "${removed_file}") > 24576 )); then
-    cap_file "${removed_file}" 24576
-    removed_note=" [supplement truncated at 24576 bytes — PARTIAL]"
+    # Fail closed like the other evidence caps: this supplement is the
+    # ONLY base-side content available to the shell-disabled reviewer,
+    # so a byte cut here hides deleted code behind a successful marker.
+    # Exiting nonzero fails the Collect step; Post renders the
+    # evidence-collection fallback.
+    echo "::error::Removed-lines evidence exceeds the 24576-byte supplement cap; failing closed to the fallback review."
+    exit 1
   fi
 else
   : > "${removed_file}"

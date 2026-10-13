@@ -73,11 +73,14 @@ fi
 # base guidance would silently drop out (a PR deleting AGENTS.md could then
 # erase every rule while the review still posts success). The retry sends
 # the step's read-scoped token via a per-command -c header — never stored,
-# never persisted, stderr swallowed so it cannot leak into logs.
+# never persisted, stderr swallowed so it cannot leak into logs. Basic
+# with x-access-token as the username (the actions/checkout auth-helper
+# scheme): Git Smart HTTP takes tokens as passwords, while Bearer is the
+# REST API scheme and stays unauthorized for git fetches.
 auth_fetch() {
   if git fetch "$@" >/dev/null 2>&1; then return 0; fi
   [[ -n "${GH_TOKEN:-}" ]] || return 1
-  git -c "http.extraHeader=Authorization: Bearer ${GH_TOKEN}" fetch "$@" >/dev/null 2>&1
+  git -c "http.extraHeader=Authorization: Basic $(printf 'x-access-token:%s' "${GH_TOKEN}" | base64 | tr -d '\n')" fetch "$@" >/dev/null 2>&1
 }
 base_available=false
 if auth_fetch --depth 1 origin "${base_sha_full}"; then

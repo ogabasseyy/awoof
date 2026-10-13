@@ -24,16 +24,19 @@ set -euo pipefail
 # Second staleness gate (see guard.sh): skip quietly when head or base
 # moved mid-run (findings would misattribute), the PR became a draft
 # (drafts are excluded, and conversion changes neither SHA), the PR
-# closed or merged (closing changes neither SHA nor draft), or the
-# lookup fails.
-if ! live_shas="$(gh api "repos/${GITHUB_REPOSITORY}/pulls/${PR_NUMBER}" --jq '[.head.sha, .base.sha, .draft, .state] | @tsv' 2>/dev/null)" \
+# closed or merged (closing changes neither SHA nor draft), the live
+# base ref left the default branch (a same-SHA retarget changes no
+# SHA/draft/state), or the lookup fails.
+if ! live_shas="$(gh api "repos/${GITHUB_REPOSITORY}/pulls/${PR_NUMBER}" --jq '[.head.sha, .base.sha, .draft, .state, .base.ref, (.base.repo.default_branch // "")] | @tsv' 2>/dev/null)" \
   || [[ -z "${live_shas}" ]]; then
   echo "::warning::Head revalidation lookup failed; skipping post to avoid publishing a stale review."
   exit 0
 fi
 live_head="${live_shas%%$'\t'*}"; live_rest="${live_shas#*$'\t'}"
 live_base="${live_rest%%$'\t'*}"; live_rest="${live_rest#*$'\t'}"
-live_draft="${live_rest%%$'\t'*}"; live_state="${live_rest#*$'\t'}"
+live_draft="${live_rest%%$'\t'*}"; live_rest="${live_rest#*$'\t'}"
+live_state="${live_rest%%$'\t'*}"; live_rest="${live_rest#*$'\t'}"
+live_base_ref="${live_rest%%$'\t'*}"; live_default="${live_rest#*$'\t'}"
 if [[ "${live_head}" != "${HEAD_SHA}" ]]; then
   echo "::notice::PR head moved during review (${HEAD_SHA:0:10} -> ${live_head:0:10}); skipping stale post."
   exit 0
@@ -48,6 +51,10 @@ if [[ "${live_draft}" == "true" ]]; then
 fi
 if [[ "${live_state}" != "open" ]]; then
   echo "::notice::PR is no longer open (state: ${live_state}); skipping post."
+  exit 0
+fi
+if [[ -z "${live_default}" || "${live_base_ref}" != "${live_default}" ]]; then
+  echo "::notice::PR base is no longer the repository default branch (live metadata); skipping post."
   exit 0
 fi
 
