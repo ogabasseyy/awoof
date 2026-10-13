@@ -43,6 +43,8 @@ test('merchant test Paystack signature, verification, durable acceptance and exa
     assert.equal(app.store.find(row => row.kind === 'provider_review').state, 'reconciliation_required');
     const noMetadataBody = JSON.stringify({ event: 'charge.success', data: { reference: 'payment' } }); const noMetadataSig = createHmac('sha512', secret).update(noMetadataBody).digest('hex');
     assert.equal((await request('/webhooks/paystack', { method: 'POST', headers: { 'x-paystack-signature': noMetadataSig }, body: noMetadataBody })).status, 202); assert.equal(reports, 2);
+    const malformedBody = 'not-json'; const malformedSig = createHmac('sha512', secret).update(malformedBody).digest('hex');
+    assert.equal((await request('/webhooks/paystack', { method: 'POST', headers: { 'x-paystack-signature': malformedSig }, body: malformedBody })).status, 400); assert.equal(reports, 2);
   } finally { await new Promise(r => app.server.close(r)); app.store.close(); }
 });
 for (const gateway of ['paystack', 'other']) test(`${gateway} server report requires independent merchant authorization and preserves payment mode`, async () => {
@@ -59,6 +61,7 @@ for (const gateway of ['paystack', 'other']) test(`${gateway} server report requ
     await request('/awoof/student-claim?assertion=' + 'b'.repeat(43), { headers: { Cookie: cookie } });
     const body = JSON.stringify({ merchantCheckoutId: checkoutId, paymentReference: 'reference' });
     assert.equal((await request('/payments/report', { method: 'POST', body })).status, 401); assert.equal(reports, 0);
+    assert.equal((await request('/payments/report', { method: 'POST', headers: { Authorization: `Bearer ${reportSecret}` }, body: 'not-json' })).status, 400); assert.equal(reports, 0);
     const headers = { Authorization: `Bearer ${reportSecret}` };
     const simultaneous = await Promise.all([request('/payments/report', { method: 'POST', headers, body }), request('/payments/report', { method: 'POST', headers, body: JSON.stringify({ merchantCheckoutId: checkoutId, paymentReference: 'conflicting' }) })]);
     const reportStatuses = simultaneous.map(response => response.status);

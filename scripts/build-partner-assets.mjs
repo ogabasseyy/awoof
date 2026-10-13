@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
-import { closeSync, fstatSync, mkdirSync, mkdtempSync, openSync, readdirSync, readFileSync, rmSync, writeFileSync, constants as fsConstants } from 'node:fs';
+import { chmodSync, closeSync, fstatSync, mkdirSync, mkdtempSync, openSync, readdirSync, readFileSync, rmSync, writeFileSync, constants as fsConstants } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -133,7 +133,10 @@ function writeDeterministicArchive(root, files, archive) {
       mkdirSync(dirname(destination), { recursive: true });
       // Pin the member mode: tar preserves staging permissions, so an
       // umask-dependent default would leak build policy into the archive.
+      // The writeFileSync mode is still masked by the process umask, so
+      // chmod afterwards to set 0644 exactly.
       writeFileSync(destination, content, { mode: 0o644 });
+      chmodSync(destination, 0o644);
     }
     execFileSync('touch', ['-t', '202401010000.00', ...files.map((file) => join(staging, file.path))],
       { stdio: 'pipe', env: { ...process.env, TZ: 'UTC' } });

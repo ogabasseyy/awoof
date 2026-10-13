@@ -209,7 +209,9 @@ export function createMerchant({ origin, apiOrigin, webOrigin, privateKey, produ
         // Awoof-account Paystack reference. This shared secret never goes to UI.
         const supplied = Buffer.from(req.headers.authorization ?? ''); const expected = Buffer.from(`Bearer ${reportSecret ?? ''}`);
         if (synthetic || !reportSecret || supplied.length !== expected.length || !timingSafeEqual(supplied, expected)) throw fail('Server reporting is unconfigured or unauthorized', 401);
-        const body = JSON.parse((await rawBody(req)).toString()); const row = store.get(body.merchantCheckoutId);
+        let body;
+        try { body = JSON.parse((await rawBody(req)).toString()); } catch { throw fail('Invalid server payment report', 400); }
+        const row = typeof body?.merchantCheckoutId === 'string' ? store.get(body.merchantCheckoutId) : undefined;
         if (!row?.receipt || typeof body.paymentReference !== 'string' || !body.paymentReference || body.paymentReference.length > 200 || row.paymentGateway === 'paystack_merchant') throw fail('Invalid server payment report', 400);
         await once(row.id, async () => {
           const current = store.get(row.id);
@@ -222,7 +224,8 @@ export function createMerchant({ origin, apiOrigin, webOrigin, privateKey, produ
         if (synthetic || paymentGateway !== 'paystack_merchant' || !paystackSecret) throw fail('Independent merchant Paystack webhook unconfigured', 503);
         const bytes = await rawBody(req);
         if (!verifyPaystackWebhook(bytes, req.headers['x-paystack-signature'], paystackSecret)) throw fail('Invalid webhook signature', 401);
-        const event = JSON.parse(bytes.toString());
+        let event;
+        try { event = JSON.parse(bytes.toString()); } catch { throw fail('Invalid webhook payload', 400); }
         if (event.event !== 'charge.success') {
           // Retain a minimal deduplicated review record, never raw provider data.
           const reviewId = `provider-review:${createHash('sha256').update(bytes).digest('hex')}`;

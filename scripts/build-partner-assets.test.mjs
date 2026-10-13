@@ -86,7 +86,9 @@ test('published starter archive normalizes ownership, timestamps and gzip metada
     mkdirSync(sdk, { recursive: true }); mkdirSync(merchant, { recursive: true });
     writeFileSync(join(sdk, 'package.json'), '{}'); writeFileSync(join(merchant, 'package.json'), '{}');
     writeFileSync(join(merchant, 'server.js'), 'export const example = 1;\n');
-    buildPartnerAssets(root);
+    // A restrictive builder umask must not leak into member modes.
+    const previousUmask = process.umask(0o077);
+    try { buildPartnerAssets(root); } finally { process.umask(previousUmask); }
     const archive = join(root, 'apps/web/public/developers/merchant-starter.tar.gz');
     const first = readFileSync(archive);
     buildPartnerAssets(root);

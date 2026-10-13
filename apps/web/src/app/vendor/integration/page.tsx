@@ -323,7 +323,7 @@ export default function VendorIntegrationPage() {
                                         <div className="flex-1">
                                             <h3 className="font-semibold text-slate-900">Implement hosted checkout</h3>
                                             <p className="mt-1 text-sm text-slate-600">
-                                                Use the hosted claim and fixed merchant callback in the Developer guide. Save allowed domains in Checkout origins. The hosted widget is unavailable for general installation; see the Widget Integration tab for the controlled pilot status.
+                                                Use the hosted claim and fixed merchant callback in the Developer guide. Save allowed domains in Checkout origins. The hosted widget is unavailable for general installation; see the Widget Integration section in Checkout origins for the controlled pilot status.
                                             </p>
                                         </div>
                                     </div>
@@ -361,7 +361,7 @@ export default function VendorIntegrationPage() {
                                         <h3 className="text-lg font-semibold text-slate-900">Widget Status</h3>
                                     </div>
                                     <p className="mt-2 text-sm text-slate-600">
-                                        Browser widget unavailable for general installation; hosted checkout requires merchant backend validation. See the Widget Integration tab for the controlled pilot status.
+                                        Browser widget unavailable for general installation; hosted checkout requires merchant backend validation. See the Widget Integration section in Checkout origins for the controlled pilot status.
                                     </p>
                                 </div>
 
