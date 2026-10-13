@@ -11,7 +11,14 @@
 # The workflow cannot tell the difference; verify billing on dev.meta.ai.
 #
 # Key hygiene (the agent holds this key with web tools on; see run.sh):
-#   - minimum scope: a key that can only run model prompts, nothing else.
+#   - dedicated key: Meta API keys are team-scoped (no prompts-only scope
+#     exists; a leaked key can burn team rate limits, access uploaded
+#     files, and send requests on the team's behalf), so use one
+#     revocable key for this workflow only.
+#   - data mode: subscription credentials default to Contributor mode,
+#     under which Meta may train on sent content — turn it off before
+#     activation (details and owner-approval requirement in
+#     docs/runbooks/muse-code-review.md).
 #   - rotation trigger: rotate immediately if any posted review looks
 #     tampered with, exfiltrated, or off-mission; treat odd output as compromise.
 #   - spending cap: set plan/prompt limits or spend alerts on dev.meta.ai so

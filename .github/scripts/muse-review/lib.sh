@@ -136,10 +136,12 @@ sweep_workspace_symlinks() {
 # and a changed link's hunk can fall past the diff cap — without this, the
 # run would publish success over an unseen target. Record BEFORE the sweep.
 # Targets are untrusted (readlink output on submitter-controlled paths):
-# newlines flattened like the manifest, each target cut at 500 bytes, and
-# the caller neutralizes tags and bounds the whole block. Prints at most
-# _max entries; returns 2 when more changed symlinks exist (caller marks
-# PARTIAL), 1 when the inventory is unreadable. Absolute and ..-carrying
+# newlines flattened like the manifest, and the caller neutralizes tags
+# and bounds the whole block. A target over 500 bytes returns 3 (caller
+# fails closed): cutting it would hide the decisive suffix of the only
+# copy the reviewer can see. Prints at most _max entries; returns 2 when
+# more changed symlinks exist (caller marks PARTIAL), 1 when the
+# inventory is unreadable. Absolute and ..-carrying
 # paths are skipped: joined onto the root they could resolve outside the
 # checkout (same containment rule as head_readable).
 # Links the PR deletes (or replaces with a regular file) fail the head -L
@@ -183,7 +185,7 @@ changed_symlinks() {
     fi
     _count=$((_count + 1))
     if (( _count > _max )); then return 2; fi
-    _t="$(printf '%s' "${_t}" | trunc_bytes 500)"
+    if (( $(printf '%s' "${_t}" | wc -c) > 500 )); then return 3; fi
     printf '%s -> %s%s\n' "${_f//$'\n'/\\n}" "${_t//$'\n'/\\n}" "${_suffix}"
   done < <(jq -j '[.[] | {f: (.filename // empty), p: (.previous_filename // "")} | select(.f | type == "string") | ("F\t" + .f), (if (.p | type) == "string" and (.p | length) > 0 and .p != .f then ("P\t" + .p) else empty end)] | .[] + "\u0000"' "${_files}" 2>/dev/null)
 }

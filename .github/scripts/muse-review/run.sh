@@ -37,7 +37,8 @@ fi
 # --disable-write (those stop local writes, and the symlink sweep above
 # stops filesystem-read exfil, but neither constrains fetch). Mitigations in
 # place: the prompt forbids transmitting secrets, output is redacted before
-# posting, and the key should be minimally scoped and rotated on any
+# posting, and the key should be dedicated to this workflow (Meta keys
+# are team-scoped; no narrower scope exists) and rotated on any
 # suspicious review output. Full containment would need runner-level egress
 # filtering, which stock GitHub-hosted runners do not offer.
 set +e

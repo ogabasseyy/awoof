@@ -133,6 +133,9 @@ CONTRACT
     # nonzero fails the Collect step; Post renders the fallback.
     echo "::error::Changed-symlink inventory exceeds the 50-link evidence cap; failing closed to the fallback review."
     exit 1
+  elif (( symlink_rc == 3 )); then
+    echo "::error::A changed symlink target exceeds the 500-byte evidence cap; failing closed to the fallback review."
+    exit 1
   elif (( symlink_rc != 0 )); then
     echo "::error::Changed-file inventory unreadable for symlink evidence; failing closed to the fallback review."
     exit 1
@@ -151,7 +154,7 @@ CONTRACT
     echo "::error::Changed-symlink evidence exceeds the 8000-byte prompt cap; failing closed to the fallback review."
     exit 1
   fi
-  printf '\n## Changed symlinks (targets recorded before the pre-run sweep removes workspace links; each target cut at 500 bytes)%s\n\n<symlink_targets>\n' "${symlink_note}"
+  printf '\n## Changed symlinks (targets recorded before the pre-run sweep removes workspace links)%s\n\n<symlink_targets>\n' "${symlink_note}"
   if [[ "${symlink_rc}" == "0" && ! -s "${symlink_tmp}" ]]; then
     printf '(No changed path is a symlink in the PR head.)\n'
   else

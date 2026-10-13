@@ -144,8 +144,9 @@ assert_eq "symlinks-flattens-newline" 'nl.txt -> a\nb' "${got}"
 longt="$(python3 -c "print('t'*600)")"
 ln -s "${longt}" "${symdir}/ws/long.txt"
 printf '[{"filename":"long.txt"}]' > "${symdir}/longf.json"
-got="$(changed_symlinks "${symdir}/longf.json" "${symdir}/ws" 50)"
-assert_eq "symlinks-target-cap" "512" "$(printf '%s' "${got}" | wc -c | tr -d ' ')"
+got="$(changed_symlinks "${symdir}/longf.json" "${symdir}/ws" 50 2>/dev/null)"; got_rc=$?
+assert_eq "symlinks-target-cap-rc" "3" "${got_rc}"
+assert_eq "symlinks-target-cap-empty" "" "${got}"
 rm -rf "${symdir}"
 
 # --- changed_symlinks return-2 capture under set -e (prompt.sh idiom) ---
@@ -450,6 +451,18 @@ got="$(jq -s --arg marker '<!-- muse-code-review sha:AAA base:BBB -->' -f "${SCR
 assert_eq "fallback-null-body" "0" "${got}"
 rm -f "${null_fix}"
 
+# --- operator docs honesty (runbook + workflow header) ---
+# The earlier "minimum scope: a key that can only run model prompts"
+# claim described a credential Meta does not offer (keys are
+# team-scoped), and the runbook must keep the Contributor-mode
+# activation requirement visible. Static asserts, same style as the
+# protocol cross-check below.
+runbook_path="${SCRIPT_DIR}/../../../docs/runbooks/muse-code-review.md"
+if grep -q "Contributor mode" "${runbook_path}" 2>/dev/null; then got_doc="yes"; else got_doc="no"; fi
+assert_eq "docs-contributor-mode" "yes" "${got_doc}"
+if grep -q "only run model prompts" "${runbook_path}" "${SCRIPT_DIR}/../../workflows/muse-code-review.yml" 2>/dev/null; then got_doc="found"; else got_doc="absent"; fi
+assert_eq "docs-no-prompts-only-scope" "absent" "${got_doc}"
+
 # --- schema.json ---
 if jq -e '.type == "object" and .additionalProperties == false and (.required | length) == 3' "${SCRIPT_DIR}/schema.json" >/dev/null 2>&1; then got_schema="yes"; else got_schema="no"; fi
 assert_eq "schema-shape" "yes" "${got_schema}"
@@ -705,6 +718,10 @@ done
 python3 -c "import json; print(json.dumps([{'filename': 'link%d' % i} for i in range(55)]))" > "${sdir}/tmp/muse-files.json"
 if PATH="${sdir}/bin:${PATH}" GH_TOKEN="fake" GITHUB_REPOSITORY="t/t" PR_NUMBER="1" GITHUB_OUTPUT="${sdir}/tmp/out.txt" RUNNER_TEMP="${sdir}/tmp" SCRIPT_DIR="${SCRIPT_DIR}" GITHUB_WORKSPACE="${sdir}/ws" bash "${prompt_script}" >/dev/null 2>&1; then got_rc="0"; else got_rc="nonzero"; fi
 assert_eq "prompt-symlink-cap-fails-closed" "nonzero" "${got_rc}"
+ln -s "$(python3 -c "print('t' * 600)")" "${sdir}/ws/longlink"
+printf '[{"filename":"longlink"}]' > "${sdir}/tmp/muse-files.json"
+if PATH="${sdir}/bin:${PATH}" GH_TOKEN="fake" GITHUB_REPOSITORY="t/t" PR_NUMBER="1" GITHUB_OUTPUT="${sdir}/tmp/out.txt" RUNNER_TEMP="${sdir}/tmp" SCRIPT_DIR="${SCRIPT_DIR}" GITHUB_WORKSPACE="${sdir}/ws" bash "${prompt_script}" >/dev/null 2>&1; then got_rc="0"; else got_rc="nonzero"; fi
+assert_eq "prompt-symlink-long-target-fails-closed" "nonzero" "${got_rc}"
 rm -rf "${sdir}"
 
 # --- post.sh comment-only retry after transient POST failure ---
