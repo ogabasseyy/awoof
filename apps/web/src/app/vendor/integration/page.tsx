@@ -631,8 +631,13 @@ export default function VendorIntegrationPage() {
     paymentGateway: 'paystack_merchant'
   })
 })
-.then(response => response.json())
-.then(data => {
+.then(async (response) => {
+  const data = await response.json().catch(() => null);
+  if (!response.ok) {
+    // 409/429/503 mean the report is NOT settled: retain the paid
+    // checkout for an exact retry or reconciliation, never record success.
+    throw new Error('Report not settled (' + response.status + '); retain for reconciliation');
+  }
   console.log('Transaction reported:', data);
 })
 .catch(error => {
@@ -659,8 +664,13 @@ export default function VendorIntegrationPage() {
     paymentGateway: 'paystack_merchant'
   })
 })
-.then(response => response.json())
-.then(data => {
+.then(async (response) => {
+  const data = await response.json().catch(() => null);
+  if (!response.ok) {
+    // 409/429/503 mean the report is NOT settled: retain the paid
+    // checkout for an exact retry or reconciliation, never record success.
+    throw new Error('Report not settled (' + response.status + '); retain for reconciliation');
+  }
   console.log('Transaction reported:', data);
 })
 .catch(error => {

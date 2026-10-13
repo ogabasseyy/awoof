@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createServer } from 'node:http';
 import { createMerchant } from '../server.js';
-import { createSimulator } from '../simulator.js';
+import { createSimulator, SYNTHETIC_PURPOSE } from '../simulator.js';
 const productId = '11111111-1111-4111-8111-111111111111';
 async function freePort() { const server = createServer(); await new Promise(resolve => server.listen(0, '127.0.0.1', resolve)); const port = server.address().port; await new Promise(resolve => server.close(resolve)); return port; }
 async function listen(server, port) { await new Promise(resolve => server.listen(port, '127.0.0.1', resolve)); }
@@ -14,7 +14,7 @@ test('synthetic full browser checkout rejects nonce/replay and persists a single
   const directory = mkdtempSync(join(tmpdir(), 'awoof-reference-')); const merchantPort = await freePort(); const simulatorPort = await freePort();
   const origin = `http://127.0.0.1:${merchantPort}`; const simulatorOrigin = `http://localhost:${simulatorPort}`;
   const simulator = createSimulator({ origin: simulatorOrigin, merchantOrigin: origin, dbPath: join(directory, 'sim.sqlite') });
-  const options = { origin, apiOrigin: simulatorOrigin, webOrigin: simulatorOrigin, privateKey: 'awoof_synthetic_local_only', productId, vendorId: 'vendor', amountKobo: 80000, synthetic: true, dbPath: join(directory, 'merchant.sqlite') };
+  const options = { origin, apiOrigin: simulatorOrigin, webOrigin: simulatorOrigin, privateKey: 'awoof_synthetic_local_only', productId, vendorId: 'vendor', amountKobo: 80000, expectedPurpose: SYNTHETIC_PURPOSE, synthetic: true, dbPath: join(directory, 'merchant.sqlite') };
   let merchant = createMerchant(options); await listen(simulator.server, simulatorPort); await listen(merchant.server, merchantPort);
   const request = (path, init = {}) => fetch(`${origin}${path}`, { redirect: 'manual', ...init, headers: { Connection: 'close', ...init.headers } });
   try {

@@ -6,6 +6,7 @@ import { nonceHash } from '../../packages/partner-sdk/index.js';
 import { Store } from './store.js';
 import { rawBody, json, redirect, html, escape } from './http.js';
 const PRODUCT = '11111111-1111-4111-8111-111111111111';
+export const SYNTHETIC_PURPOSE = 'Synthetic student discount (local test only)';
 export function createSimulator({ origin = 'http://localhost:4200', merchantOrigin = 'http://127.0.0.1:4100', dbPath = './.local/simulator.sqlite' } = {}) {
   for (const value of [origin, merchantOrigin]) { const url = new URL(value); if (url.protocol !== 'http:' || !['localhost', '127.0.0.1'].includes(url.hostname) || url.pathname !== '/') throw new Error('Simulator requires bare loopback HTTP origins'); }
   const store = new Store(dbPath);
@@ -45,7 +46,7 @@ export function createSimulator({ origin = 'http://localhost:4200', merchantOrig
         if (session.receipt && session.exchangeKey !== body.idempotencyKey) { json(res, 409, { success: false }); return; }
         if (!session.receipt && session.expiresAt < Date.now()) { json(res, 409, { success: false }); return; }
         session.exchangeKey = body.idempotencyKey;
-        session.receipt ??= { receiptId: randomUUID(), merchantSubject: randomUUID(), eligible: true, assuranceMethod: 'enrollment', institutionId: randomUUID(), verifiedAt: new Date().toISOString(), validUntil: new Date(Date.now() + 600000).toISOString(), campaignId: session.checkout, benefitAuthorizationId: randomUUID(), benefitValidUntil: new Date(Date.now() + 120000).toISOString() };
+        session.receipt ??= { receiptId: randomUUID(), merchantSubject: randomUUID(), eligible: true, assuranceMethod: 'enrollment', institutionId: randomUUID(), verifiedAt: new Date().toISOString(), validUntil: new Date(Date.now() + 600000).toISOString(), campaignId: session.checkout, purpose: SYNTHETIC_PURPOSE, benefitAuthorizationId: randomUUID(), benefitValidUntil: new Date(Date.now() + 120000).toISOString() };
         store.put(session.id, session); json(res, 200, { success: true, data: session.receipt }); return;
       }
       if (url.pathname === '/api/vendors/transactions/report') {

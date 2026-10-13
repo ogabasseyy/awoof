@@ -127,6 +127,9 @@
           "403": {
             "description": "Current eligibility or merchant consent unavailable"
           },
+          "422": {
+            "description": "Invalid request shape; field validation failure"
+          },
           "503": {
             "$ref": "#/components/responses/SessionValidationUnavailable"
           }
@@ -351,6 +354,9 @@
           "409": {
             "description": "Checkout already bound differently, used, or expired. Start a new checkout."
           },
+          "422": {
+            "description": "Invalid request shape; field validation failure"
+          },
           "429": {
             "description": "Merchant key hourly quota exhausted or key unavailable"
           }
@@ -414,6 +420,9 @@
           },
           "409": {
             "description": "Session expired or redeemed, or merchant integration unavailable."
+          },
+          "422": {
+            "description": "Invalid request shape; field validation failure"
           },
           "503": {
             "$ref": "#/components/responses/SessionValidationUnavailable"
@@ -536,6 +545,9 @@
           },
           "409": {
             "description": "Session expired or redeemed, or MERCHANT_INTEGRATION_REQUIRED."
+          },
+          "422": {
+            "description": "Invalid request shape; field validation failure"
           },
           "503": {
             "$ref": "#/components/responses/SessionValidationUnavailable"

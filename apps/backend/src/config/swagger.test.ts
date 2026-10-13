@@ -598,3 +598,23 @@ test('merchant claim-session read publishes the public projection schema', () =>
     assert.equal(projection.properties.browserNonceHash, undefined);
     assert.equal(projection.properties.handoffUrl, undefined);
 });
+
+test('published merchant operations document request validation failures', () => {
+    const spec = swaggerSpec as { paths: Record<string, Record<string, { responses: Record<string, { description?: string }> }>> };
+    // Each of these handlers Zod-parses its input; the global handler maps
+    // parse failures to 422, so the contract must declare it.
+    const operations: [string, string][] = [
+        ['/api/merchant-verification/assertions', 'post'],
+        ['/api/merchant-verification/exchange', 'post'],
+        ['/api/merchant-verification/claim-sessions', 'post'],
+        ['/api/merchant-verification/claim-sessions/{id}', 'get'],
+        ['/api/merchant-verification/product-claims', 'post'],
+        ['/api/vendors/transactions/report', 'post'],
+        ['/api/vendors/orders/{id}/status', 'put'],
+    ];
+    for (const [path, method] of operations) {
+        const operation = spec.paths[path]?.[method];
+        assert.ok(operation, `merchant contract missing ${method.toUpperCase()} ${path}`);
+        assert.ok(operation.responses['422'], `${method.toUpperCase()} ${path} documents 422 validation failures`);
+    }
+});

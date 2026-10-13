@@ -120,6 +120,7 @@ import {
  *       '400': { description: Invalid input or merchant origin }
  *       '401': { description: Student authentication required }
  *       '403': { description: Current eligibility or merchant consent unavailable }
+ *       '422': { description: Invalid request shape; field validation failure }
  *       '503': { $ref: '#/components/responses/SessionValidationUnavailable' }
  * /api/merchant-verification/pilot-assertions:
  *   post:
@@ -244,6 +245,7 @@ import {
  *       '400': { description: Invalid input or product unavailable to this merchant. }
  *       '401': { description: Private merchant key invalid or merchant inactive. }
  *       '409': { description: 'Checkout already bound differently, used, or expired. Start a new checkout.' }
+ *       '422': { description: Invalid request shape; field validation failure }
  *       '429': { description: Merchant key hourly quota exhausted or key unavailable }
  * /api/merchant-verification/claim-sessions/{id}:
  *   get:
@@ -270,6 +272,7 @@ import {
  *       '401': { description: Student authentication required. }
  *       '404': { description: Unknown session or claim no longer available. }
  *       '409': { description: 'Session expired or redeemed, or merchant integration unavailable.' }
+ *       '422': { description: Invalid request shape; field validation failure }
  *       '503': { $ref: '#/components/responses/SessionValidationUnavailable' }
  * /api/merchant-verification/product-claims:
  *   post:
@@ -313,6 +316,7 @@ import {
  *       '403': { description: Current enrollment or merchant disclosure unavailable. }
  *       '404': { description: Unknown claim session or disclosure grant. }
  *       '409': { description: 'Session expired or redeemed, or MERCHANT_INTEGRATION_REQUIRED.' }
+ *       '422': { description: Invalid request shape; field validation failure }
  *       '503': { $ref: '#/components/responses/SessionValidationUnavailable' }
  */
 const bounded = z.string().trim().min(1).max(100);

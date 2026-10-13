@@ -8,13 +8,14 @@ import { rawBody, json, redirect, html, escape } from './http.js';
 export const CALLBACK_PATH = '/awoof/student-claim';
 const COOKIE = 'awoof_reference_nonce';
 const fail = (message, status = 409) => Object.assign(new Error(message), { status });
-export function createMerchant({ origin, apiOrigin, webOrigin, privateKey, productId, vendorId, amountKobo, synthetic = false, paymentGateway = 'other', paystackSecret, reportSecret, dbPath = './.local/merchant.sqlite', fetchImpl = fetch }) {
+export function createMerchant({ origin, apiOrigin, webOrigin, privateKey, productId, vendorId, amountKobo, expectedPurpose, synthetic = false, paymentGateway = 'other', paystackSecret, reportSecret, dbPath = './.local/merchant.sqlite', fetchImpl = fetch }) {
   origin = trustedBase(origin, synthetic);
   if (!Number.isSafeInteger(amountKobo) || amountKobo < 1) throw new Error('Configure the agreed student price in integer NGN kobo');
   if (!['paystack', 'paystack_merchant', 'other'].includes(paymentGateway)) throw new Error('Unsupported payment gateway');
   if (synthetic && paymentGateway !== 'other') throw new Error('Synthetic payments use the merchant-attested other label only');
   if (paystackSecret && !paystackSecret.startsWith('sk_test_')) throw new Error('Only merchant Paystack test secrets are accepted by this reference');
   if (reportSecret && reportSecret.length < 32) throw new Error('Use at least 32 random characters for the server-to-server report secret');
+  if (expectedPurpose !== undefined && (typeof expectedPurpose !== 'string' || !expectedPurpose || expectedPurpose.length > 200)) throw new Error('Expected purpose must be the exact consent wording (1-200 characters) when configured');
   const client = new AwoofPartnerClient({ apiOrigin, webOrigin, privateKey, fetch: fetchImpl, allowLoopbackHttp: synthetic });
   const store = new Store(dbPath); const active = new Map();
   // Serialize each operation and re-evaluate its own payload against fresh state.
@@ -112,11 +113,17 @@ export function createMerchant({ origin, apiOrigin, webOrigin, privateKey, produ
             // A definitive rejection never reserves this checkout for a bad code.
             // A timeout/5xx is ambiguous: retain the hash and stable retry key.
             // A 429 quota failure also leaves the assertion unconsumed, so it
-            // keeps the binding too; only an exact retry may proceed.
-            if (error.status >= 400 && error.status < 500 && error.status !== 429) { delete current.codeHash; delete current.exchangeStartedAt; store.put(row.id, current); }
+            // keeps the binding too; only an exact retry may proceed. A 401
+            // (revoked/rotated/misconfigured key) likewise fails before the
+            // assertion is consumed, so it keeps the binding for an exact
+            // retry after credentials are repaired.
+            if (error.status >= 400 && error.status < 500 && error.status !== 401 && error.status !== 429) { delete current.codeHash; delete current.exchangeStartedAt; store.put(row.id, current); }
             throw error;
           }
-          if (receipt.eligible !== true || receipt.assuranceMethod !== 'enrollment' || receipt.campaignId !== row.id || !receipt.benefitAuthorizationId || !(Date.parse(receipt.validUntil) > Date.now())) throw fail('Current product enrollment authorization required', 403);
+          // The browser handoff is student-editable: the receipt purpose
+          // (student-approved consent wording) must match this merchant's
+          // configured intent exactly before any benefit is honored.
+          if (receipt.eligible !== true || receipt.assuranceMethod !== 'enrollment' || receipt.campaignId !== row.id || (expectedPurpose !== undefined && receipt.purpose !== expectedPurpose) || !receipt.benefitAuthorizationId || !(Date.parse(receipt.validUntil) > Date.now())) throw fail('Current product enrollment authorization required', 403);
           current.receipt = receipt; current.state = 'authorized'; store.put(row.id, current);
         });
         redirect(res, '/checkout'); return;
@@ -213,7 +220,7 @@ export function createMerchant({ origin, apiOrigin, webOrigin, privateKey, produ
         let body;
         try { body = JSON.parse(raw.toString()); } catch { throw fail('Invalid server payment report', 400); }
         const row = typeof body?.merchantCheckoutId === 'string' ? store.get(body.merchantCheckoutId) : undefined;
-        if (!row?.receipt || typeof body.paymentReference !== 'string' || !body.paymentReference || body.paymentReference.length > 200 || row.paymentGateway === 'paystack_merchant') throw fail('Invalid server payment report', 400);
+        if (!row?.receipt || typeof body.paymentReference !== 'string' || !body.paymentReference || body.paymentReference.length > 255 || row.paymentGateway === 'paystack_merchant') throw fail('Invalid server payment report', 400);
         await once(row.id, async () => {
           const current = store.get(row.id);
           if (current.paymentReference && current.paymentReference !== body.paymentReference) throw fail('Checkout already has a payment');
@@ -270,6 +277,6 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
     if (!synthetic) throw new Error(`${name} is required outside synthetic mode; see the starter README`);
     return fallback;
   };
-  const app = createMerchant({ origin: process.env.MERCHANT_ORIGIN ?? `http://127.0.0.1:${port}`, apiOrigin: process.env.AWOOF_API_ORIGIN ?? 'http://localhost:4200', webOrigin: process.env.AWOOF_WEB_ORIGIN ?? 'http://localhost:4200', privateKey: process.env.AWOOF_PRIVATE_KEY ?? (synthetic ? 'awoof_synthetic_local_only' : ''), productId: requiredInRealMode('AWOOF_PRODUCT_ID', '11111111-1111-4111-8111-111111111111'), vendorId: requiredInRealMode('AWOOF_VENDOR_ID', '22222222-2222-4222-8222-222222222222'), amountKobo: Number(requiredInRealMode('STUDENT_PRICE_KOBO', '80000')), synthetic, paymentGateway: process.env.PAYMENT_GATEWAY ?? 'other', paystackSecret: process.env.MERCHANT_PAYSTACK_TEST_SECRET, reportSecret: process.env.REFERENCE_REPORT_SECRET, dbPath: process.env.MERCHANT_DB_PATH ?? './.local/merchant.sqlite' });
+  const app = createMerchant({ origin: process.env.MERCHANT_ORIGIN ?? `http://127.0.0.1:${port}`, apiOrigin: process.env.AWOOF_API_ORIGIN ?? 'http://localhost:4200', webOrigin: process.env.AWOOF_WEB_ORIGIN ?? 'http://localhost:4200', privateKey: process.env.AWOOF_PRIVATE_KEY ?? (synthetic ? 'awoof_synthetic_local_only' : ''), productId: requiredInRealMode('AWOOF_PRODUCT_ID', '11111111-1111-4111-8111-111111111111'), vendorId: requiredInRealMode('AWOOF_VENDOR_ID', '22222222-2222-4222-8222-222222222222'), amountKobo: Number(requiredInRealMode('STUDENT_PRICE_KOBO', '80000')), expectedPurpose: requiredInRealMode('AWOOF_EXPECTED_PURPOSE', 'Synthetic student discount (local test only)'), synthetic, paymentGateway: process.env.PAYMENT_GATEWAY ?? 'other', paystackSecret: process.env.MERCHANT_PAYSTACK_TEST_SECRET, reportSecret: process.env.REFERENCE_REPORT_SECRET, dbPath: process.env.MERCHANT_DB_PATH ?? './.local/merchant.sqlite' });
   app.server.listen(port, '127.0.0.1', () => console.log(`Reference merchant on loopback port ${port}; ${synthetic ? 'SYNTHETIC ONLY' : 'sandbox integration'}`));
 }

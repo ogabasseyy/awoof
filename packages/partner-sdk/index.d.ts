@@ -1,6 +1,6 @@
 export type PaymentGateway = 'paystack' | 'paystack_merchant' | 'other';
 export interface ClaimSession { claimSessionId: string; expiresAt: string }
-export interface MerchantReceipt { receiptId: string; merchantSubject: string; eligible: true; assuranceMethod: 'student_email' | 'enrollment'; institutionId: string; verifiedAt: string; validUntil: string; campaignId: string; benefitAuthorizationId?: string; benefitValidUntil?: string }
+export interface MerchantReceipt { receiptId: string; merchantSubject: string; eligible: true; assuranceMethod: 'student_email' | 'enrollment'; institutionId: string; verifiedAt: string; validUntil: string; campaignId: string; purpose: string; benefitAuthorizationId?: string; benefitValidUntil?: string }
 export interface TransactionReport { benefitAuthorizationId: string; paymentReference: string; amount: number; productId: string; paymentGateway: PaymentGateway }
 export class AwoofApiError extends Error { status: number; body: unknown }
 export class AwoofPartnerClient {
