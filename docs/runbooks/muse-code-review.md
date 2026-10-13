@@ -34,8 +34,9 @@ The agent holds this key with web tools on:
   duplicate heads, missing secret.
 - Failures that post a short fallback note on the PR (job stays green):
   evidence-collection failures (collect/diff/guidance/prompt phases,
-  including a failed head checkout, a phase timeout, or the guidance
-  candidate cap), installer failures, and agent-run
+  including a failed head checkout, a phase timeout, or an evidence cap
+  — guidance candidates/bytes or changed-symlink targets), installer
+  failures, and agent-run
   failures (quota, errors, invalid output). Two collection-time outages
   are instead silent skips (see below): the PR-metadata lookup and the
   pre-run dedupe lookup.

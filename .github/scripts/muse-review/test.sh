@@ -243,6 +243,16 @@ got="$(META_API_KEY="${jkey}" redact_json_key < "${jfix}" | jq -r '.a.b[0]')"
 assert_eq "redactjson-doubly-escaped" "x [REDACTED] y" "${got}"
 got="$(META_API_KEY="${jkey}" redact_json_key < "${jfix}" | jq -r '.v')"
 assert_eq "redactjson-keyfree-escapes-kept" 'keep \u0041 literal' "${got}"
+cat > "${jfix}" <<'EOF'
+{"a":{"b":["quoted \"word\" then fake.live\\u002fkey+abc\\u003d123 y","line1\nline2 fake.live\\u002fkey+abc\\u003d123 y"]}}
+EOF
+got="$(META_API_KEY="${jkey}" redact_json_key < "${jfix}" | jq -r '.a.b[0]')"
+assert_eq "redactjson-doubly-escaped-quote" 'quoted "word" then [REDACTED] y' "${got}"
+got="$(META_API_KEY="${jkey}" redact_json_key < "${jfix}" | jq -r '.a.b[1]')"
+case "${got}" in *"[REDACTED]"*) got_nl="redacted";; *) got_nl="leaked";; esac
+assert_eq "redactjson-doubly-escaped-newline" "redacted" "${got_nl}"
+case "${got}" in *"fake.live"*) got_left="yes";; *) got_left="no";; esac
+assert_eq "redactjson-newline-no-fragment" "no" "${got_left}"
 if printf 'not json' | META_API_KEY="${jkey}" redact_json_key >/dev/null 2>&1; then got_rc="0"; else got_rc="nonzero"; fi
 assert_eq "redactjson-nonjson-rc" "nonzero" "${got_rc}"
 if printf '{}' | META_API_KEY='' redact_json_key >/dev/null 2>&1; then got_rc="0"; else got_rc=$?; fi
@@ -478,6 +488,17 @@ assert_eq "guidance-small-emits-root" "yes" "${got_g}"
 python3 -c "import json; print(json.dumps([{'filename': 'd%03d/f.ts' % i} for i in range(300)]))" > "${gdir}/tmp/muse-files.json"
 if (cd "${gdir}/ws" && RUNNER_TEMP="${gdir}/tmp" SCRIPT_DIR="${SCRIPT_DIR}" bash "${guidance_script}") >/dev/null 2>&1; then got_rc="0"; else got_rc="nonzero"; fi
 assert_eq "guidance-cap-fails-closed" "nonzero" "${got_rc}"
+printf '[{"filename":"a.ts"}]' > "${gdir}/tmp/muse-files.json"
+python3 -c "print('x' * 33000)" > "${gdir}/ws/AGENTS.md"
+if (cd "${gdir}/ws" && RUNNER_TEMP="${gdir}/tmp" SCRIPT_DIR="${SCRIPT_DIR}" bash "${guidance_script}") >/dev/null 2>&1; then got_rc="0"; else got_rc="nonzero"; fi
+assert_eq "guidance-truncation-fails-closed" "nonzero" "${got_rc}"
+python3 -c "print('x' * 30000)" > "${gdir}/ws/AGENTS.md"
+python3 -c "print('y' * 30000)" > "${gdir}/ws/CLAUDE.md"
+python3 -c "print('z' * 30000)" > "${gdir}/ws/CONTRIBUTING.md"
+mkdir -p "${gdir}/ws/.github"
+python3 -c "print('w' * 30000)" > "${gdir}/ws/.github/copilot-instructions.md"
+if (cd "${gdir}/ws" && RUNNER_TEMP="${gdir}/tmp" SCRIPT_DIR="${SCRIPT_DIR}" bash "${guidance_script}") >/dev/null 2>&1; then got_rc="0"; else got_rc="nonzero"; fi
+assert_eq "guidance-budget-fails-closed" "nonzero" "${got_rc}"
 rm -rf "${gdir}"
 
 # --- diff.sh --text vs .gitattributes -diff suppression (script level) ---
@@ -561,6 +582,160 @@ assert_eq "post-budget-fallback-no-inline" "0" "${got}"
 case "$(jq -r '.body // ""' "${pdir}/capture.json" 2>/dev/null)" in *"muse-fallback:v1"*"exceeds the 60000-byte post budget"*) got_p="yes";; *) got_p="no";; esac
 assert_eq "post-budget-fallback-tagged" "yes" "${got_p}"
 rm -rf "${pdir}"
+
+# --- collect.sh live default-base eligibility (script level) ---
+# A rerun after a base retarget keeps the event-time job gate fooled; the
+# live recheck must stop custom-base runs before evidence collection.
+cdir="$(mktemp -d)"
+mkdir -p "${cdir}/tmp" "${cdir}/bin" "${cdir}/repo"
+cat > "${cdir}/bin/gh" <<'STUB'
+#!/usr/bin/env bash
+args=" $* "
+case "${args}" in
+  *"/files"*) printf '[]\n' ;;
+  *"/pulls/"*) cat "${GH_STUB_PR_JSON}" ;;
+  *) printf '{}\n' ;;
+esac
+STUB
+chmod +x "${cdir}/bin/gh"
+git -C "${cdir}/repo" init -q 2>/dev/null
+chead="cccccccccccccccccccccccccccccccccccccccc"
+cbase="dddddddddddddddddddddddddddddddddddddddd"
+collect_script="${SCRIPT_DIR}/collect.sh"
+python3 -c "
+import json, sys
+base = sys.argv[1]
+print(json.dumps({'head': {'sha': '${chead}', 'ref': 'feat'}, 'base': {'ref': base, 'sha': '${cbase}', 'repo': {'default_branch': 'main'}}, 'state': 'open', 'title': 't', 'body': ''}))
+" "stacked-base" > "${cdir}/pr-custom.json"
+: > "${cdir}/tmp/out.txt"
+(cd "${cdir}/repo" && GH_STUB_PR_JSON="${cdir}/pr-custom.json" PATH="${cdir}/bin:${PATH}" GH_TOKEN="fake" GITHUB_REPOSITORY="t/t" PR_NUMBER="1" HEAD_SHA_EVENT="${chead}" GITHUB_OUTPUT="${cdir}/tmp/out.txt" RUNNER_TEMP="${cdir}/tmp" SCRIPT_DIR="${SCRIPT_DIR}" bash "${collect_script}") >/dev/null 2>&1
+case "$(cat "${cdir}/tmp/out.txt")" in *"should_review=false"*) got_c="skip";; *) got_c="review";; esac
+assert_eq "collect-custom-base-skips" "skip" "${got_c}"
+assert_eq "collect-custom-base-stop" "MUSE_STOP=1" "$(cat "${cdir}/tmp/muse-vars.env" 2>/dev/null)"
+python3 -c "
+import json, sys
+base = sys.argv[1]
+print(json.dumps({'head': {'sha': '${chead}', 'ref': 'feat'}, 'base': {'ref': base, 'sha': '${cbase}', 'repo': {'default_branch': 'main'}}, 'state': 'open', 'title': 't', 'body': ''}))
+" "main" > "${cdir}/pr-main.json"
+: > "${cdir}/tmp/out.txt"
+(cd "${cdir}/repo" && GH_STUB_PR_JSON="${cdir}/pr-main.json" PATH="${cdir}/bin:${PATH}" GH_TOKEN="fake" GITHUB_REPOSITORY="t/t" PR_NUMBER="1" HEAD_SHA_EVENT="${chead}" GITHUB_OUTPUT="${cdir}/tmp/out.txt" RUNNER_TEMP="${cdir}/tmp" SCRIPT_DIR="${SCRIPT_DIR}" bash "${collect_script}") >/dev/null 2>&1
+case "$(cat "${cdir}/tmp/out.txt")" in *"should_review=true"*) got_c="review";; *) got_c="skip";; esac
+assert_eq "collect-default-base-reviews" "review" "${got_c}"
+rm -rf "${cdir}"
+
+# --- prompt.sh symlink cap fails closed (script level) ---
+# run.sh sweeps every symlink before the agent starts, so targets past
+# the evidence cap are uninspectable anywhere: no successful marker.
+sdir="$(mktemp -d)"
+mkdir -p "${sdir}/tmp" "${sdir}/bin" "${sdir}/ws"
+printf '#!/usr/bin/env bash\nprintf "[]\\n"\n' > "${sdir}/bin/gh"
+chmod +x "${sdir}/bin/gh"
+printf 'x' > "${sdir}/ws/a.ts"
+{
+  printf 'MUSE_STOP=0\n'
+  printf 'MUSE_HEAD_SHA=%s\n' "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+  printf 'MUSE_BASE_REF=main\n'
+  printf 'MUSE_HEAD_REF=feat\n'
+  printf 'MUSE_PR_TITLE=t\n'
+  printf 'MUSE_PR_BODY=\n'
+  printf 'MUSE_FILES_NOTE=\n'
+  printf 'MUSE_MANIFEST_NOTE=\n'
+  printf 'MUSE_DIFF_NOTE=\n'
+  printf 'MUSE_REMOVED_NOTE=\n'
+  printf 'MUSE_BASE_AVAILABLE=false\n'
+  printf 'MUSE_BASE_SHA_FULL=%s\n' "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+} > "${sdir}/tmp/muse-vars.env"
+printf -- '- a.ts\n' > "${sdir}/tmp/muse-summary.txt"
+printf 'a.ts\n' > "${sdir}/tmp/muse-manifest.txt"
+printf 'diff\n' > "${sdir}/tmp/muse.diff"
+: > "${sdir}/tmp/muse-removed.txt"
+printf 'g\n' > "${sdir}/tmp/muse-guidance.md"
+: > "${sdir}/tmp/out.txt"
+prompt_script="${SCRIPT_DIR}/prompt.sh"
+printf '[{"filename":"a.ts"}]' > "${sdir}/tmp/muse-files.json"
+if PATH="${sdir}/bin:${PATH}" GH_TOKEN="fake" GITHUB_REPOSITORY="t/t" PR_NUMBER="1" GITHUB_OUTPUT="${sdir}/tmp/out.txt" RUNNER_TEMP="${sdir}/tmp" SCRIPT_DIR="${SCRIPT_DIR}" GITHUB_WORKSPACE="${sdir}/ws" bash "${prompt_script}" >/dev/null 2>&1; then got_rc="0"; else got_rc="nonzero"; fi
+assert_eq "prompt-symlink-small-ok" "0" "${got_rc}"
+i=0
+while (( i < 55 )); do
+  ln -s "/target${i}" "${sdir}/ws/link${i}"
+  i=$(( i + 1 ))
+done
+python3 -c "import json; print(json.dumps([{'filename': 'link%d' % i} for i in range(55)]))" > "${sdir}/tmp/muse-files.json"
+if PATH="${sdir}/bin:${PATH}" GH_TOKEN="fake" GITHUB_REPOSITORY="t/t" PR_NUMBER="1" GITHUB_OUTPUT="${sdir}/tmp/out.txt" RUNNER_TEMP="${sdir}/tmp" SCRIPT_DIR="${SCRIPT_DIR}" GITHUB_WORKSPACE="${sdir}/ws" bash "${prompt_script}" >/dev/null 2>&1; then got_rc="0"; else got_rc="nonzero"; fi
+assert_eq "prompt-symlink-cap-fails-closed" "nonzero" "${got_rc}"
+rm -rf "${sdir}"
+
+# --- post.sh comment-only retry after transient POST failure ---
+# Stub gh counts POSTs, can fail the first, and can report the first
+# attempt as landed (marker visible only after a POST was attempted).
+rdir="$(mktemp -d)"
+mkdir -p "${rdir}/tmp" "${rdir}/bin"
+cat > "${rdir}/bin/gh" <<'STUB'
+#!/usr/bin/env bash
+args=" $* "
+case "${args}" in
+  *" --method POST "*)
+    n=0
+    if [[ -f "${GH_STUB_COUNT}" ]]; then n="$(cat "${GH_STUB_COUNT}")"; fi
+    n=$((n + 1))
+    printf '%s' "${n}" > "${GH_STUB_COUNT}"
+    : > "${GH_STUB_POSTED}"
+    if [[ "${GH_STUB_FAIL_FIRST:-}" == "1" && "${n}" == "1" ]]; then
+      printf 'transient failure\n' >&2
+      exit 1
+    fi
+    prev=""
+    for a in "$@"; do
+      if [[ "${prev}" == "--input" ]]; then cp "${a}" "${GH_STUB_CAPTURE}"; fi
+      prev="${a}"
+    done
+    printf '{}\n'
+    ;;
+  *"/reviews"*)
+    if [[ -f "${GH_STUB_POSTED}" && -n "${GH_STUB_LANDED:-}" ]]; then
+      cat "${GH_STUB_LANDED}"
+    else
+      printf '[]\n'
+    fi
+    ;;
+  *) printf '%s\t%s\tfalse\topen\n' "${GH_STUB_HEAD}" "${GH_STUB_BASE}" ;;
+esac
+STUB
+chmod +x "${rdir}/bin/gh"
+rsha="aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+rbsha="bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+printf 'diff --git a/a.ts b/a.ts\n--- a/a.ts\n+++ b/a.ts\n@@ -1 +1,5 @@\n+x\n' > "${rdir}/tmp/muse.diff"
+printf '[{"filename":"a.ts"}]' > "${rdir}/tmp/muse-files.json"
+printf '%s' '{"verdict":"v","findings":[{"path":"a.ts","line":0,"severity":"low","title":"t","body":"b"}],"next_steps":[]}' > "${rdir}/tmp/review.json"
+post_script="${SCRIPT_DIR}/post.sh"
+rm -f "${rdir}/count" "${rdir}/posted" "${rdir}/capture.json"
+GH_STUB_COUNT="${rdir}/count" GH_STUB_POSTED="${rdir}/posted" GH_STUB_CAPTURE="${rdir}/capture.json" GH_STUB_HEAD="${rsha}" GH_STUB_BASE="${rbsha}" GH_STUB_FAIL_FIRST="1" GH_STUB_LANDED="" \
+PATH="${rdir}/bin:${PATH}" \
+GH_TOKEN="fake" GITHUB_REPOSITORY="t/t" PR_NUMBER="1" \
+HEAD_SHA="${rsha}" BASE_SHA="${rbsha}" HEAD_SHA_EVENT="${rsha}" BASE_SHA_EVENT="${rbsha}" \
+MUSE_OUTCOME="success" DIFF_FAILED="false" DIFF_OUTCOME="success" \
+REVIEW_FILE="${rdir}/tmp/review.json" RUN_URL="https://example.invalid/run" \
+RUNNER_TEMP="${rdir}/tmp" SCRIPT_DIR="${SCRIPT_DIR}" \
+  bash "${post_script}" >/dev/null 2>&1
+assert_eq "post-retry-transient-count" "2" "$(cat "${rdir}/count" 2>/dev/null || echo missing)"
+case "$(jq -r '.body // ""' "${rdir}/capture.json" 2>/dev/null)" in *"muse-fallback:v1"*) got_r="fallback";; *"## Verdict"*) got_r="review";; *) got_r="other";; esac
+assert_eq "post-retry-transient-posts-review" "review" "${got_r}"
+python3 -c "
+import json
+body = '<!-- muse-code-review sha:${rsha} base:bbbbbbbbbb -->\n## Muse code review (advisory)\n\nx'
+print(json.dumps([{'user': {'login': 'github-actions[bot]'}, 'body': body}]))
+" > "${rdir}/landed.json"
+rm -f "${rdir}/count" "${rdir}/posted" "${rdir}/capture.json"
+GH_STUB_COUNT="${rdir}/count" GH_STUB_POSTED="${rdir}/posted" GH_STUB_CAPTURE="${rdir}/capture.json" GH_STUB_HEAD="${rsha}" GH_STUB_BASE="${rbsha}" GH_STUB_FAIL_FIRST="1" GH_STUB_LANDED="${rdir}/landed.json" \
+PATH="${rdir}/bin:${PATH}" \
+GH_TOKEN="fake" GITHUB_REPOSITORY="t/t" PR_NUMBER="1" \
+HEAD_SHA="${rsha}" BASE_SHA="${rbsha}" HEAD_SHA_EVENT="${rsha}" BASE_SHA_EVENT="${rbsha}" \
+MUSE_OUTCOME="success" DIFF_FAILED="false" DIFF_OUTCOME="success" \
+REVIEW_FILE="${rdir}/tmp/review.json" RUN_URL="https://example.invalid/run" \
+RUNNER_TEMP="${rdir}/tmp" SCRIPT_DIR="${SCRIPT_DIR}" \
+  bash "${post_script}" >/dev/null 2>&1
+assert_eq "post-retry-landed-no-double" "1" "$(cat "${rdir}/count" 2>/dev/null || echo missing)"
+rm -rf "${rdir}"
 
 printf '\npass=%d fail=%d%s\n' "${pass}" "${fail}" "${fail_names:+  failed:${fail_names}}"
 [[ "${fail}" == "0" ]]

@@ -228,21 +228,64 @@ redact() {
 # strings at any depth. Deterministic: same input key/output every run.
 # Nested escaping (JSON inside a JSON string) hides the key one level
 # deeper: the parsed value still carries \uXXXX text that a downstream
-# decode revives. So each string is also repeatedly JSON-unescaped
-# (bounded; a value that cannot reparse as a JSON string stays as-is)
-# and replaced ONLY when the decoded form actually contains the key —
-# key-free strings keep their exact original bytes.
+# decode revives. So each backslash-bearing string is also repeatedly
+# JSON-unescaped (bounded) and replaced ONLY when the decoded form
+# actually contains the key — key-free strings keep exact original
+# bytes. Unescaping is a manual codepoint state machine, not a
+# quote-wrap reparse: values containing raw quotes or control chars
+# (common in finding bodies) cannot reparse as bare JSON string
+# content, and a reparse-or-keep fallback would skip decoding exactly
+# the hostile strings. Malformed/truncated escapes pass through
+# literally; any hard failure keeps the original string.
 redact_json_key() {
   local _key="${META_API_KEY:-}"
   [[ -n "${_key}" ]] || return 1
   jq --arg k "${_key}" '
-    def _unesc: try ("\"" + . + "\"" | fromjson) catch .;
+    def _hexval:
+      if . >= 48 and . <= 57 then . - 48
+      elif . >= 97 and . <= 102 then . - 87
+      elif . >= 65 and . <= 70 then . - 55
+      else -1 end;
+    def _unesc1:
+      (explode) as $cs
+      | (reduce $cs[] as $c ({out: [], mode: 0, hex: []};
+          if .mode == 0 then
+            if $c == 92 then .mode = 1 else .out += [$c] end
+          elif .mode == 1 then
+            if $c == 117 then .mode = 2 | .hex = []
+            elif $c == 47 then .out += [47] | .mode = 0
+            elif $c == 92 then .out += [92] | .mode = 0
+            elif $c == 34 then .out += [34] | .mode = 0
+            elif $c == 110 then .out += [10] | .mode = 0
+            elif $c == 114 then .out += [13] | .mode = 0
+            elif $c == 116 then .out += [9] | .mode = 0
+            elif $c == 98 then .out += [8] | .mode = 0
+            elif $c == 102 then .out += [12] | .mode = 0
+            else .out += [92, $c] | .mode = 0 end
+          else
+            .hex += [$c]
+            | if (.hex | length) < 4 then .
+              else
+                (if (.hex | all(_hexval >= 0))
+                 then .out += [(.hex | map(_hexval) | reduce .[] as $d (0; . * 16 + $d))]
+                 else .out += ([92, 117] + .hex) end)
+                | .mode = 0 | .hex = []
+              end
+          end)) as $st
+      | (($st.out
+          + (if $st.mode == 1 then [92]
+             elif $st.mode == 2 then [92, 117] + $st.hex
+             else [] end)) | implode);
+    def _unesc: (. as $s | try _unesc1 catch $s);
     def _deep(n): if n <= 0 then .
       else (_unesc as $u | if $u == . then . else ($u | _deep(n - 1)) end) end;
     walk(if type == "string" then
-      (. as $orig | (_deep(5)) as $dec
-       | if ($dec | contains($k)) then ($dec | split($k) | join("[REDACTED]"))
-         else $orig end)
+      (if contains($k) then (. | split($k) | join("[REDACTED]"))
+       elif contains("\\") then
+         (. as $orig | (_deep(5)) as $dec
+          | if ($dec | contains($k)) then ($dec | split($k) | join("[REDACTED]"))
+            else $orig end)
+       else . end)
     else . end)'
 }
 

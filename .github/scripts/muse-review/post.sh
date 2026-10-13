@@ -378,29 +378,36 @@ if [[ "${is_fallback}" == "false" ]]; then
 fi
 
 # Advisory: a failed POST warns, never fails. The endpoint is
-# all-or-nothing, so retry once summary-only rather than lose the review.
+# all-or-nothing, so retry once (summary-only for inline payloads, the
+# identical payload for comment-only ones) rather than lose the review.
 post_resp="${RUNNER_TEMP}/muse-post-resp.txt"
 if ! gh api --method POST \
   "repos/${GITHUB_REPOSITORY}/pulls/${PR_NUMBER}/reviews" \
   --input "${payload_file}" > "${post_resp}" 2>&1; then
   echo "::warning::Review POST failed: $(head -c 300 "${post_resp}" 2>/dev/null || true)"
-  if [[ "${inline_payload}" != "[]" ]]; then
-    # The first POST may have reached GitHub while its response was lost
-    # (timeout, reset): review creation has no idempotency key, so a blind
-    # retry would double-post. A landed attempt carries our marker — check
-    # for it first, and skip the retry when the lookup itself fails rather
-    # than risk a duplicate.
-    marker_check="${RUNNER_TEMP}/muse-retry-check.json"
-    if gh api "repos/${GITHUB_REPOSITORY}/pulls/${PR_NUMBER}/reviews" --paginate \
-        > "${marker_check}" 2>/dev/null; then
-      if (( $(jq -s --arg marker "${marker}" -f "${SCRIPT_DIR}/dedupe.jq" "${marker_check}" 2>/dev/null || echo 1) > 0 )); then
-        echo "::notice::First review POST landed despite the error; skipping retry."
-        exit 0
-      fi
+  # Shared ambiguity guard for every payload shape: the first POST may
+  # have reached GitHub while its response was lost (timeout, reset), and
+  # review creation has no idempotency key, so a blind retry would
+  # double-post. A landed attempt carries our marker — check for it
+  # first (fallback-aware counter for fallback posts), and skip the retry
+  # when the lookup itself fails rather than risk a duplicate.
+  marker_check="${RUNNER_TEMP}/muse-retry-check.json"
+  if gh api "repos/${GITHUB_REPOSITORY}/pulls/${PR_NUMBER}/reviews" --paginate \
+      > "${marker_check}" 2>/dev/null; then
+    if [[ "${is_fallback}" == "true" ]]; then
+      landed_count="$(jq -s --arg marker "${marker}" -f "${SCRIPT_DIR}/fallback.jq" "${marker_check}" 2>/dev/null || echo 1)"
     else
-      echo "::warning::Retry-dedupe lookup failed; skipping retry to avoid a double-post."
+      landed_count="$(jq -s --arg marker "${marker}" -f "${SCRIPT_DIR}/dedupe.jq" "${marker_check}" 2>/dev/null || echo 1)"
+    fi
+    if (( landed_count > 0 )); then
+      echo "::notice::First review POST landed despite the error; skipping retry."
       exit 0
     fi
+  else
+    echo "::warning::Retry-dedupe lookup failed; skipping retry to avoid a double-post."
+    exit 0
+  fi
+  if [[ "${inline_payload}" != "[]" ]]; then
     echo "::warning::Retrying as summary-only."
     # Reuse the rejected payload's already-sanitized bodies (paths
     # re-sanitized here, bodies capped with markers), minus dangling
@@ -464,6 +471,16 @@ Re-run the workflow, or inspect the logs."
       echo "::warning::Failed to post Muse review; see previous logs."
     fi
   else
-    echo "::warning::Failed to post Muse review; see previous logs."
+    # Comment-only payload (clean review, line-0-only findings, any
+    # fallback): retry the identical payload once — the marker check
+    # above already proved the first attempt did not land, so this
+    # cannot double-post; without it a transient failure silently loses
+    # the review (or the promised fallback) while the job stays green.
+    echo "::warning::Retrying comment-only post once."
+    if ! gh api --method POST \
+      "repos/${GITHUB_REPOSITORY}/pulls/${PR_NUMBER}/reviews" \
+      --input "${payload_file}" >/dev/null 2>&1; then
+      echo "::warning::Failed to post Muse review; see previous logs."
+    fi
   fi
 fi

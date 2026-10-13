@@ -23,6 +23,7 @@ guidance_bytes=0
 guidance_budget=96000
 guidance_cap=32000
 guidance_capped=false
+guidance_truncated=false
 emit_guidance() {
   candidate="$1"
   phase="$2"
@@ -64,6 +65,7 @@ emit_guidance() {
     # still exceed the aggregate budget and starve later guidance.
     content="$(bound_untrusted "${content}" "${guidance_cap}")"
     trunc_note=" [TRUNCATED at ${guidance_cap} bytes]"
+    guidance_truncated=true
   fi
   # Candidate paths from changed files are submitter-controlled: flatten
   # newlines for display and omit the path from the block attribute (a quote
@@ -186,6 +188,15 @@ done
 for candidate in "${xbase_list[@]+"${xbase_list[@]}"}"; do
   emit_guidance "${candidate}" xbase
 done
+if [[ "${guidance_capped}" == "true" || "${guidance_truncated}" == "true" ]]; then
+  # Same fail-closed rule as the candidate cap: a budget-dropped or
+  # byte-truncated guidance file means rules the reviewer never sees
+  # (for base-side files, rules it cannot recover from the head tree).
+  # Exiting nonzero fails the Collect step; Post renders the
+  # evidence-collection fallback instead of a successful marker.
+  echo "::error::Guidance collection incomplete (budget exhausted: ${guidance_capped}, file truncated: ${guidance_truncated}); failing closed to the fallback review."
+  exit 1
+fi
 if [[ ! -s "${guidance_file}" ]]; then
   printf '(No AGENTS.md, CLAUDE.md, CONTRIBUTING.md, or copilot instructions found in this repo.)\n' > "${guidance_file}"
 fi

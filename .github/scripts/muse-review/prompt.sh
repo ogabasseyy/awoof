@@ -110,7 +110,7 @@ CONTRACT
   # past the diff cap would be reviewed blind yet posted as success.
   # if/else capture: a bare `x="$(...)"` under set -e exits the shell on
   # the intentional return-2 (>50 links) before `$?` is read, so the
-  # PARTIAL branch below would never run. Base ref from the fetched base
+  # fail-closed branch below would never run. Base ref from the fetched base
   # commit (collect.sh): lets the lookup also capture targets for links the
   # PR deletes or replaces, which fail the head -L test.
   base_ref_for_links=""
@@ -124,10 +124,16 @@ CONTRACT
   fi
   symlink_note=""
   if (( symlink_rc == 2 )); then
-    symlink_note=" [PARTIAL: over the 50-link cap — first 50 shown]"
+    # Fail closed like the other evidence caps: run.sh sweeps every
+    # workspace symlink before the agent starts, so targets past the cap
+    # are uninspectable anywhere — a PARTIAL note would still let a
+    # successful marker publish over unseen changed targets. Exiting
+    # nonzero fails the Collect step; Post renders the fallback.
+    echo "::error::Changed-symlink inventory exceeds the 50-link evidence cap; failing closed to the fallback review."
+    exit 1
   elif (( symlink_rc != 0 )); then
-    symlink_lines=""
-    symlink_note=" [evidence unavailable: changed-file inventory unreadable]"
+    echo "::error::Changed-file inventory unreadable for symlink evidence; failing closed to the fallback review."
+    exit 1
   fi
   if [[ -z "${base_ref_for_links}" ]]; then
     symlink_note="${symlink_note} [base-side targets unavailable: base commit not fetched]"
@@ -138,8 +144,10 @@ CONTRACT
     printf '%s\n' "${symlink_lines}" | neutralize_tags > "${symlink_tmp}" 2>/dev/null || true
   fi
   if (( $(wc -c < "${symlink_tmp}") > 8000 )); then
-    cap_file "${symlink_tmp}" 8000 || true
-    symlink_note="${symlink_note} [truncated at 8000 bytes — PARTIAL]"
+    # Same fail-closed rule: a byte-cut target block hides changed
+    # targets the sweep makes otherwise uninspectable.
+    echo "::error::Changed-symlink evidence exceeds the 8000-byte prompt cap; failing closed to the fallback review."
+    exit 1
   fi
   printf '\n## Changed symlinks (targets recorded before the pre-run sweep removes workspace links; each target cut at 500 bytes)%s\n\n<symlink_targets>\n' "${symlink_note}"
   if [[ "${symlink_rc}" == "0" && ! -s "${symlink_tmp}" ]]; then

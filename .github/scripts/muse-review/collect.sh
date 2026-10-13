@@ -45,6 +45,23 @@ if [[ -z "${default_branch}" ]]; then
   default_branch="$(gh api "repos/${GITHUB_REPOSITORY}" --jq '.default_branch' 2>/dev/null || true)"
 fi
 
+# Live eligibility recheck (the workflow job `if` is the first gate): the
+# job gate evaluates the EVENT payload, so a manual rerun of an attempt
+# created while the PR targeted the default branch still passes after the
+# PR is retargeted to a contributor branch — retargeting need not move the
+# head SHA, so the staleness check above misses it, and guard.sh would
+# compare against this newly captured custom base. Re-derive eligibility
+# from live metadata: only default-base PRs are reviewed (documented
+# scope), and an unknown default branch fails closed. Silent skip, like
+# the other ineligible states. (No ref name in the log line: branch names
+# are submitter-controlled.)
+if [[ -z "${default_branch}" || "${base_ref}" != "${default_branch}" ]]; then
+  echo "should_review=false" >> "${GITHUB_OUTPUT}"
+  echo "MUSE_STOP=1" > "${RUNNER_TEMP}/muse-vars.env"
+  echo "::notice::PR base is not the repository default branch (live metadata); skipping Muse review."
+  exit 0
+fi
+
 # Best-effort base fetch up front: the file list, diff ranges, and trusted
 # guidance all derive from it. Fetches the captured base SHA (not the live
 # branch ref, which could advance mid-run). Works anonymously on public
