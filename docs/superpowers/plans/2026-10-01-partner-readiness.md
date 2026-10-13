@@ -28,7 +28,7 @@
 
 ## Task 1: Merchant payment boundary and API contract
 
-**Files:** backend configuration, `services/payment/paystack.service.ts`, `services/verification/merchant-benefit.service.ts`, controller/route OpenAPI, migration 085 if needed, relevant tests.
+**Files:** backend configuration, `services/payment/paystack.service.ts`, `services/verification/merchant-benefit.service.ts`, controller/route OpenAPI, migration 086 if needed, relevant tests.
 
 **Interfaces:** `paystack_merchant`; server-only merchant secret mapping; metadata `awoofVendorId`, `awoofProductId`, `awoofBenefitAuthorizationId`; existing `paystack` behavior preserved.
 

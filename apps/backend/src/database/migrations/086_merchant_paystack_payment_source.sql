@@ -1,7 +1,7 @@
 -- Merchant-account references are vendor scoped. Existing Awoof Paystack
 -- global uniqueness and legacy reference constraints remain unchanged.
 -- Added NOT VALID: the runner wraps each file in one transaction, so the
--- lower-lock VALIDATE CONSTRAINT steps live in the follow-up migration 086.
+-- lower-lock VALIDATE CONSTRAINT steps live in the follow-up migration 087.
 ALTER TABLE transactions DROP CONSTRAINT transactions_payment_source_check;
 ALTER TABLE transactions ADD CONSTRAINT transactions_payment_source_check
     CHECK (payment_source IN ('awoof', 'vendor_paystack', 'vendor_other', 'vendor_merchant_paystack')) NOT VALID;
