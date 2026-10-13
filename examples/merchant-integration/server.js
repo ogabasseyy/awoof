@@ -148,7 +148,6 @@ export function createMerchant({ origin, apiOrigin, webOrigin, privateKey, produ
         await once(row.id, async () => {
           const current = store.get(row.id);
           if (!current.receipt || !['authorized', 'payment_initializing', 'payment_initialized', 'payment_initialization_unknown'].includes(current.state)) throw fail('A current claimed checkout is required');
-          if (!(Date.parse(current.receipt.validUntil) > Date.now()) || !(benefitDeadline(current) > Date.now())) throw fail('Benefit authorization expired; do not start payment');
           if (current.paymentUrl) return;
           if (!email || email.length > 254 || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) throw fail('Payment email required', 400);
           const emailHash = createHash('sha256').update(email).digest('hex');
@@ -160,6 +159,11 @@ export function createMerchant({ origin, apiOrigin, webOrigin, privateKey, produ
           if (current.initializedReference && !current.paymentUrl) {
             await reconcileInitialization(current);
           }
+          // Expiry gates only a FRESH initialization: a held reference is
+          // reconciled above first, so an outage outlasting the benefit
+          // window still determines the upstream outcome instead of
+          // stranding the reference unexamined.
+          if (!(Date.parse(current.receipt.validUntil) > Date.now()) || !(benefitDeadline(current) > Date.now())) throw fail('Benefit authorization expired; do not start payment');
           current.initializedReference ??= `awoof-${randomUUID()}`; current.state = 'payment_initializing'; store.put(current.id, current);
           let response;
           try {
@@ -188,7 +192,11 @@ export function createMerchant({ origin, apiOrigin, webOrigin, privateKey, produ
             // reference and reconcile on retry.
             const ambiguous = /duplicate|already|in.use|used|exists/i.test(detail)
               || (!response.ok && (response.status >= 500 || response.status === 408 || response.status === 429))
-              || (response.ok && initialized?.status === true);
+              || (response.ok && initialized?.status === true)
+              // A malformed/empty 2xx body may hide a created transaction:
+              // hold the reference for reconciliation, never release it as
+              // a correctable shopper-input rejection.
+              || (response.ok && initialized === undefined);
             if (ambiguous) {
               current.state = 'payment_initialization_unknown'; store.put(current.id, current);
               throw fail('Test payment initialization outcome unknown; retry to reconcile the held reference', 502);

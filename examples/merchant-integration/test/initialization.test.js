@@ -209,3 +209,34 @@ test('trailing-slash merchant origin is normalized for Origin and Host checks', 
     assert.equal((await fetch(`http://127.0.0.1:${port}/checkout`, { method: 'POST', redirect: 'manual', headers: { Origin: canonical } })).status, 303);
   } finally { await new Promise(r => app.server.close(r)); app.store.close(); }
 });
+test('malformed success bodies hold the reference and expired benefits reconcile before refusing fresh initialization', async () => {
+  const port = await freePort(); const origin = `https://127.0.0.1:${port}`; let checkoutId; const references = []; let verifies = 0; let malformed = true;
+  const app = createMerchant({ origin, apiOrigin: 'https://api.test', webOrigin: 'https://awoof.test', privateKey: 'awoof_test', productId: 'product', vendorId: 'vendor', amountKobo: 80000, paymentGateway: 'paystack_merchant', paystackSecret: 'sk_test_fixture', dbPath: ':memory:', fetchImpl: async (url, init) => {
+    if (url.endsWith('/transaction/initialize')) { const reference = JSON.parse(init.body).reference; references.push(reference); if (malformed) return new Response('ok', { status: 200 }); return Response.json({ status: true, data: { authorization_url: 'https://checkout.paystack.com/after-expiry', reference } }); }
+    if (url.includes('/transaction/verify/')) { verifies++; return Response.json({ status: false, message: 'Transaction reference not found' }, { status: 404 }); }
+    const body = JSON.parse(init.body);
+    if (url.endsWith('/claim-sessions')) { checkoutId = body.merchantCheckoutId; return Response.json({ success: true, data: { claimSessionId: 'session' } }); }
+    if (url.endsWith('/exchange')) return Response.json({ success: true, data: { eligible: true, assuranceMethod: 'enrollment', campaignId: checkoutId, benefitAuthorizationId: 'benefit', benefitValidUntil: new Date(Date.now() + 600000).toISOString(), validUntil: new Date(Date.now() + 600000).toISOString() } });
+    throw new Error(`unexpected backend call ${url}`);
+  } });
+  await new Promise(r => app.server.listen(port, '127.0.0.1', r));
+  const request = (path, init = {}) => fetch(`http://127.0.0.1:${port}${path}`, { redirect: 'manual', ...init });
+  try {
+    const start = await request('/checkout', { method: 'POST', headers: { Origin: origin } }); const cookie = start.headers.get('set-cookie').split(';')[0];
+    await request('/awoof/student-claim?assertion=' + 'a'.repeat(43), { headers: { Cookie: cookie } });
+    const headers = { Origin: origin, Cookie: cookie }; const form = 'email=checkout%40example.test';
+    // Malformed 2xx: outcome unknown, reference held (not released as a 400).
+    assert.equal((await request('/payments/paystack-initialize', { method: 'POST', headers, body: form })).status, 502);
+    assert.equal(app.store.get(checkoutId).state, 'payment_initialization_unknown');
+    assert.ok(app.store.get(checkoutId).initializedReference);
+    // Benefit lapses during the outage: retry still reconciles the held
+    // reference first, then refuses any fresh initialization.
+    const held = app.store.get(checkoutId); held.receipt.benefitValidUntil = new Date(Date.now() - 1000).toISOString(); app.store.put(checkoutId, held);
+    malformed = false;
+    const refused = await request('/payments/paystack-initialize', { method: 'POST', headers, body: form });
+    assert.equal(refused.status, 409);
+    assert.match(await refused.text(), /Benefit authorization expired/);
+    assert.equal(verifies, 1);
+    assert.equal(references.length, 1);
+  } finally { await new Promise(r => app.server.close(r)); app.store.close(); }
+});
