@@ -170,7 +170,7 @@ test('revoked merchant credentials hold the reference with a retryable configura
   const port = await freePort(); const origin = `https://127.0.0.1:${port}`; let checkoutId; const references = []; let verifies = 0; let credentialsFixed = false;
   const app = createMerchant({ origin, apiOrigin: 'https://api.test', webOrigin: 'https://awoof.test', privateKey: 'awoof_test', productId: 'product', vendorId: 'vendor', amountKobo: 80000, paymentGateway: 'paystack_merchant', paystackSecret: 'sk_test_fixture', dbPath: ':memory:', fetchImpl: async (url, init) => {
     if (url.endsWith('/transaction/initialize')) { const reference = JSON.parse(init.body).reference; references.push(reference); if (!credentialsFixed) return Response.json({ status: false, message: 'Invalid key' }, { status: 401 }); return Response.json({ status: true, data: { authorization_url: 'https://checkout.paystack.com/recovered-payment', reference } }); }
-    if (url.includes('/transaction/verify/')) { verifies++; return Response.json({ status: false, message: 'Transaction reference not found' }, { status: 404 }); }
+    if (url.includes('/transaction/verify/')) { verifies++; if (!credentialsFixed) return Response.json({ status: false, message: 'Invalid key' }, { status: 401 }); return Response.json({ status: false, message: 'Transaction reference not found' }, { status: 404 }); }
     const body = JSON.parse(init.body);
     if (url.endsWith('/claim-sessions')) { checkoutId = body.merchantCheckoutId; return Response.json({ success: true, data: { claimSessionId: 'session' } }); }
     if (url.endsWith('/exchange')) return Response.json({ success: true, data: { eligible: true, assuranceMethod: 'enrollment', campaignId: checkoutId, benefitAuthorizationId: 'benefit', validUntil: new Date(Date.now() + 600000).toISOString() } });
@@ -188,11 +188,17 @@ test('revoked merchant credentials hold the reference with a retryable configura
     assert.equal(app.store.get(checkoutId).state, 'payment_initialization_unknown');
     assert.ok(app.store.get(checkoutId).initializedReference);
     assert.equal((await request('/payments/paystack-initialize', { method: 'POST', headers, body: 'email=other%40example.test' })).status, 409);
+    // Retrying while credentials are still broken keeps the 503 diagnosis
+    // through reconciliation instead of degrading to a generic 502.
+    const stillBroken = await request('/payments/paystack-initialize', { method: 'POST', headers, body: form });
+    assert.equal(stillBroken.status, 503);
+    assert.match(await stillBroken.text(), /credentials rejected/);
+    assert.equal(app.store.get(checkoutId).state, 'payment_initialization_unknown');
     credentialsFixed = true;
     const retry = await request('/payments/paystack-initialize', { method: 'POST', headers, body: form });
     assert.equal(retry.status, 303); assert.equal(retry.headers.get('location'), 'https://checkout.paystack.com/recovered-payment');
     assert.deepEqual(references, [references[0], references[0]]);
-    assert.equal(verifies, 1); assert.equal(app.store.get(checkoutId).state, 'payment_initialized');
+    assert.equal(verifies, 2); assert.equal(app.store.get(checkoutId).state, 'payment_initialized');
   } finally { await new Promise(r => app.server.close(r)); app.store.close(); }
 });
 test('trailing-slash merchant origin is normalized for Origin and Host checks', async () => {

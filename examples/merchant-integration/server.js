@@ -66,6 +66,12 @@ export function createMerchant({ origin, apiOrigin, webOrigin, privateKey, produ
     } catch (error) {
       throw fail('Test payment initialization outcome still unknown; retry later', 502);
     }
+    // A revoked/rotated secret fails reconciliation the same way it fails
+    // initialization: a retryable configuration outage (503) with the held
+    // reference preserved, never a generic unknown outcome.
+    if (response.status === 401 || response.status === 403) {
+      throw fail('Merchant Paystack test credentials rejected; fix the server secret and retry to reconcile the held reference', 503);
+    }
     if (response.status === 404 || (response.status === 400 && /not.?found/i.test(body?.message ?? ''))) return;
     const payment = body?.data;
     if (!response.ok || body?.status !== true || payment?.reference !== current.initializedReference) throw fail('Test payment initialization outcome still unknown; retry later', 502);
