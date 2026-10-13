@@ -160,7 +160,12 @@ changed_symlinks() {
       _t=""
       _suffix=" (base-side; deleted or replaced in head)"
       if [[ -n "${_base_ref}" && -n "${_repo}" ]]; then
-        _entry="$(git -C "${_repo}" ls-tree "${_base_ref}" -- "${_f}" 2>/dev/null || true)"
+        # --literal-pathspecs: _f is an untrusted PR filename. Read as a
+        # pathspec, magic names (e.g. a file named ':(glob)*') make
+        # ls-tree error out; swallowed by || true, the base-side target
+        # would be silently omitted and the review would post success
+        # over unseen evidence. Literal mode matches the name as-is.
+        _entry="$(git --literal-pathspecs -C "${_repo}" ls-tree "${_base_ref}" -- "${_f}" 2>/dev/null || true)"
         if [[ "${_entry}" == 120000[[:space:]]* ]]; then
           _t="$(git -C "${_repo}" show "${_base_ref}:${_f}" 2>/dev/null || true)"
         fi

@@ -175,14 +175,18 @@ printf 'x' > "${basedir}/repo/keep.txt"
 ln -s /etc/target "${basedir}/repo/gone.txt"
 ln -s /etc/old "${basedir}/repo/replaced.txt"
 ln -s /etc/still "${basedir}/repo/still.txt"
+# Pathspec-magic filename: without --literal-pathspecs the base-side
+# ls-tree lookup errors on ':(glob)*' and the target is silently dropped.
+ln -s /etc/magic "${basedir}/repo/:(glob)*"
 git -C "${basedir}/repo" add -A 2>/dev/null
 git -C "${basedir}/repo" -c user.email=t@t -c user.name=t commit -qm base 2>/dev/null
 base_sha="$(git -C "${basedir}/repo" rev-parse HEAD 2>/dev/null)"
 rm "${basedir}/repo/gone.txt"
 rm "${basedir}/repo/replaced.txt" && printf 'now a file' > "${basedir}/repo/replaced.txt"
-printf '[{"filename":"gone.txt"},{"filename":"replaced.txt"},{"filename":"still.txt"},{"filename":"keep.txt"}]' > "${basedir}/files.json"
+rm "${basedir}/repo/:(glob)*"
+printf '[{"filename":"gone.txt"},{"filename":"replaced.txt"},{"filename":":(glob)*"},{"filename":"still.txt"},{"filename":"keep.txt"}]' > "${basedir}/files.json"
 got="$(changed_symlinks "${basedir}/files.json" "${basedir}/repo" 50 "${base_sha}" "${basedir}/repo")"
-assert_eq "symlinks-base-side" "$(printf 'gone.txt -> /etc/target (base-side; deleted or replaced in head)\nreplaced.txt -> /etc/old (base-side; deleted or replaced in head)\nstill.txt -> /etc/still')" "${got}"
+assert_eq "symlinks-base-side" "$(printf 'gone.txt -> /etc/target (base-side; deleted or replaced in head)\nreplaced.txt -> /etc/old (base-side; deleted or replaced in head)\n:(glob)* -> /etc/magic (base-side; deleted or replaced in head)\nstill.txt -> /etc/still')" "${got}"
 got="$(changed_symlinks "${basedir}/files.json" "${basedir}/repo" 50 "" "")"
 assert_eq "symlinks-no-base-head-only" "still.txt -> /etc/still" "${got}"
 got="$(changed_symlinks "${basedir}/files.json" "${basedir}/repo" 50 "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef" "${basedir}/repo" 2>/dev/null)"
