@@ -292,6 +292,11 @@ if (( $(printf '%s' "${review}" | wc -c) > body_budget )); then
   fi
   if (( $(printf '%s' "${review}" | wc -c) > body_budget )); then
     is_fallback=true
+    # The fallback body claims no review is posted as fact: drop the
+    # already-built inline threads too, or the payload below would still
+    # publish them as findings (and the fallback tag would let a rerun
+    # publish them again).
+    inline_payload='[]'
     review="## Verdict
 
 Muse returned a review that exceeds the ${body_budget}-byte post budget

@@ -226,22 +226,40 @@ redact() {
 # via jq --arg (never interpolated into the program); split/join replaces
 # literally (gsub would read key bytes as regex); walk covers nested
 # strings at any depth. Deterministic: same input key/output every run.
+# Nested escaping (JSON inside a JSON string) hides the key one level
+# deeper: the parsed value still carries \uXXXX text that a downstream
+# decode revives. So each string is also repeatedly JSON-unescaped
+# (bounded; a value that cannot reparse as a JSON string stays as-is)
+# and replaced ONLY when the decoded form actually contains the key —
+# key-free strings keep their exact original bytes.
 redact_json_key() {
   local _key="${META_API_KEY:-}"
   [[ -n "${_key}" ]] || return 1
-  jq --arg k "${_key}" 'walk(if type == "string" then (. | split($k) | join("[REDACTED]")) else . end)'
+  jq --arg k "${_key}" '
+    def _unesc: try ("\"" + . + "\"" | fromjson) catch .;
+    def _deep(n): if n <= 0 then .
+      else (_unesc as $u | if $u == . then . else ($u | _deep(n - 1)) end) end;
+    walk(if type == "string" then
+      (. as $orig | (_deep(5)) as $dec
+       | if ($dec | contains($k)) then ($dec | split($k) | join("[REDACTED]"))
+         else $orig end)
+    else . end)'
 }
 
 # Decode JSON escape sequences in possibly-mixed text (stdin to stdout).
 # redact_json_key needs the WHOLE input to be one valid JSON value, so prose
 # around a JSON fragment (e.g. `error: {"key":"live\/key\u003dabc"}`) fails
 # the parse and byte redaction then misses the reversible escaped key. Run
-# this before redact() on the non-JSON path so escaped bytes match too. The
-# lookbehind keeps an escaped backslash (`\\u003d`) intact instead of
-# decoding what JSON itself would leave literal. Aggressive by design: any
-# over-decoding only over-redacts, never leaks.
+# this before redact() on the non-JSON path so escaped bytes match too.
+# Bounded fixed point, NOT single-pass: JSON nested inside another JSON
+# string (or quoted in prose) doubly escapes the key (`\\u002f`), and one
+# decode level — or a lookbehind sparing escaped backslashes — leaves it
+# reversible in the log/post. Each pass collapses \\ first (one nesting
+# level), then decodes \uXXXX and \/; every changing pass strictly
+# shortens the text, so the loop terminates (capped anyway). Aggressive
+# by design: any over-decoding only over-redacts, never leaks.
 decode_json_escapes() {
-  perl -pe 's/(?<!\\)\\u([0-9a-fA-F]{4})/chr(hex($1))/ge; s/(?<!\\)\\\//\//g'
+  perl -pe '$c = 0; while ($c++ < 10) { $p = $_; s/\\\\/\\/g; s/\\u([0-9a-fA-F]{4})/chr(hex($1))/ge; s/\\\//\//g; last if $_ eq $p; }'
 }
 
 # Neutralize Actions workflow commands in untrusted log text (stdin to

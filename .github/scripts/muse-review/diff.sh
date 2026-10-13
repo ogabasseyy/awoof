@@ -15,7 +15,12 @@ if [[ "${MUSE_STOP:-1}" == "1" ]]; then exit 0; fi
 
 # Unified diff, truncated to a prompt budget. Collection failures are routed
 # to the explicit fallback (never reviewed blind). Prefer the complete
-# local merge-base diff. The compare diff endpoint caps file diffs at 300
+# local merge-base diff. --text on that diff: a base/head .gitattributes
+# -diff rule would otherwise turn source hunks into "Binary files differ"
+# placeholders, hiding removed lines from the supplement below while
+# diff_failed stays false. True binaries emit byte noise instead — bounded
+# by the caps below and UTF-8-filtered at prompt assembly.
+# The compare diff endpoint caps file diffs at 300
 # WITHOUT flagging it, so without local history the complete paginated
 # inventory decides: over 300 files, hunks would be silently missing and
 # the run must fall back instead of reviewing blind.
@@ -23,7 +28,7 @@ diff_file="${RUNNER_TEMP}/muse.diff"
 if [[ "${MUSE_FILES_FAILED}" == "true" ]]; then
   diff_failed=true
 elif [[ "${MUSE_FILES_SOURCE:-}" == "local" && -n "${MUSE_MERGE_BASE:-}" ]] \
-  && git -c core.quotePath=false diff "${MUSE_MERGE_BASE}" "${HEAD_SHA_EVENT}" \
+  && git -c core.quotePath=false diff --text "${MUSE_MERGE_BASE}" "${HEAD_SHA_EVENT}" \
     > "${diff_file}" 2>"${RUNNER_TEMP}/muse-ghdiff.err"; then
   diff_failed=false
 elif (( ${MUSE_TOTAL_FILES:-0} > 300 )); then

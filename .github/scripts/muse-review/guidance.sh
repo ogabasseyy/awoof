@@ -108,7 +108,8 @@ done
 # Ancestor walk with zero subprocesses (bash prefix removal, not dirname)
 # and a candidate cap: giant PRs could otherwise start tens of thousands of
 # processes before the byte budget matters. Root candidates above are always
-# included; the cap only trims deep scoped discovery.
+# included; hitting the cap fails closed (below) instead of trimming
+# silently, since later paths' scoped guidance would never be discovered.
 candidate_cap=500
 guidance_cap_hit=false
 while IFS= read -r -d '' changed; do
@@ -131,6 +132,16 @@ while IFS= read -r -d '' changed; do
     break
   fi
 done < <(jq -j '[.[] | .filename, (.previous_filename // empty)] | map(select(length > 0))[] + "\u0000"' "${RUNNER_TEMP}/muse-files.json" 2>/dev/null)
+if [[ "${guidance_cap_hit}" == "true" ]]; then
+  # Fail closed like every other evidence cap (inventory, manifest, diff):
+  # later changed paths never contributed scoped candidates, so a
+  # governing AGENTS.md/CLAUDE.md may never reach the prompt. Posting a
+  # successful marker would claim a complete review over incomplete
+  # guidance; exiting nonzero fails the Collect step and Post renders the
+  # evidence-collection fallback instead.
+  echo "::error::Guidance candidate cap (${candidate_cap}) reached; scoped guidance is incomplete, failing closed to the fallback review."
+  exit 1
+fi
 # Three phases: trusted base guidance first, then head versions, then
 # custom-base versions — so PR-authored content can never exhaust the byte
 # budget before applicable trusted rules are collected, and operative head
@@ -175,13 +186,6 @@ done
 for candidate in "${xbase_list[@]+"${xbase_list[@]}"}"; do
   emit_guidance "${candidate}" xbase
 done
-if [[ "${guidance_cap_hit}" == "true" ]]; then
-  # The log notice alone is invisible to the reviewer: record the partial
-  # scope in the prompt input itself so the verdict cannot silently claim
-  # full coverage when scoped files were never collected.
-  printf '\n(Partial scope: guidance discovery hit the %s-candidate cap; scoped files for later changed paths were omitted.)\n' \
-    "${candidate_cap}" >> "${guidance_file}"
-fi
 if [[ ! -s "${guidance_file}" ]]; then
   printf '(No AGENTS.md, CLAUDE.md, CONTRIBUTING.md, or copilot instructions found in this repo.)\n' > "${guidance_file}"
 fi

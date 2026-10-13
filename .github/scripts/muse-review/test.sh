@@ -236,6 +236,13 @@ got2="$(META_API_KEY="${jkey}" redact_json_key < "${jfix}")"
 assert_eq "redactjson-deterministic" "${got1}" "${got2}"
 case "${got1}" in *"${jkey}"*) got_left="yes";; *) got_left="no";; esac
 assert_eq "redactjson-no-key-bytes" "no" "${got_left}"
+cat > "${jfix}" <<'EOF'
+{"a":{"b":["x fake.live\\u002fkey+abc\\u003d123 y"]},"v":"keep \\u0041 literal"}
+EOF
+got="$(META_API_KEY="${jkey}" redact_json_key < "${jfix}" | jq -r '.a.b[0]')"
+assert_eq "redactjson-doubly-escaped" "x [REDACTED] y" "${got}"
+got="$(META_API_KEY="${jkey}" redact_json_key < "${jfix}" | jq -r '.v')"
+assert_eq "redactjson-keyfree-escapes-kept" 'keep \u0041 literal' "${got}"
 if printf 'not json' | META_API_KEY="${jkey}" redact_json_key >/dev/null 2>&1; then got_rc="0"; else got_rc="nonzero"; fi
 assert_eq "redactjson-nonjson-rc" "nonzero" "${got_rc}"
 if printf '{}' | META_API_KEY='' redact_json_key >/dev/null 2>&1; then got_rc="0"; else got_rc=$?; fi
@@ -255,8 +262,17 @@ got="$(META_API_KEY="${mixkey}" redact "$(decode_json_escapes < "${mixfix}")")"
 assert_eq "decode-mixed-redacted" 'error: {"key":"[REDACTED]"} tail' "${got}"
 case "${got}" in *"fake.live"*) got_left="yes";; *) got_left="no";; esac
 assert_eq "decode-mixed-no-key-fragment" "no" "${got_left}"
+# Doubly escaped sequences decode too (bounded fixed point): JSON nested
+# in another JSON string writes \\u0041 for "A", and sparing escaped
+# backslashes would leave a doubly escaped live key reversible in the
+# log / posted body after redaction.
 got="$(printf '%s' 'keep \\u0041 literal, \/ slash' | decode_json_escapes)"
-assert_eq "decode-escaped-backslash-kept" 'keep \\u0041 literal, / slash' "${got}"
+assert_eq "decode-doubly-escaped" 'keep A literal, / slash' "${got}"
+printf '%s' 'error: {"key":"fake.live\\u002fkey+abc\\u003d123"} tail' > "${mixfix}"
+got="$(META_API_KEY="${mixkey}" redact "$(decode_json_escapes < "${mixfix}")")"
+assert_eq "decode-double-mixed-redacted" 'error: {"key":"[REDACTED]"} tail' "${got}"
+case "${got}" in *"fake.live"*) got_left="yes";; *) got_left="no";; esac
+assert_eq "decode-double-no-key-fragment" "no" "${got_left}"
 rm -f "${mixfix}"
 
 # --- neutralize_workflow_commands (run.sh stderr-tail P2) ---
@@ -439,6 +455,112 @@ if [[ "${MUSE_REVIEW_PROTOCOL:-}" =~ ^[0-9]+$ ]]; then got_proto="yes"; else got
 assert_eq "protocol-declared" "yes" "${got_proto}"
 yaml_proto="$(sed -n 's/^[[:space:]]*expected_protocol=\([0-9][0-9]*\)[[:space:]]*$/\1/p' "${SCRIPT_DIR}/../../workflows/muse-code-review.yml" 2>/dev/null || true)"
 assert_eq "protocol-yaml-agrees" "${MUSE_REVIEW_PROTOCOL:-<unset>}" "${yaml_proto:-<missing>}"
+
+# --- guidance.sh candidate cap fails closed (script level) ---
+# Discovery past the 500-candidate cap must not post success over partial
+# guidance: the phase exits nonzero so Post renders the fallback.
+gdir="$(mktemp -d)"
+mkdir -p "${gdir}/tmp" "${gdir}/ws"
+printf 'root rules\n' > "${gdir}/ws/AGENTS.md"
+{
+  printf 'MUSE_STOP=0\n'
+  printf 'MUSE_BASE_REF=main\n'
+  printf 'MUSE_DEFAULT_BRANCH=main\n'
+  printf 'MUSE_BASE_AVAILABLE=false\n'
+  printf 'MUSE_BASE_SHA_FULL=%s\n' "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+} > "${gdir}/tmp/muse-vars.env"
+printf '[{"filename":"a.ts"}]' > "${gdir}/tmp/muse-files.json"
+guidance_script="${SCRIPT_DIR}/guidance.sh"
+if (cd "${gdir}/ws" && RUNNER_TEMP="${gdir}/tmp" SCRIPT_DIR="${SCRIPT_DIR}" bash "${guidance_script}") >/dev/null 2>&1; then got_rc="0"; else got_rc="nonzero"; fi
+assert_eq "guidance-small-ok" "0" "${got_rc}"
+case "$(cat "${gdir}/tmp/muse-guidance.md" 2>/dev/null)" in *"root rules"*) got_g="yes";; *) got_g="no";; esac
+assert_eq "guidance-small-emits-root" "yes" "${got_g}"
+python3 -c "import json; print(json.dumps([{'filename': 'd%03d/f.ts' % i} for i in range(300)]))" > "${gdir}/tmp/muse-files.json"
+if (cd "${gdir}/ws" && RUNNER_TEMP="${gdir}/tmp" SCRIPT_DIR="${SCRIPT_DIR}" bash "${guidance_script}") >/dev/null 2>&1; then got_rc="0"; else got_rc="nonzero"; fi
+assert_eq "guidance-cap-fails-closed" "nonzero" "${got_rc}"
+rm -rf "${gdir}"
+
+# --- diff.sh --text vs .gitattributes -diff suppression (script level) ---
+# A -diff rule would otherwise emit a "Binary files differ" placeholder:
+# the removed-lines supplement loses the deleted code while diff_failed
+# stays false and a blind review posts as success.
+ddir="$(mktemp -d)"
+mkdir -p "${ddir}/tmp" "${ddir}/repo"
+git -C "${ddir}/repo" init -q 2>/dev/null
+printf 'one\nremoved_marker_line\nthree\n' > "${ddir}/repo/app.js"
+git -C "${ddir}/repo" add app.js 2>/dev/null
+git -C "${ddir}/repo" -c user.email=t@t -c user.name=t commit -qm base 2>/dev/null
+dbase="$(git -C "${ddir}/repo" rev-parse HEAD 2>/dev/null)"
+printf '*.js -diff\n' > "${ddir}/repo/.gitattributes"
+printf 'one\nthree\nfour\n' > "${ddir}/repo/app.js"
+git -C "${ddir}/repo" add app.js .gitattributes 2>/dev/null
+git -C "${ddir}/repo" -c user.email=t@t -c user.name=t commit -qm head 2>/dev/null
+dhead="$(git -C "${ddir}/repo" rev-parse HEAD 2>/dev/null)"
+{
+  printf 'MUSE_STOP=0\n'
+  printf 'MUSE_FILES_FAILED=false\n'
+  printf 'MUSE_FILES_SOURCE=local\n'
+  printf 'MUSE_MERGE_BASE=%s\n' "${dbase}"
+  printf 'MUSE_TOTAL_FILES=2\n'
+  printf 'MUSE_BASE_SHA=%s\n' "${dbase}"
+} > "${ddir}/tmp/muse-vars.env"
+: > "${ddir}/tmp/out.txt"
+diff_script="${SCRIPT_DIR}/diff.sh"
+(cd "${ddir}/repo" && RUNNER_TEMP="${ddir}/tmp" SCRIPT_DIR="${SCRIPT_DIR}" GITHUB_OUTPUT="${ddir}/tmp/out.txt" HEAD_SHA_EVENT="${dhead}" GITHUB_REPOSITORY="t/t" GH_TOKEN="fake" bash "${diff_script}") >/dev/null 2>&1
+case "$(cat "${ddir}/tmp/muse-removed.txt" 2>/dev/null)" in *"removed_marker_line"*) got_d="yes";; *) got_d="no";; esac
+assert_eq "diff-text-removed-lines" "yes" "${got_d}"
+case "$(cat "${ddir}/tmp/muse.diff" 2>/dev/null)" in *"Binary files"*) got_d="binary";; *"removed_marker_line"*) got_d="text";; *) got_d="other";; esac
+assert_eq "diff-text-not-binary" "text" "${got_d}"
+rm -rf "${ddir}"
+
+# --- post.sh over-budget fallback drops inline threads (script level) ---
+# Stub gh: the live-PR lookup prints the @tsv row post.sh expects, review
+# lists are empty, and POST captures its --input payload for inspection.
+# 40 findings with 4000-char titles overflow even the compact render, so
+# post.sh must fall back — with NO inline comments attached.
+pdir="$(mktemp -d)"
+mkdir -p "${pdir}/tmp" "${pdir}/bin"
+cat > "${pdir}/bin/gh" <<'STUB'
+#!/usr/bin/env bash
+args=" $* "
+case "${args}" in
+  *" --method POST "*)
+    prev=""
+    for a in "$@"; do
+      if [[ "${prev}" == "--input" ]]; then cp "${a}" "${GH_STUB_CAPTURE}"; fi
+      prev="${a}"
+    done
+    printf '{}\n'
+    ;;
+  *"/reviews"*) printf '[]\n' ;;
+  *) printf '%s\t%s\tfalse\topen\n' "${GH_STUB_HEAD}" "${GH_STUB_BASE}" ;;
+esac
+STUB
+chmod +x "${pdir}/bin/gh"
+psha="aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+pbsha="bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+printf 'diff --git a/a.ts b/a.ts\n--- a/a.ts\n+++ b/a.ts\n@@ -1 +1,50 @@\n+x\n' > "${pdir}/tmp/muse.diff"
+printf '[{"filename":"a.ts"}]' > "${pdir}/tmp/muse-files.json"
+python3 -c "
+import json
+t = 'T' * 4000
+fs = [{'path': 'a.ts', 'line': (i % 50) + 1, 'severity': 'low', 'title': t, 'body': 'b'} for i in range(40)]
+print(json.dumps({'verdict': 'v', 'findings': fs, 'next_steps': []}))
+" > "${pdir}/tmp/review.json"
+post_script="${SCRIPT_DIR}/post.sh"
+GH_STUB_CAPTURE="${pdir}/capture.json" GH_STUB_HEAD="${psha}" GH_STUB_BASE="${pbsha}" \
+PATH="${pdir}/bin:${PATH}" \
+GH_TOKEN="fake" GITHUB_REPOSITORY="t/t" PR_NUMBER="1" \
+HEAD_SHA="${psha}" BASE_SHA="${pbsha}" HEAD_SHA_EVENT="${psha}" BASE_SHA_EVENT="${pbsha}" \
+MUSE_OUTCOME="success" DIFF_FAILED="false" DIFF_OUTCOME="success" \
+REVIEW_FILE="${pdir}/tmp/review.json" RUN_URL="https://example.invalid/run" \
+RUNNER_TEMP="${pdir}/tmp" SCRIPT_DIR="${SCRIPT_DIR}" \
+  bash "${post_script}" >/dev/null 2>&1
+got="$(jq -r '(.comments // []) | length' "${pdir}/capture.json" 2>/dev/null || echo "missing")"
+assert_eq "post-budget-fallback-no-inline" "0" "${got}"
+case "$(jq -r '.body // ""' "${pdir}/capture.json" 2>/dev/null)" in *"muse-fallback:v1"*"exceeds the 60000-byte post budget"*) got_p="yes";; *) got_p="no";; esac
+assert_eq "post-budget-fallback-tagged" "yes" "${got_p}"
+rm -rf "${pdir}"
 
 printf '\npass=%d fail=%d%s\n' "${pass}" "${fail}" "${fail_names:+  failed:${fail_names}}"
 [[ "${fail}" == "0" ]]
