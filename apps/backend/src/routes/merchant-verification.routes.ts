@@ -66,6 +66,20 @@ import {
  *           type: string
  *           format: date-time
  *           description: Creation expiry. Sessions expire after ten minutes and are consumed once at exchange.
+ *     MerchantClaimSessionPublic:
+ *       type: object
+ *       additionalProperties: false
+ *       required: [claimSessionId, vendorId, vendorName, productId, productName, listPrice, studentPrice, handoffOrigin, expiresAt]
+ *       properties:
+ *         claimSessionId: { type: string, format: uuid }
+ *         vendorId: { type: string, format: uuid }
+ *         vendorName: { type: string }
+ *         productId: { type: string, format: uuid }
+ *         productName: { type: string }
+ *         listPrice: { type: string, description: 'Quoted list price in NGN major units (naira) as a decimal string; the session quote when present.' }
+ *         studentPrice: { type: string, description: 'Quoted student price in NGN major units (naira) as a decimal string; the session quote when present.' }
+ *         handoffOrigin: { type: string, description: Registered merchant origin the browser returns to after consent. }
+ *         expiresAt: { type: string, format: date-time }
  * /api/merchant-verification/assertions:
  *   post:
  *     summary: Create a short-lived merchant-specific eligibility code
@@ -243,7 +257,16 @@ import {
  *         required: true
  *         schema: { type: string, format: uuid }
  *     responses:
- *       '200': { description: Public claim-session projection. }
+ *       '200':
+ *         description: Public claim-session projection.
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               required: [success, data]
+ *               properties:
+ *                 success: { type: boolean, enum: [true] }
+ *                 data: { $ref: '#/components/schemas/MerchantClaimSessionPublic' }
  *       '401': { description: Student authentication required. }
  *       '404': { description: Unknown session or claim no longer available. }
  *       '409': { description: 'Session expired or redeemed, or merchant integration unavailable.' }

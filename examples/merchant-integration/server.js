@@ -209,8 +209,9 @@ export function createMerchant({ origin, apiOrigin, webOrigin, privateKey, produ
         // Awoof-account Paystack reference. This shared secret never goes to UI.
         const supplied = Buffer.from(req.headers.authorization ?? ''); const expected = Buffer.from(`Bearer ${reportSecret ?? ''}`);
         if (synthetic || !reportSecret || supplied.length !== expected.length || !timingSafeEqual(supplied, expected)) throw fail('Server reporting is unconfigured or unauthorized', 401);
+        const raw = await rawBody(req);
         let body;
-        try { body = JSON.parse((await rawBody(req)).toString()); } catch { throw fail('Invalid server payment report', 400); }
+        try { body = JSON.parse(raw.toString()); } catch { throw fail('Invalid server payment report', 400); }
         const row = typeof body?.merchantCheckoutId === 'string' ? store.get(body.merchantCheckoutId) : undefined;
         if (!row?.receipt || typeof body.paymentReference !== 'string' || !body.paymentReference || body.paymentReference.length > 200 || row.paymentGateway === 'paystack_merchant') throw fail('Invalid server payment report', 400);
         await once(row.id, async () => {
@@ -260,6 +261,15 @@ export function createMerchant({ origin, apiOrigin, webOrigin, privateKey, produ
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   const synthetic = process.env.AWOOF_SYNTHETIC === '1'; const port = Number(process.env.PORT ?? 4100);
-  const app = createMerchant({ origin: process.env.MERCHANT_ORIGIN ?? `http://127.0.0.1:${port}`, apiOrigin: process.env.AWOOF_API_ORIGIN ?? 'http://localhost:4200', webOrigin: process.env.AWOOF_WEB_ORIGIN ?? 'http://localhost:4200', privateKey: process.env.AWOOF_PRIVATE_KEY ?? (synthetic ? 'awoof_synthetic_local_only' : ''), productId: process.env.AWOOF_PRODUCT_ID ?? '11111111-1111-4111-8111-111111111111', vendorId: process.env.AWOOF_VENDOR_ID ?? '22222222-2222-4222-8222-222222222222', amountKobo: Number(process.env.STUDENT_PRICE_KOBO ?? 80000), synthetic, paymentGateway: process.env.PAYMENT_GATEWAY ?? 'other', paystackSecret: process.env.MERCHANT_PAYSTACK_TEST_SECRET, reportSecret: process.env.REFERENCE_REPORT_SECRET, dbPath: process.env.MERCHANT_DB_PATH ?? './.local/merchant.sqlite' });
+  // Fixture product/vendor/price defaults exist only for the synthetic
+  // walkthrough. In real mode a missing value must fail startup, never
+  // silently bind a paid checkout to placeholder metadata or pricing.
+  const requiredInRealMode = (name, fallback) => {
+    const value = process.env[name];
+    if (value) return value;
+    if (!synthetic) throw new Error(`${name} is required outside synthetic mode; see the starter README`);
+    return fallback;
+  };
+  const app = createMerchant({ origin: process.env.MERCHANT_ORIGIN ?? `http://127.0.0.1:${port}`, apiOrigin: process.env.AWOOF_API_ORIGIN ?? 'http://localhost:4200', webOrigin: process.env.AWOOF_WEB_ORIGIN ?? 'http://localhost:4200', privateKey: process.env.AWOOF_PRIVATE_KEY ?? (synthetic ? 'awoof_synthetic_local_only' : ''), productId: requiredInRealMode('AWOOF_PRODUCT_ID', '11111111-1111-4111-8111-111111111111'), vendorId: requiredInRealMode('AWOOF_VENDOR_ID', '22222222-2222-4222-8222-222222222222'), amountKobo: Number(requiredInRealMode('STUDENT_PRICE_KOBO', '80000')), synthetic, paymentGateway: process.env.PAYMENT_GATEWAY ?? 'other', paystackSecret: process.env.MERCHANT_PAYSTACK_TEST_SECRET, reportSecret: process.env.REFERENCE_REPORT_SECRET, dbPath: process.env.MERCHANT_DB_PATH ?? './.local/merchant.sqlite' });
   app.server.listen(port, '127.0.0.1', () => console.log(`Reference merchant on loopback port ${port}; ${synthetic ? 'SYNTHETIC ONLY' : 'sandbox integration'}`));
 }

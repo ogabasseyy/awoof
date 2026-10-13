@@ -506,6 +506,7 @@ router.put(
  *               paymentReference:
  *                 type: string
  *                 minLength: 1
+ *                 maxLength: 255
  *                 description: Payment reference from the merchant payment gateway.
  *               amount:
  *                 type: integer

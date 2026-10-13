@@ -470,6 +470,7 @@ test('merchant transaction report is published with both private authentication 
     const body = operation.requestBody.content['application/json'].schema;
     assert.equal(body.additionalProperties, false);
     assert.equal(body.properties.amount.type, 'integer');
+    assert.equal((body.properties.paymentReference as { maxLength?: number }).maxLength, 255);
     assert.ok(body.required.includes('benefitAuthorizationId'));
     assert.match(body.properties.paymentGateway.description ?? '', /paystack_merchant/);
     // Retryable merchant verification failures (missing merchant credentials,
@@ -572,4 +573,28 @@ test('merchant-key operations document reporting-key quota exhaustion', () => {
         assert.match(operation.responses['429']?.description ?? '', /quota exhausted/,
             `${method.toUpperCase()} ${path} documents 429 quota exhaustion`);
     }
+});
+
+test('merchant claim-session read publishes the public projection schema', () => {
+    const spec = swaggerSpec as { paths: Record<string, Record<string, {
+        responses: Record<string, { content?: { 'application/json': { schema: {
+            required: string[]; properties: { success: { enum: boolean[] }; data: { $ref?: string } };
+        } } } }>;
+    } >>; components: { schemas: Record<string, { required: string[]; properties: Record<string, { type: string; format?: string }> }> } };
+    const operation = spec.paths['/api/merchant-verification/claim-sessions/{id}']?.get;
+    assert.ok(operation);
+    const schema = operation.responses['200']?.content?.['application/json']?.schema;
+    assert.ok(schema, '200 publishes a claim-session projection schema');
+    assert.deepEqual(schema.properties.success.enum, [true]);
+    assert.equal(schema.properties.data.$ref, '#/components/schemas/MerchantClaimSessionPublic');
+    const projection = spec.components.schemas.MerchantClaimSessionPublic;
+    assert.deepEqual([...projection.required].sort(), [
+        'claimSessionId', 'expiresAt', 'handoffOrigin', 'listPrice', 'productId',
+        'productName', 'studentPrice', 'vendorId', 'vendorName',
+    ]);
+    assert.equal(projection.properties.claimSessionId.format, 'uuid');
+    assert.equal(projection.properties.expiresAt.format, 'date-time');
+    // The projection never carries proof material or handoff URLs.
+    assert.equal(projection.properties.browserNonceHash, undefined);
+    assert.equal(projection.properties.handoffUrl, undefined);
 });

@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createHmac } from 'node:crypto';
 import { createServer } from 'node:http';
+import { spawnSync } from 'node:child_process';
 import { createMerchant } from '../server.js';
 async function port() { const s = createServer(); await new Promise(r => s.listen(0, '127.0.0.1', r)); const p = s.address().port; await new Promise(r => s.close(r)); return p; }
 test('merchant test Paystack signature, verification, durable acceptance and exact reconciliation retry', async () => {
@@ -62,6 +63,7 @@ for (const gateway of ['paystack', 'other']) test(`${gateway} server report requ
     const body = JSON.stringify({ merchantCheckoutId: checkoutId, paymentReference: 'reference' });
     assert.equal((await request('/payments/report', { method: 'POST', body })).status, 401); assert.equal(reports, 0);
     assert.equal((await request('/payments/report', { method: 'POST', headers: { Authorization: `Bearer ${reportSecret}` }, body: 'not-json' })).status, 400); assert.equal(reports, 0);
+    assert.equal((await request('/payments/report', { method: 'POST', headers: { Authorization: `Bearer ${reportSecret}` }, body: 'x'.repeat(64 * 1024 + 1) })).status, 413); assert.equal(reports, 0);
     const headers = { Authorization: `Bearer ${reportSecret}` };
     const simultaneous = await Promise.all([request('/payments/report', { method: 'POST', headers, body }), request('/payments/report', { method: 'POST', headers, body: JSON.stringify({ merchantCheckoutId: checkoutId, paymentReference: 'conflicting' }) })]);
     const reportStatuses = simultaneous.map(response => response.status);
@@ -137,4 +139,12 @@ test('quota failure keeps the callback binding so only the exact assertion retri
     assert.ok(app.store.get(checkoutId).receipt);
     assert.equal(exchanges, 2);
   } finally { await new Promise(r => app.server.close(r)); app.store.close(); }
+});
+test('real-mode entrypoint refuses fixture product, vendor and price defaults', () => {
+  const serverPath = new URL('../server.js', import.meta.url).pathname;
+  const base = { ...process.env, MERCHANT_ORIGIN: 'https://shop.example.test', AWOOF_API_ORIGIN: 'https://api.example.test', AWOOF_WEB_ORIGIN: 'https://awoof.example.test', AWOOF_PRIVATE_KEY: 'awoof_test_only', AWOOF_PRODUCT_ID: '11111111-1111-4111-8111-111111111111', STUDENT_PRICE_KOBO: '80000' };
+  delete base.AWOOF_SYNTHETIC; delete base.AWOOF_VENDOR_ID;
+  const result = spawnSync(process.execPath, [serverPath], { env: base, encoding: 'utf8', timeout: 15000 });
+  assert.notEqual(result.status, 0);
+  assert.match(`${result.stderr}\n${result.stdout}`, /AWOOF_VENDOR_ID/);
 });
