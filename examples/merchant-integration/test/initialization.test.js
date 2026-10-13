@@ -212,7 +212,7 @@ test('trailing-slash merchant origin is normalized for Origin and Host checks', 
 test('malformed success bodies hold the reference and expired benefits reconcile before refusing fresh initialization', async () => {
   const port = await freePort(); const origin = `https://127.0.0.1:${port}`; let checkoutId; const references = []; let verifies = 0; let malformed = true;
   const app = createMerchant({ origin, apiOrigin: 'https://api.test', webOrigin: 'https://awoof.test', privateKey: 'awoof_test', productId: 'product', vendorId: 'vendor', amountKobo: 80000, paymentGateway: 'paystack_merchant', paystackSecret: 'sk_test_fixture', dbPath: ':memory:', fetchImpl: async (url, init) => {
-    if (url.endsWith('/transaction/initialize')) { const reference = JSON.parse(init.body).reference; references.push(reference); if (malformed) return new Response('ok', { status: 200 }); return Response.json({ status: true, data: { authorization_url: 'https://checkout.paystack.com/after-expiry', reference } }); }
+    if (url.endsWith('/transaction/initialize')) { const reference = JSON.parse(init.body).reference; references.push(reference); if (malformed) return Response.json({}, { status: 200 }); return Response.json({ status: true, data: { authorization_url: 'https://checkout.paystack.com/after-expiry', reference } }); }
     if (url.includes('/transaction/verify/')) { verifies++; return Response.json({ status: false, message: 'Transaction reference not found' }, { status: 404 }); }
     const body = JSON.parse(init.body);
     if (url.endsWith('/claim-sessions')) { checkoutId = body.merchantCheckoutId; return Response.json({ success: true, data: { claimSessionId: 'session' } }); }

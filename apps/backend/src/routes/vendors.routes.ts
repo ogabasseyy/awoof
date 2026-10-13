@@ -186,7 +186,7 @@ router.get(
  *       orders can become refunded, and refunded orders cannot change again.
  *       Refund bookkeeping reverses the recorded savings credit and restores consumed
  *       inventory atomically. Legacy orders without a recorded savings delta, or
- *       missing savings balances, require reconciliation and return 409. Completed orders can only move to refunded, and orders can only become completed through payment settlement; other transitions return 400.
+ *       missing savings balances, require reconciliation and return 409. Completed orders can only move to refunded, and orders can only become completed through payment settlement; other transitions return 400. Repeating refunded on an already-refunded order also returns 400 (duplicate refunds never reverse twice); after an ambiguous response, read the order to confirm its recorded status before retrying.
  *     tags: [Vendors]
  *     security: [{ bearerAuth: [] }]
  *     parameters:

@@ -190,13 +190,14 @@ export function createMerchant({ origin, apiOrigin, webOrigin, privateKey, produ
             // A duplicate-text, throttled, timed-out, 5xx, or mismatched
             // success-shape response may already exist upstream: hold the
             // reference and reconcile on retry.
+            // Reaching this block with a 2xx means the body was not a valid
+            // success (unparseable, wrong shape, or a different reference):
+            // the transaction may exist upstream, so every 2xx here is
+            // unknown — hold the reference for reconciliation, never
+            // release it as a correctable shopper-input rejection.
             const ambiguous = /duplicate|already|in.use|used|exists/i.test(detail)
               || (!response.ok && (response.status >= 500 || response.status === 408 || response.status === 429))
-              || (response.ok && initialized?.status === true)
-              // A malformed/empty 2xx body may hide a created transaction:
-              // hold the reference for reconciliation, never release it as
-              // a correctable shopper-input rejection.
-              || (response.ok && initialized === undefined);
+              || response.ok;
             if (ambiguous) {
               current.state = 'payment_initialization_unknown'; store.put(current.id, current);
               throw fail('Test payment initialization outcome unknown; retry to reconcile the held reference', 502);
