@@ -44,9 +44,13 @@ export class AwoofPartnerClient {
     return this.#post('/api/vendors/transactions/report', input);
   }
 }
+const uuidShape = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const canonicalUuid = (value) => (uuidShape.test(value) ? value.toLowerCase() : value);
 export function merchantPaystackMetadata({ vendorId, productId, benefitAuthorizationId }) {
   if (![vendorId, productId, benefitAuthorizationId].every(value => typeof value === 'string' && value.length > 0)) throw new Error('Missing payment binding');
-  return { awoofVendorId: vendorId, awoofProductId: productId, awoofBenefitAuthorizationId: benefitAuthorizationId };
+  // PostgreSQL returns UUIDs in lowercase; publish the canonical spelling so
+  // an uppercase AWOOF_VENDOR_ID cannot strand an already-paid checkout.
+  return { awoofVendorId: canonicalUuid(vendorId), awoofProductId: canonicalUuid(productId), awoofBenefitAuthorizationId: canonicalUuid(benefitAuthorizationId) };
 }
 export function verifyPaystackWebhook(rawBody, signature, secret) {
   if (!Buffer.isBuffer(rawBody) || typeof secret !== 'string' || !secret || typeof signature !== 'string' || !/^[a-f0-9]{128}$/i.test(signature)) return false;

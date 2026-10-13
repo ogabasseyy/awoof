@@ -33,6 +33,10 @@ test('raw-body Paystack HMAC and metadata are exact', () => {
   assert.equal(verifyPaystackWebhook(body, 'bad', secret), false);
   assert.equal(verifyPaystackWebhook(body, signature, ''), false);
   assert.deepEqual(merchantPaystackMetadata({ vendorId: 'v', productId: 'p', benefitAuthorizationId: 'a' }), { awoofVendorId: 'v', awoofProductId: 'p', awoofBenefitAuthorizationId: 'a' });
+  assert.deepEqual(
+    merchantPaystackMetadata({ vendorId: '00000000-0000-4000-8000-0000000000AB', productId: '00000000-0000-4000-8000-000000000003', benefitAuthorizationId: '40000000-0000-4000-8000-000000000001' }),
+    { awoofVendorId: '00000000-0000-4000-8000-0000000000ab', awoofProductId: '00000000-0000-4000-8000-000000000003', awoofBenefitAuthorizationId: '40000000-0000-4000-8000-000000000001' },
+  );
 });
 test('every provider capability defaults unconfigured; contract reference gate blocks execution', async () => {
   for (const adapter of Object.values(partnerCapabilities())) assert.equal((await invokeConfiguredAdapter(adapter, { identity: 'google_account' })).status, 'unconfigured');

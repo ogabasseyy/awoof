@@ -42,7 +42,7 @@ test('merchant test Paystack signature, verification, durable acceptance and exa
     assert.equal((await request('/webhooks/paystack', { method: 'POST', headers: { 'x-paystack-signature': reversalSig }, body: reversalBody })).status, 202); assert.equal(reports, 2);
     assert.equal(app.store.find(row => row.kind === 'provider_review').state, 'reconciliation_required');
     const noMetadataBody = JSON.stringify({ event: 'charge.success', data: { reference: 'payment' } }); const noMetadataSig = createHmac('sha512', secret).update(noMetadataBody).digest('hex');
-    assert.equal((await request('/webhooks/paystack', { method: 'POST', headers: { 'x-paystack-signature': noMetadataSig }, body: noMetadataBody })).status, 404); assert.equal(reports, 2);
+    assert.equal((await request('/webhooks/paystack', { method: 'POST', headers: { 'x-paystack-signature': noMetadataSig }, body: noMetadataBody })).status, 202); assert.equal(reports, 2);
   } finally { await new Promise(r => app.server.close(r)); app.store.close(); }
 });
 for (const gateway of ['paystack', 'other']) test(`${gateway} server report requires independent merchant authorization and preserves payment mode`, async () => {
@@ -66,7 +66,9 @@ for (const gateway of ['paystack', 'other']) test(`${gateway} server report requ
     assert.equal(reportStatuses.filter(status => status === 409).length, 1);
     assert.equal(app.store.get(checkoutId).paymentReference, simultaneous[0].status === 200 ? 'reference' : 'conflicting');
     assert.equal(reports, 1);
-    await request('/payments/report', { method: 'POST', headers, body }); assert.equal(reports, 1);
+    const acceptedReference = simultaneous[0].status === 200 ? 'reference' : 'conflicting';
+    const retry = await request('/payments/report', { method: 'POST', headers, body: JSON.stringify({ merchantCheckoutId: checkoutId, paymentReference: acceptedReference }) });
+    assert.equal(retry.status, 200); assert.equal(reports, 1);
     assert.equal((await request('/payments/report', { method: 'POST', headers, body: JSON.stringify({ merchantCheckoutId: checkoutId, paymentReference: 'different' }) })).status, 409);
   } finally { await new Promise(r => app.server.close(r)); app.store.close(); }
 });
@@ -107,5 +109,29 @@ test('merchant verification keeps transient Paystack failures retryable and defi
     assert.equal((await webhook()).status, 200);
     assert.equal(reports, 1);
     assert.equal(app.store.get(checkoutId).state, 'reported');
+  } finally { await new Promise(r => app.server.close(r)); app.store.close(); }
+});
+test('quota failure keeps the callback binding so only the exact assertion retries', async () => {
+  const p = await port(); const origin = `https://127.0.0.1:${p}`; let checkoutId; let exchanges = 0;
+  const app = createMerchant({ origin, apiOrigin: 'https://api.test', webOrigin: 'https://awoof.test', privateKey: 'awoof_test', productId: 'product', vendorId: 'vendor', amountKobo: 80000, paymentGateway: 'other', dbPath: ':memory:', fetchImpl: async (url, init) => {
+    const body = JSON.parse(init.body);
+    if (url.endsWith('/claim-sessions')) { checkoutId = body.merchantCheckoutId; return Response.json({ success: true, data: { claimSessionId: 'session' } }); }
+    if (url.endsWith('/exchange')) {
+      exchanges++;
+      if (exchanges === 1) return Response.json({ success: false, error: 'quota' }, { status: 429 });
+      return Response.json({ success: true, data: { eligible: true, assuranceMethod: 'enrollment', campaignId: checkoutId, benefitAuthorizationId: 'benefit', validUntil: new Date(Date.now() + 600000).toISOString() } });
+    }
+    return Response.json({ success: true, data: { transactionId: 'same' } });
+  } });
+  await new Promise(r => app.server.listen(p, '127.0.0.1', r)); const request = (path, init = {}) => fetch(`http://127.0.0.1:${p}${path}`, { redirect: 'manual', ...init });
+  try {
+    const start = await request('/checkout', { method: 'POST', headers: { Origin: origin } }); const cookie = start.headers.get('set-cookie').split(';')[0];
+    const callback = code => request('/awoof/student-claim?assertion=' + code, { headers: { Cookie: cookie } });
+    assert.equal((await callback('d'.repeat(43))).status, 429);
+    assert.ok(app.store.get(checkoutId).codeHash, '429 keeps the pending binding');
+    assert.equal((await callback('e'.repeat(43))).status, 409);
+    assert.equal((await callback('d'.repeat(43))).status, 303);
+    assert.ok(app.store.get(checkoutId).receipt);
+    assert.equal(exchanges, 2);
   } finally { await new Promise(r => app.server.close(r)); app.store.close(); }
 });

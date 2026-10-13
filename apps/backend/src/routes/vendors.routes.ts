@@ -536,6 +536,7 @@ router.put(
  *       '404': { description: Unknown benefit authorization for this merchant }
  *       '409': { description: 'Conflicting report bindings, or a late first report needing explicit reconciliation' }
  *       '422': { description: Request body failed strict validation }
+ *       '429': { description: Merchant key hourly quota exhausted or key unavailable }
  *       '503': { $ref: '#/components/responses/MerchantPaymentUnavailable' }
  */
 router.post(

@@ -95,6 +95,7 @@ test('published starter archive normalizes ownership, timestamps and gzip metada
     assert.equal(first.readUInt32LE(4), 0);
     const member = gunzipSync(first);
     const octal = (offset, length) => parseInt(member.subarray(offset, offset + length).toString('utf8').replace(/[\0 ]/g, ''), 8);
+    assert.equal(octal(100, 8), 0o644);
     assert.equal(octal(108, 8), 0);
     assert.equal(octal(116, 8), 0);
     assert.equal(octal(136, 12), starterArchiveEpoch);

@@ -556,3 +556,20 @@ test('merchant claim-session creation publishes the session id and expiry schema
     assert.equal(session.properties.expiresAt.type, 'string');
     assert.equal(session.properties.expiresAt.format, 'date-time');
 });
+
+test('merchant-key operations document reporting-key quota exhaustion', () => {
+    const spec = swaggerSpec as { paths: Record<string, Record<string, { responses: Record<string, { description?: string }> }>> };
+    // Every private-key operation authenticates through the reporting key,
+    // whose hourly quota returns 429; generated clients must model it.
+    const operations: [string, string][] = [
+        ['/api/merchant-verification/exchange', 'post'],
+        ['/api/merchant-verification/claim-sessions', 'post'],
+        ['/api/vendors/transactions/report', 'post'],
+    ];
+    for (const [path, method] of operations) {
+        const operation = spec.paths[path]?.[method];
+        assert.ok(operation, `merchant contract missing ${method.toUpperCase()} ${path}`);
+        assert.match(operation.responses['429']?.description ?? '', /quota exhausted/,
+            `${method.toUpperCase()} ${path} documents 429 quota exhaustion`);
+    }
+});

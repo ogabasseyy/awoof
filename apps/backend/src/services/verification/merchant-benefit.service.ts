@@ -36,6 +36,25 @@ export function computePricingVersion(
         .digest('hex');
 }
 
+const UUID_SHAPE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+function canonicalUuid(value: unknown): string | undefined {
+    return typeof value === 'string' && UUID_SHAPE.test(value) ? value.toLowerCase() : undefined;
+}
+
+/** Provider metadata echoes the merchant's configured spelling, while
+ *  PostgreSQL returns UUIDs in lowercase. Compare canonical UUID forms so a
+ *  valid uppercase AWOOF_VENDOR_ID cannot strand an already-paid checkout;
+ *  missing or non-UUID metadata never matches. */
+export function merchantPaymentMetadataMatches(
+    metadata: Record<string, unknown> | undefined,
+    expected: { vendorId: string; productId: string; benefitAuthorizationId: string },
+): boolean {
+    return canonicalUuid(metadata?.awoofVendorId) === canonicalUuid(expected.vendorId)
+        && canonicalUuid(metadata?.awoofProductId) === canonicalUuid(expected.productId)
+        && canonicalUuid(metadata?.awoofBenefitAuthorizationId) === canonicalUuid(expected.benefitAuthorizationId);
+}
+
 /** Explicit minor-unit boundary: provider/report kobo in, naira out. */
 export function koboToNaira(kobo: number): number {
     if (!Number.isInteger(kobo) || kobo <= 0) {
@@ -341,9 +360,9 @@ export async function reportMerchantBenefit(
             || payment.amountKobo !== input.amountKobo) {
             throw new BadRequestError('Merchant payment amount or currency does not match the report');
         }
-        const metadata = payment.metadata;
-        if (metadata?.awoofVendorId !== vendor.id || metadata?.awoofProductId !== input.productId
-            || metadata?.awoofBenefitAuthorizationId !== input.benefitAuthorizationId) {
+        if (!merchantPaymentMetadataMatches(payment.metadata, {
+            vendorId: vendor.id, productId: input.productId, benefitAuthorizationId: input.benefitAuthorizationId,
+        })) {
             throw new BadRequestError('Merchant payment metadata does not match the benefit authorization');
         }
     }

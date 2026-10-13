@@ -131,7 +131,9 @@ function writeDeterministicArchive(root, files, archive) {
     for (const { path: file, content } of files) {
       const destination = join(staging, file);
       mkdirSync(dirname(destination), { recursive: true });
-      writeFileSync(destination, content);
+      // Pin the member mode: tar preserves staging permissions, so an
+      // umask-dependent default would leak build policy into the archive.
+      writeFileSync(destination, content, { mode: 0o644 });
     }
     execFileSync('touch', ['-t', '202401010000.00', ...files.map((file) => join(staging, file.path))],
       { stdio: 'pipe', env: { ...process.env, TZ: 'UTC' } });
@@ -185,13 +187,17 @@ export function checkPartnerAssets(root = repository) {
   const sourceContract = merchantApiReference(JSON.parse(readFileSync(join(root, 'apps/backend/dist/config/openapi.json'), 'utf8')));
   const publishedContract = readFileSync(join(output, 'merchant-api.json'), 'utf8');
   if (publishedContract !== `${JSON.stringify(sourceContract, null, 2)}\n`) throw new Error('Published merchant API is stale: run npm run docs:partner');
-  const expectedFiles = starterFiles(root).map((file) => file.path).sort();
+  // Compare archive members with the exact buffers starterFiles scanned.
+  // Rereading source paths here would reopen the post-scan swap race the
+  // scan closes: --check could accept unscanned bytes swapped in after it.
+  const expected = starterFiles(root);
+  const expectedFiles = expected.map((file) => file.path).sort();
   const archive = join(output, 'merchant-starter.tar.gz');
   const archivedFiles = execFileSync('tar', ['-tzf', archive], { encoding: 'utf8' }).trim().split('\n').sort();
   if (JSON.stringify(archivedFiles) !== JSON.stringify(expectedFiles)) throw new Error('Published starter file list is stale');
-  for (const path of expectedFiles) {
-    const bundled = execFileSync('tar', ['-xOf', archive, path]);
-    if (!bundled.equals(readFileSync(join(root, path)))) throw new Error(`Published starter is stale: ${path}`);
+  for (const file of expected) {
+    const bundled = execFileSync('tar', ['-xOf', archive, file.path]);
+    if (!bundled.equals(file.content)) throw new Error(`Published starter is stale: ${file.path}`);
   }
   const manifest = JSON.parse(readFileSync(join(output, 'integration-artifacts.json'), 'utf8'));
   const publishedFiles = ['merchant-api.json', 'merchant-starter.tar.gz'];

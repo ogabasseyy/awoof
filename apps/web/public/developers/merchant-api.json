@@ -216,7 +216,7 @@
             }
           },
           "400": {
-            "description": "Invalid input, code or campaign mismatch"
+            "description": "Invalid code or campaign mismatch; missing or unexpected claim-session proof; product unavailable for product-bound codes"
           },
           "401": {
             "description": "Private merchant key invalid or merchant inactive"
@@ -225,10 +225,16 @@
             "description": "Eligibility or disclosure no longer current"
           },
           "409": {
-            "description": "Code expired, consumed by another operation or conflicting idempotency key"
+            "description": "Code expired, consumed by another operation or conflicting idempotency key; claim session expired, already redeemed, or checkout ID or browser nonce binding failed"
+          },
+          "422": {
+            "description": "Invalid request shape; field validation failure"
           },
           "429": {
             "description": "Merchant key hourly quota exhausted or key unavailable"
+          },
+          "500": {
+            "description": "Malformed JSON or unexpected server error. Treat the exchange as failed and do not grant a benefit."
           }
         }
       }
@@ -344,6 +350,9 @@
           },
           "409": {
             "description": "Checkout already bound differently, used, or expired. Start a new checkout."
+          },
+          "429": {
+            "description": "Merchant key hourly quota exhausted or key unavailable"
           }
         }
       }
@@ -611,6 +620,9 @@
           "422": {
             "description": "Request body failed strict validation"
           },
+          "429": {
+            "description": "Merchant key hourly quota exhausted or key unavailable"
+          },
           "503": {
             "$ref": "#/components/responses/MerchantPaymentUnavailable"
           }
@@ -823,7 +835,8 @@
           "institutionId",
           "verifiedAt",
           "validUntil",
-          "campaignId"
+          "campaignId",
+          "purpose"
         ],
         "properties": {
           "receiptId": {
@@ -863,6 +876,10 @@
           },
           "campaignId": {
             "type": "string"
+          },
+          "purpose": {
+            "type": "string",
+            "description": "Consent wording recorded at issuance. The browser handoff is student-editable, so the merchant server MUST compare this with its own intent before honoring the receipt."
           },
           "benefitAuthorizationId": {
             "type": "string",

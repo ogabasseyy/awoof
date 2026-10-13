@@ -230,6 +230,7 @@ import {
  *       '400': { description: Invalid input or product unavailable to this merchant. }
  *       '401': { description: Private merchant key invalid or merchant inactive. }
  *       '409': { description: 'Checkout already bound differently, used, or expired. Start a new checkout.' }
+ *       '429': { description: Merchant key hourly quota exhausted or key unavailable }
  * /api/merchant-verification/claim-sessions/{id}:
  *   get:
  *     summary: Read the public projection of one claim session

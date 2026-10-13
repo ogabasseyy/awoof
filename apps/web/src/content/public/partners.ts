@@ -162,7 +162,7 @@ export const developerExamples = [
       '    "campaignId": "order-12345",',
       '    "purpose": "10% student discount",',
       '    "benefitAuthorizationId": "40000000-0000-4000-8000-000000000001",',
-      '    "benefitValidUntil": "2026-09-21T00:02:00Z"'
+      '    "benefitValidUntil": "2026-09-21T00:02:00Z"',
       '  }',
       '}',
     ].join('\n'),

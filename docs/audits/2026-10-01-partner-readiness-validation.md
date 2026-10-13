@@ -1,6 +1,6 @@
 # Merchant and partner readiness validation
 
-Reviewed: 2026-10-01. Base: `origin/main` at `01181472b08b16d91aa32180d8ef15fbb2cc46ba`. Implementation branch: `codex/awoof-partner-readiness`. Review: [draft PR #59](https://github.com/ogabasseyy/awoof/pull/59); CI/review, merge and deployment remain pending. This is an internal source and local-validation record, not deployment or partnership evidence.
+Reviewed: 2026-10-01; revalidated 2026-10-13 after rebasing onto `origin/main` at `944f07aa6b4876601d85c03e256e6e1c1df5c5af` (the merchant migrations were renumbered 086/087 because main added its own 085). Implementation branch: `codex/awoof-partner-readiness`. Review: [PR #59](https://github.com/ogabasseyy/awoof/pull/59); CI/review, merge and deployment remain pending. This is an internal source and local-validation record, not deployment or partnership evidence.
 
 ## Delivered source
 
@@ -16,15 +16,14 @@ Reviewed: 2026-10-01. Base: `origin/main` at `01181472b08b16d91aa32180d8ef15fbb2
 | Check | Observed result and limits |
 | --- | --- |
 | Fresh Node 24 dependencies | Backend and web `npm ci` completed in the isolated worktree. |
-| Backend unit suite | Final `npm test`: 485 passed, zero failed or skipped. |
+| Backend unit suite | Rebased-tree `npm test`: 682 passed, zero failed or skipped. |
 | Backend compilation and artifacts | Typecheck, build, compiled OpenAPI parity and artifact runtime/source-absent checks passed. |
-| Disposable PostgreSQL targeted suites | Merchant-benefit and checkout-refund run: 41 passed. Final merchant-assertion and merchant-benefit run: 35 passed. Runs overlap; counts are not additive. |
-| Full PostgreSQL suite | Both full runs exceeded the launcher's 300-second timeout, including the final run without this task's parallel build/browser load. The full suite is incomplete; no full-suite pass is claimed. Focused changed-path suites passed as listed above, and CI must run the full suite. |
-| SDK and merchant reference | Four SDK and fifteen reference tests passed; mocked/local transports only, no provider or real Awoof calls. |
+| Disposable PostgreSQL suite | Full source-mode run on the rebased tree: 498 passed, 1 skipped, zero failed, including migration application through 087 and the merchant-benefit integration paths. CI still runs the full suite on the final head. |
+| SDK and merchant reference | Four SDK and sixteen reference tests passed; mocked/local transports only, no provider or real Awoof calls. |
 | Download safeguard tests | Five tests passed for merchant API allowlisting, missing definitions, excluded credentials/state, symlink rejection, YAML-split null rejection and deterministic archive headers. |
 | Extracted public starter | Both package suites passed after HTTP download from the production build and extraction outside the repository. No installation required. |
 | Production web build and HTTP | Web build passed. `/developers` contained the deadline and download links; API, archive and manifest were served successfully, with verified checksums and seven API paths. |
-| Web checks | Web and browser typechecks passed. Focused browser runs covered 20 cases, including 360/768/1440 widths, keyboard examples, saved configuration and newly issued key-copy visibility. |
+| Web checks | Web and browser typechecks passed. Focused browser runs on the rebased tree covered 15 partner/merchant cases, including 360/768/1440 widths, saved configuration and newly issued key-copy visibility; the full browser suite remains a CI gate. |
 | Lint | No errors. Existing backend warnings and two hook/helper warnings in focused web files remain. |
 | Fresh review | Two confirmed findings fixed: conflicting concurrent operations borrowing a success response, and evidence expiry incorrectly standing in for the shorter benefit deadline. Independent conflict reproduction returned 200 then 409. No additional actionable findings in focused final review. |
 | Final source parity | Published API/archive match current backend/SDK/reference source; whitespace checks passed. |
@@ -36,7 +35,7 @@ The affected public routes and claim evidence are recorded in `docs/public-trust
 
 ## Remaining activation work
 
-1. Review, CI, merge and deployment; apply migrations 085 then 086 (086 validates the NOT VALID constraints from 085) and verify configured runtime routes and artifacts.
+1. Review, CI, merge and deployment; apply migrations 086 then 087 (087 validates the NOT VALID constraints from 086) and verify configured runtime routes and artifacts.
 2. Approved institution enrollment authority, merchant agreement/annexes, test merchant origins/products/keys and operational ownership.
 3. A real end-to-end Awoof checkout and merchant Paystack test payment, including expiry, failed reporting, duplicate events, refunds and reconciliation, before live merchant use.
 4. Google entitlement acceptance/fulfillment access and Verve qualification, funding, limits, settlement and reversal contracts before implementing provider adapters or enabling campaigns.

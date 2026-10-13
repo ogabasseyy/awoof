@@ -111,7 +111,9 @@ export function createMerchant({ origin, apiOrigin, webOrigin, privateKey, produ
           catch (error) {
             // A definitive rejection never reserves this checkout for a bad code.
             // A timeout/5xx is ambiguous: retain the hash and stable retry key.
-            if (error.status >= 400 && error.status < 500) { delete current.codeHash; delete current.exchangeStartedAt; store.put(row.id, current); }
+            // A 429 quota failure also leaves the assertion unconsumed, so it
+            // keeps the binding too; only an exact retry may proceed.
+            if (error.status >= 400 && error.status < 500 && error.status !== 429) { delete current.codeHash; delete current.exchangeStartedAt; store.put(row.id, current); }
             throw error;
           }
           if (receipt.eligible !== true || receipt.assuranceMethod !== 'enrollment' || receipt.campaignId !== row.id || !receipt.benefitAuthorizationId || !(Date.parse(receipt.validUntil) > Date.now())) throw fail('Current product enrollment authorization required', 403);
@@ -228,7 +230,12 @@ export function createMerchant({ origin, apiOrigin, webOrigin, privateKey, produ
           json(res, 202, { accepted: true, reconciliation: 'Refund/dispute/reversal events recorded for merchant review; this example does not settle them.' }); return;
         }
         const authorizationId = event.data?.metadata?.awoofBenefitAuthorizationId;
-        if (typeof authorizationId !== 'string' || !authorizationId) throw fail('Unknown checkout', 404);
+        if (typeof authorizationId !== 'string' || !authorizationId) {
+          // The merchant account also processes non-Awoof charges. Their
+          // signed events carry no Awoof binding: acknowledge them so the
+          // provider stops retrying, and never settle them here.
+          json(res, 202, { accepted: true, ignored: 'Charge carries no Awoof benefit binding; not settled by this reference.' }); return;
+        }
         const row = store.find(row => row.receipt?.benefitAuthorizationId === authorizationId);
         if (!row) throw fail('Unknown checkout', 404);
         await once(row.id, async () => {
