@@ -203,6 +203,7 @@ router.get(
  *                         commission: { type: number, description: 'Awoof commission in NGN major units (naira).' }
  *                         status: { type: string, enum: [pending, completed, failed, refunded] }
  *                         paystackReference: { type: string, nullable: true }
+ *                         vendorPaymentReference: { type: string, nullable: true, description: 'Merchant-reported payment reference for externally collected payments; null for Awoof-collected payments.' }
  *                         managedPayment: { type: boolean, description: True when Awoof collected this payment; vendor status changes are then unavailable. }
  *                         createdAt: { type: string, format: date-time }
  *                         updatedAt: { type: string, format: date-time }
@@ -226,6 +227,7 @@ router.get(
  *                             phoneNumber: { type: string, nullable: true }
  *       '401': { description: Authentication required or caller is not a vendor }
  *       '404': { description: Order or vendor profile not found for this vendor }
+ *       '422': { description: Invalid request shape; field validation failure }
  */
 router.get(
     '/orders/:id',

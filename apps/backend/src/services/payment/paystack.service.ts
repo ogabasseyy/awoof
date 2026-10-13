@@ -25,9 +25,13 @@ export async function verifyPaystackPayment(
     };
     metadata?: Record<string, unknown>;
     error?: string;
+    // True when verification could not be performed (provider outage,
+    // timeout, throttling, or rejected platform credentials): callers must
+    // surface a retryable outcome, never a definitive payment failure.
+    unavailable?: boolean;
 }> {
     if (!config.paystack.secretKey) {
-        throw new BadRequestError('Paystack secret key not configured');
+        throw new ServiceUnavailableError('Paystack secret key not configured');
     }
 
     try {
@@ -63,10 +67,18 @@ export async function verifyPaystackPayment(
         };
     } catch (error: unknown) {
         if (axios.isAxiosError(error)) {
-            if (error.response?.status === 404) {
+            const status = error.response?.status;
+            if (status === 404) {
                 return {
                     verified: false,
                     error: 'Payment reference not found',
+                };
+            }
+            if (status === undefined || status === 401 || status === 403 || status === 408 || status === 429 || status >= 500) {
+                return {
+                    verified: false,
+                    unavailable: true,
+                    error: 'Paystack verification temporarily unavailable',
                 };
             }
             return {
@@ -76,7 +88,8 @@ export async function verifyPaystackPayment(
         }
         return {
             verified: false,
-            error: 'Unknown error verifying payment',
+            unavailable: true,
+            error: 'Paystack verification temporarily unavailable',
         };
     }
 }

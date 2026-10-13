@@ -883,6 +883,11 @@
                               "type": "string",
                               "nullable": true
                             },
+                            "vendorPaymentReference": {
+                              "type": "string",
+                              "nullable": true,
+                              "description": "Merchant-reported payment reference for externally collected payments; null for Awoof-collected payments."
+                            },
                             "managedPayment": {
                               "type": "boolean",
                               "description": "True when Awoof collected this payment; vendor status changes are then unavailable."
@@ -966,6 +971,9 @@
           },
           "404": {
             "description": "Order or vendor profile not found for this vendor"
+          },
+          "422": {
+            "description": "Invalid request shape; field validation failure"
           }
         }
       }

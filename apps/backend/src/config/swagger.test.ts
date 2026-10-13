@@ -611,6 +611,7 @@ test('published merchant operations document request validation failures', () =>
         ['/api/merchant-verification/product-claims', 'post'],
         ['/api/vendors/transactions/report', 'post'],
         ['/api/vendors/orders/{id}/status', 'put'],
+        ['/api/vendors/orders/{id}', 'get'],
     ];
     for (const [path, method] of operations) {
         const operation = spec.paths[path]?.[method];
@@ -632,6 +633,7 @@ test('merchant order read is published for refund recovery', () => {
     const order = operation.responses['200']?.content?.['application/json']?.schema?.properties?.data?.properties?.order;
     assert.ok(order);
     assert.deepEqual(order.properties.status.enum, ['pending', 'completed', 'failed', 'refunded']);
+    assert.ok(order.properties.vendorPaymentReference, 'order read returns the merchant-reported payment reference');
     assert.ok(operation.responses['401']);
     assert.ok(operation.responses['404']);
 });

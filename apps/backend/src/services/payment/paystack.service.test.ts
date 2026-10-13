@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import axios from 'axios';
 import { config } from '../../config/env.js';
-import { createPaystackSubaccount, updatePaystackSubaccount, PaystackMutationRejectedError, isDefinitiveInitializationRejection, resolvePaystackAccount, verifyMerchantPaystackPayment } from './paystack.service.js';
+import { createPaystackSubaccount, updatePaystackSubaccount, PaystackMutationRejectedError, isDefinitiveInitializationRejection, resolvePaystackAccount, verifyMerchantPaystackPayment, verifyPaystackPayment } from './paystack.service.js';
 
 test('initialization distinguishes rejected requests from ambiguous provider outcomes', () => {
     const error = (status: number, message: string, rejected = true) => ({ isAxiosError: true, response: { status, data: { status: !rejected, message } } });
@@ -104,5 +104,33 @@ test('merchant verification selects only authenticated vendor credentials and va
     } finally {
         axios.get = originalGet;
         Object.assign(config.paystack, { merchantSecretKeys: oldKeys });
+    }
+});
+
+test('platform verification classifies transient provider failures as unavailable', async () => {
+    const original = axios.get;
+    const key = config.paystack.secretKey;
+    Object.assign(config.paystack, { secretKey: 'synthetic-key' });
+    try {
+        for (const failure of [
+            { isAxiosError: true, code: 'ECONNABORTED' },
+            { isAxiosError: true, response: { status: 401, data: { message: 'Invalid key' } } },
+            { isAxiosError: true, response: { status: 429, data: { message: 'Too many requests' } } },
+            { isAxiosError: true, response: { status: 503, data: { message: 'Unavailable' } } },
+        ]) {
+            axios.get = (async () => { throw failure; }) as typeof axios.get;
+            const result = await verifyPaystackPayment('ref-transient');
+            assert.equal(result.verified, false);
+            assert.equal(result.unavailable, true);
+        }
+        axios.get = (async () => { throw { isAxiosError: true, response: { status: 404, data: { message: 'not found' } } }; }) as typeof axios.get;
+        assert.deepEqual(await verifyPaystackPayment('ref-missing'), { verified: false, error: 'Payment reference not found' });
+        axios.get = (async () => { throw { isAxiosError: true, response: { status: 400, data: { message: 'Invalid reference' } } }; }) as typeof axios.get;
+        const definitive = await verifyPaystackPayment('ref-invalid');
+        assert.equal(definitive.verified, false);
+        assert.equal(definitive.unavailable, undefined);
+    } finally {
+        axios.get = original;
+        Object.assign(config.paystack, { secretKey: key });
     }
 });

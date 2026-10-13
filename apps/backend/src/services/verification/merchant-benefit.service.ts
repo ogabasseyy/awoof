@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 import type { Pool, PoolClient } from 'pg';
-import { BadRequestError, ConflictError, NotFoundError, UnauthorizedError } from '../../common/errors/AppError.js';
+import { BadRequestError, ConflictError, NotFoundError, ServiceUnavailableError, UnauthorizedError } from '../../common/errors/AppError.js';
 import { recheckReportingKeyInTransaction } from '../auth/reporting-key.service.js';
 import { verifyPaystackPayment, verifyMerchantPaystackPayment } from '../payment/paystack.service.js';
 import { calculateMarketplaceCommission, effectiveVendorCommissionRate } from '../payment/checkout.service.js';
@@ -320,7 +320,7 @@ export async function reportMerchantBenefit(
     auth: ReportBenefitAuth,
     input: ReportBenefitInput,
     dependencies: {
-        verifyPaystack?: (reference: string) => Promise<{ verified: boolean; amount?: number; error?: string }>;
+        verifyPaystack?: (reference: string) => Promise<{ verified: boolean; amount?: number; error?: string; unavailable?: boolean }>;
         verifyMerchantPaystack?: typeof verifyMerchantPaystackPayment;
     } = {},
 ): Promise<ReportBenefitResult> {
@@ -345,6 +345,9 @@ export async function reportMerchantBenefit(
     if (candidate.transaction_id === null && input.paymentGateway === 'paystack') {
         const verify = dependencies.verifyPaystack ?? verifyPaystackPayment;
         const payment = await verify(input.paymentReference);
+        if (!payment.verified && payment.unavailable) {
+            throw new ServiceUnavailableError('Paystack verification temporarily unavailable; retry the identical report');
+        }
         if (!payment.verified) throw new BadRequestError(payment.error || 'Payment verification failed');
         if (payment.amount == null || !Number.isFinite(payment.amount) || nairaToKobo(payment.amount) !== input.amountKobo) {
             throw new BadRequestError(

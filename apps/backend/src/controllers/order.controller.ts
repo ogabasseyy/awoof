@@ -196,11 +196,9 @@ export class OrderController {
         }
 
         const vendorId = vendorResult.rows[0].id as string;
-        const orderId = req.params.id as string;
-
-        if (!orderId) {
-            throw new BadRequestError('Order ID is required');
-        }
+        // Validate before the UUID comparison: a typo must be a client
+        // error (422), not a database 22P02 failure.
+        const { id: orderId } = updateOrderStatusParams.parse(req.params);
 
         const result = await db.query(
             `SELECT 
@@ -209,6 +207,7 @@ export class OrderController {
                 t.commission,
                 t.status,
                 t.paystack_reference,
+                t.vendor_payment_reference,
                 t.payment_source,
                 t.created_at,
                 t.updated_at,
@@ -242,6 +241,7 @@ export class OrderController {
             commission: parseFloat(row.commission),
             status: row.status,
             paystackReference: row.paystack_reference,
+            vendorPaymentReference: row.vendor_payment_reference,
             managedPayment: row.payment_source === 'awoof' && Boolean(row.paystack_reference),
             createdAt: row.created_at,
             updatedAt: row.updated_at,
