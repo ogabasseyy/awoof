@@ -253,6 +253,9 @@ case "${got}" in *"[REDACTED]"*) got_nl="redacted";; *) got_nl="leaked";; esac
 assert_eq "redactjson-doubly-escaped-newline" "redacted" "${got_nl}"
 case "${got}" in *"fake.live"*) got_left="yes";; *) got_left="no";; esac
 assert_eq "redactjson-newline-no-fragment" "no" "${got_left}"
+python3 -c "import json; print(json.dumps({'a': 'x fake.live' + '\\\\' * 32 + 'u002fkey+abc' + '\\\\' * 32 + 'u003d123 y'}))" > "${jfix}"
+got="$(META_API_KEY="${jkey}" redact_json_key < "${jfix}" | jq -r '.a')"
+assert_eq "redactjson-deep-nesting" "x [REDACTED] y" "${got}"
 if printf 'not json' | META_API_KEY="${jkey}" redact_json_key >/dev/null 2>&1; then got_rc="0"; else got_rc="nonzero"; fi
 assert_eq "redactjson-nonjson-rc" "nonzero" "${got_rc}"
 if printf '{}' | META_API_KEY='' redact_json_key >/dev/null 2>&1; then got_rc="0"; else got_rc=$?; fi
@@ -283,6 +286,9 @@ got="$(META_API_KEY="${mixkey}" redact "$(decode_json_escapes < "${mixfix}")")"
 assert_eq "decode-double-mixed-redacted" 'error: {"key":"[REDACTED]"} tail' "${got}"
 case "${got}" in *"fake.live"*) got_left="yes";; *) got_left="no";; esac
 assert_eq "decode-double-no-key-fragment" "no" "${got_left}"
+python3 -c "print('err fake.live' + '\\\\' * 100000 + 'u002fkey+abc=123 tail', end='')" > "${mixfix}"
+got="$(META_API_KEY="${mixkey}" redact "$(decode_json_escapes < "${mixfix}")")"
+assert_eq "decode-deep-run-redacted" 'err [REDACTED] tail' "${got}"
 rm -f "${mixfix}"
 
 # --- neutralize_workflow_commands (run.sh stderr-tail P2) ---
@@ -358,6 +364,9 @@ if [[ "${got1}" == "${got2}" ]]; then got_same="yes"; else got_same="no"; fi
 assert_eq "manifest-distinct" "no" "${got_same}"
 if manifest_paths "/nonexistent-muse-test-$$" >/dev/null 2>&1; then got_rc="0"; else got_rc="nonzero"; fi
 assert_eq "manifest-missing-rc" "nonzero" "${got_rc}"
+python3 -c "import json; json.dump([{'filename': 'new.ts', 'previous_filename': 'old.ts'}, {'filename': 'plain.ts', 'previous_filename': ''}, {'filename': 'solo.ts'}], open('${man_fix}', 'w'))"
+got="$(manifest_paths "${man_fix}")"
+assert_eq "manifest-rename-source" "$(printf 'old.ts -> new.ts\nplain.ts\nsolo.ts')" "${got}"
 rm -f "${man_fix}" "${col_fix}"
 
 # --- ranges.pl ---
@@ -485,6 +494,15 @@ if (cd "${gdir}/ws" && RUNNER_TEMP="${gdir}/tmp" SCRIPT_DIR="${SCRIPT_DIR}" bash
 assert_eq "guidance-small-ok" "0" "${got_rc}"
 case "$(cat "${gdir}/tmp/muse-guidance.md" 2>/dev/null)" in *"root rules"*) got_g="yes";; *) got_g="no";; esac
 assert_eq "guidance-small-emits-root" "yes" "${got_g}"
+mkdir -p "${gdir}/ws/a/b"
+printf 'parent-rule\n' > "${gdir}/ws/a/AGENTS.md"
+printf 'child-rule\n' > "${gdir}/ws/a/b/AGENTS.md"
+printf '[{"filename":"a/b/f.ts"}]' > "${gdir}/tmp/muse-files.json"
+(cd "${gdir}/ws" && RUNNER_TEMP="${gdir}/tmp" SCRIPT_DIR="${SCRIPT_DIR}" bash "${guidance_script}") >/dev/null 2>&1
+pline="$(grep -n 'parent-rule' "${gdir}/tmp/muse-guidance.md" 2>/dev/null | head -n 1 | cut -d: -f1)"
+cline="$(grep -n 'child-rule' "${gdir}/tmp/muse-guidance.md" 2>/dev/null | head -n 1 | cut -d: -f1)"
+if [[ -n "${pline}" && -n "${cline}" ]] && (( pline < cline )); then got_o="root-first"; else got_o="leaf-first"; fi
+assert_eq "guidance-root-first-order" "root-first" "${got_o}"
 python3 -c "import json; print(json.dumps([{'filename': 'd%03d/f.ts' % i} for i in range(300)]))" > "${gdir}/tmp/muse-files.json"
 if (cd "${gdir}/ws" && RUNNER_TEMP="${gdir}/tmp" SCRIPT_DIR="${SCRIPT_DIR}" bash "${guidance_script}") >/dev/null 2>&1; then got_rc="0"; else got_rc="nonzero"; fi
 assert_eq "guidance-cap-fails-closed" "nonzero" "${got_rc}"
@@ -655,6 +673,8 @@ prompt_script="${SCRIPT_DIR}/prompt.sh"
 printf '[{"filename":"a.ts"}]' > "${sdir}/tmp/muse-files.json"
 if PATH="${sdir}/bin:${PATH}" GH_TOKEN="fake" GITHUB_REPOSITORY="t/t" PR_NUMBER="1" GITHUB_OUTPUT="${sdir}/tmp/out.txt" RUNNER_TEMP="${sdir}/tmp" SCRIPT_DIR="${SCRIPT_DIR}" GITHUB_WORKSPACE="${sdir}/ws" bash "${prompt_script}" >/dev/null 2>&1; then got_rc="0"; else got_rc="nonzero"; fi
 assert_eq "prompt-symlink-small-ok" "0" "${got_rc}"
+case "$(cat "${sdir}/tmp/muse-prompt.md" 2>/dev/null)" in *"closest to the changed file"*) got_p="yes";; *) got_p="no";; esac
+assert_eq "prompt-guidance-precedence" "yes" "${got_p}"
 i=0
 while (( i < 55 )); do
   ln -s "/target${i}" "${sdir}/ws/link${i}"

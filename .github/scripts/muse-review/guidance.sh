@@ -121,12 +121,22 @@ while IFS= read -r -d '' changed; do
     break
   fi
   if [[ "${changed}" == */* ]]; then dir="${changed%/*}"; else dir="."; fi
-  # Cap enforced inside the traversal too: a single deeply nested path
-  # would otherwise append two candidates per ancestor without rechecking.
-  while [[ "${dir}" != "." && "${dir}" != "/" ]] && (( ${#MUSE_CANDIDATES[@]} < candidate_cap )); do
-    seen_add "${dir}/AGENTS.md"
-    seen_add "${dir}/CLAUDE.md"
+  # Collect the ancestor chain leaf-first, then insert root-to-leaf:
+  # scoped-guidance precedence is closest-scope-wins, so parents must
+  # precede their children in candidate (and therefore prompt) order —
+  # leaf-first insertion would let a later parent read as the override.
+  chain=()
+  while [[ "${dir}" != "." && "${dir}" != "/" ]]; do
+    chain+=("${dir}")
     if [[ "${dir}" == */* ]]; then dir="${dir%/*}"; else dir="."; fi
+  done
+  # Cap enforced inside the insertion too: a single deeply nested path
+  # would otherwise append two candidates per ancestor without rechecking.
+  ci=${#chain[@]}
+  while (( ci > 0 )) && (( ${#MUSE_CANDIDATES[@]} < candidate_cap )); do
+    ci=$(( ci - 1 ))
+    seen_add "${chain[${ci}]}/AGENTS.md"
+    seen_add "${chain[${ci}]}/CLAUDE.md"
   done
   if (( ${#MUSE_CANDIDATES[@]} >= candidate_cap )); then
     guidance_cap_hit=true

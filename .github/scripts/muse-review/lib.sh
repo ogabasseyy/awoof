@@ -229,9 +229,11 @@ redact() {
 # Nested escaping (JSON inside a JSON string) hides the key one level
 # deeper: the parsed value still carries \uXXXX text that a downstream
 # decode revives. So each backslash-bearing string is also repeatedly
-# JSON-unescaped (bounded) and replaced ONLY when the decoded form
-# actually contains the key — key-free strings keep exact original
-# bytes. Unescaping is a manual codepoint state machine, not a
+# JSON-unescaped to a fixed point (every changing pass strictly
+# shortens the string, so an input-length bound always suffices; no
+# fixed pass limit for nesting depth to exceed) and replaced ONLY when
+# the decoded form actually contains the key — key-free strings keep
+# exact original bytes. Unescaping is a manual codepoint state machine, not a
 # quote-wrap reparse: values containing raw quotes or control chars
 # (common in finding bodies) cannot reparse as bare JSON string
 # content, and a reparse-or-keep fallback would skip decoding exactly
@@ -277,12 +279,19 @@ redact_json_key() {
              elif $st.mode == 2 then [92, 117] + $st.hex
              else [] end)) | implode);
     def _unesc: (. as $s | try _unesc1 catch $s);
-    def _deep(n): if n <= 0 then .
-      else (_unesc as $u | if $u == . then . else ($u | _deep(n - 1)) end) end;
+    def _deep:
+      (. as $orig
+       | {s: ., done: false}
+       | reduce range(0; ($orig | length) + 1) as $i (.;
+           if .done then .
+           else ((.s | _unesc) as $u
+                 | if $u == .s then .done = true else .s = $u end)
+           end)
+       | .s);
     walk(if type == "string" then
       (if contains($k) then (. | split($k) | join("[REDACTED]"))
        elif contains("\\") then
-         (. as $orig | (_deep(5)) as $dec
+         (. as $orig | (_deep) as $dec
           | if ($dec | contains($k)) then ($dec | split($k) | join("[REDACTED]"))
             else $orig end)
        else . end)
@@ -299,10 +308,12 @@ redact_json_key() {
 # decode level — or a lookbehind sparing escaped backslashes — leaves it
 # reversible in the log/post. Each pass collapses \\ first (one nesting
 # level), then decodes \uXXXX and \/; every changing pass strictly
-# shortens the text, so the loop terminates (capped anyway). Aggressive
-# by design: any over-decoding only over-redacts, never leaks.
+# shortens the text and at least halves any backslash run, so the loop
+# reaches its fixed point long before the pass cap (64 halvings exceed
+# any backslash run a real input can contain). Aggressive by design:
+# any over-decoding only over-redacts, never leaks.
 decode_json_escapes() {
-  perl -pe '$c = 0; while ($c++ < 10) { $p = $_; s/\\\\/\\/g; s/\\u([0-9a-fA-F]{4})/chr(hex($1))/ge; s/\\\//\//g; last if $_ eq $p; }'
+  perl -pe '$c = 0; while ($c++ < 64) { $p = $_; s/\\\\/\\/g; s/\\u([0-9a-fA-F]{4})/chr(hex($1))/ge; s/\\\//\//g; last if $_ eq $p; }'
 }
 
 # Neutralize Actions workflow commands in untrusted log text (stdin to
@@ -318,9 +329,15 @@ neutralize_workflow_commands() {
 # per line. Backslashes escape FIRST, then newlines — escaping newlines
 # alone maps `a<LF>b` and a literal `a\nb` to the same bytes, so the
 # shell-disabled reviewer could miss a file it cannot re-derive. Mirrors
-# jq @tsv (which the changed-files summary already relies on).
+# jq @tsv (which the changed-files summary already relies on). Renames
+# render as `old -> new`: past the summary/diff/supplement caps the
+# manifest is the only complete record, and without the source path the
+# reviewer cannot discover that the old path was removed.
 manifest_paths() {
-  jq -r '.[].filename | gsub("\\\\"; "\\\\") | gsub("\n"; "\\n")' "$1" 2>/dev/null
+  jq -r 'def esc: gsub("\\\\"; "\\\\") | gsub("\n"; "\\n");
+    .[] | (.previous_filename // "") as $prev
+    | if ($prev | length) > 0 then "\($prev | esc) -> \(.filename | esc)"
+      else (.filename | esc) end' "$1" 2>/dev/null
 }
 
 # Guidance trust: a PR base branch is contributor-controlled unless it is the
