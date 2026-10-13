@@ -59,19 +59,22 @@ export function createMerchant({ origin, apiOrigin, webOrigin, privateKey, produ
     // Paystack returns the authorization URL only from initialization, never
     // from verification, so a held reference found upstream is abandoned and
     // replaced: only a reference unknown upstream is safe to initialize.
-    let response; let body;
+    let response;
     try {
       response = await fetchImpl(`https://api.paystack.co/transaction/verify/${encodeURIComponent(current.initializedReference)}`, { headers: { Authorization: `Bearer ${paystackSecret}` }, redirect: 'error', signal: AbortSignal.timeout(15_000) });
-      body = await response.json();
     } catch (error) {
       throw fail('Test payment initialization outcome still unknown; retry later', 502);
     }
-    // A revoked/rotated secret fails reconciliation the same way it fails
-    // initialization: a retryable configuration outage (503) with the held
+    // Classify credentials from the status before parsing: an edge-generated
+    // 401/403 may carry an empty or non-JSON body, and parsing first would
+    // degrade the documented 503 diagnosis to a generic 502. A revoked or
+    // rotated secret is a retryable configuration outage with the held
     // reference preserved, never a generic unknown outcome.
     if (response.status === 401 || response.status === 403) {
       throw fail('Merchant Paystack test credentials rejected; fix the server secret and retry to reconcile the held reference', 503);
     }
+    let body;
+    try { body = await response.json(); } catch { body = undefined; }
     if (response.status === 404 || (response.status === 400 && /not.?found/i.test(body?.message ?? ''))) return;
     const payment = body?.data;
     if (!response.ok || body?.status !== true || payment?.reference !== current.initializedReference) throw fail('Test payment initialization outcome still unknown; retry later', 502);
@@ -158,15 +161,19 @@ export function createMerchant({ origin, apiOrigin, webOrigin, privateKey, produ
             await reconcileInitialization(current);
           }
           current.initializedReference ??= `awoof-${randomUUID()}`; current.state = 'payment_initializing'; store.put(current.id, current);
-          let response; let initialized;
+          let response;
           try {
             response = await fetchImpl('https://api.paystack.co/transaction/initialize', { method: 'POST', redirect: 'error', signal: AbortSignal.timeout(15_000), headers: { Authorization: `Bearer ${paystackSecret}`, 'Content-Type': 'application/json' }, body: JSON.stringify({ email, amount: String(current.amountKobo), currency: 'NGN', reference: current.initializedReference, callback_url: `${origin}/payments/paystack-return`, metadata: JSON.stringify(merchantPaystackMetadata({ vendorId, productId: current.productId, benefitAuthorizationId: current.receipt.benefitAuthorizationId })) }) });
-            initialized = await response.json();
           } catch (error) {
             current.state = 'payment_initialization_unknown'; store.put(current.id, current);
             throw fail('Test payment initialization outcome unknown; retry to reconcile the held reference', 502);
           }
-          if (!response.ok || initialized.status !== true || initialized.data?.reference !== current.initializedReference) {
+          // Parse after the fetch so status-driven classification below
+          // (401/403 credentials, ambiguous 5xx) survives empty/non-JSON
+          // edge bodies instead of collapsing into the network-unknown path.
+          let initialized;
+          try { initialized = await response.json(); } catch { initialized = undefined; }
+          if (!response.ok || initialized?.status !== true || initialized.data?.reference !== current.initializedReference) {
             // Provider authentication failures mean the configured test secret
             // was revoked or misconfigured: a merchant-side configuration
             // outage, not a shopper email problem. Hold the reference and stay
