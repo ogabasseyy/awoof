@@ -181,3 +181,20 @@ test('authentication failure keeps the callback binding and purpose mismatch nev
     assert.equal(exchanges, 2);
   } finally { await new Promise(r => app.server.close(r)); app.store.close(); }
 });
+test('server report surfaces unconfirmed settlement as a non-success status', async () => {
+  const p = await port(); const origin = `https://127.0.0.1:${p}`; const reportSecret = 's'.repeat(40); let checkoutId;
+  const app = createMerchant({ origin, apiOrigin: 'https://api.test', webOrigin: 'https://awoof.test', privateKey: 'awoof_test', productId: 'product', vendorId: 'vendor', amountKobo: 80000, paymentGateway: 'other', reportSecret, dbPath: ':memory:', fetchImpl: async (url, init) => {
+    const body = JSON.parse(init.body);
+    if (url.endsWith('/claim-sessions')) { checkoutId = body.merchantCheckoutId; return Response.json({ success: true, data: { claimSessionId: 'session' } }); }
+    if (url.endsWith('/exchange')) return Response.json({ success: true, data: { eligible: true, assuranceMethod: 'enrollment', campaignId: checkoutId, benefitAuthorizationId: 'benefit', validUntil: new Date(Date.now() + 600000).toISOString() } });
+    return Response.json({ success: false, error: 'temporarily unavailable' }, { status: 503 });
+  } });
+  await new Promise(r => app.server.listen(p, '127.0.0.1', r)); const request = (path, init = {}) => fetch(`http://127.0.0.1:${p}${path}`, { redirect: 'manual', ...init });
+  try {
+    const start = await request('/checkout', { method: 'POST', headers: { Origin: origin } }); const cookie = start.headers.get('set-cookie').split(';')[0];
+    await request('/awoof/student-claim?assertion=' + 'g'.repeat(43), { headers: { Cookie: cookie } });
+    const reported = await request('/payments/report', { method: 'POST', headers: { Authorization: `Bearer ${reportSecret}` }, body: JSON.stringify({ merchantCheckoutId: checkoutId, paymentReference: 'paid-reference' }) });
+    assert.equal(reported.status, 503);
+    assert.equal(app.store.get(checkoutId).state, 'reconciliation_required');
+  } finally { await new Promise(r => app.server.close(r)); app.store.close(); }
+});

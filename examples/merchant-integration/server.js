@@ -226,7 +226,11 @@ export function createMerchant({ origin, apiOrigin, webOrigin, privateKey, produ
           if (current.paymentReference && current.paymentReference !== body.paymentReference) throw fail('Checkout already has a payment');
           current.paymentReference = body.paymentReference; current.state = current.state === 'reported' ? 'reported' : 'paid_pending_report'; store.put(current.id, current); await report(current);
         });
-        json(res, 200, { state: store.get(row.id).state }); return;
+        const settled = store.get(row.id);
+        // Only `reported` is settled. A paid checkout held for
+        // reconciliation must not look successful to response.ok callers:
+        // surface the upstream status (502 when none was recorded).
+        json(res, settled.state === 'reported' ? 200 : (settled.reconciliation?.httpStatus ?? 502), { state: settled.state }); return;
       }
       if (req.method === 'POST' && url.pathname === '/webhooks/paystack') {
         if (synthetic || paymentGateway !== 'paystack_merchant' || !paystackSecret) throw fail('Independent merchant Paystack webhook unconfigured', 503);

@@ -58,7 +58,7 @@ Set these in your server's secret/environment configuration, never a frontend bu
 | `AWOOF_VENDOR_ID` | Your configured vendor UUID. |
 | `AWOOF_PRODUCT_ID` | Active Awoof product UUID belonging to that merchant. |
 | `STUDENT_PRICE_KOBO` | Agreed single-item student price in integer NGN kobo, exactly matching Awoof's product quote. For example NGN 800 is `80000`. |
-| `AWOOF_EXPECTED_PURPOSE` | Exact student-approved consent wording for this checkout. The reference rejects any receipt whose `purpose` differs, because the browser handoff is student-editable. Synthetic mode defaults to the simulator's synthetic wording. |
+| `AWOOF_EXPECTED_PURPOSE` | Exact student-approved consent wording for this checkout. For the hosted claim flow the required literal is `Student discount claim` — the wording the Awoof marketplace claim page records; it is not merchant-selected. The reference rejects any receipt whose `purpose` differs, because the browser handoff is student-editable. Synthetic mode defaults to the simulator's synthetic wording. |
 | `PAYMENT_GATEWAY` | `paystack_merchant`, `paystack` or explicitly merchant-attested `other`; see below. |
 | `MERCHANT_DB_PATH` | Optional durable local SQLite path (default `.local/merchant.sqlite` relative to example working directory). Keep the same path across restarts. |
 | `PORT` | Optional loopback server port (default `4100`). |
