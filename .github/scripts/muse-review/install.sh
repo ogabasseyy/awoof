@@ -11,11 +11,11 @@
 # Env in: HOME, GITHUB_PATH. Must run on Linux (runner: ubuntu-latest).
 set -euo pipefail
 
-MUSE_VERSION="1.4.1-R4503.1"
-# From manifest.json for MUSE_VERSION (retrieved 2026-09-30 over TLS):
-# https://lookaside.facebook.com/lookaside/muse/download/?channel=muse&version=1.4.1-R4503.1&file=manifest.json
-SHA_X86_LINUX="8b53c9cdbc025bc2d9068bc7016e2c1e51c3a0c608821da17528ad23be900a12"
-SHA_AARCH64_LINUX="a6d46239975adac282aa829d2a5bd1cd3119334c18ecfa776d4377daebddb595"
+MUSE_VERSION="1.4.7-R6101.1"
+# From manifest.json for MUSE_VERSION (retrieved 2026-10-14 over TLS):
+# https://lookaside.facebook.com/lookaside/muse/download/?channel=muse&version=1.4.7-R6101.1&file=manifest.json
+SHA_X86_LINUX="36e3dac91f56c15572b95be55d70ee9fd9685cd9ab49f747bab4746c8d7c2518"
+SHA_AARCH64_LINUX="48db3c7468cd4f401eff9b415fb7e0cdfe0351fb1730649ceae2a0f766e23b85"
 
 arch="$(uname -m)"
 case "${arch}" in

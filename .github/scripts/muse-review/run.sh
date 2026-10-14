@@ -41,6 +41,15 @@ fi
 # are team-scoped; no narrower scope exists) and rotated on any
 # suspicious review output. Full containment would need runner-level egress
 # filtering, which stock GitHub-hosted runners do not offer.
+# Workspace trust is deliberately left UNRESOLVED (no --trust-workspace):
+# trusting would load the PR checkout's own skills, rules, and hooks
+# into the key-holding agent. Headless exec on a fresh runner HOME
+# proceeds in the untrusted state instead — project rules are ignored
+# by the CLI and the applicable guidance reaches the model through the
+# assembled prompt — so no trust prompt can stall the run and no
+# PR-controlled configuration executes. Verified against the pinned
+# CLI on a fresh HOME: the run starts, notes the untrusted workspace,
+# and completes.
 set +e
 env -u GITHUB_TOKEN -u GH_TOKEN "${HOME}/.local/bin/muse" exec \
   --prompt-file "${PROMPT_FILE}" \
