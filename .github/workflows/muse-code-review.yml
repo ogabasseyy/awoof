@@ -106,14 +106,16 @@ permissions:
 concurrency:
   # Attempt-suffixed group: first attempts share the PR group (new pushes
   # cancel superseded runs, saving quota), while manual reruns land in a
-  # separate group where they can neither cancel nor queue-replace a newer
-  # head's in-flight review — the rerun's own head-SHA check skips it.
+  # separate group (keyed by their own run_id, since per-run attempt
+  # counters collide across different runs) where they can neither cancel
+  # nor queue-replace a newer head's in-flight review — the rerun's own
+  # head-SHA check skips it.
   # Ignored title/body edits get their own lane: GitHub replaces a pending
   # run when another queues in the same group regardless of
   # cancel-in-progress, so a no-op edit must never share the live group and
   # evict a pending synchronize review.
   group: >-
-    muse-code-review-${{ github.event.pull_request.number }}-attempt-${{ github.run_attempt }}${{ github.event.action == 'edited' && github.event.changes.base == null && '-ignored' || '' }}
+    muse-code-review-${{ github.event.pull_request.number }}-attempt-${{ github.run_attempt }}${{ github.run_attempt > 1 && format('-run-{0}', github.run_id) || '' }}${{ github.event.action == 'edited' && github.event.changes.base == null && '-ignored' || '' }}
   cancel-in-progress: ${{ github.run_attempt == 1 && (github.event.action != 'edited' || github.event.changes.base != null) }}
 
 jobs:

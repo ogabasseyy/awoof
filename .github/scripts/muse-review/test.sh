@@ -37,9 +37,9 @@ assert_eq "neutralize-symlink-targets" 'evil <\/Symlink_Targets > end' "${got}"
 # than a genuine closer and must not render identically; unrelated
 # backslash escapes pass through untouched.
 got="$(printf '%s' 'pre <\/diff> post' | neutralize_tags)"
-assert_eq "neutralize-preescaped-distinct" 'pre <\\/diff> post' "${got}"
+assert_eq "neutralize-preescaped-distinct" 'pre <\\\/diff> post' "${got}"
 got="$(printf '%s' 'keep \xFF and <\/pr_title>' | neutralize_tags)"
-assert_eq "neutralize-injective-mixed" 'keep \xFF and <\\/pr_title>' "${got}"
+assert_eq "neutralize-injective-mixed" 'keep \xFF and <\\\/pr_title>' "${got}"
 
 # --- bound_untrusted ---
 big="$(python3 -c "print('x'*5000)")"
@@ -488,12 +488,18 @@ rm -f "${man_fix}" "${col_fix}"
 
 # --- ranges.pl ---
 diff_fix="$(mktemp)"
-printf 'diff --git "a/foo\\tb.ts" "b/foo\\tb.ts"\n--- "a/foo\\tb.ts"\n+++ "b/foo\\tb.ts"\n@@ -1,3 +1,4 @@ ctx\n+x\n+++ b/forged.ts\n+y\ndiff --git a/p.ts b/p.ts\n--- a/p.ts\n+++ b/p.ts\n@@ -10 +12,2 @@\n+y\n+z\n--- b/victim.ts\n+++ b/other.ts\n@@ -20 +22,2 @@\n+q\n+r\ndiff --git a/d.ts b/d.ts\n--- a/d.ts\n+++ /dev/null\n@@ -1 +0,0 @@\n-gone\ndiff --git a/my file.ts b/my file.ts\n--- "a/my file.ts"\t\n+++ "b/my file.ts"\t\n@@ -2 +2 @@\n+z\n' > "${diff_fix}"
+printf 'diff --git "a/foo\\tb.ts" "b/foo\\tb.ts"\n--- "a/foo\\tb.ts"\n+++ "b/foo\\tb.ts"\n@@ -1,3 +1,4 @@ ctx\n+x\n+++ b/forged.ts\n+y\n kept\ndiff --git a/p.ts b/p.ts\n--- a/p.ts\n+++ b/p.ts\n@@ -10 +12,2 @@\n+y\n+z\n--- b/victim.ts\n+++ b/other.ts\n@@ -20 +22,2 @@\n+q\n+r\ndiff --git a/d.ts b/d.ts\n--- a/d.ts\n+++ /dev/null\n@@ -1 +0,0 @@\n-gone\ndiff --git a/my file.ts b/my file.ts\n--- "a/my file.ts"\t\n+++ "b/my file.ts"\t\n@@ -2 +2 @@\n+z\n' > "${diff_fix}"
 got="$(perl "${SCRIPT_DIR}/ranges.pl" "${diff_fix}")"
 assert_eq "ranges-json" '[{"path":"foo\u0009b.ts","start":1,"end":4},{"path":"p.ts","start":12,"end":13},{"path":"p.ts","start":22,"end":23},{"path":"my file.ts","start":2,"end":2}]' "${got}"
 if printf '%s' "${got}" | jq empty 2>/dev/null; then got_jq="yes"; else got_jq="no"; fi
 assert_eq "ranges-valid-json" "yes" "${got_jq}"
 assert_eq "ranges-missing-file" "[]" "$(perl "${SCRIPT_DIR}/ranges.pl" "/nonexistent-muse-test-$$")"
+# Truncation clamp: a header declaring more new-side lines than the
+# (byte-cut) body contains validates only the lines actually present,
+# and a hunk with no body present validates nothing.
+printf 'diff --git a/t.ts b/t.ts\n--- a/t.ts\n+++ b/t.ts\n@@ -5 +10,6 @@\n+y\n+z\n@@ -30 +40,3 @@\n' > "${diff_fix}"
+got="$(perl "${SCRIPT_DIR}/ranges.pl" "${diff_fix}")"
+assert_eq "ranges-truncated-clamp" '[{"path":"t.ts","start":10,"end":11}]' "${got}"
 rm -f "${diff_fix}"
 
 # --- clean.jq + validate.jq ---

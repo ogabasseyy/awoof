@@ -255,27 +255,27 @@ xbase_levels=()
 head_levels=()
 for candidate in "${MUSE_CANDIDATES[@]+"${MUSE_CANDIDATES[@]}"}"; do
   lvl="$(guidance_level "${candidate}")"
-  # Standalone candidates (CONTRIBUTING.md, copilot instructions) always
-  # apply: their level is not a directory path and must never deduplicate
-  # against one — a legal directory literally named `own:CONTRIBUTING.md`
-  # would otherwise mint the same level as the root candidate and
-  # suppress the scoped instruction file below it.
+  # Standalone candidates always apply and are identified by candidate
+  # identity, never by name pattern: only the two root non-instruction
+  # files are standalone, so a legal directory named `own:CONTRIBUTING.md`
+  # (or starting with `own:`) keeps normal directory-level semantics for
+  # the instruction files beneath it instead of being treated standalone.
   standalone=false
-  case "${lvl}" in own:*) standalone=true ;; esac
+  case "${candidate}" in CONTRIBUTING.md|.github/copilot-instructions.md) standalone=true ;; esac
   if in_candidate_list "${candidate}" "${base_list[@]+"${base_list[@]}"}" \
     && { [[ "${standalone}" == "true" ]] || ! in_candidate_list "${lvl}" "${base_levels[@]+"${base_levels[@]}"}"; }; then
     base_winners+=("${candidate}")
-    base_levels+=("${lvl}")
+    [[ "${standalone}" == "true" ]] || base_levels+=("${lvl}")
   fi
   if in_candidate_list "${candidate}" "${xbase_list[@]+"${xbase_list[@]}"}" \
     && { [[ "${standalone}" == "true" ]] || ! in_candidate_list "${lvl}" "${xbase_levels[@]+"${xbase_levels[@]}"}"; }; then
     xbase_winners+=("${candidate}")
-    xbase_levels+=("${lvl}")
+    [[ "${standalone}" == "true" ]] || xbase_levels+=("${lvl}")
   fi
   if head_readable "${candidate}" \
     && { [[ "${standalone}" == "true" ]] || ! in_candidate_list "${lvl}" "${head_levels[@]+"${head_levels[@]}"}"; }; then
     head_winners+=("${candidate}")
-    head_levels+=("${lvl}")
+    [[ "${standalone}" == "true" ]] || head_levels+=("${lvl}")
   fi
 done
 for candidate in "${MUSE_CANDIDATES[@]+"${MUSE_CANDIDATES[@]}"}"; do

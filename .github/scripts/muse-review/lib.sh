@@ -31,7 +31,7 @@ neutralize_tags() {
   # `<\/diff>` becomes `<\\/diff>` — the two source byte strings stay
   # distinguishable. Backslashes elsewhere (e.g. \xFF evidence escapes)
   # pass through untouched.
-  perl -pe 's{<\\(\s*/\s*(?:file|diff|pr_title|pr_description|changed_files|removed_lines|symlink_targets|gitlink_targets|changed_modes|head_ref|base_ref|untrusted_guidance))}{<\\\\$1}gi; s{<\s*/\s*(file|diff|pr_title|pr_description|changed_files|removed_lines|symlink_targets|gitlink_targets|changed_modes|head_ref|base_ref|untrusted_guidance)}{<\\/$1}gi'
+  perl -pe 's{<(\\*)\s*/\s*(file|diff|pr_title|pr_description|changed_files|removed_lines|symlink_targets|gitlink_targets|changed_modes|head_ref|base_ref|untrusted_guidance)}{"<" . ("\\" x (2 * length($1))) . "\\/" . $2}gie; s{<\s*/\s*(file|diff|pr_title|pr_description|changed_files|removed_lines|symlink_targets|gitlink_targets|changed_modes|head_ref|base_ref|untrusted_guidance)}{<\\/$1}gi'
 }
 
 # In-place byte cap for a file. Only replaces the original when truncation
@@ -118,8 +118,9 @@ strip_images() {
   # repeats to a fixed point: removing HTML can form a new markdown
   # image (e.g. `!<img>[]()`) that a single pass would leave for a
   # later keyless pass to remove and rejoin split text. Every change
-  # strictly shortens the input, so the bounded loop converges.
-  perl -0777 -pe '$c=0; while ($c++ < 1000) { $p=$_; s{!\[((?:[^\[\]\\]++|\\.|(\[(?:[^\[\]\\]++|\\.|(?2))*\]))*)\]\(((?:[^()\\]++|\\.|(\((?:[^()\\]++|\\.|(?4))*\)))*)\)}{$1}g; s{!\[((?:[^\[\]\\]++|\\.|(\[(?:[^\[\]\\]++|\\.|(?2))*\]))*)\]\[((?:[^\[\]\\]++|\\.|(\[(?:[^\[\]\\]++|\\.|(?4))*\]))*)\]}{$1}g; s{!(\[((?:[^\[\]\\]++|\\.|(\[(?:[^\[\]\\]++|\\.|(?3))*\]))*)\])(?!\()}{$1}g; s{<\s*img\b[^>]*\balt\s*=\s*"([^"]*)"[^>]*>}{$1}gi; s{<\s*img\b[^>]*\balt\s*=\s*'"'"'([^'"'"']*)'"'"'[^>]*>}{$1}gi; s{<\s*img\b[^>]*>}{}gi; last if $_ eq $p; }'
+  # strictly shortens the input, so the loop needs no iteration ceiling
+  # to converge — a cap would only leave deeper nestings unstripped.
+  perl -0777 -pe 'while (1) { $p=$_; s{!\[((?:[^\[\]\\]++|\\.|(\[(?:[^\[\]\\]++|\\.|(?2))*\]))*)\]\(((?:[^()\\]++|\\.|(\((?:[^()\\]++|\\.|(?4))*\)))*)\)}{$1}g; s{!\[((?:[^\[\]\\]++|\\.|(\[(?:[^\[\]\\]++|\\.|(?2))*\]))*)\]\[((?:[^\[\]\\]++|\\.|(\[(?:[^\[\]\\]++|\\.|(?4))*\]))*)\]}{$1}g; s{!(\[((?:[^\[\]\\]++|\\.|(\[(?:[^\[\]\\]++|\\.|(?3))*\]))*)\])(?!\()}{$1}g; s{<\s*img\b[^>]*\balt\s*=\s*"([^"]*)"[^>]*>}{$1}gi; s{<\s*img\b[^>]*\balt\s*=\s*'"'"'([^'"'"']*)'"'"'[^>]*>}{$1}gi; s{<\s*img\b[^>]*>}{}gi; last if $_ eq $p; }'
 }
 
 # Remove every symlink under a workspace root (except .git) and print the
