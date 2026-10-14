@@ -525,15 +525,16 @@ assert_eq "docs-rollout-gate" "yes" "${got_doc}"
 if jq -e '.type == "object" and .additionalProperties == false and (.required | length) == 3' "${SCRIPT_DIR}/schema.json" >/dev/null 2>&1; then got_schema="yes"; else got_schema="no"; fi
 assert_eq "schema-shape" "yes" "${got_schema}"
 
-# --- paginated PR-files inventory merge (collect.sh) ---
-# gh --paginate emits one JSON document per page; only array pages merge,
-# so a mid-stream error object can never masquerade as a file list.
+# --- pinned compare inventory merge (collect.sh) ---
+# The fallback inventory reads the compare object for the captured
+# base...head pair; only its files array is taken, so an error payload
+# can never masquerade as a file list.
 pages_fix="$(mktemp)"
-printf '[{"filename":"a.ts"}]\n[{"filename":"b.ts"}]\n{"message":"API error"}\n' > "${pages_fix}"
-got="$(jq -s '[.[] | select(type == "array")] | add // []' "${pages_fix}")"
+printf '{"files":[{"filename":"a.ts"},{"filename":"b.ts"}]}\n' > "${pages_fix}"
+got="$(jq -s '[.[] | select(type == "object") | (.files // [])] | add // []' "${pages_fix}")"
 assert_eq "pages-merge" '[{"filename":"a.ts"},{"filename":"b.ts"}]' "$(printf '%s' "${got}" | jq -c '.')"
 printf '{"message":"only errors"}\n' > "${pages_fix}"
-got="$(jq -s '[.[] | select(type == "array")] | add // []' "${pages_fix}")"
+got="$(jq -s '[.[] | select(type == "object") | (.files // [])] | add // []' "${pages_fix}")"
 assert_eq "pages-all-error" '[]' "$(printf '%s' "${got}" | jq -c '.')"
 rm -f "${pages_fix}"
 
@@ -1018,6 +1019,60 @@ want_b64="$(python3 -c "import base64; print(base64.b64encode(b'x-access-token:f
 case "$(sed -n '2p' "${adir}/git.log" 2>/dev/null)" in *"Authorization: Basic ${want_b64}"*) got_a="basic";; *) got_a="wrong";; esac
 assert_eq "collect-fetch-basic-auth" "basic" "${got_a}"
 rm -rf "${adir}"
+
+# --- collect.sh fallback inventory pinned to captured SHAs (script level) ---
+# Stub git lets the base fetch succeed but merge-base fail, forcing the
+# API fallback with base guidance available. Stub gh serves a DIFFERENT
+# (live B) list on the PR-files endpoint and the pinned A list on
+# compare/base...head: the inventory must come from the captured pair,
+# the live endpoint must never be requested, and a 300-file compare
+# response (the silent truncation cap) must fail closed.
+fdir="$(mktemp -d)"
+mkdir -p "${fdir}/tmp" "${fdir}/bin" "${fdir}/repo"
+cat > "${fdir}/bin/git" <<'STUB'
+#!/usr/bin/env bash
+case " $* " in
+  *" merge-base "*) exit 1 ;;
+  *) exit 0 ;;
+esac
+STUB
+cat > "${fdir}/bin/gh" <<'STUB'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "${GH_STUB_LOG}"
+args=" $* "
+case "${args}" in
+  *"/compare/"*) cat "${GH_STUB_COMPARE_JSON}" ;;
+  *"/files"*) printf '[{"filename":"live-b.ts","status":"modified","additions":9,"deletions":9}]\n' ;;
+  *"/pulls/"*) cat "${GH_STUB_PR_JSON}" ;;
+  *) printf '{}\n' ;;
+esac
+STUB
+chmod +x "${fdir}/bin/git" "${fdir}/bin/gh"
+git -C "${fdir}/repo" init -q 2>/dev/null
+fhead="aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+fbase="bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+python3 -c "
+import json
+print(json.dumps({'head': {'sha': '${fhead}', 'ref': 'feat'}, 'base': {'ref': 'main', 'sha': '${fbase}', 'repo': {'default_branch': 'main'}}, 'state': 'open', 'title': 't', 'body': ''}))
+" > "${fdir}/pr.json"
+printf '%s' '{"files":[{"filename":"pinned-a.ts","status":"modified","additions":1,"deletions":1}]}' > "${fdir}/compare.json"
+: > "${fdir}/tmp/out.txt"
+: > "${fdir}/gh.log"
+collect_script="${SCRIPT_DIR}/collect.sh"
+(cd "${fdir}/repo" && GH_STUB_LOG="${fdir}/gh.log" GH_STUB_COMPARE_JSON="${fdir}/compare.json" GH_STUB_PR_JSON="${fdir}/pr.json" PATH="${fdir}/bin:${PATH}" GH_TOKEN="fake" GITHUB_REPOSITORY="t/t" PR_NUMBER="1" HEAD_SHA_EVENT="${fhead}" GITHUB_OUTPUT="${fdir}/tmp/out.txt" RUNNER_TEMP="${fdir}/tmp" SCRIPT_DIR="${SCRIPT_DIR}" bash "${collect_script}") >/dev/null 2>&1
+assert_eq "collect-pinned-files" "pinned-a.ts" "$(jq -r '.[].filename' "${fdir}/tmp/muse-files.json" 2>/dev/null)"
+case "$(cat "${fdir}/gh.log" 2>/dev/null)" in *"compare/${fbase}...${fhead}"*) got_f="pinned-url";; *) got_f="live-url";; esac
+assert_eq "collect-pinned-url" "pinned-url" "${got_f}"
+case "$(cat "${fdir}/gh.log" 2>/dev/null)" in *"/files"*) got_f="live-hit";; *) got_f="no-live";; esac
+assert_eq "collect-no-live-files-endpoint" "no-live" "${got_f}"
+case "$(cat "${fdir}/tmp/muse-vars.env" 2>/dev/null)" in *"MUSE_FILES_FAILED=false"*) got_f="complete";; *) got_f="fallback";; esac
+assert_eq "collect-pinned-complete" "complete" "${got_f}"
+python3 -c "import json; print(json.dumps({'files': [{'filename': 'f%03d.ts' % i, 'status': 'modified', 'additions': 1, 'deletions': 0} for i in range(300)]}))" > "${fdir}/compare.json"
+: > "${fdir}/tmp/out.txt"
+(cd "${fdir}/repo" && GH_STUB_LOG="${fdir}/gh.log" GH_STUB_COMPARE_JSON="${fdir}/compare.json" GH_STUB_PR_JSON="${fdir}/pr.json" PATH="${fdir}/bin:${PATH}" GH_TOKEN="fake" GITHUB_REPOSITORY="t/t" PR_NUMBER="1" HEAD_SHA_EVENT="${fhead}" GITHUB_OUTPUT="${fdir}/tmp/out.txt" RUNNER_TEMP="${fdir}/tmp" SCRIPT_DIR="${SCRIPT_DIR}" bash "${collect_script}") >/dev/null 2>&1
+case "$(cat "${fdir}/tmp/muse-vars.env" 2>/dev/null)" in *"MUSE_FILES_FAILED=true"*) got_f="fallback";; *) got_f="complete";; esac
+assert_eq "collect-compare-cap-fails-closed" "fallback" "${got_f}"
+rm -rf "${fdir}"
 
 printf '\npass=%d fail=%d%s\n' "${pass}" "${fail}" "${fail_names:+  failed:${fail_names}}"
 [[ "${fail}" == "0" ]]

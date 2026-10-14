@@ -200,17 +200,26 @@ fi
 if [[ "${local_diff}" != "true" ]]; then
   files_source="api"
   pages_file="${RUNNER_TEMP}/muse-files-pages.json"
-  # Paginated PR-files inventory: the compare endpoint caps file lists at
-  # 300, which would silently drop files from the manifest, guidance, and
-  # verdict. Pagination has no cap. Only array pages are merged, so a
-  # mid-stream error payload can never masquerade as a file list; any
-  # fetch/parse failure routes to the explicit fallback (via files_failed)
-  # rather than reviewing blind.
-  if gh api "repos/${GITHUB_REPOSITORY}/pulls/${PR_NUMBER}/files?per_page=100" --paginate \
+  # Pinned compare inventory: the file list derives from the captured
+  # base...head SHA pair (immutable commits), never the live PR file
+  # list. The PR-files endpoint reads whatever head is current while it
+  # paginates, so in an isolated manual-rerun lane a contributor can move
+  # the head A -> B -> A around this fetch: every SHA guard still passes
+  # on A, yet B's inventory would drive the manifest and scoped-guidance
+  # discovery while the workspace and diff remain at A. The compare API
+  # answers for the exact commits named in the URL, so that ABA race
+  # cannot mix inventories. Its file list caps at 300 entries WITHOUT
+  # flagging truncation, so at the cap the inventory may be incomplete:
+  # fail closed (via files_failed) instead of reviewing blind. Any
+  # fetch/parse failure routes to the same explicit fallback.
+  if gh api "repos/${GITHUB_REPOSITORY}/compare/${base_sha_full}...${head_sha}" \
       > "${pages_file}" 2>"${RUNNER_TEMP}/muse-ghfiles.err" \
-    && jq -s '[.[] | select(type == "array")] | add // []' "${pages_file}" > "${files_file}" 2>/dev/null \
+    && jq -s '[.[] | select(type == "object") | (.files // [])] | add // []' "${pages_file}" > "${files_file}" 2>/dev/null \
     && jq -e 'type == "array"' "${files_file}" >/dev/null 2>&1; then
-    :
+    if (( $(jq -r 'length' "${files_file}") >= 300 )); then
+      echo "::warning::Pinned compare inventory reached the 300-file API cap; it may be truncated, routing to the fallback review."
+      files_failed=true
+    fi
   else
     echo '[]' > "${files_file}"
     echo "::warning::PR files inventory failed: $(head -c 300 "${RUNNER_TEMP}/muse-ghfiles.err" 2>/dev/null || true)"
