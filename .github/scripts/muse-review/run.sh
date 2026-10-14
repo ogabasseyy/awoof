@@ -148,4 +148,12 @@ if strip_html_tags < "${review_file}" > "${review_file}.notags" 2>/dev/null; the
 else
   rm -f "${review_file}.notags"
 fi
+# Remove render-empty Markdown links before the final pass for the same
+# reason: `left[]()right` renders as "leftright" (empty anchor), while
+# strip_images above covers only the image form.
+if strip_empty_links < "${review_file}" > "${review_file}.nolinks" 2>/dev/null; then
+  mv "${review_file}.nolinks" "${review_file}"
+else
+  rm -f "${review_file}.nolinks"
+fi
 redact "$(cat "${review_file}")" > "${review_file}.clean" && mv "${review_file}.clean" "${review_file}"

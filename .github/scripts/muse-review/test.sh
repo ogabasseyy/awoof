@@ -462,6 +462,10 @@ assert_eq "ansi-stripped" 'leftright end!' "${got}"
 if jq -e '.properties.next_steps.items.type == "string"' "${SCRIPT_DIR}/schema.json" >/dev/null 2>&1; then got_s="string"; else got_s="other"; fi
 assert_eq "schema-next-steps-strings" "string" "${got_s}"
 
+# --- strip_empty_links ---
+got="$(printf '%s' 'left[]()right and [](https://x.example) mid [][r] end [text](https://y.example) kept' | strip_empty_links)"
+assert_eq "empty-links-removed" 'leftright and  mid  end [text](https://y.example) kept' "${got}"
+
 # --- trunc_bytes_marked ---
 got="$(printf 'abcdefghij' | trunc_bytes_marked 10)"
 assert_eq "trunc-marked-under" 'abcdefghij' "${got}"
@@ -1279,7 +1283,7 @@ hsha="cccccccccccccccccccccccccccccccccccccccc"
 hbsha="dddddddddddddddddddddddddddddddddddddddd"
 printf 'diff --git a/a.ts b/a.ts\n--- a/a.ts\n+++ b/a.ts\n@@ -1 +1,50 @@\n+x\n' > "${hdir}/tmp/muse.diff"
 printf '[{"filename":"a.ts"}]' > "${hdir}/tmp/muse-files.json"
-printf '%s' '{"verdict":"v","findings":[{"path":"a.ts","line":1,"severity":"low","title":"t","body":"x ghp_left<!-- hidden -->right y and ghp_ab&#99;d and ghp_xy<span></span>zw end"}],"next_steps":[]}' > "${hdir}/tmp/review.json"
+printf '%s' '{"verdict":"v","findings":[{"path":"a.ts","line":1,"severity":"low","title":"t","body":"x ghp_left<!-- hidden -->right y and ghp_ab&#99;d and ghp_xy<span></span>zw and ghp_qq[]()rr end"}],"next_steps":[]}' > "${hdir}/tmp/review.json"
 GH_STUB_CAPTURE="${hdir}/capture.json" GH_STUB_HEAD="${hsha}" GH_STUB_BASE="${hbsha}" \
 PATH="${hdir}/bin:${PATH}" \
 GH_TOKEN="fake" GITHUB_REPOSITORY="t/t" PR_NUMBER="1" \
@@ -1302,6 +1306,10 @@ case "$(cat "${hdir}/capture.json" 2>/dev/null)" in *"[HTML removed]"*) got_h="s
 assert_eq "post-tag-separated" "separated" "${got_h}"
 case "$(cat "${hdir}/capture.json" 2>/dev/null)" in *"<sub>Useful?"*) got_h="kept";; *) got_h="eaten";; esac
 assert_eq "post-footer-sub-kept" "kept" "${got_h}"
+case "$(cat "${hdir}/capture.json" 2>/dev/null)" in *"ghp_qqrr"*) got_h="visible";; *) got_h="clean";; esac
+assert_eq "post-empty-link-split-not-visible" "clean" "${got_h}"
+case "$(cat "${hdir}/capture.json" 2>/dev/null)" in *"[]()"*) got_h="kept";; *) got_h="removed";; esac
+assert_eq "post-empty-link-removed" "removed" "${got_h}"
 rm -rf "${hdir}"
 
 # --- post.sh non-string next_steps routes to fallback (script level) ---

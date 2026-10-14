@@ -166,6 +166,17 @@ strip_ansi() {
   perl -pe 's/\x1b\[[0-9;?]*[ -\/]*[@-~]//g; s/\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)//g; s/\x1b.//g'
 }
 
+# Remove render-empty Markdown links: `[](dest)` and `[][ref]` render as
+# an empty anchor (no visible text), so a credential split as
+# `left[]()right` visibly reconstructs when posted while every redaction
+# pass saw only halves. Deleting the token joins the halves where the
+# redaction that runs after this can match the whole value (same
+# delete-then-redact discipline as strip_images). Links with visible
+# text render that text, so they are not empty and stay.
+strip_empty_links() {
+  perl -0777 -pe 's{\[\]\([^)]*\)}{}g; s{\[\]\[[^\]]*\]}{}g'
+}
+
 # Byte-bounded UTF-8-safe truncation WITH an explicit marker, reserved
 # inside the budget: trunc_bytes cuts silently, so a truncated inline
 # finding would read as complete while its tail exists nowhere.
