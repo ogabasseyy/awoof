@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
-import { BENEFIT_CURRENCY, computePricingVersion, koboToNaira } from './merchant-benefit.service.js';
+import { BENEFIT_CURRENCY, computePricingVersion, koboToNaira, merchantPaymentMetadataMatches } from './merchant-benefit.service.js';
 
 describe('merchant benefit pricing', () => {
     it('quotes in naira on the NGN catalog without a client currency', () => {
@@ -23,6 +23,30 @@ describe('merchant benefit pricing', () => {
         assert.notEqual(version, computePricingVersion('product-1', 'NGN', 101, 80));
         assert.notEqual(version, computePricingVersion('product-1', 'NGN', 100, 81));
         assert.notEqual(version, computePricingVersion('product-1', 'USD', 100, 80));
+    });
+
+    it('matches provider UUID metadata case-insensitively and rejects anything else', () => {
+        const expected = {
+            vendorId: '00000000-0000-4000-8000-000000000002',
+            productId: '00000000-0000-4000-8000-000000000003',
+            benefitAuthorizationId: '40000000-0000-4000-8000-000000000001',
+        };
+        assert.equal(merchantPaymentMetadataMatches({
+            awoofVendorId: expected.vendorId.toUpperCase(),
+            awoofProductId: expected.productId,
+            awoofBenefitAuthorizationId: expected.benefitAuthorizationId,
+        }, expected), true);
+        assert.equal(merchantPaymentMetadataMatches(undefined, expected), false);
+        assert.equal(merchantPaymentMetadataMatches({
+            awoofVendorId: 'not-a-uuid',
+            awoofProductId: expected.productId,
+            awoofBenefitAuthorizationId: expected.benefitAuthorizationId,
+        }, expected), false);
+        assert.equal(merchantPaymentMetadataMatches({
+            awoofVendorId: expected.vendorId,
+            awoofProductId: '00000000-0000-4000-8000-000000000099',
+            awoofBenefitAuthorizationId: expected.benefitAuthorizationId,
+        }, expected), false);
     });
 
     it('rejects invalid quoted prices instead of digesting them', () => {

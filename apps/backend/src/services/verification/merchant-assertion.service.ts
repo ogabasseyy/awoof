@@ -62,6 +62,7 @@ export type MerchantReceipt = {
     institutionId: string; verifiedAt: string; validUntil: string; campaignId: string;
     purpose: string;
     benefitAuthorizationId?: string;
+    benefitValidUntil?: string;
 };
 
 /**
@@ -183,6 +184,7 @@ export async function exchangeMerchantAssertion(pool: Pool, key: string, input: 
             }
         }
         let benefitAuthorizationId: string | undefined;
+        let benefitValidUntil: string | undefined;
         if (productId !== null) {
             // Reserve one unit atomically: the row lock serializes
             // concurrent exchanges and the stock predicate fails closed,
@@ -221,12 +223,12 @@ export async function exchangeMerchantAssertion(pool: Pool, key: string, input: 
                     studentPrice = issuedStudent;
                 }
             }
-            const authorization = await tx.query<{ id: string }>(
+            const authorization = await tx.query<{ id: string; expires_at: Date }>(
                 `INSERT INTO merchant_benefit_authorizations
                  (assertion_id,vendor_id,user_id,product_id,evidence_id,processing_grant_id,disclosure_grant_id,
                   list_price_snapshot,student_price_snapshot,currency,pricing_version,expires_at,claim_session_id,stock_reserved)
                  VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,LEAST($12::timestamptz,clock_timestamp()+interval '2 minutes'),$13,true)
-                 RETURNING id`,
+                 RETURNING id, expires_at`,
                 [assertion.id, assertion.vendor_id, assertion.user_id, productId,
                     eligibility.evidenceId, eligibility.processingGrantId, assertion.disclosure_grant_id,
                     listPrice, studentPrice, BENEFIT_CURRENCY,
@@ -234,6 +236,7 @@ export async function exchangeMerchantAssertion(pool: Pool, key: string, input: 
                     eligibility.expiresAt, claimSessionId],
             );
             benefitAuthorizationId = authorization.rows[0]!.id;
+            benefitValidUntil = authorization.rows[0]!.expires_at.toISOString();
         }
         await tx.query(`INSERT INTO merchant_subjects (vendor_id,user_id) VALUES ($1,$2)
             ON CONFLICT (vendor_id,user_id) DO NOTHING`, [assertion.vendor_id, assertion.user_id]);
@@ -244,7 +247,8 @@ export async function exchangeMerchantAssertion(pool: Pool, key: string, input: 
             assuranceMethod: eligibility.method, institutionId: eligibility.universityId,
             verifiedAt: eligibility.verifiedAt.toISOString(), validUntil: eligibility.expiresAt.toISOString(),
             campaignId: assertion.campaign_id, purpose: assertion.purpose,
-            ...(benefitAuthorizationId !== undefined ? { benefitAuthorizationId } : {}),
+            ...(benefitAuthorizationId !== undefined && benefitValidUntil !== undefined
+                ? { benefitAuthorizationId, benefitValidUntil } : {}),
         };
         const stored = await tx.query(`INSERT INTO merchant_assertion_receipts (vendor_id,idempotency_key,assertion_id,receipt)
             VALUES ($1,$2,$3,$4::jsonb) ON CONFLICT (vendor_id, idempotency_key) DO NOTHING RETURNING receipt`, [assertion.vendor_id,input.idempotencyKey,assertion.id,JSON.stringify(receipt)]);

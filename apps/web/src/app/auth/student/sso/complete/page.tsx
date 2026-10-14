@@ -259,7 +259,7 @@ function RecoveryReauthComplete({ attemptId, duplicate, unavailable }: { attempt
                 const response = await studentSsoSessionApiClient.post('/auth/student/sso/link', { handoffId: handoff.handoffId, handoffSecret: handoff.handoffSecret, reauthGrant: auth });
                 if (stale()) return;
                 if (parseSsoLinkResponse(response.status, response.data)?.kind !== 'linked') throw new Error('not linked');
-                clearSsoHandoff(tabStorage()); window.location.assign(handoff.returnPath); return;
+                clearSsoHandoff(tabStorage()); window.location.assign(resolveStudentReturn(handoff.returnPath, window.location.origin)); return;
             } catch (cause: unknown) {
                 if (stale()) return;
                 const result = parseSsoLinkResponse(statusOf(cause), bodyOf(cause));

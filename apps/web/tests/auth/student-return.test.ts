@@ -43,6 +43,40 @@ test('rejects foreign, credentialed, malformed, and authentication-loop returns'
   }
 });
 
+test('rejects encoded-separator and lookalike returns that decode into auth or external routes', () => {
+  for (const candidate of [
+    // Encoded separators in the pathname (single encoded).
+    '/auth%2Fstudent%2Flogin',
+    '/auth%2fstudent%2flogin',
+    '/auth%5Cstudent%5Clogin',
+    '/auth/student%2Flogin',
+    '%2Fauth%2Fstudent%2Flogin',
+    '/%2Fauth/student/login',
+    // Double encoded: one downstream decode reveals the separator.
+    '/auth%252Fstudent%252Flogin',
+    '%252F%252Fevil.test',
+    // Encoded controls and lookalike separators.
+    '/auth%0A/student/login',
+    '/auth%00/student/login',
+    '/auth;/student/login',
+    '/AUTH/student/login',
+    // Encoded external hosts must never survive as return paths.
+    '%2F%2Fevil.test/phish',
+    '/%2Fevil.test/phish',
+    '/%5Cevil.test/phish',
+  ]) {
+    assert.equal(resolveStudentReturn(candidate, origin), '/marketplace', candidate);
+  }
+});
+
+test('still permits ordinary encoded characters outside the pathname separators', () => {
+  assert.equal(
+    resolveStudentReturn('/marketplace?q=hello%20world&next=%2Fstudent%2Fverification', origin),
+    '/marketplace?q=hello%20world&next=%2Fstudent%2Fverification',
+  );
+  assert.equal(resolveStudentReturn('/student/verification', origin), '/student/verification');
+});
+
 test('normalizes an invalid fallback to marketplace', () => {
   assert.equal(resolveStudentReturn(null, origin, 'https://evil.test'), '/marketplace');
 });

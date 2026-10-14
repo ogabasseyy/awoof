@@ -40,7 +40,7 @@ import {
  *         assuranceMethod: { type: string, enum: [student_email, enrollment] }
  *         institutionId: { type: string, format: uuid }
  *         verifiedAt: { type: string, format: date-time }
- *         validUntil: { type: string, format: date-time }
+ *         validUntil: { type: string, format: date-time, description: Enrollment evidence expiry; not the discounted transaction settlement deadline. }
  *         campaignId: { type: string }
  *         purpose:
  *           type: string
@@ -49,6 +49,37 @@ import {
  *           type: string
  *           format: uuid
  *           description: Present only for product-bound exchanges. Authorizes one discounted transaction report for the bound product; generic campaign receipts never carry it.
+ *         benefitValidUntil:
+ *           type: string
+ *           format: date-time
+ *           description: Persisted benefit authorization expiry for new product-bound receipts; the earlier of evidence expiry and two minutes after exchange. First settlement must complete before this deadline. Historical exact receipt retries are unchanged and may omit it; generic receipts never carry it.
+ *     MerchantClaimSession:
+ *       type: object
+ *       additionalProperties: false
+ *       required: [claimSessionId, expiresAt]
+ *       properties:
+ *         claimSessionId:
+ *           type: string
+ *           format: uuid
+ *           description: Session to append as a claimSession query value to the marketplace product URL.
+ *         expiresAt:
+ *           type: string
+ *           format: date-time
+ *           description: Creation expiry. Sessions expire after ten minutes and are consumed once at exchange.
+ *     MerchantClaimSessionPublic:
+ *       type: object
+ *       additionalProperties: false
+ *       required: [claimSessionId, vendorId, vendorName, productId, productName, listPrice, studentPrice, handoffOrigin, expiresAt]
+ *       properties:
+ *         claimSessionId: { type: string, format: uuid }
+ *         vendorId: { type: string, format: uuid }
+ *         vendorName: { type: string }
+ *         productId: { type: string, format: uuid }
+ *         productName: { type: string }
+ *         listPrice: { type: string, description: 'Quoted list price in NGN major units (naira) as a decimal string; the session quote when present.' }
+ *         studentPrice: { type: string, description: 'Quoted student price in NGN major units (naira) as a decimal string; the session quote when present.' }
+ *         handoffOrigin: { type: string, description: Registered merchant origin the browser returns to after consent. }
+ *         expiresAt: { type: string, format: date-time }
  * /api/merchant-verification/assertions:
  *   post:
  *     summary: Create a short-lived merchant-specific eligibility code
@@ -69,7 +100,7 @@ import {
  *               purpose: { type: string, minLength: 1, maxLength: 200 }
  *               campaignId: { type: string, minLength: 1, maxLength: 100 }
  *               disclosureGrantId: { type: string, format: uuid }
- *               productId: { type: string, format: uuid, description: Optional active product of this vendor. When present, the exchange receipt carries a benefitAuthorizationId for one discounted transaction report. }
+ *               productId: { type: string, format: uuid, description: 'Optional active product of this vendor. When present, the exchange receipt carries a benefitAuthorizationId for one discounted transaction report.' }
  *     responses:
  *       '201':
  *         description: Pass this opaque code only to the intended merchant backend; it is not an eligibility receipt.
@@ -89,6 +120,7 @@ import {
  *       '400': { description: Invalid input or merchant origin }
  *       '401': { description: Student authentication required }
  *       '403': { description: Current eligibility or merchant consent unavailable }
+ *       '422': { description: Invalid request shape; field validation failure }
  *       '503': { $ref: '#/components/responses/SessionValidationUnavailable' }
  * /api/merchant-verification/pilot-assertions:
  *   post:
@@ -150,7 +182,7 @@ import {
  *               code: { type: string, pattern: '^[A-Za-z0-9_-]{43}$' }
  *               campaignId: { type: string, minLength: 1, maxLength: 100 }
  *               idempotencyKey: { type: string, minLength: 1, maxLength: 100 }
- *               browserNonce: { type: string, minLength: 16, maxLength: 512, description: Required only for claim-bound codes. The merchant's cookie-derived browser nonce, sent over its authenticated server connection; never place it in a URL. }
+ *               browserNonce: { type: string, minLength: 16, maxLength: 512, description: "Required only for claim-bound codes. The merchant's cookie-derived browser nonce, sent over its authenticated server connection; never place it in a URL." }
  *               merchantCheckoutId: { type: string, minLength: 1, maxLength: 100, description: Required only for claim-bound codes. Must match the checkout the claim session was created for. }
  *     responses:
  *       '200':
@@ -190,11 +222,31 @@ import {
  *               browserNonceHash: { type: string, pattern: '^[0-9a-f]{64}$', description: Hex SHA-256 of the merchant's browser nonce. }
  *               origin: { type: string, maxLength: 512, description: Initiating merchant site. Must exactly match one of the vendor's active allowed origins; the handoff goes only there. }
  *     responses:
- *       '201': { description: Claim session created. }
- *       '200': { description: Exact creation retry; returns the same live session. }
+ *       '201':
+ *         description: Claim session created.
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               required: [success, data]
+ *               properties:
+ *                 success: { type: boolean, enum: [true] }
+ *                 data: { $ref: '#/components/schemas/MerchantClaimSession' }
+ *       '200':
+ *         description: Exact creation retry; returns the same live session.
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               required: [success, data]
+ *               properties:
+ *                 success: { type: boolean, enum: [true] }
+ *                 data: { $ref: '#/components/schemas/MerchantClaimSession' }
  *       '400': { description: Invalid input or product unavailable to this merchant. }
  *       '401': { description: Private merchant key invalid or merchant inactive. }
- *       '409': { description: Checkout already bound differently, used, or expired. Start a new checkout. }
+ *       '409': { description: 'Checkout already bound differently, used, or expired. Start a new checkout.' }
+ *       '422': { description: Invalid request shape; field validation failure }
+ *       '429': { description: Merchant key hourly quota exhausted or key unavailable }
  * /api/merchant-verification/claim-sessions/{id}:
  *   get:
  *     summary: Read the public projection of one claim session
@@ -207,10 +259,20 @@ import {
  *         required: true
  *         schema: { type: string, format: uuid }
  *     responses:
- *       '200': { description: Public claim-session projection. }
+ *       '200':
+ *         description: Public claim-session projection.
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               required: [success, data]
+ *               properties:
+ *                 success: { type: boolean, enum: [true] }
+ *                 data: { $ref: '#/components/schemas/MerchantClaimSessionPublic' }
  *       '401': { description: Student authentication required. }
  *       '404': { description: Unknown session or claim no longer available. }
- *       '409': { description: Session expired or redeemed, or merchant integration unavailable. }
+ *       '409': { description: 'Session expired or redeemed, or merchant integration unavailable.' }
+ *       '422': { description: Invalid request shape; field validation failure }
  *       '503': { $ref: '#/components/responses/SessionValidationUnavailable' }
  * /api/merchant-verification/product-claims:
  *   post:
@@ -253,7 +315,8 @@ import {
  *       '401': { description: Student authentication required. }
  *       '403': { description: Current enrollment or merchant disclosure unavailable. }
  *       '404': { description: Unknown claim session or disclosure grant. }
- *       '409': { description: Session expired or redeemed, or MERCHANT_INTEGRATION_REQUIRED. }
+ *       '409': { description: 'Session expired or redeemed, or MERCHANT_INTEGRATION_REQUIRED.' }
+ *       '422': { description: Invalid request shape; field validation failure }
  *       '503': { $ref: '#/components/responses/SessionValidationUnavailable' }
  */
 const bounded = z.string().trim().min(1).max(100);
@@ -281,6 +344,7 @@ export type ExchangeAssertion = (merchantKey: string, input: {
     receiptId: string; merchantSubject: string; eligible: true; assuranceMethod: string;
     institutionId: string; verifiedAt: string; validUntil: string; campaignId: string;
     purpose: string; benefitAuthorizationId?: string;
+    benefitValidUntil?: string;
 }>;
 export type CreateClaimSession = (merchantKey: string, input: ClaimSessionInput) => Promise<ClaimSessionResult>;
 export type ReadClaimSession = (sessionId: string) => Promise<ClaimSessionPublic>;
