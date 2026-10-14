@@ -600,6 +600,37 @@ if (cd "${gdir}/ws" && RUNNER_TEMP="${gdir}/tmp" SCRIPT_DIR="${SCRIPT_DIR}" bash
 assert_eq "guidance-budget-fails-closed" "nonzero" "${got_rc}"
 rm -rf "${gdir}"
 
+# --- guidance.sh base/head copies interleave by candidate scope ---
+# A modified parent must not be emitted after an unchanged child:
+# batching all base copies before all head copies produced
+# parent-base, child-base, parent-head, contradicting the prompt's
+# closest-scope-wins precedence. Per candidate, base precedes its head.
+idir="$(mktemp -d)"
+mkdir -p "${idir}/tmp" "${idir}/ws/a/b"
+git -C "${idir}/ws" init -q 2>/dev/null
+printf 'parent-base\n' > "${idir}/ws/AGENTS.md"
+printf 'child-base\n' > "${idir}/ws/a/b/AGENTS.md"
+git -C "${idir}/ws" add -A 2>/dev/null
+git -C "${idir}/ws" -c user.email=t@t -c user.name=t commit -qm base 2>/dev/null
+ibase="$(git -C "${idir}/ws" rev-parse HEAD 2>/dev/null)"
+printf 'parent-head-modified\n' > "${idir}/ws/AGENTS.md"
+{
+  printf 'MUSE_STOP=0\n'
+  printf 'MUSE_BASE_REF=main\n'
+  printf 'MUSE_DEFAULT_BRANCH=main\n'
+  printf 'MUSE_BASE_AVAILABLE=true\n'
+  printf 'MUSE_BASE_SHA_FULL=%s\n' "${ibase}"
+} > "${idir}/tmp/muse-vars.env"
+printf '[{"filename":"a/b/f.ts"}]' > "${idir}/tmp/muse-files.json"
+guidance_script="${SCRIPT_DIR}/guidance.sh"
+(cd "${idir}/ws" && RUNNER_TEMP="${idir}/tmp" SCRIPT_DIR="${SCRIPT_DIR}" bash "${guidance_script}") >/dev/null 2>&1
+pbline="$(grep -n 'parent-base' "${idir}/tmp/muse-guidance.md" 2>/dev/null | head -n 1 | cut -d: -f1)"
+phline="$(grep -n 'parent-head-modified' "${idir}/tmp/muse-guidance.md" 2>/dev/null | head -n 1 | cut -d: -f1)"
+cbline="$(grep -n 'child-base' "${idir}/tmp/muse-guidance.md" 2>/dev/null | head -n 1 | cut -d: -f1)"
+if [[ -n "${pbline}" && -n "${phline}" && -n "${cbline}" ]] && (( pbline < phline && phline < cbline )); then got_o="interleaved"; else got_o="batched"; fi
+assert_eq "guidance-interleaved-by-scope" "interleaved" "${got_o}"
+rm -rf "${idir}"
+
 # --- diff.sh --text vs .gitattributes -diff suppression (script level) ---
 # A -diff rule would otherwise emit a "Binary files differ" placeholder:
 # the removed-lines supplement loses the deleted code while diff_failed

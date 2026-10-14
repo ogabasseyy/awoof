@@ -158,10 +158,23 @@ if [[ "${guidance_cap_hit}" == "true" ]]; then
   echo "::error::Guidance candidate cap (${candidate_cap}) reached; scoped guidance is incomplete, failing closed to the fallback review."
   exit 1
 fi
-# Three phases: trusted base guidance first, then head versions, then
-# custom-base versions — so PR-authored content can never exhaust the byte
-# budget before applicable trusted rules are collected, and operative head
-# rules precede superseded base context. Classified in one pass.
+# Classification in one pass, then ONE emission pass interleaved by
+# candidate: for each candidate in scope order, its base copy (trusted,
+# or UNTRUSTED custom-base) is immediately followed by its differing
+# head copy. Batching every base copy before every head copy would emit
+# a modified parent after an unchanged deeper child (parent-base,
+# child-base, parent-head), contradicting the prompt's root-first,
+# closest-scope-wins precedence and letting the parent read as the
+# override. Byte-budget exhaustion still fails closed below, so no
+# ordering can publish success over guidance it crowded out.
+in_candidate_list() {
+  local _needle="$1" _item
+  shift
+  for _item in "$@"; do
+    if [[ "${_item}" == "${_needle}" ]]; then return 0; fi
+  done
+  return 1
+}
 base_list=()
 xbase_list=()
 head_list=()
@@ -193,14 +206,16 @@ for candidate in "${MUSE_CANDIDATES[@]+"${MUSE_CANDIDATES[@]}"}"; do
     head_list+=("${candidate}")
   fi
 done
-for candidate in "${base_list[@]+"${base_list[@]}"}"; do
-  emit_guidance "${candidate}" base
-done
-for candidate in "${head_list[@]+"${head_list[@]}"}"; do
-  emit_guidance "${candidate}" head
-done
-for candidate in "${xbase_list[@]+"${xbase_list[@]}"}"; do
-  emit_guidance "${candidate}" xbase
+for candidate in "${MUSE_CANDIDATES[@]+"${MUSE_CANDIDATES[@]}"}"; do
+  if in_candidate_list "${candidate}" "${base_list[@]+"${base_list[@]}"}"; then
+    emit_guidance "${candidate}" base
+  fi
+  if in_candidate_list "${candidate}" "${xbase_list[@]+"${xbase_list[@]}"}"; then
+    emit_guidance "${candidate}" xbase
+  fi
+  if in_candidate_list "${candidate}" "${head_list[@]+"${head_list[@]}"}"; then
+    emit_guidance "${candidate}" head
+  fi
 done
 if [[ "${guidance_capped}" == "true" || "${guidance_truncated}" == "true" ]]; then
   # Same fail-closed rule as the candidate cap: a budget-dropped or
