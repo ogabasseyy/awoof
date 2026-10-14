@@ -329,6 +329,11 @@ if printf 'not json' | META_API_KEY="${jkey}" redact_json_key >/dev/null 2>&1; t
 assert_eq "redactjson-nonjson-rc" "nonzero" "${got_rc}"
 if printf '{}' | META_API_KEY='' redact_json_key >/dev/null 2>&1; then got_rc="0"; else got_rc=$?; fi
 assert_eq "redactjson-empty-key-rc" "1" "${got_rc}"
+cat > "${jfix}" <<'EOF'
+{"a":"oops fake\\.live/key+abc=123 end"}
+EOF
+got="$(META_API_KEY="${jkey}" redact_json_key < "${jfix}" | jq -r '.a')"
+assert_eq "redactjson-markdown-escape" "oops [REDACTED] end" "${got}"
 # NUL-split key: an embedded U+0000 keeps the halves non-contiguous here,
 # but Bash discards NUL bytes when the keyless post step extracts decoded
 # strings into variables, rejoining the credential. Stripping NULs while
@@ -473,6 +478,10 @@ got="$(printf '%s' 'a * b and *em* word and snake_case and 2 * 3' | strip_intraw
 assert_eq "intraword-spaced-kept" 'a * b and *em* word and snake_case and 2 * 3' "${got}"
 got="$(printf 'x`code`y end' | strip_intraword_markers)"
 assert_eq "intraword-backtick-removed" 'xcodey end' "${got}"
+
+# --- strip_markdown_escapes ---
+got="$(printf '%s' 'fake\.live a\*b c\n d \\ e' | strip_markdown_escapes)"
+assert_eq "markdown-escapes-decoded" 'fake.live a*b c\n d \ e' "${got}"
 
 # --- canonicalize_links ---
 got="$(printf '%s' 'see [docs](https://d.example/x) and left[A](https://e.example)right and [t][r1] end' | canonicalize_links)"
@@ -1299,7 +1308,7 @@ hsha="cccccccccccccccccccccccccccccccccccccccc"
 hbsha="dddddddddddddddddddddddddddddddddddddddd"
 printf 'diff --git a/a.ts b/a.ts\n--- a/a.ts\n+++ b/a.ts\n@@ -1 +1,50 @@\n+x\n' > "${hdir}/tmp/muse.diff"
 printf '[{"filename":"a.ts"}]' > "${hdir}/tmp/muse-files.json"
-printf '%s' '{"verdict":"v","findings":[{"path":"a.ts","line":1,"severity":"low","title":"t","body":"x ghp_left<!-- hidden -->right y and ghp_ab&#99;d and ghp_xy<span></span>zw and ghp_qq[]()rr and ghp_zz*A*ww and ghp_mm[A](https://example.invalid)nn and ghp_pp[A]qq tail\n\n[A]: https://example.invalid/d"}],"next_steps":[]}' > "${hdir}/tmp/review.json"
+printf '%s' '{"verdict":"v","findings":[{"path":"a.ts","line":1,"severity":"low","title":"t","body":"x ghp_left<!-- hidden -->right y and ghp_ab&#99;d and ghp_xy<span></span>zw and ghp_qq[]()rr and ghp_zz*A*ww and ghp_mm[A](https://example.invalid)nn and ghp_pp[A]qq and ghp_rs\\.tu and ghp_oo[*A*]pp tail\n\n[A]: https://example.invalid/d\n[*A*]: https://example.invalid/e"}],"next_steps":[]}' > "${hdir}/tmp/review.json"
 GH_STUB_CAPTURE="${hdir}/capture.json" GH_STUB_HEAD="${hsha}" GH_STUB_BASE="${hbsha}" \
 PATH="${hdir}/bin:${PATH}" \
 GH_TOKEN="fake" GITHUB_REPOSITORY="t/t" PR_NUMBER="1" \
@@ -1338,6 +1347,12 @@ case "$(cat "${hdir}/capture.json" 2>/dev/null)" in *"ghp_ppAqq"*) got_h="visibl
 assert_eq "post-shortcut-split-not-visible" "clean" "${got_h}"
 case "$(cat "${hdir}/capture.json" 2>/dev/null)" in *"example.invalid/d"*) got_h="kept";; *) got_h="removed";; esac
 assert_eq "post-link-def-removed" "removed" "${got_h}"
+case "$(cat "${hdir}/capture.json" 2>/dev/null)" in *"ghp_rs.tu"*) got_h="visible";; *) got_h="clean";; esac
+assert_eq "post-mdesc-split-not-visible" "clean" "${got_h}"
+case "$(cat "${hdir}/capture.json" 2>/dev/null)" in *"ghp_ooApp"*) got_h="visible";; *) got_h="clean";; esac
+assert_eq "post-canon-marker-split-not-visible" "clean" "${got_h}"
+case "$(cat "${hdir}/capture.json" 2>/dev/null)" in *"*A*"*) got_h="raw";; *) got_h="stripped";; esac
+assert_eq "post-canon-marker-stripped" "stripped" "${got_h}"
 rm -rf "${hdir}"
 
 # --- post.sh non-string next_steps routes to fallback (script level) ---

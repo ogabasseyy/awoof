@@ -199,6 +199,16 @@ strip_intraword_markers() {
 # text and destinations accept balanced nesting, mirroring
 # strip_images. Reference forms keep their label the same way. Links
 # with empty text are deleted earlier (strip_empty_links).
+# Decode Markdown backslash escapes: GFM removes a backslash before
+# ASCII punctuation when rendering, so a key emitted as `fake\.live`
+# displays as the actual credential while literal redaction saw only
+# the escaped bytes. Decoding before redaction joins the value where
+# it can be matched. Only ASCII punctuation is escapable in GFM, so
+# sequences like \n pass through unchanged.
+strip_markdown_escapes() {
+  perl -0777 -pe 's/\\([\x21-\x2F\x3A-\x40\x5B-\x5E\x60\x7B-\x7E])/$1/g'
+}
+
 canonicalize_links() {
   # Shortcut references render as bare text ONLY when a matching link
   # reference definition exists in the same text (the definition itself
@@ -629,6 +639,10 @@ redact() {
 # CR bytes are stripped the same way: a downstream CR-deleting filter
 # (neutralize_workflow_commands in the log path) would otherwise join
 # a CR-split key after this pass.
+# Markdown backslash escapes are decoded for the same reason: GFM
+# removes \ before ASCII punctuation at render, so a key written
+# `fake\.live` displays as the credential; the _mdesc form is checked
+# (and emitted, redacted) whenever it is the one containing the key.
 redact_json_key() {
   local _key="${META_API_KEY:-}"
   [[ -n "${_key}" ]] || return 1
@@ -678,6 +692,16 @@ redact_json_key() {
                  | if $u == .s then .done = true else .s = $u end)
            end)
        | .s);
+    def _punct: (. >= 33 and . <= 47) or (. >= 58 and . <= 64) or (. >= 91 and . <= 94) or (. == 96) or (. >= 123 and . <= 126);
+    def _mdesc:
+      (explode) as $cs
+      | (reduce $cs[] as $c ({out: [], esc: false};
+          if .esc then
+            if ($c | _punct) then .out += [$c] | .esc = false
+            else .out += [92, $c] | .esc = false end
+          elif $c == 92 then .esc = true
+          else .out += [$c] end)) as $st
+      | (($st.out + (if $st.esc then [92] else [] end)) | implode);
     def _denul: split("\u0000") | join("");
     def _decr: split("\r") | join("");
     def _img1: gsub("!\\[[^\\]]*\\]\\([^)]*\\)"; "") | gsub("</?(img|IMG)[^>]*>"; "");
@@ -686,10 +710,12 @@ redact_json_key() {
       ((. | _denul | _decr) as $s
        | if ($s | contains($k)) then ($s | split($k) | join("[REDACTED]"))
          elif (($s | _imgstrip) | contains($k)) then (($s | _imgstrip) | split($k) | join("[REDACTED]"))
+         elif (($s | _mdesc) | contains($k)) then (($s | _mdesc) | split($k) | join("[REDACTED]"))
          elif ($s | contains("\\")) then
            ((($s | _deep) | _denul | _decr) as $dec
             | if ($dec | contains($k)) then ($dec | split($k) | join("[REDACTED]"))
               elif (($dec | _imgstrip) | contains($k)) then (($dec | _imgstrip) | split($k) | join("[REDACTED]"))
+              elif (($dec | _mdesc) | contains($k)) then (($dec | _mdesc) | split($k) | join("[REDACTED]"))
               else $s end)
          else $s end)
     else . end)'

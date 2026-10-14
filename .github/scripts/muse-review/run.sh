@@ -93,7 +93,7 @@ if (( muse_rc != 0 )); then
   # byte-changing filter before the log, so a second key-aware pass
   # (redact itself strips CRs before matching) catches any credential
   # a CR split hid from the first pass.
-  redact "$(redact "$(strip_ansi < "${stderr_clean}" 2>/dev/null || true)" | tail -c 4000 | neutralize_workflow_commands)"
+  redact "$(redact "$(strip_ansi < "${stderr_clean}" 2>/dev/null | strip_markdown_escapes || true)" | tail -c 4000 | neutralize_workflow_commands)"
   rm -f "${stderr_clean}"
   exit "${muse_rc}"
 fi
@@ -171,5 +171,13 @@ if canonicalize_links < "${review_file}" > "${review_file}.canon" 2>/dev/null; t
   mv "${review_file}.canon" "${review_file}"
 else
   rm -f "${review_file}.canon"
+fi
+# Canonicalizing can itself expose an intraword split (a defined
+# shortcut `[*A*]` unwraps to `*A*` between word characters), so the
+# marker strip runs once more after it, closest to the final pass.
+if strip_intraword_markers < "${review_file}" > "${review_file}.nomarks2" 2>/dev/null; then
+  mv "${review_file}.nomarks2" "${review_file}"
+else
+  rm -f "${review_file}.nomarks2"
 fi
 redact "$(cat "${review_file}")" > "${review_file}.clean" && mv "${review_file}.clean" "${review_file}"
