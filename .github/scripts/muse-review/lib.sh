@@ -25,7 +25,7 @@ MUSE_REVIEW_PROTOCOL=1
 # text cannot break out of its prompt block. Single unified tag list for all
 # blocks — neutralizing more is strictly safer than less.
 neutralize_tags() {
-  perl -pe 's{<\s*/\s*(file|diff|pr_title|pr_description|changed_files|removed_lines|symlink_targets|gitlink_targets|head_ref|base_ref|untrusted_guidance)}{<\\/$1}gi'
+  perl -pe 's{<\s*/\s*(file|diff|pr_title|pr_description|changed_files|removed_lines|symlink_targets|gitlink_targets|changed_modes|head_ref|base_ref|untrusted_guidance)}{<\\/$1}gi'
 }
 
 # In-place byte cap for a file. Only replaces the original when truncation
@@ -366,6 +366,52 @@ changed_gitlinks() {
       printf '%s -> head %s\n' "${_label}" "${_head_oid}"
     fi
   done < <(jq -j '[.[] | {f: (.filename // empty), p: (.previous_filename // "")} | select(.f | type == "string") | ("F\t" + .f), (if (.p | type) == "string" and (.p | length) > 0 and .p != .f then ("P\t" + .p) else empty end)] | .[] + "\u0000"' "${_files}" 2>/dev/null)
+}
+
+# Changed file modes, one `path: base <mode>, head <mode>` line per
+# file whose tree mode differs (including new/deleted files, where
+# one side is absent). A mode-only change (executable bit) has no
+# content hunk: past the 60 KB diff cap its `old mode`/`new mode`
+# records are truncated, the removed-lines supplement excludes mode
+# headers, the manifest records only paths, and reading the head file
+# cannot reveal the base mode. Record modes from the captured tree
+# objects like gitlink targets, so the evidence survives truncation;
+# caller fails closed past caps. Returns 1 unreadable, 2 over _max.
+changed_modes() {
+  local _files="$1" _head_ref="$2" _base_ref="$3" _repo="$4" _max="${5:-50}" _count=0 _rec _f _prev _base_path _hentry _bentry _hmode _bmode _label
+  jq -e 'type == "array"' "${_files}" >/dev/null 2>&1 || return 1
+  while IFS= read -r -d '' _rec; do
+    _f="${_rec%%$'\t'*}"
+    _prev="${_rec#*$'\t'}"
+    if [[ "${_prev}" == "${_rec}" ]]; then _prev=""; fi
+    case "${_f}" in /*|..|../*|*/../*|*/..) continue ;; esac
+    _base_path="${_f}"
+    if [[ -n "${_prev}" && "${_prev}" != "${_f}" ]]; then _base_path="${_prev}"; fi
+    _hmode=""
+    _bmode=""
+    if [[ -n "${_head_ref}" && -n "${_repo}" ]]; then
+      _hentry="$(git --literal-pathspecs -C "${_repo}" ls-tree "${_head_ref}" -- "${_f}" 2>/dev/null || true)"
+      if [[ -n "${_hentry}" ]]; then _hmode="${_hentry%%[[:space:]]*}"; fi
+    fi
+    if [[ -n "${_base_ref}" && -n "${_repo}" ]]; then
+      _bentry="$(git --literal-pathspecs -C "${_repo}" ls-tree "${_base_ref}" -- "${_base_path}" 2>/dev/null || true)"
+      if [[ -n "${_bentry}" ]]; then _bmode="${_bentry%%[[:space:]]*}"; fi
+    fi
+    if [[ "${_hmode}" == "${_bmode}" ]]; then continue; fi
+    if [[ -z "${_hmode}" && -z "${_bmode}" ]]; then continue; fi
+    _label="${_f//\\/\\\\}"
+    _label="${_label//$'\n'/\\n}"
+    _label="${_label//$'\r'/\\r}"
+    _count=$((_count + 1))
+    if (( _count > _max )); then return 2; fi
+    if [[ -n "${_bmode}" && -n "${_hmode}" ]]; then
+      printf '%s: base %s, head %s\n' "${_label}" "${_bmode}" "${_hmode}"
+    elif [[ -n "${_hmode}" ]]; then
+      printf '%s: head %s (new file)\n' "${_label}" "${_hmode}"
+    else
+      printf '%s: base %s (deleted)\n' "${_label}" "${_bmode}"
+    fi
+  done < <(jq -j '[.[] | select((.filename | type) == "string") | .filename + "\t" + (if (.previous_filename | type) == "string" then .previous_filename else "" end)] | .[] + "\u0000"' "${_files}" 2>/dev/null)
 }
 
 # True when a head-tree candidate is safe to read: a regular file, not a

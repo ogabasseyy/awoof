@@ -855,6 +855,29 @@ printf '[{"filename":"newsub","previous_filename":"sub"}]' > "${gldir}/files2.js
 got="$(changed_gitlinks "${gldir}/files.json" "${glbase}" "${glbase}" "${gldir}/repo" 50)"
 assert_eq "gitlinks-unchanged-none" "" "${got}"
 rm -rf "${gldir}"
+# Mode-only changes are recorded from trees, past the diff cap.
+mdir="$(mktemp -d)"
+mkdir -p "${mdir}/repo"
+git -C "${mdir}/repo" init -q 2>/dev/null
+printf 'echo hi\n' > "${mdir}/repo/run.sh"
+git -C "${mdir}/repo" add run.sh 2>/dev/null
+git -C "${mdir}/repo" -c user.email=t@t -c user.name=t commit -qm base 2>/dev/null
+mbase="$(git -C "${mdir}/repo" rev-parse HEAD 2>/dev/null)"
+mhead="$(python3 -c "
+import subprocess
+repo='${mdir}/repo'
+blob=subprocess.check_output(['git','-C',repo,'hash-object','-w','run.sh']).strip()
+subprocess.check_call(['git','-C',repo,'update-index','--add','--cacheinfo','100755,' + blob.decode() + ',run.sh'])
+tree=subprocess.check_output(['git','-C',repo,'write-tree']).strip()
+head=subprocess.check_output(['git','-C',repo,'-c','user.email=t@t','-c','user.name=t','commit-tree',tree,'-p','${mbase}','-m','head']).strip()
+print(head.decode())
+")"
+printf '[{"filename":"run.sh"}]' > "${mdir}/files.json"
+got="$(changed_modes "${mdir}/files.json" "${mhead}" "${mbase}" "${mdir}/repo" 50)"
+assert_eq "modes-change-recorded" "run.sh: base 100644, head 100755" "${got}"
+got="$(changed_modes "${mdir}/files.json" "${mbase}" "${mbase}" "${mdir}/repo" 50)"
+assert_eq "modes-unchanged-none" "" "${got}"
+rm -rf "${mdir}"
 
 # --- diff.sh --text vs .gitattributes -diff suppression (script level) ---
 # A -diff rule would otherwise emit a "Binary files differ" placeholder:
