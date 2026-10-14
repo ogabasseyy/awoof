@@ -47,11 +47,43 @@ export function resolveStudentPostAuthDestination(input: {
     return `${STUDENT_PROFILE_COMPLETION_PATH}?${query}`;
 }
 
+// Encoded separators or controls can be decoded by a downstream router,
+// proxy, or server into a different route than the one validated here
+// (an auth-route lookalike today, an open redirect after a stack change).
+// No legitimate student return path needs them, so fail closed.
+const ENCODED_SEPARATOR_OR_CONTROL = /%(?:2f|5c|0[0-9a-f]|1[0-9a-f]|7f)/i;
+
+function hasUnsafePathname(pathname: string): boolean {
+    return ENCODED_SEPARATOR_OR_CONTROL.test(pathname) || pathname.includes(';');
+}
+
+function isAuthPathname(pathname: string): boolean {
+    const lower = pathname.toLowerCase();
+    return lower === '/auth' || lower.startsWith('/auth/');
+}
+
 function resolveCandidate(candidate: string | null, origin: string): string | null {
     if (!candidate || hasMalformedEscape(candidate) || candidate.includes('\\')) return null;
     try {
         const resolved = new URL(candidate, origin);
-        const isAuthRoute = resolved.pathname === '/auth' || resolved.pathname.startsWith('/auth/');
+        if (hasUnsafePathname(resolved.pathname)) return null;
+        // Judge the auth boundary on the decoded pathname as well: a value
+        // that only becomes an auth route (or gains a separator) after one
+        // downstream decode must not pass as an ordinary return path.
+        let decodedPathname: string;
+        try {
+            decodedPathname = decodeURIComponent(resolved.pathname);
+        } catch {
+            return null;
+        }
+        if (
+            hasUnsafePathname(decodedPathname)
+            || decodedPathname.includes('\\')
+            || decodedPathname.startsWith('//')
+        ) {
+            return null;
+        }
+        const isAuthRoute = isAuthPathname(resolved.pathname) || isAuthPathname(decodedPathname);
         if (
             (resolved.protocol !== 'http:' && resolved.protocol !== 'https:')
             || resolved.origin !== origin

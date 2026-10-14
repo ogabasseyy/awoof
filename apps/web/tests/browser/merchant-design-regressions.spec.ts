@@ -63,9 +63,43 @@ test('integration tabs and key generation entry point survive', async ({ page })
   await installSyntheticApi(page);
   await seedSession(page, 'vendor');
   await page.goto('/vendor/integration');
-  for (const tab of ['Overview', 'Widget Integration', 'API Configuration', 'Webhook Setup']) {
+  for (const tab of ['Overview', 'Checkout origins', 'API Configuration', 'Payment events']) {
     await expect(page.getByRole('button', { name: tab, exact: true })).toBeVisible();
   }
   await page.getByRole('button', { name: 'API Configuration' }).click();
   await expect(page.getByRole('button', { name: /generate/i })).toBeVisible();
+});
+
+
+test('saved vendor configuration never advertises validated widget or external webhook', async ({ page }) => {
+  await installSyntheticApi(page);
+  await seedSession(page, 'vendor');
+  await page.route(`${apiOrigin}/api/vendors/payment/api-key`, (route) => route.fulfill({ headers, json: { success: true, data: { hasApiKey: true } } }));
+  await page.route(`${apiOrigin}/api/vendors/payment/settings`, (route) => route.fulfill({ headers, json: { success: true, data: { settings: { paymentMethod: 'vendor_website', paystackSubaccountCode: 'SUBACCOUNT_SAMPLE' } } } }));
+  await page.goto('/vendor/integration');
+  await expect(page.getByText('Settings saved — checkout and payment validation pending')).toBeVisible();
+  await expect(page.getByText(/Browser widget unavailable/)).toBeVisible();
+  await page.getByRole('button', { name: 'Payment events', exact: true }).click();
+  await expect(page.getByRole('heading', { name: 'Merchant-owned payment events' })).toBeVisible();
+  await expect(page.getByText(/not a general webhook destination/)).toBeVisible();
+  await expect(page.locator('main')).not.toContainText('/api/webhooks/paystack/vendor-payment');
+  await expect(page.locator('main')).not.toContainText('automatically split');
+});
+
+test('a newly issued server key remains available to copy after metadata refresh', async ({ page }) => {
+  await installSyntheticApi(page);
+  await seedSession(page, 'vendor');
+  await page.route(`${apiOrigin}/api/vendors/payment/api-key`, async (route) => {
+    await route.fulfill({ headers, json: route.request().method() === 'POST'
+      ? { success: true, data: { apiKey: 'SYNTHETIC_NEW_SERVER_KEY' } }
+      : { success: true, data: { hasApiKey: true } } });
+  });
+  await page.goto('/vendor/integration');
+  await page.getByRole('button', { name: 'API Configuration', exact: true }).click();
+  await expect(page.locator('input[value="***hidden***"]')).toBeVisible();
+  await page.getByRole('button', { name: 'Generate', exact: true }).click();
+  await page.getByRole('alertdialog').getByRole('button', { name: 'Generate key', exact: true }).click();
+  await expect(page.getByRole('button', { name: 'Generate', exact: true })).toBeEnabled();
+  await expect(page.locator('input[value="SYNTHETIC_NEW_SERVER_KEY"]')).toBeVisible();
+  await expect(page.locator('input[value="***hidden***"]')).toHaveCount(0);
 });

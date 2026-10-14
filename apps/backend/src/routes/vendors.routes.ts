@@ -161,6 +161,74 @@ router.get(
  * @desc    Get a single order by ID
  * @access  Private (Vendor)
  */
+/**
+ * @swagger
+ * /api/vendors/orders/{id}:
+ *   get:
+ *     summary: Read one merchant order's recorded state
+ *     description: >
+ *       Requires a vendor JWT; private awoof_ reporting keys are not accepted.
+ *       The active vendor must own the transaction. Use this read to confirm
+ *       the recorded status after an ambiguous status-update response before
+ *       deciding whether to retry; duplicate refunds never reverse twice.
+ *     tags: [Vendors]
+ *     security: [{ bearerAuth: [] }]
+ *     parameters:
+ *       - in: path
+ *         name: id
+ *         required: true
+ *         schema: { type: string, format: uuid }
+ *         description: Awoof transaction ID returned by reporting.
+ *     responses:
+ *       '200':
+ *         description: Recorded order state for the owning vendor.
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               required: [success, message, data]
+ *               properties:
+ *                 success: { type: boolean, enum: [true] }
+ *                 message: { type: string }
+ *                 data:
+ *                   type: object
+ *                   required: [order]
+ *                   properties:
+ *                     order:
+ *                       type: object
+ *                       required: [id, amount, commission, status, managedPayment, createdAt, updatedAt, product, student]
+ *                       properties:
+ *                         id: { type: string, format: uuid }
+ *                         amount: { type: number, description: 'Settled amount in NGN major units (naira).' }
+ *                         commission: { type: number, description: 'Awoof commission in NGN major units (naira).' }
+ *                         status: { type: string, enum: [pending, completed, failed, refunded] }
+ *                         paystackReference: { type: string, nullable: true }
+ *                         vendorPaymentReference: { type: string, nullable: true, description: 'Merchant-reported payment reference for externally collected payments; null for Awoof-collected payments.' }
+ *                         managedPayment: { type: boolean, description: True when Awoof collected this payment; vendor status changes are then unavailable. }
+ *                         createdAt: { type: string, format: date-time }
+ *                         updatedAt: { type: string, format: date-time }
+ *                         product:
+ *                           type: object
+ *                           required: [id, name, price, studentPrice]
+ *                           properties:
+ *                             id: { type: string, format: uuid }
+ *                             name: { type: string }
+ *                             description: { type: string, nullable: true }
+ *                             imageUrl: { type: string, nullable: true }
+ *                             price: { type: number }
+ *                             studentPrice: { type: number }
+ *                         student:
+ *                           type: object
+ *                           required: [id, name, email]
+ *                           properties:
+ *                             id: { type: string, format: uuid }
+ *                             name: { type: string }
+ *                             email: { type: string, format: email }
+ *                             phoneNumber: { type: string, nullable: true }
+ *       '401': { description: Authentication required or caller is not a vendor }
+ *       '404': { description: Order or vendor profile not found for this vendor }
+ *       '422': { description: Invalid request shape; field validation failure }
+ */
 router.get(
     '/orders/:id',
     authenticate,
@@ -171,6 +239,66 @@ router.get(
  * @route   PUT /api/vendors/orders/:id/status
  * @desc    Update order status
  * @access  Private (Vendor)
+ */
+/**
+ * @swagger
+ * /api/vendors/orders/{id}/status:
+ *   put:
+ *     summary: Update a merchant order's recorded status
+ *     description: >
+ *       Requires a vendor JWT; private awoof_ reporting keys are not accepted.
+ *       The active vendor must own the transaction. Awoof-managed Paystack states
+ *       cannot be changed here. For merchant-collected payments, marking refunded
+ *       records bookkeeping only and does not issue a provider refund. The merchant
+ *       must separately refund the payment through its provider. Only completed
+ *       orders can become refunded, and refunded orders cannot change again.
+ *       Refund bookkeeping reverses the recorded savings credit and restores consumed
+ *       inventory atomically. Legacy orders without a recorded savings delta, or
+ *       missing savings balances, require reconciliation and return 409. Completed orders can only move to refunded, and orders can only become completed through payment settlement; other transitions return 400. Repeating refunded on an already-refunded order also returns 400 (duplicate refunds never reverse twice); after an ambiguous response, read the order to confirm its recorded status before retrying.
+ *     tags: [Vendors]
+ *     security: [{ bearerAuth: [] }]
+ *     parameters:
+ *       - in: path
+ *         name: id
+ *         required: true
+ *         schema: { type: string, format: uuid }
+ *         description: Awoof transaction ID returned by reporting.
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required: [status]
+ *             properties:
+ *               status: { type: string, enum: [pending, completed, failed, refunded] }
+ *     responses:
+ *       '200':
+ *         description: Recorded order status updated; no provider refund is issued.
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               required: [success, message, data]
+ *               properties:
+ *                 success: { type: boolean, enum: [true] }
+ *                 message: { type: string }
+ *                 data:
+ *                   type: object
+ *                   required: [order]
+ *                   properties:
+ *                     order:
+ *                       type: object
+ *                       required: [id, status, updatedAt]
+ *                       properties:
+ *                         id: { type: string, format: uuid }
+ *                         status: { type: string, enum: [pending, completed, failed, refunded] }
+ *                         updatedAt: { type: string, format: date-time }
+ *       '400': { description: 'Invalid transition, inactive vendor, or Awoof-managed payment' }
+ *       '401': { description: Valid vendor JWT required }
+ *       '404': { description: Vendor profile or owned order not found }
+ *       '409': { description: Savings reconciliation required before refund bookkeeping }
+ *       '422': { description: Invalid order ID or status input }
  */
 router.put(
     '/orders/:id/status',
@@ -392,8 +520,28 @@ router.put(
  * @route   POST /api/vendors/transactions/report
  * @desc    Report transaction (for vendor website payments)
  * @access  Private (Vendor API Key or JWT)
- *
+ */
+
+/**
  * @swagger
+ * components:
+ *   schemas:
+ *     MerchantTransactionReportResponse:
+ *       type: object
+ *       required: [success, message, data]
+ *       properties:
+ *         success: { type: boolean, enum: [true] }
+ *         message: { type: string }
+ *         data:
+ *           type: object
+ *           required: [transactionId, status, amount, commission, earnings, createdAt]
+ *           properties:
+ *             transactionId: { type: string, format: uuid }
+ *             status: { type: string }
+ *             amount: { type: number, description: 'Recorded amount in naira; request amount is integer kobo.' }
+ *             commission: { type: number, description: Commission in naira. }
+ *             earnings: { type: number, description: Vendor earnings in naira. }
+ *             createdAt: { type: string, format: date-time }
  * /api/vendors/transactions/report:
  *   post:
  *     summary: Report a discounted transaction against a benefit authorization
@@ -409,7 +557,7 @@ router.put(
  *       enforce an external checkout: the merchant must hold current enrollment
  *       authority before granting a discount.
  *     tags: [Vendors]
- *     security: [{ bearerAuth: [] }]
+ *     security: [{ bearerAuth: [] }, { merchantServerKey: [] }]
  *     requestBody:
  *       required: true
  *       content:
@@ -426,6 +574,7 @@ router.put(
  *               paymentReference:
  *                 type: string
  *                 minLength: 1
+ *                 maxLength: 255
  *                 description: Payment reference from the merchant payment gateway.
  *               amount:
  *                 type: integer
@@ -438,18 +587,26 @@ router.put(
  *               paymentGateway:
  *                 type: string
  *                 minLength: 1
- *                 description: Payment gateway used ('paystack' is verified externally; other values are merchant-attested).
+ *                 description: "paystack uses the Awoof Paystack account; paystack_merchant uses this vendor's configured account and validates NGN, exact kobo amount and awoofVendorId/awoofProductId/awoofBenefitAuthorizationId metadata. Other values are merchant-attested."
  *     responses:
  *       '201':
  *         description: Discounted transaction settled.
+ *         content:
+ *           application/json:
+ *             schema: { $ref: '#/components/schemas/MerchantTransactionReportResponse' }
  *       '200':
  *         description: Exact committed retry; the original result without new benefit.
- *       '400': { description: Invalid input, retired token, or amount/product/currency mismatch }
- *       '401': { description: Vendor JWT or reporting key invalid, or merchant inactive }
+ *         content:
+ *           application/json:
+ *             schema: { $ref: '#/components/schemas/MerchantTransactionReportResponse' }
+ *       '400': { description: 'Invalid input, retired token, or amount/product/currency mismatch' }
+ *       '401': { description: 'Vendor JWT or reporting key invalid, or merchant inactive' }
  *       '403': { description: Current enrollment authority or merchant disclosure unavailable }
  *       '404': { description: Unknown benefit authorization for this merchant }
- *       '409': { description: Conflicting report bindings, or a late first report needing explicit reconciliation }
+ *       '409': { description: 'Conflicting report bindings, or a late first report needing explicit reconciliation' }
  *       '422': { description: Request body failed strict validation }
+ *       '429': { description: Merchant key hourly quota exhausted or key unavailable }
+ *       '503': { $ref: '#/components/responses/MerchantPaymentUnavailable' }
  */
 router.post(
     '/transactions/report',

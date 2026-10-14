@@ -22,6 +22,9 @@ import { z } from 'zod';
 const updateOrderStatusSchema = z.object({
     status: z.enum(['pending', 'completed', 'failed', 'refunded']),
 });
+const updateOrderStatusParams = z.object({
+    id: z.string().uuid(),
+});
 
 /**
  * Order Controller
@@ -193,11 +196,9 @@ export class OrderController {
         }
 
         const vendorId = vendorResult.rows[0].id as string;
-        const orderId = req.params.id as string;
-
-        if (!orderId) {
-            throw new BadRequestError('Order ID is required');
-        }
+        // Validate before the UUID comparison: a typo must be a client
+        // error (422), not a database 22P02 failure.
+        const { id: orderId } = updateOrderStatusParams.parse(req.params);
 
         const result = await db.query(
             `SELECT 
@@ -206,6 +207,7 @@ export class OrderController {
                 t.commission,
                 t.status,
                 t.paystack_reference,
+                t.vendor_payment_reference,
                 t.payment_source,
                 t.created_at,
                 t.updated_at,
@@ -239,6 +241,7 @@ export class OrderController {
             commission: parseFloat(row.commission),
             status: row.status,
             paystackReference: row.paystack_reference,
+            vendorPaymentReference: row.vendor_payment_reference,
             managedPayment: row.payment_source === 'awoof' && Boolean(row.paystack_reference),
             createdAt: row.created_at,
             updatedAt: row.updated_at,
@@ -283,11 +286,9 @@ export class OrderController {
         }
 
         const vendorId = vendorResult.rows[0].id as string;
-        const orderId = req.params.id as string;
-
-        if (!orderId) {
-            throw new BadRequestError('Order ID is required');
-        }
+        // Validate before the UUID comparison: a typo must be a client
+        // error, not a database 22P02 failure.
+        const { id: orderId } = updateOrderStatusParams.parse(req.params);
 
         // Validate request body
         const validated = updateOrderStatusSchema.parse(req.body);
@@ -321,6 +322,17 @@ export class OrderController {
             }
             if (validated.status === 'refunded' && order.status !== 'completed') {
                 throw new BadRequestError('Only completed orders can be refunded');
+            }
+            // Settlement bookkeeping (savings credit + inventory consumption)
+            // happens atomically when an order completes and is reversed only
+            // by the completed -> refunded transition below. Every other move
+            // across the completed boundary would strand one side of that
+            // ledger, so it is rejected instead of silently desyncing it.
+            if (order.status === 'completed' && validated.status !== 'completed' && validated.status !== 'refunded') {
+                throw new BadRequestError('Completed orders can only move to refunded; other changes would strand recorded savings and consumed inventory');
+            }
+            if (validated.status === 'completed' && order.status !== 'completed') {
+                throw new BadRequestError('Orders can only complete through payment settlement, which records savings and consumes inventory atomically');
             }
             if (validated.status === 'refunded' && order.recorded_savings_delta === null) {
                 throw new ConflictError('Savings reconciliation is required before refunding this legacy order',

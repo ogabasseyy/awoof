@@ -144,6 +144,35 @@ test('external reporting records the exact credited delta for a later refund', a
     }
 });
 
+test('order status cannot cross the completed boundary without settlement bookkeeping', async () => {
+    await withTestClient(async (client) => {
+        const f = await fixture(client);
+        const completed = (await client.query(`INSERT INTO transactions(student_id, product_id, vendor_id, amount, commission, list_price_snapshot, status, payment_source, inventory_consumed, recorded_savings_delta)
+            VALUES ($1, $2, $3, 80, 4, 100, 'completed', 'vendor_other', true, 20) RETURNING id`, [f.student, f.product, f.vendor])).rows[0].id;
+        await client.query(`INSERT INTO savings_stats(student_id, total_savings, total_purchases) VALUES ($1, 70, 3)`, [f.student]);
+        for (const status of ['pending', 'failed'] as const) {
+            await assert.rejects(
+                new OrderController().updateOrderStatus({ user: { userId: f.owner, role: 'vendor' }, params: { id: completed }, body: { status } } as unknown as AuthRequest, response),
+                /can only move to refunded/,
+            );
+        }
+        assert.equal((await client.query('SELECT status FROM transactions WHERE id = $1', [completed])).rows[0].status, 'completed');
+        assert.equal(Number((await client.query('SELECT total_savings FROM savings_stats WHERE student_id = $1', [f.student])).rows[0].total_savings), 70);
+        assert.equal((await client.query('SELECT stock FROM products WHERE id = $1', [f.product])).rows[0].stock, 4);
+
+        const pending = (await client.query(`INSERT INTO transactions(student_id, product_id, vendor_id, amount, commission, status, payment_source)
+            VALUES ($1, $2, $3, 80, 4, 'pending', 'vendor_other') RETURNING id`, [f.student, f.product, f.vendor])).rows[0].id;
+        await assert.rejects(
+            new OrderController().updateOrderStatus({ user: { userId: f.owner, role: 'vendor' }, params: { id: pending }, body: { status: 'completed' } } as unknown as AuthRequest, response),
+            /only complete through payment settlement/,
+        );
+        assert.equal((await client.query('SELECT status FROM transactions WHERE id = $1', [pending])).rows[0].status, 'pending');
+        // Non-completed housekeeping remains available.
+        await new OrderController().updateOrderStatus({ user: { userId: f.owner, role: 'vendor' }, params: { id: pending }, body: { status: 'failed' } } as unknown as AuthRequest, response);
+        assert.equal((await client.query('SELECT status FROM transactions WHERE id = $1', [pending])).rows[0].status, 'failed');
+    });
+});
+
 test('legacy external refund requires reconciliation instead of reversing a backfilled price', async () => {
     await withTestClient(async (client) => {
         const f = await fixture(client);

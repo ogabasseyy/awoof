@@ -1,8 +1,8 @@
 import { createHash } from 'node:crypto';
 import type { Pool, PoolClient } from 'pg';
-import { BadRequestError, ConflictError, NotFoundError, UnauthorizedError } from '../../common/errors/AppError.js';
+import { BadRequestError, ConflictError, NotFoundError, ServiceUnavailableError, UnauthorizedError } from '../../common/errors/AppError.js';
 import { recheckReportingKeyInTransaction } from '../auth/reporting-key.service.js';
-import { verifyPaystackPayment } from '../payment/paystack.service.js';
+import { verifyPaystackPayment, verifyMerchantPaystackPayment } from '../payment/paystack.service.js';
 import { calculateMarketplaceCommission, effectiveVendorCommissionRate } from '../payment/checkout.service.js';
 import { prepareMerchantDisclosure } from './eligibility-merchant-context.service.js';
 import { getEffectiveEligibility } from './eligibility-read.service.js';
@@ -34,6 +34,25 @@ export function computePricingVersion(
     return createHash('sha256')
         .update(`${PRICING_VERSION_PREFIX}:${productId}:${currency}:${list}:${student}`)
         .digest('hex');
+}
+
+const UUID_SHAPE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+function canonicalUuid(value: unknown): string | undefined {
+    return typeof value === 'string' && UUID_SHAPE.test(value) ? value.toLowerCase() : undefined;
+}
+
+/** Provider metadata echoes the merchant's configured spelling, while
+ *  PostgreSQL returns UUIDs in lowercase. Compare canonical UUID forms so a
+ *  valid uppercase AWOOF_VENDOR_ID cannot strand an already-paid checkout;
+ *  missing or non-UUID metadata never matches. */
+export function merchantPaymentMetadataMatches(
+    metadata: Record<string, unknown> | undefined,
+    expected: { vendorId: string; productId: string; benefitAuthorizationId: string },
+): boolean {
+    return canonicalUuid(metadata?.awoofVendorId) === canonicalUuid(expected.vendorId)
+        && canonicalUuid(metadata?.awoofProductId) === canonicalUuid(expected.productId)
+        && canonicalUuid(metadata?.awoofBenefitAuthorizationId) === canonicalUuid(expected.benefitAuthorizationId);
 }
 
 /** Explicit minor-unit boundary: provider/report kobo in, naira out. */
@@ -300,10 +319,14 @@ export async function reportMerchantBenefit(
     pool: Pool,
     auth: ReportBenefitAuth,
     input: ReportBenefitInput,
-    dependencies: { verifyPaystack?: (reference: string) => Promise<{ verified: boolean; amount?: number; error?: string }> } = {},
+    dependencies: {
+        verifyPaystack?: (reference: string) => Promise<{ verified: boolean; amount?: number; error?: string; unavailable?: boolean }>;
+        verifyMerchantPaystack?: typeof verifyMerchantPaystackPayment;
+    } = {},
 ): Promise<ReportBenefitResult> {
     const reportedNaira = koboToNaira(input.amountKobo);
-    const paymentSource = input.paymentGateway === 'paystack' ? 'vendor_paystack' : 'vendor_other';
+    const paymentSource = input.paymentGateway === 'paystack' ? 'vendor_paystack'
+        : input.paymentGateway === 'paystack_merchant' ? 'vendor_merchant_paystack' : 'vendor_other';
     const vendor = (await pool.query('SELECT id FROM vendors WHERE user_id = $1 AND deleted_at IS NULL AND status = $2', [auth.ownerUserId, 'active'])).rows[0];
     if (!vendor) throw new NotFoundError('Vendor profile not found');
     const candidate = (await pool.query(
@@ -322,11 +345,28 @@ export async function reportMerchantBenefit(
     if (candidate.transaction_id === null && input.paymentGateway === 'paystack') {
         const verify = dependencies.verifyPaystack ?? verifyPaystackPayment;
         const payment = await verify(input.paymentReference);
+        if (!payment.verified && payment.unavailable) {
+            throw new ServiceUnavailableError('Paystack verification temporarily unavailable; retry the identical report');
+        }
         if (!payment.verified) throw new BadRequestError(payment.error || 'Payment verification failed');
         if (payment.amount == null || !Number.isFinite(payment.amount) || nairaToKobo(payment.amount) !== input.amountKobo) {
             throw new BadRequestError(
                 `Paystack payment amount (${payment.amount}) does not match reported amount (${reportedNaira})`,
             );
+        }
+    }
+    if (candidate.transaction_id === null && input.paymentGateway === 'paystack_merchant') {
+        const verify = dependencies.verifyMerchantPaystack ?? verifyMerchantPaystackPayment;
+        const payment = await verify(vendor.id, input.paymentReference);
+        if (!payment.verified) throw new BadRequestError(payment.error || 'Merchant payment verification failed');
+        if (payment.currency !== BENEFIT_CURRENCY || !Number.isSafeInteger(payment.amountKobo)
+            || payment.amountKobo !== input.amountKobo) {
+            throw new BadRequestError('Merchant payment amount or currency does not match the report');
+        }
+        if (!merchantPaymentMetadataMatches(payment.metadata, {
+            vendorId: vendor.id, productId: input.productId, benefitAuthorizationId: input.benefitAuthorizationId,
+        })) {
+            throw new BadRequestError('Merchant payment metadata does not match the benefit authorization');
         }
     }
     const tx = await pool.connect();
