@@ -55,6 +55,19 @@ else
     echo "compare diff reached a GitHub size limit (lines=${cmp_lines} bytes=${cmp_bytes} max-file-bytes=${cmp_maxfile}); content may be omitted" > "${RUNNER_TEMP}/muse-ghdiff.err"
     diff_failed=true
   fi
+  # Binary entries in a compare diff carry no patch content: GitHub
+  # documents binary files have no patch, and the diff media type shows
+  # only "Binary files ... differ". A deleted/replaced binary (or a text
+  # path classified binary via attributes) therefore leaves no base-side
+  # evidence in either the diff or the removed-lines supplement derived
+  # from it, and the head checkout cannot recover deleted bytes. Fail
+  # closed like the size limits above; local history (preferred above,
+  # --text) has no such placeholder. Outside hunks only: hunk lines are
+  # prefixed, so a source line with this text cannot false-positive.
+  if [[ "${diff_failed}" != "true" ]] && grep -q '^Binary files ' "${diff_file}" 2>/dev/null; then
+    echo "compare diff contains a binary file with no patch content; base-side evidence is unavailable" > "${RUNNER_TEMP}/muse-ghdiff.err"
+    diff_failed=true
+  fi
 fi
 echo "diff_failed=${diff_failed}" >> "${GITHUB_OUTPUT}"
 

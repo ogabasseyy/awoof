@@ -701,6 +701,23 @@ assert_eq "guidance-exposed-head-winner" "yes" "${got_g}"
 case "$(cat "${edir}/tmp/muse-guidance.md" 2>/dev/null)" in *"agents-base"*) got_g="yes";; *) got_g="no";; esac
 assert_eq "guidance-exposed-base-retained" "yes" "${got_g}"
 rm -rf "${edir}"
+# Invalid UTF-8 in guidance must be byte-escaped, not silently deleted
+# by iconv -c: altered directives could otherwise publish as success.
+gudir="$(mktemp -d)"
+mkdir -p "${gudir}/tmp" "${gudir}/ws"
+python3 -c "open('${gudir}/ws/AGENTS.md','wb').write(b'rule ' + bytes([255]) + b'here\n')"
+{
+  printf 'MUSE_STOP=0\n'
+  printf 'MUSE_BASE_REF=main\n'
+  printf 'MUSE_DEFAULT_BRANCH=main\n'
+  printf 'MUSE_BASE_AVAILABLE=false\n'
+  printf 'MUSE_BASE_SHA_FULL=%s\n' "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+} > "${gudir}/tmp/muse-vars.env"
+printf '[{"filename":"f.ts"}]' > "${gudir}/tmp/muse-files.json"
+(cd "${gudir}/ws" && RUNNER_TEMP="${gudir}/tmp" SCRIPT_DIR="${SCRIPT_DIR}" bash "${guidance_script}") >/dev/null 2>&1
+case "$(cat "${gudir}/tmp/muse-guidance.md" 2>/dev/null)" in *'rule \xFFhere'*) got_g="escaped";; *) got_g="altered";; esac
+assert_eq "guidance-invalid-utf8-escaped" "escaped" "${got_g}"
+rm -rf "${gudir}"
 
 # --- diff.sh --text vs .gitattributes -diff suppression (script level) ---
 # A -diff rule would otherwise emit a "Binary files differ" placeholder:
@@ -791,6 +808,11 @@ assert_eq "diff-compare-line-limit-fails-closed" "failed" "${got_x}"
 (cd "${xdir}/repo" && GH_STUB_DIFF="${xdir}/small.diff" PATH="${xdir}/bin:${PATH}" GH_TOKEN="fake" GITHUB_REPOSITORY="t/t" HEAD_SHA_EVENT="aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" GITHUB_OUTPUT="${xdir}/tmp/out.txt" RUNNER_TEMP="${xdir}/tmp" SCRIPT_DIR="${SCRIPT_DIR}" bash "${diff_script}") >/dev/null 2>&1
 case "$(cat "${xdir}/tmp/out.txt")" in *"diff_failed=false"*) got_x="ok";; *) got_x="failed";; esac
 assert_eq "diff-compare-small-ok" "ok" "${got_x}"
+printf 'diff --git a/img.png b/img.png\ndeleted file mode 100644\nBinary files a/img.png and /dev/null differ\n' > "${xdir}/bin.diff"
+: > "${xdir}/tmp/out.txt"
+(cd "${xdir}/repo" && GH_STUB_DIFF="${xdir}/bin.diff" PATH="${xdir}/bin:${PATH}" GH_TOKEN="fake" GITHUB_REPOSITORY="t/t" HEAD_SHA_EVENT="aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" GITHUB_OUTPUT="${xdir}/tmp/out.txt" RUNNER_TEMP="${xdir}/tmp" SCRIPT_DIR="${SCRIPT_DIR}" bash "${diff_script}") >/dev/null 2>&1
+case "$(cat "${xdir}/tmp/out.txt")" in *"diff_failed=true"*) got_x="failed";; *) got_x="ok";; esac
+assert_eq "diff-compare-binary-fails-closed" "failed" "${got_x}"
 rm -rf "${xdir}"
 
 # --- post.sh over-budget fallback drops inline threads (script level) ---

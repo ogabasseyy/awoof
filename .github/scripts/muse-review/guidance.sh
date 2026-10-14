@@ -83,6 +83,9 @@ emit_guidance() {
   # Budget the whole rendered block (heading, label, wrapper), not just
   # the content: hundreds of short files under long paths could otherwise
   # overshoot the aggregate budget severalfold with no warning.
+  # Byte-escape invalid UTF-8 losslessly (as diff evidence does) instead
+  # of iconv -c silently deleting guidance bytes that base-side rules
+  # may make unrecoverable from the head tree.
   if [[ "${source}" == UNTRUSTED* ]]; then
     # Submitter-controlled content AND label: the candidate path derives
     # from changed files, so an instruction-like directory name would
@@ -90,12 +93,12 @@ emit_guidance() {
     # Keep the label inside the untrusted block with the content.
     block="$(printf '<untrusted_guidance>\n### %s (%s)%s\n\n' \
       "${safe_candidate}" "${source}" "${trunc_note}"
-      printf '%s' "${content}" | iconv -c -f UTF-8 -t UTF-8 2>/dev/null \
+      printf '%s' "${content}" | escape_invalid_utf8 \
         | neutralize_tags || true
       printf '\n</untrusted_guidance>')"
   else
     block="$(printf '\n### %s (%s)%s\n\n' "${safe_candidate}" "${source}" "${trunc_note}"
-      printf '%s' "${content}" | iconv -c -f UTF-8 -t UTF-8 2>/dev/null || true
+      printf '%s' "${content}" | escape_invalid_utf8 || true
       printf '\n')"
   fi
   block_len="$(printf '%s' "${block}" | wc -c)"
