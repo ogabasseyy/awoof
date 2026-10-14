@@ -346,6 +346,11 @@ cat > "${jfix}" <<'EOF'
 EOF
 got="$(META_API_KEY='leftAright' redact_json_key < "${jfix}" | jq -r '.a')"
 assert_eq "redactjson-codespan-split-redacted" "[REDACTED]" "${got}"
+cat > "${jfix}" <<'EOF'
+{"a":"left[*A*]right"}
+EOF
+got="$(META_API_KEY='leftAright' redact_json_key < "${jfix}" | jq -r '.a')"
+assert_eq "redactjson-composed-split-redacted" "[REDACTED]" "${got}"
 if grep -q 'canonicalize_links < "${review_file}"' "${SCRIPT_DIR}/run.sh"; then got_rc="present"; else got_rc="absent"; fi
 assert_eq "run-no-canon-on-json" "absent" "${got_rc}"
 # NUL-split key: an embedded U+0000 keeps the halves non-contiguous here,

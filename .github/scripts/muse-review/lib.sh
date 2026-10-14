@@ -657,6 +657,10 @@ redact() {
 # removes \ before ASCII punctuation at render, so a key written
 # `fake\.live` displays as the credential; the _mdesc form is checked
 # (and emitted, redacted) whenever it is the one containing the key.
+# A composed _canon form (link markup, formatting runs, code spans,
+# and escapes normalized together) is checked last: transforms compose
+# (a defined shortcut `[*A*]` only exposes its intraword split after
+# canonicalization), so single-transform forms each miss that chain.
 redact_json_key() {
   local _key="${META_API_KEY:-}"
   [[ -n "${_key}" ]] || return 1
@@ -718,6 +722,8 @@ redact_json_key() {
       | (($st.out + (if $st.esc then [92] else [] end)) | implode);
     def _linkstrip: gsub("\\[(?<t>[^\\]]+)\\]\\([^)]*\\)"; "\(.t)") | gsub("\\[(?<t>[^\\]]+)\\]\\[[^\\]]*\\]"; "\(.t)") | gsub("[\\[\\]]"; "");
     def _codestrip: gsub("`(?<c>[^`]*)`"; "\(.c | if (startswith(" ") and endswith(" ") and ((gsub(" "; "") | length) > 0)) then .[1:-1] else . end)");
+    def _fmtstrip: gsub("[*`_~]+"; "");
+    def _canon: (_linkstrip | _fmtstrip | _codestrip | _mdesc);
     def _denul: split("\u0000") | join("");
     def _decr: split("\r") | join("");
     def _img1: gsub("!\\[[^\\]]*\\]\\([^)]*\\)"; "") | gsub("</?(img|IMG)[^>]*>"; "");
@@ -729,6 +735,7 @@ redact_json_key() {
          elif (($s | _mdesc) | contains($k)) then (($s | _mdesc) | split($k) | join("[REDACTED]"))
          elif (($s | _linkstrip) | contains($k)) then (($s | _linkstrip) | split($k) | join("[REDACTED]"))
          elif (($s | _codestrip) | contains($k)) then (($s | _codestrip) | split($k) | join("[REDACTED]"))
+         elif (($s | _canon) | contains($k)) then (($s | _canon) | split($k) | join("[REDACTED]"))
          elif ($s | contains("\\")) then
            ((($s | _deep) | _denul | _decr) as $dec
             | if ($dec | contains($k)) then ($dec | split($k) | join("[REDACTED]"))
@@ -736,6 +743,7 @@ redact_json_key() {
               elif (($dec | _mdesc) | contains($k)) then (($dec | _mdesc) | split($k) | join("[REDACTED]"))
               elif (($dec | _linkstrip) | contains($k)) then (($dec | _linkstrip) | split($k) | join("[REDACTED]"))
               elif (($dec | _codestrip) | contains($k)) then (($dec | _codestrip) | split($k) | join("[REDACTED]"))
+              elif (($dec | _canon) | contains($k)) then (($dec | _canon) | split($k) | join("[REDACTED]"))
               else $s end)
          else $s end)
     else . end)'
