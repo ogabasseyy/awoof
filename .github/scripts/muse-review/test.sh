@@ -168,6 +168,10 @@ got="$(printf 'caf\xc3\xa9' | escape_symlink_target)"
 assert_eq "escape-keeps-valid-multibyte" "café" "${got}"
 got="$(printf 'a\xffb' | escape_symlink_target)"
 assert_eq "escape-invalid-byte" 'a\xFFb' "${got}"
+got="$(printf 'a\xffb\ncaf\xc3\xa9\n' | escape_invalid_utf8)"
+assert_eq "evidence-escape-invalid" "$(printf 'a\\xFFb\ncafé')" "${got}"
+got="$(printf 'keep\\path\n' | escape_invalid_utf8)"
+assert_eq "evidence-escape-keeps-backslash" 'keep\path' "${got}"
 rm -rf "${symdir}"
 
 # --- changed_symlinks return-2 capture under set -e (prompt.sh idiom) ---
@@ -991,6 +995,14 @@ if PATH="${sdir}/bin:${PATH}" GH_TOKEN="fake" GITHUB_REPOSITORY="t/t" PR_NUMBER=
 assert_eq "prompt-invalid-utf8-escaped-ok" "0" "${got_rc}"
 case "$(cat "${sdir}/tmp/muse-prompt.md" 2>/dev/null)" in *'badutf -> bad\xFFtarget'*) got_p="escaped";; *) got_p="altered";; esac
 assert_eq "prompt-invalid-utf8-escaped" "escaped" "${got_p}"
+# Removed-line evidence with non-UTF-8 bytes reaches the prompt escaped,
+# not silently shortened: the head checkout cannot recover deletions.
+printf 'gone bad\xffline\n' > "${sdir}/tmp/muse-removed.txt"
+printf '[{"filename":"a.ts"}]' > "${sdir}/tmp/muse-files.json"
+if PATH="${sdir}/bin:${PATH}" GH_TOKEN="fake" GITHUB_REPOSITORY="t/t" PR_NUMBER="1" GITHUB_OUTPUT="${sdir}/tmp/out.txt" RUNNER_TEMP="${sdir}/tmp" SCRIPT_DIR="${SCRIPT_DIR}" GITHUB_WORKSPACE="${sdir}/ws" bash "${prompt_script}" >/dev/null 2>&1; then got_rc="0"; else got_rc="nonzero"; fi
+assert_eq "prompt-removed-invalid-ok" "0" "${got_rc}"
+case "$(cat "${sdir}/tmp/muse-prompt.md" 2>/dev/null)" in *'gone bad\xFFline'*) got_p="escaped";; *) got_p="altered";; esac
+assert_eq "prompt-removed-invalid-escaped" "escaped" "${got_p}"
 rm -rf "${sdir}"
 
 # --- post.sh comment-only retry after transient POST failure ---

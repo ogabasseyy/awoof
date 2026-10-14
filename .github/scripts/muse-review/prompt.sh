@@ -172,11 +172,15 @@ CONTRACT
   rm -f "${symlink_tmp}"
   printf '\n</symlink_targets>\n'
   printf '\n## Unified diff%s\n\n<diff>\n' "${MUSE_DIFF_NOTE}"
-  iconv -c -f UTF-8 -t UTF-8 "${RUNNER_TEMP}/muse.diff" 2>/dev/null \
+  # Byte-escape invalid UTF-8 instead of iconv -c: deleted or changed
+  # lines can carry non-UTF-8 bytes, the checked-out head cannot recover
+  # removed content, and silently deleting bytes would let a successful
+  # marker publish over altered base-side evidence.
+  escape_invalid_utf8 < "${RUNNER_TEMP}/muse.diff" \
     | neutralize_tags || true
   printf '\n</diff>\n'
   printf '\n## Removed base-side lines%s\n\n<removed_lines>\n' "${MUSE_REMOVED_NOTE}"
-  iconv -c -f UTF-8 -t UTF-8 "${RUNNER_TEMP}/muse-removed.txt" 2>/dev/null \
+  escape_invalid_utf8 < "${RUNNER_TEMP}/muse-removed.txt" \
     | neutralize_tags || true
   printf '\n</removed_lines>\n'
   printf '\n## Repo guidance\n'

@@ -177,6 +177,49 @@ escape_symlink_target() {
   '
 }
 
+# Lossless encoding of arbitrary evidence bytes (stdin to stdout):
+# bytes that are not part of a well-formed UTF-8 sequence become \xHH;
+# everything else — newlines, backslashes, valid multibyte — passes
+# through unchanged. Unlike escape_symlink_target this preserves the
+# text layout (diffs and removed-line blocks stay readable) while
+# guaranteeing valid UTF-8 output, so no downstream filter needs to
+# silently delete evidence bytes.
+escape_invalid_utf8() {
+  perl -e '
+    local $/; my $s = <STDIN>; $s = "" unless defined $s;
+    my $out = ""; my $i = 0; my $n = length $s;
+    while ($i < $n) {
+      my $b = ord substr($s, $i, 1);
+      if ($b < 128) { $out .= substr($s, $i, 1); $i++ }
+      else {
+        my ($len, $lo, $hi) = (0, 128, 191);
+        if ($b >= 194 && $b <= 223) { $len = 2 }
+        elsif ($b == 224) { $len = 3; $lo = 160 }
+        elsif ($b >= 225 && $b <= 236) { $len = 3 }
+        elsif ($b == 237) { $len = 3; $hi = 159 }
+        elsif ($b >= 238 && $b <= 239) { $len = 3 }
+        elsif ($b == 240) { $len = 4; $lo = 144 }
+        elsif ($b >= 241 && $b <= 243) { $len = 4 }
+        elsif ($b == 244) { $len = 4; $hi = 143 }
+        my $ok = 0;
+        if ($len && $i + $len <= $n) {
+          my $b2 = ord substr($s, $i + 1, 1);
+          if ($b2 >= $lo && $b2 <= $hi) {
+            $ok = 1;
+            for (my $j = 2; $j < $len; $j++) {
+              my $bj = ord substr($s, $i + $j, 1);
+              if ($bj < 128 || $bj > 191) { $ok = 0; last }
+            }
+          }
+        }
+        if ($ok) { $out .= substr($s, $i, $len); $i += $len }
+        else { $out .= sprintf "\\x%02X", $b; $i++ }
+      }
+    }
+    print $out;
+  '
+}
+
 # Changed-path symlink targets, one `path -> target` line per link, for the
 # review input. The agent runs symlink-blind (the sweep above removes every
 # workspace link before the key is exposed), the manifest records paths only,
