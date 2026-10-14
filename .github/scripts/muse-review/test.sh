@@ -1005,6 +1005,41 @@ case "$(cat "${sdir}/tmp/muse-prompt.md" 2>/dev/null)" in *'gone bad\xFFline'*) 
 assert_eq "prompt-removed-invalid-escaped" "escaped" "${got_p}"
 rm -rf "${sdir}"
 
+# --- prompt.sh dedupe parse failure is unknown, not zero (script level) ---
+# A successful reviews request whose body jq cannot parse must skip the
+# billable run like a lookup failure, not proceed as "no review found".
+qdir="$(mktemp -d)"
+mkdir -p "${qdir}/tmp" "${qdir}/bin" "${qdir}/ws"
+printf '#!/usr/bin/env bash\nprintf "not json\\n"\n' > "${qdir}/bin/gh"
+chmod +x "${qdir}/bin/gh"
+printf 'x' > "${qdir}/ws/a.ts"
+{
+  printf 'MUSE_STOP=0\n'
+  printf 'MUSE_HEAD_SHA=%s\n' "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+  printf 'MUSE_BASE_REF=main\n'
+  printf 'MUSE_HEAD_REF=feat\n'
+  printf 'MUSE_PR_TITLE=t\n'
+  printf 'MUSE_PR_BODY=\n'
+  printf 'MUSE_FILES_NOTE=\n'
+  printf 'MUSE_MANIFEST_NOTE=\n'
+  printf 'MUSE_DIFF_NOTE=\n'
+  printf 'MUSE_REMOVED_NOTE=\n'
+  printf 'MUSE_BASE_AVAILABLE=false\n'
+  printf 'MUSE_BASE_SHA_FULL=%s\n' "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+} > "${qdir}/tmp/muse-vars.env"
+printf -- '- a.ts\n' > "${qdir}/tmp/muse-summary.txt"
+printf 'a.ts\n' > "${qdir}/tmp/muse-manifest.txt"
+printf 'diff\n' > "${qdir}/tmp/muse.diff"
+: > "${qdir}/tmp/muse-removed.txt"
+printf 'g\n' > "${qdir}/tmp/muse-guidance.md"
+: > "${qdir}/tmp/out.txt"
+printf '[{"filename":"a.ts"}]' > "${qdir}/tmp/muse-files.json"
+prompt_script="${SCRIPT_DIR}/prompt.sh"
+PATH="${qdir}/bin:${PATH}" GH_TOKEN="fake" GITHUB_REPOSITORY="t/t" PR_NUMBER="1" GITHUB_OUTPUT="${qdir}/tmp/out.txt" RUNNER_TEMP="${qdir}/tmp" SCRIPT_DIR="${SCRIPT_DIR}" GITHUB_WORKSPACE="${qdir}/ws" bash "${prompt_script}" >/dev/null 2>&1
+case "$(cat "${qdir}/tmp/out.txt")" in *"duplicate=true"*) got_q="skip";; *) got_q="run";; esac
+assert_eq "prompt-dedupe-parse-failure-skips" "skip" "${got_q}"
+rm -rf "${qdir}"
+
 # --- post.sh comment-only retry after transient POST failure ---
 # Stub gh counts POSTs, can fail the first, and can report the first
 # attempt as landed (marker visible only after a POST was attempted).

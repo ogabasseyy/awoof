@@ -204,11 +204,20 @@ dup_reviews="${RUNNER_TEMP}/muse-existing-reviews.json"
 # advisory-safe — the next event retries.
 duplicate=false
 if gh api --paginate "repos/${GITHUB_REPOSITORY}/pulls/${PR_NUMBER}/reviews" > "${dup_reviews}" 2>/dev/null; then
-  real_count="$(jq -s --arg marker "${marker}" -f "${SCRIPT_DIR}/dedupe.jq" \
-    "${dup_reviews}" 2>/dev/null || echo 0)"
-  if [[ "${real_count}" =~ [1-9] ]]; then
+  # A jq parse/filter failure is an UNKNOWN state, not a count of zero:
+  # mapping it to 0 would spend a billable invocation despite an
+  # existing same-SHA review (the final marker check would catch the
+  # duplicate only after the quota was burned). Fail closed like the
+  # lookup failure below.
+  if real_count="$(jq -s --arg marker "${marker}" -f "${SCRIPT_DIR}/dedupe.jq" \
+    "${dup_reviews}" 2>/dev/null)"; then
+    if [[ "${real_count}" =~ [1-9] ]]; then
+      duplicate=true
+      echo "::notice::Muse review for ${MUSE_HEAD_SHA} already posted; skipping duplicate run."
+    fi
+  else
     duplicate=true
-    echo "::notice::Muse review for ${MUSE_HEAD_SHA} already posted; skipping duplicate run."
+    echo "::warning::Dedupe response could not be parsed; skipping run to avoid a duplicate billed review."
   fi
 else
   duplicate=true
