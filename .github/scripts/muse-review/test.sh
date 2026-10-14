@@ -351,6 +351,11 @@ cat > "${jfix}" <<'EOF'
 EOF
 got="$(META_API_KEY='leftAright' redact_json_key < "${jfix}" | jq -r '.a')"
 assert_eq "redactjson-composed-split-redacted" "[REDACTED]" "${got}"
+cat > "${jfix}" <<'EOF'
+{"a":"left[` A `]right"}
+EOF
+got="$(META_API_KEY='leftAright' redact_json_key < "${jfix}" | jq -r '.a')"
+assert_eq "redactjson-codespan-link-split-redacted" "[REDACTED]" "${got}"
 if grep -q 'canonicalize_links < "${review_file}"' "${SCRIPT_DIR}/run.sh"; then got_rc="present"; else got_rc="absent"; fi
 assert_eq "run-no-canon-on-json" "absent" "${got_rc}"
 # NUL-split key: an embedded U+0000 keeps the halves non-contiguous here,
@@ -582,6 +587,9 @@ assert_eq "manifest-rename-source" "$(printf 'old.ts -> new.ts\nplain.ts\nsolo.t
 python3 -c "import json; json.dump([{'filename': 'a -> b'}, {'filename': 'b', 'previous_filename': 'a'}], open('${man_fix}', 'w'))"
 got="$(manifest_paths "${man_fix}")"
 assert_eq "manifest-rename-delimiter-escaped" "$(printf 'a -\\> b\na -> b')" "${got}"
+python3 -c "import json; json.dump([{'filename': 'a\rb.ts'}], open('${man_fix}', 'w'))"
+got="$(manifest_paths "${man_fix}")"
+assert_eq "manifest-cr-escaped" 'a\rb.ts' "${got}"
 rm -f "${man_fix}" "${col_fix}"
 
 # --- ranges.pl ---
@@ -617,8 +625,8 @@ printf '[{"path":"a.ts","start":10,"end":15}]' > "${ranges_fix}"
 printf '[{"filename":"a.ts"}]' > "${files_fix}"
 jq -f "${SCRIPT_DIR}/clean.jq" "${find_fix}" > "${find_fix}.clean" && mv "${find_fix}.clean" "${find_fix}"
 assert_eq "clean-keeps-5" "5" "$(jq -r '.findings | length' "${find_fix}")"
-got="$(jq --slurpfile ranges "${ranges_fix}" --slurpfile files "${files_fix}" -f "${SCRIPT_DIR}/validate.jq" "${find_fix}" | jq -c '{v:[.valid[].title],s:[.summary_only[]|{t:.title,o:(.orphaned//false)}]}')"
-assert_eq "validate-split" '{"v":["T1"],"s":[{"t":"T3","o":false},{"t":"T2","o":false},{"t":"T5","o":true},{"t":"T4","o":true}]}' "${got}"
+got="$(jq --slurpfile ranges "${ranges_fix}" --slurpfile files "${files_fix}" -f "${SCRIPT_DIR}/validate.jq" "${find_fix}" | jq -c '{v:[.valid[].title],s:[.summary_only[]|{t:.title,o:(.orphaned//false),u:(.unverified//false)}]}')"
+assert_eq "validate-split" '{"v":["T1"],"s":[{"t":"T3","o":false,"u":false},{"t":"T2","o":false,"u":true},{"t":"T5","o":true,"u":false},{"t":"T4","o":true,"u":false}]}' "${got}"
 cat > "${find_fix}" <<'EOF'
 {"verdict":"v","findings":[
  {"path":"a.ts","line":5,"severity":"low","title":42,"body":"B"},
@@ -1492,6 +1500,43 @@ RUNNER_TEMP="${rdir}/tmp" SCRIPT_DIR="${SCRIPT_DIR}" \
 if [[ -f "${rdir}/capture.json" ]]; then got_r="posted"; else got_r="blocked"; fi
 assert_eq "post-revalidate-blocks-stale" "blocked" "${got_r}"
 rm -rf "${rdir}"
+
+# --- post.sh out-of-range line renders unverified (script level) ---
+vdir="$(mktemp -d)"
+mkdir -p "${vdir}/tmp" "${vdir}/bin"
+cat > "${vdir}/bin/gh" <<'STUB'
+#!/usr/bin/env bash
+args=" $* "
+case "${args}" in
+  *" --method POST "*)
+    prev=""
+    for a in "$@"; do
+      if [[ "${prev}" == "--input" ]]; then cp "${a}" "${GH_STUB_CAPTURE}"; fi
+      prev="${a}"
+    done
+    printf '{}\n'
+    ;;
+  *"/reviews"*) printf '[]\n' ;;
+  *) printf '%s\t%s\tfalse\topen\t%s\t%s\n' "${GH_STUB_HEAD}" "${GH_STUB_BASE}" "${GH_STUB_BASEREF:-main}" "${GH_STUB_DEFAULT:-main}" ;;
+esac
+STUB
+chmod +x "${vdir}/bin/gh"
+vsha="7878787878787878787878787878787878787878"
+vbsha="9090909090909090909090909090909090909090"
+printf 'diff --git a/a.ts b/a.ts\n--- a/a.ts\n+++ b/a.ts\n@@ -1 +1,50 @@\n+x\n' > "${vdir}/tmp/muse.diff"
+printf '[{"filename":"a.ts"}]' > "${vdir}/tmp/muse-files.json"
+printf '%s' '{"verdict":"v","findings":[{"path":"a.ts","line":99,"severity":"low","title":"far","body":"b"}],"next_steps":[]}' > "${vdir}/tmp/review.json"
+GH_STUB_CAPTURE="${vdir}/capture.json" GH_STUB_HEAD="${vsha}" GH_STUB_BASE="${vbsha}" \
+PATH="${vdir}/bin:${PATH}" \
+GH_TOKEN="fake" GITHUB_REPOSITORY="t/t" PR_NUMBER="1" \
+HEAD_SHA="${vsha}" BASE_SHA="${vbsha}" HEAD_SHA_EVENT="${vsha}" BASE_SHA_EVENT="${vbsha}" \
+MUSE_OUTCOME="success" DIFF_FAILED="false" DIFF_OUTCOME="success" \
+REVIEW_FILE="${vdir}/tmp/review.json" RUN_URL="https://example.invalid/run" \
+RUNNER_TEMP="${vdir}/tmp" SCRIPT_DIR="${SCRIPT_DIR}" \
+  bash "${post_script}" >/dev/null 2>&1
+case "$(cat "${vdir}/capture.json" 2>/dev/null)" in *"line not in visible diff — unverified"*) got_v="marked";; *) got_v="plain";; esac
+assert_eq "post-outofrange-unverified" "marked" "${got_v}"
+rm -rf "${vdir}"
 
 # --- collect.sh live default-base eligibility (script level) ---
 # A rerun after a base retarget keeps the event-time job gate fooled; the

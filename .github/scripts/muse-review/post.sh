@@ -89,9 +89,11 @@ render_summary() {
     while IFS=$'\t' read -r sev title path line; do
       printf '%s\n' "- ${sev}: ${title} in ${path}:${line} (see inline)"
     done < <(jq -r '.valid[]? | [(.severity // "low" | gsub("\t"; " ")), (.title // "" | gsub("\t"; " ")), (.path // "" | gsub("\t"; " ") | gsub("\n"; " ")), (.line // 0)] | @tsv' "${validated_json}")
-    while IFS=$'\t' read -r sev title path line body orphaned; do
+    while IFS=$'\t' read -r sev title path line body orphaned unverified; do
       if [[ "${orphaned}" == "true" ]]; then
         printf '%s\n' "- ${sev}: ${title} in ${path}:${line} (path not in changed files — unverified)"
+      elif [[ "${unverified}" == "true" ]]; then
+        printf '%s\n' "- ${sev}: ${title} in ${path}:${line} (line not in visible diff — unverified)"
       else
         printf '%s\n' "- ${sev}: ${title} in ${path}:${line}"
       fi
@@ -100,7 +102,7 @@ render_summary() {
       else
         printf '  %s\n' "${body}"
       fi
-    done < <(jq -r '.summary_only[]? | [(.severity // "low" | gsub("\t"; " ")), (.title // "" | gsub("\t"; " ")), (.path // "" | gsub("\t"; " ") | gsub("\n"; " ")), (.line // 0), ((.body // "") | gsub("\n"; " ") | gsub("\t"; " ")), (.orphaned // false)] | @tsv' "${validated_json}")
+    done < <(jq -r '.summary_only[]? | [(.severity // "low" | gsub("\t"; " ")), (.title // "" | gsub("\t"; " ")), (.path // "" | gsub("\t"; " ") | gsub("\n"; " ")), (.line // 0), ((.body // "") | gsub("\n"; " ") | gsub("\t"; " ")), (.orphaned // false), (.unverified // false)] | @tsv' "${validated_json}")
     printf '\n## Suggested next steps\n\n'
     jq -r '.next_steps[]?' "${findings_json}" 2>/dev/null | while IFS= read -r step; do
       printf '%s\n' "- ${step}"

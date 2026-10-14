@@ -723,7 +723,7 @@ redact_json_key() {
     def _linkstrip: gsub("\\[(?<t>[^\\]]+)\\]\\([^)]*\\)"; "\(.t)") | gsub("\\[(?<t>[^\\]]+)\\]\\[[^\\]]*\\]"; "\(.t)") | gsub("[\\[\\]]"; "");
     def _codestrip: gsub("`(?<c>[^`]*)`"; "\(.c | if (startswith(" ") and endswith(" ") and ((gsub(" "; "") | length) > 0)) then .[1:-1] else . end)");
     def _fmtstrip: gsub("[*`_~]+"; "");
-    def _canon: (_linkstrip | _fmtstrip | _codestrip | _mdesc);
+    def _canon: ((_codestrip | _linkstrip | _fmtstrip | _codestrip | _mdesc) as $n | if $n == . then . else ($n | _canon) end);
     def _denul: split("\u0000") | join("");
     def _decr: split("\r") | join("");
     def _img1: gsub("!\\[[^\\]]*\\]\\([^)]*\\)"; "") | gsub("</?(img|IMG)[^>]*>"; "");
@@ -779,7 +779,8 @@ neutralize_workflow_commands() {
 }
 
 # Changed-path manifest lines from a PR-files JSON array: one escaped path
-# per line. Backslashes escape FIRST, then newlines — escaping newlines
+# per line. Backslashes escape FIRST, then newlines and carriage returns
+# (a raw CR would read as a line boundary in the block) — escaping newlines
 # alone maps `a<LF>b` and a literal `a\nb` to the same bytes, so the
 # shell-disabled reviewer could miss a file it cannot re-derive. Mirrors
 # jq @tsv (which the changed-files summary already relies on). Renames
@@ -790,7 +791,7 @@ neutralize_workflow_commands() {
 # is the only unescaped ` -> ` on a line and an ordinary file named
 # `a -> b` cannot be mistaken for a rename from `a` to `b`.
 manifest_paths() {
-  jq -r 'def esc: gsub("\\\\"; "\\\\") | gsub("\n"; "\\n") | gsub(" -> "; " -\\> ");
+  jq -r 'def esc: gsub("\\\\"; "\\\\") | gsub("\n"; "\\n") | gsub("\r"; "\\r") | gsub(" -> "; " -\\> ");
     .[] | (.previous_filename // "") as $prev
     | if ($prev | length) > 0 then "\($prev | esc) -> \(.filename | esc)"
       else (.filename | esc) end' "$1" 2>/dev/null

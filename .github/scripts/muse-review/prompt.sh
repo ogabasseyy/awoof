@@ -80,7 +80,8 @@ Rules:
   non-UTF-8 byte 0xHH, never literal source text. In <symlink_targets>
   a newline appears as `\n` and a carriage return as `\r` (literal
   two-character sequences). In <changed_files> paths, a newline
-  appears as `\n` and a literal ` -> ` inside a filename appears as
+  appears as `\n`, a carriage return as `\r`, and a literal ` -> `
+  inside a filename appears as
   `-\>`, so the only unescaped ` -> ` is the rename separator
   (old -> new). Path labels in <gitlink_targets> and <changed_modes>
   use the same escapes (doubled backslash, `\n`, `\r`, `-\>`).
