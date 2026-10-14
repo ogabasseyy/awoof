@@ -1158,5 +1158,49 @@ case "$(cat "${fdir}/tmp/muse-vars.env" 2>/dev/null)" in *"MUSE_FILES_FAILED=tru
 assert_eq "collect-compare-cap-fails-closed" "fallback" "${got_f}"
 rm -rf "${fdir}"
 
+# --- collect.sh non-UTF-8 changed path fails closed (script level) ---
+# jq --arg would rewrite the raw bytes to U+FFFD and the inventory would
+# name a path that does not exist; the run must fall back instead.
+udir2="$(mktemp -d)"
+mkdir -p "${udir2}/tmp" "${udir2}/bin" "${udir2}/repo"
+cat > "${udir2}/bin/gh" <<'STUB'
+#!/usr/bin/env bash
+args=" $* "
+case "${args}" in
+  *"/pulls/"*) cat "${GH_STUB_PR_JSON}" ;;
+  *) printf '{}\n' ;;
+esac
+STUB
+chmod +x "${udir2}/bin/gh"
+git -C "${udir2}/repo" init -q 2>/dev/null
+printf 'base\n' > "${udir2}/repo/f.txt"
+git -C "${udir2}/repo" add f.txt 2>/dev/null
+git -C "${udir2}/repo" -c user.email=t@t -c user.name=t commit -qm base 2>/dev/null
+ubase="$(git -C "${udir2}/repo" rev-parse HEAD 2>/dev/null)"
+# Build the head commit by plumbing: macOS filesystems reject non-UTF-8
+# names, but a tree entry can carry the raw bytes without a checkout.
+uhead="$(python3 -c "
+import subprocess
+repo = b'${udir2}/repo'
+blob = subprocess.check_output([b'git', b'-C', repo, b'hash-object', b'-w', b'--stdin'], input=b'x').strip()
+bad = b'bad' + bytes([255]) + b'.ts'
+subprocess.check_call([b'git', b'-C', repo, b'update-index', b'--add', b'--cacheinfo', b'100644,' + blob + b',' + bad])
+tree = subprocess.check_output([b'git', b'-C', repo, b'write-tree']).strip()
+head = subprocess.check_output([b'git', b'-C', repo, b'commit-tree', tree, b'-p', b'${ubase}', b'-m', b'head']).strip()
+print(head.decode())
+")"
+git -C "${udir2}/repo" update-ref HEAD "${uhead}" 2>/dev/null
+git -C "${udir2}/repo" remote add origin "file://${udir2}/repo" 2>/dev/null
+python3 -c "
+import json
+print(json.dumps({'head': {'sha': '${uhead}', 'ref': 'feat'}, 'base': {'ref': 'main', 'sha': '${ubase}', 'repo': {'default_branch': 'main'}}, 'state': 'open', 'title': 't', 'body': ''}))
+" > "${udir2}/pr.json"
+: > "${udir2}/tmp/out.txt"
+collect_script="${SCRIPT_DIR}/collect.sh"
+(cd "${udir2}/repo" && GH_STUB_PR_JSON="${udir2}/pr.json" PATH="${udir2}/bin:${PATH}" GH_TOKEN="fake" GITHUB_REPOSITORY="t/t" PR_NUMBER="1" HEAD_SHA_EVENT="${uhead}" GITHUB_OUTPUT="${udir2}/tmp/out.txt" RUNNER_TEMP="${udir2}/tmp" SCRIPT_DIR="${SCRIPT_DIR}" bash "${collect_script}") >/dev/null 2>&1
+case "$(cat "${udir2}/tmp/muse-vars.env" 2>/dev/null)" in *"MUSE_FILES_FAILED=true"*) got_u="fallback";; *) got_u="complete";; esac
+assert_eq "collect-nonutf8-path-fails-closed" "fallback" "${got_u}"
+rm -rf "${udir2}"
+
 printf '\npass=%d fail=%d%s\n' "${pass}" "${fail}" "${fail_names:+  failed:${fail_names}}"
 [[ "${fail}" == "0" ]]

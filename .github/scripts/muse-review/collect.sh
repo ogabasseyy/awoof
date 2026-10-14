@@ -135,6 +135,7 @@ files_file="${RUNNER_TEMP}/muse-files.json"
 # the reviewed API diff. The compare API is the fallback when local history
 # is unavailable (e.g. fetch failures after the authenticated retry).
 files_source="local"
+files_invalid=false
 if [[ "${local_diff}" == "true" ]]; then
   ns_file="${RUNNER_TEMP}/muse-namestat.txt"
   num_file="${RUNNER_TEMP}/muse-numstat.txt"
@@ -163,6 +164,20 @@ if [[ "${local_diff}" == "true" ]]; then
         IFS= read -r -d '' _ns_old <&4 || { join_ok=false; break; }
         IFS= read -r -d '' _ns_new <&4 || { join_ok=false; break; }
       fi
+      # Reject non-UTF-8 path bytes BEFORE jq --arg serializes them:
+      # jq normalizes invalid bytes to U+FFFD, so muse-files.json would
+      # name a path that does not exist in the checkout — guidance
+      # derives wrong ancestors, the manifest misnames the file, and
+      # finding validation compares against the altered string while a
+      # successful review still posts. Fail closed (files_failed below)
+      # instead of falling back: the pinned compare inventory is built
+      # from the same JSON strings and cannot name the raw bytes either.
+      if ! printf '%s' "${path}" | iconv -f UTF-8 -t UTF-8 >/dev/null 2>&1 \
+        || ! printf '%s' "${prev}" | iconv -f UTF-8 -t UTF-8 >/dev/null 2>&1; then
+        join_ok=false
+        files_invalid=true
+        break
+      fi
       add="${numrec%%$'\t'*}"; rest="${numrec#*$'\t'}"; del="${rest%%$'\t'*}"
       if ! [[ "${add}" =~ ^[0-9]+$ ]]; then add=0; fi
       if ! [[ "${del}" =~ ^[0-9]+$ ]]; then del=0; fi
@@ -175,9 +190,13 @@ if [[ "${local_diff}" == "true" ]]; then
     exec 3<&- 4<&-
     if [[ "${join_ok}" == "true" ]]; then
       jq -s '.' "${files_file}.jsonl" > "${files_file}" 2>/dev/null || echo '[]' > "${files_file}"
+    elif [[ "${files_invalid}" == "true" ]]; then
+      echo '[]' > "${files_file}"
+      echo "::warning::Changed path contains non-UTF-8 bytes; routing to the fallback review."
+      local_diff=false
     else
       echo '[]' > "${files_file}"
-      echo "::warning::local diff join failed; falling back to the paginated PR-files API."
+      echo "::warning::local diff join failed; falling back to the pinned compare inventory."
       local_diff=false
     fi
   else
@@ -197,7 +216,13 @@ if [[ "${base_available}" != "true" ]]; then
   files_failed=true
   echo "::warning::Base commit could not be fetched; trusted base guidance is unavailable, routing to the fallback review."
 fi
-if [[ "${local_diff}" != "true" ]]; then
+if [[ "${files_invalid}" == "true" ]]; then
+  # Non-UTF-8 paths cannot be named losslessly in the JSON inventory
+  # (see the local parse above), and the compare inventory shares that
+  # limit — fail closed here instead of substituting its altered names.
+  files_failed=true
+fi
+if [[ "${local_diff}" != "true" && "${files_invalid}" != "true" ]]; then
   files_source="api"
   pages_file="${RUNNER_TEMP}/muse-files-pages.json"
   # Pinned compare inventory: the file list derives from the captured
