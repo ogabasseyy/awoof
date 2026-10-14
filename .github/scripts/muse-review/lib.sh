@@ -310,6 +310,7 @@ changed_symlinks() {
     _label="${_f//\\/\\\\}"
     _label="${_label//$'\n'/\\n}"
     _label="${_label//$'\r'/\\r}"
+    _label="${_label// -> / -\\> }"
     printf '%s -> %s%s\n' "${_label}" "${_esc}" "${_suffix}"
   done < <(jq -j '[.[] | {f: (.filename // empty), p: (.previous_filename // "")} | select(.f | type == "string") | ("F\t" + .f), (if (.p | type) == "string" and (.p | length) > 0 and .p != .f then ("P\t" + .p) else empty end)] | .[] + "\u0000"' "${_files}" 2>/dev/null)
   rm -f "${_raw}"
@@ -348,6 +349,7 @@ changed_gitlinks() {
     _label="${_f//\\/\\\\}"
     _label="${_label//$'\n'/\\n}"
     _label="${_label//$'\r'/\\r}"
+    _label="${_label// -> / -\\> }"
     if [[ -n "${_base_oid}" && "${_base_oid}" != "${_head_oid}" ]]; then
       if [[ "${_kind}" == "P" ]]; then
         _suffix=" (base-side; renamed away in head)"
@@ -402,6 +404,7 @@ changed_modes() {
     _label="${_f//\\/\\\\}"
     _label="${_label//$'\n'/\\n}"
     _label="${_label//$'\r'/\\r}"
+    _label="${_label// -> / -\\> }"
     _count=$((_count + 1))
     if (( _count > _max )); then return 2; fi
     if [[ -n "${_bmode}" && -n "${_hmode}" ]]; then
