@@ -1,5 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { createHmac } from 'node:crypto';
 import { createServer } from 'node:http';
 import { createMerchant } from '../server.js';
 async function freePort() { const server = createServer(); await new Promise(r => server.listen(0, '127.0.0.1', r)); const port = server.address().port; await new Promise(r => server.close(r)); return port; }
@@ -265,5 +266,65 @@ test('a held reference already paid upstream settles instead of initializing aga
     assert.equal(app.store.get(checkoutId).state, 'reported');
     assert.equal(app.store.get(checkoutId).paymentReference, references[0]);
     assert.equal(reports, 1); assert.ok(verifies >= 1);
+  } finally { await new Promise(r => app.server.close(r)); app.store.close(); }
+});
+test('in-progress and unknown verification statuses hold the reference until it settles', async () => {
+  const port = await freePort(); const origin = `https://127.0.0.1:${port}`; let checkoutId; const references = []; let verifies = 0; let reports = 0; let lost = true;
+  const metadata = { awoofVendorId: 'vendor', awoofProductId: 'product', awoofBenefitAuthorizationId: 'benefit' };
+  const pendingStatuses = ['pending', 'ongoing', 'processing', 'unexpected-status'];
+  const app = createMerchant({ origin, apiOrigin: 'https://api.test', webOrigin: 'https://awoof.test', privateKey: 'awoof_test', productId: 'product', vendorId: 'vendor', amountKobo: 80000, paymentGateway: 'paystack_merchant', paystackSecret: 'sk_test_fixture', dbPath: ':memory:', fetchImpl: async (url, init) => {
+    if (url.endsWith('/transaction/initialize')) { const reference = JSON.parse(init.body).reference; references.push(reference); if (lost) { lost = false; throw new Error('Ambiguous connection loss'); } throw new Error('must not initialize a second payment while one is in progress'); }
+    if (url.includes('/transaction/verify/')) { verifies++; assert.equal(url, `https://api.paystack.co/transaction/verify/${references[0]}`); const status = pendingStatuses[verifies - 1] ?? 'success'; return Response.json({ status: true, data: { reference: references[0], status, amount: 80000, currency: 'NGN', domain: 'test', metadata } }); }
+    const body = JSON.parse(init.body);
+    if (url.endsWith('/claim-sessions')) { checkoutId = body.merchantCheckoutId; return Response.json({ success: true, data: { claimSessionId: 'session' } }); }
+    if (url.endsWith('/exchange')) return Response.json({ success: true, data: { eligible: true, assuranceMethod: 'enrollment', campaignId: checkoutId, benefitAuthorizationId: 'benefit', validUntil: new Date(Date.now() + 600000).toISOString() } });
+    if (url.endsWith('/transactions/report')) { reports++; assert.equal(body.paymentReference, references[0]); return Response.json({ success: true, data: { transactionId: 'settled' } }); }
+    throw new Error(`unexpected backend call ${url}`);
+  } });
+  await new Promise(r => app.server.listen(port, '127.0.0.1', r));
+  const request = (path, init = {}) => fetch(`http://127.0.0.1:${port}${path}`, { redirect: 'manual', ...init });
+  try {
+    const start = await request('/checkout', { method: 'POST', headers: { Origin: origin } }); const cookie = start.headers.get('set-cookie').split(';')[0];
+    await request('/awoof/student-claim?assertion=' + 'a'.repeat(43), { headers: { Cookie: cookie } });
+    const headers = { Origin: origin, Cookie: cookie }; const form = 'email=checkout%40example.test';
+    assert.equal((await request('/payments/paystack-initialize', { method: 'POST', headers, body: form })).status, 502);
+    assert.equal(app.store.get(checkoutId).state, 'payment_initialization_unknown');
+    for (const expected of pendingStatuses) {
+      const retry = await request('/payments/paystack-initialize', { method: 'POST', headers, body: form });
+      assert.equal(retry.status, 502, `status ${expected} must hold the reference`);
+      assert.equal(app.store.get(checkoutId).initializedReference, references[0]);
+      assert.equal(app.store.get(checkoutId).state, 'payment_initialization_unknown');
+      assert.equal(references.length, 1);
+    }
+    // The held reference later succeeds upstream: the webhook binding still
+    // matches because the reference was never rotated.
+    const webhookBody = JSON.stringify({ event: 'charge.success', data: { reference: references[0], metadata: { awoofBenefitAuthorizationId: 'benefit' } } });
+    assert.equal((await request('/webhooks/paystack', { method: 'POST', headers: { 'x-paystack-signature': createHmac('sha512', 'sk_test_fixture').update(webhookBody).digest('hex') }, body: webhookBody })).status, 200);
+    assert.equal(app.store.get(checkoutId).state, 'reported');
+    assert.equal(app.store.get(checkoutId).paymentReference, references[0]);
+    assert.equal(references.length, 1); assert.equal(reports, 1); assert.equal(verifies, 5);
+  } finally { await new Promise(r => app.server.close(r)); app.store.close(); }
+});
+test('terminal failed verification rotates the reference for a fresh initialization', async () => {
+  const port = await freePort(); const origin = `https://127.0.0.1:${port}`; let checkoutId; const references = []; let verifies = 0; let lost = true;
+  const app = createMerchant({ origin, apiOrigin: 'https://api.test', webOrigin: 'https://awoof.test', privateKey: 'awoof_test', productId: 'product', vendorId: 'vendor', amountKobo: 80000, paymentGateway: 'paystack_merchant', paystackSecret: 'sk_test_fixture', dbPath: ':memory:', fetchImpl: async (url, init) => {
+    if (url.endsWith('/transaction/initialize')) { const reference = JSON.parse(init.body).reference; references.push(reference); if (lost) { lost = false; throw new Error('Ambiguous connection loss'); } return Response.json({ status: true, data: { authorization_url: 'https://checkout.paystack.com/fresh-payment', reference } }); }
+    if (url.includes('/transaction/verify/')) { verifies++; return Response.json({ status: true, data: { reference: references[0], status: 'failed' } }); }
+    const body = JSON.parse(init.body);
+    if (url.endsWith('/claim-sessions')) { checkoutId = body.merchantCheckoutId; return Response.json({ success: true, data: { claimSessionId: 'session' } }); }
+    if (url.endsWith('/exchange')) return Response.json({ success: true, data: { eligible: true, assuranceMethod: 'enrollment', campaignId: checkoutId, benefitAuthorizationId: 'benefit', validUntil: new Date(Date.now() + 600000).toISOString() } });
+    throw new Error(`unexpected backend call ${url}`);
+  } });
+  await new Promise(r => app.server.listen(port, '127.0.0.1', r));
+  const request = (path, init = {}) => fetch(`http://127.0.0.1:${port}${path}`, { redirect: 'manual', ...init });
+  try {
+    const start = await request('/checkout', { method: 'POST', headers: { Origin: origin } }); const cookie = start.headers.get('set-cookie').split(';')[0];
+    await request('/awoof/student-claim?assertion=' + 'a'.repeat(43), { headers: { Cookie: cookie } });
+    const headers = { Origin: origin, Cookie: cookie }; const form = 'email=checkout%40example.test';
+    assert.equal((await request('/payments/paystack-initialize', { method: 'POST', headers, body: form })).status, 502);
+    const retry = await request('/payments/paystack-initialize', { method: 'POST', headers, body: form });
+    assert.equal(retry.status, 303); assert.equal(retry.headers.get('location'), 'https://checkout.paystack.com/fresh-payment');
+    assert.equal(references.length, 2); assert.notEqual(references[0], references[1]); assert.equal(verifies, 1);
+    assert.equal(app.store.get(checkoutId).state, 'payment_initialized');
   } finally { await new Promise(r => app.server.close(r)); app.store.close(); }
 });

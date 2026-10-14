@@ -57,8 +57,11 @@ export function createMerchant({ origin, apiOrigin, webOrigin, privateKey, produ
   }
   async function reconcileInitialization(current) {
     // Paystack returns the authorization URL only from initialization, never
-    // from verification, so a held reference found upstream is abandoned and
-    // replaced: only a reference unknown upstream is safe to initialize.
+    // from verification, so a held reference found upstream in a terminal
+    // state is abandoned and replaced: only a reference unknown upstream is
+    // safe to initialize. An in-progress or unknown status keeps the held
+    // reference so a later success still matches this checkout instead of
+    // initializing a second payment while one is underway.
     let response;
     try {
       response = await fetchImpl(`https://api.paystack.co/transaction/verify/${encodeURIComponent(current.initializedReference)}`, { headers: { Authorization: `Bearer ${paystackSecret}` }, redirect: 'error', signal: AbortSignal.timeout(15_000) });
@@ -89,6 +92,12 @@ export function createMerchant({ origin, apiOrigin, webOrigin, privateKey, produ
       await report(current);
       return true;
     }
+    // Only a terminal status establishes that the held reference can never
+    // complete. In-progress (`pending`, `ongoing`, `processing`) and
+    // unknown statuses hold the reference in the unknown state: retrying
+    // re-verifies it, a later success still matches the webhook binding,
+    // and no second payment is initialized while one is underway.
+    if (!['failed', 'abandoned', 'reversed'].includes(payment.status)) throw fail('Test payment initialization outcome still unknown; retry later', 502);
     current.initializedReference = `awoof-${randomUUID()}`;
     return false;
   }
