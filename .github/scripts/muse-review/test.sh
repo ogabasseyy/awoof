@@ -584,8 +584,16 @@ if (cd "${gdir}/ws" && RUNNER_TEMP="${gdir}/tmp" SCRIPT_DIR="${SCRIPT_DIR}" bash
 assert_eq "guidance-small-ok" "0" "${got_rc}"
 case "$(cat "${gdir}/tmp/muse-guidance.md" 2>/dev/null)" in *"root rules"*) got_g="yes";; *) got_g="no";; esac
 assert_eq "guidance-small-emits-root" "yes" "${got_g}"
+# First-existing rule: AGENTS.md wins the root level, so the
+# .claude/CLAUDE.md sibling is omitted while AGENTS.md exists...
+case "$(cat "${gdir}/tmp/muse-guidance.md" 2>/dev/null)" in *"root-alt-rule"*) got_g="yes";; *) got_g="no";; esac
+assert_eq "guidance-alt-suppressed-by-winner" "no" "${got_g}"
+# ...and emitted once the winner is absent.
+rm "${gdir}/ws/AGENTS.md"
+(cd "${gdir}/ws" && RUNNER_TEMP="${gdir}/tmp" SCRIPT_DIR="${SCRIPT_DIR}" bash "${guidance_script}") >/dev/null 2>&1
 case "$(cat "${gdir}/tmp/muse-guidance.md" 2>/dev/null)" in *"root-alt-rule"*) got_g="yes";; *) got_g="no";; esac
 assert_eq "guidance-root-alt-location" "yes" "${got_g}"
+printf 'root rules\n' > "${gdir}/ws/AGENTS.md"
 mkdir -p "${gdir}/ws/a/b" "${gdir}/ws/a/.agents"
 printf 'parent-rule\n' > "${gdir}/ws/a/AGENTS.md"
 printf 'child-rule\n' > "${gdir}/ws/a/b/AGENTS.md"
@@ -597,7 +605,12 @@ cline="$(grep -n 'child-rule' "${gdir}/tmp/muse-guidance.md" 2>/dev/null | head 
 if [[ -n "${pline}" && -n "${cline}" ]] && (( pline < cline )); then got_o="root-first"; else got_o="leaf-first"; fi
 assert_eq "guidance-root-first-order" "root-first" "${got_o}"
 case "$(cat "${gdir}/tmp/muse-guidance.md" 2>/dev/null)" in *"scoped-alt-rule"*) got_g="yes";; *) got_g="no";; esac
+assert_eq "guidance-scoped-alt-suppressed" "no" "${got_g}"
+rm "${gdir}/ws/a/AGENTS.md"
+(cd "${gdir}/ws" && RUNNER_TEMP="${gdir}/tmp" SCRIPT_DIR="${SCRIPT_DIR}" bash "${guidance_script}") >/dev/null 2>&1
+case "$(cat "${gdir}/tmp/muse-guidance.md" 2>/dev/null)" in *"scoped-alt-rule"*) got_g="yes";; *) got_g="no";; esac
 assert_eq "guidance-scoped-alt-location" "yes" "${got_g}"
+printf 'parent-rule\n' > "${gdir}/ws/a/AGENTS.md"
 python3 -c "import json; print(json.dumps([{'filename': 'd%03d/f.ts' % i} for i in range(300)]))" > "${gdir}/tmp/muse-files.json"
 if (cd "${gdir}/ws" && RUNNER_TEMP="${gdir}/tmp" SCRIPT_DIR="${SCRIPT_DIR}" bash "${guidance_script}") >/dev/null 2>&1; then got_rc="0"; else got_rc="nonzero"; fi
 assert_eq "guidance-cap-fails-closed" "nonzero" "${got_rc}"
@@ -605,11 +618,14 @@ printf '[{"filename":"a.ts"}]' > "${gdir}/tmp/muse-files.json"
 python3 -c "print('x' * 33000)" > "${gdir}/ws/AGENTS.md"
 if (cd "${gdir}/ws" && RUNNER_TEMP="${gdir}/tmp" SCRIPT_DIR="${SCRIPT_DIR}" bash "${guidance_script}") >/dev/null 2>&1; then got_rc="0"; else got_rc="nonzero"; fi
 assert_eq "guidance-truncation-fails-closed" "nonzero" "${got_rc}"
-python3 -c "print('x' * 30000)" > "${gdir}/ws/AGENTS.md"
+# CLAUDE.md is the suppressed sibling at the root level (AGENTS.md
+# wins), so size the three applicable files to exhaust the budget on
+# their own: 3 x 32000 content bytes plus block overhead > 96000.
+python3 -c "print('x' * 32000)" > "${gdir}/ws/AGENTS.md"
 python3 -c "print('y' * 30000)" > "${gdir}/ws/CLAUDE.md"
-python3 -c "print('z' * 30000)" > "${gdir}/ws/CONTRIBUTING.md"
+python3 -c "print('z' * 32000)" > "${gdir}/ws/CONTRIBUTING.md"
 mkdir -p "${gdir}/ws/.github"
-python3 -c "print('w' * 30000)" > "${gdir}/ws/.github/copilot-instructions.md"
+python3 -c "print('w' * 32000)" > "${gdir}/ws/.github/copilot-instructions.md"
 if (cd "${gdir}/ws" && RUNNER_TEMP="${gdir}/tmp" SCRIPT_DIR="${SCRIPT_DIR}" bash "${guidance_script}") >/dev/null 2>&1; then got_rc="0"; else got_rc="nonzero"; fi
 assert_eq "guidance-budget-fails-closed" "nonzero" "${got_rc}"
 rm -rf "${gdir}"
@@ -643,6 +659,14 @@ phline="$(grep -n 'parent-head-modified' "${idir}/tmp/muse-guidance.md" 2>/dev/n
 cbline="$(grep -n 'child-base' "${idir}/tmp/muse-guidance.md" 2>/dev/null | head -n 1 | cut -d: -f1)"
 if [[ -n "${pbline}" && -n "${phline}" && -n "${cbline}" ]] && (( pbline < phline && phline < cbline )); then got_o="interleaved"; else got_o="batched"; fi
 assert_eq "guidance-interleaved-by-scope" "interleaved" "${got_o}"
+# First-existing under a trusted base: a head-only CLAUDE.md beside the
+# winning AGENTS.md is omitted, not presented as concurrent guidance.
+printf 'claude-head-rule\n' > "${idir}/ws/CLAUDE.md"
+(cd "${idir}/ws" && RUNNER_TEMP="${idir}/tmp" SCRIPT_DIR="${SCRIPT_DIR}" bash "${guidance_script}") >/dev/null 2>&1
+case "$(cat "${idir}/tmp/muse-guidance.md" 2>/dev/null)" in *"claude-head-rule"*) got_g="yes";; *) got_g="no";; esac
+assert_eq "guidance-head-sibling-suppressed" "no" "${got_g}"
+case "$(cat "${idir}/tmp/muse-guidance.md" 2>/dev/null)" in *"parent-base"*"parent-head-modified"*) got_g="yes";; *) got_g="no";; esac
+assert_eq "guidance-base-winner-retained" "yes" "${got_g}"
 rm -rf "${idir}"
 
 # --- diff.sh --text vs .gitattributes -diff suppression (script level) ---

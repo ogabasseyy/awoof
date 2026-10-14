@@ -2,7 +2,12 @@
 # Collect repo guidance: root candidates plus scoped instruction files from
 # each changed file's ancestor dirs (per directory, in Muse's
 # documented check order: AGENTS.md, CLAUDE.md, .agents/AGENTS.md,
-# .claude/CLAUDE.md). Default-branch base versions are
+# .claude/CLAUDE.md). Per directory level only the FIRST existing file
+# in that order applies — Muse's own loading rule — so lower-priority
+# siblings are omitted rather than presented as concurrent guidance,
+# while a differing base winner is still retained: it governed the
+# change even when the head winner is a different sibling. Default-branch
+# base versions are
 # trusted; custom-base versions are still emitted from the captured base
 # SHA labeled UNTRUSTED (unreachable today — the job `if` admits only
 # default-base PRs; kept as defense in depth), as are all head fallbacks.
@@ -175,6 +180,21 @@ in_candidate_list() {
   done
   return 1
 }
+# Directory level of a candidate for Muse's first-existing rule: the
+# four instruction candidates of one directory share its level; other
+# collected files (CONTRIBUTING.md, copilot instructions) are not Muse
+# instruction files and keep a level of their own (always applicable).
+guidance_level() {
+  local _c="$1"
+  case "${_c}" in
+    AGENTS.md|CLAUDE.md|.agents/AGENTS.md|.claude/CLAUDE.md) printf '.' ;;
+    */.agents/AGENTS.md) printf '%s' "${_c%/.agents/AGENTS.md}" ;;
+    */.claude/CLAUDE.md) printf '%s' "${_c%/.claude/CLAUDE.md}" ;;
+    */AGENTS.md) printf '%s' "${_c%/AGENTS.md}" ;;
+    */CLAUDE.md) printf '%s' "${_c%/CLAUDE.md}" ;;
+    *) printf 'own:%s' "${_c}" ;;
+  esac
+}
 base_list=()
 xbase_list=()
 head_list=()
@@ -206,14 +226,45 @@ for candidate in "${MUSE_CANDIDATES[@]+"${MUSE_CANDIDATES[@]}"}"; do
     head_list+=("${candidate}")
   fi
 done
+# First-existing winners per directory level (candidates are already in
+# check order within each level): the first base-side candidate whose
+# base version exists, and the first candidate readable in the head.
+# Lower-priority siblings are not emitted at all; a base winner is still
+# emitted when the head winner is a different sibling, because the base
+# rules governed the change under review.
+base_winners=()
+xbase_winners=()
+head_winners=()
+base_levels=()
+xbase_levels=()
+head_levels=()
 for candidate in "${MUSE_CANDIDATES[@]+"${MUSE_CANDIDATES[@]}"}"; do
-  if in_candidate_list "${candidate}" "${base_list[@]+"${base_list[@]}"}"; then
+  lvl="$(guidance_level "${candidate}")"
+  if in_candidate_list "${candidate}" "${base_list[@]+"${base_list[@]}"}" \
+    && ! in_candidate_list "${lvl}" "${base_levels[@]+"${base_levels[@]}"}"; then
+    base_winners+=("${candidate}")
+    base_levels+=("${lvl}")
+  fi
+  if in_candidate_list "${candidate}" "${xbase_list[@]+"${xbase_list[@]}"}" \
+    && ! in_candidate_list "${lvl}" "${xbase_levels[@]+"${xbase_levels[@]}"}"; then
+    xbase_winners+=("${candidate}")
+    xbase_levels+=("${lvl}")
+  fi
+  if head_readable "${candidate}" \
+    && ! in_candidate_list "${lvl}" "${head_levels[@]+"${head_levels[@]}"}"; then
+    head_winners+=("${candidate}")
+    head_levels+=("${lvl}")
+  fi
+done
+for candidate in "${MUSE_CANDIDATES[@]+"${MUSE_CANDIDATES[@]}"}"; do
+  if in_candidate_list "${candidate}" "${base_winners[@]+"${base_winners[@]}"}"; then
     emit_guidance "${candidate}" base
   fi
-  if in_candidate_list "${candidate}" "${xbase_list[@]+"${xbase_list[@]}"}"; then
+  if in_candidate_list "${candidate}" "${xbase_winners[@]+"${xbase_winners[@]}"}"; then
     emit_guidance "${candidate}" xbase
   fi
-  if in_candidate_list "${candidate}" "${head_list[@]+"${head_list[@]}"}"; then
+  if in_candidate_list "${candidate}" "${head_list[@]+"${head_list[@]}"}" \
+    && in_candidate_list "${candidate}" "${head_winners[@]+"${head_winners[@]}"}"; then
     emit_guidance "${candidate}" head
   fi
 done
