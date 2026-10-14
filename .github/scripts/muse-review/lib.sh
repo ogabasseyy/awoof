@@ -231,12 +231,30 @@ canonicalize_links() {
   # [text] renders literally with brackets and cannot join a split.
   perl -0777 -e '
     local $/; my $s = <STDIN>; $s = "" unless defined $s;
-    my %def;
-    while ($s =~ /^[ \t]{0,3}\[([^\]]+)\]:/mg) {
-      my $l = lc $1; $l =~ s/\s+/ /g; $l =~ s/^\s+//; $l =~ s/\s+$//;
-      $def{$l} = 1;
+    # Definition collection/removal is fence-aware: a [label]: line
+    # inside a fenced code block is literal code, not a definition, so
+    # it neither defines a shortcut nor gets removed. (A definition
+    # indented 4+ spaces is indented code, already excluded by the
+    # {0,3} indent bound.)
+    my @lines = split /(?<=\n)/, $s;
+    my %def; my $fence = "";
+    for my $ln (@lines) {
+      if ($fence eq "" and $ln =~ /^ {0,3}(`{3,}|~{3,})/) { $fence = substr($1, 0, 1); next }
+      if ($fence ne "" and $ln =~ /^ {0,3}\Q$fence\E{3,}/) { $fence = ""; next }
+      if ($fence eq "" and $ln =~ /^[ \t]{0,3}\[([^\]]+)\]:/) {
+        my $l = lc $1; $l =~ s/\s+/ /g; $l =~ s/^\s+//; $l =~ s/\s+$//;
+        $def{$l} = 1;
+      }
     }
-    $s =~ s/^[ \t]{0,3}\[[^\]]+\]:[^\n]*(?:\n|$)//gm;
+    $fence = "";
+    my $out = "";
+    for my $ln (@lines) {
+      if ($fence eq "" and $ln =~ /^ {0,3}(`{3,}|~{3,})/) { $fence = substr($1, 0, 1); $out .= $ln; next }
+      if ($fence ne "" and $ln =~ /^ {0,3}\Q$fence\E{3,}/) { $fence = ""; $out .= $ln; next }
+      next if $fence eq "" and $ln =~ /^[ \t]{0,3}\[[^\]]+\]:/;
+      $out .= $ln;
+    }
+    $s = $out;
     $s =~ s{\[((?:[^\[\]\\]++|\\.|\[(?:[^\[\]\\]++|\\.|\[(?:[^\[\]\\]++|\\.)*\])*\])*)\]\(((?:[^()\\]++|\\.|\((?:[^()\\]++|\\.|\((?:[^()\\]++|\\.)*\))*\))*)\)}{$1 ($2)}g;
     $s =~ s{\[((?:[^\[\]\\]++|\\.|\[(?:[^\[\]\\]++|\\.|\[(?:[^\[\]\\]++|\\.)*\])*\])*)\]\[((?:[^\[\]\\]++|\\.|\[(?:[^\[\]\\]++|\\.|\[(?:[^\[\]\\]++|\\.)*\])*\])*)\]}{$1 ($2)}g;
     $s =~ s{\[((?:[^\[\]\\]++|\\.|\[(?:[^\[\]\\]++|\\.|\[(?:[^\[\]\\]++|\\.)*\])*\])*)\](?![(\[])}{ my $l = lc $1; $l =~ s/\s+/ /g; $l =~ s/^\s+//; $l =~ s/\s+$//; exists $def{$l} ? $1 : "[$1]" }ge;
@@ -727,7 +745,7 @@ redact_json_key() {
     def _fmtstrip: gsub("[*`_~]+"; "");
     def _denul: split("\u0000") | join("");
     def _decr: split("\r") | join("");
-    def _img1: gsub("!\\[[^\\]]*\\]\\([^)]*\\)"; "") | gsub("</?(img|IMG)[^>]*>"; "");
+    def _img1: gsub("!\\[(?:[^\\[\\]\\\\]|\\\\.|\\[(?:[^\\[\\]\\\\]|\\\\.)*\\])*\\]\\((?:[^()\\\\]|\\\\.|\\((?:[^()\\\\]|\\\\.)*\\))*\\)"; "") | gsub("</?(img|IMG)[^>]*>"; "");
     def _imgstrip: (_img1 as $once | if $once == . then . else ($once | _imgstrip) end);
     def _canon: ((_imgstrip | _codestrip | _linkstrip | _fmtstrip | _codestrip | _mdesc) as $n | if $n == . then . else ($n | _canon) end);
     walk(if type == "string" then

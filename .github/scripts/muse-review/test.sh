@@ -361,6 +361,11 @@ cat > "${jfix}" <<'EOF'
 EOF
 got="$(META_API_KEY='leftAright' redact_json_key < "${jfix}" | jq -r '.a')"
 assert_eq "redactjson-image-composed-redacted" "[REDACTED]" "${got}"
+cat > "${jfix}" <<'EOF'
+{"a":"left![[]()](u)[*A*]right"}
+EOF
+got="$(META_API_KEY='leftAright' redact_json_key < "${jfix}" | jq -r '.a')"
+assert_eq "redactjson-nested-image-redacted" "[REDACTED]" "${got}"
 if grep -q 'canonicalize_links < "${review_file}"' "${SCRIPT_DIR}/run.sh"; then got_rc="present"; else got_rc="absent"; fi
 assert_eq "run-no-canon-on-json" "absent" "${got_rc}"
 # NUL-split key: an embedded U+0000 keeps the halves non-contiguous here,
@@ -529,6 +534,8 @@ got="$(printf '%s' 'nested [a [b] c](https://e.example/u(1)) tail' | canonicaliz
 assert_eq "links-nested" 'nested a [b] c (https://e.example/u(1)) tail' "${got}"
 got="$(printf 'left[A]right see [docs] here\n\n[A]: https://e.example/x' | canonicalize_links)"
 assert_eq "links-shortcut-defined" "$(printf 'leftAright see [docs] here\n')" "${got}"
+got="$(printf 'see [setting] here\n\n```\n[setting]: dangerous-value\n```\n' | canonicalize_links)"
+assert_eq "links-fenced-def-preserved" "$(printf 'see [setting] here\n\n```\n[setting]: dangerous-value\n```\n')" "${got}"
 
 # --- trunc_bytes_marked ---
 got="$(printf 'abcdefghij' | trunc_bytes_marked 10)"
