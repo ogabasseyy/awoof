@@ -356,6 +356,11 @@ cat > "${jfix}" <<'EOF'
 EOF
 got="$(META_API_KEY='leftAright' redact_json_key < "${jfix}" | jq -r '.a')"
 assert_eq "redactjson-codespan-link-split-redacted" "[REDACTED]" "${got}"
+cat > "${jfix}" <<'EOF'
+{"a":"left![](u)[*A*]right"}
+EOF
+got="$(META_API_KEY='leftAright' redact_json_key < "${jfix}" | jq -r '.a')"
+assert_eq "redactjson-image-composed-redacted" "[REDACTED]" "${got}"
 if grep -q 'canonicalize_links < "${review_file}"' "${SCRIPT_DIR}/run.sh"; then got_rc="present"; else got_rc="absent"; fi
 assert_eq "run-no-canon-on-json" "absent" "${got_rc}"
 # NUL-split key: an embedded U+0000 keeps the halves non-contiguous here,
@@ -833,6 +838,31 @@ assert_eq "guidance-head-sibling-suppressed" "no" "${got_g}"
 case "$(cat "${idir}/tmp/muse-guidance.md" 2>/dev/null)" in *"parent-base"*"parent-head-modified"*) got_g="yes";; *) got_g="no";; esac
 assert_eq "guidance-base-winner-retained" "yes" "${got_g}"
 rm -rf "${idir}"
+# Head winner follows the retained base winner for the same directory:
+# base has only CLAUDE.md, the PR adds the higher-priority AGENTS.md;
+# the retained base sibling must not read as the later override.
+fdir="$(mktemp -d)"
+mkdir -p "${fdir}/tmp" "${fdir}/ws"
+git -C "${fdir}/ws" init -q 2>/dev/null
+printf 'claude-base-only\n' > "${fdir}/ws/CLAUDE.md"
+git -C "${fdir}/ws" add -A 2>/dev/null
+git -C "${fdir}/ws" -c user.email=t@t -c user.name=t commit -qm base 2>/dev/null
+fbase="$(git -C "${fdir}/ws" rev-parse HEAD 2>/dev/null)"
+printf 'agents-head-new\n' > "${fdir}/ws/AGENTS.md"
+{
+  printf 'MUSE_STOP=0\n'
+  printf 'MUSE_BASE_REF=main\n'
+  printf 'MUSE_DEFAULT_BRANCH=main\n'
+  printf 'MUSE_BASE_AVAILABLE=true\n'
+  printf 'MUSE_BASE_SHA_FULL=%s\n' "${fbase}"
+} > "${fdir}/tmp/muse-vars.env"
+printf '[{"filename":"f.ts"}]' > "${fdir}/tmp/muse-files.json"
+(cd "${fdir}/ws" && RUNNER_TEMP="${fdir}/tmp" SCRIPT_DIR="${SCRIPT_DIR}" bash "${guidance_script}") >/dev/null 2>&1
+cbline="$(grep -n 'claude-base-only' "${fdir}/tmp/muse-guidance.md" 2>/dev/null | head -n 1 | cut -d: -f1)"
+haline="$(grep -n 'agents-head-new' "${fdir}/tmp/muse-guidance.md" 2>/dev/null | head -n 1 | cut -d: -f1)"
+if [[ -n "${cbline}" && -n "${haline}" ]] && (( cbline < haline )); then got_o="base-first"; else got_o="head-first"; fi
+assert_eq "guidance-head-winner-after-base" "base-first" "${got_o}"
+rm -rf "${fdir}"
 # Standalone levels never collide with directory levels: a directory
 # literally named `own:CONTRIBUTING.md` must not suppress its scoped
 # AGENTS.md just because the root CONTRIBUTING.md minted that level.

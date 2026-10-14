@@ -657,10 +657,12 @@ redact() {
 # removes \ before ASCII punctuation at render, so a key written
 # `fake\.live` displays as the credential; the _mdesc form is checked
 # (and emitted, redacted) whenever it is the one containing the key.
-# A composed _canon form (link markup, formatting runs, code spans,
-# and escapes normalized together) is checked last: transforms compose
-# (a defined shortcut `[*A*]` only exposes its intraword split after
-# canonicalization), so single-transform forms each miss that chain.
+# A composed _canon form (image markup, link markup, formatting runs,
+# code spans, and escapes normalized together to a fixed point) is
+# checked last: transforms compose (a defined shortcut `[*A*]` only
+# exposes its intraword split after canonicalization, and an image
+# token can be the separator that exposes it), so single-transform
+# forms each miss those chains.
 redact_json_key() {
   local _key="${META_API_KEY:-}"
   [[ -n "${_key}" ]] || return 1
@@ -723,11 +725,11 @@ redact_json_key() {
     def _linkstrip: gsub("\\[(?<t>[^\\]]+)\\]\\([^)]*\\)"; "\(.t)") | gsub("\\[(?<t>[^\\]]+)\\]\\[[^\\]]*\\]"; "\(.t)") | gsub("[\\[\\]]"; "");
     def _codestrip: gsub("`(?<c>[^`]*)`"; "\(.c | if (startswith(" ") and endswith(" ") and ((gsub(" "; "") | length) > 0)) then .[1:-1] else . end)");
     def _fmtstrip: gsub("[*`_~]+"; "");
-    def _canon: ((_codestrip | _linkstrip | _fmtstrip | _codestrip | _mdesc) as $n | if $n == . then . else ($n | _canon) end);
     def _denul: split("\u0000") | join("");
     def _decr: split("\r") | join("");
     def _img1: gsub("!\\[[^\\]]*\\]\\([^)]*\\)"; "") | gsub("</?(img|IMG)[^>]*>"; "");
     def _imgstrip: (_img1 as $once | if $once == . then . else ($once | _imgstrip) end);
+    def _canon: ((_imgstrip | _codestrip | _linkstrip | _fmtstrip | _codestrip | _mdesc) as $n | if $n == . then . else ($n | _canon) end);
     walk(if type == "string" then
       ((. | _denul | _decr) as $s
        | if ($s | contains($k)) then ($s | split($k) | join("[REDACTED]"))

@@ -278,24 +278,52 @@ for candidate in "${MUSE_CANDIDATES[@]+"${MUSE_CANDIDATES[@]}"}"; do
     [[ "${standalone}" == "true" ]] || head_levels+=("${lvl}")
   fi
 done
+# Emission is ordered by directory level (root first), then by side
+# within the level (base, custom base, head): the head winner for a
+# directory must follow any retained base winner for the SAME directory,
+# or the lower-priority base sibling (e.g. an unchanged CLAUDE.md) would
+# read as overriding the current head winner (e.g. a newly added
+# AGENTS.md) under the prompt's later-wins precedence. Standalone
+# candidates keep candidate identity as their own level so they emit
+# with all their sides together, in candidate order.
+emission_levels=()
 for candidate in "${MUSE_CANDIDATES[@]+"${MUSE_CANDIDATES[@]}"}"; do
-  if in_candidate_list "${candidate}" "${base_winners[@]+"${base_winners[@]}"}"; then
-    emit_guidance "${candidate}" base
+  case "${candidate}" in
+    CONTRIBUTING.md|.github/copilot-instructions.md) ekey="own:${candidate}" ;;
+    *) ekey="$(guidance_level "${candidate}")" ;;
+  esac
+  if ! in_candidate_list "${ekey}" "${emission_levels[@]+"${emission_levels[@]}"}"; then
+    emission_levels+=("${ekey}")
   fi
-  if in_candidate_list "${candidate}" "${xbase_winners[@]+"${xbase_winners[@]}"}"; then
-    emit_guidance "${candidate}" xbase
-  fi
-  if in_candidate_list "${candidate}" "${head_winners[@]+"${head_winners[@]}"}"; then
-    # Emit the head winner when it is a differing copy (head_list) or
-    # when it differs from the base winner for its level: deleting the
-    # base winner (e.g. AGENTS.md) can expose an unchanged lower-priority
-    # sibling (e.g. CLAUDE.md) that never entered head_list because its
-    # bytes did not change, yet it is the guidance that applies in head.
-    if in_candidate_list "${candidate}" "${head_list[@]+"${head_list[@]}"}" \
-      || ! in_candidate_list "${candidate}" "${base_winners[@]+"${base_winners[@]}"}"; then
-      emit_guidance "${candidate}" head
-    fi
-  fi
+done
+for ekey in "${emission_levels[@]+"${emission_levels[@]}"}"; do
+  for side in base xbase head; do
+    for candidate in "${MUSE_CANDIDATES[@]+"${MUSE_CANDIDATES[@]}"}"; do
+      case "${candidate}" in
+        CONTRIBUTING.md|.github/copilot-instructions.md) ckey="own:${candidate}" ;;
+        *) ckey="$(guidance_level "${candidate}")" ;;
+      esac
+      [[ "${ckey}" == "${ekey}" ]] || continue
+      if [[ "${side}" == "base" ]] && in_candidate_list "${candidate}" "${base_winners[@]+"${base_winners[@]}"}"; then
+        emit_guidance "${candidate}" base
+      fi
+      if [[ "${side}" == "xbase" ]] && in_candidate_list "${candidate}" "${xbase_winners[@]+"${xbase_winners[@]}"}"; then
+        emit_guidance "${candidate}" xbase
+      fi
+      if [[ "${side}" == "head" ]] && in_candidate_list "${candidate}" "${head_winners[@]+"${head_winners[@]}"}"; then
+        # Emit the head winner when it is a differing copy (head_list)
+        # or when it differs from the base winner for its level:
+        # deleting the base winner (e.g. AGENTS.md) can expose an
+        # unchanged lower-priority sibling (e.g. CLAUDE.md) that never
+        # entered head_list because its bytes did not change, yet it is
+        # the guidance that applies in head.
+        if in_candidate_list "${candidate}" "${head_list[@]+"${head_list[@]}"}" \
+          || ! in_candidate_list "${candidate}" "${base_winners[@]+"${base_winners[@]}"}"; then
+          emit_guidance "${candidate}" head
+        fi
+      fi
+    done
+  done
 done
 if [[ "${guidance_capped}" == "true" || "${guidance_truncated}" == "true" || "${guidance_nul}" == "true" || "${guidance_ambiguous}" == "true" ]]; then
   # Fail closed as with the candidate cap: incomplete guidance must

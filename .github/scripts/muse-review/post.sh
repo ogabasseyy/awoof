@@ -461,11 +461,28 @@ if ! gh api --method POST \
     # recovery — so an over-budget retry compacts to headers-only with an
     # explicit note (the main body's treatment), and past that posts the
     # explicit fallback instead (its tag keeps dedupe from blocking a rerun).
+    # Run the assembled body through the same full filters as the first
+    # attempt BEFORE measuring it: retry bodies interpolate
+    # validated-but-untrusted paths (a filename carrying <img> markup
+    # would survive the jq-level scrub), and entity neutralization is
+    # not idempotent (&amp; -> &amp;amp;), so a body measured first
+    # could grow past the budget after acceptance. A filter failure
+    # keeps the jq-only body and still attempts the retry.
+    filter_retry_body() {
+      if jq -r '.body' "${payload_file}.summary" 2>/dev/null \
+        | strip_images | strip_empty_links | strip_markdown_escapes | strip_code_spans | strip_intraword_markers | canonicalize_links | strip_intraword_markers | strip_html_comments | strip_html_tags | neutralize_html_entities | sanitize_mentions > "${RUNNER_TEMP}/muse-retry-body.txt" \
+        && jq --rawfile body "${RUNNER_TEMP}/muse-retry-body.txt" '.body = $body' \
+          "${payload_file}.summary" > "${payload_file}.summary.clean" 2>/dev/null; then
+        mv "${payload_file}.summary.clean" "${payload_file}.summary"
+      else
+        rm -f "${payload_file}.summary.clean"
+      fi
+    }
     retry_ok=false
-    if build_retry full \
+    if build_retry full && filter_retry_body \
       && (( $(jq -r '.body // ""' "${payload_file}.summary" 2>/dev/null | wc -c) <= body_budget )); then
       retry_ok=true
-    elif build_retry compact \
+    elif build_retry compact && filter_retry_body \
       && (( $(jq -r '.body // ""' "${payload_file}.summary" 2>/dev/null | wc -c) <= body_budget )); then
       retry_ok=true
     fi
@@ -495,20 +512,6 @@ Re-run the workflow, or inspect the logs."
         echo "::warning::Retry-body assembly failed; skipping retry to avoid posting a partial review."
         exit 0
       fi
-    fi
-    # Retry bodies interpolate validated-but-untrusted paths: a filename
-    # carrying <img> markup or nested-paren markdown-image syntax would
-    # survive the jq-level path scrub above, so run the assembled body
-    # through the same full filters as the first attempt (idempotent on
-    # clean text). A filter failure keeps the jq-only body and still
-    # attempts the retry rather than losing the review.
-    if jq -r '.body' "${payload_file}.summary" 2>/dev/null \
-      | strip_images | strip_empty_links | strip_markdown_escapes | strip_code_spans | strip_intraword_markers | canonicalize_links | strip_intraword_markers | strip_html_comments | strip_html_tags | neutralize_html_entities | sanitize_mentions > "${RUNNER_TEMP}/muse-retry-body.txt" \
-      && jq --rawfile body "${RUNNER_TEMP}/muse-retry-body.txt" '.body = $body' \
-        "${payload_file}.summary" > "${payload_file}.summary.clean" 2>/dev/null; then
-      mv "${payload_file}.summary.clean" "${payload_file}.summary"
-    else
-      rm -f "${payload_file}.summary.clean"
     fi
     # Revalidate immediately before the retry POST as well.
     check_live || exit 0
