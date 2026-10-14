@@ -50,7 +50,7 @@ else
   # is indistinguishable from a truncated one.
   cmp_lines="$(wc -l < "${diff_file}")"
   cmp_bytes="$(wc -c < "${diff_file}")"
-  cmp_maxfile="$(awk '/^diff --git / {if (n > max) max = n; n = 0} {n += length($0) + 1} END {if (n > max) max = n; print max + 0}' "${diff_file}" 2>/dev/null || echo 0)"
+  cmp_maxfile="$(LC_ALL=C awk '/^diff --git / {if (n > max) max = n; n = 0} {n += length($0) + 1} END {if (n > max) max = n; print max + 0}' "${diff_file}" 2>/dev/null || echo 0)"
   if (( cmp_lines >= 20000 || cmp_bytes >= 1000000 || cmp_maxfile >= 500000 )); then
     echo "compare diff reached a GitHub size limit (lines=${cmp_lines} bytes=${cmp_bytes} max-file-bytes=${cmp_maxfile}); content may be omitted" > "${RUNNER_TEMP}/muse-ghdiff.err"
     diff_failed=true

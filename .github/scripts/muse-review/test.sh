@@ -478,6 +478,10 @@ got="$(printf '%s' 'a * b and *em* word and snake_case and 2 * 3' | strip_intraw
 assert_eq "intraword-spaced-kept" 'a * b and *em* word and snake_case and 2 * 3' "${got}"
 got="$(printf 'x`code`y end' | strip_intraword_markers)"
 assert_eq "intraword-backtick-removed" 'xcodey end' "${got}"
+got="$(printf '%s' 'fake.*live*/key+abc=123 x' | strip_intraword_markers)"
+assert_eq "punct-bounded-markers-removed" 'fake.live/key+abc=123 x' "${got}"
+got="$(printf '%s' 'fake._live_/key and a_b_c stay' | strip_intraword_markers)"
+assert_eq "punct-bounded-underscore-removed" 'fake.live/key and a_b_c stay' "${got}"
 
 # --- strip_markdown_escapes ---
 got="$(printf '%s' 'fake\.live a\*b c\n d \\ e' | strip_markdown_escapes)"
@@ -1130,6 +1134,18 @@ assert_eq "diff-compare-line-limit-fails-closed" "failed" "${got_x}"
 (cd "${xdir}/repo" && GH_STUB_DIFF="${xdir}/small.diff" PATH="${xdir}/bin:${PATH}" GH_TOKEN="fake" GITHUB_REPOSITORY="t/t" HEAD_SHA_EVENT="aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" GITHUB_OUTPUT="${xdir}/tmp/out.txt" RUNNER_TEMP="${xdir}/tmp" SCRIPT_DIR="${SCRIPT_DIR}" bash "${diff_script}") >/dev/null 2>&1
 case "$(cat "${xdir}/tmp/out.txt")" in *"diff_failed=false"*) got_x="ok";; *) got_x="failed";; esac
 assert_eq "diff-compare-small-ok" "ok" "${got_x}"
+python3 -c "
+print('diff --git a/f.txt b/f.txt')
+print('--- a/f.txt')
+print('+++ b/f.txt')
+print('@@ -1 +1 @@')
+for i in range(6000):
+    print('+' + 'é' * 60)
+" > "${xdir}/wide.diff"
+: > "${xdir}/tmp/out.txt"
+(cd "${xdir}/repo" && GH_STUB_DIFF="${xdir}/wide.diff" PATH="${xdir}/bin:${PATH}" GH_TOKEN="fake" GITHUB_REPOSITORY="t/t" HEAD_SHA_EVENT="aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" GITHUB_OUTPUT="${xdir}/tmp/out.txt" RUNNER_TEMP="${xdir}/tmp" SCRIPT_DIR="${SCRIPT_DIR}" bash "${diff_script}") >/dev/null 2>&1
+case "$(cat "${xdir}/tmp/out.txt")" in *"diff_failed=true"*) got_x="failed";; *) got_x="ok";; esac
+assert_eq "diff-compare-byte-limit-fails-closed" "failed" "${got_x}"
 printf 'diff --git a/img.png b/img.png\ndeleted file mode 100644\nBinary files a/img.png and /dev/null differ\n' > "${xdir}/bin.diff"
 : > "${xdir}/tmp/out.txt"
 (cd "${xdir}/repo" && GH_STUB_DIFF="${xdir}/bin.diff" PATH="${xdir}/bin:${PATH}" GH_TOKEN="fake" GITHUB_REPOSITORY="t/t" HEAD_SHA_EVENT="aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" GITHUB_OUTPUT="${xdir}/tmp/out.txt" RUNNER_TEMP="${xdir}/tmp" SCRIPT_DIR="${SCRIPT_DIR}" bash "${diff_script}") >/dev/null 2>&1

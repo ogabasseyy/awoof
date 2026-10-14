@@ -177,17 +177,19 @@ strip_empty_links() {
   perl -0777 -pe 's{\[\]\([^)]*\)}{}g; s{\[\]\[[^\]]*\]}{}g'
 }
 
-# Remove intraword Markdown formatting runs (`*`, backticks, `~~`
-# flanked by word characters on both sides): GFM renders intraword
-# emphasis/code/strikethrough with the markers hidden, so a credential
-# split as `left*A*right` displays contiguously while every redaction
-# pass saw only halves. A split needs the separator between two word
-# characters (a spaced marker renders with its spaces and cannot join
-# a credential), so only intraword runs go; spaced emphasis, lists,
-# and snake_case are untouched. Deleting joins the halves where the
+# Remove Markdown formatting runs (`*`, backticks, `~~`, and `_` with a
+# punctuation neighbour) bounded by non-space characters on both sides:
+# GFM renders such emphasis/code/strikethrough with the markers hidden,
+# so a credential split as `left*A*right` or `fake.*live*/key` displays
+# contiguously while every redaction pass saw only halves. A split needs
+# the separator between two non-space characters (a spaced marker
+# renders with its spaces and cannot join a credential), so spaced
+# emphasis and lists are untouched. `_` additionally requires a
+# punctuation neighbour: intraword underscores never form emphasis in
+# GFM, so snake_case stays intact. Deleting joins the halves where the
 # redaction that runs after this can match the whole value.
 strip_intraword_markers() {
-  perl -0777 -pe 's{(?<=[A-Za-z0-9])(?:\*+|`+|~{2,})(?=[A-Za-z0-9])}{}g'
+  perl -0777 -pe 's{(?<=\S)(?:\*+|`+|~{2,})(?=\S)}{}g; s{(?<=[^\w\s])_+(?=\S)}{}g; s{(?<=\S)_+(?=[^\w\s])}{}g'
 }
 
 # Canonicalize visible Markdown links to `text (destination)`: GFM
