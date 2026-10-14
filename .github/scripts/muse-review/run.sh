@@ -81,11 +81,15 @@ if (( muse_rc != 0 )); then
   # which the runner would execute as a workflow command on print.
   stderr_clean="$(mktemp)"
   if redact_json_key < "${RUNNER_TEMP}/muse-stderr.log" > "${stderr_clean}" 2>/dev/null; then
-    redact "$(cat "${stderr_clean}" 2>/dev/null || true)" | tail -c 4000 | neutralize_workflow_commands
+    :
   else
     decode_json_escapes < "${RUNNER_TEMP}/muse-stderr.log" > "${stderr_clean}" 2>/dev/null || : > "${stderr_clean}"
-    redact "$(cat "${stderr_clean}" 2>/dev/null || true)" | tail -c 4000 | neutralize_workflow_commands
   fi
+  # Redact again after neutralize: CR handling there is the last
+  # byte-changing filter before the log, so a second key-aware pass
+  # (redact itself strips CRs before matching) catches any credential
+  # a CR split hid from the first pass.
+  redact "$(redact "$(cat "${stderr_clean}" 2>/dev/null || true)" | tail -c 4000 | neutralize_workflow_commands)"
   rm -f "${stderr_clean}"
   exit "${muse_rc}"
 fi

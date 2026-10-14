@@ -220,6 +220,25 @@ escape_invalid_utf8() {
   '
 }
 
+# True when a file (arg) or a git blob (sha, path) contains a NUL byte.
+# Checked on raw bytes, never a Bash variable: command substitution
+# silently drops NULs and could join otherwise separate text.
+file_has_nul() {
+  perl -0777 -ne 'exit(index($_, "\0") >= 0 ? 0 : 1)' -- "$1" 2>/dev/null
+}
+blob_has_nul() {
+  git show "$1:$2" 2>/dev/null | perl -0777 -ne 'exit(index($_, "\0") >= 0 ? 0 : 1)'
+}
+# True only for a regular-file blob in a git tree (sha, path): a
+# directory/gitlink named like a guidance file makes `git show`
+# succeed with a tree/commit listing, which must not be treated as a
+# readable file. Symlink blobs (120000) are likewise rejected.
+base_guidance_blob() {
+  local _entry
+  _entry="$(git --literal-pathspecs ls-tree "$1" -- "$2" 2>/dev/null)"
+  case "${_entry}" in 100644\ *|100755\ *) return 0 ;; *) return 1 ;; esac
+}
+
 # Changed-path symlink targets, one `path -> target` line per link, for the
 # review input. The agent runs symlink-blind (the sweep above removes every
 # workspace link before the key is exposed), the manifest records paths only,
@@ -325,7 +344,11 @@ head_readable() {
 # through this function in the run step. Always redact BEFORE truncating:
 # cutting first could remove a PEM footer and defeat the full-block match.
 redact() {
-  printf '%s' "$1" | META_API_KEY="${META_API_KEY:-}" perl -0777 -pe 'BEGIN { $k = $ENV{META_API_KEY} // q{} } if (length $k) { $q = quotemeta($k); s/$q/[REDACTED]/g } s/-----BEGIN [A-Z ]*PRIVATE KEY-----.*?-----END [A-Z ]*PRIVATE KEY-----/[REDACTED-PRIVATE-KEY]/gs; s/\b(sk-|rk-|ghp_|gho_|ghu_|ghs_|ghr_|github_pat_|xox[A-Za-z]-|AKIA)[A-Za-z0-9_\-]+/[REDACTED]/g; s/\bAIza[0-9A-Za-z_\-]{35}/[REDACTED]/g; s/eyJ[A-Za-z0-9_\-]{10,}\.eyJ[A-Za-z0-9_\-]{10,}\.[A-Za-z0-9_\-]+/[REDACTED-JWT]/g; s/((?:api[_-]?key|secret|token|password)\s*[:=]\s*["'"'"']?)[A-Za-z0-9_\-.\/+]{12,}/${1}[REDACTED]/gi'
+  # CRs are removed before matching in this same pass, so a key split
+  # by a raw CR (or a decoded \u000d) joins while the key is available
+  # and redacts instead of rejoining later when a downstream filter
+  # deletes CRs (the same rejoin class as NUL/image splits).
+  printf '%s' "$1" | META_API_KEY="${META_API_KEY:-}" perl -0777 -pe 'BEGIN { $k = $ENV{META_API_KEY} // q{} } s/\r//g; if (length $k) { $q = quotemeta($k); s/$q/[REDACTED]/g } s/-----BEGIN [A-Z ]*PRIVATE KEY-----.*?-----END [A-Z ]*PRIVATE KEY-----/[REDACTED-PRIVATE-KEY]/gs; s/\b(sk-|rk-|ghp_|gho_|ghu_|ghs_|ghr_|github_pat_|xox[A-Za-z]-|AKIA)[A-Za-z0-9_\-]+/[REDACTED]/g; s/\bAIza[0-9A-Za-z_\-]{35}/[REDACTED]/g; s/eyJ[A-Za-z0-9_\-]{10,}\.eyJ[A-Za-z0-9_\-]{10,}\.[A-Za-z0-9_\-]+/[REDACTED-JWT]/g; s/((?:api[_-]?key|secret|token|password)\s*[:=]\s*["'"'"']?)[A-Za-z0-9_\-.\/+]{12,}/${1}[REDACTED]/gi'
 }
 
 # Mask the live META_API_KEY inside DECODED JSON string values (stdin to
@@ -367,6 +390,9 @@ redact() {
 # redactable) and guarantees no NUL reaches the post step; the decoded
 # form of backslash-bearing strings is stripped the same way, since a
 # `\u0000` escape sequence decodes to the same byte one level down.
+# CR bytes are stripped the same way: a downstream CR-deleting filter
+# (neutralize_workflow_commands in the log path) would otherwise join
+# a CR-split key after this pass.
 redact_json_key() {
   local _key="${META_API_KEY:-}"
   [[ -n "${_key}" ]] || return 1
@@ -417,13 +443,14 @@ redact_json_key() {
            end)
        | .s);
     def _denul: split("\u0000") | join("");
+    def _decr: split("\r") | join("");
     def _imgstrip: gsub("!\\[[^\\]]*\\]\\([^)]*\\)"; "") | gsub("</?(img|IMG)[^>]*>"; "");
     walk(if type == "string" then
-      ((. | _denul) as $s
+      ((. | _denul | _decr) as $s
        | if ($s | contains($k)) then ($s | split($k) | join("[REDACTED]"))
          elif (($s | _imgstrip) | contains($k)) then (($s | _imgstrip) | split($k) | join("[REDACTED]"))
          elif ($s | contains("\\")) then
-           ((($s | _deep) | _denul) as $dec
+           ((($s | _deep) | _denul | _decr) as $dec
             | if ($dec | contains($k)) then ($dec | split($k) | join("[REDACTED]"))
               elif (($dec | _imgstrip) | contains($k)) then (($dec | _imgstrip) | split($k) | join("[REDACTED]"))
               else $s end)
@@ -453,9 +480,11 @@ decode_json_escapes() {
 # stdout). The runner executes any log line starting with `::` as a command
 # (annotations, masks, groups); decoded model stderr can smuggle one via
 # `\u000a\u003a...` escapes, and GitHub offers no command escaping — so break
-# the prefix with a space. CRs go first: `\r::cmd` might survive the anchor.
+# the prefix with a space. CRs become a space first (a nonempty
+# separator, not deletion): `\r::cmd` must not survive the anchor, and
+# deleting a CR between key halves would rejoin a split credential.
 neutralize_workflow_commands() {
-  perl -pe 's/\r//g; s/^::/ ::/'
+  perl -pe 's/\r/ /g; s/^::/ ::/'
 }
 
 # Changed-path manifest lines from a PR-files JSON array: one escaped path

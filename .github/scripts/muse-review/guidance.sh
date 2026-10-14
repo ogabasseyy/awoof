@@ -31,10 +31,18 @@ guidance_budget=96000
 guidance_cap=32000
 guidance_capped=false
 guidance_truncated=false
+guidance_nul=false
 emit_guidance() {
   candidate="$1"
   phase="$2"
   if [[ "${guidance_capped}" == "true" ]]; then return 0; fi
+  # NUL check on raw bytes, never a Bash variable (substitution drops
+  # NULs and could join directive text); fail closed below.
+  if [[ "${phase}" == "head" ]]; then
+    if file_has_nul "${candidate}"; then guidance_nul=true; return 0; fi
+  elif blob_has_nul "${MUSE_BASE_SHA_FULL}" "${candidate}"; then
+    guidance_nul=true; return 0
+  fi
   content=""
   source=""
   # Phase is pre-classified by the caller (one git show per candidate), so
@@ -205,6 +213,7 @@ for candidate in "${MUSE_CANDIDATES[@]+"${MUSE_CANDIDATES[@]}"}"; do
   # Explicit base SHA, never bare FETCH_HEAD: later deepens append the head
   # to FETCH_HEAD, so the bare ref could resolve to the wrong commit.
   if [[ "${trust_base_flag}" == "true" ]] \
+    && base_guidance_blob "${MUSE_BASE_SHA_FULL}" "${candidate}" \
     && base_probe="$(git show "${MUSE_BASE_SHA_FULL}:${candidate}" 2>/dev/null)"; then
     base_list+=("${candidate}")
     # Head modified this guidance file: emit the differing head copy as
@@ -223,6 +232,7 @@ for candidate in "${MUSE_CANDIDATES[@]+"${MUSE_CANDIDATES[@]}"}"; do
     # too, so base-side rules that the PR deleted or changed are still
     # visible (emit skips it when head content is identical).
     if [[ "${MUSE_BASE_AVAILABLE:-}" == "true" && -n "${MUSE_BASE_SHA_FULL:-}" ]] \
+      && base_guidance_blob "${MUSE_BASE_SHA_FULL}" "${candidate}" \
       && git show "${MUSE_BASE_SHA_FULL}:${candidate}" >/dev/null 2>&1; then
       xbase_list+=("${candidate}")
     fi
@@ -278,13 +288,10 @@ for candidate in "${MUSE_CANDIDATES[@]+"${MUSE_CANDIDATES[@]}"}"; do
     fi
   fi
 done
-if [[ "${guidance_capped}" == "true" || "${guidance_truncated}" == "true" ]]; then
-  # Same fail-closed rule as the candidate cap: a budget-dropped or
-  # byte-truncated guidance file means rules the reviewer never sees
-  # (for base-side files, rules it cannot recover from the head tree).
-  # Exiting nonzero fails the Collect step; Post renders the
-  # evidence-collection fallback instead of a successful marker.
-  echo "::error::Guidance collection incomplete (budget exhausted: ${guidance_capped}, file truncated: ${guidance_truncated}); failing closed to the fallback review."
+if [[ "${guidance_capped}" == "true" || "${guidance_truncated}" == "true" || "${guidance_nul}" == "true" ]]; then
+  # Fail closed as with the candidate cap: incomplete guidance must
+  # not publish success; Post renders the fallback instead.
+  echo "::error::Guidance collection incomplete (budget exhausted: ${guidance_capped}, file truncated: ${guidance_truncated}, NUL-bearing: ${guidance_nul}); failing closed to the fallback review."
   exit 1
 fi
 if [[ ! -s "${guidance_file}" ]]; then

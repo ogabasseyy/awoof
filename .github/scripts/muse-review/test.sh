@@ -378,6 +378,20 @@ got="$(printf '\r::group::leak' | neutralize_workflow_commands)"
 assert_eq "wfcmd-cr" " ::group::leak" "${got}"
 got="$(printf '%s' 'x\u000a\u003a\u003aerror\u003a\u003afake' | decode_json_escapes | neutralize_workflow_commands)"
 assert_eq "wfcmd-decoded-smuggle" "$(printf 'x\n ::error::fake')" "${got}"
+got="$(printf 'a\rb' | neutralize_workflow_commands)"
+assert_eq "wfcmd-cr-separator" "a b" "${got}"
+# CR-split key: redact strips CRs before matching, neutralize uses a
+# space separator, and a second redact after neutralize (run.sh order)
+# must leave no contiguous credential.
+crkey='fake.live/key+abc=123'
+got="$(META_API_KEY="${crkey}" redact "$(printf 'leak fake.live/key+abc\r=123 end')" | neutralize_workflow_commands)"
+got="$(META_API_KEY="${crkey}" redact "${got}")"
+assert_eq "wfcmd-cr-split-redacted" "leak [REDACTED] end" "${got}"
+crfix="$(mktemp)"
+printf '%s' '{"a":"leak fake.live/key+abc\r=123 end"}' > "${crfix}"
+got="$(META_API_KEY="${crkey}" redact_json_key < "${crfix}" | jq -r '.a')"
+assert_eq "redactjson-cr-split-redacted" "leak [REDACTED] end" "${got}"
+rm -f "${crfix}"
 
 # --- strip_images ---
 got="$(printf '%s' 'see ![pixel](https://a.example/p?d=1) and [docs](https://d.example/x) ok' | strip_images)"
@@ -540,6 +554,12 @@ if grep -q "only run model prompts" "${runbook_path}" "${SCRIPT_DIR}/../../workf
 assert_eq "docs-no-prompts-only-scope" "absent" "${got_doc}"
 if grep -q "MUSE_REVIEW_ENABLED" "${runbook_path}" 2>/dev/null && grep -q "MUSE_REVIEW_ENABLED" "${SCRIPT_DIR}/../../workflows/muse-code-review.yml" 2>/dev/null; then got_doc="yes"; else got_doc="no"; fi
 assert_eq "docs-rollout-gate" "yes" "${got_doc}"
+# The selftest asserts against the runbook above, so a runbook-only
+# change must trigger it in both push and pull_request path filters.
+selftest_path="${SCRIPT_DIR}/../../workflows/muse-review-selftest.yml"
+assert_eq "selftest-runbook-trigger" "2" "$(grep -c 'docs/runbooks/muse-code-review.md' "${selftest_path}" 2>/dev/null || echo 0)"
+if grep -q 'redact "\$(redact' "${SCRIPT_DIR}/run.sh" 2>/dev/null; then got_doc="yes"; else got_doc="no"; fi
+assert_eq "run-redact-after-neutralize" "yes" "${got_doc}"
 
 # --- schema.json ---
 if jq -e '.type == "object" and .additionalProperties == false and (.required | length) == 3' "${SCRIPT_DIR}/schema.json" >/dev/null 2>&1; then got_schema="yes"; else got_schema="no"; fi
@@ -718,6 +738,48 @@ printf '[{"filename":"f.ts"}]' > "${gudir}/tmp/muse-files.json"
 case "$(cat "${gudir}/tmp/muse-guidance.md" 2>/dev/null)" in *'rule \xFFhere'*) got_g="escaped";; *) got_g="altered";; esac
 assert_eq "guidance-invalid-utf8-escaped" "escaped" "${got_g}"
 rm -rf "${gudir}"
+# NUL-bearing guidance fails closed: Bash substitution would drop the
+# NUL and join directive text while reporting complete guidance.
+nudir="$(mktemp -d)"
+mkdir -p "${nudir}/tmp" "${nudir}/ws"
+python3 -c "open('${nudir}/ws/AGENTS.md','wb').write(b'ruleA' + bytes([0]) + b'ruleB\n')"
+{
+  printf 'MUSE_STOP=0\n'
+  printf 'MUSE_BASE_REF=main\n'
+  printf 'MUSE_DEFAULT_BRANCH=main\n'
+  printf 'MUSE_BASE_AVAILABLE=false\n'
+  printf 'MUSE_BASE_SHA_FULL=%s\n' "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+} > "${nudir}/tmp/muse-vars.env"
+printf '[{"filename":"f.ts"}]' > "${nudir}/tmp/muse-files.json"
+if (cd "${nudir}/ws" && RUNNER_TEMP="${nudir}/tmp" SCRIPT_DIR="${SCRIPT_DIR}" bash "${guidance_script}") >/dev/null 2>&1; then got_rc="0"; else got_rc="nonzero"; fi
+assert_eq "guidance-nul-fails-closed" "nonzero" "${got_rc}"
+rm -rf "${nudir}"
+# A directory named AGENTS.md in base is a tree, not a guidance blob:
+# it must not win first-existing selection over a real CLAUDE.md.
+bldir="$(mktemp -d)"
+mkdir -p "${bldir}/tmp" "${bldir}/ws/AGENTS.md"
+git -C "${bldir}/ws" init -q 2>/dev/null
+printf 'inner\n' > "${bldir}/ws/AGENTS.md/inner.txt"
+printf 'claude-base\n' > "${bldir}/ws/CLAUDE.md"
+git -C "${bldir}/ws" add -A 2>/dev/null
+git -C "${bldir}/ws" -c user.email=t@t -c user.name=t commit -qm base 2>/dev/null
+blbase="$(git -C "${bldir}/ws" rev-parse HEAD 2>/dev/null)"
+{
+  printf 'MUSE_STOP=0\n'
+  printf 'MUSE_BASE_REF=main\n'
+  printf 'MUSE_DEFAULT_BRANCH=main\n'
+  printf 'MUSE_BASE_AVAILABLE=true\n'
+  printf 'MUSE_BASE_SHA_FULL=%s\n' "${blbase}"
+} > "${bldir}/tmp/muse-vars.env"
+printf '[{"filename":"f.ts"}]' > "${bldir}/tmp/muse-files.json"
+(cd "${bldir}/ws" && RUNNER_TEMP="${bldir}/tmp" SCRIPT_DIR="${SCRIPT_DIR}" bash "${guidance_script}") >/dev/null 2>&1
+case "$(cat "${bldir}/tmp/muse-guidance.md" 2>/dev/null)" in *"claude-base"*) got_g="yes";; *) got_g="no";; esac
+assert_eq "guidance-base-blob-winner" "yes" "${got_g}"
+case "$(cat "${bldir}/tmp/muse-guidance.md" 2>/dev/null)" in *"CLAUDE.md (trusted"*) got_g="trusted";; *) got_g="untrusted";; esac
+assert_eq "guidance-base-blob-trusted" "trusted" "${got_g}"
+case "$(cat "${bldir}/tmp/muse-guidance.md" 2>/dev/null)" in *"inner.txt"*) got_g="tree";; *) got_g="no-tree";; esac
+assert_eq "guidance-base-tree-not-trusted" "no-tree" "${got_g}"
+rm -rf "${bldir}"
 
 # --- diff.sh --text vs .gitattributes -diff suppression (script level) ---
 # A -diff rule would otherwise emit a "Binary files differ" placeholder:

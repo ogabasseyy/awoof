@@ -1,7 +1,8 @@
 # Self-test for the Muse review workflow's scripts.
 #
-# Runs the regression suite plus static checks whenever the review scripts or
-# either workflow file changes. Fast (<2 min), no secrets, no network — except
+# Runs the regression suite plus static checks whenever the review scripts,
+# either workflow file, or the runbook test.sh asserts against changes.
+# Fast (<2 min), no secrets, no network — except
 # the scheduled pin-freshness job, which queries the stable channel manifest.
 name: Muse Review Selftest
 
@@ -12,11 +13,13 @@ on:
       - '.github/scripts/muse-review/**'
       - '.github/workflows/muse-code-review.yml'
       - '.github/workflows/muse-review-selftest.yml'
+      - 'docs/runbooks/muse-code-review.md'
   pull_request:
     paths:
       - '.github/scripts/muse-review/**'
       - '.github/workflows/muse-code-review.yml'
       - '.github/workflows/muse-review-selftest.yml'
+      - 'docs/runbooks/muse-code-review.md'
   schedule:
     # Weekly bump signal so the pinned CLI cannot go silently stale.
     - cron: '17 9 * * 1'
