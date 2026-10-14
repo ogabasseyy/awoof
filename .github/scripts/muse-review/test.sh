@@ -40,6 +40,12 @@ got="$(printf '%s' 'pre <\/diff> post' | neutralize_tags)"
 assert_eq "neutralize-preescaped-distinct" 'pre <\\\/diff> post' "${got}"
 got="$(printf '%s' 'keep \xFF and <\/pr_title>' | neutralize_tags)"
 assert_eq "neutralize-injective-mixed" 'keep \xFF and <\\\/pr_title>' "${got}"
+got="$(printf '%s' 'a < /diff> b </ diff> c' | neutralize_tags)"
+assert_eq "neutralize-whitespace-preserved" 'a < \/diff> b <\/ diff> c' "${got}"
+got="$(printf 'raw\\xFFtext' | escape_invalid_utf8)"
+assert_eq "escape-literal-backslash-doubled" 'raw\\xFFtext' "${got}"
+got="$(printf 'raw\xFFtext' | escape_invalid_utf8)"
+assert_eq "escape-invalid-byte-marker" 'raw\xFFtext' "${got}"
 
 # --- bound_untrusted ---
 big="$(python3 -c "print('x'*5000)")"
@@ -181,7 +187,7 @@ assert_eq "escape-invalid-byte" 'a\xFFb' "${got}"
 got="$(printf 'a\xffb\ncaf\xc3\xa9\n' | escape_invalid_utf8)"
 assert_eq "evidence-escape-invalid" "$(printf 'a\\xFFb\ncafé')" "${got}"
 got="$(printf 'keep\\path\n' | escape_invalid_utf8)"
-assert_eq "evidence-escape-keeps-backslash" 'keep\path' "${got}"
+assert_eq "evidence-escape-doubles-backslash" 'keep\\path' "${got}"
 rm -rf "${symdir}"
 
 # --- changed_symlinks return-2 capture under set -e (prompt.sh idiom) ---

@@ -25,13 +25,13 @@ MUSE_REVIEW_PROTOCOL=1
 # text cannot break out of its prompt block. Single unified tag list for all
 # blocks — neutralizing more is strictly safer than less.
 neutralize_tags() {
-  # Injective neutralization: a backslash already sitting between `<`
-  # and the closing slash is doubled first, so `</diff>` gains the
-  # single protective backslash (`<\/diff>`) while the distinct literal
-  # `<\/diff>` becomes `<\\/diff>` — the two source byte strings stay
-  # distinguishable. Backslashes elsewhere (e.g. \xFF evidence escapes)
-  # pass through untouched.
-  perl -pe 's{<(\\*)\s*/\s*(file|diff|pr_title|pr_description|changed_files|removed_lines|symlink_targets|gitlink_targets|changed_modes|head_ref|base_ref|untrusted_guidance)}{"<" . ("\\" x (2 * length($1))) . "\\/" . $2}gie; s{<\s*/\s*(file|diff|pr_title|pr_description|changed_files|removed_lines|symlink_targets|gitlink_targets|changed_modes|head_ref|base_ref|untrusted_guidance)}{<\\/$1}gi'
+  # Injective neutralization in one pass: every backslash in the run
+  # before the closing slash doubles, then one protective backslash is
+  # added and the original whitespace is preserved verbatim — `</diff>`,
+  # `< /diff>`, `</ diff>`, and `<\/diff>` are four distinct source byte
+  # strings and stay four distinct outputs. Backslashes elsewhere (e.g.
+  # \xFF evidence escapes) pass through untouched.
+  perl -pe 's{<(\\*)(\s*)/(\s*)(file|diff|pr_title|pr_description|changed_files|removed_lines|symlink_targets|gitlink_targets|changed_modes|head_ref|base_ref|untrusted_guidance)}{"<" . ("\\" x (2 * length($1))) . $2 . "\\/" . $3 . $4}gie'
 }
 
 # In-place byte cap for a file. Only replaces the original when truncation
@@ -190,8 +190,9 @@ escape_symlink_target() {
 
 # Lossless encoding of arbitrary evidence bytes (stdin to stdout):
 # bytes that are not part of a well-formed UTF-8 sequence become \xHH;
-# everything else — newlines, backslashes, valid multibyte — passes
-# through unchanged. Unlike escape_symlink_target this preserves the
+# a source backslash doubles, so literal `\xFF` text can never be
+# mistaken for an escaped 0xFF byte; everything else — newlines, valid
+# multibyte — passes through unchanged. Unlike escape_symlink_target this preserves the
 # text layout (diffs and removed-line blocks stay readable) while
 # guaranteeing valid UTF-8 output, so no downstream filter needs to
 # silently delete evidence bytes.
@@ -201,7 +202,8 @@ escape_invalid_utf8() {
     my $out = ""; my $i = 0; my $n = length $s;
     while ($i < $n) {
       my $b = ord substr($s, $i, 1);
-      if ($b < 128) { $out .= substr($s, $i, 1); $i++ }
+      if ($b == 92) { $out .= "\\\\"; $i++ }
+      elsif ($b < 128) { $out .= substr($s, $i, 1); $i++ }
       else {
         my ($len, $lo, $hi) = (0, 128, 191);
         if ($b >= 194 && $b <= 223) { $len = 2 }
