@@ -40,6 +40,21 @@ elif ! gh api -H 'Accept: application/vnd.github.diff' \
   diff_failed=true
 else
   diff_failed=false
+  # GitHub compare diffs silently omit content past 20,000 lines, 1 MB
+  # overall, or 500 KB per file: a successful response at those limits
+  # can lack deleted tail content in both the diff and the removed-lines
+  # supplement (extracted from this file below), yet would otherwise
+  # post as a complete review. At any limit, fail closed to the
+  # fallback instead — local history (the preferred source above) has
+  # no such caps. Thresholds are inclusive: a response exactly at a cap
+  # is indistinguishable from a truncated one.
+  cmp_lines="$(wc -l < "${diff_file}")"
+  cmp_bytes="$(wc -c < "${diff_file}")"
+  cmp_maxfile="$(awk '/^diff --git / {if (n > max) max = n; n = 0} {n += length($0) + 1} END {if (n > max) max = n; print max + 0}' "${diff_file}" 2>/dev/null || echo 0)"
+  if (( cmp_lines >= 20000 || cmp_bytes >= 1000000 || cmp_maxfile >= 500000 )); then
+    echo "compare diff reached a GitHub size limit (lines=${cmp_lines} bytes=${cmp_bytes} max-file-bytes=${cmp_maxfile}); content may be omitted" > "${RUNNER_TEMP}/muse-ghdiff.err"
+    diff_failed=true
+  fi
 fi
 echo "diff_failed=${diff_failed}" >> "${GITHUB_OUTPUT}"
 

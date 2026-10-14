@@ -694,6 +694,44 @@ if (cd "${ddir}/repo2" && RUNNER_TEMP="${ddir}/tmp" SCRIPT_DIR="${SCRIPT_DIR}" G
 assert_eq "diff-removed-cap-fails-closed" "nonzero" "${got_rc}"
 rm -rf "${ddir}"
 
+# --- diff.sh size-limited compare diff fails closed (script level) ---
+# A successful compare response at GitHub's 20,000-line / 1 MB / 500 KB
+# limits can silently omit deleted tail content; it must not post as a
+# complete review. Stub gh serves the compare diff from a fixture.
+xdir="$(mktemp -d)"
+mkdir -p "${xdir}/tmp" "${xdir}/bin" "${xdir}/repo"
+cat > "${xdir}/bin/gh" <<'STUB'
+#!/usr/bin/env bash
+cat "${GH_STUB_DIFF}"
+STUB
+chmod +x "${xdir}/bin/gh"
+python3 -c "
+print('diff --git a/f.txt b/f.txt')
+print('--- a/f.txt')
+print('+++ b/f.txt')
+print('@@ -1 +1 @@')
+for i in range(20010):
+    print('+line%06d' % i)
+" > "${xdir}/big.diff"
+printf 'diff --git a/f.txt b/f.txt\n--- a/f.txt\n+++ b/f.txt\n@@ -1 +1 @@\n+ok\n' > "${xdir}/small.diff"
+{
+  printf 'MUSE_STOP=0\n'
+  printf 'MUSE_FILES_FAILED=false\n'
+  printf 'MUSE_FILES_SOURCE=api\n'
+  printf 'MUSE_TOTAL_FILES=1\n'
+  printf 'MUSE_BASE_SHA=%s\n' "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+} > "${xdir}/tmp/muse-vars.env"
+: > "${xdir}/tmp/out.txt"
+diff_script="${SCRIPT_DIR}/diff.sh"
+(cd "${xdir}/repo" && GH_STUB_DIFF="${xdir}/big.diff" PATH="${xdir}/bin:${PATH}" GH_TOKEN="fake" GITHUB_REPOSITORY="t/t" HEAD_SHA_EVENT="aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" GITHUB_OUTPUT="${xdir}/tmp/out.txt" RUNNER_TEMP="${xdir}/tmp" SCRIPT_DIR="${SCRIPT_DIR}" bash "${diff_script}") >/dev/null 2>&1
+case "$(cat "${xdir}/tmp/out.txt")" in *"diff_failed=true"*) got_x="failed";; *) got_x="ok";; esac
+assert_eq "diff-compare-line-limit-fails-closed" "failed" "${got_x}"
+: > "${xdir}/tmp/out.txt"
+(cd "${xdir}/repo" && GH_STUB_DIFF="${xdir}/small.diff" PATH="${xdir}/bin:${PATH}" GH_TOKEN="fake" GITHUB_REPOSITORY="t/t" HEAD_SHA_EVENT="aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" GITHUB_OUTPUT="${xdir}/tmp/out.txt" RUNNER_TEMP="${xdir}/tmp" SCRIPT_DIR="${SCRIPT_DIR}" bash "${diff_script}") >/dev/null 2>&1
+case "$(cat "${xdir}/tmp/out.txt")" in *"diff_failed=false"*) got_x="ok";; *) got_x="failed";; esac
+assert_eq "diff-compare-small-ok" "ok" "${got_x}"
+rm -rf "${xdir}"
+
 # --- post.sh over-budget fallback drops inline threads (script level) ---
 # Stub gh: the live-PR lookup prints the @tsv row post.sh expects, review
 # lists are empty, and POST captures its --input payload for inspection.
