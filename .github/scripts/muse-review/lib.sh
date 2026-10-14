@@ -200,7 +200,9 @@ strip_intraword_markers() {
 # still shown) while the separating ` (url)` breaks contiguity. Alt
 # text and destinations accept balanced nesting, mirroring
 # strip_images. Reference forms keep their label the same way. Links
-# with empty text are deleted earlier (strip_empty_links).
+# with empty text are deleted earlier (strip_empty_links). Apply ONLY
+# to decoded review text (post.sh), never to serialized JSON:
+# pretty-printed arrays read as bracketed Markdown and would collapse.
 # Decode Markdown backslash escapes: GFM removes a backslash before
 # ASCII punctuation when rendering, so a key emitted as `fake\.live`
 # displays as the actual credential while literal redaction saw only
@@ -704,6 +706,7 @@ redact_json_key() {
           elif $c == 92 then .esc = true
           else .out += [$c] end)) as $st
       | (($st.out + (if $st.esc then [92] else [] end)) | implode);
+    def _linkstrip: gsub("\\[(?<t>[^\\]]+)\\]\\([^)]*\\)"; "\(.t)") | gsub("\\[(?<t>[^\\]]+)\\]\\[[^\\]]*\\]"; "\(.t)") | gsub("[\\[\\]]"; "");
     def _denul: split("\u0000") | join("");
     def _decr: split("\r") | join("");
     def _img1: gsub("!\\[[^\\]]*\\]\\([^)]*\\)"; "") | gsub("</?(img|IMG)[^>]*>"; "");
@@ -713,11 +716,13 @@ redact_json_key() {
        | if ($s | contains($k)) then ($s | split($k) | join("[REDACTED]"))
          elif (($s | _imgstrip) | contains($k)) then (($s | _imgstrip) | split($k) | join("[REDACTED]"))
          elif (($s | _mdesc) | contains($k)) then (($s | _mdesc) | split($k) | join("[REDACTED]"))
+         elif (($s | _linkstrip) | contains($k)) then (($s | _linkstrip) | split($k) | join("[REDACTED]"))
          elif ($s | contains("\\")) then
            ((($s | _deep) | _denul | _decr) as $dec
             | if ($dec | contains($k)) then ($dec | split($k) | join("[REDACTED]"))
               elif (($dec | _imgstrip) | contains($k)) then (($dec | _imgstrip) | split($k) | join("[REDACTED]"))
               elif (($dec | _mdesc) | contains($k)) then (($dec | _mdesc) | split($k) | join("[REDACTED]"))
+              elif (($dec | _linkstrip) | contains($k)) then (($dec | _linkstrip) | split($k) | join("[REDACTED]"))
               else $s end)
          else $s end)
     else . end)'

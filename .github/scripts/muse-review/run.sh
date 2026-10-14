@@ -164,20 +164,9 @@ if strip_intraword_markers < "${review_file}" > "${review_file}.nomarks" 2>/dev/
 else
   rm -f "${review_file}.nomarks"
 fi
-# Canonicalize visible links to `text (destination)` before the final
-# pass: only the text renders, so `left[A](url)right` would display as
-# the joined credential; the visible destination breaks contiguity.
-if canonicalize_links < "${review_file}" > "${review_file}.canon" 2>/dev/null; then
-  mv "${review_file}.canon" "${review_file}"
-else
-  rm -f "${review_file}.canon"
-fi
-# Canonicalizing can itself expose an intraword split (a defined
-# shortcut `[*A*]` unwraps to `*A*` between word characters), so the
-# marker strip runs once more after it, closest to the final pass.
-if strip_intraword_markers < "${review_file}" > "${review_file}.nomarks2" 2>/dev/null; then
-  mv "${review_file}.nomarks2" "${review_file}"
-else
-  rm -f "${review_file}.nomarks2"
-fi
+# Link markup is NOT canonicalized at this serialized-JSON layer:
+# canonicalize_links would read the pretty-printed arrays as Markdown
+# brackets and collapse them. redact_json_key already covers the
+# link-split form inside decoded strings (its _linkstrip check), and
+# post.sh canonicalizes the decoded text it actually posts.
 redact "$(cat "${review_file}")" > "${review_file}.clean" && mv "${review_file}.clean" "${review_file}"

@@ -334,6 +334,15 @@ cat > "${jfix}" <<'EOF'
 EOF
 got="$(META_API_KEY="${jkey}" redact_json_key < "${jfix}" | jq -r '.a')"
 assert_eq "redactjson-markdown-escape" "oops [REDACTED] end" "${got}"
+cat > "${jfix}" <<'EOF'
+{"a":"left[A](https://e.example)right","b":"left[A]right"}
+EOF
+got="$(META_API_KEY='leftAright' redact_json_key < "${jfix}" | jq -r '.a')"
+assert_eq "redactjson-link-split-redacted" "[REDACTED]" "${got}"
+got="$(META_API_KEY='leftAright' redact_json_key < "${jfix}" | jq -r '.b')"
+assert_eq "redactjson-shortcut-split-redacted" "[REDACTED]" "${got}"
+if grep -q 'canonicalize_links < "${review_file}"' "${SCRIPT_DIR}/run.sh"; then got_rc="present"; else got_rc="absent"; fi
+assert_eq "run-no-canon-on-json" "absent" "${got_rc}"
 # NUL-split key: an embedded U+0000 keeps the halves non-contiguous here,
 # but Bash discards NUL bytes when the keyless post step extracts decoded
 # strings into variables, rejoining the credential. Stripping NULs while
@@ -1413,6 +1422,55 @@ got="$(jq -r '(.comments // []) | length' "${xdir}/capture.json" 2>/dev/null || 
 assert_eq "post-bad-next-step-no-inline" "0" "${got}"
 rm -rf "${xdir}"
 
+# --- post.sh revalidates immediately before POST (script level) ---
+# The stub serves the captured head on the entry gate and a moved head
+# on the next pull lookup: the pre-POST revalidation must skip the post
+# entirely (no capture) instead of attaching findings to the old SHA.
+rdir="$(mktemp -d)"
+mkdir -p "${rdir}/tmp" "${rdir}/bin"
+cat > "${rdir}/bin/gh" <<'STUB'
+#!/usr/bin/env bash
+args=" $* "
+case "${args}" in
+  *" --method POST "*)
+    prev=""
+    for a in "$@"; do
+      if [[ "${prev}" == "--input" ]]; then cp "${a}" "${GH_STUB_CAPTURE}"; fi
+      prev="${a}"
+    done
+    printf '{}\n'
+    ;;
+  *"/reviews"*) printf '[]\n' ;;
+  *)
+    n="$(cat "${GH_STUB_STATE}" 2>/dev/null || echo 0)"; n=$((n + 1)); printf '%s' "${n}" > "${GH_STUB_STATE}"
+    if (( n >= 2 )); then
+      printf '%s\t%s\tfalse\topen\t%s\t%s\n' "${GH_STUB_HEAD2}" "${GH_STUB_BASE}" "${GH_STUB_BASEREF:-main}" "${GH_STUB_DEFAULT:-main}"
+    else
+      printf '%s\t%s\tfalse\topen\t%s\t%s\n' "${GH_STUB_HEAD}" "${GH_STUB_BASE}" "${GH_STUB_BASEREF:-main}" "${GH_STUB_DEFAULT:-main}"
+    fi
+    ;;
+esac
+STUB
+chmod +x "${rdir}/bin/gh"
+rsha="1212121212121212121212121212121212121212"
+rsha2="3434343434343434343434343434343434343434"
+rbsha="5656565656565656565656565656565656565656"
+printf 'diff --git a/a.ts b/a.ts\n--- a/a.ts\n+++ b/a.ts\n@@ -1 +1,50 @@\n+x\n' > "${rdir}/tmp/muse.diff"
+printf '[{"filename":"a.ts"}]' > "${rdir}/tmp/muse-files.json"
+printf '%s' '{"verdict":"v","findings":[{"path":"a.ts","line":1,"severity":"low","title":"t","body":"b"}],"next_steps":[]}' > "${rdir}/tmp/review.json"
+printf '0' > "${rdir}/state"
+GH_STUB_CAPTURE="${rdir}/capture.json" GH_STUB_STATE="${rdir}/state" GH_STUB_HEAD="${rsha}" GH_STUB_HEAD2="${rsha2}" GH_STUB_BASE="${rbsha}" \
+PATH="${rdir}/bin:${PATH}" \
+GH_TOKEN="fake" GITHUB_REPOSITORY="t/t" PR_NUMBER="1" \
+HEAD_SHA="${rsha}" BASE_SHA="${rbsha}" HEAD_SHA_EVENT="${rsha}" BASE_SHA_EVENT="${rbsha}" \
+MUSE_OUTCOME="success" DIFF_FAILED="false" DIFF_OUTCOME="success" \
+REVIEW_FILE="${rdir}/tmp/review.json" RUN_URL="https://example.invalid/run" \
+RUNNER_TEMP="${rdir}/tmp" SCRIPT_DIR="${SCRIPT_DIR}" \
+  bash "${post_script}" >/dev/null 2>&1
+if [[ -f "${rdir}/capture.json" ]]; then got_r="posted"; else got_r="blocked"; fi
+assert_eq "post-revalidate-blocks-stale" "blocked" "${got_r}"
+rm -rf "${rdir}"
+
 # --- collect.sh live default-base eligibility (script level) ---
 # A rerun after a base retarget keeps the event-time job gate fooled; the
 # live recheck must stop custom-base runs before evidence collection.
@@ -1512,6 +1570,8 @@ case "$(cat "${sdir}/tmp/muse-prompt.md" 2>/dev/null)" in *"literal source backs
 assert_eq "prompt-escape-legend" "yes" "${got_p}"
 case "$(cat "${sdir}/tmp/muse-prompt.md" 2>/dev/null)" in *"newline appears as"*) got_p="yes";; *) got_p="no";; esac
 assert_eq "prompt-symlink-legend" "yes" "${got_p}"
+case "$(cat "${sdir}/tmp/muse-prompt.md" 2>/dev/null)" in *"rename separator"*) got_p="yes";; *) got_p="no";; esac
+assert_eq "prompt-manifest-legend" "yes" "${got_p}"
 i=0
 while (( i < 55 )); do
   ln -s "/target${i}" "${sdir}/ws/link${i}"

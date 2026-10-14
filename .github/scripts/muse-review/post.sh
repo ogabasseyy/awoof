@@ -26,37 +26,45 @@ set -euo pipefail
 # (drafts are excluded, and conversion changes neither SHA), the PR
 # closed or merged (closing changes neither SHA nor draft), the live
 # base ref left the default branch (a same-SHA retarget changes no
-# SHA/draft/state), or the lookup fails.
-if ! live_shas="$(gh api "repos/${GITHUB_REPOSITORY}/pulls/${PR_NUMBER}" --jq '[.head.sha, .base.sha, .draft, .state, .base.ref, (.base.repo.default_branch // "")] | @tsv' 2>/dev/null)" \
-  || [[ -z "${live_shas}" ]]; then
-  echo "::warning::Head revalidation lookup failed; skipping post to avoid publishing a stale review."
-  exit 0
-fi
-live_head="${live_shas%%$'\t'*}"; live_rest="${live_shas#*$'\t'}"
-live_base="${live_rest%%$'\t'*}"; live_rest="${live_rest#*$'\t'}"
-live_draft="${live_rest%%$'\t'*}"; live_rest="${live_rest#*$'\t'}"
-live_state="${live_rest%%$'\t'*}"; live_rest="${live_rest#*$'\t'}"
-live_base_ref="${live_rest%%$'\t'*}"; live_default="${live_rest#*$'\t'}"
-if [[ "${live_head}" != "${HEAD_SHA}" ]]; then
-  echo "::notice::PR head moved during review (${HEAD_SHA:0:10} -> ${live_head:0:10}); skipping stale post."
-  exit 0
-fi
-if [[ "${live_base}" != "${BASE_SHA}" ]]; then
-  echo "::notice::PR base moved during review (${BASE_SHA:0:10} -> ${live_base:0:10}); skipping stale post."
-  exit 0
-fi
-if [[ "${live_draft}" == "true" ]]; then
-  echo "::notice::PR was converted to draft during review; skipping post."
-  exit 0
-fi
-if [[ "${live_state}" != "open" ]]; then
-  echo "::notice::PR is no longer open (state: ${live_state}); skipping post."
-  exit 0
-fi
-if [[ -z "${live_default}" || "${live_base_ref}" != "${live_default}" ]]; then
-  echo "::notice::PR base is no longer the repository default branch (live metadata); skipping post."
-  exit 0
-fi
+# SHA/draft/state), or the lookup fails. Runs at entry AND immediately
+# before every POST: body construction and dedupe calls sit between
+# the gates, and a push landing in that window would otherwise attach
+# findings to a superseded commit_id.
+check_live() {
+  local _shas _head _rest _base _draft _state _bref _default
+  if ! _shas="$(gh api "repos/${GITHUB_REPOSITORY}/pulls/${PR_NUMBER}" --jq '[.head.sha, .base.sha, .draft, .state, .base.ref, (.base.repo.default_branch // "")] | @tsv' 2>/dev/null)" \
+    || [[ -z "${_shas}" ]]; then
+    echo "::warning::Head revalidation lookup failed; skipping post to avoid publishing a stale review."
+    return 1
+  fi
+  _head="${_shas%%$'\t'*}"; _rest="${_shas#*$'\t'}"
+  _base="${_rest%%$'\t'*}"; _rest="${_rest#*$'\t'}"
+  _draft="${_rest%%$'\t'*}"; _rest="${_rest#*$'\t'}"
+  _state="${_rest%%$'\t'*}"; _rest="${_rest#*$'\t'}"
+  _bref="${_rest%%$'\t'*}"; _default="${_rest#*$'\t'}"
+  if [[ "${_head}" != "${HEAD_SHA}" ]]; then
+    echo "::notice::PR head moved during review (${HEAD_SHA:0:10} -> ${_head:0:10}); skipping stale post."
+    return 1
+  fi
+  if [[ "${_base}" != "${BASE_SHA}" ]]; then
+    echo "::notice::PR base moved during review (${BASE_SHA:0:10} -> ${_base:0:10}); skipping stale post."
+    return 1
+  fi
+  if [[ "${_draft}" == "true" ]]; then
+    echo "::notice::PR was converted to draft during review; skipping post."
+    return 1
+  fi
+  if [[ "${_state}" != "open" ]]; then
+    echo "::notice::PR is no longer open (state: ${_state}); skipping post."
+    return 1
+  fi
+  if [[ -z "${_default}" || "${_bref}" != "${_default}" ]]; then
+    echo "::notice::PR base is no longer the repository default branch (live metadata); skipping post."
+    return 1
+  fi
+  return 0
+}
+check_live || exit 0
 
 body_file="${RUNNER_TEMP}/muse-review.md"
 marker="<!-- muse-code-review sha:${HEAD_SHA} base:${BASE_SHA:0:10} -->"
@@ -413,6 +421,8 @@ fi
 # Advisory: a failed POST warns, never fails. The endpoint is
 # all-or-nothing, so retry once (summary-only for inline payloads, the
 # identical payload for comment-only ones) rather than lose the review.
+# Revalidate immediately before posting (see check_live).
+check_live || exit 0
 post_resp="${RUNNER_TEMP}/muse-post-resp.txt"
 if ! gh api --method POST \
   "repos/${GITHUB_REPOSITORY}/pulls/${PR_NUMBER}/reviews" \
@@ -498,6 +508,8 @@ Re-run the workflow, or inspect the logs."
     else
       rm -f "${payload_file}.summary.clean"
     fi
+    # Revalidate immediately before the retry POST as well.
+    check_live || exit 0
     if ! gh api --method POST \
       "repos/${GITHUB_REPOSITORY}/pulls/${PR_NUMBER}/reviews" \
       --input "${payload_file}.summary" >/dev/null 2>&1; then
@@ -510,6 +522,7 @@ Re-run the workflow, or inspect the logs."
     # cannot double-post; without it a transient failure silently loses
     # the review (or the promised fallback) while the job stays green.
     echo "::warning::Retrying comment-only post once."
+    check_live || exit 0
     if ! gh api --method POST \
       "repos/${GITHUB_REPOSITORY}/pulls/${PR_NUMBER}/reviews" \
       --input "${payload_file}" >/dev/null 2>&1; then
