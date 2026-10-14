@@ -435,6 +435,14 @@ got="$(printf '![a\nb](https://e.example/u) tail' | strip_images)"
 assert_eq "images-multiline" "$(printf 'a\nb tail')" "${got}"
 got="$(printf '%s' 'left!<img src=x>[]()right' | strip_images)"
 assert_eq "images-cross-form-fixed-point" "leftright" "${got}"
+
+# --- strip_html_comments ---
+got="$(printf '%s' 'x<!-- hidden -->y' | strip_html_comments)"
+assert_eq "html-comment-replaced" 'x [HTML comment removed] y' "${got}"
+got="$(printf 'a<!-- one\ntwo -->b' | strip_html_comments)"
+assert_eq "html-comment-multiline" "$(printf 'a [HTML comment removed] b')" "${got}"
+got="$(printf '%s' 'keep <!-- unterminated' | strip_html_comments)"
+assert_eq "html-comment-unterminated-kept" 'keep <!-- unterminated' "${got}"
 crf2="$(mktemp)"
 printf '%s' '{"a":"leak split!<img src=x>[]()key123456 end"}' > "${crf2}"
 got="$(META_API_KEY='splitkey123456' redact_json_key < "${crf2}" | jq -r '.a')"
@@ -1218,6 +1226,48 @@ case "$(cat "${idir2}/capture.json" 2>/dev/null)" in *"[REDACTED]"*) got_i="reda
 assert_eq "post-img-split-redacted" "redacted" "${got_i}"
 rm -rf "${idir2}"
 
+# --- post.sh HTML-comment split cannot reconstruct (script level) ---
+# A credential split by a render-hidden HTML comment must not visibly
+# rejoin when posted: the comment is replaced by a nonempty separator
+# before the final redaction.
+hdir="$(mktemp -d)"
+mkdir -p "${hdir}/tmp" "${hdir}/bin"
+cat > "${hdir}/bin/gh" <<'STUB'
+#!/usr/bin/env bash
+args=" $* "
+case "${args}" in
+  *" --method POST "*)
+    prev=""
+    for a in "$@"; do
+      if [[ "${prev}" == "--input" ]]; then cp "${a}" "${GH_STUB_CAPTURE}"; fi
+      prev="${a}"
+    done
+    printf '{}\n'
+    ;;
+  *"/reviews"*) printf '[]\n' ;;
+  *) printf '%s\t%s\tfalse\topen\t%s\t%s\n' "${GH_STUB_HEAD}" "${GH_STUB_BASE}" "${GH_STUB_BASEREF:-main}" "${GH_STUB_DEFAULT:-main}" ;;
+esac
+STUB
+chmod +x "${hdir}/bin/gh"
+hsha="cccccccccccccccccccccccccccccccccccccccc"
+hbsha="dddddddddddddddddddddddddddddddddddddddd"
+printf 'diff --git a/a.ts b/a.ts\n--- a/a.ts\n+++ b/a.ts\n@@ -1 +1,50 @@\n+x\n' > "${hdir}/tmp/muse.diff"
+printf '[{"filename":"a.ts"}]' > "${hdir}/tmp/muse-files.json"
+printf '%s' '{"verdict":"v","findings":[{"path":"a.ts","line":1,"severity":"low","title":"t","body":"x ghp_left<!-- hidden -->right y"}],"next_steps":[]}' > "${hdir}/tmp/review.json"
+GH_STUB_CAPTURE="${hdir}/capture.json" GH_STUB_HEAD="${hsha}" GH_STUB_BASE="${hbsha}" \
+PATH="${hdir}/bin:${PATH}" \
+GH_TOKEN="fake" GITHUB_REPOSITORY="t/t" PR_NUMBER="1" \
+HEAD_SHA="${hsha}" BASE_SHA="${hbsha}" HEAD_SHA_EVENT="${hsha}" BASE_SHA_EVENT="${hbsha}" \
+MUSE_OUTCOME="success" DIFF_FAILED="false" DIFF_OUTCOME="success" \
+REVIEW_FILE="${hdir}/tmp/review.json" RUN_URL="https://example.invalid/run" \
+RUNNER_TEMP="${hdir}/tmp" SCRIPT_DIR="${SCRIPT_DIR}" \
+  bash "${post_script}" >/dev/null 2>&1
+case "$(cat "${hdir}/capture.json" 2>/dev/null)" in *"ghp_leftright"*) got_h="rejoined";; *) got_h="clean";; esac
+assert_eq "post-html-split-not-rejoined" "clean" "${got_h}"
+case "$(cat "${hdir}/capture.json" 2>/dev/null)" in *"<!-- hidden -->"*) got_h="kept";; *) got_h="removed";; esac
+assert_eq "post-html-comment-removed" "removed" "${got_h}"
+rm -rf "${hdir}"
+
 # --- collect.sh live default-base eligibility (script level) ---
 # A rerun after a base retarget keeps the event-time job gate fooled; the
 # live recheck must stop custom-base runs before evidence collection.
@@ -1313,6 +1363,8 @@ if PATH="${sdir}/bin:${PATH}" GH_TOKEN="fake" GITHUB_REPOSITORY="t/t" PR_NUMBER=
 assert_eq "prompt-symlink-small-ok" "0" "${got_rc}"
 case "$(cat "${sdir}/tmp/muse-prompt.md" 2>/dev/null)" in *"closest to the changed file"*) got_p="yes";; *) got_p="no";; esac
 assert_eq "prompt-guidance-precedence" "yes" "${got_p}"
+case "$(cat "${sdir}/tmp/muse-prompt.md" 2>/dev/null)" in *"literal source backslash"*) got_p="yes";; *) got_p="no";; esac
+assert_eq "prompt-escape-legend" "yes" "${got_p}"
 i=0
 while (( i < 55 )); do
   ln -s "/target${i}" "${sdir}/ws/link${i}"

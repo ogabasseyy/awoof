@@ -123,6 +123,17 @@ strip_images() {
   perl -0777 -pe 'while (1) { $p=$_; s{!\[((?:[^\[\]\\]++|\\.|(\[(?:[^\[\]\\]++|\\.|(?2))*\]))*)\]\(((?:[^()\\]++|\\.|(\((?:[^()\\]++|\\.|(?4))*\)))*)\)}{$1}g; s{!\[((?:[^\[\]\\]++|\\.|(\[(?:[^\[\]\\]++|\\.|(?2))*\]))*)\]\[((?:[^\[\]\\]++|\\.|(\[(?:[^\[\]\\]++|\\.|(?4))*\]))*)\]}{$1}g; s{!(\[((?:[^\[\]\\]++|\\.|(\[(?:[^\[\]\\]++|\\.|(?3))*\]))*)\])(?!\()}{$1}g; s{<\s*img\b[^>]*\balt\s*=\s*"([^"]*)"[^>]*>}{$1}gi; s{<\s*img\b[^>]*\balt\s*=\s*'"'"'([^'"'"']*)'"'"'[^>]*>}{$1}gi; s{<\s*img\b[^>]*>}{}gi; last if $_ eq $p; }'
 }
 
+# Replace render-hidden HTML comments with a nonempty separator: GitHub
+# hides <!-- ... --> content when rendering Markdown, so a credential
+# split as `ghp_left<!-- x -->right` would visibly reconstruct in the
+# posted review even though neither redaction pass can match the split
+# value. The separator keeps the halves apart in the rendered text.
+# Slurp mode: comments may span lines. An unterminated <!-- renders as
+# literal text in GFM (not hidden), so it is left alone.
+strip_html_comments() {
+  perl -0777 -pe 's{<!--.*?-->}{ [HTML comment removed] }gs'
+}
+
 # Remove every symlink under a workspace root (except .git) and print the
 # count. No trusted-scripts carve-out: trusted helpers stage outside the
 # reviewed workspace (RUNNER_TEMP), so every path the agent reads is
