@@ -25,7 +25,7 @@ MUSE_REVIEW_PROTOCOL=1
 # text cannot break out of its prompt block. Single unified tag list for all
 # blocks — neutralizing more is strictly safer than less.
 neutralize_tags() {
-  perl -pe 's{<\s*/\s*(file|diff|pr_title|pr_description|changed_files|removed_lines|symlink_targets|head_ref|base_ref|untrusted_guidance)}{<\\/$1}gi'
+  perl -pe 's{<\s*/\s*(file|diff|pr_title|pr_description|changed_files|removed_lines|symlink_targets|gitlink_targets|head_ref|base_ref|untrusted_guidance)}{<\\/$1}gi'
 }
 
 # In-place byte cap for a file. Only replaces the original when truncation
@@ -108,8 +108,12 @@ strip_images() {
   # runs are possessive (++), keeping the match linear. Slurp mode
   # (-0777): link text may span lines, and a line-oriented filter would
   # miss a multiline image token entirely. Unbalanced tokens match
-  # nothing and (like GFM itself) are left alone.
-  perl -0777 -pe 's{!\[((?:[^\[\]\\]++|\\.|(\[(?:[^\[\]\\]++|\\.|(?2))*\]))*)\]\(((?:[^()\\]++|\\.|(\((?:[^()\\]++|\\.|(?4))*\)))*)\)}{$1}g; s{!\[((?:[^\[\]\\]++|\\.|(\[(?:[^\[\]\\]++|\\.|(?2))*\]))*)\]\[((?:[^\[\]\\]++|\\.|(\[(?:[^\[\]\\]++|\\.|(?4))*\]))*)\]}{$1}g; s{!(\[((?:[^\[\]\\]++|\\.|(\[(?:[^\[\]\\]++|\\.|(?3))*\]))*)\])(?!\()}{$1}g; s{<\s*img\b[^>]*\balt\s*=\s*"([^"]*)"[^>]*>}{$1}gi; s{<\s*img\b[^>]*\balt\s*=\s*'"'"'([^'"'"']*)'"'"'[^>]*>}{$1}gi; s{<\s*img\b[^>]*>}{}gi'
+  # nothing and (like GFM itself) are left alone. The whole sequence
+  # repeats to a fixed point: removing HTML can form a new markdown
+  # image (e.g. `!<img>[]()`) that a single pass would leave for a
+  # later keyless pass to remove and rejoin split text. Every change
+  # strictly shortens the input, so the bounded loop converges.
+  perl -0777 -pe '$c=0; while ($c++ < 1000) { $p=$_; s{!\[((?:[^\[\]\\]++|\\.|(\[(?:[^\[\]\\]++|\\.|(?2))*\]))*)\]\(((?:[^()\\]++|\\.|(\((?:[^()\\]++|\\.|(?4))*\)))*)\)}{$1}g; s{!\[((?:[^\[\]\\]++|\\.|(\[(?:[^\[\]\\]++|\\.|(?2))*\]))*)\]\[((?:[^\[\]\\]++|\\.|(\[(?:[^\[\]\\]++|\\.|(?4))*\]))*)\]}{$1}g; s{!(\[((?:[^\[\]\\]++|\\.|(\[(?:[^\[\]\\]++|\\.|(?3))*\]))*)\])(?!\()}{$1}g; s{<\s*img\b[^>]*\balt\s*=\s*"([^"]*)"[^>]*>}{$1}gi; s{<\s*img\b[^>]*\balt\s*=\s*'"'"'([^'"'"']*)'"'"'[^>]*>}{$1}gi; s{<\s*img\b[^>]*>}{}gi; last if $_ eq $p; }'
 }
 
 # Remove every symlink under a workspace root (except .git) and print the
@@ -311,6 +315,59 @@ changed_symlinks() {
   rm -f "${_raw}"
 }
 
+# Changed gitlink targets, one `path -> head|base <oid>` line per side.
+# Submodules are never populated by checkout, so a changed gitlink's
+# head OID lives only in its diff hunk — past the 60 KB diff cap the
+# manifest (paths only) and removed-lines supplement (old OID only,
+# or nothing for a new link) leave the reviewer no way to determine
+# the target yet able to publish success. Record OIDs from the tree
+# objects (ls-tree on the captured SHAs), like symlink targets, so
+# the evidence survives truncation; caller fails closed past caps.
+# Returns 1 when inventory unreadable, 2 when more than _max lines.
+changed_gitlinks() {
+  local _files="$1" _head_ref="$2" _base_ref="$3" _repo="$4" _max="${5:-50}" _count=0 _rec _kind _f _entry _rest _head_oid _base_oid _label _suffix
+  jq -e 'type == "array"' "${_files}" >/dev/null 2>&1 || return 1
+  while IFS= read -r -d '' _rec; do
+    _kind="${_rec%%$'\t'*}"
+    _f="${_rec#*$'\t'}"
+    case "${_f}" in /*|..|../*|*/../*|*/..) continue ;; esac
+    _head_oid=""
+    _base_oid=""
+    if [[ "${_kind}" == "F" && -n "${_head_ref}" && -n "${_repo}" ]]; then
+      _entry="$(git --literal-pathspecs -C "${_repo}" ls-tree "${_head_ref}" -- "${_f}" 2>/dev/null || true)"
+      if [[ "${_entry}" == 160000\ * ]]; then
+        _rest="${_entry#* }"; _rest="${_rest#* }"; _head_oid="${_rest%%$'\t'*}"
+      fi
+    fi
+    if [[ -n "${_base_ref}" && -n "${_repo}" ]]; then
+      _entry="$(git --literal-pathspecs -C "${_repo}" ls-tree "${_base_ref}" -- "${_f}" 2>/dev/null || true)"
+      if [[ "${_entry}" == 160000\ * ]]; then
+        _rest="${_entry#* }"; _rest="${_rest#* }"; _base_oid="${_rest%%$'\t'*}"
+      fi
+    fi
+    _label="${_f//\\/\\\\}"
+    _label="${_label//$'\n'/\\n}"
+    _label="${_label//$'\r'/\\r}"
+    if [[ -n "${_base_oid}" && "${_base_oid}" != "${_head_oid}" ]]; then
+      if [[ "${_kind}" == "P" ]]; then
+        _suffix=" (base-side; renamed away in head)"
+      elif [[ -z "${_head_oid}" ]]; then
+        _suffix=" (base-side; deleted or replaced in head)"
+      else
+        _suffix=" (base-side; previous gitlink target)"
+      fi
+      _count=$((_count + 1))
+      if (( _count > _max )); then return 2; fi
+      printf '%s -> base %s%s\n' "${_label}" "${_base_oid}" "${_suffix}"
+    fi
+    if [[ -n "${_head_oid}" ]]; then
+      _count=$((_count + 1))
+      if (( _count > _max )); then return 2; fi
+      printf '%s -> head %s\n' "${_label}" "${_head_oid}"
+    fi
+  done < <(jq -j '[.[] | {f: (.filename // empty), p: (.previous_filename // "")} | select(.f | type == "string") | ("F\t" + .f), (if (.p | type) == "string" and (.p | length) > 0 and .p != .f then ("P\t" + .p) else empty end)] | .[] + "\u0000"' "${_files}" 2>/dev/null)
+}
+
 # True when a head-tree candidate is safe to read: a regular file, not a
 # symlink itself, with no symlinked ancestor directory, and contained in
 # the workspace. Checking only the final path would let a PR-added symlink
@@ -444,7 +501,8 @@ redact_json_key() {
        | .s);
     def _denul: split("\u0000") | join("");
     def _decr: split("\r") | join("");
-    def _imgstrip: gsub("!\\[[^\\]]*\\]\\([^)]*\\)"; "") | gsub("</?(img|IMG)[^>]*>"; "");
+    def _img1: gsub("!\\[[^\\]]*\\]\\([^)]*\\)"; "") | gsub("</?(img|IMG)[^>]*>"; "");
+    def _imgstrip: (_img1 as $once | if $once == . then . else ($once | _imgstrip) end);
     walk(if type == "string" then
       ((. | _denul | _decr) as $s
        | if ($s | contains($k)) then ($s | split($k) | join("[REDACTED]"))

@@ -410,6 +410,13 @@ got="$(printf '%s' '![o [i]][b] and ![o [i]]' | strip_images)"
 assert_eq "images-nested-ref" "o [i] and [o [i]]" "${got}"
 got="$(printf '![a\nb](https://e.example/u) tail' | strip_images)"
 assert_eq "images-multiline" "$(printf 'a\nb tail')" "${got}"
+got="$(printf '%s' 'left!<img src=x>[]()right' | strip_images)"
+assert_eq "images-cross-form-fixed-point" "leftright" "${got}"
+crf2="$(mktemp)"
+printf '%s' '{"a":"leak split!<img src=x>[]()key123456 end"}' > "${crf2}"
+got="$(META_API_KEY='splitkey123456' redact_json_key < "${crf2}" | jq -r '.a')"
+assert_eq "redactjson-img-cross-redacted" "leak [REDACTED] end" "${got}"
+rm -f "${crf2}"
 assert_eq "redact-assign" 'api_key="[REDACTED]"' "$(redact 'api_key="abcDEF1234567890"')"
 assert_eq "redact-token-colon" 'token: [REDACTED]' "$(redact 'token: abcDEF1234567890')"
 assert_eq "redact-prose-kept" "no token here" "$(redact 'no token here')"
@@ -560,6 +567,9 @@ selftest_path="${SCRIPT_DIR}/../../workflows/muse-review-selftest.yml"
 assert_eq "selftest-runbook-trigger" "2" "$(grep -c 'docs/runbooks/muse-code-review.md' "${selftest_path}" 2>/dev/null || echo 0)"
 if grep -q 'redact "\$(redact' "${SCRIPT_DIR}/run.sh" 2>/dev/null; then got_doc="yes"; else got_doc="no"; fi
 assert_eq "run-redact-after-neutralize" "yes" "${got_doc}"
+trust_path="${SCRIPT_DIR}/../../../docs/public-trust-pages.md"
+if grep -q "non-Contributor-mode model" "${trust_path}" 2>/dev/null && grep -q "not a Contributor-mode variant" "${trust_path}" 2>/dev/null; then got_doc="yes"; else got_doc="no"; fi
+assert_eq "docs-paygo-noncontributor" "yes" "${got_doc}"
 
 # --- schema.json ---
 if jq -e '.type == "object" and .additionalProperties == false and (.required | length) == 3' "${SCRIPT_DIR}/schema.json" >/dev/null 2>&1; then got_schema="yes"; else got_schema="no"; fi
@@ -780,6 +790,71 @@ assert_eq "guidance-base-blob-trusted" "trusted" "${got_g}"
 case "$(cat "${bldir}/tmp/muse-guidance.md" 2>/dev/null)" in *"inner.txt"*) got_g="tree";; *) got_g="no-tree";; esac
 assert_eq "guidance-base-tree-not-trusted" "no-tree" "${got_g}"
 rm -rf "${bldir}"
+# Guidance labels must keep newline vs underscore scopes distinct.
+ladir="$(mktemp -d)"
+mkdir -p "${ladir}/tmp" "${ladir}/ws/a_b"
+python3 -c "import os; os.makedirs('${ladir}/ws/' + 'a' + chr(10) + 'b', exist_ok=True)"
+printf 'underscore-rule\n' > "${ladir}/ws/a_b/AGENTS.md"
+python3 -c "open('${ladir}/ws/' + 'a' + chr(10) + 'b/AGENTS.md','w').write('newline-rule\n')"
+{
+  printf 'MUSE_STOP=0\n'
+  printf 'MUSE_BASE_REF=main\n'
+  printf 'MUSE_DEFAULT_BRANCH=main\n'
+  printf 'MUSE_BASE_AVAILABLE=false\n'
+  printf 'MUSE_BASE_SHA_FULL=%s\n' "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+} > "${ladir}/tmp/muse-vars.env"
+python3 -c "import json; print(json.dumps([{'filename': 'a_b/f.ts'}, {'filename': 'a' + chr(10) + 'b/f.ts'}]))" > "${ladir}/tmp/muse-files.json"
+(cd "${ladir}/ws" && RUNNER_TEMP="${ladir}/tmp" SCRIPT_DIR="${SCRIPT_DIR}" bash "${guidance_script}") >/dev/null 2>&1
+uline="$(grep -a 'underscore-rule' "${ladir}/tmp/muse-guidance.md" >/dev/null 2>&1 && grep -a -B2 'underscore-rule' "${ladir}/tmp/muse-guidance.md" | head -n 3 | grep -a 'a_b' >/dev/null && echo ok || echo bad)"
+assert_eq "guidance-label-underscore" "ok" "${uline}"
+case "$(grep -a 'AGENTS.md' "${ladir}/tmp/muse-guidance.md" 2>/dev/null)" in *'a\nb/AGENTS.md'*) got_g="escaped";; *) got_g="collapsed";; esac
+assert_eq "guidance-label-newline-escaped" "escaped" "${got_g}"
+rm -rf "${ladir}"
+# An over-300-char guidance candidate fails closed instead of
+# collapsing two long-prefix labels by slicing.
+lodir="$(mktemp -d)"
+mkdir -p "${lodir}/tmp" "${lodir}/ws"
+longa="$(python3 -c "print('a' * 140)")"
+longb="$(python3 -c "print('b' * 170)")"
+longdir="${longa}/${longb}"
+mkdir -p "${lodir}/ws/${longdir}"
+printf 'long-rule\n' > "${lodir}/ws/${longdir}/AGENTS.md"
+{
+  printf 'MUSE_STOP=0\n'
+  printf 'MUSE_BASE_REF=main\n'
+  printf 'MUSE_DEFAULT_BRANCH=main\n'
+  printf 'MUSE_BASE_AVAILABLE=false\n'
+  printf 'MUSE_BASE_SHA_FULL=%s\n' "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+} > "${lodir}/tmp/muse-vars.env"
+python3 -c "import json; print(json.dumps([{'filename': 'a'*140 + '/' + 'b'*170 + '/f.ts'}]))" > "${lodir}/tmp/muse-files.json"
+if (cd "${lodir}/ws" && RUNNER_TEMP="${lodir}/tmp" SCRIPT_DIR="${SCRIPT_DIR}" bash "${guidance_script}") >/dev/null 2>&1; then got_rc="0"; else got_rc="nonzero"; fi
+assert_eq "guidance-long-label-fails-closed" "nonzero" "${got_rc}"
+rm -rf "${lodir}"
+# Gitlink targets are recorded from tree objects, not the diff hunk,
+# so they survive the 60 KB truncation.
+gldir="$(mktemp -d)"
+mkdir -p "${gldir}/repo"
+git -C "${gldir}/repo" init -q 2>/dev/null
+printf 'x\n' > "${gldir}/repo/f.txt"
+git -C "${gldir}/repo" add f.txt 2>/dev/null
+git -C "${gldir}/repo" -c user.email=t@t -c user.name=t commit -qm base 2>/dev/null
+glbase="$(git -C "${gldir}/repo" rev-parse HEAD 2>/dev/null)"
+glhead="$(python3 -c "
+import subprocess
+repo='${gldir}/repo'
+subprocess.check_call(['git','-C',repo,'update-index','--add','--cacheinfo','160000,${glbase},sub'])
+tree=subprocess.check_output(['git','-C',repo,'write-tree']).strip()
+head=subprocess.check_output(['git','-C',repo,'-c','user.email=t@t','-c','user.name=t','commit-tree',tree,'-p','${glbase}','-m','head']).strip()
+print(head.decode())
+")"
+printf '[{"filename":"sub"},{"filename":"f.txt"}]' > "${gldir}/files.json"
+got="$(changed_gitlinks "${gldir}/files.json" "${glhead}" "${glbase}" "${gldir}/repo" 50)"
+assert_eq "gitlinks-head-recorded" "sub -> head ${glbase}" "${got}"
+printf '[{"filename":"newsub","previous_filename":"sub"}]' > "${gldir}/files2.json"
+# Rename-away fixture needs a head without sub: reuse base as head (no sub change is not in its tree, so construct via files2 against base..base gives no head, base only)
+got="$(changed_gitlinks "${gldir}/files.json" "${glbase}" "${glbase}" "${gldir}/repo" 50)"
+assert_eq "gitlinks-unchanged-none" "" "${got}"
+rm -rf "${gldir}"
 
 # --- diff.sh --text vs .gitattributes -diff suppression (script level) ---
 # A -diff rule would otherwise emit a "Binary files differ" placeholder:

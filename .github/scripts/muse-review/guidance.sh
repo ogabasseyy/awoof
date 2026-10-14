@@ -32,12 +32,12 @@ guidance_cap=32000
 guidance_capped=false
 guidance_truncated=false
 guidance_nul=false
+guidance_ambiguous=false
 emit_guidance() {
   candidate="$1"
   phase="$2"
   if [[ "${guidance_capped}" == "true" ]]; then return 0; fi
-  # NUL check on raw bytes, never a Bash variable (substitution drops
-  # NULs and could join directive text); fail closed below.
+  # NUL check on raw bytes, never a Bash variable; fail closed below.
   if [[ "${phase}" == "head" ]]; then
     if file_has_nul "${candidate}"; then guidance_nul=true; return 0; fi
   elif blob_has_nul "${MUSE_BASE_SHA_FULL}" "${candidate}"; then
@@ -82,12 +82,14 @@ emit_guidance() {
     trunc_note=" [TRUNCATED at ${guidance_cap} bytes]"
     guidance_truncated=true
   fi
-  # Candidate paths from changed files are submitter-controlled: flatten
-  # newlines for display and omit the path from the block attribute (a quote
-  # in the path would break out of it). The 300-char cut is a display label,
-  # not a byte budget, so char-based slicing is correct here.
-  safe_candidate="$(printf '%s' "${candidate}" | tr '\n' '_' | neutralize_tags)"
-  safe_candidate="${safe_candidate:0:300}"
+  # Escape candidate paths injectively (backslash first, then LF/CR,
+  # as manifest_paths) so newline vs underscore cannot collapse; never
+  # slice the label — an over-300-char candidate fails closed below.
+  if (( ${#candidate} > 300 )); then guidance_ambiguous=true; return 0; fi
+  safe_candidate="${candidate//\\/\\\\}"
+  safe_candidate="${safe_candidate//$'\n'/\\n}"
+  safe_candidate="${safe_candidate//$'\r'/\\r}"
+  safe_candidate="$(printf '%s' "${safe_candidate}" | neutralize_tags)"
   # Budget the whole rendered block (heading, label, wrapper), not just
   # the content: hundreds of short files under long paths could otherwise
   # overshoot the aggregate budget severalfold with no warning.
@@ -288,10 +290,10 @@ for candidate in "${MUSE_CANDIDATES[@]+"${MUSE_CANDIDATES[@]}"}"; do
     fi
   fi
 done
-if [[ "${guidance_capped}" == "true" || "${guidance_truncated}" == "true" || "${guidance_nul}" == "true" ]]; then
+if [[ "${guidance_capped}" == "true" || "${guidance_truncated}" == "true" || "${guidance_nul}" == "true" || "${guidance_ambiguous}" == "true" ]]; then
   # Fail closed as with the candidate cap: incomplete guidance must
   # not publish success; Post renders the fallback instead.
-  echo "::error::Guidance collection incomplete (budget exhausted: ${guidance_capped}, file truncated: ${guidance_truncated}, NUL-bearing: ${guidance_nul}); failing closed to the fallback review."
+  echo "::error::Guidance collection incomplete (budget exhausted: ${guidance_capped}, file truncated: ${guidance_truncated}, NUL-bearing: ${guidance_nul}, ambiguous label: ${guidance_ambiguous}); failing closed to the fallback review."
   exit 1
 fi
 if [[ ! -s "${guidance_file}" ]]; then
