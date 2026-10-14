@@ -190,6 +190,19 @@ strip_intraword_markers() {
   perl -0777 -pe 's{(?<=[A-Za-z0-9])(?:\*+|`+|~{2,})(?=[A-Za-z0-9])}{}g'
 }
 
+# Canonicalize visible Markdown links to `text (destination)`: GFM
+# renders only the link text, so a credential wrapping an interior
+# character as `left[A](https://example.com)right` displays as the
+# joined value while every redaction pass saw the markup form. Writing
+# the destination as visible text keeps citations readable (the URL is
+# still shown) while the separating ` (url)` breaks contiguity. Alt
+# text and destinations accept balanced nesting, mirroring
+# strip_images. Reference forms keep their label the same way. Links
+# with empty text are deleted earlier (strip_empty_links).
+canonicalize_links() {
+  perl -0777 -pe 's{\[((?:[^\[\]\\]++|\\.|\[(?:[^\[\]\\]++|\\.|\[(?:[^\[\]\\]++|\\.)*\])*\])*)\]\(((?:[^()\\]++|\\.|\((?:[^()\\]++|\\.|\((?:[^()\\]++|\\.)*\))*\))*)\)}{$1 ($2)}g; s{\[((?:[^\[\]\\]++|\\.|\[(?:[^\[\]\\]++|\\.|\[(?:[^\[\]\\]++|\\.)*\])*\])*)\]\[((?:[^\[\]\\]++|\\.|\[(?:[^\[\]\\]++|\\.|\[(?:[^\[\]\\]++|\\.)*\])*\])*)\]}{$1 ($2)}g'
+}
+
 # Byte-bounded UTF-8-safe truncation WITH an explicit marker, reserved
 # inside the budget: trunc_bytes cuts silently, so a truncated inline
 # finding would read as complete while its tail exists nowhere.

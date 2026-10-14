@@ -474,6 +474,12 @@ assert_eq "intraword-spaced-kept" 'a * b and *em* word and snake_case and 2 * 3'
 got="$(printf 'x`code`y end' | strip_intraword_markers)"
 assert_eq "intraword-backtick-removed" 'xcodey end' "${got}"
 
+# --- canonicalize_links ---
+got="$(printf '%s' 'see [docs](https://d.example/x) and left[A](https://e.example)right and [t][r1] end' | canonicalize_links)"
+assert_eq "links-canonicalized" 'see docs (https://d.example/x) and leftA (https://e.example)right and t (r1) end' "${got}"
+got="$(printf '%s' 'nested [a [b] c](https://e.example/u(1)) tail' | canonicalize_links)"
+assert_eq "links-nested" 'nested a [b] c (https://e.example/u(1)) tail' "${got}"
+
 # --- trunc_bytes_marked ---
 got="$(printf 'abcdefghij' | trunc_bytes_marked 10)"
 assert_eq "trunc-marked-under" 'abcdefghij' "${got}"
@@ -1291,7 +1297,7 @@ hsha="cccccccccccccccccccccccccccccccccccccccc"
 hbsha="dddddddddddddddddddddddddddddddddddddddd"
 printf 'diff --git a/a.ts b/a.ts\n--- a/a.ts\n+++ b/a.ts\n@@ -1 +1,50 @@\n+x\n' > "${hdir}/tmp/muse.diff"
 printf '[{"filename":"a.ts"}]' > "${hdir}/tmp/muse-files.json"
-printf '%s' '{"verdict":"v","findings":[{"path":"a.ts","line":1,"severity":"low","title":"t","body":"x ghp_left<!-- hidden -->right y and ghp_ab&#99;d and ghp_xy<span></span>zw and ghp_qq[]()rr and ghp_zz*A*ww end"}],"next_steps":[]}' > "${hdir}/tmp/review.json"
+printf '%s' '{"verdict":"v","findings":[{"path":"a.ts","line":1,"severity":"low","title":"t","body":"x ghp_left<!-- hidden -->right y and ghp_ab&#99;d and ghp_xy<span></span>zw and ghp_qq[]()rr and ghp_zz*A*ww and ghp_mm[A](https://example.invalid)nn end"}],"next_steps":[]}' > "${hdir}/tmp/review.json"
 GH_STUB_CAPTURE="${hdir}/capture.json" GH_STUB_HEAD="${hsha}" GH_STUB_BASE="${hbsha}" \
 PATH="${hdir}/bin:${PATH}" \
 GH_TOKEN="fake" GITHUB_REPOSITORY="t/t" PR_NUMBER="1" \
@@ -1322,6 +1328,10 @@ case "$(cat "${hdir}/capture.json" 2>/dev/null)" in *"ghp_zzAww"*) got_h="visibl
 assert_eq "post-emphasis-split-not-visible" "clean" "${got_h}"
 case "$(cat "${hdir}/capture.json" 2>/dev/null)" in *"ghp_zz*A*ww"*) got_h="raw";; *) got_h="stripped";; esac
 assert_eq "post-emphasis-markers-stripped" "stripped" "${got_h}"
+case "$(cat "${hdir}/capture.json" 2>/dev/null)" in *"ghp_mmAnn"*) got_h="visible";; *) got_h="clean";; esac
+assert_eq "post-link-split-not-visible" "clean" "${got_h}"
+case "$(cat "${hdir}/capture.json" 2>/dev/null)" in *"[REDACTED] (https://example.invalid)"*) got_h="canon";; *) got_h="raw";; esac
+assert_eq "post-link-canonicalized" "canon" "${got_h}"
 rm -rf "${hdir}"
 
 # --- post.sh non-string next_steps routes to fallback (script level) ---

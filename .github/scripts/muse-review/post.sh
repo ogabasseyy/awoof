@@ -105,7 +105,7 @@ render_summary() {
 # budget checks (both can defeat the full-block match or add characters).
 sanitize_review() {
   review="$(redact "${review}")"
-  review="$(printf '%s' "${review}" | strip_images | strip_empty_links | strip_intraword_markers | strip_html_comments | strip_html_tags | neutralize_html_entities | sanitize_mentions)"
+  review="$(printf '%s' "${review}" | strip_images | strip_empty_links | strip_intraword_markers | canonicalize_links | strip_html_comments | strip_html_tags | neutralize_html_entities | sanitize_mentions)"
   # Redact again after the byte-removing filters: deleting an image
   # token can rejoin a secret the first pass saw only in split form.
   # The run step already checks stripped forms against the live key;
@@ -261,11 +261,11 @@ Re-run the workflow, or inspect the logs."
     # the image/mention filters, which can rejoin a split secret by
     # deleting the token between its halves.
     f_title="$(redact "${f_title}")"
-    f_title="$(redact "$(printf '%s' "${f_title}" | strip_images | strip_empty_links | strip_intraword_markers | strip_html_comments | strip_html_tags | neutralize_html_entities | sanitize_mentions | trunc_bytes 300)")"
+    f_title="$(redact "$(printf '%s' "${f_title}" | strip_images | strip_empty_links | strip_intraword_markers | canonicalize_links | strip_html_comments | strip_html_tags | neutralize_html_entities | sanitize_mentions | trunc_bytes 300)")"
     # Sanitize the model body BEFORE composing the thread: the composed
     # text carries our own <sub> footer, which the tag stripper would
     # otherwise eat along with model-supplied tags.
-    f_body="$(redact "$(printf '%s' "${f_body}" | strip_images | strip_empty_links | strip_intraword_markers | strip_html_comments | strip_html_tags | neutralize_html_entities | sanitize_mentions | trunc_bytes_marked 6000)")"
+    f_body="$(redact "$(printf '%s' "${f_body}" | strip_images | strip_empty_links | strip_intraword_markers | canonicalize_links | strip_html_comments | strip_html_tags | neutralize_html_entities | sanitize_mentions | trunc_bytes_marked 6000)")"
     thread_body="$(printf '**[%s] %s**\n\n%s\n\n<sub>Useful? React with 👍 / 👎.</sub>' "${f_sev}" "${f_title}" "${f_body}")"
     thread_body="$(redact "${thread_body}")"
     jq -n --arg path "${f_path}" --argjson line "${f_line}" --arg body "${thread_body}" \
@@ -491,7 +491,7 @@ Re-run the workflow, or inspect the logs."
     # clean text). A filter failure keeps the jq-only body and still
     # attempts the retry rather than losing the review.
     if jq -r '.body' "${payload_file}.summary" 2>/dev/null \
-      | strip_images | strip_empty_links | strip_intraword_markers | strip_html_comments | strip_html_tags | neutralize_html_entities | sanitize_mentions > "${RUNNER_TEMP}/muse-retry-body.txt" \
+      | strip_images | strip_empty_links | strip_intraword_markers | canonicalize_links | strip_html_comments | strip_html_tags | neutralize_html_entities | sanitize_mentions > "${RUNNER_TEMP}/muse-retry-body.txt" \
       && jq --rawfile body "${RUNNER_TEMP}/muse-retry-body.txt" '.body = $body' \
         "${payload_file}.summary" > "${payload_file}.summary.clean" 2>/dev/null; then
       mv "${payload_file}.summary.clean" "${payload_file}.summary"

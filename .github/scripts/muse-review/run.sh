@@ -164,4 +164,12 @@ if strip_intraword_markers < "${review_file}" > "${review_file}.nomarks" 2>/dev/
 else
   rm -f "${review_file}.nomarks"
 fi
+# Canonicalize visible links to `text (destination)` before the final
+# pass: only the text renders, so `left[A](url)right` would display as
+# the joined credential; the visible destination breaks contiguity.
+if canonicalize_links < "${review_file}" > "${review_file}.canon" 2>/dev/null; then
+  mv "${review_file}.canon" "${review_file}"
+else
+  rm -f "${review_file}.canon"
+fi
 redact "$(cat "${review_file}")" > "${review_file}.clean" && mv "${review_file}.clean" "${review_file}"
