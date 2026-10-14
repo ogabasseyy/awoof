@@ -156,4 +156,12 @@ if strip_empty_links < "${review_file}" > "${review_file}.nolinks" 2>/dev/null; 
 else
   rm -f "${review_file}.nolinks"
 fi
+# Remove intraword formatting runs before the final pass: intraword
+# emphasis/code markers render hidden (`left*A*right` displays as the
+# joined credential), and only intraword runs can join a split value.
+if strip_intraword_markers < "${review_file}" > "${review_file}.nomarks" 2>/dev/null; then
+  mv "${review_file}.nomarks" "${review_file}"
+else
+  rm -f "${review_file}.nomarks"
+fi
 redact "$(cat "${review_file}")" > "${review_file}.clean" && mv "${review_file}.clean" "${review_file}"

@@ -177,6 +177,19 @@ strip_empty_links() {
   perl -0777 -pe 's{\[\]\([^)]*\)}{}g; s{\[\]\[[^\]]*\]}{}g'
 }
 
+# Remove intraword Markdown formatting runs (`*`, backticks, `~~`
+# flanked by word characters on both sides): GFM renders intraword
+# emphasis/code/strikethrough with the markers hidden, so a credential
+# split as `left*A*right` displays contiguously while every redaction
+# pass saw only halves. A split needs the separator between two word
+# characters (a spaced marker renders with its spaces and cannot join
+# a credential), so only intraword runs go; spaced emphasis, lists,
+# and snake_case are untouched. Deleting joins the halves where the
+# redaction that runs after this can match the whole value.
+strip_intraword_markers() {
+  perl -0777 -pe 's{(?<=[A-Za-z0-9])(?:\*+|`+|~{2,})(?=[A-Za-z0-9])}{}g'
+}
+
 # Byte-bounded UTF-8-safe truncation WITH an explicit marker, reserved
 # inside the budget: trunc_bytes cuts silently, so a truncated inline
 # finding would read as complete while its tail exists nowhere.
