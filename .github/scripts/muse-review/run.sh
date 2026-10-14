@@ -115,6 +115,9 @@ fi
 # splits the key would rejoin it after the last key-aware pass (the
 # same rejoin class as the NUL case). Stripping here — the post strip
 # is idempotent — keeps every byte-removing filter ahead of redaction.
-strip_images < "${review_file}" > "${review_file}.noimg" 2>/dev/null \
-  && mv "${review_file}.noimg" "${review_file}" || rm -f "${review_file}.noimg"
+if strip_images < "${review_file}" > "${review_file}.noimg" 2>/dev/null; then
+  mv "${review_file}.noimg" "${review_file}"
+else
+  rm -f "${review_file}.noimg"
+fi
 redact "$(cat "${review_file}")" > "${review_file}.clean" && mv "${review_file}.clean" "${review_file}"
