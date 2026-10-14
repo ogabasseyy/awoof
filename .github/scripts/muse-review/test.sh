@@ -1295,7 +1295,7 @@ blob = subprocess.check_output([b'git', b'-C', repo, b'hash-object', b'-w', b'--
 bad = b'bad' + bytes([255]) + b'.ts'
 subprocess.check_call([b'git', b'-C', repo, b'update-index', b'--add', b'--cacheinfo', b'100644,' + blob + b',' + bad])
 tree = subprocess.check_output([b'git', b'-C', repo, b'write-tree']).strip()
-head = subprocess.check_output([b'git', b'-C', repo, b'commit-tree', tree, b'-p', b'${ubase}', b'-m', b'head']).strip()
+head = subprocess.check_output([b'git', b'-C', repo, b'-c', b'user.email=t@t', b'-c', b'user.name=t', b'commit-tree', tree, b'-p', b'${ubase}', b'-m', b'head']).strip()
 print(head.decode())
 ")"
 git -C "${udir2}/repo" update-ref HEAD "${uhead}" 2>/dev/null
