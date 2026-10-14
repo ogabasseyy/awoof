@@ -160,7 +160,7 @@ CONTRACT
     echo "::error::Changed-symlink evidence exceeds the 8000-byte prompt cap; failing closed to the fallback review."
     exit 1
   fi
-  printf '\n## Changed symlinks (targets recorded before the pre-run sweep removes workspace links; a literal -> in a path is shown as -\\>)%s\n\n<symlink_targets>\n' "${symlink_note}"
+  printf '\n## Changed symlinks (targets recorded before the pre-run sweep removes workspace links; each record names its side, head or base, before the target; a literal -> in a path is shown as -\\>)%s\n\n<symlink_targets>\n' "${symlink_note}"
   if [[ "${symlink_rc}" == "0" && ! -s "${symlink_tmp}" ]]; then
     printf '(No changed path is a symlink in the PR head.)\n'
   elif ! iconv -f UTF-8 -t UTF-8 "${symlink_tmp}" >/dev/null 2>&1; then
@@ -202,7 +202,7 @@ CONTRACT
     echo "::error::Changed-gitlink evidence exceeds the 8000-byte prompt cap; failing closed to the fallback review."
     exit 1
   fi
-  printf '\n## Changed gitlinks (submodule targets recorded from the captured trees; a literal -> in a path is shown as -\\>)\n\n<gitlink_targets>\n'
+  printf '\n## Changed gitlinks (submodule targets recorded from the captured trees; each record names its side, head or base, before the target OID; a literal -> in a path is shown as -\\>)\n\n<gitlink_targets>\n'
   if [[ "${gitlink_rc}" == "0" && ! -s "${gitlink_tmp}" ]]; then
     printf '(No changed path is a gitlink.)\n'
   elif ! iconv -f UTF-8 -t UTF-8 "${gitlink_tmp}" >/dev/null 2>&1; then

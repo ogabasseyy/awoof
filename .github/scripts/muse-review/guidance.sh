@@ -255,18 +255,25 @@ xbase_levels=()
 head_levels=()
 for candidate in "${MUSE_CANDIDATES[@]+"${MUSE_CANDIDATES[@]}"}"; do
   lvl="$(guidance_level "${candidate}")"
+  # Standalone candidates (CONTRIBUTING.md, copilot instructions) always
+  # apply: their level is not a directory path and must never deduplicate
+  # against one — a legal directory literally named `own:CONTRIBUTING.md`
+  # would otherwise mint the same level as the root candidate and
+  # suppress the scoped instruction file below it.
+  standalone=false
+  case "${lvl}" in own:*) standalone=true ;; esac
   if in_candidate_list "${candidate}" "${base_list[@]+"${base_list[@]}"}" \
-    && ! in_candidate_list "${lvl}" "${base_levels[@]+"${base_levels[@]}"}"; then
+    && { [[ "${standalone}" == "true" ]] || ! in_candidate_list "${lvl}" "${base_levels[@]+"${base_levels[@]}"}"; }; then
     base_winners+=("${candidate}")
     base_levels+=("${lvl}")
   fi
   if in_candidate_list "${candidate}" "${xbase_list[@]+"${xbase_list[@]}"}" \
-    && ! in_candidate_list "${lvl}" "${xbase_levels[@]+"${xbase_levels[@]}"}"; then
+    && { [[ "${standalone}" == "true" ]] || ! in_candidate_list "${lvl}" "${xbase_levels[@]+"${xbase_levels[@]}"}"; }; then
     xbase_winners+=("${candidate}")
     xbase_levels+=("${lvl}")
   fi
   if head_readable "${candidate}" \
-    && ! in_candidate_list "${lvl}" "${head_levels[@]+"${head_levels[@]}"}"; then
+    && { [[ "${standalone}" == "true" ]] || ! in_candidate_list "${lvl}" "${head_levels[@]+"${head_levels[@]}"}"; }; then
     head_winners+=("${candidate}")
     head_levels+=("${lvl}")
   fi

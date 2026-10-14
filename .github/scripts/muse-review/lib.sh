@@ -25,7 +25,13 @@ MUSE_REVIEW_PROTOCOL=1
 # text cannot break out of its prompt block. Single unified tag list for all
 # blocks — neutralizing more is strictly safer than less.
 neutralize_tags() {
-  perl -pe 's{<\s*/\s*(file|diff|pr_title|pr_description|changed_files|removed_lines|symlink_targets|gitlink_targets|changed_modes|head_ref|base_ref|untrusted_guidance)}{<\\/$1}gi'
+  # Injective neutralization: a backslash already sitting between `<`
+  # and the closing slash is doubled first, so `</diff>` gains the
+  # single protective backslash (`<\/diff>`) while the distinct literal
+  # `<\/diff>` becomes `<\\/diff>` — the two source byte strings stay
+  # distinguishable. Backslashes elsewhere (e.g. \xFF evidence escapes)
+  # pass through untouched.
+  perl -pe 's{<\\(\s*/\s*(?:file|diff|pr_title|pr_description|changed_files|removed_lines|symlink_targets|gitlink_targets|changed_modes|head_ref|base_ref|untrusted_guidance))}{<\\\\$1}gi; s{<\s*/\s*(file|diff|pr_title|pr_description|changed_files|removed_lines|symlink_targets|gitlink_targets|changed_modes|head_ref|base_ref|untrusted_guidance)}{<\\/$1}gi'
 }
 
 # In-place byte cap for a file. Only replaces the original when truncation
@@ -263,14 +269,14 @@ base_guidance_blob() {
 # Links the PR deletes (or replaces with a regular file) fail the head -L
 # test, yet their base-side target is review evidence too: when _base_ref and
 # _repo name the fetched base commit, mode-120000 base entries print as
-# `path -> target (base-side; deleted or replaced in head)` and count toward
+# `path -> base target (base-side; deleted or replaced in head)` and count toward
 # _max like head lines. Rename sources (previous_filename) get the same
 # base lookup — querying the destination in the base cannot recover the
 # source target — labeled `(base-side; renamed away in head)`. Empty
 # ref/repo disables the base lookup (head-only); the caller labels that
 # absence explicitly.
 changed_symlinks() {
-  local _files="$1" _root="$2" _max="${3:-50}" _base_ref="${4:-}" _repo="${5:-}" _count=0 _rec _kind _f _suffix _entry _raw _esc _label
+  local _files="$1" _root="$2" _max="${3:-50}" _base_ref="${4:-}" _repo="${5:-}" _count=0 _rec _kind _f _suffix _entry _raw _esc _label _side
   jq -e 'type == "array"' "${_files}" >/dev/null 2>&1 || return 1
   _raw="$(mktemp)" || return 1
   while IFS= read -r -d '' _rec; do
@@ -281,7 +287,9 @@ changed_symlinks() {
     if [[ "${_kind}" == "F" && -L "${_root}/${_f}" ]]; then
       readlink -n -- "${_root}/${_f}" > "${_raw}" 2>/dev/null || : > "${_raw}"
       _suffix=""
+      _side="head"
     else
+      _side="base"
       if [[ "${_kind}" == "P" ]]; then
         _suffix=" (base-side; renamed away in head)"
       else
@@ -311,7 +319,10 @@ changed_symlinks() {
     _label="${_label//$'\n'/\\n}"
     _label="${_label//$'\r'/\\r}"
     _label="${_label// -> / -\\> }"
-    printf '%s -> %s%s\n' "${_label}" "${_esc}" "${_suffix}"
+    # Side is an explicit field BEFORE the target (as in
+    # changed_gitlinks): a target literally ending in the base-side
+    # annotation text can no longer impersonate a base record.
+    printf '%s -> %s %s%s\n' "${_label}" "${_side}" "${_esc}" "${_suffix}"
   done < <(jq -j '[.[] | {f: (.filename // empty), p: (.previous_filename // "")} | select(.f | type == "string") | ("F\t" + .f), (if (.p | type) == "string" and (.p | length) > 0 and .p != .f then ("P\t" + .p) else empty end)] | .[] + "\u0000"' "${_files}" 2>/dev/null)
   rm -f "${_raw}"
 }
@@ -380,12 +391,14 @@ changed_gitlinks() {
 # objects like gitlink targets, so the evidence survives truncation;
 # caller fails closed past caps. Returns 1 unreadable, 2 over _max.
 changed_modes() {
-  local _files="$1" _head_ref="$2" _base_ref="$3" _repo="$4" _max="${5:-50}" _count=0 _rec _f _prev _base_path _hentry _bentry _hmode _bmode _label
+  local _files="$1" _head_ref="$2" _base_ref="$3" _repo="$4" _max="${5:-50}" _count=0 _f _prev _base_path _hentry _bentry _hmode _bmode _label
   jq -e 'type == "array"' "${_files}" >/dev/null 2>&1 || return 1
-  while IFS= read -r -d '' _rec; do
-    _f="${_rec%%$'\t'*}"
-    _prev="${_rec#*$'\t'}"
-    if [[ "${_prev}" == "${_rec}" ]]; then _prev=""; fi
+  # Fields arrive as separate NUL-terminated values (filename, then
+  # previous_filename): joining them with a tab made a filename
+  # containing a literal tab truncate at its first tab and leak the
+  # remainder into the previous-path field.
+  while IFS= read -r -d '' _f; do
+    if ! IFS= read -r -d '' _prev; then _prev=""; fi
     case "${_f}" in /*|..|../*|*/../*|*/..) continue ;; esac
     _base_path="${_f}"
     if [[ -n "${_prev}" && "${_prev}" != "${_f}" ]]; then _base_path="${_prev}"; fi
@@ -414,7 +427,7 @@ changed_modes() {
     else
       printf '%s: base %s (deleted)\n' "${_label}" "${_bmode}"
     fi
-  done < <(jq -j '[.[] | select((.filename | type) == "string") | .filename + "\t" + (if (.previous_filename | type) == "string" then .previous_filename else "" end)] | .[] + "\u0000"' "${_files}" 2>/dev/null)
+  done < <(jq -j '.[] | select((.filename | type) == "string") | .filename, (if (.previous_filename | type) == "string" then .previous_filename else "" end) | . + "\u0000"' "${_files}" 2>/dev/null)
 }
 
 # True when a head-tree candidate is safe to read: a regular file, not a

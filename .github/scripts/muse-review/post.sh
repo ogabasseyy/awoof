@@ -115,7 +115,9 @@ sanitize_review() {
 }
 
 # Assemble the summary-only retry body after the API rejects the inline
-# payload: the rejected summary minus dangling "(see inline)" pointers, plus
+# payload: the rejected summary with "(see inline)" pointers replaced by a
+# pointer to the findings below (never deleted — deleting the separator
+# could rejoin a secret the key-aware pass only saw in split form), plus
 # the sanitized findings. $1 "compact" keeps headers only with an explicit
 # note; anything else keeps capped finding bodies. Lands in
 # ${payload_file}.summary for the size gate at the retry site.
@@ -123,7 +125,7 @@ build_retry() {
   local _compact="false"
   if [[ "$1" == "compact" ]]; then _compact="true"; fi
   jq --argjson compact "${_compact}" --arg budget "${body_budget}" '
-    .body |= gsub(" \\(see inline\\)"; "") |
+    .body |= gsub(" \\(see inline\\)"; " (details in the inline findings below)") |
     .body += "\n\n<sub>Inline threads were rejected by the API; findings inlined below.</sub>\n\n" +
       ([.comments[]? |
         "### \(.path | gsub("\\n"; " ") | gsub("!\\[[^\\]]*\\]\\([^\\)]*\\)"; "") | gsub("(?<![A-Za-z0-9_])@(?=[A-Za-z0-9_])"; "@\u200b")):\(.line)\n\n" +

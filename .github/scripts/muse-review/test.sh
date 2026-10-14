@@ -33,6 +33,13 @@ got="$(printf '%s' 'plain <diff> text' | neutralize_tags)"
 assert_eq "neutralize-keeps-open" 'plain <diff> text' "${got}"
 got="$(printf '%s' 'evil </Symlink_Targets > end' | neutralize_tags)"
 assert_eq "neutralize-symlink-targets" 'evil <\/Symlink_Targets > end' "${got}"
+# Injectivity: a pre-escaped closer is a DIFFERENT source byte string
+# than a genuine closer and must not render identically; unrelated
+# backslash escapes pass through untouched.
+got="$(printf '%s' 'pre <\/diff> post' | neutralize_tags)"
+assert_eq "neutralize-preescaped-distinct" 'pre <\\/diff> post' "${got}"
+got="$(printf '%s' 'keep \xFF and <\/pr_title>' | neutralize_tags)"
+assert_eq "neutralize-injective-mixed" 'keep \xFF and <\\/pr_title>' "${got}"
 
 # --- bound_untrusted ---
 big="$(python3 -c "print('x'*5000)")"
@@ -125,9 +132,9 @@ ln -s /etc/hostname "${symdir}/ws/untracked-link"
 ln -s "${symdir}/ws/real.txt" "${symdir}/escape"
 printf '[{"filename":"leak.txt"},{"filename":"sub/rel"},{"filename":"real.txt"},{"filename":"missing.txt"}]' > "${symdir}/files.json"
 got="$(changed_symlinks "${symdir}/files.json" "${symdir}/ws" 50)"
-assert_eq "symlinks-targets" "$(printf 'leak.txt -> /etc\nsub/rel -> ../real.txt')" "${got}"
+assert_eq "symlinks-targets" "$(printf 'leak.txt -> head /etc\nsub/rel -> head ../real.txt')" "${got}"
 got="$(changed_symlinks "${symdir}/files.json" "${symdir}/ws" 1 2>/dev/null)"; got_rc=$?
-assert_eq "symlinks-overcap-first" "leak.txt -> /etc" "${got}"
+assert_eq "symlinks-overcap-first" "leak.txt -> head /etc" "${got}"
 assert_eq "symlinks-overcap-rc" "2" "${got_rc}"
 if changed_symlinks "/nonexistent-muse-test-$$" "${symdir}/ws" >/dev/null 2>&1; then got_rc=0; else got_rc=$?; fi
 assert_eq "symlinks-missing-rc" "1" "${got_rc}"
@@ -140,7 +147,7 @@ assert_eq "symlinks-skips-escape" "" "${got}"
 ln -s "$(printf 'a\nb')" "${symdir}/ws/nl.txt"
 printf '[{"filename":"nl.txt"}]' > "${symdir}/nlf.json"
 got="$(changed_symlinks "${symdir}/nlf.json" "${symdir}/ws" 50)"
-assert_eq "symlinks-flattens-newline" 'nl.txt -> a\nb' "${got}"
+assert_eq "symlinks-flattens-newline" 'nl.txt -> head a\nb' "${got}"
 longt="$(python3 -c "print('t'*600)")"
 ln -s "${longt}" "${symdir}/ws/long.txt"
 printf '[{"filename":"long.txt"}]' > "${symdir}/longf.json"
@@ -155,18 +162,18 @@ assert_eq "symlinks-target-cap-empty" "" "${got}"
 python3 -c "import os; os.symlink('target' + chr(10) + chr(10), '${symdir}/ws/trail')"
 printf '[{"filename":"trail"}]' > "${symdir}/tlf.json"
 got="$(changed_symlinks "${symdir}/tlf.json" "${symdir}/ws" 50)"
-assert_eq "symlinks-trailing-newlines-kept" 'trail -> target\n\n' "${got}"
+assert_eq "symlinks-trailing-newlines-kept" 'trail -> head target\n\n' "${got}"
 python3 -c "import os; os.symlink(b'bad' + bytes([255]) + b'target', b'${symdir}/ws/badutf')"
 printf '[{"filename":"badutf"}]' > "${symdir}/badf.json"
 got="$(changed_symlinks "${symdir}/badf.json" "${symdir}/ws" 50)"
-assert_eq "symlinks-invalid-utf8-escaped" 'badutf -> bad\xFFtarget' "${got}"
+assert_eq "symlinks-invalid-utf8-escaped" 'badutf -> head bad\xFFtarget' "${got}"
 python3 -c "import os; os.symlink('a' + chr(92) + 'nb', '${symdir}/ws/bslash')"
 printf '[{"filename":"bslash"}]' > "${symdir}/bsf.json"
 got="$(changed_symlinks "${symdir}/bsf.json" "${symdir}/ws" 50)"
-assert_eq "symlinks-backslash-escaped" 'bslash -> a\\nb' "${got}"
+assert_eq "symlinks-backslash-escaped" 'bslash -> head a\\nb' "${got}"
 python3 -c "import os, json; os.symlink('/target-bs', '${symdir}/ws/' + 'a' + chr(92) + 'nb'); os.symlink('/target-nl', '${symdir}/ws/' + 'a' + chr(10) + 'b'); json.dump([{'filename': 'a' + chr(92) + 'nb'}, {'filename': 'a' + chr(10) + 'b'}], open('${symdir}/lbl.json', 'w'))"
 got="$(changed_symlinks "${symdir}/lbl.json" "${symdir}/ws" 50)"
-assert_eq "symlinks-label-backslash-vs-newline" "$(printf 'a\\\\nb -> /target-bs\na\\nb -> /target-nl')" "${got}"
+assert_eq "symlinks-label-backslash-vs-newline" "$(printf 'a\\\\nb -> head /target-bs\na\\nb -> head /target-nl')" "${got}"
 got="$(printf 'caf\xc3\xa9' | escape_symlink_target)"
 assert_eq "escape-keeps-valid-multibyte" "café" "${got}"
 got="$(printf 'a\xffb' | escape_symlink_target)"
@@ -190,7 +197,7 @@ while (( i < 55 )); do
 done
 python3 -c "import json; print(json.dumps([{'filename': 'link%d' % i} for i in range(55)]))" > "${capdir}/files.json"
 got="$(set -e; if cap_lines="$(changed_symlinks "${capdir}/files.json" "${capdir}/ws" 50 2>/dev/null)"; then cap_rc=0; else cap_rc=$?; fi; printf 'rc=%s first=%s last=%s' "${cap_rc}" "$(printf '%s' "${cap_lines}" | head -n 1)" "$(printf '%s' "${cap_lines}" | tail -n 1)")"
-assert_eq "capture-rc2-partial" "rc=2 first=link0 -> /target0 last=link49 -> /target49" "${got}"
+assert_eq "capture-rc2-partial" "rc=2 first=link0 -> head /target0 last=link49 -> head /target49" "${got}"
 rm -rf "${capdir}"
 
 # --- changed_symlinks base-side targets (deleted/replaced links) ---
@@ -217,13 +224,13 @@ rm "${basedir}/repo/:(glob)*"
 rm "${basedir}/repo/oldlink.txt" && ln -s /etc/after "${basedir}/repo/newlink.txt"
 printf '[{"filename":"gone.txt"},{"filename":"replaced.txt"},{"filename":":(glob)*"},{"filename":"still.txt"},{"filename":"keep.txt"},{"filename":"newlink.txt","previous_filename":"oldlink.txt"}]' > "${basedir}/files.json"
 got="$(changed_symlinks "${basedir}/files.json" "${basedir}/repo" 50 "${base_sha}" "${basedir}/repo")"
-assert_eq "symlinks-base-side" "$(printf 'gone.txt -> /etc/target (base-side; deleted or replaced in head)\nreplaced.txt -> /etc/old (base-side; deleted or replaced in head)\n:(glob)* -> /etc/magic (base-side; deleted or replaced in head)\nstill.txt -> /etc/still\nnewlink.txt -> /etc/after\noldlink.txt -> /etc/before (base-side; renamed away in head)')" "${got}"
+assert_eq "symlinks-base-side" "$(printf 'gone.txt -> base /etc/target (base-side; deleted or replaced in head)\nreplaced.txt -> base /etc/old (base-side; deleted or replaced in head)\n:(glob)* -> base /etc/magic (base-side; deleted or replaced in head)\nstill.txt -> head /etc/still\nnewlink.txt -> head /etc/after\noldlink.txt -> base /etc/before (base-side; renamed away in head)')" "${got}"
 got="$(changed_symlinks "${basedir}/files.json" "${basedir}/repo" 50 "" "")"
-assert_eq "symlinks-no-base-head-only" "$(printf 'still.txt -> /etc/still\nnewlink.txt -> /etc/after')" "${got}"
+assert_eq "symlinks-no-base-head-only" "$(printf 'still.txt -> head /etc/still\nnewlink.txt -> head /etc/after')" "${got}"
 got="$(changed_symlinks "${basedir}/files.json" "${basedir}/repo" 50 "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef" "${basedir}/repo" 2>/dev/null)"
-assert_eq "symlinks-bad-ref-head-only" "$(printf 'still.txt -> /etc/still\nnewlink.txt -> /etc/after')" "${got}"
+assert_eq "symlinks-bad-ref-head-only" "$(printf 'still.txt -> head /etc/still\nnewlink.txt -> head /etc/after')" "${got}"
 got="$(changed_symlinks "${basedir}/files.json" "${basedir}/repo" 1 "${base_sha}" "${basedir}/repo" 2>/dev/null)"; got_rc=$?
-assert_eq "symlinks-base-counts-cap" "gone.txt -> /etc/target (base-side; deleted or replaced in head)" "${got}"
+assert_eq "symlinks-base-counts-cap" "gone.txt -> base /etc/target (base-side; deleted or replaced in head)" "${got}"
 assert_eq "symlinks-base-cap-rc" "2" "${got_rc}"
 rm -rf "${basedir}"
 
@@ -239,8 +246,18 @@ bs_sha="$(git -C "${bsdir}/repo" rev-parse HEAD 2>/dev/null)"
 rm "${bsdir}/repo/gone-nl.txt"
 printf '[{"filename":"gone-nl.txt"}]' > "${bsdir}/files.json"
 got="$(changed_symlinks "${bsdir}/files.json" "${bsdir}/repo" 50 "${bs_sha}" "${bsdir}/repo")"
-assert_eq "symlinks-base-trailing-newline" 'gone-nl.txt -> gone\n (base-side; deleted or replaced in head)' "${got}"
+assert_eq "symlinks-base-trailing-newline" 'gone-nl.txt -> base gone\n (base-side; deleted or replaced in head)' "${got}"
 rm -rf "${bsdir}"
+
+# Side is a field BEFORE the target: a head target literally ending in
+# the base-side annotation text cannot impersonate a base record.
+spoofdir="$(mktemp -d)"
+mkdir -p "${spoofdir}/ws"
+ln -s 'x (base-side; deleted or replaced in head)' "${spoofdir}/ws/spoof.txt"
+printf '[{"filename":"spoof.txt"}]' > "${spoofdir}/files.json"
+got="$(changed_symlinks "${spoofdir}/files.json" "${spoofdir}/ws" 50)"
+assert_eq "symlinks-side-before-target" 'spoof.txt -> head x (base-side; deleted or replaced in head)' "${got}"
+rm -rf "${spoofdir}"
 
 # --- redact ---
 pem='-----BEGIN TEST PRIVATE KEY-----FAKEFAKEFAKE-----END TEST PRIVATE KEY-----'
@@ -704,6 +721,25 @@ assert_eq "guidance-head-sibling-suppressed" "no" "${got_g}"
 case "$(cat "${idir}/tmp/muse-guidance.md" 2>/dev/null)" in *"parent-base"*"parent-head-modified"*) got_g="yes";; *) got_g="no";; esac
 assert_eq "guidance-base-winner-retained" "yes" "${got_g}"
 rm -rf "${idir}"
+# Standalone levels never collide with directory levels: a directory
+# literally named `own:CONTRIBUTING.md` must not suppress its scoped
+# AGENTS.md just because the root CONTRIBUTING.md minted that level.
+cddir="$(mktemp -d)"
+mkdir -p "${cddir}/tmp" "${cddir}/ws/own:CONTRIBUTING.md"
+printf 'root-contrib-rule\n' > "${cddir}/ws/CONTRIBUTING.md"
+printf 'scoped-rule\n' > "${cddir}/ws/own:CONTRIBUTING.md/AGENTS.md"
+{
+  printf 'MUSE_STOP=0\n'
+  printf 'MUSE_BASE_REF=main\n'
+  printf 'MUSE_DEFAULT_BRANCH=main\n'
+  printf 'MUSE_BASE_AVAILABLE=false\n'
+  printf 'MUSE_BASE_SHA_FULL=%s\n' "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+} > "${cddir}/tmp/muse-vars.env"
+printf '[{"filename":"own:CONTRIBUTING.md/x.ts"}]' > "${cddir}/tmp/muse-files.json"
+(cd "${cddir}/ws" && RUNNER_TEMP="${cddir}/tmp" SCRIPT_DIR="${SCRIPT_DIR}" bash "${guidance_script}") >/dev/null 2>&1
+case "$(cat "${cddir}/tmp/muse-guidance.md" 2>/dev/null)" in *"scoped-rule"*) got_g="yes";; *) got_g="no";; esac
+assert_eq "guidance-standalone-level-no-collision" "yes" "${got_g}"
+rm -rf "${cddir}"
 # Newly exposed head winner: deleting the base winner (AGENTS.md)
 # exposes an unchanged lower-priority sibling (CLAUDE.md) that applies
 # in head even though its bytes never changed and it never entered
@@ -877,6 +913,28 @@ got="$(changed_modes "${mdir}/files.json" "${mhead}" "${mbase}" "${mdir}/repo" 5
 assert_eq "modes-change-recorded" "run.sh: base 100644, head 100755" "${got}"
 got="$(changed_modes "${mdir}/files.json" "${mbase}" "${mbase}" "${mdir}/repo" 50)"
 assert_eq "modes-unchanged-none" "" "${got}"
+# Tab in a filename: fields must not split on the filename's own tab.
+tfdir="$(mktemp -d)"
+mkdir -p "${tfdir}/repo"
+git -C "${tfdir}/repo" init -q 2>/dev/null
+python3 -c "open('${tfdir}/repo/with' + chr(9) + 'tab.sh', 'w').write('echo hi\n')"
+git -C "${tfdir}/repo" add -A 2>/dev/null
+git -C "${tfdir}/repo" -c user.email=t@t -c user.name=t commit -qm base 2>/dev/null
+tfbase="$(git -C "${tfdir}/repo" rev-parse HEAD 2>/dev/null)"
+tfhead="$(python3 -c "
+import subprocess, json
+repo='${tfdir}/repo'
+name='with' + chr(9) + 'tab.sh'
+blob=subprocess.check_output(['git','-C',repo,'hash-object','-w',name]).strip()
+subprocess.check_call(['git','-C',repo,'update-index','--add','--cacheinfo','100755,' + blob.decode() + ',' + name])
+tree=subprocess.check_output(['git','-C',repo,'write-tree']).strip()
+head=subprocess.check_output(['git','-C',repo,'-c','user.email=t@t','-c','user.name=t','commit-tree',tree,'-p','${tfbase}','-m','head']).strip()
+print(head.decode())
+")"
+python3 -c "import json; json.dump([{'filename': 'with' + chr(9) + 'tab.sh'}], open('${tfdir}/files.json','w'))"
+got="$(changed_modes "${tfdir}/files.json" "${tfhead}" "${tfbase}" "${tfdir}/repo" 50)"
+assert_eq "modes-tab-filename-intact" "$(printf 'with\ttab.sh: base 100644, head 100755')" "${got}"
+rm -rf "${tfdir}"
 rm -rf "${mdir}"
 
 # --- diff.sh --text vs .gitattributes -diff suppression (script level) ---
@@ -931,6 +989,35 @@ dhead2="$(git -C "${ddir}/repo2" rev-parse HEAD 2>/dev/null)"
 if (cd "${ddir}/repo2" && RUNNER_TEMP="${ddir}/tmp" SCRIPT_DIR="${SCRIPT_DIR}" GITHUB_OUTPUT="${ddir}/tmp/out.txt" HEAD_SHA_EVENT="${dhead2}" GITHUB_REPOSITORY="t/t" GH_TOKEN="fake" bash "${diff_script}") >/dev/null 2>&1; then got_rc="0"; else got_rc="nonzero"; fi
 assert_eq "diff-removed-cap-fails-closed" "nonzero" "${got_rc}"
 rm -rf "${ddir}"
+# Removed-line EOF marker: adding only a final newline must keep the
+# `\ No newline at end of file` marker beside the removed line, or the
+# supplement is identical to removing a newline-terminated line.
+eod="$(mktemp -d)"
+mkdir -p "${eod}/tmp" "${eod}/repo"
+git -C "${eod}/repo" init -q 2>/dev/null
+printf 'keep' > "${eod}/repo/eol.txt"
+git -C "${eod}/repo" add eol.txt 2>/dev/null
+git -C "${eod}/repo" -c user.email=t@t -c user.name=t commit -qm base 2>/dev/null
+eobase="$(git -C "${eod}/repo" rev-parse HEAD 2>/dev/null)"
+printf 'keep\n' > "${eod}/repo/eol.txt"
+git -C "${eod}/repo" add eol.txt 2>/dev/null
+git -C "${eod}/repo" -c user.email=t@t -c user.name=t commit -qm head 2>/dev/null
+eohead="$(git -C "${eod}/repo" rev-parse HEAD 2>/dev/null)"
+{
+  printf 'MUSE_STOP=0\n'
+  printf 'MUSE_FILES_FAILED=false\n'
+  printf 'MUSE_FILES_SOURCE=local\n'
+  printf 'MUSE_MERGE_BASE=%s\n' "${eobase}"
+  printf 'MUSE_TOTAL_FILES=1\n'
+  printf 'MUSE_BASE_SHA=%s\n' "${eobase}"
+} > "${eod}/tmp/muse-vars.env"
+: > "${eod}/tmp/out.txt"
+(cd "${eod}/repo" && RUNNER_TEMP="${eod}/tmp" SCRIPT_DIR="${SCRIPT_DIR}" GITHUB_OUTPUT="${eod}/tmp/out.txt" HEAD_SHA_EVENT="${eohead}" GITHUB_REPOSITORY="t/t" GH_TOKEN="fake" bash "${diff_script}") >/dev/null 2>&1
+case "$(cat "${eod}/tmp/muse-removed.txt" 2>/dev/null)" in *'-keep'*) got_d="line";; *) got_d="missing";; esac
+assert_eq "diff-removed-eof-line" "line" "${got_d}"
+case "$(cat "${eod}/tmp/muse-removed.txt" 2>/dev/null)" in *'No newline at end of file'*) got_d="marker";; *) got_d="missing";; esac
+assert_eq "diff-removed-eof-marker" "marker" "${got_d}"
+rm -rf "${eod}"
 
 # --- diff.sh size-limited compare diff fails closed (script level) ---
 # A successful compare response at GitHub's 20,000-line / 1 MB / 500 KB
@@ -1232,7 +1319,7 @@ python3 -c "import os; os.symlink(b'bad' + bytes([255]) + b'target', b'${sdir}/w
 printf '[{"filename":"badutf"}]' > "${sdir}/tmp/muse-files.json"
 if PATH="${sdir}/bin:${PATH}" GH_TOKEN="fake" GITHUB_REPOSITORY="t/t" PR_NUMBER="1" GITHUB_OUTPUT="${sdir}/tmp/out.txt" RUNNER_TEMP="${sdir}/tmp" SCRIPT_DIR="${SCRIPT_DIR}" GITHUB_WORKSPACE="${sdir}/ws" bash "${prompt_script}" >/dev/null 2>&1; then got_rc="0"; else got_rc="nonzero"; fi
 assert_eq "prompt-invalid-utf8-escaped-ok" "0" "${got_rc}"
-case "$(cat "${sdir}/tmp/muse-prompt.md" 2>/dev/null)" in *'badutf -> bad\xFFtarget'*) got_p="escaped";; *) got_p="altered";; esac
+case "$(cat "${sdir}/tmp/muse-prompt.md" 2>/dev/null)" in *'badutf -> head bad\xFFtarget'*) got_p="escaped";; *) got_p="altered";; esac
 assert_eq "prompt-invalid-utf8-escaped" "escaped" "${got_p}"
 # Removed-line evidence with non-UTF-8 bytes reaches the prompt escaped,
 # not silently shortened: the head checkout cannot recover deletions.
@@ -1361,6 +1448,59 @@ RUNNER_TEMP="${rdir}/tmp" SCRIPT_DIR="${SCRIPT_DIR}" \
 if [[ -f "${rdir}/count" ]]; then got_r="posted"; else got_r="skipped"; fi
 assert_eq "post-retargeted-base-skips" "skipped" "${got_r}"
 rm -rf "${rdir}"
+
+# Summary-retry pointer must stay a nonempty separator: deleting
+# " (see inline)" entirely would rejoin a secret the key-aware pass
+# only saw in split halves (here an AIza token split around the
+# pointer) inside the keyless retry payload.
+kdir="$(mktemp -d)"
+mkdir -p "${kdir}/tmp" "${kdir}/bin"
+cp /dev/null "${kdir}/bin/.keep" 2>/dev/null || true
+cat > "${kdir}/bin/gh" <<'STUB'
+#!/usr/bin/env bash
+args=" $* "
+case "${args}" in
+  *" --method POST "*)
+    n=0
+    if [[ -f "${GH_STUB_COUNT}" ]]; then n="$(cat "${GH_STUB_COUNT}")"; fi
+    n=$((n + 1))
+    printf '%s' "${n}" > "${GH_STUB_COUNT}"
+    : > "${GH_STUB_POSTED}"
+    if [[ "${GH_STUB_FAIL_FIRST:-}" == "1" && "${n}" == "1" ]]; then
+      printf 'transient failure\n' >&2
+      exit 1
+    fi
+    prev=""
+    for a in "$@"; do
+      if [[ "${prev}" == "--input" ]]; then cp "${a}" "${GH_STUB_CAPTURE}"; fi
+      prev="${a}"
+    done
+    printf '{}\n'
+    ;;
+  *"/reviews"*)
+    printf '[]\n'
+    ;;
+  *) printf '%s\t%s\tfalse\topen\t%s\t%s\n' "${GH_STUB_HEAD}" "${GH_STUB_BASE}" "${GH_STUB_BASEREF:-main}" "${GH_STUB_DEFAULT:-main}" ;;
+esac
+STUB
+chmod +x "${kdir}/bin/gh"
+printf 'diff --git a/a.ts b/a.ts\n--- a/a.ts\n+++ b/a.ts\n@@ -1 +1,5 @@\n+x\n' > "${kdir}/tmp/muse.diff"
+printf '[{"filename":"a.ts"}]' > "${kdir}/tmp/muse-files.json"
+printf '%s' '{"verdict":"leak AIza0123456789 (see inline)AbCdEfGhIjKlMnOpQrStUvWx end","findings":[{"path":"a.ts","line":1,"severity":"low","title":"t","body":"b"}],"next_steps":[]}' > "${kdir}/tmp/review.json"
+rm -f "${kdir}/count" "${kdir}/posted" "${kdir}/capture.json"
+GH_STUB_COUNT="${kdir}/count" GH_STUB_POSTED="${kdir}/posted" GH_STUB_CAPTURE="${kdir}/capture.json" GH_STUB_HEAD="${rsha}" GH_STUB_BASE="${rbsha}" GH_STUB_FAIL_FIRST="1" GH_STUB_LANDED="" \
+PATH="${kdir}/bin:${PATH}" \
+GH_TOKEN="fake" GITHUB_REPOSITORY="t/t" PR_NUMBER="1" \
+HEAD_SHA="${rsha}" BASE_SHA="${rbsha}" HEAD_SHA_EVENT="${rsha}" BASE_SHA_EVENT="${rbsha}" \
+MUSE_OUTCOME="success" DIFF_FAILED="false" DIFF_OUTCOME="success" \
+REVIEW_FILE="${kdir}/tmp/review.json" RUN_URL="https://example.invalid/run" \
+RUNNER_TEMP="${kdir}/tmp" SCRIPT_DIR="${SCRIPT_DIR}" \
+  bash "${post_script}" >/dev/null 2>&1
+case "$(jq -r '.body // ""' "${kdir}/capture.json" 2>/dev/null)" in *"AIza0123456789AbCdEfGhIjKlMnOpQrStUvWx"*) got_k="joined";; *) got_k="split";; esac
+assert_eq "post-retry-pointer-not-joined" "split" "${got_k}"
+case "$(jq -r '.body // ""' "${kdir}/capture.json" 2>/dev/null)" in *"(details in the inline findings below)"*) got_k="yes";; *) got_k="no";; esac
+assert_eq "post-retry-pointer-separator-kept" "yes" "${got_k}"
+rm -rf "${kdir}"
 
 # --- guard.sh live base-ref revalidation (script level) ---
 # Same-SHA retarget to a custom branch changes no SHA/draft/state; the

@@ -86,7 +86,7 @@ if [[ "${diff_failed}" != "true" ]]; then
   # which an unconditional match would mistake for file headers and
   # misattribute every later removal to — while genuinely dropping the
   # removed "-- x" content. Headers only occur outside hunks.
-  awk '/^diff --git / {in_hunk=0; print; next} /^@@ / {in_hunk=1; next} !in_hunk && /^--- / {print; next} !in_hunk && /^\+\+\+ / {print; next} in_hunk && /^-/ {print}' \
+  awk '/^diff --git / {in_hunk=0; prev_removed=0; print; next} /^@@ / {in_hunk=1; prev_removed=0; next} !in_hunk && /^--- / {prev_removed=0; print; next} !in_hunk && /^\+\+\+ / {prev_removed=0; print; next} in_hunk && /^-/ {print; prev_removed=1; next} in_hunk && /^\\ No newline at end of file/ {if (prev_removed) print; prev_removed=0; next} {prev_removed=0}' \
     "${diff_file}" 2>/dev/null > "${removed_file}" || : > "${removed_file}"
   if (( $(wc -c < "${removed_file}") > 24576 )); then
     # Fail closed like the other evidence caps: this supplement is the
