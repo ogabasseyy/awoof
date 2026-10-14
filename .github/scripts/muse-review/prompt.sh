@@ -105,7 +105,7 @@ CONTRACT
 
   printf '\n## Changed files%s\n\n<changed_files>\n' "${MUSE_FILES_NOTE}"
   cat "${RUNNER_TEMP}/muse-summary.txt"
-  printf '\n\n### Full path manifest (renames shown as old -> new)%s\n' "${MUSE_MANIFEST_NOTE}"
+  printf '\n\n### Full path manifest (renames shown as old -> new; a literal -> in a filename is shown as -\\>)%s\n' "${MUSE_MANIFEST_NOTE}"
   iconv -c -f UTF-8 -t UTF-8 "${RUNNER_TEMP}/muse-manifest.txt" 2>/dev/null \
     | neutralize_tags || true
   printf '\n</changed_files>\n'

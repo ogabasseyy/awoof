@@ -247,7 +247,7 @@ escape_invalid_utf8() {
 # ref/repo disables the base lookup (head-only); the caller labels that
 # absence explicitly.
 changed_symlinks() {
-  local _files="$1" _root="$2" _max="${3:-50}" _base_ref="${4:-}" _repo="${5:-}" _count=0 _rec _kind _f _suffix _entry _raw _esc
+  local _files="$1" _root="$2" _max="${3:-50}" _base_ref="${4:-}" _repo="${5:-}" _count=0 _rec _kind _f _suffix _entry _raw _esc _label
   jq -e 'type == "array"' "${_files}" >/dev/null 2>&1 || return 1
   _raw="$(mktemp)" || return 1
   while IFS= read -r -d '' _rec; do
@@ -281,7 +281,13 @@ changed_symlinks() {
     if (( _count > _max )); then rm -f "${_raw}"; return 2; fi
     if (( $(wc -c < "${_raw}") > 500 )); then rm -f "${_raw}"; return 3; fi
     _esc="$(escape_symlink_target < "${_raw}")"
-    printf '%s -> %s%s\n' "${_f//$'\n'/\\n}" "${_esc}" "${_suffix}"
+    # Escape backslashes BEFORE newlines (as manifest_paths does), so a
+    # literal `a\nb` path and an actual-newline `a<LF>b` path do not
+    # render with the identical label and swap targets in the prompt.
+    _label="${_f//\\/\\\\}"
+    _label="${_label//$'\n'/\\n}"
+    _label="${_label//$'\r'/\\r}"
+    printf '%s -> %s%s\n' "${_label}" "${_esc}" "${_suffix}"
   done < <(jq -j '[.[] | {f: (.filename // empty), p: (.previous_filename // "")} | select(.f | type == "string") | ("F\t" + .f), (if (.p | type) == "string" and (.p | length) > 0 and .p != .f then ("P\t" + .p) else empty end)] | .[] + "\u0000"' "${_files}" 2>/dev/null)
   rm -f "${_raw}"
 }
@@ -459,9 +465,12 @@ neutralize_workflow_commands() {
 # jq @tsv (which the changed-files summary already relies on). Renames
 # render as `old -> new`: past the summary/diff/supplement caps the
 # manifest is the only complete record, and without the source path the
-# reviewer cannot discover that the old path was removed.
+# reviewer cannot discover that the old path was removed. A literal
+# ` -> ` inside a filename escapes to ` -\> `, so the rename delimiter
+# is the only unescaped ` -> ` on a line and an ordinary file named
+# `a -> b` cannot be mistaken for a rename from `a` to `b`.
 manifest_paths() {
-  jq -r 'def esc: gsub("\\\\"; "\\\\") | gsub("\n"; "\\n");
+  jq -r 'def esc: gsub("\\\\"; "\\\\") | gsub("\n"; "\\n") | gsub(" -> "; " -\\> ");
     .[] | (.previous_filename // "") as $prev
     | if ($prev | length) > 0 then "\($prev | esc) -> \(.filename | esc)"
       else (.filename | esc) end' "$1" 2>/dev/null

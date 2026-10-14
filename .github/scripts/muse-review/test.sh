@@ -164,6 +164,9 @@ python3 -c "import os; os.symlink('a' + chr(92) + 'nb', '${symdir}/ws/bslash')"
 printf '[{"filename":"bslash"}]' > "${symdir}/bsf.json"
 got="$(changed_symlinks "${symdir}/bsf.json" "${symdir}/ws" 50)"
 assert_eq "symlinks-backslash-escaped" 'bslash -> a\\nb' "${got}"
+python3 -c "import os, json; os.symlink('/target-bs', '${symdir}/ws/' + 'a' + chr(92) + 'nb'); os.symlink('/target-nl', '${symdir}/ws/' + 'a' + chr(10) + 'b'); json.dump([{'filename': 'a' + chr(92) + 'nb'}, {'filename': 'a' + chr(10) + 'b'}], open('${symdir}/lbl.json', 'w'))"
+got="$(changed_symlinks "${symdir}/lbl.json" "${symdir}/ws" 50)"
+assert_eq "symlinks-label-backslash-vs-newline" "$(printf 'a\\\\nb -> /target-bs\na\\nb -> /target-nl')" "${got}"
 got="$(printf 'caf\xc3\xa9' | escape_symlink_target)"
 assert_eq "escape-keeps-valid-multibyte" "café" "${got}"
 got="$(printf 'a\xffb' | escape_symlink_target)"
@@ -440,6 +443,9 @@ assert_eq "manifest-missing-rc" "nonzero" "${got_rc}"
 python3 -c "import json; json.dump([{'filename': 'new.ts', 'previous_filename': 'old.ts'}, {'filename': 'plain.ts', 'previous_filename': ''}, {'filename': 'solo.ts'}], open('${man_fix}', 'w'))"
 got="$(manifest_paths "${man_fix}")"
 assert_eq "manifest-rename-source" "$(printf 'old.ts -> new.ts\nplain.ts\nsolo.ts')" "${got}"
+python3 -c "import json; json.dump([{'filename': 'a -> b'}, {'filename': 'b', 'previous_filename': 'a'}], open('${man_fix}', 'w'))"
+got="$(manifest_paths "${man_fix}")"
+assert_eq "manifest-rename-delimiter-escaped" "$(printf 'a -\\> b\na -> b')" "${got}"
 rm -f "${man_fix}" "${col_fix}"
 
 # --- ranges.pl ---
@@ -668,6 +674,33 @@ assert_eq "guidance-head-sibling-suppressed" "no" "${got_g}"
 case "$(cat "${idir}/tmp/muse-guidance.md" 2>/dev/null)" in *"parent-base"*"parent-head-modified"*) got_g="yes";; *) got_g="no";; esac
 assert_eq "guidance-base-winner-retained" "yes" "${got_g}"
 rm -rf "${idir}"
+# Newly exposed head winner: deleting the base winner (AGENTS.md)
+# exposes an unchanged lower-priority sibling (CLAUDE.md) that applies
+# in head even though its bytes never changed and it never entered
+# head_list as a differing copy.
+edir="$(mktemp -d)"
+mkdir -p "${edir}/tmp" "${edir}/ws"
+git -C "${edir}/ws" init -q 2>/dev/null
+printf 'agents-base\n' > "${edir}/ws/AGENTS.md"
+printf 'claude-base\n' > "${edir}/ws/CLAUDE.md"
+git -C "${edir}/ws" add -A 2>/dev/null
+git -C "${edir}/ws" -c user.email=t@t -c user.name=t commit -qm base 2>/dev/null
+ebase="$(git -C "${edir}/ws" rev-parse HEAD 2>/dev/null)"
+rm "${edir}/ws/AGENTS.md"
+{
+  printf 'MUSE_STOP=0\n'
+  printf 'MUSE_BASE_REF=main\n'
+  printf 'MUSE_DEFAULT_BRANCH=main\n'
+  printf 'MUSE_BASE_AVAILABLE=true\n'
+  printf 'MUSE_BASE_SHA_FULL=%s\n' "${ebase}"
+} > "${edir}/tmp/muse-vars.env"
+printf '[{"filename":"f.ts"}]' > "${edir}/tmp/muse-files.json"
+(cd "${edir}/ws" && RUNNER_TEMP="${edir}/tmp" SCRIPT_DIR="${SCRIPT_DIR}" bash "${guidance_script}") >/dev/null 2>&1
+case "$(cat "${edir}/tmp/muse-guidance.md" 2>/dev/null)" in *"claude-base"*) got_g="yes";; *) got_g="no";; esac
+assert_eq "guidance-exposed-head-winner" "yes" "${got_g}"
+case "$(cat "${edir}/tmp/muse-guidance.md" 2>/dev/null)" in *"agents-base"*) got_g="yes";; *) got_g="no";; esac
+assert_eq "guidance-exposed-base-retained" "yes" "${got_g}"
+rm -rf "${edir}"
 
 # --- diff.sh --text vs .gitattributes -diff suppression (script level) ---
 # A -diff rule would otherwise emit a "Binary files differ" placeholder:

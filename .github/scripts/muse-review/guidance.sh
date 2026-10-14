@@ -263,9 +263,16 @@ for candidate in "${MUSE_CANDIDATES[@]+"${MUSE_CANDIDATES[@]}"}"; do
   if in_candidate_list "${candidate}" "${xbase_winners[@]+"${xbase_winners[@]}"}"; then
     emit_guidance "${candidate}" xbase
   fi
-  if in_candidate_list "${candidate}" "${head_list[@]+"${head_list[@]}"}" \
-    && in_candidate_list "${candidate}" "${head_winners[@]+"${head_winners[@]}"}"; then
-    emit_guidance "${candidate}" head
+  if in_candidate_list "${candidate}" "${head_winners[@]+"${head_winners[@]}"}"; then
+    # Emit the head winner when it is a differing copy (head_list) or
+    # when it differs from the base winner for its level: deleting the
+    # base winner (e.g. AGENTS.md) can expose an unchanged lower-priority
+    # sibling (e.g. CLAUDE.md) that never entered head_list because its
+    # bytes did not change, yet it is the guidance that applies in head.
+    if in_candidate_list "${candidate}" "${head_list[@]+"${head_list[@]}"}" \
+      || ! in_candidate_list "${candidate}" "${base_winners[@]+"${base_winners[@]}"}"; then
+      emit_guidance "${candidate}" head
+    fi
   fi
 done
 if [[ "${guidance_capped}" == "true" || "${guidance_truncated}" == "true" ]]; then
