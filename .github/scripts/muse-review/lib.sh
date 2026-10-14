@@ -145,6 +145,27 @@ neutralize_html_entities() {
   perl -0777 -pe 's{&(?=#?[A-Za-z0-9]+;)}{&amp;}g'
 }
 
+# Replace raw HTML tags with a nonempty separator: GFM renders inline
+# raw HTML, so a credential split as `left<span></span>right` matches
+# no redaction as halves, yet the tag syntax disappears at render and
+# the posted text exposes the joined credential. The separator keeps
+# the halves apart. Comments are stripped separately first; this covers
+# the remaining tag and declaration forms. An unterminated < renders as
+# literal text in GFM, so it is left alone.
+strip_html_tags() {
+  perl -0777 -pe 's{</?[A-Za-z][^>]*>|<![^>]*>}{ [HTML removed] }g'
+}
+
+# Remove ANSI terminal control sequences (CSI styling, OSC, bare ESC
+# pairs): log viewers render them as styling and hide the bytes, so a
+# credential split by an escape sequence displays contiguously while
+# both the dynamic-key redaction and GitHub's own masker see only the
+# separated halves. Deleting (not separating) lets the redaction that
+# runs after this join-and-match the whole value.
+strip_ansi() {
+  perl -pe 's/\x1b\[[0-9;?]*[ -\/]*[@-~]//g; s/\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)//g; s/\x1b.//g'
+}
+
 # Byte-bounded UTF-8-safe truncation WITH an explicit marker, reserved
 # inside the budget: trunc_bytes cuts silently, so a truncated inline
 # finding would read as complete while its tail exists nowhere.

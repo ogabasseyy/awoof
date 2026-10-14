@@ -450,6 +450,18 @@ assert_eq "entities-neutralized" 'left&amp;#65;right &amp;#x42; &amp;amp; a & b'
 got="$(printf '%s' 'plain &notaref text &; end' | neutralize_html_entities)"
 assert_eq "entities-bare-amp-kept" 'plain &notaref text &; end' "${got}"
 
+# --- strip_html_tags ---
+got="$(printf '%s' 'left<span></span>right <b class="x">bold</b> a < b' | strip_html_tags)"
+assert_eq "html-tags-replaced" 'left [HTML removed]  [HTML removed] right  [HTML removed] bold [HTML removed]  a < b' "${got}"
+
+# --- strip_ansi ---
+got="$(printf 'left\033[31mright\033[0m end\033[1K!' | strip_ansi)"
+assert_eq "ansi-stripped" 'leftright end!' "${got}"
+
+# --- schema constrains next_steps items ---
+if jq -e '.properties.next_steps.items.type == "string"' "${SCRIPT_DIR}/schema.json" >/dev/null 2>&1; then got_s="string"; else got_s="other"; fi
+assert_eq "schema-next-steps-strings" "string" "${got_s}"
+
 # --- trunc_bytes_marked ---
 got="$(printf 'abcdefghij' | trunc_bytes_marked 10)"
 assert_eq "trunc-marked-under" 'abcdefghij' "${got}"
@@ -1267,7 +1279,7 @@ hsha="cccccccccccccccccccccccccccccccccccccccc"
 hbsha="dddddddddddddddddddddddddddddddddddddddd"
 printf 'diff --git a/a.ts b/a.ts\n--- a/a.ts\n+++ b/a.ts\n@@ -1 +1,50 @@\n+x\n' > "${hdir}/tmp/muse.diff"
 printf '[{"filename":"a.ts"}]' > "${hdir}/tmp/muse-files.json"
-printf '%s' '{"verdict":"v","findings":[{"path":"a.ts","line":1,"severity":"low","title":"t","body":"x ghp_left<!-- hidden -->right y and ghp_ab&#99;d end"}],"next_steps":[]}' > "${hdir}/tmp/review.json"
+printf '%s' '{"verdict":"v","findings":[{"path":"a.ts","line":1,"severity":"low","title":"t","body":"x ghp_left<!-- hidden -->right y and ghp_ab&#99;d and ghp_xy<span></span>zw end"}],"next_steps":[]}' > "${hdir}/tmp/review.json"
 GH_STUB_CAPTURE="${hdir}/capture.json" GH_STUB_HEAD="${hsha}" GH_STUB_BASE="${hbsha}" \
 PATH="${hdir}/bin:${PATH}" \
 GH_TOKEN="fake" GITHUB_REPOSITORY="t/t" PR_NUMBER="1" \
@@ -1284,7 +1296,55 @@ case "$(cat "${hdir}/capture.json" 2>/dev/null)" in *"ghp_abcd"*) got_h="rejoine
 assert_eq "post-entity-split-not-rejoined" "clean" "${got_h}"
 case "$(cat "${hdir}/capture.json" 2>/dev/null)" in *"&amp;#99;"*) got_h="neutralized";; *) got_h="raw";; esac
 assert_eq "post-entity-neutralized" "neutralized" "${got_h}"
+case "$(cat "${hdir}/capture.json" 2>/dev/null)" in *"ghp_xyzw"*) got_h="rejoined";; *) got_h="clean";; esac
+assert_eq "post-tag-split-not-rejoined" "clean" "${got_h}"
+case "$(cat "${hdir}/capture.json" 2>/dev/null)" in *"[HTML removed]"*) got_h="separated";; *) got_h="raw";; esac
+assert_eq "post-tag-separated" "separated" "${got_h}"
+case "$(cat "${hdir}/capture.json" 2>/dev/null)" in *"<sub>Useful?"*) got_h="kept";; *) got_h="eaten";; esac
+assert_eq "post-footer-sub-kept" "kept" "${got_h}"
 rm -rf "${hdir}"
+
+# --- post.sh non-string next_steps routes to fallback (script level) ---
+# clean.jq drops non-string next_steps; posting the cleaned review
+# under the success marker would silently lose part of the output and
+# dedupe would block recovery, so any dropped step is malformed output.
+xdir="$(mktemp -d)"
+mkdir -p "${xdir}/tmp" "${xdir}/bin"
+cat > "${xdir}/bin/gh" <<'STUB'
+#!/usr/bin/env bash
+args=" $* "
+case "${args}" in
+  *" --method POST "*)
+    prev=""
+    for a in "$@"; do
+      if [[ "${prev}" == "--input" ]]; then cp "${a}" "${GH_STUB_CAPTURE}"; fi
+      prev="${a}"
+    done
+    printf '{}\n'
+    ;;
+  *"/reviews"*) printf '[]\n' ;;
+  *) printf '%s\t%s\tfalse\topen\t%s\t%s\n' "${GH_STUB_HEAD}" "${GH_STUB_BASE}" "${GH_STUB_BASEREF:-main}" "${GH_STUB_DEFAULT:-main}" ;;
+esac
+STUB
+chmod +x "${xdir}/bin/gh"
+xsha="eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+xbsha="ffffffffffffffffffffffffffffffffffffffff"
+printf 'diff --git a/a.ts b/a.ts\n--- a/a.ts\n+++ b/a.ts\n@@ -1 +1,50 @@\n+x\n' > "${xdir}/tmp/muse.diff"
+printf '[{"filename":"a.ts"}]' > "${xdir}/tmp/muse-files.json"
+printf '%s' '{"verdict":"v","findings":[{"path":"a.ts","line":1,"severity":"low","title":"t","body":"b"}],"next_steps":["ok",42]}' > "${xdir}/tmp/review.json"
+GH_STUB_CAPTURE="${xdir}/capture.json" GH_STUB_HEAD="${xsha}" GH_STUB_BASE="${xbsha}" \
+PATH="${xdir}/bin:${PATH}" \
+GH_TOKEN="fake" GITHUB_REPOSITORY="t/t" PR_NUMBER="1" \
+HEAD_SHA="${xsha}" BASE_SHA="${xbsha}" HEAD_SHA_EVENT="${xsha}" BASE_SHA_EVENT="${xbsha}" \
+MUSE_OUTCOME="success" DIFF_FAILED="false" DIFF_OUTCOME="success" \
+REVIEW_FILE="${xdir}/tmp/review.json" RUN_URL="https://example.invalid/run" \
+RUNNER_TEMP="${xdir}/tmp" SCRIPT_DIR="${SCRIPT_DIR}" \
+  bash "${post_script}" >/dev/null 2>&1
+case "$(cat "${xdir}/capture.json" 2>/dev/null)" in *"muse-fallback:v1"*) got_x="fallback";; *) got_x="review";; esac
+assert_eq "post-bad-next-step-fallback" "fallback" "${got_x}"
+got="$(jq -r '(.comments // []) | length' "${xdir}/capture.json" 2>/dev/null || echo "missing")"
+assert_eq "post-bad-next-step-no-inline" "0" "${got}"
+rm -rf "${xdir}"
 
 # --- collect.sh live default-base eligibility (script level) ---
 # A rerun after a base retarget keeps the event-time job gate fooled; the
@@ -1383,6 +1443,8 @@ case "$(cat "${sdir}/tmp/muse-prompt.md" 2>/dev/null)" in *"closest to the chang
 assert_eq "prompt-guidance-precedence" "yes" "${got_p}"
 case "$(cat "${sdir}/tmp/muse-prompt.md" 2>/dev/null)" in *"literal source backslash"*) got_p="yes";; *) got_p="no";; esac
 assert_eq "prompt-escape-legend" "yes" "${got_p}"
+case "$(cat "${sdir}/tmp/muse-prompt.md" 2>/dev/null)" in *"newline appears as"*) got_p="yes";; *) got_p="no";; esac
+assert_eq "prompt-symlink-legend" "yes" "${got_p}"
 i=0
 while (( i < 55 )); do
   ln -s "/target${i}" "${sdir}/ws/link${i}"

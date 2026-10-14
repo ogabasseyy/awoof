@@ -105,7 +105,7 @@ render_summary() {
 # budget checks (both can defeat the full-block match or add characters).
 sanitize_review() {
   review="$(redact "${review}")"
-  review="$(printf '%s' "${review}" | strip_images | strip_html_comments | neutralize_html_entities | sanitize_mentions)"
+  review="$(printf '%s' "${review}" | strip_images | strip_html_comments | strip_html_tags | neutralize_html_entities | sanitize_mentions)"
   # Redact again after the byte-removing filters: deleting an image
   # token can rejoin a secret the first pass saw only in split form.
   # The run step already checks stripped forms against the live key;
@@ -197,14 +197,17 @@ elif printf '%s' "${raw_output}" | jq -e '(.verdict | type) == "string" and (.fi
   # routes to the explicit fallback: posting the cleaned subset would
   # permanently hide the rejected finding behind a successful review.
   raw_finding_count="$(jq -r '(.findings // []) | length' "${findings_json}")"
+  raw_next_count="$(jq -r '(.next_steps // []) | length' "${findings_json}")"
   # Cleanup failure keeps NO findings, never the uncleaned original.
   if jq -f "${SCRIPT_DIR}/clean.jq" \
     "${findings_json}" > "${findings_json}.clean" 2>/dev/null; then
     mv "${findings_json}.clean" "${findings_json}"
     clean_finding_count="$(jq -r '(.findings // []) | length' "${findings_json}")"
+    clean_next_count="$(jq -r '(.next_steps // []) | length' "${findings_json}")"
   else
     rm -f "${findings_json}.clean"
     clean_finding_count=0
+    clean_next_count=0
   fi
   # NUL-bearing strings route to the same fallback (defense in depth):
   # the run step strips NULs while the key is available, but any NUL
@@ -216,7 +219,7 @@ elif printf '%s' "${raw_output}" | jq -e '(.verdict | type) == "string" and (.fi
   if jq -e '[.. | strings | contains("\u0000")] | any' "${findings_json}" >/dev/null 2>&1; then
     nul_bearing=true
   fi
-  if (( clean_finding_count < raw_finding_count )) || [[ "${nul_bearing}" == "true" ]]; then
+  if (( clean_finding_count < raw_finding_count )) || (( clean_next_count < raw_next_count )) || [[ "${nul_bearing}" == "true" ]]; then
     is_fallback=true
     review="## Verdict
 
@@ -258,10 +261,13 @@ Re-run the workflow, or inspect the logs."
     # the image/mention filters, which can rejoin a split secret by
     # deleting the token between its halves.
     f_title="$(redact "${f_title}")"
-    f_title="$(redact "$(printf '%s' "${f_title}" | strip_images | strip_html_comments | neutralize_html_entities | sanitize_mentions | trunc_bytes 300)")"
+    f_title="$(redact "$(printf '%s' "${f_title}" | strip_images | strip_html_comments | strip_html_tags | neutralize_html_entities | sanitize_mentions | trunc_bytes 300)")"
+    # Sanitize the model body BEFORE composing the thread: the composed
+    # text carries our own <sub> footer, which the tag stripper would
+    # otherwise eat along with model-supplied tags.
+    f_body="$(redact "$(printf '%s' "${f_body}" | strip_images | strip_html_comments | strip_html_tags | neutralize_html_entities | sanitize_mentions | trunc_bytes_marked 6000)")"
     thread_body="$(printf '**[%s] %s**\n\n%s\n\n<sub>Useful? React with 👍 / 👎.</sub>' "${f_sev}" "${f_title}" "${f_body}")"
     thread_body="$(redact "${thread_body}")"
-    thread_body="$(redact "$(printf '%s' "${thread_body}" | strip_images | strip_html_comments | neutralize_html_entities | sanitize_mentions | trunc_bytes_marked 6000)")"
     jq -n --arg path "${f_path}" --argjson line "${f_line}" --arg body "${thread_body}" \
       '{path: $path, line: $line, side: "RIGHT", body: $body}' >> "${inline_jsonl}"
   done < <(jq -c '.valid[]?' "${validated_json}")
@@ -485,7 +491,7 @@ Re-run the workflow, or inspect the logs."
     # clean text). A filter failure keeps the jq-only body and still
     # attempts the retry rather than losing the review.
     if jq -r '.body' "${payload_file}.summary" 2>/dev/null \
-      | strip_images | strip_html_comments | neutralize_html_entities | sanitize_mentions > "${RUNNER_TEMP}/muse-retry-body.txt" \
+      | strip_images | strip_html_comments | strip_html_tags | neutralize_html_entities | sanitize_mentions > "${RUNNER_TEMP}/muse-retry-body.txt" \
       && jq --rawfile body "${RUNNER_TEMP}/muse-retry-body.txt" '.body = $body' \
         "${payload_file}.summary" > "${payload_file}.summary.clean" 2>/dev/null; then
       mv "${payload_file}.summary.clean" "${payload_file}.summary"

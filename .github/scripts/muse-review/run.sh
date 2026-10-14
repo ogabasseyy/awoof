@@ -85,11 +85,15 @@ if (( muse_rc != 0 )); then
   else
     decode_json_escapes < "${RUNNER_TEMP}/muse-stderr.log" > "${stderr_clean}" 2>/dev/null || : > "${stderr_clean}"
   fi
+  # Strip ANSI controls first: log viewers render them as styling and
+  # hide the bytes, so an escape-split key would display contiguously
+  # while every redaction pass saw only halves. Removing the sequences
+  # joins the halves where the key-aware passes below can match them.
   # Redact again after neutralize: CR handling there is the last
   # byte-changing filter before the log, so a second key-aware pass
   # (redact itself strips CRs before matching) catches any credential
   # a CR split hid from the first pass.
-  redact "$(redact "$(cat "${stderr_clean}" 2>/dev/null || true)" | tail -c 4000 | neutralize_workflow_commands)"
+  redact "$(redact "$(strip_ansi < "${stderr_clean}" 2>/dev/null || true)" | tail -c 4000 | neutralize_workflow_commands)"
   rm -f "${stderr_clean}"
   exit "${muse_rc}"
 fi
@@ -134,5 +138,14 @@ if neutralize_html_entities < "${review_file}" > "${review_file}.noent" 2>/dev/n
   mv "${review_file}.noent" "${review_file}"
 else
   rm -f "${review_file}.noent"
+fi
+# Replace raw HTML tags before the final key-aware pass for the same
+# reason: GFM renders inline raw HTML, so `left<span></span>right`
+# displays as the joined credential even though every redaction pass
+# saw only halves (the post step repeats this as presentation defense).
+if strip_html_tags < "${review_file}" > "${review_file}.notags" 2>/dev/null; then
+  mv "${review_file}.notags" "${review_file}"
+else
+  rm -f "${review_file}.notags"
 fi
 redact "$(cat "${review_file}")" > "${review_file}.clean" && mv "${review_file}.clean" "${review_file}"

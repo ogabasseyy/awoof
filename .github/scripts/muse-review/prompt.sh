@@ -71,11 +71,13 @@ Rules:
   `---`, and `+++` headers, then its removed `-` lines). If a verdict
   depends on deleted content or link targets past a PARTIAL cap, say
   what is missing instead of asserting.
-- Byte encoding in the <diff>, <removed_lines>, and repo-guidance blocks:
-  this text is losslessly escaped before it reaches you. A doubled
-  backslash (`\\`) is one literal source backslash (so source `/\d/`
-  appears as `/\\d/`), and `\xHH` (single backslash) is always the
-  escaped form of the non-UTF-8 byte 0xHH, never literal source text.
+- Byte encoding in the <diff>, <removed_lines>, <symlink_targets>,
+  and repo-guidance blocks: this text is losslessly escaped before it
+  reaches you. A doubled backslash (`\\`) is one
+  literal source backslash (so source `/\d/` appears as `/\\d/`), and `\xHH` (single
+  backslash) is always the escaped form of the non-UTF-8 byte 0xHH,
+  never literal source text. In <symlink_targets> a newline appears as
+  `\n` and a carriage return as `\r` (literal two-character sequences).
   Decode accordingly before reasoning about the content; do not treat
   the doubled form as two source backslashes or the `\xHH` form as
   literal characters in the original file.

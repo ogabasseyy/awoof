@@ -1,1 +1,1 @@
-{"type":"object","additionalProperties":false,"required":["verdict","findings","next_steps"],"properties":{"verdict":{"type":"string"},"findings":{"type":"array"},"next_steps":{"type":"array"}}}
+{"type":"object","additionalProperties":false,"required":["verdict","findings","next_steps"],"properties":{"verdict":{"type":"string"},"findings":{"type":"array"},"next_steps":{"type":"array","items":{"type":"string"}}}}
