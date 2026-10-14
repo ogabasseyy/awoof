@@ -153,7 +153,17 @@ neutralize_html_entities() {
 # the remaining tag and declaration forms. An unterminated < renders as
 # literal text in GFM, so it is left alone.
 strip_html_tags() {
-  perl -0777 -pe 's{</?[A-Za-z][^>]*>|<![^>]*>}{ [HTML removed] }g'
+  perl -0777 -pe 's{<!\[CDATA\[.*?\]\]>}{ [HTML removed] }gs; s{<\?.*?\?>}{ [HTML removed] }gs; s{</?[A-Za-z][^>]*>|<![^>]*>}{ [HTML removed] }g'
+}
+
+# Normalize Markdown code spans to their rendered text: GFM drops the
+# backtick delimiters and strips one leading/trailing space when the
+# content has both, so `left` + "` A `" + `right` displays as the joined
+# credential while delimiter strips bounded by non-space miss it.
+# Replacing spans with their (trimmed) content joins split halves
+# where the following redaction can match them.
+strip_code_spans() {
+  perl -0777 -pe 's{(`+)(.+?)\1}{ my $c = $2; if ($c =~ /^ / and $c =~ / $/ and $c !~ /^ +$/) { $c = substr($c, 1, length($c) - 2) } $c }gse'
 }
 
 # Remove ANSI terminal control sequences (CSI styling, OSC, bare ESC
@@ -707,6 +717,7 @@ redact_json_key() {
           else .out += [$c] end)) as $st
       | (($st.out + (if $st.esc then [92] else [] end)) | implode);
     def _linkstrip: gsub("\\[(?<t>[^\\]]+)\\]\\([^)]*\\)"; "\(.t)") | gsub("\\[(?<t>[^\\]]+)\\]\\[[^\\]]*\\]"; "\(.t)") | gsub("[\\[\\]]"; "");
+    def _codestrip: gsub("`(?<c>[^`]*)`"; "\(.c | if (startswith(" ") and endswith(" ") and ((gsub(" "; "") | length) > 0)) then .[1:-1] else . end)");
     def _denul: split("\u0000") | join("");
     def _decr: split("\r") | join("");
     def _img1: gsub("!\\[[^\\]]*\\]\\([^)]*\\)"; "") | gsub("</?(img|IMG)[^>]*>"; "");
@@ -717,12 +728,14 @@ redact_json_key() {
          elif (($s | _imgstrip) | contains($k)) then (($s | _imgstrip) | split($k) | join("[REDACTED]"))
          elif (($s | _mdesc) | contains($k)) then (($s | _mdesc) | split($k) | join("[REDACTED]"))
          elif (($s | _linkstrip) | contains($k)) then (($s | _linkstrip) | split($k) | join("[REDACTED]"))
+         elif (($s | _codestrip) | contains($k)) then (($s | _codestrip) | split($k) | join("[REDACTED]"))
          elif ($s | contains("\\")) then
            ((($s | _deep) | _denul | _decr) as $dec
             | if ($dec | contains($k)) then ($dec | split($k) | join("[REDACTED]"))
               elif (($dec | _imgstrip) | contains($k)) then (($dec | _imgstrip) | split($k) | join("[REDACTED]"))
               elif (($dec | _mdesc) | contains($k)) then (($dec | _mdesc) | split($k) | join("[REDACTED]"))
               elif (($dec | _linkstrip) | contains($k)) then (($dec | _linkstrip) | split($k) | join("[REDACTED]"))
+              elif (($dec | _codestrip) | contains($k)) then (($dec | _codestrip) | split($k) | join("[REDACTED]"))
               else $s end)
          else $s end)
     else . end)'

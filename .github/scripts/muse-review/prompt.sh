@@ -72,7 +72,8 @@ Rules:
   depends on deleted content or link targets past a PARTIAL cap, say
   what is missing instead of asserting.
 - Byte encoding in the <diff>, <removed_lines>, <symlink_targets>,
-  <changed_files>, and repo-guidance blocks: this text is losslessly
+  <changed_files>, <gitlink_targets>, <changed_modes>, and
+  repo-guidance blocks: this text is losslessly
   escaped before it reaches you. A doubled backslash (`\\`) is one
   literal source backslash (so source `/\d/` appears as `/\\d/`), and
   `\xHH` (single backslash) is always the escaped form of the
@@ -81,7 +82,9 @@ Rules:
   two-character sequences). In <changed_files> paths, a newline
   appears as `\n` and a literal ` -> ` inside a filename appears as
   `-\>`, so the only unescaped ` -> ` is the rename separator
-  (old -> new). Decode accordingly before reasoning about the content;
+  (old -> new). Path labels in <gitlink_targets> and <changed_modes>
+  use the same escapes (doubled backslash, `\n`, `\r`, `-\>`).
+  Decode accordingly before reasoning about the content;
   do not treat the doubled form as two source backslashes or the
   `\xHH` form as literal characters in the original file.
 - Follow the repo guidance below when it names project conventions.
