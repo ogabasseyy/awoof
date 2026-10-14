@@ -157,8 +157,17 @@ CONTRACT
   printf '\n## Changed symlinks (targets recorded before the pre-run sweep removes workspace links)%s\n\n<symlink_targets>\n' "${symlink_note}"
   if [[ "${symlink_rc}" == "0" && ! -s "${symlink_tmp}" ]]; then
     printf '(No changed path is a symlink in the PR head.)\n'
+  elif ! iconv -f UTF-8 -t UTF-8 "${symlink_tmp}" >/dev/null 2>&1; then
+    # Targets arrive byte-escaped from changed_symlinks, so the block is
+    # valid UTF-8 by construction; anything else here means the evidence
+    # cannot be shown exactly. Never `iconv -c`: silently deleting bytes
+    # would publish a successful review over an altered target the sweep
+    # makes otherwise uninspectable. Fail closed to the fallback instead.
+    echo "::error::Changed-symlink evidence is not valid UTF-8; failing closed to the fallback review." >&2
+    rm -f "${symlink_tmp}"
+    exit 1
   else
-    iconv -c -f UTF-8 -t UTF-8 "${symlink_tmp}" 2>/dev/null || true
+    cat "${symlink_tmp}"
   fi
   rm -f "${symlink_tmp}"
   printf '\n</symlink_targets>\n'
