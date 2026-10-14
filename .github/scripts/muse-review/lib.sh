@@ -250,6 +250,15 @@ redact() {
 # content, and a reparse-or-keep fallback would skip decoding exactly
 # the hostile strings. Malformed/truncated escapes pass through
 # literally; any hard failure keeps the original string.
+# NUL bytes are normalized away BEFORE any containment check: a key
+# split by an embedded U+0000 is not contiguous here, but the keyless
+# post step extracts decoded strings with `jq -r` into Bash variables,
+# Bash silently discards NUL bytes, and the halves rejoin into the live
+# credential where only pattern redaction remains. Stripping NULs while
+# the key is still available makes a split key contiguous (and therefore
+# redactable) and guarantees no NUL reaches the post step; the decoded
+# form of backslash-bearing strings is stripped the same way, since a
+# `\u0000` escape sequence decodes to the same byte one level down.
 redact_json_key() {
   local _key="${META_API_KEY:-}"
   [[ -n "${_key}" ]] || return 1
@@ -299,13 +308,15 @@ redact_json_key() {
                  | if $u == .s then .done = true else .s = $u end)
            end)
        | .s);
+    def _denul: split("\u0000") | join("");
     walk(if type == "string" then
-      (if contains($k) then (. | split($k) | join("[REDACTED]"))
-       elif contains("\\") then
-         (. as $orig | (_deep) as $dec
-          | if ($dec | contains($k)) then ($dec | split($k) | join("[REDACTED]"))
-            else $orig end)
-       else . end)
+      ((. | _denul) as $s
+       | if ($s | contains($k)) then ($s | split($k) | join("[REDACTED]"))
+         elif ($s | contains("\\")) then
+           ((($s | _deep) | _denul) as $dec
+            | if ($dec | contains($k)) then ($dec | split($k) | join("[REDACTED]"))
+              else $s end)
+         else $s end)
     else . end)'
 }
 

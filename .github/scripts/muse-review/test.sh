@@ -263,6 +263,26 @@ if printf 'not json' | META_API_KEY="${jkey}" redact_json_key >/dev/null 2>&1; t
 assert_eq "redactjson-nonjson-rc" "nonzero" "${got_rc}"
 if printf '{}' | META_API_KEY='' redact_json_key >/dev/null 2>&1; then got_rc="0"; else got_rc=$?; fi
 assert_eq "redactjson-empty-key-rc" "1" "${got_rc}"
+# NUL-split key: an embedded U+0000 keeps the halves non-contiguous here,
+# but Bash discards NUL bytes when the keyless post step extracts decoded
+# strings into variables, rejoining the credential. Stripping NULs while
+# the key is available must make the split key redactable, normalize
+# key-free NULs away, and emit no NUL at all.
+cat > "${jfix}" <<'EOF'
+{"a":"leak fake.live/key+abc\u0000=123 end","b":"plain\u0000nul"}
+EOF
+got="$(META_API_KEY="${jkey}" redact_json_key < "${jfix}" | jq -r '.a')"
+assert_eq "redactjson-nul-split-redacted" "leak [REDACTED] end" "${got}"
+got="$(META_API_KEY="${jkey}" redact_json_key < "${jfix}" | jq -r '.b')"
+assert_eq "redactjson-nul-normalized" "plainnul" "${got}"
+got="$(META_API_KEY="${jkey}" redact_json_key < "${jfix}")"
+case "${got}" in *"\u0000"*) got_nul="present";; *) got_nul="absent";; esac
+assert_eq "redactjson-no-nul-emitted" "absent" "${got_nul}"
+cat > "${jfix}" <<'EOF'
+{"a":"leak fake.live/key+abc\\u0000=123 end"}
+EOF
+got="$(META_API_KEY="${jkey}" redact_json_key < "${jfix}" | jq -r '.a')"
+assert_eq "redactjson-nul-escaped-split-redacted" "leak [REDACTED] end" "${got}"
 rm -f "${jfix}"
 
 # --- decode_json_escapes (mixed prose + JSON fragment; the run.sh P1) ---
@@ -644,6 +664,58 @@ assert_eq "post-budget-fallback-no-inline" "0" "${got}"
 case "$(jq -r '.body // ""' "${pdir}/capture.json" 2>/dev/null)" in *"muse-fallback:v1"*"exceeds the 60000-byte post budget"*) got_p="yes";; *) got_p="no";; esac
 assert_eq "post-budget-fallback-tagged" "yes" "${got_p}"
 rm -rf "${pdir}"
+
+# --- post.sh NUL-bearing findings route to fallback (script level) ---
+# Defense in depth for the run-step NUL strip: a decoded NUL reaching this
+# keyless step would be discarded by Bash variable extraction, rejoining a
+# split credential. Stub gh like the budget test above; the review body
+# carries the fake key split by U+0000, so a vulnerable post would publish
+# the rejoined key while the guarded post must fall back with no inline
+# comments and no contiguous key anywhere in the payload.
+ndir="$(mktemp -d)"
+mkdir -p "${ndir}/tmp" "${ndir}/bin"
+cat > "${ndir}/bin/gh" <<'STUB'
+#!/usr/bin/env bash
+args=" $* "
+case "${args}" in
+  *" --method POST "*)
+    prev=""
+    for a in "$@"; do
+      if [[ "${prev}" == "--input" ]]; then cp "${a}" "${GH_STUB_CAPTURE}"; fi
+      prev="${a}"
+    done
+    printf '{}\n'
+    ;;
+  *"/reviews"*) printf '[]\n' ;;
+  *) printf '%s\t%s\tfalse\topen\t%s\t%s\n' "${GH_STUB_HEAD}" "${GH_STUB_BASE}" "${GH_STUB_BASEREF:-main}" "${GH_STUB_DEFAULT:-main}" ;;
+esac
+STUB
+chmod +x "${ndir}/bin/gh"
+nsha="aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+nbsha="bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+printf 'diff --git a/a.ts b/a.ts\n--- a/a.ts\n+++ b/a.ts\n@@ -1 +1,50 @@\n+x\n' > "${ndir}/tmp/muse.diff"
+printf '[{"filename":"a.ts"}]' > "${ndir}/tmp/muse-files.json"
+python3 -c "
+import json
+body = 'leak fake.live/key+abc' + chr(0) + '=123 end'
+print(json.dumps({'verdict': 'v', 'findings': [{'path': 'a.ts', 'line': 1, 'severity': 'low', 'title': 't', 'body': body}], 'next_steps': []}))
+" > "${ndir}/tmp/review.json"
+post_script="${SCRIPT_DIR}/post.sh"
+GH_STUB_CAPTURE="${ndir}/capture.json" GH_STUB_HEAD="${nsha}" GH_STUB_BASE="${nbsha}" \
+PATH="${ndir}/bin:${PATH}" \
+GH_TOKEN="fake" GITHUB_REPOSITORY="t/t" PR_NUMBER="1" \
+HEAD_SHA="${nsha}" BASE_SHA="${nbsha}" HEAD_SHA_EVENT="${nsha}" BASE_SHA_EVENT="${nbsha}" \
+MUSE_OUTCOME="success" DIFF_FAILED="false" DIFF_OUTCOME="success" \
+REVIEW_FILE="${ndir}/tmp/review.json" RUN_URL="https://example.invalid/run" \
+RUNNER_TEMP="${ndir}/tmp" SCRIPT_DIR="${SCRIPT_DIR}" \
+  bash "${post_script}" >/dev/null 2>&1
+got="$(jq -r '(.comments // []) | length' "${ndir}/capture.json" 2>/dev/null || echo "missing")"
+assert_eq "post-nul-no-inline" "0" "${got}"
+case "$(jq -r '.body // ""' "${ndir}/capture.json" 2>/dev/null)" in *"muse-fallback:v1"*) got_n="fallback";; *) got_n="review";; esac
+assert_eq "post-nul-fallback-tagged" "fallback" "${got_n}"
+case "$(cat "${ndir}/capture.json" 2>/dev/null)" in *"fake.live/key+abc=123"*) got_n="leaked";; *) got_n="clean";; esac
+assert_eq "post-nul-no-rejoined-key" "clean" "${got_n}"
+rm -rf "${ndir}"
 
 # --- collect.sh live default-base eligibility (script level) ---
 # A rerun after a base retarget keeps the event-time job gate fooled; the

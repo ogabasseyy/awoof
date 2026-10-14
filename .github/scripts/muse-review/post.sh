@@ -198,7 +198,17 @@ elif printf '%s' "${raw_output}" | jq -e '(.verdict | type) == "string" and (.fi
     rm -f "${findings_json}.clean"
     clean_finding_count=0
   fi
-  if (( clean_finding_count < raw_finding_count )); then
+  # NUL-bearing strings route to the same fallback (defense in depth):
+  # the run step strips NULs while the key is available, but any NUL
+  # reaching this keyless step would be silently discarded when decoded
+  # strings pass through Bash variables below, rejoining a split
+  # credential where only pattern redaction remains. Detect the decoded
+  # byte here, while the value is still inside jq.
+  nul_bearing=false
+  if jq -e '[.. | strings | contains("\u0000")] | any' "${findings_json}" >/dev/null 2>&1; then
+    nul_bearing=true
+  fi
+  if (( clean_finding_count < raw_finding_count )) || [[ "${nul_bearing}" == "true" ]]; then
     is_fallback=true
     review="## Verdict
 
