@@ -479,6 +479,8 @@ got="$(printf '%s' 'see [docs](https://d.example/x) and left[A](https://e.exampl
 assert_eq "links-canonicalized" 'see docs (https://d.example/x) and leftA (https://e.example)right and t (r1) end' "${got}"
 got="$(printf '%s' 'nested [a [b] c](https://e.example/u(1)) tail' | canonicalize_links)"
 assert_eq "links-nested" 'nested a [b] c (https://e.example/u(1)) tail' "${got}"
+got="$(printf 'left[A]right see [docs] here\n\n[A]: https://e.example/x' | canonicalize_links)"
+assert_eq "links-shortcut-defined" "$(printf 'leftAright see [docs] here\n')" "${got}"
 
 # --- trunc_bytes_marked ---
 got="$(printf 'abcdefghij' | trunc_bytes_marked 10)"
@@ -1297,7 +1299,7 @@ hsha="cccccccccccccccccccccccccccccccccccccccc"
 hbsha="dddddddddddddddddddddddddddddddddddddddd"
 printf 'diff --git a/a.ts b/a.ts\n--- a/a.ts\n+++ b/a.ts\n@@ -1 +1,50 @@\n+x\n' > "${hdir}/tmp/muse.diff"
 printf '[{"filename":"a.ts"}]' > "${hdir}/tmp/muse-files.json"
-printf '%s' '{"verdict":"v","findings":[{"path":"a.ts","line":1,"severity":"low","title":"t","body":"x ghp_left<!-- hidden -->right y and ghp_ab&#99;d and ghp_xy<span></span>zw and ghp_qq[]()rr and ghp_zz*A*ww and ghp_mm[A](https://example.invalid)nn end"}],"next_steps":[]}' > "${hdir}/tmp/review.json"
+printf '%s' '{"verdict":"v","findings":[{"path":"a.ts","line":1,"severity":"low","title":"t","body":"x ghp_left<!-- hidden -->right y and ghp_ab&#99;d and ghp_xy<span></span>zw and ghp_qq[]()rr and ghp_zz*A*ww and ghp_mm[A](https://example.invalid)nn and ghp_pp[A]qq tail\n\n[A]: https://example.invalid/d"}],"next_steps":[]}' > "${hdir}/tmp/review.json"
 GH_STUB_CAPTURE="${hdir}/capture.json" GH_STUB_HEAD="${hsha}" GH_STUB_BASE="${hbsha}" \
 PATH="${hdir}/bin:${PATH}" \
 GH_TOKEN="fake" GITHUB_REPOSITORY="t/t" PR_NUMBER="1" \
@@ -1332,6 +1334,10 @@ case "$(cat "${hdir}/capture.json" 2>/dev/null)" in *"ghp_mmAnn"*) got_h="visibl
 assert_eq "post-link-split-not-visible" "clean" "${got_h}"
 case "$(cat "${hdir}/capture.json" 2>/dev/null)" in *"[REDACTED] (https://example.invalid)"*) got_h="canon";; *) got_h="raw";; esac
 assert_eq "post-link-canonicalized" "canon" "${got_h}"
+case "$(cat "${hdir}/capture.json" 2>/dev/null)" in *"ghp_ppAqq"*) got_h="visible";; *) got_h="clean";; esac
+assert_eq "post-shortcut-split-not-visible" "clean" "${got_h}"
+case "$(cat "${hdir}/capture.json" 2>/dev/null)" in *"example.invalid/d"*) got_h="kept";; *) got_h="removed";; esac
+assert_eq "post-link-def-removed" "removed" "${got_h}"
 rm -rf "${hdir}"
 
 # --- post.sh non-string next_steps routes to fallback (script level) ---

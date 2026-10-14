@@ -200,7 +200,24 @@ strip_intraword_markers() {
 # strip_images. Reference forms keep their label the same way. Links
 # with empty text are deleted earlier (strip_empty_links).
 canonicalize_links() {
-  perl -0777 -pe 's{\[((?:[^\[\]\\]++|\\.|\[(?:[^\[\]\\]++|\\.|\[(?:[^\[\]\\]++|\\.)*\])*\])*)\]\(((?:[^()\\]++|\\.|\((?:[^()\\]++|\\.|\((?:[^()\\]++|\\.)*\))*\))*)\)}{$1 ($2)}g; s{\[((?:[^\[\]\\]++|\\.|\[(?:[^\[\]\\]++|\\.|\[(?:[^\[\]\\]++|\\.)*\])*\])*)\]\[((?:[^\[\]\\]++|\\.|\[(?:[^\[\]\\]++|\\.|\[(?:[^\[\]\\]++|\\.)*\])*\])*)\]}{$1 ($2)}g'
+  # Shortcut references render as bare text ONLY when a matching link
+  # reference definition exists in the same text (the definition itself
+  # renders as nothing), so collect defined labels first, drop the
+  # definition lines, and unwrap only defined shortcuts; an undefined
+  # [text] renders literally with brackets and cannot join a split.
+  perl -0777 -e '
+    local $/; my $s = <STDIN>; $s = "" unless defined $s;
+    my %def;
+    while ($s =~ /^[ \t]{0,3}\[([^\]]+)\]:/mg) {
+      my $l = lc $1; $l =~ s/\s+/ /g; $l =~ s/^\s+//; $l =~ s/\s+$//;
+      $def{$l} = 1;
+    }
+    $s =~ s/^[ \t]{0,3}\[[^\]]+\]:[^\n]*(?:\n|$)//gm;
+    $s =~ s{\[((?:[^\[\]\\]++|\\.|\[(?:[^\[\]\\]++|\\.|\[(?:[^\[\]\\]++|\\.)*\])*\])*)\]\(((?:[^()\\]++|\\.|\((?:[^()\\]++|\\.|\((?:[^()\\]++|\\.)*\))*\))*)\)}{$1 ($2)}g;
+    $s =~ s{\[((?:[^\[\]\\]++|\\.|\[(?:[^\[\]\\]++|\\.|\[(?:[^\[\]\\]++|\\.)*\])*\])*)\]\[((?:[^\[\]\\]++|\\.|\[(?:[^\[\]\\]++|\\.|\[(?:[^\[\]\\]++|\\.)*\])*\])*)\]}{$1 ($2)}g;
+    $s =~ s{\[((?:[^\[\]\\]++|\\.|\[(?:[^\[\]\\]++|\\.|\[(?:[^\[\]\\]++|\\.)*\])*\])*)\](?![(\[])}{ my $l = lc $1; $l =~ s/\s+/ /g; $l =~ s/^\s+//; $l =~ s/\s+$//; exists $def{$l} ? $1 : "[$1]" }ge;
+    print $s;
+  '
 }
 
 # Byte-bounded UTF-8-safe truncation WITH an explicit marker, reserved
