@@ -303,6 +303,12 @@ redact() {
 # content, and a reparse-or-keep fallback would skip decoding exactly
 # the hostile strings. Malformed/truncated escapes pass through
 # literally; any hard failure keeps the original string.
+# Image markup is stripped for a second containment form: the post
+# step deletes image tokens (strip_images) AFTER its redaction pass, so
+# a key split by a removable token (key-half![](url)key-half) would
+# rejoin there exactly like the NUL case. Checking the image-stripped
+# form here, while the key is available, and emitting that form when it
+# matches keeps every byte-removing filter ahead of the last redaction.
 # NUL bytes are normalized away BEFORE any containment check: a key
 # split by an embedded U+0000 is not contiguous here, but the keyless
 # post step extracts decoded strings with `jq -r` into Bash variables,
@@ -362,12 +368,15 @@ redact_json_key() {
            end)
        | .s);
     def _denul: split("\u0000") | join("");
+    def _imgstrip: gsub("!\\[[^\\]]*\\]\\([^)]*\\)"; "") | gsub("</?(img|IMG)[^>]*>"; "");
     walk(if type == "string" then
       ((. | _denul) as $s
        | if ($s | contains($k)) then ($s | split($k) | join("[REDACTED]"))
+         elif (($s | _imgstrip) | contains($k)) then (($s | _imgstrip) | split($k) | join("[REDACTED]"))
          elif ($s | contains("\\")) then
            ((($s | _deep) | _denul) as $dec
             | if ($dec | contains($k)) then ($dec | split($k) | join("[REDACTED]"))
+              elif (($dec | _imgstrip) | contains($k)) then (($dec | _imgstrip) | split($k) | join("[REDACTED]"))
               else $s end)
          else $s end)
     else . end)'

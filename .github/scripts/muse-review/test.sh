@@ -319,6 +319,16 @@ cat > "${jfix}" <<'EOF'
 EOF
 got="$(META_API_KEY="${jkey}" redact_json_key < "${jfix}" | jq -r '.a')"
 assert_eq "redactjson-nul-escaped-split-redacted" "leak [REDACTED] end" "${got}"
+# Image-split key: post-side strip_images deletes the token between the
+# halves, so the stripped form must be checked (and emitted) while the
+# key is available; key-free images stay untouched.
+cat > "${jfix}" <<'EOF'
+{"a":"leak fake.live![](https://example.invalid/i)/key+abc=123 end","b":"keep ![alt](https://d.example/x) text"}
+EOF
+got="$(META_API_KEY="${jkey}" redact_json_key < "${jfix}" | jq -r '.a')"
+assert_eq "redactjson-img-split-redacted" "leak [REDACTED] end" "${got}"
+got="$(META_API_KEY="${jkey}" redact_json_key < "${jfix}" | jq -r '.b')"
+assert_eq "redactjson-img-keyfree-kept" "keep ![alt](https://d.example/x) text" "${got}"
 rm -f "${jfix}"
 
 # --- decode_json_escapes (mixed prose + JSON fragment; the run.sh P1) ---
@@ -784,6 +794,49 @@ assert_eq "post-nul-fallback-tagged" "fallback" "${got_n}"
 case "$(cat "${ndir}/capture.json" 2>/dev/null)" in *"fake.live/key+abc=123"*) got_n="leaked";; *) got_n="clean";; esac
 assert_eq "post-nul-no-rejoined-key" "clean" "${got_n}"
 rm -rf "${ndir}"
+
+# --- post.sh redact again after image stripping (script level) ---
+# A pattern secret split by a removable image token must not rejoin
+# when strip_images deletes the token: the final redaction pass runs
+# after every byte-removing filter.
+idir2="$(mktemp -d)"
+mkdir -p "${idir2}/tmp" "${idir2}/bin"
+cat > "${idir2}/bin/gh" <<'STUB'
+#!/usr/bin/env bash
+args=" $* "
+case "${args}" in
+  *" --method POST "*)
+    prev=""
+    for a in "$@"; do
+      if [[ "${prev}" == "--input" ]]; then cp "${a}" "${GH_STUB_CAPTURE}"; fi
+      prev="${a}"
+    done
+    printf '{}\n'
+    ;;
+  *"/reviews"*) printf '[]\n' ;;
+  *) printf '%s\t%s\tfalse\topen\t%s\t%s\n' "${GH_STUB_HEAD}" "${GH_STUB_BASE}" "${GH_STUB_BASEREF:-main}" "${GH_STUB_DEFAULT:-main}" ;;
+esac
+STUB
+chmod +x "${idir2}/bin/gh"
+isha="aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+ibsha="bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+printf 'diff --git a/a.ts b/a.ts\n--- a/a.ts\n+++ b/a.ts\n@@ -1 +1,50 @@\n+x\n' > "${idir2}/tmp/muse.diff"
+printf '[{"filename":"a.ts"}]' > "${idir2}/tmp/muse-files.json"
+printf '%s' '{"verdict":"v","findings":[{"path":"a.ts","line":1,"severity":"low","title":"t","body":"x gh![](https://example.invalid/i)p_abc123XYZ y"}],"next_steps":[]}' > "${idir2}/tmp/review.json"
+post_script="${SCRIPT_DIR}/post.sh"
+GH_STUB_CAPTURE="${idir2}/capture.json" GH_STUB_HEAD="${isha}" GH_STUB_BASE="${ibsha}" \
+PATH="${idir2}/bin:${PATH}" \
+GH_TOKEN="fake" GITHUB_REPOSITORY="t/t" PR_NUMBER="1" \
+HEAD_SHA="${isha}" BASE_SHA="${ibsha}" HEAD_SHA_EVENT="${isha}" BASE_SHA_EVENT="${ibsha}" \
+MUSE_OUTCOME="success" DIFF_FAILED="false" DIFF_OUTCOME="success" \
+REVIEW_FILE="${idir2}/tmp/review.json" RUN_URL="https://example.invalid/run" \
+RUNNER_TEMP="${idir2}/tmp" SCRIPT_DIR="${SCRIPT_DIR}" \
+  bash "${post_script}" >/dev/null 2>&1
+case "$(cat "${idir2}/capture.json" 2>/dev/null)" in *"ghp_abc123XYZ"*) got_i="leaked";; *) got_i="clean";; esac
+assert_eq "post-img-split-not-rejoined" "clean" "${got_i}"
+case "$(cat "${idir2}/capture.json" 2>/dev/null)" in *"[REDACTED]"*) got_i="redacted";; *) got_i="missing";; esac
+assert_eq "post-img-split-redacted" "redacted" "${got_i}"
+rm -rf "${idir2}"
 
 # --- collect.sh live default-base eligibility (script level) ---
 # A rerun after a base retarget keeps the event-time job gate fooled; the

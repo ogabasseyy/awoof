@@ -101,4 +101,11 @@ else
   decode_json_escapes < "${review_file}" > "${review_file}.decoded" 2>/dev/null \
     && mv "${review_file}.decoded" "${review_file}" || rm -f "${review_file}.decoded"
 fi
+# Strip image markup BEFORE the final byte redaction: the post step
+# strips images as presentation filtering, and deleting a token that
+# splits the key would rejoin it after the last key-aware pass (the
+# same rejoin class as the NUL case). Stripping here — the post strip
+# is idempotent — keeps every byte-removing filter ahead of redaction.
+strip_images < "${review_file}" > "${review_file}.noimg" 2>/dev/null \
+  && mv "${review_file}.noimg" "${review_file}" || rm -f "${review_file}.noimg"
 redact "$(cat "${review_file}")" > "${review_file}.clean" && mv "${review_file}.clean" "${review_file}"

@@ -106,6 +106,12 @@ render_summary() {
 sanitize_review() {
   review="$(redact "${review}")"
   review="$(printf '%s' "${review}" | strip_images | sanitize_mentions)"
+  # Redact again after the byte-removing filters: deleting an image
+  # token can rejoin a secret the first pass saw only in split form.
+  # The run step already checks stripped forms against the live key;
+  # this catches pattern-recognizable secrets on any path that reaches
+  # this keyless step unstripped.
+  review="$(redact "${review}")"
 }
 
 # Assemble the summary-only retry body after the API rejects the inline
@@ -246,12 +252,14 @@ Re-run the workflow, or inspect the logs."
     f_line="$(printf '%s' "${finding}" | jq -r '(.line|tonumber?) // 0')"
     f_body="$(printf '%s' "${finding}" | jq -r '.body // ""')"
     # Redact-then-bound for BOTH title and body: truncating first would cut
-    # PEM footers and defeat the full-block regex.
+    # PEM footers and defeat the full-block regex. Redact once more after
+    # the image/mention filters, which can rejoin a split secret by
+    # deleting the token between its halves.
     f_title="$(redact "${f_title}")"
-    f_title="$(printf '%s' "${f_title}" | strip_images | sanitize_mentions | trunc_bytes 300)"
+    f_title="$(redact "$(printf '%s' "${f_title}" | strip_images | sanitize_mentions | trunc_bytes 300)")"
     thread_body="$(printf '**[%s] %s**\n\n%s\n\n<sub>Useful? React with 👍 / 👎.</sub>' "${f_sev}" "${f_title}" "${f_body}")"
     thread_body="$(redact "${thread_body}")"
-    thread_body="$(printf '%s' "${thread_body}" | strip_images | sanitize_mentions | trunc_bytes 6000)"
+    thread_body="$(redact "$(printf '%s' "${thread_body}" | strip_images | sanitize_mentions | trunc_bytes 6000)")"
     jq -n --arg path "${f_path}" --argjson line "${f_line}" --arg body "${thread_body}" \
       '{path: $path, line: $line, side: "RIGHT", body: $body}' >> "${inline_jsonl}"
   done < <(jq -c '.valid[]?' "${validated_json}")
