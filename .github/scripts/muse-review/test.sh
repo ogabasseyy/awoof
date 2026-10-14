@@ -147,6 +147,27 @@ printf '[{"filename":"long.txt"}]' > "${symdir}/longf.json"
 got="$(changed_symlinks "${symdir}/longf.json" "${symdir}/ws" 50 2>/dev/null)"; got_rc=$?
 assert_eq "symlinks-target-cap-rc" "3" "${got_rc}"
 assert_eq "symlinks-target-cap-empty" "" "${got}"
+# Lossless capture: trailing newlines are part of the target, so they must
+# survive as visible \n (command substitution used to strip them and
+# record a different link); invalid UTF-8 bytes must survive as \xHH
+# (the prompt iconv used to delete them); backslashes escape so a literal
+# backslash cannot masquerade as an escaped newline.
+python3 -c "import os; os.symlink('target' + chr(10) + chr(10), '${symdir}/ws/trail')"
+printf '[{"filename":"trail"}]' > "${symdir}/tlf.json"
+got="$(changed_symlinks "${symdir}/tlf.json" "${symdir}/ws" 50)"
+assert_eq "symlinks-trailing-newlines-kept" 'trail -> target\n\n' "${got}"
+python3 -c "import os; os.symlink(b'bad' + bytes([255]) + b'target', b'${symdir}/ws/badutf')"
+printf '[{"filename":"badutf"}]' > "${symdir}/badf.json"
+got="$(changed_symlinks "${symdir}/badf.json" "${symdir}/ws" 50)"
+assert_eq "symlinks-invalid-utf8-escaped" 'badutf -> bad\xFFtarget' "${got}"
+python3 -c "import os; os.symlink('a' + chr(92) + 'nb', '${symdir}/ws/bslash')"
+printf '[{"filename":"bslash"}]' > "${symdir}/bsf.json"
+got="$(changed_symlinks "${symdir}/bsf.json" "${symdir}/ws" 50)"
+assert_eq "symlinks-backslash-escaped" 'bslash -> a\\nb' "${got}"
+got="$(printf 'caf\xc3\xa9' | escape_symlink_target)"
+assert_eq "escape-keeps-valid-multibyte" "café" "${got}"
+got="$(printf 'a\xffb' | escape_symlink_target)"
+assert_eq "escape-invalid-byte" 'a\xFFb' "${got}"
 rm -rf "${symdir}"
 
 # --- changed_symlinks return-2 capture under set -e (prompt.sh idiom) ---
@@ -198,6 +219,21 @@ got="$(changed_symlinks "${basedir}/files.json" "${basedir}/repo" 1 "${base_sha}
 assert_eq "symlinks-base-counts-cap" "gone.txt -> /etc/target (base-side; deleted or replaced in head)" "${got}"
 assert_eq "symlinks-base-cap-rc" "2" "${got_rc}"
 rm -rf "${basedir}"
+
+# Base-side capture is lossless too: the blob bytes are the exact target,
+# so a deleted link whose target ended in newlines records them all.
+bsdir="$(mktemp -d)"
+mkdir -p "${bsdir}/repo"
+git -C "${bsdir}/repo" init -q 2>/dev/null
+python3 -c "import os; os.symlink('gone' + chr(10), '${bsdir}/repo/gone-nl.txt')"
+git -C "${bsdir}/repo" add -A 2>/dev/null
+git -C "${bsdir}/repo" -c user.email=t@t -c user.name=t commit -qm base 2>/dev/null
+bs_sha="$(git -C "${bsdir}/repo" rev-parse HEAD 2>/dev/null)"
+rm "${bsdir}/repo/gone-nl.txt"
+printf '[{"filename":"gone-nl.txt"}]' > "${bsdir}/files.json"
+got="$(changed_symlinks "${bsdir}/files.json" "${bsdir}/repo" 50 "${bs_sha}" "${bsdir}/repo")"
+assert_eq "symlinks-base-trailing-newline" 'gone-nl.txt -> gone\n (base-side; deleted or replaced in head)' "${got}"
+rm -rf "${bsdir}"
 
 # --- redact ---
 pem='-----BEGIN TEST PRIVATE KEY-----FAKEFAKEFAKE-----END TEST PRIVATE KEY-----'
@@ -824,6 +860,14 @@ ln -s "$(python3 -c "print('t' * 600)")" "${sdir}/ws/longlink"
 printf '[{"filename":"longlink"}]' > "${sdir}/tmp/muse-files.json"
 if PATH="${sdir}/bin:${PATH}" GH_TOKEN="fake" GITHUB_REPOSITORY="t/t" PR_NUMBER="1" GITHUB_OUTPUT="${sdir}/tmp/out.txt" RUNNER_TEMP="${sdir}/tmp" SCRIPT_DIR="${SCRIPT_DIR}" GITHUB_WORKSPACE="${sdir}/ws" bash "${prompt_script}" >/dev/null 2>&1; then got_rc="0"; else got_rc="nonzero"; fi
 assert_eq "prompt-symlink-long-target-fails-closed" "nonzero" "${got_rc}"
+# End-to-end: a non-UTF-8 target reaches the prompt byte-escaped instead
+# of being silently shortened by UTF-8 filtering, and the run succeeds.
+python3 -c "import os; os.symlink(b'bad' + bytes([255]) + b'target', b'${sdir}/ws/badutf')"
+printf '[{"filename":"badutf"}]' > "${sdir}/tmp/muse-files.json"
+if PATH="${sdir}/bin:${PATH}" GH_TOKEN="fake" GITHUB_REPOSITORY="t/t" PR_NUMBER="1" GITHUB_OUTPUT="${sdir}/tmp/out.txt" RUNNER_TEMP="${sdir}/tmp" SCRIPT_DIR="${SCRIPT_DIR}" GITHUB_WORKSPACE="${sdir}/ws" bash "${prompt_script}" >/dev/null 2>&1; then got_rc="0"; else got_rc="nonzero"; fi
+assert_eq "prompt-invalid-utf8-escaped-ok" "0" "${got_rc}"
+case "$(cat "${sdir}/tmp/muse-prompt.md" 2>/dev/null)" in *'badutf -> bad\xFFtarget'*) got_p="escaped";; *) got_p="altered";; esac
+assert_eq "prompt-invalid-utf8-escaped" "escaped" "${got_p}"
 rm -rf "${sdir}"
 
 # --- post.sh comment-only retry after transient POST failure ---

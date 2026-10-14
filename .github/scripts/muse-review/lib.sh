@@ -130,14 +130,64 @@ sweep_workspace_symlinks() {
   printf '%d' "${_removed}"
 }
 
+# Lossless single-line encoding of raw symlink-target bytes (stdin to
+# stdout, no trailing newline). Backslash, LF, and CR become \\, \n, \r
+# literals; bytes that are not part of a well-formed UTF-8 sequence
+# become \xHH; well-formed sequences (including multibyte) pass through
+# unchanged. The result is always valid UTF-8, so downstream UTF-8
+# filtering cannot silently delete target bytes, and always one line,
+# so trailing newlines survive as visible \n instead of being stripped
+# by command-substitution captures.
+escape_symlink_target() {
+  perl -e '
+    local $/; my $s = <STDIN>; $s = "" unless defined $s;
+    my $out = ""; my $i = 0; my $n = length $s;
+    while ($i < $n) {
+      my $b = ord substr($s, $i, 1);
+      if ($b == 92) { $out .= "\\\\"; $i++ }
+      elsif ($b == 10) { $out .= "\\n"; $i++ }
+      elsif ($b == 13) { $out .= "\\r"; $i++ }
+      elsif ($b < 128) { $out .= substr($s, $i, 1); $i++ }
+      else {
+        my ($len, $lo, $hi) = (0, 128, 191);
+        if ($b >= 194 && $b <= 223) { $len = 2 }
+        elsif ($b == 224) { $len = 3; $lo = 160 }
+        elsif ($b >= 225 && $b <= 236) { $len = 3 }
+        elsif ($b == 237) { $len = 3; $hi = 159 }
+        elsif ($b >= 238 && $b <= 239) { $len = 3 }
+        elsif ($b == 240) { $len = 4; $lo = 144 }
+        elsif ($b >= 241 && $b <= 243) { $len = 4 }
+        elsif ($b == 244) { $len = 4; $hi = 143 }
+        my $ok = 0;
+        if ($len && $i + $len <= $n) {
+          my $b2 = ord substr($s, $i + 1, 1);
+          if ($b2 >= $lo && $b2 <= $hi) {
+            $ok = 1;
+            for (my $j = 2; $j < $len; $j++) {
+              my $bj = ord substr($s, $i + $j, 1);
+              if ($bj < 128 || $bj > 191) { $ok = 0; last }
+            }
+          }
+        }
+        if ($ok) { $out .= substr($s, $i, $len); $i += $len }
+        else { $out .= sprintf "\\x%02X", $b; $i++ }
+      }
+    }
+    print $out;
+  '
+}
+
 # Changed-path symlink targets, one `path -> target` line per link, for the
 # review input. The agent runs symlink-blind (the sweep above removes every
 # workspace link before the key is exposed), the manifest records paths only,
 # and a changed link's hunk can fall past the diff cap — without this, the
 # run would publish success over an unseen target. Record BEFORE the sweep.
 # Targets are untrusted (readlink output on submitter-controlled paths):
-# newlines flattened like the manifest, and the caller neutralizes tags
-# and bounds the whole block. A target over 500 bytes returns 3 (caller
+# raw bytes are captured to a file with `readlink -n` (no separator
+# newline, no command substitution — substitution strips trailing
+# newlines from the target itself and records a different link), then
+# encoded with escape_symlink_target; the caller neutralizes tags and
+# bounds the whole block. A target over 500 bytes returns 3 (caller
 # fails closed): cutting it would hide the decisive suffix of the only
 # copy the reviewer can see. Prints at most _max entries; returns 2 when
 # more changed symlinks exist (caller marks PARTIAL), 1 when the
@@ -154,17 +204,18 @@ sweep_workspace_symlinks() {
 # ref/repo disables the base lookup (head-only); the caller labels that
 # absence explicitly.
 changed_symlinks() {
-  local _files="$1" _root="$2" _max="${3:-50}" _base_ref="${4:-}" _repo="${5:-}" _count=0 _rec _kind _f _t _suffix _entry
+  local _files="$1" _root="$2" _max="${3:-50}" _base_ref="${4:-}" _repo="${5:-}" _count=0 _rec _kind _f _suffix _entry _raw _esc
   jq -e 'type == "array"' "${_files}" >/dev/null 2>&1 || return 1
+  _raw="$(mktemp)" || return 1
   while IFS= read -r -d '' _rec; do
     _kind="${_rec%%$'\t'*}"
     _f="${_rec#*$'\t'}"
     case "${_f}" in /*|..|../*|*/../*|*/..) continue ;; esac
+    : > "${_raw}"
     if [[ "${_kind}" == "F" && -L "${_root}/${_f}" ]]; then
-      _t="$(readlink -- "${_root}/${_f}" 2>/dev/null || true)"
+      readlink -n -- "${_root}/${_f}" > "${_raw}" 2>/dev/null || : > "${_raw}"
       _suffix=""
     else
-      _t=""
       if [[ "${_kind}" == "P" ]]; then
         _suffix=" (base-side; renamed away in head)"
       else
@@ -178,16 +229,18 @@ changed_symlinks() {
         # over unseen evidence. Literal mode matches the name as-is.
         _entry="$(git --literal-pathspecs -C "${_repo}" ls-tree "${_base_ref}" -- "${_f}" 2>/dev/null || true)"
         if [[ "${_entry}" == 120000[[:space:]]* ]]; then
-          _t="$(git -C "${_repo}" show "${_base_ref}:${_f}" 2>/dev/null || true)"
+          git -C "${_repo}" show "${_base_ref}:${_f}" > "${_raw}" 2>/dev/null || : > "${_raw}"
         fi
       fi
-      [[ -n "${_t}" ]] || continue
+      [[ -s "${_raw}" ]] || continue
     fi
     _count=$((_count + 1))
-    if (( _count > _max )); then return 2; fi
-    if (( $(printf '%s' "${_t}" | wc -c) > 500 )); then return 3; fi
-    printf '%s -> %s%s\n' "${_f//$'\n'/\\n}" "${_t//$'\n'/\\n}" "${_suffix}"
+    if (( _count > _max )); then rm -f "${_raw}"; return 2; fi
+    if (( $(wc -c < "${_raw}") > 500 )); then rm -f "${_raw}"; return 3; fi
+    _esc="$(escape_symlink_target < "${_raw}")"
+    printf '%s -> %s%s\n' "${_f//$'\n'/\\n}" "${_esc}" "${_suffix}"
   done < <(jq -j '[.[] | {f: (.filename // empty), p: (.previous_filename // "")} | select(.f | type == "string") | ("F\t" + .f), (if (.p | type) == "string" and (.p | length) > 0 and .p != .f then ("P\t" + .p) else empty end)] | .[] + "\u0000"' "${_files}" 2>/dev/null)
+  rm -f "${_raw}"
 }
 
 # True when a head-tree candidate is safe to read: a regular file, not a
