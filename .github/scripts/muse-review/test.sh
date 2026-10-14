@@ -443,6 +443,20 @@ got="$(printf 'a<!-- one\ntwo -->b' | strip_html_comments)"
 assert_eq "html-comment-multiline" "$(printf 'a [HTML comment removed] b')" "${got}"
 got="$(printf '%s' 'keep <!-- unterminated' | strip_html_comments)"
 assert_eq "html-comment-unterminated-kept" 'keep <!-- unterminated' "${got}"
+
+# --- neutralize_html_entities ---
+got="$(printf '%s' 'left&#65;right &#x42; &amp; a & b' | neutralize_html_entities)"
+assert_eq "entities-neutralized" 'left&amp;#65;right &amp;#x42; &amp;amp; a & b' "${got}"
+got="$(printf '%s' 'plain &notaref text &; end' | neutralize_html_entities)"
+assert_eq "entities-bare-amp-kept" 'plain &notaref text &; end' "${got}"
+
+# --- trunc_bytes_marked ---
+got="$(printf 'abcdefghij' | trunc_bytes_marked 10)"
+assert_eq "trunc-marked-under" 'abcdefghij' "${got}"
+got="$(printf 'abcdefghijklmnopqrstuvwxyz0123456789ABCD' | trunc_bytes_marked 36)"
+assert_eq "trunc-marked-over" "$(printf 'abcd\n\n[... truncated for length ...]')" "${got}"
+got_len="$(printf 'abcdefghijklmnopqrstuvwxyz0123456789ABCD' | trunc_bytes_marked 36 | wc -c | tr -d ' ')"
+assert_eq "trunc-marked-within-budget" "36" "${got_len}"
 crf2="$(mktemp)"
 printf '%s' '{"a":"leak split!<img src=x>[]()key123456 end"}' > "${crf2}"
 got="$(META_API_KEY='splitkey123456' redact_json_key < "${crf2}" | jq -r '.a')"
@@ -1253,7 +1267,7 @@ hsha="cccccccccccccccccccccccccccccccccccccccc"
 hbsha="dddddddddddddddddddddddddddddddddddddddd"
 printf 'diff --git a/a.ts b/a.ts\n--- a/a.ts\n+++ b/a.ts\n@@ -1 +1,50 @@\n+x\n' > "${hdir}/tmp/muse.diff"
 printf '[{"filename":"a.ts"}]' > "${hdir}/tmp/muse-files.json"
-printf '%s' '{"verdict":"v","findings":[{"path":"a.ts","line":1,"severity":"low","title":"t","body":"x ghp_left<!-- hidden -->right y"}],"next_steps":[]}' > "${hdir}/tmp/review.json"
+printf '%s' '{"verdict":"v","findings":[{"path":"a.ts","line":1,"severity":"low","title":"t","body":"x ghp_left<!-- hidden -->right y and ghp_ab&#99;d end"}],"next_steps":[]}' > "${hdir}/tmp/review.json"
 GH_STUB_CAPTURE="${hdir}/capture.json" GH_STUB_HEAD="${hsha}" GH_STUB_BASE="${hbsha}" \
 PATH="${hdir}/bin:${PATH}" \
 GH_TOKEN="fake" GITHUB_REPOSITORY="t/t" PR_NUMBER="1" \
@@ -1266,6 +1280,10 @@ case "$(cat "${hdir}/capture.json" 2>/dev/null)" in *"ghp_leftright"*) got_h="re
 assert_eq "post-html-split-not-rejoined" "clean" "${got_h}"
 case "$(cat "${hdir}/capture.json" 2>/dev/null)" in *"<!-- hidden -->"*) got_h="kept";; *) got_h="removed";; esac
 assert_eq "post-html-comment-removed" "removed" "${got_h}"
+case "$(cat "${hdir}/capture.json" 2>/dev/null)" in *"ghp_abcd"*) got_h="rejoined";; *) got_h="clean";; esac
+assert_eq "post-entity-split-not-rejoined" "clean" "${got_h}"
+case "$(cat "${hdir}/capture.json" 2>/dev/null)" in *"&amp;#99;"*) got_h="neutralized";; *) got_h="raw";; esac
+assert_eq "post-entity-neutralized" "neutralized" "${got_h}"
 rm -rf "${hdir}"
 
 # --- collect.sh live default-base eligibility (script level) ---

@@ -124,4 +124,15 @@ if strip_images < "${review_file}" > "${review_file}.noimg" 2>/dev/null; then
 else
   rm -f "${review_file}.noimg"
 fi
+# Neutralize HTML character references BEFORE the final key-aware pass:
+# GFM renders &#65; as A, so an entity-encoded character of the live key
+# matches neither the JSON-aware nor the literal redaction, yet the
+# posted review would visibly reconstruct the credential (the keyless
+# post step preserves entities). Escaping the & shows the reference
+# literally instead.
+if neutralize_html_entities < "${review_file}" > "${review_file}.noent" 2>/dev/null; then
+  mv "${review_file}.noent" "${review_file}"
+else
+  rm -f "${review_file}.noent"
+fi
 redact "$(cat "${review_file}")" > "${review_file}.clean" && mv "${review_file}.clean" "${review_file}"

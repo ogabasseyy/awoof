@@ -14,12 +14,14 @@ on:
       - '.github/workflows/muse-code-review.yml'
       - '.github/workflows/muse-review-selftest.yml'
       - 'docs/runbooks/muse-code-review.md'
+      - 'docs/public-trust-pages.md'
   pull_request:
     paths:
       - '.github/scripts/muse-review/**'
       - '.github/workflows/muse-code-review.yml'
       - '.github/workflows/muse-review-selftest.yml'
       - 'docs/runbooks/muse-code-review.md'
+      - 'docs/public-trust-pages.md'
   schedule:
     # Weekly bump signal so the pinned CLI cannot go silently stale.
     - cron: '17 9 * * 1'

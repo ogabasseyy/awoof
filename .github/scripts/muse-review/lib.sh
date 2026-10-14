@@ -134,6 +134,34 @@ strip_html_comments() {
   perl -0777 -pe 's{<!--.*?-->}{ [HTML comment removed] }gs'
 }
 
+# Neutralize HTML character references (&#65;, &#x41;, &amp;, ...) by
+# escaping the leading ampersand: GFM renders references as the encoded
+# character, so a credential with one character entity-encoded matches
+# no literal or pattern redaction yet visibly reconstructs when posted.
+# Escaping the & makes the renderer show the reference literally, so
+# the encoded char can never rejoin its neighbours. Applies to any
+# &...; form; a bare & with no reference syntax is left alone.
+neutralize_html_entities() {
+  perl -0777 -pe 's{&(?=#?[A-Za-z0-9]+;)}{&amp;}g'
+}
+
+# Byte-bounded UTF-8-safe truncation WITH an explicit marker, reserved
+# inside the budget: trunc_bytes cuts silently, so a truncated inline
+# finding would read as complete while its tail exists nowhere.
+trunc_bytes_marked() {
+  local _bytes="$1" _tmp _marker
+  _marker=$'\n\n[... truncated for length ...]'
+  _tmp="$(mktemp)"
+  cat > "${_tmp}"
+  if (( $(wc -c < "${_tmp}") > _bytes )); then
+    head -c $((_bytes - ${#_marker})) "${_tmp}" | iconv -c -f UTF-8 -t UTF-8 2>/dev/null || true
+    printf '%s' "${_marker}"
+  else
+    cat "${_tmp}"
+  fi
+  rm -f "${_tmp}"
+}
+
 # Remove every symlink under a workspace root (except .git) and print the
 # count. No trusted-scripts carve-out: trusted helpers stage outside the
 # reviewed workspace (RUNNER_TEMP), so every path the agent reads is
