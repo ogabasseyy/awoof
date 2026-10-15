@@ -172,7 +172,7 @@ strip_html_tags() {
 # every literal and pattern redaction saw only halves. Deleting joins
 # the halves where the following redaction can match them.
 strip_invisible_chars() {
-  perl -0777 -pe 's/\xE2\x80[\x8B-\x8F]//g; s/\xE2\x81[\xA0-\xA9]//g; s/\xEF\xBB\xBF//g; s/\xC2\xAD//g; s/\xE1\xA0\x8E//g'
+  perl -0777 -pe 's/(?:\xC2\xAD|\xCC\x8F|\xD8\x9C|\xE1\x85\x9F|\xE1\x86\xA0|\xE1\x9E[\xB4\xB5]|\xE1\xA0[\x8B-\x8E]|\xE2\x80[\x8B-\x8F\xAA-\xAE]|\xE2\x81[\xA0-\xAF]|\xE3\x85\xA4|\xEF\xB8[\x80-\x8F]|\xEF\xBB\xBF|\xEF\xBF[\xB0-\xB8]|\xF0\x9D\x85[\xB3-\xBA]|\xF0\x9B\xB2[\xA0-\xA3]|\xF3\xA0[\x80-\x87][\x80-\xBF][\x80-\xBF])//g'
 }
 
 strip_code_spans() {
@@ -259,10 +259,11 @@ strip_intraword_markers() {
 # Protect inline code spans while the Markdown sanitizers run: span
 # contents render literally in GFM, so escapes/formatting inside them
 # must survive untouched (`a*b` stays `a*b`, `\.` stays `\.`), but the
-# formatting filters would rewrite them. Each span (outside fences)
-# becomes a hex token the filters cannot alter; restore_code_spans
-# swaps the original span back before the final redaction, which still
-# catches a credential spanning the boundary in its joined raw form.
+# formatting filters would rewrite them. Each span — and each whole
+# fenced block, whose interior is also literal — becomes a hex token
+# the filters cannot alter; restore_code_spans swaps the original back
+# before the final redaction, which still catches a credential
+# spanning the boundary in its joined raw form.
 protect_code_spans() {
   perl -0777 -e '
     local $/; my $s = <STDIN>; $s = "" unless defined $s;
@@ -271,18 +272,31 @@ protect_code_spans() {
     # generated here, never literal MUSECS<hex>Z an author planted.
     $s =~ s/MUSECS([0-9a-f]+)Z/MUSECSX$1Z/g;
     my @lines = split /(?<=\n)/, $s;
-    my $fence = ""; my $flen = 0; my $buf = ""; my $out = "";
+    my $fence = ""; my $flen = 0; my $buf = ""; my $fbuf = ""; my $out = "";
     my $flush = sub {
       my $t = $buf;
       $t =~ s{(`+)(.+?)\1}{ "MUSECS" . ($ENV{MUSE_CS_NONCE} // "") . unpack("H*", $&) . "Z" }gse;
       $out .= $t; $buf = "";
     };
+    # Whole fenced blocks tokenize too (not just inline spans): their
+    # contents are literal code, and every downstream filter — images,
+    # HTML tags, link canonicalization — would otherwise rewrite the
+    # interior while leaving the delimiters looking intact.
+    my $emit_fence = sub {
+      $out .= "MUSECS" . ($ENV{MUSE_CS_NONCE} // "") . unpack("H*", $fbuf) . "Z";
+      $fbuf = "";
+    };
     for my $ln (@lines) {
-      if ($fence eq "" and $ln =~ /^ {0,3}(`{3,}|~{3,})/) { $flush->(); $fence = substr($1, 0, 1); $flen = length($1); $out .= $ln; next }
-      if ($fence ne "" and $ln =~ /^ {0,3}(\Q$fence\E{3,})/ and length($1) >= $flen) { $fence = ""; $out .= $ln; next }
-      if ($fence ne "") { $out .= $ln } else { $buf .= $ln }
+      if ($fence eq "" and $ln =~ /^ {0,3}(`{3,}|~{3,})/) { $flush->(); $fence = substr($1, 0, 1); $flen = length($1); $fbuf = $ln; next }
+      if ($fence ne "") {
+        $fbuf .= $ln;
+        if ($ln =~ /^ {0,3}(\Q$fence\E{3,})/ and length($1) >= $flen) { $emit_fence->(); $fence = "" }
+        next;
+      }
+      $buf .= $ln;
     }
     $flush->();
+    $emit_fence->() if $fence ne "";
     print $out;
   '
 }
@@ -349,9 +363,9 @@ canonicalize_links() {
       $out .= $ln;
     }
     $s = $out;
-    $s =~ s{\[((?:[^\[\]\\]++|\\.|\[(?:[^\[\]\\]++|\\.|\[(?:[^\[\]\\]++|\\.)*\])*\])*)\]\(((?:[^()\\]++|\\.|\((?:[^()\\]++|\\.|\((?:[^()\\]++|\\.)*\))*\))*)\)}{$1 ($2)}g;
-    $s =~ s{\[((?:[^\[\]\\]++|\\.|\[(?:[^\[\]\\]++|\\.|\[(?:[^\[\]\\]++|\\.)*\])*\])*)\]\[((?:[^\[\]\\]++|\\.|\[(?:[^\[\]\\]++|\\.|\[(?:[^\[\]\\]++|\\.)*\])*\])*)\]}{$1 ($2)}g;
-    $s =~ s{\[((?:[^\[\]\\]++|\\.|\[(?:[^\[\]\\]++|\\.|\[(?:[^\[\]\\]++|\\.)*\])*\])*)\](?![(\[])}{ my $t = $1; my $l = lc $t; $l =~ s/\s+/ /g; $l =~ s/^\s+//; $l =~ s/\s+$//; exists $def{$l} ? $t : "[$t]" }ge;
+    $s =~ s{\[((?:[^\[\]\\]++|\\.|(\[(?:[^\[\]\\]++|\\.|(?2))*\]))*)\]\(((?:[^()\\]++|\\.|(\((?:[^()\\]++|\\.|(?4))*\)))*)\)}{$1 ($3)}g;
+    $s =~ s{\[((?:[^\[\]\\]++|\\.|(\[(?:[^\[\]\\]++|\\.|(?2))*\]))*)\]\[((?:[^\[\]\\]++|\\.|(\[(?:[^\[\]\\]++|\\.|(?4))*\]))*)\]}{$1 ($3)}g;
+    $s =~ s{\[((?:[^\[\]\\]++|\\.|(\[(?:[^\[\]\\]++|\\.|(?2))*\]))*)\](?![(\[])}{ my $t = $1; my $l = lc $t; $l =~ s/\s+/ /g; $l =~ s/^\s+//; $l =~ s/\s+$//; exists $def{$l} ? $t : "[$t]" }ge;
     print $s;
   '
 }
@@ -837,9 +851,10 @@ redact_json_key() {
           elif $c == 92 then .esc = true
           else .out += [$c] end)) as $st
       | (($st.out + (if $st.esc then [92] else [] end)) | implode);
-    def _linkstrip: gsub("\\[(?<t>[^\\]]+)\\]\\([^)]*\\)"; "\(.t)") | gsub("\\[(?<t>[^\\]]+)\\]\\[[^\\]]*\\]"; "\(.t)") | gsub("[\\[\\]]"; "");
+    def _parens: (gsub("\\([^()]*\\)"; "") as $o | if $o == . then . else ($o | _parens) end);
+    def _linkstrip: (_parens | gsub("\\[(?<t>[^\\]]+)\\]\\([^)]*\\)"; "\(.t)") | gsub("\\[(?<t>[^\\]]+)\\]\\[[^\\]]*\\]"; "\(.t)") | gsub("[\\[\\]]"; ""));
     def _codestrip: gsub("(?<t>`+)(?<c>[\\s\\S]*?)\\k<t>"; "\(.c | if (startswith(" ") and endswith(" ") and ((gsub(" "; "") | length) > 0)) then .[1:-1] else . end)");
-    def _dezero: gsub("[\u00ad\u180e\u200b-\u200f\u2060-\u2069\ufeff]"; "");
+    def _dezero: (gsub("[\u00ad\u034f\u061c\u115f-\u1160\u17b4-\u17b5\u180b-\u180e\u200b-\u200f\u202a-\u202e\u2060-\u206f\u3164\ufe00-\ufe0f\ufeff\ufff0-\ufff8]"; "") | (explode | map(select((. < 917504 or . > 918015) and (. < 119155 or . > 119170))) | implode));
     def _fmtstrip: gsub("[*`_~]+"; "");
     def _emptylink: gsub("\\[\\]\\([^)]*\\)"; "") | gsub("\\[\\]\\[[^\\]]*\\]"; "");
     def _denul: split("\u0000") | join("");

@@ -369,6 +369,13 @@ EOF
 got="$(META_API_KEY='leftAright' redact_json_key < "${jfix}" | jq -r '.a')"
 assert_eq "redactjson-emptylink-composed-redacted" "[REDACTED]" "${got}"
 cat > "${jfix}" <<'EOF'
+{"a":"left[A](https://x/(((q))))right","b":"left\u034fAright"}
+EOF
+got="$(META_API_KEY='leftAright' redact_json_key < "${jfix}" | jq -r '.a')"
+assert_eq "redactjson-nested-dest-redacted" "[REDACTED]" "${got}"
+got="$(META_API_KEY='leftAright' redact_json_key < "${jfix}" | jq -r '.b')"
+assert_eq "redactjson-cgj-redacted" "[REDACTED]" "${got}"
+cat > "${jfix}" <<'EOF'
 {"a":"left![[]()](u)[*A*]right"}
 EOF
 got="$(META_API_KEY='leftAright' redact_json_key < "${jfix}" | jq -r '.a')"
@@ -545,6 +552,8 @@ got="$(printf 'a\xe2\x80\x8bb\xef\xbb\xbfc\xc2\xadd' | strip_invisible_chars)"
 assert_eq "invisible-stripped" 'abcd' "${got}"
 got="$(printf 'a\xe2\x81\xa6b\xe2\x81\xa9c' | strip_invisible_chars)"
 assert_eq "invisible-bidi-stripped" 'abc' "${got}"
+got="$(printf 'a\xcc\x8fb\xe2\x80\xaec' | strip_invisible_chars)"
+assert_eq "invisible-cgj-bidi-stripped" 'abc' "${got}"
 
 # --- strip_code_spans ---
 got="$(printf '%s' 'left` A `right and `code` x and ``a`b`` y' | strip_code_spans)"
@@ -557,6 +566,8 @@ got="$(printf '%s' 'see [docs](https://d.example/x) and left[A](https://e.exampl
 assert_eq "links-canonicalized" 'see docs (https://d.example/x) and leftA (https://e.example)right and t (r1) end' "${got}"
 got="$(printf '%s' 'nested [a [b] c](https://e.example/u(1)) tail' | canonicalize_links)"
 assert_eq "links-nested" 'nested a [b] c (https://e.example/u(1)) tail' "${got}"
+got="$(printf '%s' 'left[A](https://x/(((q))))right' | canonicalize_links)"
+assert_eq "links-nested-dest" 'leftA (https://x/(((q))))right' "${got}"
 got="$(printf 'left[A]right see [docs] here\n\n[A]: https://e.example/x' | canonicalize_links)"
 assert_eq "links-shortcut-defined" "$(printf 'leftAright see [docs] here\n')" "${got}"
 got="$(printf 'see [my label] here\n\n[my label]: https://e.example/x' | canonicalize_links)"
@@ -576,6 +587,8 @@ case "${got}" in *'`'*) got_p="raw";; *) got_p="tokenized";; esac
 assert_eq "codespan-tokenized" "tokenized" "${got_p}"
 got="$(printf 'MUSECS6162Z and `x` end' | protect_code_spans | restore_code_spans)"
 assert_eq "codespan-sentinel-escaped" 'MUSECSX6162Z and `x` end' "${got}"
+got="$(printf 'before\n\n```\n![a](https://e.example/x) and <b>y</b>\n```\n\nafter' | protect_code_spans | strip_images | strip_html_tags | canonicalize_links | restore_code_spans)"
+assert_eq "fence-content-preserved" "$(printf 'before\n\n```\n![a](https://e.example/x) and <b>y</b>\n```\n\nafter')" "${got}"
 got="$(printf 'MUSECSdeadbeefZ x' | MUSE_CS_NONCE='cafe1234' restore_code_spans)"
 assert_eq "codespan-wrong-nonce-kept" 'MUSECSdeadbeefZ x' "${got}"
 got="$( (export MUSE_CS_NONCE='cafe1234'; printf 'a `b` c' | protect_code_spans | restore_code_spans) )"
