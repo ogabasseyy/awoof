@@ -162,6 +162,15 @@ strip_html_tags() {
 # credential while delimiter strips bounded by non-space miss it.
 # Replacing spans with their (trimmed) content joins split halves
 # where the following redaction can match them.
+# Remove default-ignorable format characters (zero-width space/joiners,
+# word joiner, BOM, soft hyphen, Mongolian vowel separator): they render
+# invisibly, so a credential split by one displays contiguously while
+# every literal and pattern redaction saw only halves. Deleting joins
+# the halves where the following redaction can match them.
+strip_invisible_chars() {
+  perl -0777 -pe 's/\xE2\x80[\x8B-\x8F]//g; s/\xE2\x81[\xA0-\xA4]//g; s/\xEF\xBB\xBF//g; s/\xC2\xAD//g; s/\xE1\xA0\x8E//g'
+}
+
 strip_code_spans() {
   perl -0777 -pe 's{(`+)(.+?)\1}{ my $c = $2; if ($c =~ /^ / and $c =~ / $/ and $c !~ /^ +$/) { $c = substr($c, 1, length($c) - 2) } $c }gse'
 }
@@ -681,6 +690,9 @@ redact() {
 # exposes its intraword split after canonicalization, and an image
 # token can be the separator that exposes it), so single-transform
 # forms each miss those chains.
+# Zero-width/default-ignorable characters are stripped in the same
+# normalization as NUL/CR: they render invisibly, so a split key
+# would display contiguously without ever matching literally.
 redact_json_key() {
   local _key="${META_API_KEY:-}"
   [[ -n "${_key}" ]] || return 1
@@ -741,7 +753,8 @@ redact_json_key() {
           else .out += [$c] end)) as $st
       | (($st.out + (if $st.esc then [92] else [] end)) | implode);
     def _linkstrip: gsub("\\[(?<t>[^\\]]+)\\]\\([^)]*\\)"; "\(.t)") | gsub("\\[(?<t>[^\\]]+)\\]\\[[^\\]]*\\]"; "\(.t)") | gsub("[\\[\\]]"; "");
-    def _codestrip: gsub("`(?<c>[^`]*)`"; "\(.c | if (startswith(" ") and endswith(" ") and ((gsub(" "; "") | length) > 0)) then .[1:-1] else . end)");
+    def _codestrip: gsub("(?<t>`+)(?<c>[\\s\\S]*?)\\k<t>"; "\(.c | if (startswith(" ") and endswith(" ") and ((gsub(" "; "") | length) > 0)) then .[1:-1] else . end)");
+    def _dezero: gsub("[\u00ad\u180e\u200b-\u200f\u2060-\u2064\ufeff]"; "");
     def _fmtstrip: gsub("[*`_~]+"; "");
     def _denul: split("\u0000") | join("");
     def _decr: split("\r") | join("");
@@ -749,7 +762,7 @@ redact_json_key() {
     def _imgstrip: (_img1 as $once | if $once == . then . else ($once | _imgstrip) end);
     def _canon: ((_imgstrip | _codestrip | _linkstrip | _fmtstrip | _codestrip | _mdesc) as $n | if $n == . then . else ($n | _canon) end);
     walk(if type == "string" then
-      ((. | _denul | _decr) as $s
+      ((. | _denul | _decr | _dezero) as $s
        | if ($s | contains($k)) then ($s | split($k) | join("[REDACTED]"))
          elif (($s | _imgstrip) | contains($k)) then (($s | _imgstrip) | split($k) | join("[REDACTED]"))
          elif (($s | _mdesc) | contains($k)) then (($s | _mdesc) | split($k) | join("[REDACTED]"))
@@ -757,7 +770,7 @@ redact_json_key() {
          elif (($s | _codestrip) | contains($k)) then (($s | _codestrip) | split($k) | join("[REDACTED]"))
          elif (($s | _canon) | contains($k)) then (($s | _canon) | split($k) | join("[REDACTED]"))
          elif ($s | contains("\\")) then
-           ((($s | _deep) | _denul | _decr) as $dec
+           ((($s | _deep) | _denul | _decr | _dezero) as $dec
             | if ($dec | contains($k)) then ($dec | split($k) | join("[REDACTED]"))
               elif (($dec | _imgstrip) | contains($k)) then (($dec | _imgstrip) | split($k) | join("[REDACTED]"))
               elif (($dec | _mdesc) | contains($k)) then (($dec | _mdesc) | split($k) | join("[REDACTED]"))

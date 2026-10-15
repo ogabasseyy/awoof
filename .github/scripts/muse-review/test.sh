@@ -366,6 +366,13 @@ cat > "${jfix}" <<'EOF'
 EOF
 got="$(META_API_KEY='leftAright' redact_json_key < "${jfix}" | jq -r '.a')"
 assert_eq "redactjson-nested-image-redacted" "[REDACTED]" "${got}"
+cat > "${jfix}" <<'EOF'
+{"a":"left`` A ``right","b":"left\u200bAright"}
+EOF
+got="$(META_API_KEY='leftAright' redact_json_key < "${jfix}" | jq -r '.a')"
+assert_eq "redactjson-multibacktick-redacted" "[REDACTED]" "${got}"
+got="$(META_API_KEY='leftAright' redact_json_key < "${jfix}" | jq -r '.b')"
+assert_eq "redactjson-zerowidth-redacted" "[REDACTED]" "${got}"
 if grep -q 'canonicalize_links < "${review_file}"' "${SCRIPT_DIR}/run.sh"; then got_rc="present"; else got_rc="absent"; fi
 assert_eq "run-no-canon-on-json" "absent" "${got_rc}"
 # NUL-split key: an embedded U+0000 keeps the halves non-contiguous here,
@@ -520,6 +527,10 @@ assert_eq "punct-bounded-underscore-removed" 'fake.live/key and a_b_c stay' "${g
 # --- strip_markdown_escapes ---
 got="$(printf '%s' 'fake\.live a\*b c\n d \\ e' | strip_markdown_escapes)"
 assert_eq "markdown-escapes-decoded" 'fake.live a*b c\n d \ e' "${got}"
+
+# --- strip_invisible_chars ---
+got="$(printf 'a\xe2\x80\x8bb\xef\xbb\xbfc\xc2\xadd' | strip_invisible_chars)"
+assert_eq "invisible-stripped" 'abcd' "${got}"
 
 # --- strip_code_spans ---
 got="$(printf '%s' 'left` A `right and `code` x and ``a`b`` y' | strip_code_spans)"
@@ -1394,7 +1405,7 @@ hsha="cccccccccccccccccccccccccccccccccccccccc"
 hbsha="dddddddddddddddddddddddddddddddddddddddd"
 printf 'diff --git a/a.ts b/a.ts\n--- a/a.ts\n+++ b/a.ts\n@@ -1 +1,50 @@\n+x\n' > "${hdir}/tmp/muse.diff"
 printf '[{"filename":"a.ts"}]' > "${hdir}/tmp/muse-files.json"
-printf '%s' '{"verdict":"v","findings":[{"path":"a.ts","line":1,"severity":"low","title":"t","body":"x ghp_left<!-- hidden -->right y and ghp_ab&#99;d and ghp_xy<span></span>zw and ghp_qq[]()rr and ghp_zz*A*ww and ghp_mm[A](https://example.invalid)nn and ghp_pp[A]qq and ghp_rs\\.tu and ghp_oo[*A*]pp and ghp_ab` C `de and ghp_fg<?x?>hi tail\n\n[A]: https://example.invalid/d\n[*A*]: https://example.invalid/e"}],"next_steps":[]}' > "${hdir}/tmp/review.json"
+printf '%s' '{"verdict":"v","findings":[{"path":"a.ts","line":1,"severity":"low","title":"t","body":"x ghp_left<!-- hidden -->right y and ghp_ab&#99;d and ghp_xy<span></span>zw and ghp_qq[]()rr and ghp_zz*A*ww and ghp_mm[A](https://example.invalid)nn and ghp_pp[A]qq and ghp_rs\\.tu and ghp_oo[*A*]pp and ghp_ab` C `de and ghp_fg<?x?>hi and ghp_st\u200btuv tail\n\n[A]: https://example.invalid/d\n[*A*]: https://example.invalid/e"}],"next_steps":[]}' > "${hdir}/tmp/review.json"
 GH_STUB_CAPTURE="${hdir}/capture.json" GH_STUB_HEAD="${hsha}" GH_STUB_BASE="${hbsha}" \
 PATH="${hdir}/bin:${PATH}" \
 GH_TOKEN="fake" GITHUB_REPOSITORY="t/t" PR_NUMBER="1" \
@@ -1445,6 +1456,10 @@ case "$(cat "${hdir}/capture.json" 2>/dev/null)" in *"ghp_fghi"*) got_h="visible
 assert_eq "post-pi-split-not-visible" "clean" "${got_h}"
 case "$(cat "${hdir}/capture.json" 2>/dev/null)" in *'<?x?>'*) got_h="raw";; *) got_h="stripped";; esac
 assert_eq "post-pi-stripped" "stripped" "${got_h}"
+case "$(cat "${hdir}/capture.json" 2>/dev/null)" in *"ghp_sttuv"*) got_h="visible";; *) got_h="clean";; esac
+assert_eq "post-zerowidth-split-not-visible" "clean" "${got_h}"
+case "$(cat "${hdir}/capture.json" 2>/dev/null)" in *$'\xe2\x80\x8b'*) got_h="raw";; *) got_h="stripped";; esac
+assert_eq "post-zerowidth-stripped" "stripped" "${got_h}"
 rm -rf "${hdir}"
 
 # --- post.sh non-string next_steps routes to fallback (script level) ---
