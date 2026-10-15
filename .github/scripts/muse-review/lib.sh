@@ -300,12 +300,21 @@ protect_code_spans() {
     # blocks: their contents are literal in GFM. An indented chunk only
     # starts a block at a block boundary (start of text, after a blank
     # line, or after another block) — an indented line continuing a
-    # paragraph stays ordinary text, matching GFM.
-    my $icode = 0; my $prevblank = 1;
+    # paragraph stays ordinary text, matching GFM. Inside a list item
+    # the chunk must clear the item content indent by 4 more spaces:
+    # list structure takes precedence, so a 4-space line after
+    # `- item` is item paragraph text, not code.
+    my $icode = 0; my $prevblank = 1; my $icodereq = 4; my $listindent = -1;
+    my $indent_of = sub {
+      my ($l) = @_; my ($ws) = $l =~ /^([ \t]*)/; my $n = 0;
+      for my $ch (split //, $ws) { $n += ($ch eq "\t") ? 4 - ($n % 4) : 1 }
+      return $n;
+    };
     for my $ln (@lines) {
+      my $ind = $indent_of->($ln);
       if ($fence eq "" and $icode) {
         if ($ln =~ /^\s*$/) { $fbuf .= $ln; next }
-        if ($ln =~ /^(?:    |\t)/) { $fbuf .= $ln; next }
+        if ($ind >= $icodereq) { $fbuf .= $ln; next }
         $emit_fence->(); $icode = 0;
       }
       if ($fence eq "" and $ln =~ /^ {0,3}(`{3,}|~{3,})([^\n]*)/ and !(substr($1, 0, 1) eq "`" and index($2, "`") >= 0)) { $flush->(); $fence = substr($1, 0, 1); $flen = length($1); $fbuf = $ln; next }
@@ -314,7 +323,14 @@ protect_code_spans() {
         if ($ln =~ /^ {0,3}(\Q$fence\E{3,})[ \t]*$/ and length($1) >= $flen) { $emit_fence->(); $fence = ""; $prevblank = 1 }
         next;
       }
-      if ($prevblank and $ln =~ /^(?:    |\t)/) { $flush->(); $icode = 1; $fbuf = $ln; next }
+      if ($ln =~ /^([ ]*)([-*+]|[0-9]{1,9}[.)])([ \t]+)(?=\S)/) {
+        my $sp = length($3); $sp = 1 if $sp > 4;
+        $listindent = length($1) + length($2) + $sp;
+      } elsif ($listindent >= 0 and $ln !~ /^\s*$/ and $ind < $listindent) {
+        $listindent = -1;
+      }
+      my $req = $listindent >= 0 ? $listindent + 4 : 4;
+      if ($prevblank and $ind >= $req) { $flush->(); $icode = 1; $icodereq = $req; $fbuf = $ln; next }
       $buf .= $ln;
       $prevblank = ($ln =~ /^\s*$/) ? 1 : 0;
     }
@@ -375,7 +391,7 @@ canonicalize_links() {
     for my $ln (@lines) {
       if ($fence eq "" and $ln =~ /^ {0,3}(`{3,}|~{3,})([^\n]*)/ and !(substr($1, 0, 1) eq "`" and index($2, "`") >= 0)) { $fence = substr($1, 0, 1); $flen = length($1); next }
       if ($fence ne "" and $ln =~ /^ {0,3}(\Q$fence\E{3,})[ \t]*$/ and length($1) >= $flen) { $fence = ""; next }
-      if ($fence eq "" and $ln =~ /^[ \t]{0,3}\[([^\]]+)\]:[ \t]*(?:<[^>\n]*>|\S)/) {
+      if ($fence eq "" and $ln =~ /^[ \t]{0,3}\[([^\]]+)\]:[ \t]*(?:<[^>\n]*>|[^ \t\n"\x27][^ \t\n]*)(?:[ \t]+(?:"[^"\n]*"|\x27[^\x27\n]*\x27|\([^()\n]*\)))?[ \t]*$/) {
         my $l = lc $1; $l =~ s/\s+/ /g; $l =~ s/^\s+//; $l =~ s/\s+$//;
         $def{$l} = 1;
       }
@@ -385,7 +401,7 @@ canonicalize_links() {
     for my $ln (@lines) {
       if ($fence eq "" and $ln =~ /^ {0,3}(`{3,}|~{3,})([^\n]*)/ and !(substr($1, 0, 1) eq "`" and index($2, "`") >= 0)) { $fence = substr($1, 0, 1); $flen = length($1); $out .= $ln; next }
       if ($fence ne "" and $ln =~ /^ {0,3}(\Q$fence\E{3,})[ \t]*$/ and length($1) >= $flen) { $fence = ""; $out .= $ln; next }
-      next if $fence eq "" and $ln =~ /^[ \t]{0,3}\[[^\]]+\]:[ \t]*(?:<[^>\n]*>|\S)/;
+      next if $fence eq "" and $ln =~ /^[ \t]{0,3}\[[^\]]+\]:[ \t]*(?:<[^>\n]*>|[^ \t\n"\x27][^ \t\n]*)(?:[ \t]+(?:"[^"\n]*"|\x27[^\x27\n]*\x27|\([^()\n]*\)))?[ \t]*$/;
       $out .= $ln;
     }
     $s = $out;
