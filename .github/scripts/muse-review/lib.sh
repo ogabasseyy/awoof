@@ -172,7 +172,7 @@ strip_html_tags() {
 # every literal and pattern redaction saw only halves. Deleting joins
 # the halves where the following redaction can match them.
 strip_invisible_chars() {
-  perl -0777 -pe 's/(?:\xC2\xAD|\xCC\x8F|\xD8\x9C|\xE1\x85\x9F|\xE1\x86\xA0|\xE1\x9E[\xB4\xB5]|\xE1\xA0[\x8B-\x8E]|\xE2\x80[\x8B-\x8F\xAA-\xAE]|\xE2\x81[\xA0-\xAF]|\xE3\x85\xA4|\xEF\xB8[\x80-\x8F]|\xEF\xBB\xBF|\xEF\xBF[\xB0-\xB8]|\xF0\x9D\x85[\xB3-\xBA]|\xF0\x9B\xB2[\xA0-\xA3]|\xF3\xA0[\x80-\x87][\x80-\xBF][\x80-\xBF])//g'
+  perl -0777 -pe 's/(?:\xC2\xAD|\xCC\x8F|\xD8\x9C|\xE1\x85\x9F|\xE1\x86\xA0|\xE1\x9E[\xB4\xB5]|\xE1\xA0[\x8B-\x8F]|\xE2\x80[\x8B-\x8F\xAA-\xAE]|\xE2\x81[\xA0-\xAF]|\xE3\x85\xA4|\xEF\xB8[\x80-\x8F]|\xEF\xBB\xBF|\xEF\xBF[\xB0-\xB8]|\xF0\x9D\x85[\xB3-\xBA]|\xF0\x9B\xB2[\xA0-\xA3]|\xF3\xA0[\x80-\x87][\x80-\xBF][\x80-\xBF])//g'
 }
 
 strip_code_spans() {
@@ -854,7 +854,7 @@ redact_json_key() {
     def _parens: (gsub("\\([^()]*\\)"; "") as $o | if $o == . then . else ($o | _parens) end);
     def _linkstrip: (_parens | gsub("\\[(?<t>[^\\]]+)\\]\\([^)]*\\)"; "\(.t)") | gsub("\\[(?<t>[^\\]]+)\\]\\[[^\\]]*\\]"; "\(.t)") | gsub("[\\[\\]]"; ""));
     def _codestrip: gsub("(?<t>`+)(?<c>[\\s\\S]*?)\\k<t>"; "\(.c | if (startswith(" ") and endswith(" ") and ((gsub(" "; "") | length) > 0)) then .[1:-1] else . end)");
-    def _dezero: (gsub("[\u00ad\u034f\u061c\u115f-\u1160\u17b4-\u17b5\u180b-\u180e\u200b-\u200f\u202a-\u202e\u2060-\u206f\u3164\ufe00-\ufe0f\ufeff\ufff0-\ufff8]"; "") | (explode | map(select((. < 917504 or . > 918015) and (. < 119155 or . > 119170))) | implode));
+    def _dezero: (gsub("[\u00ad\u034f\u061c\u115f-\u1160\u17b4-\u17b5\u180b-\u180f\u200b-\u200f\u202a-\u202e\u2060-\u206f\u3164\ufe00-\ufe0f\ufeff\ufff0-\ufff8]"; "") | (explode | map(select((. < 917504 or . > 918015) and (. < 119155 or . > 119170))) | implode));
     def _fmtstrip: gsub("[*`_~]+"; "");
     def _emptylink: gsub("\\[\\]\\([^)]*\\)"; "") | gsub("\\[\\]\\[[^\\]]*\\]"; "");
     def _denul: split("\u0000") | join("");

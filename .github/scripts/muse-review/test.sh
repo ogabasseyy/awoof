@@ -376,6 +376,11 @@ assert_eq "redactjson-nested-dest-redacted" "[REDACTED]" "${got}"
 got="$(META_API_KEY='leftAright' redact_json_key < "${jfix}" | jq -r '.b')"
 assert_eq "redactjson-cgj-redacted" "[REDACTED]" "${got}"
 cat > "${jfix}" <<'EOF'
+{"a":"left\u180fAright"}
+EOF
+got="$(META_API_KEY='leftAright' redact_json_key < "${jfix}" | jq -r '.a')"
+assert_eq "redactjson-u180f-redacted" "[REDACTED]" "${got}"
+cat > "${jfix}" <<'EOF'
 {"a":"left![[]()](u)[*A*]right"}
 EOF
 got="$(META_API_KEY='leftAright' redact_json_key < "${jfix}" | jq -r '.a')"
