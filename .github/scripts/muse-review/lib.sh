@@ -191,7 +191,7 @@ strip_code_spans() {
       $out .= $t; $buf = "";
     };
     for my $ln (@lines) {
-      if ($fence eq "" and $ln =~ /^ {0,3}(`{3,}|~{3,})/) { $flush->(); $fence = substr($1, 0, 1); $flen = length($1); $out .= $ln; next }
+      if ($fence eq "" and $ln =~ /^ {0,3}(`{3,}|~{3,})([^\n]*)/ and !(substr($1, 0, 1) eq "`" and index($2, "`") >= 0)) { $flush->(); $fence = substr($1, 0, 1); $flen = length($1); $out .= $ln; next }
       if ($fence ne "" and $ln =~ /^ {0,3}(\Q$fence\E{3,})/ and length($1) >= $flen) { $fence = ""; $out .= $ln; next }
       if ($fence ne "") { $out .= $ln } else { $buf .= $ln }
     }
@@ -221,8 +221,8 @@ strip_empty_links() {
   perl -0777 -pe 's{\[\]\([^)]*\)}{}g; s{\[\]\[[^\]]*\]}{}g'
 }
 
-# Remove Markdown formatting runs (`*`, backticks, `~~`, and `_` with a
-# punctuation neighbour) bounded by non-space characters on both sides:
+# Remove paired Markdown formatting runs (`*`, backticks, `~~`, and
+# `_` with a punctuation neighbour) bounded by non-space characters:
 # GFM renders such emphasis/code/strikethrough with the markers hidden,
 # so a credential split as `left*A*right` or `fake.*live*/key` displays
 # contiguously while every redaction pass saw only halves. A split needs
@@ -241,13 +241,23 @@ strip_intraword_markers() {
     my $fence = ""; my $flen = 0; my $buf = ""; my $out = "";
     my $flush = sub {
       my $t = $buf;
-      $t =~ s{(?<=\S)(?:\*+|`+|~{2,})(?=\S)}{}g;
+      # Only PAIRED delimiter runs are removed: a lone run renders
+      # literally in GFM (a*b stays a*b), so deleting it corrupts
+      # literal text without joining anything at render. A pair is
+      # removed when either boundary is intraword (non-space on the
+      # outer side), which is exactly when GFM hides the markers and
+      # joins the halves; spaced standalone emphasis (*em* word)
+      # keeps its markers and is preserved.
+      for (1..16) {
+        $t =~ s{(\*+|`+|~{2,})([^\s*`~](?:[^*`~]*[^\s*`~])?)\1(?=\S)}{$2}g;
+        $t =~ s{(?<=\S)(\*+|`+|~{2,})([^\s*`~](?:[^*`~]*[^\s*`~])?)\1(?!\S)}{$2}g;
+      }
       $t =~ s{(?<=[^\w\s])_+(?=\S)}{}g;
       $t =~ s{(?<=\S)_+(?=[^\w\s])}{}g;
       $out .= $t; $buf = "";
     };
     for my $ln (@lines) {
-      if ($fence eq "" and $ln =~ /^ {0,3}(`{3,}|~{3,})/) { $flush->(); $fence = substr($1, 0, 1); $flen = length($1); $out .= $ln; next }
+      if ($fence eq "" and $ln =~ /^ {0,3}(`{3,}|~{3,})([^\n]*)/ and !(substr($1, 0, 1) eq "`" and index($2, "`") >= 0)) { $flush->(); $fence = substr($1, 0, 1); $flen = length($1); $out .= $ln; next }
       if ($fence ne "" and $ln =~ /^ {0,3}(\Q$fence\E{3,})/ and length($1) >= $flen) { $fence = ""; $out .= $ln; next }
       if ($fence ne "") { $out .= $ln } else { $buf .= $ln }
     }
@@ -287,7 +297,7 @@ protect_code_spans() {
       $fbuf = "";
     };
     for my $ln (@lines) {
-      if ($fence eq "" and $ln =~ /^ {0,3}(`{3,}|~{3,})/) { $flush->(); $fence = substr($1, 0, 1); $flen = length($1); $fbuf = $ln; next }
+      if ($fence eq "" and $ln =~ /^ {0,3}(`{3,}|~{3,})([^\n]*)/ and !(substr($1, 0, 1) eq "`" and index($2, "`") >= 0)) { $flush->(); $fence = substr($1, 0, 1); $flen = length($1); $fbuf = $ln; next }
       if ($fence ne "") {
         $fbuf .= $ln;
         if ($ln =~ /^ {0,3}(\Q$fence\E{3,})/ and length($1) >= $flen) { $emit_fence->(); $fence = "" }
@@ -336,7 +346,10 @@ canonicalize_links() {
   # reference definition exists in the same text (the definition itself
   # renders as nothing), so collect defined labels first, drop the
   # definition lines, and unwrap only defined shortcuts; an undefined
-  # [text] renders literally with brackets and cannot join a split.
+  # [text] renders literally with brackets and cannot join a split. A
+  # definition requires a destination after the colon: a bare
+  # `[label]:` line is literal text in GFM, so it neither defines a
+  # shortcut nor is removed.
   perl -0777 -e '
     local $/; my $s = <STDIN>; $s = "" unless defined $s;
     # Definition collection/removal is fence-aware: a [label]: line
@@ -347,9 +360,9 @@ canonicalize_links() {
     my @lines = split /(?<=\n)/, $s;
     my %def; my $fence = ""; my $flen = 0;
     for my $ln (@lines) {
-      if ($fence eq "" and $ln =~ /^ {0,3}(`{3,}|~{3,})/) { $fence = substr($1, 0, 1); $flen = length($1); next }
+      if ($fence eq "" and $ln =~ /^ {0,3}(`{3,}|~{3,})([^\n]*)/ and !(substr($1, 0, 1) eq "`" and index($2, "`") >= 0)) { $fence = substr($1, 0, 1); $flen = length($1); next }
       if ($fence ne "" and $ln =~ /^ {0,3}(\Q$fence\E{3,})/ and length($1) >= $flen) { $fence = ""; next }
-      if ($fence eq "" and $ln =~ /^[ \t]{0,3}\[([^\]]+)\]:/) {
+      if ($fence eq "" and $ln =~ /^[ \t]{0,3}\[([^\]]+)\]:[ \t]*(?:<[^>\n]*>|\S)/) {
         my $l = lc $1; $l =~ s/\s+/ /g; $l =~ s/^\s+//; $l =~ s/\s+$//;
         $def{$l} = 1;
       }
@@ -357,9 +370,9 @@ canonicalize_links() {
     $fence = ""; $flen = 0;
     my $out = "";
     for my $ln (@lines) {
-      if ($fence eq "" and $ln =~ /^ {0,3}(`{3,}|~{3,})/) { $fence = substr($1, 0, 1); $flen = length($1); $out .= $ln; next }
+      if ($fence eq "" and $ln =~ /^ {0,3}(`{3,}|~{3,})([^\n]*)/ and !(substr($1, 0, 1) eq "`" and index($2, "`") >= 0)) { $fence = substr($1, 0, 1); $flen = length($1); $out .= $ln; next }
       if ($fence ne "" and $ln =~ /^ {0,3}(\Q$fence\E{3,})/ and length($1) >= $flen) { $fence = ""; $out .= $ln; next }
-      next if $fence eq "" and $ln =~ /^[ \t]{0,3}\[[^\]]+\]:/;
+      next if $fence eq "" and $ln =~ /^[ \t]{0,3}\[[^\]]+\]:[ \t]*(?:<[^>\n]*>|\S)/;
       $out .= $ln;
     }
     $s = $out;
@@ -855,7 +868,7 @@ redact_json_key() {
     def _linkstrip: (_parens | gsub("\\[(?<t>[^\\]]+)\\]\\([^)]*\\)"; "\(.t)") | gsub("\\[(?<t>[^\\]]+)\\]\\[[^\\]]*\\]"; "\(.t)") | gsub("[\\[\\]]"; ""));
     def _codestrip: gsub("(?<t>`+)(?<c>[\\s\\S]*?)\\k<t>"; "\(.c | if (startswith(" ") and endswith(" ") and ((gsub(" "; "") | length) > 0)) then .[1:-1] else . end)");
     def _dezero: (gsub("[\u00ad\u034f\u061c\u115f-\u1160\u17b4-\u17b5\u180b-\u180f\u200b-\u200f\u202a-\u202e\u2060-\u206f\u3164\ufe00-\ufe0f\ufeff\ufff0-\ufff8]"; "") | (explode | map(select((. < 917504 or . > 918015) and (. < 119155 or . > 119170))) | implode));
-    def _fmtstrip: gsub("[*`_~]+"; "");
+    def _fmtstrip: (gsub("(?<d>[*`]+|~{2,})(?<c>[^\\s*`~](?:[^*`~]*[^\\s*`~])?)\\k<d>"; "\(.c)") | gsub("_+"; ""));
     def _emptylink: gsub("\\[\\]\\([^)]*\\)"; "") | gsub("\\[\\]\\[[^\\]]*\\]"; "");
     def _denul: split("\u0000") | join("");
     def _decr: split("\r") | join("");

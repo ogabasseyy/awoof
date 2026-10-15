@@ -381,6 +381,11 @@ EOF
 got="$(META_API_KEY='leftAright' redact_json_key < "${jfix}" | jq -r '.a')"
 assert_eq "redactjson-u180f-redacted" "[REDACTED]" "${got}"
 cat > "${jfix}" <<'EOF'
+{"a":"left*A*right keep a*b end"}
+EOF
+got="$(META_API_KEY='leftAright' redact_json_key < "${jfix}" | jq -r '.a')"
+assert_eq "redactjson-pairfmt-unmatched-kept" "[REDACTED] keep a*b end" "${got}"
+cat > "${jfix}" <<'EOF'
 {"a":"left![[]()](u)[*A*]right"}
 EOF
 got="$(META_API_KEY='leftAright' redact_json_key < "${jfix}" | jq -r '.a')"
@@ -547,6 +552,10 @@ got="$(printf '%s' 'fake.*live*/key+abc=123 x' | strip_intraword_markers)"
 assert_eq "punct-bounded-markers-removed" 'fake.live/key+abc=123 x' "${got}"
 got="$(printf '%s' 'fake._live_/key and a_b_c stay' | strip_intraword_markers)"
 assert_eq "punct-bounded-underscore-removed" 'fake.live/key and a_b_c stay' "${got}"
+got="$(printf '%s' 'a*b and c~~d and e`f end' | strip_intraword_markers)"
+assert_eq "intraword-unmatched-preserved" 'a*b and c~~d and e`f end' "${got}"
+got="$(printf '%s' 'pre *A*right mid left*B* post' | strip_intraword_markers)"
+assert_eq "intraword-boundary-pairs-removed" 'pre Aright mid leftB post' "${got}"
 
 # --- strip_markdown_escapes ---
 got="$(printf '%s' 'fake\.live a\*b c\n d \\ e' | strip_markdown_escapes)"
@@ -579,6 +588,8 @@ got="$(printf 'see [my label] here\n\n[my label]: https://e.example/x' | canonic
 assert_eq "links-shortcut-multiword" "$(printf 'see my label here\n')" "${got}"
 got="$(printf 'see [setting] here\n\n```\n[setting]: dangerous-value\n```\n' | canonicalize_links)"
 assert_eq "links-fenced-def-preserved" "$(printf 'see [setting] here\n\n```\n[setting]: dangerous-value\n```\n')" "${got}"
+got="$(printf 'see [setting] here\n\n[setting]:\n' | canonicalize_links)"
+assert_eq "links-invalid-def-preserved" "$(printf 'see [setting] here\n\n[setting]:\n')" "${got}"
 got="$(printf 'ex ` A ` y\n\n```\n[setting]: dangerous-value\n```\n' | strip_code_spans | canonicalize_links)"
 assert_eq "pipeline-fenced-def-preserved" "$(printf 'ex A y\n\n```\n[setting]: dangerous-value\n```\n')" "${got}"
 got="$(printf '````\n```\n[setting]: dangerous-value\n````\nsee [setting]\n' | strip_code_spans | canonicalize_links)"
@@ -600,6 +611,10 @@ got="$( (export MUSE_CS_NONCE='cafe1234'; printf 'a `b` c' | protect_code_spans 
 assert_eq "codespan-nonce-roundtrip" 'a `b` c' "${got}"
 got="$(printf '```html\n<p>`x`</p>\n```\na*B*c end' | strip_intraword_markers)"
 assert_eq "intraword-fence-preserved" "$(printf '```html\n<p>`x`</p>\n```\naBc end')" "${got}"
+got="$(printf '```x`\n@octocat here' | protect_code_spans | sanitize_mentions | restore_code_spans)"
+assert_eq "codespan-invalid-fence-not-protected" "$(printf '```x`\n@%soctocat here' "${zwsp}")" "${got}"
+got="$(printf '~~~x`\n@octocat\n~~~\nafter' | protect_code_spans | sanitize_mentions | restore_code_spans)"
+assert_eq "codespan-tilde-fence-backtick-info" "$(printf '~~~x`\n@octocat\n~~~\nafter')" "${got}"
 got="$(printf '%s' 'see <https://docs.github.com/en/actions> and <a@b.com> and <b>bold</b>' | strip_html_tags)"
 assert_eq "html-autolinks-kept" 'see https://docs.github.com/en/actions and a@b.com and  [HTML removed] bold [HTML removed] ' "${got}"
 
@@ -774,6 +789,8 @@ selftest_path="${SCRIPT_DIR}/../../workflows/muse-review-selftest.yml"
 assert_eq "selftest-runbook-trigger" "2" "$(grep -c 'docs/runbooks/muse-code-review.md' "${selftest_path}" 2>/dev/null || echo 0)"
 if grep -q 'redact "\$(redact' "${SCRIPT_DIR}/run.sh" 2>/dev/null; then got_doc="yes"; else got_doc="no"; fi
 assert_eq "run-redact-after-neutralize" "yes" "${got_doc}"
+if grep -q 'strip_ansi < "${stderr_clean}" 2>/dev/null | strip_invisible_chars | strip_markdown_escapes' "${SCRIPT_DIR}/run.sh" 2>/dev/null; then got_doc="yes"; else got_doc="no"; fi
+assert_eq "run-stderr-invisible-stripped" "yes" "${got_doc}"
 trust_path="${SCRIPT_DIR}/../../../docs/public-trust-pages.md"
 if grep -q "non-Contributor-mode model" "${trust_path}" 2>/dev/null && grep -q "not a Contributor-mode variant" "${trust_path}" 2>/dev/null; then got_doc="yes"; else got_doc="no"; fi
 assert_eq "docs-paygo-noncontributor" "yes" "${got_doc}"

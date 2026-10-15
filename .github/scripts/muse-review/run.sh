@@ -89,11 +89,14 @@ if (( muse_rc != 0 )); then
   # hide the bytes, so an escape-split key would display contiguously
   # while every redaction pass saw only halves. Removing the sequences
   # joins the halves where the key-aware passes below can match them.
+  # Invisible/default-ignorable characters are stripped the same way:
+  # a key split by U+200B or U+180F displays contiguously in the log
+  # while literal matching sees only the separated halves.
   # Redact again after neutralize: CR handling there is the last
   # byte-changing filter before the log, so a second key-aware pass
   # (redact itself strips CRs before matching) catches any credential
   # a CR split hid from the first pass.
-  redact "$(redact "$(strip_ansi < "${stderr_clean}" 2>/dev/null | strip_markdown_escapes || true)" | tail -c 4000 | neutralize_workflow_commands)"
+  redact "$(redact "$(strip_ansi < "${stderr_clean}" 2>/dev/null | strip_invisible_chars | strip_markdown_escapes || true)" | tail -c 4000 | neutralize_workflow_commands)"
   rm -f "${stderr_clean}"
   exit "${muse_rc}"
 fi
