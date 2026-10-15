@@ -13,7 +13,7 @@ if [[ "${MUSE_STOP:-1}" == "1" ]]; then exit 0; fi
 # shellcheck disable=SC1091  # SCRIPT_DIR is set by the workflow step
 . "${SCRIPT_DIR}/lib.sh"
 
-# Unified diff, truncated to a prompt budget. Collection failures are routed
+# Unified diff, bounded by a prompt budget. Collection failures are routed
 # to the explicit fallback (never reviewed blind). Prefer the complete
 # local merge-base diff. --text on that diff: a base/head .gitattributes
 # -diff rule would otherwise turn source hunks into "Binary files differ"
@@ -69,6 +69,16 @@ else
     diff_failed=true
   fi
 fi
+# Prompt-budget overflow fails closed the same way: a diff cut at the
+# budget hides tail hunks entirely (an addition-only hunk past the
+# cutoff leaves no trace in the removed-lines supplement either), yet
+# a partial review would still post the success marker for a change it
+# could not cite lines from. Route to the explicit fallback instead.
+budget=60000
+if [[ "${diff_failed}" != "true" ]] && (( $(wc -c < "${diff_file}") > budget )); then
+  echo "complete diff exceeds the ${budget}-byte prompt budget; routing to the fallback instead of reviewing a truncated diff" > "${RUNNER_TEMP}/muse-ghdiff.err"
+  diff_failed=true
+fi
 echo "diff_failed=${diff_failed}" >> "${GITHUB_OUTPUT}"
 
 # Removed-lines supplement, extracted from the FULL diff before any
@@ -101,20 +111,12 @@ else
   : > "${removed_file}"
 fi
 
-budget=60000
 diff_note=""
 if [[ "${diff_failed}" == "true" ]]; then
   printf '(Diff collection failed; the fallback review explains. Diff error: %s)\n' \
     "$(head -c 300 "${RUNNER_TEMP}/muse-ghdiff.err" 2>/dev/null || true)" > "${diff_file}"
   diff_note=" (collection failed)"
 else
-  diff_len="$(wc -c < "${diff_file}")"
-  if (( diff_len > budget )); then
-    head -c "${budget}" "${diff_file}" > "${diff_file}.trunc"
-    printf '\n[... PARTIAL DIFF truncated at %s bytes. The tail is NOT visible: read each changed file in full from the working tree, and check the <removed_lines> supplement for deleted base-side lines ...]\n' "${budget}" >> "${diff_file}.trunc"
-    mv "${diff_file}.trunc" "${diff_file}"
-    diff_note=" (truncated — read full files from the working tree)"
-  fi
   if [[ ! -s "${diff_file}" ]]; then
     printf '(No textual diff was returned by the GitHub API.)\n' > "${diff_file}"
   fi

@@ -391,6 +391,11 @@ EOF
 got="$(META_API_KEY='leftAright' redact_json_key < "${jfix}" | jq -r '.a')"
 assert_eq "redactjson-uffa0-redacted" "[REDACTED]" "${got}"
 cat > "${jfix}" <<'EOF'
+{"a":"left\udb40\udc00Aright"}
+EOF
+got="$(META_API_KEY='leftAright' redact_json_key < "${jfix}" | jq -r '.a')"
+assert_eq "redactjson-tagchar-redacted" "[REDACTED]" "${got}"
+cat > "${jfix}" <<'EOF'
 {"a":"left![[]()](u)[*A*]right"}
 EOF
 got="$(META_API_KEY='leftAright' redact_json_key < "${jfix}" | jq -r '.a')"
@@ -575,6 +580,8 @@ got="$(printf 'a\xcc\x8fb\xe2\x80\xaec' | strip_invisible_chars)"
 assert_eq "invisible-cgj-bidi-stripped" 'abc' "${got}"
 got="$(printf 'a\xef\xbe\xa0b' | strip_invisible_chars)"
 assert_eq "invisible-uffa0-stripped" 'ab' "${got}"
+got="$(printf 'a\xf3\xa0\x88\x80b' | strip_invisible_chars)"
+assert_eq "invisible-tag-supplementary-stripped" 'ab' "${got}"
 
 # --- strip_code_spans ---
 got="$(printf '%s' 'left` A `right and `code` x and ``a`b`` y' | strip_code_spans)"
@@ -628,6 +635,14 @@ got="$(printf '```\n@alice\n```x\n@bob\n```\n\n@carol end' | protect_code_spans 
 assert_eq "fence-closing-trailing-text" "$(printf '```\n@alice\n```x\n@bob\n```\n\n@%scarol end' "${zwsp}")" "${got}"
 got="$(printf 'a `x`` b' | strip_code_spans)"
 assert_eq "codespan-unequal-run-preserved" 'a `x`` b' "${got}"
+got="$(printf 'x ``![](https://e.example/pixel)` y' | protect_code_spans | strip_images | restore_code_spans)"
+assert_eq "codespan-opening-run-maximal" 'x ``` y' "${got}"
+got="$(printf 'a ``x` b' | strip_code_spans)"
+assert_eq "codespan-opening-run-preserved" 'a ``x` b' "${got}"
+got="$(printf 'intro\n\n    ![a](https://e.example/x) and <b>y</b>\n\nafter' | protect_code_spans | strip_images | strip_html_tags | restore_code_spans)"
+assert_eq "indented-code-protected" "$(printf 'intro\n\n    ![a](https://e.example/x) and <b>y</b>\n\nafter')" "${got}"
+got="$(printf 'intro\n    ![a](https://e.example/x) tail' | protect_code_spans | strip_images | restore_code_spans)"
+assert_eq "indented-paragraph-not-code" "$(printf 'intro\n    a tail')" "${got}"
 got="$(printf '%s' 'see <https://docs.github.com/en/actions> and <a@b.com> and <b>bold</b>' | strip_html_tags)"
 assert_eq "html-autolinks-kept" 'see https://docs.github.com/en/actions and a@b.com and  [HTML removed] bold [HTML removed] ' "${got}"
 
@@ -1317,6 +1332,20 @@ printf 'diff --git a/img.png b/img.png\ndeleted file mode 100644\nBinary files a
 (cd "${xdir}/repo" && GH_STUB_DIFF="${xdir}/bin.diff" PATH="${xdir}/bin:${PATH}" GH_TOKEN="fake" GITHUB_REPOSITORY="t/t" HEAD_SHA_EVENT="aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" GITHUB_OUTPUT="${xdir}/tmp/out.txt" RUNNER_TEMP="${xdir}/tmp" SCRIPT_DIR="${SCRIPT_DIR}" bash "${diff_script}") >/dev/null 2>&1
 case "$(cat "${xdir}/tmp/out.txt")" in *"diff_failed=true"*) got_x="failed";; *) got_x="ok";; esac
 assert_eq "diff-compare-binary-fails-closed" "failed" "${got_x}"
+python3 -c "
+print('diff --git a/f.txt b/f.txt')
+print('--- a/f.txt')
+print('+++ b/f.txt')
+print('@@ -1 +1 @@')
+for i in range(6000):
+    print('+line%06d' % i)
+" > "${xdir}/budget.diff"
+: > "${xdir}/tmp/out.txt"
+(cd "${xdir}/repo" && GH_STUB_DIFF="${xdir}/budget.diff" PATH="${xdir}/bin:${PATH}" GH_TOKEN="fake" GITHUB_REPOSITORY="t/t" HEAD_SHA_EVENT="aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" GITHUB_OUTPUT="${xdir}/tmp/out.txt" RUNNER_TEMP="${xdir}/tmp" SCRIPT_DIR="${SCRIPT_DIR}" bash "${diff_script}") >/dev/null 2>&1
+case "$(cat "${xdir}/tmp/out.txt")" in *"diff_failed=true"*) got_x="failed";; *) got_x="ok";; esac
+assert_eq "diff-budget-fails-closed" "failed" "${got_x}"
+case "$(cat "${xdir}/tmp/muse.diff" 2>/dev/null)" in *"Diff collection failed"*) got_x="fallback";; *) got_x="partial";; esac
+assert_eq "diff-budget-fallback-note" "fallback" "${got_x}"
 rm -rf "${xdir}"
 
 # --- post.sh over-budget fallback drops inline threads (script level) ---
