@@ -386,6 +386,11 @@ EOF
 got="$(META_API_KEY='leftAright' redact_json_key < "${jfix}" | jq -r '.a')"
 assert_eq "redactjson-pairfmt-unmatched-kept" "[REDACTED] keep a*b end" "${got}"
 cat > "${jfix}" <<'EOF'
+{"a":"left\uffa0Aright"}
+EOF
+got="$(META_API_KEY='leftAright' redact_json_key < "${jfix}" | jq -r '.a')"
+assert_eq "redactjson-uffa0-redacted" "[REDACTED]" "${got}"
+cat > "${jfix}" <<'EOF'
 {"a":"left![[]()](u)[*A*]right"}
 EOF
 got="$(META_API_KEY='leftAright' redact_json_key < "${jfix}" | jq -r '.a')"
@@ -568,6 +573,8 @@ got="$(printf 'a\xe2\x81\xa6b\xe2\x81\xa9c' | strip_invisible_chars)"
 assert_eq "invisible-bidi-stripped" 'abc' "${got}"
 got="$(printf 'a\xcc\x8fb\xe2\x80\xaec' | strip_invisible_chars)"
 assert_eq "invisible-cgj-bidi-stripped" 'abc' "${got}"
+got="$(printf 'a\xef\xbe\xa0b' | strip_invisible_chars)"
+assert_eq "invisible-uffa0-stripped" 'ab' "${got}"
 
 # --- strip_code_spans ---
 got="$(printf '%s' 'left` A `right and `code` x and ``a`b`` y' | strip_code_spans)"
@@ -615,6 +622,12 @@ got="$(printf '```x`\n@octocat here' | protect_code_spans | sanitize_mentions | 
 assert_eq "codespan-invalid-fence-not-protected" "$(printf '```x`\n@%soctocat here' "${zwsp}")" "${got}"
 got="$(printf '~~~x`\n@octocat\n~~~\nafter' | protect_code_spans | sanitize_mentions | restore_code_spans)"
 assert_eq "codespan-tilde-fence-backtick-info" "$(printf '~~~x`\n@octocat\n~~~\nafter')" "${got}"
+got="$(printf 'x `![](https://e.example/pixel)`` y' | protect_code_spans | strip_images | restore_code_spans)"
+assert_eq "codespan-unequal-run-image-stripped" 'x ``` y' "${got}"
+got="$(printf '```\n@alice\n```x\n@bob\n```\n\n@carol end' | protect_code_spans | sanitize_mentions | restore_code_spans)"
+assert_eq "fence-closing-trailing-text" "$(printf '```\n@alice\n```x\n@bob\n```\n\n@%scarol end' "${zwsp}")" "${got}"
+got="$(printf 'a `x`` b' | strip_code_spans)"
+assert_eq "codespan-unequal-run-preserved" 'a `x`` b' "${got}"
 got="$(printf '%s' 'see <https://docs.github.com/en/actions> and <a@b.com> and <b>bold</b>' | strip_html_tags)"
 assert_eq "html-autolinks-kept" 'see https://docs.github.com/en/actions and a@b.com and  [HTML removed] bold [HTML removed] ' "${got}"
 

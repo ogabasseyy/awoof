@@ -172,7 +172,7 @@ strip_html_tags() {
 # every literal and pattern redaction saw only halves. Deleting joins
 # the halves where the following redaction can match them.
 strip_invisible_chars() {
-  perl -0777 -pe 's/(?:\xC2\xAD|\xCC\x8F|\xD8\x9C|\xE1\x85\x9F|\xE1\x86\xA0|\xE1\x9E[\xB4\xB5]|\xE1\xA0[\x8B-\x8F]|\xE2\x80[\x8B-\x8F\xAA-\xAE]|\xE2\x81[\xA0-\xAF]|\xE3\x85\xA4|\xEF\xB8[\x80-\x8F]|\xEF\xBB\xBF|\xEF\xBF[\xB0-\xB8]|\xF0\x9D\x85[\xB3-\xBA]|\xF0\x9B\xB2[\xA0-\xA3]|\xF3\xA0[\x80-\x87][\x80-\xBF][\x80-\xBF])//g'
+  perl -0777 -pe 's/(?:\xC2\xAD|\xCC\x8F|\xD8\x9C|\xE1\x85\x9F|\xE1\x86\xA0|\xE1\x9E[\xB4\xB5]|\xE1\xA0[\x8B-\x8F]|\xE2\x80[\x8B-\x8F\xAA-\xAE]|\xE2\x81[\xA0-\xAF]|\xE3\x85\xA4|\xEF\xB8[\x80-\x8F]|\xEF\xBE\xA0|\xEF\xBB\xBF|\xEF\xBF[\xB0-\xB8]|\xF0\x9D\x85[\xB3-\xBA]|\xF0\x9B\xB2[\xA0-\xA3]|\xF3\xA0[\x80-\x87][\x80-\xBF][\x80-\xBF])//g'
 }
 
 strip_code_spans() {
@@ -187,12 +187,12 @@ strip_code_spans() {
     my $fence = ""; my $flen = 0; my $buf = ""; my $out = "";
     my $flush = sub {
       my $t = $buf;
-      $t =~ s{(`+)(.+?)\1}{ my $c = $2; if ($c =~ /^ / and $c =~ / $/ and $c !~ /^ +$/) { $c = substr($c, 1, length($c) - 2) } $c }gse;
+      $t =~ s{(`+)(.+?)(?<!`)\1(?!`)}{ my $c = $2; if ($c =~ /^ / and $c =~ / $/ and $c !~ /^ +$/) { $c = substr($c, 1, length($c) - 2) } $c }gse;
       $out .= $t; $buf = "";
     };
     for my $ln (@lines) {
       if ($fence eq "" and $ln =~ /^ {0,3}(`{3,}|~{3,})([^\n]*)/ and !(substr($1, 0, 1) eq "`" and index($2, "`") >= 0)) { $flush->(); $fence = substr($1, 0, 1); $flen = length($1); $out .= $ln; next }
-      if ($fence ne "" and $ln =~ /^ {0,3}(\Q$fence\E{3,})/ and length($1) >= $flen) { $fence = ""; $out .= $ln; next }
+      if ($fence ne "" and $ln =~ /^ {0,3}(\Q$fence\E{3,})[ \t]*$/ and length($1) >= $flen) { $fence = ""; $out .= $ln; next }
       if ($fence ne "") { $out .= $ln } else { $buf .= $ln }
     }
     $flush->();
@@ -249,8 +249,8 @@ strip_intraword_markers() {
       # joins the halves; spaced standalone emphasis (*em* word)
       # keeps its markers and is preserved.
       for (1..16) {
-        $t =~ s{(\*+|`+|~{2,})([^\s*`~](?:[^*`~]*[^\s*`~])?)\1(?=\S)}{$2}g;
-        $t =~ s{(?<=\S)(\*+|`+|~{2,})([^\s*`~](?:[^*`~]*[^\s*`~])?)\1(?!\S)}{$2}g;
+        $t =~ s{(\*+|`+|~{2,})([^\s*`~](?:[^*`~]*[^\s*`~])?)\1(?!`)(?=\S)}{$2}g;
+        $t =~ s{(?<=\S)(\*+|`+|~{2,})([^\s*`~](?:[^*`~]*[^\s*`~])?)\1(?!`)(?!\S)}{$2}g;
       }
       $t =~ s{(?<=[^\w\s])_+(?=\S)}{}g;
       $t =~ s{(?<=\S)_+(?=[^\w\s])}{}g;
@@ -258,7 +258,7 @@ strip_intraword_markers() {
     };
     for my $ln (@lines) {
       if ($fence eq "" and $ln =~ /^ {0,3}(`{3,}|~{3,})([^\n]*)/ and !(substr($1, 0, 1) eq "`" and index($2, "`") >= 0)) { $flush->(); $fence = substr($1, 0, 1); $flen = length($1); $out .= $ln; next }
-      if ($fence ne "" and $ln =~ /^ {0,3}(\Q$fence\E{3,})/ and length($1) >= $flen) { $fence = ""; $out .= $ln; next }
+      if ($fence ne "" and $ln =~ /^ {0,3}(\Q$fence\E{3,})[ \t]*$/ and length($1) >= $flen) { $fence = ""; $out .= $ln; next }
       if ($fence ne "") { $out .= $ln } else { $buf .= $ln }
     }
     $flush->();
@@ -285,7 +285,7 @@ protect_code_spans() {
     my $fence = ""; my $flen = 0; my $buf = ""; my $fbuf = ""; my $out = "";
     my $flush = sub {
       my $t = $buf;
-      $t =~ s{(`+)(.+?)\1}{ "MUSECS" . ($ENV{MUSE_CS_NONCE} // "") . unpack("H*", $&) . "Z" }gse;
+      $t =~ s{(`+)(.+?)(?<!`)\1(?!`)}{ "MUSECS" . ($ENV{MUSE_CS_NONCE} // "") . unpack("H*", $&) . "Z" }gse;
       $out .= $t; $buf = "";
     };
     # Whole fenced blocks tokenize too (not just inline spans): their
@@ -300,7 +300,7 @@ protect_code_spans() {
       if ($fence eq "" and $ln =~ /^ {0,3}(`{3,}|~{3,})([^\n]*)/ and !(substr($1, 0, 1) eq "`" and index($2, "`") >= 0)) { $flush->(); $fence = substr($1, 0, 1); $flen = length($1); $fbuf = $ln; next }
       if ($fence ne "") {
         $fbuf .= $ln;
-        if ($ln =~ /^ {0,3}(\Q$fence\E{3,})/ and length($1) >= $flen) { $emit_fence->(); $fence = "" }
+        if ($ln =~ /^ {0,3}(\Q$fence\E{3,})[ \t]*$/ and length($1) >= $flen) { $emit_fence->(); $fence = "" }
         next;
       }
       $buf .= $ln;
@@ -361,7 +361,7 @@ canonicalize_links() {
     my %def; my $fence = ""; my $flen = 0;
     for my $ln (@lines) {
       if ($fence eq "" and $ln =~ /^ {0,3}(`{3,}|~{3,})([^\n]*)/ and !(substr($1, 0, 1) eq "`" and index($2, "`") >= 0)) { $fence = substr($1, 0, 1); $flen = length($1); next }
-      if ($fence ne "" and $ln =~ /^ {0,3}(\Q$fence\E{3,})/ and length($1) >= $flen) { $fence = ""; next }
+      if ($fence ne "" and $ln =~ /^ {0,3}(\Q$fence\E{3,})[ \t]*$/ and length($1) >= $flen) { $fence = ""; next }
       if ($fence eq "" and $ln =~ /^[ \t]{0,3}\[([^\]]+)\]:[ \t]*(?:<[^>\n]*>|\S)/) {
         my $l = lc $1; $l =~ s/\s+/ /g; $l =~ s/^\s+//; $l =~ s/\s+$//;
         $def{$l} = 1;
@@ -371,7 +371,7 @@ canonicalize_links() {
     my $out = "";
     for my $ln (@lines) {
       if ($fence eq "" and $ln =~ /^ {0,3}(`{3,}|~{3,})([^\n]*)/ and !(substr($1, 0, 1) eq "`" and index($2, "`") >= 0)) { $fence = substr($1, 0, 1); $flen = length($1); $out .= $ln; next }
-      if ($fence ne "" and $ln =~ /^ {0,3}(\Q$fence\E{3,})/ and length($1) >= $flen) { $fence = ""; $out .= $ln; next }
+      if ($fence ne "" and $ln =~ /^ {0,3}(\Q$fence\E{3,})[ \t]*$/ and length($1) >= $flen) { $fence = ""; $out .= $ln; next }
       next if $fence eq "" and $ln =~ /^[ \t]{0,3}\[[^\]]+\]:[ \t]*(?:<[^>\n]*>|\S)/;
       $out .= $ln;
     }
@@ -866,8 +866,8 @@ redact_json_key() {
       | (($st.out + (if $st.esc then [92] else [] end)) | implode);
     def _parens: (gsub("\\([^()]*\\)"; "") as $o | if $o == . then . else ($o | _parens) end);
     def _linkstrip: (_parens | gsub("\\[(?<t>[^\\]]+)\\]\\([^)]*\\)"; "\(.t)") | gsub("\\[(?<t>[^\\]]+)\\]\\[[^\\]]*\\]"; "\(.t)") | gsub("[\\[\\]]"; ""));
-    def _codestrip: gsub("(?<t>`+)(?<c>[\\s\\S]*?)\\k<t>"; "\(.c | if (startswith(" ") and endswith(" ") and ((gsub(" "; "") | length) > 0)) then .[1:-1] else . end)");
-    def _dezero: (gsub("[\u00ad\u034f\u061c\u115f-\u1160\u17b4-\u17b5\u180b-\u180f\u200b-\u200f\u202a-\u202e\u2060-\u206f\u3164\ufe00-\ufe0f\ufeff\ufff0-\ufff8]"; "") | (explode | map(select((. < 917504 or . > 918015) and (. < 119155 or . > 119170))) | implode));
+    def _codestrip: gsub("(?<t>`+)(?<c>[\\s\\S]*?)(?<!`)\\k<t>(?!`)"; "\(.c | if (startswith(" ") and endswith(" ") and ((gsub(" "; "") | length) > 0)) then .[1:-1] else . end)");
+    def _dezero: (gsub("[\u00ad\u034f\u061c\u115f-\u1160\u17b4-\u17b5\u180b-\u180f\u200b-\u200f\u202a-\u202e\u2060-\u206f\u3164\ufe00-\ufe0f\ufeff\uffa0\ufff0-\ufff8]"; "") | (explode | map(select((. < 917504 or . > 918015) and (. < 119155 or . > 119170))) | implode));
     def _fmtstrip: (gsub("(?<d>[*`]+|~{2,})(?<c>[^\\s*`~](?:[^*`~]*[^\\s*`~])?)\\k<d>"; "\(.c)") | gsub("_+"; ""));
     def _emptylink: gsub("\\[\\]\\([^)]*\\)"; "") | gsub("\\[\\]\\[[^\\]]*\\]"; "");
     def _denul: split("\u0000") | join("");
