@@ -172,7 +172,28 @@ strip_invisible_chars() {
 }
 
 strip_code_spans() {
-  perl -0777 -pe 's{(`+)(.+?)\1}{ my $c = $2; if ($c =~ /^ / and $c =~ / $/ and $c !~ /^ +$/) { $c = substr($c, 1, length($c) - 2) } $c }gse'
+  # Fence-aware: fenced code blocks (``` / ~~~ lines) are literal text,
+  # not spans — stripping their delimiters would expose fenced lines
+  # (e.g. a `[setting]: value` config line) to the definition removal
+  # in canonicalize_links. Buffer non-fence segments and normalize
+  # spans only there.
+  perl -0777 -e '
+    local $/; my $s = <STDIN>; $s = "" unless defined $s;
+    my @lines = split /(?<=\n)/, $s;
+    my $fence = ""; my $buf = ""; my $out = "";
+    my $flush = sub {
+      my $t = $buf;
+      $t =~ s{(`+)(.+?)\1}{ my $c = $2; if ($c =~ /^ / and $c =~ / $/ and $c !~ /^ +$/) { $c = substr($c, 1, length($c) - 2) } $c }gse;
+      $out .= $t; $buf = "";
+    };
+    for my $ln (@lines) {
+      if ($fence eq "" and $ln =~ /^ {0,3}(`{3,}|~{3,})/) { $flush->(); $fence = substr($1, 0, 1); $out .= $ln; next }
+      if ($fence ne "" and $ln =~ /^ {0,3}\Q$fence\E{3,}/) { $fence = ""; $out .= $ln; next }
+      if ($fence ne "") { $out .= $ln } else { $buf .= $ln }
+    }
+    $flush->();
+    print $out;
+  '
 }
 
 # Remove ANSI terminal control sequences (CSI styling, OSC, bare ESC

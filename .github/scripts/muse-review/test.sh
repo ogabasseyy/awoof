@@ -547,6 +547,8 @@ got="$(printf 'left[A]right see [docs] here\n\n[A]: https://e.example/x' | canon
 assert_eq "links-shortcut-defined" "$(printf 'leftAright see [docs] here\n')" "${got}"
 got="$(printf 'see [setting] here\n\n```\n[setting]: dangerous-value\n```\n' | canonicalize_links)"
 assert_eq "links-fenced-def-preserved" "$(printf 'see [setting] here\n\n```\n[setting]: dangerous-value\n```\n')" "${got}"
+got="$(printf 'ex ` A ` y\n\n```\n[setting]: dangerous-value\n```\n' | strip_code_spans | canonicalize_links)"
+assert_eq "pipeline-fenced-def-preserved" "$(printf 'ex A y\n\n```\n[setting]: dangerous-value\n```\n')" "${got}"
 
 # --- trunc_bytes_marked ---
 got="$(printf 'abcdefghij' | trunc_bytes_marked 10)"
