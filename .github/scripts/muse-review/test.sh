@@ -81,6 +81,8 @@ assert_eq "capfile-missing-rc" "1" "${got_rc}"
 zwsp=$'\xe2\x80\x8b'
 got="$(printf '%s' 'hi @octocat, ping @a-b and mail a@b.com' | sanitize_mentions)"
 assert_eq "mentions-zwsp" "hi @${zwsp}octocat, ping @${zwsp}a-b and mail a@b.com" "${got}"
+got="$(printf '%s' 'see https://www.npmjs.com/package/@scope/pkg and ping @user' | sanitize_mentions)"
+assert_eq "mentions-url-kept" "see https://www.npmjs.com/package/@scope/pkg and ping @${zwsp}user" "${got}"
 got="$(printf '%s' '@lead starts here' | sanitize_mentions)"
 assert_eq "mentions-start" "@${zwsp}lead starts here" "${got}"
 got="$(printf '%s' 'say (@octo) and "[@root]" ok' | sanitize_mentions)"
@@ -373,6 +375,11 @@ got="$(META_API_KEY='leftAright' redact_json_key < "${jfix}" | jq -r '.a')"
 assert_eq "redactjson-multibacktick-redacted" "[REDACTED]" "${got}"
 got="$(META_API_KEY='leftAright' redact_json_key < "${jfix}" | jq -r '.b')"
 assert_eq "redactjson-zerowidth-redacted" "[REDACTED]" "${got}"
+cat > "${jfix}" <<'EOF'
+{"a":"left\u2066A\u2069right"}
+EOF
+got="$(META_API_KEY='leftAright' redact_json_key < "${jfix}" | jq -r '.a')"
+assert_eq "redactjson-bidi-redacted" "[REDACTED]" "${got}"
 if grep -q 'canonicalize_links < "${review_file}"' "${SCRIPT_DIR}/run.sh"; then got_rc="present"; else got_rc="absent"; fi
 assert_eq "run-no-canon-on-json" "absent" "${got_rc}"
 # NUL-split key: an embedded U+0000 keeps the halves non-contiguous here,
@@ -531,6 +538,8 @@ assert_eq "markdown-escapes-decoded" 'fake.live a*b c\n d \ e' "${got}"
 # --- strip_invisible_chars ---
 got="$(printf 'a\xe2\x80\x8bb\xef\xbb\xbfc\xc2\xadd' | strip_invisible_chars)"
 assert_eq "invisible-stripped" 'abcd' "${got}"
+got="$(printf 'a\xe2\x81\xa6b\xe2\x81\xa9c' | strip_invisible_chars)"
+assert_eq "invisible-bidi-stripped" 'abc' "${got}"
 
 # --- strip_code_spans ---
 got="$(printf '%s' 'left` A `right and `code` x and ``a`b`` y' | strip_code_spans)"
@@ -549,6 +558,15 @@ got="$(printf 'see [setting] here\n\n```\n[setting]: dangerous-value\n```\n' | c
 assert_eq "links-fenced-def-preserved" "$(printf 'see [setting] here\n\n```\n[setting]: dangerous-value\n```\n')" "${got}"
 got="$(printf 'ex ` A ` y\n\n```\n[setting]: dangerous-value\n```\n' | strip_code_spans | canonicalize_links)"
 assert_eq "pipeline-fenced-def-preserved" "$(printf 'ex A y\n\n```\n[setting]: dangerous-value\n```\n')" "${got}"
+got="$(printf '````\n```\n[setting]: dangerous-value\n````\nsee [setting]\n' | strip_code_spans | canonicalize_links)"
+assert_eq "pipeline-fence-length-preserved" "$(printf '````\n```\n[setting]: dangerous-value\n````\nsee [setting]\n')" "${got}"
+
+# --- protect/restore code spans ---
+got="$(printf 'pre `a*b` mid `\\.` post' | protect_code_spans | strip_markdown_escapes | strip_intraword_markers | restore_code_spans)"
+assert_eq "codespan-content-preserved" 'pre `a*b` mid `\.` post' "${got}"
+got="$(printf 'x `keep me` y' | protect_code_spans)"
+case "${got}" in *'`'*) got_p="raw";; *) got_p="tokenized";; esac
+assert_eq "codespan-tokenized" "tokenized" "${got_p}"
 
 # --- trunc_bytes_marked ---
 got="$(printf 'abcdefghij' | trunc_bytes_marked 10)"
@@ -1407,7 +1425,7 @@ hsha="cccccccccccccccccccccccccccccccccccccccc"
 hbsha="dddddddddddddddddddddddddddddddddddddddd"
 printf 'diff --git a/a.ts b/a.ts\n--- a/a.ts\n+++ b/a.ts\n@@ -1 +1,50 @@\n+x\n' > "${hdir}/tmp/muse.diff"
 printf '[{"filename":"a.ts"}]' > "${hdir}/tmp/muse-files.json"
-printf '%s' '{"verdict":"v","findings":[{"path":"a.ts","line":1,"severity":"low","title":"t","body":"x ghp_left<!-- hidden -->right y and ghp_ab&#99;d and ghp_xy<span></span>zw and ghp_qq[]()rr and ghp_zz*A*ww and ghp_mm[A](https://example.invalid)nn and ghp_pp[A]qq and ghp_rs\\.tu and ghp_oo[*A*]pp and ghp_ab` C `de and ghp_fg<?x?>hi and ghp_st\u200btuv tail\n\n[A]: https://example.invalid/d\n[*A*]: https://example.invalid/e"}],"next_steps":[]}' > "${hdir}/tmp/review.json"
+printf '%s' '{"verdict":"v","findings":[{"path":"a.ts","line":1,"severity":"low","title":"t","body":"x ghp_left<!-- hidden -->right y and ghp_ab&#99;d and ghp_xy<span></span>zw and ghp_qq[]()rr and ghp_zz*A*ww and ghp_mm[A](https://example.invalid)nn and ghp_pp[A]qq and ghp_rs\\.tu and ghp_oo[*A*]pp and ghp_ab` C `de and ghp_fg<?x?>hi and ghp_st\u200btuv and use `a*b` ok tail\n\n[A]: https://example.invalid/d\n[*A*]: https://example.invalid/e"}],"next_steps":[]}' > "${hdir}/tmp/review.json"
 GH_STUB_CAPTURE="${hdir}/capture.json" GH_STUB_HEAD="${hsha}" GH_STUB_BASE="${hbsha}" \
 PATH="${hdir}/bin:${PATH}" \
 GH_TOKEN="fake" GITHUB_REPOSITORY="t/t" PR_NUMBER="1" \
@@ -1462,6 +1480,8 @@ case "$(cat "${hdir}/capture.json" 2>/dev/null)" in *"ghp_sttuv"*) got_h="visibl
 assert_eq "post-zerowidth-split-not-visible" "clean" "${got_h}"
 case "$(cat "${hdir}/capture.json" 2>/dev/null)" in *$'\xe2\x80\x8b'*) got_h="raw";; *) got_h="stripped";; esac
 assert_eq "post-zerowidth-stripped" "stripped" "${got_h}"
+case "$(cat "${hdir}/capture.json" 2>/dev/null)" in *'`a*b`'*) got_h="kept";; *) got_h="mangled";; esac
+assert_eq "post-inline-code-preserved" "kept" "${got_h}"
 rm -rf "${hdir}"
 
 # --- post.sh non-string next_steps routes to fallback (script level) ---

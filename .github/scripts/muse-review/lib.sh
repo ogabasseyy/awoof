@@ -92,7 +92,11 @@ sanitize_mentions() {
   # punctuation contexts like (@u), ":@u", or `/@u` included — instead of
   # enumerating punctuation that always misses one more char. Mid-word @
   # (emails, decorators) is left alone.
-  perl -pe 's/(?<![A-Za-z0-9_])@([A-Za-z0-9_])/\@\xE2\x80\x8B$1/g'
+  # URL tokens are split out first and left untouched: an @ inside a
+  # cited URL (scoped-package paths like /package/@scope/pkg) is part of
+  # the address, and inserting the zero-width space there corrupts the
+  # citation so it no longer resolves.
+  perl -pe 'my @p = split /(https?:\/\/[^\s)\]]+|www\.[^\s)\]]+)/; for (my $i = 0; $i < @p; $i += 2) { $p[$i] =~ s/(?<![A-Za-z0-9_])@([A-Za-z0-9_])/\@\xE2\x80\x8B$1/g } $_ = join "", @p'
 }
 
 # Strip image embeds from review text posted as github-actions[bot]: a
@@ -168,7 +172,7 @@ strip_html_tags() {
 # every literal and pattern redaction saw only halves. Deleting joins
 # the halves where the following redaction can match them.
 strip_invisible_chars() {
-  perl -0777 -pe 's/\xE2\x80[\x8B-\x8F]//g; s/\xE2\x81[\xA0-\xA4]//g; s/\xEF\xBB\xBF//g; s/\xC2\xAD//g; s/\xE1\xA0\x8E//g'
+  perl -0777 -pe 's/\xE2\x80[\x8B-\x8F]//g; s/\xE2\x81[\xA0-\xA9]//g; s/\xEF\xBB\xBF//g; s/\xC2\xAD//g; s/\xE1\xA0\x8E//g'
 }
 
 strip_code_spans() {
@@ -180,15 +184,15 @@ strip_code_spans() {
   perl -0777 -e '
     local $/; my $s = <STDIN>; $s = "" unless defined $s;
     my @lines = split /(?<=\n)/, $s;
-    my $fence = ""; my $buf = ""; my $out = "";
+    my $fence = ""; my $flen = 0; my $buf = ""; my $out = "";
     my $flush = sub {
       my $t = $buf;
       $t =~ s{(`+)(.+?)\1}{ my $c = $2; if ($c =~ /^ / and $c =~ / $/ and $c !~ /^ +$/) { $c = substr($c, 1, length($c) - 2) } $c }gse;
       $out .= $t; $buf = "";
     };
     for my $ln (@lines) {
-      if ($fence eq "" and $ln =~ /^ {0,3}(`{3,}|~{3,})/) { $flush->(); $fence = substr($1, 0, 1); $out .= $ln; next }
-      if ($fence ne "" and $ln =~ /^ {0,3}\Q$fence\E{3,}/) { $fence = ""; $out .= $ln; next }
+      if ($fence eq "" and $ln =~ /^ {0,3}(`{3,}|~{3,})/) { $flush->(); $fence = substr($1, 0, 1); $flen = length($1); $out .= $ln; next }
+      if ($fence ne "" and $ln =~ /^ {0,3}(\Q$fence\E{3,})/ and length($1) >= $flen) { $fence = ""; $out .= $ln; next }
       if ($fence ne "") { $out .= $ln } else { $buf .= $ln }
     }
     $flush->();
@@ -232,6 +236,38 @@ strip_intraword_markers() {
   perl -0777 -pe 's{(?<=\S)(?:\*+|`+|~{2,})(?=\S)}{}g; s{(?<=[^\w\s])_+(?=\S)}{}g; s{(?<=\S)_+(?=[^\w\s])}{}g'
 }
 
+# Protect inline code spans while the Markdown sanitizers run: span
+# contents render literally in GFM, so escapes/formatting inside them
+# must survive untouched (`a*b` stays `a*b`, `\.` stays `\.`), but the
+# formatting filters would rewrite them. Each span (outside fences)
+# becomes a hex token the filters cannot alter; restore_code_spans
+# swaps the original span back before the final redaction, which still
+# catches a credential spanning the boundary in its joined raw form.
+protect_code_spans() {
+  perl -0777 -e '
+    local $/; my $s = <STDIN>; $s = "" unless defined $s;
+    my @lines = split /(?<=\n)/, $s;
+    my $fence = ""; my $flen = 0; my $buf = ""; my $out = "";
+    my $flush = sub {
+      my $t = $buf;
+      $t =~ s{(`+)(.+?)\1}{ "MUSECS" . unpack("H*", $&) . "Z" }gse;
+      $out .= $t; $buf = "";
+    };
+    for my $ln (@lines) {
+      if ($fence eq "" and $ln =~ /^ {0,3}(`{3,}|~{3,})/) { $flush->(); $fence = substr($1, 0, 1); $flen = length($1); $out .= $ln; next }
+      if ($fence ne "" and $ln =~ /^ {0,3}(\Q$fence\E{3,})/ and length($1) >= $flen) { $fence = ""; $out .= $ln; next }
+      if ($fence ne "") { $out .= $ln } else { $buf .= $ln }
+    }
+    $flush->();
+    print $out;
+  '
+}
+
+# Inverse of protect_code_spans (hex token back to the original span).
+restore_code_spans() {
+  perl -0777 -pe 's/MUSECS([0-9a-f]+)Z/pack("H*", $1)/ge'
+}
+
 # Canonicalize visible Markdown links to `text (destination)`: GFM
 # renders only the link text, so a credential wrapping an interior
 # character as `left[A](https://example.com)right` displays as the
@@ -267,20 +303,20 @@ canonicalize_links() {
     # indented 4+ spaces is indented code, already excluded by the
     # {0,3} indent bound.)
     my @lines = split /(?<=\n)/, $s;
-    my %def; my $fence = "";
+    my %def; my $fence = ""; my $flen = 0;
     for my $ln (@lines) {
-      if ($fence eq "" and $ln =~ /^ {0,3}(`{3,}|~{3,})/) { $fence = substr($1, 0, 1); next }
-      if ($fence ne "" and $ln =~ /^ {0,3}\Q$fence\E{3,}/) { $fence = ""; next }
+      if ($fence eq "" and $ln =~ /^ {0,3}(`{3,}|~{3,})/) { $fence = substr($1, 0, 1); $flen = length($1); next }
+      if ($fence ne "" and $ln =~ /^ {0,3}(\Q$fence\E{3,})/ and length($1) >= $flen) { $fence = ""; next }
       if ($fence eq "" and $ln =~ /^[ \t]{0,3}\[([^\]]+)\]:/) {
         my $l = lc $1; $l =~ s/\s+/ /g; $l =~ s/^\s+//; $l =~ s/\s+$//;
         $def{$l} = 1;
       }
     }
-    $fence = "";
+    $fence = ""; $flen = 0;
     my $out = "";
     for my $ln (@lines) {
-      if ($fence eq "" and $ln =~ /^ {0,3}(`{3,}|~{3,})/) { $fence = substr($1, 0, 1); $out .= $ln; next }
-      if ($fence ne "" and $ln =~ /^ {0,3}\Q$fence\E{3,}/) { $fence = ""; $out .= $ln; next }
+      if ($fence eq "" and $ln =~ /^ {0,3}(`{3,}|~{3,})/) { $fence = substr($1, 0, 1); $flen = length($1); $out .= $ln; next }
+      if ($fence ne "" and $ln =~ /^ {0,3}(\Q$fence\E{3,})/ and length($1) >= $flen) { $fence = ""; $out .= $ln; next }
       next if $fence eq "" and $ln =~ /^[ \t]{0,3}\[[^\]]+\]:/;
       $out .= $ln;
     }
@@ -775,7 +811,7 @@ redact_json_key() {
       | (($st.out + (if $st.esc then [92] else [] end)) | implode);
     def _linkstrip: gsub("\\[(?<t>[^\\]]+)\\]\\([^)]*\\)"; "\(.t)") | gsub("\\[(?<t>[^\\]]+)\\]\\[[^\\]]*\\]"; "\(.t)") | gsub("[\\[\\]]"; "");
     def _codestrip: gsub("(?<t>`+)(?<c>[\\s\\S]*?)\\k<t>"; "\(.c | if (startswith(" ") and endswith(" ") and ((gsub(" "; "") | length) > 0)) then .[1:-1] else . end)");
-    def _dezero: gsub("[\u00ad\u180e\u200b-\u200f\u2060-\u2064\ufeff]"; "");
+    def _dezero: gsub("[\u00ad\u180e\u200b-\u200f\u2060-\u2069\ufeff]"; "");
     def _fmtstrip: gsub("[*`_~]+"; "");
     def _denul: split("\u0000") | join("");
     def _decr: split("\r") | join("");
