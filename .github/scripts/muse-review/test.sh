@@ -569,6 +569,10 @@ case "${got}" in *'`'*) got_p="raw";; *) got_p="tokenized";; esac
 assert_eq "codespan-tokenized" "tokenized" "${got_p}"
 got="$(printf 'MUSECS6162Z and `x` end' | protect_code_spans | restore_code_spans)"
 assert_eq "codespan-sentinel-escaped" 'MUSECSX6162Z and `x` end' "${got}"
+got="$(printf 'MUSECSdeadbeefZ x' | MUSE_CS_NONCE='cafe1234' restore_code_spans)"
+assert_eq "codespan-wrong-nonce-kept" 'MUSECSdeadbeefZ x' "${got}"
+got="$( (export MUSE_CS_NONCE='cafe1234'; printf 'a `b` c' | protect_code_spans | restore_code_spans) )"
+assert_eq "codespan-nonce-roundtrip" 'a `b` c' "${got}"
 got="$(printf '```html\n<p>`x`</p>\n```\na*B*c end' | strip_intraword_markers)"
 assert_eq "intraword-fence-preserved" "$(printf '```html\n<p>`x`</p>\n```\naBc end')" "${got}"
 got="$(printf '%s' 'see <https://docs.github.com/en/actions> and <a@b.com> and <b>bold</b>' | strip_html_tags)"
@@ -1431,7 +1435,7 @@ hsha="cccccccccccccccccccccccccccccccccccccccc"
 hbsha="dddddddddddddddddddddddddddddddddddddddd"
 printf 'diff --git a/a.ts b/a.ts\n--- a/a.ts\n+++ b/a.ts\n@@ -1 +1,50 @@\n+x\n' > "${hdir}/tmp/muse.diff"
 printf '[{"filename":"a.ts"}]' > "${hdir}/tmp/muse-files.json"
-printf '%s' '{"verdict":"v","findings":[{"path":"a.ts","line":1,"severity":"low","title":"t","body":"x ghp_left<!-- hidden -->right y and ghp_ab&#99;d and ghp_xy<span></span>zw and ghp_qq[]()rr and ghp_zz*A*ww and ghp_mm[A](https://example.invalid)nn and ghp_pp[A]qq and ghp_rs\\.tu and ghp_oo[*A*]pp and ghp_ab` C `de and ghp_fg<?x?>hi and ghp_st\u200btuv and use `a*b` ok tail\n\n[A]: https://example.invalid/d\n[*A*]: https://example.invalid/e"}],"next_steps":[]}' > "${hdir}/tmp/review.json"
+printf '%s' '{"verdict":"v","findings":[{"path":"a.ts","line":1,"severity":"low","title":"t","body":"x ghp_left<!-- hidden -->right y and ghp_ab&#99;d and ghp_xy<span></span>zw and ghp_qq[]()rr and ghp_zz*A*ww and ghp_mm[A](https://example.invalid)nn and ghp_pp[A]qq and ghp_rs\\.tu and ghp_oo[*A*]pp and ghp_ab` C `de and ghp_fg<?x?>hi and ghp_st\u200btuv and use `a*b` ok and MUSEC[S]6c656674417269676874Z tail\n\n[A]: https://example.invalid/d\n[*A*]: https://example.invalid/e\n[S]: https://example.invalid/g"}],"next_steps":[]}' > "${hdir}/tmp/review.json"
 GH_STUB_CAPTURE="${hdir}/capture.json" GH_STUB_HEAD="${hsha}" GH_STUB_BASE="${hbsha}" \
 PATH="${hdir}/bin:${PATH}" \
 GH_TOKEN="fake" GITHUB_REPOSITORY="t/t" PR_NUMBER="1" \
@@ -1488,6 +1492,8 @@ case "$(cat "${hdir}/capture.json" 2>/dev/null)" in *$'\xe2\x80\x8b'*) got_h="ra
 assert_eq "post-zerowidth-stripped" "stripped" "${got_h}"
 case "$(cat "${hdir}/capture.json" 2>/dev/null)" in *'`a*b`'*) got_h="kept";; *) got_h="mangled";; esac
 assert_eq "post-inline-code-preserved" "kept" "${got_h}"
+case "$(cat "${hdir}/capture.json" 2>/dev/null)" in *"leftAright"*) got_h="forged";; *) got_h="safe";; esac
+assert_eq "post-sentinel-not-forged" "safe" "${got_h}"
 rm -rf "${hdir}"
 
 # --- post.sh non-string next_steps routes to fallback (script level) ---
@@ -1617,6 +1623,50 @@ RUNNER_TEMP="${vdir}/tmp" SCRIPT_DIR="${SCRIPT_DIR}" \
 case "$(cat "${vdir}/capture.json" 2>/dev/null)" in *"line not in visible diff — unverified"*) got_v="marked";; *) got_v="plain";; esac
 assert_eq "post-outofrange-unverified" "marked" "${got_v}"
 rm -rf "${vdir}"
+
+# --- post.sh truncation re-sanitizes exposed mentions (script level) ---
+# A code span whose closing backtick falls past the 6000-byte cutoff is
+# restored whole and then truncated open; the exposed @mention inside
+# must be broken again after truncation.
+tdir="$(mktemp -d)"
+mkdir -p "${tdir}/tmp" "${tdir}/bin"
+cat > "${tdir}/bin/gh" <<'STUB'
+#!/usr/bin/env bash
+args=" $* "
+case "${args}" in
+  *" --method POST "*)
+    prev=""
+    for a in "$@"; do
+      if [[ "${prev}" == "--input" ]]; then cp "${a}" "${GH_STUB_CAPTURE}"; fi
+      prev="${a}"
+    done
+    printf '{}\n'
+    ;;
+  *"/reviews"*) printf '[]\n' ;;
+  *) printf '%s\t%s\tfalse\topen\t%s\t%s\n' "${GH_STUB_HEAD}" "${GH_STUB_BASE}" "${GH_STUB_BASEREF:-main}" "${GH_STUB_DEFAULT:-main}" ;;
+esac
+STUB
+chmod +x "${tdir}/bin/gh"
+tsha="abababababababababababababababababababab"
+tbsha="cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd"
+printf 'diff --git a/a.ts b/a.ts\n--- a/a.ts\n+++ b/a.ts\n@@ -1 +1,50 @@\n+x\n' > "${tdir}/tmp/muse.diff"
+printf '[{"filename":"a.ts"}]' > "${tdir}/tmp/muse-files.json"
+python3 -c "
+import json
+body = '\`@octocat' + 'x' * 6100 + '\`'
+json.dump({'verdict': 'v', 'findings': [{'path': 'a.ts', 'line': 1, 'severity': 'low', 'title': 't', 'body': body}], 'next_steps': []}, open('${tdir}/tmp/review.json', 'w'))
+"
+GH_STUB_CAPTURE="${tdir}/capture.json" GH_STUB_HEAD="${tsha}" GH_STUB_BASE="${tbsha}" \
+PATH="${tdir}/bin:${PATH}" \
+GH_TOKEN="fake" GITHUB_REPOSITORY="t/t" PR_NUMBER="1" \
+HEAD_SHA="${tsha}" BASE_SHA="${tbsha}" HEAD_SHA_EVENT="${tsha}" BASE_SHA_EVENT="${tbsha}" \
+MUSE_OUTCOME="success" DIFF_FAILED="false" DIFF_OUTCOME="success" \
+REVIEW_FILE="${tdir}/tmp/review.json" RUN_URL="https://example.invalid/run" \
+RUNNER_TEMP="${tdir}/tmp" SCRIPT_DIR="${SCRIPT_DIR}" \
+  bash "${post_script}" >/dev/null 2>&1
+case "$(cat "${tdir}/capture.json" 2>/dev/null)" in *"@"$'\xe2\x80\x8b'"octocat"*) got_t="broken";; *) got_t="active";; esac
+assert_eq "post-trunc-mention-broken" "broken" "${got_t}"
+rm -rf "${tdir}"
 
 # --- collect.sh live default-base eligibility (script level) ---
 # A rerun after a base retarget keeps the event-time job gate fooled; the

@@ -274,7 +274,7 @@ protect_code_spans() {
     my $fence = ""; my $flen = 0; my $buf = ""; my $out = "";
     my $flush = sub {
       my $t = $buf;
-      $t =~ s{(`+)(.+?)\1}{ "MUSECS" . unpack("H*", $&) . "Z" }gse;
+      $t =~ s{(`+)(.+?)\1}{ "MUSECS" . ($ENV{MUSE_CS_NONCE} // "") . unpack("H*", $&) . "Z" }gse;
       $out .= $t; $buf = "";
     };
     for my $ln (@lines) {
@@ -289,7 +289,11 @@ protect_code_spans() {
 
 # Inverse of protect_code_spans (hex token back to the original span).
 restore_code_spans() {
-  perl -0777 -pe 's/MUSECS([0-9a-f]+)Z/pack("H*", $1)/ge'
+  # Only tokens minted by protect_code_spans in THIS run decode: the
+  # token embeds a per-run nonce (MUSE_CS_NONCE, set by post.sh) that
+  # model text cannot know, so no later sanitizer composition (e.g. a
+  # canonicalized shortcut forming MUSECS<hex>Z) can forge one.
+  perl -0777 -pe 'my $n = $ENV{MUSE_CS_NONCE} // ""; s/MUSECS\Q$n\E([0-9a-f]+)Z/pack("H*", $1)/ge'
 }
 
 # Canonicalize visible Markdown links to `text (destination)`: GFM

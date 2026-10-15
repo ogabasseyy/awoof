@@ -21,6 +21,13 @@ set -euo pipefail
 # shellcheck disable=SC1091  # SCRIPT_DIR is set by the workflow step
 . "${SCRIPT_DIR}/lib.sh"
 
+# Per-run nonce for code-span restore tokens (see lib.sh): minted once
+# here so every sanitize chain in this invocation shares it, and model
+# text can never predict the token shape restore_code_spans accepts.
+MUSE_CS_NONCE="$(head -c 16 /dev/urandom 2>/dev/null | od -An -tx1 | tr -d ' \n' || true)"
+if [[ -z "${MUSE_CS_NONCE}" ]]; then MUSE_CS_NONCE="pid$$"; fi
+export MUSE_CS_NONCE
+
 # Second staleness gate (see guard.sh): skip quietly when head or base
 # moved mid-run (findings would misattribute), the PR became a draft
 # (drafts are excluded, and conversion changes neither SHA), the PR
@@ -271,11 +278,11 @@ Re-run the workflow, or inspect the logs."
     # the image/mention filters, which can rejoin a split secret by
     # deleting the token between its halves.
     f_title="$(redact "${f_title}")"
-    f_title="$(redact "$(printf '%s' "${f_title}" | protect_code_spans | strip_images | strip_empty_links | strip_markdown_escapes | strip_invisible_chars | strip_intraword_markers | canonicalize_links | strip_intraword_markers | strip_html_comments | strip_html_tags | neutralize_html_entities | sanitize_mentions | restore_code_spans | trunc_bytes 300)")"
+    f_title="$(redact "$(printf '%s' "${f_title}" | protect_code_spans | strip_images | strip_empty_links | strip_markdown_escapes | strip_invisible_chars | strip_intraword_markers | canonicalize_links | strip_intraword_markers | strip_html_comments | strip_html_tags | neutralize_html_entities | sanitize_mentions | restore_code_spans | trunc_bytes 300 | sanitize_mentions)")"
     # Sanitize the model body BEFORE composing the thread: the composed
     # text carries our own <sub> footer, which the tag stripper would
     # otherwise eat along with model-supplied tags.
-    f_body="$(redact "$(printf '%s' "${f_body}" | protect_code_spans | strip_images | strip_empty_links | strip_markdown_escapes | strip_invisible_chars | strip_intraword_markers | canonicalize_links | strip_intraword_markers | strip_html_comments | strip_html_tags | neutralize_html_entities | sanitize_mentions | restore_code_spans | trunc_bytes_marked 6000)")"
+    f_body="$(redact "$(printf '%s' "${f_body}" | protect_code_spans | strip_images | strip_empty_links | strip_markdown_escapes | strip_invisible_chars | strip_intraword_markers | canonicalize_links | strip_intraword_markers | strip_html_comments | strip_html_tags | neutralize_html_entities | sanitize_mentions | restore_code_spans | trunc_bytes_marked 6000 | sanitize_mentions)")"
     thread_body="$(printf '**[%s] %s**\n\n%s\n\n<sub>Useful? React with 👍 / 👎.</sub>' "${f_sev}" "${f_title}" "${f_body}")"
     thread_body="$(redact "${thread_body}")"
     jq -n --arg path "${f_path}" --argjson line "${f_line}" --arg body "${thread_body}" \
