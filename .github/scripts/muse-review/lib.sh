@@ -157,7 +157,7 @@ neutralize_html_entities() {
 # the remaining tag and declaration forms. An unterminated < renders as
 # literal text in GFM, so it is left alone.
 strip_html_tags() {
-  perl -0777 -pe 's{<!\[CDATA\[.*?\]\]>}{ [HTML removed] }gs; s{<\?.*?\?>}{ [HTML removed] }gs; s{</?[A-Za-z][^>]*>|<![^>]*>}{ [HTML removed] }g'
+  perl -0777 -pe 's{<(https?://[^>\s]+)>}{$1}g; s{<([A-Za-z0-9.+\-]+@[A-Za-z0-9\-]+(?:\.[A-Za-z0-9\-]+)+)>}{$1}g; s{<!\[CDATA\[.*?\]\]>}{ [HTML removed] }gs; s{<\?.*?\?>}{ [HTML removed] }gs; s{</?[A-Za-z][^>]*>|<![^>]*>}{ [HTML removed] }g'
 }
 
 # Normalize Markdown code spans to their rendered text: GFM drops the
@@ -233,7 +233,27 @@ strip_empty_links() {
 # GFM, so snake_case stays intact. Deleting joins the halves where the
 # redaction that runs after this can match the whole value.
 strip_intraword_markers() {
-  perl -0777 -pe 's{(?<=\S)(?:\*+|`+|~{2,})(?=\S)}{}g; s{(?<=[^\w\s])_+(?=\S)}{}g; s{(?<=\S)_+(?=[^\w\s])}{}g'
+  # Fence-aware like strip_code_spans: fenced blocks are literal text,
+  # and a backtick run must never match a sub-run of a fence delimiter.
+  perl -0777 -e '
+    local $/; my $s = <STDIN>; $s = "" unless defined $s;
+    my @lines = split /(?<=\n)/, $s;
+    my $fence = ""; my $flen = 0; my $buf = ""; my $out = "";
+    my $flush = sub {
+      my $t = $buf;
+      $t =~ s{(?<=\S)(?:\*+|`+|~{2,})(?=\S)}{}g;
+      $t =~ s{(?<=[^\w\s])_+(?=\S)}{}g;
+      $t =~ s{(?<=\S)_+(?=[^\w\s])}{}g;
+      $out .= $t; $buf = "";
+    };
+    for my $ln (@lines) {
+      if ($fence eq "" and $ln =~ /^ {0,3}(`{3,}|~{3,})/) { $flush->(); $fence = substr($1, 0, 1); $flen = length($1); $out .= $ln; next }
+      if ($fence ne "" and $ln =~ /^ {0,3}(\Q$fence\E{3,})/ and length($1) >= $flen) { $fence = ""; $out .= $ln; next }
+      if ($fence ne "") { $out .= $ln } else { $buf .= $ln }
+    }
+    $flush->();
+    print $out;
+  '
 }
 
 # Protect inline code spans while the Markdown sanitizers run: span
@@ -246,6 +266,10 @@ strip_intraword_markers() {
 protect_code_spans() {
   perl -0777 -e '
     local $/; my $s = <STDIN>; $s = "" unless defined $s;
+    # Escape pre-existing sentinel-shaped text first (everywhere,
+    # fences included): restore_code_spans must only decode tokens
+    # generated here, never literal MUSECS<hex>Z an author planted.
+    $s =~ s/MUSECS([0-9a-f]+)Z/MUSECSX$1Z/g;
     my @lines = split /(?<=\n)/, $s;
     my $fence = ""; my $flen = 0; my $buf = ""; my $out = "";
     my $flush = sub {

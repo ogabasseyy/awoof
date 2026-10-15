@@ -567,6 +567,12 @@ assert_eq "codespan-content-preserved" 'pre `a*b` mid `\.` post' "${got}"
 got="$(printf 'x `keep me` y' | protect_code_spans)"
 case "${got}" in *'`'*) got_p="raw";; *) got_p="tokenized";; esac
 assert_eq "codespan-tokenized" "tokenized" "${got_p}"
+got="$(printf 'MUSECS6162Z and `x` end' | protect_code_spans | restore_code_spans)"
+assert_eq "codespan-sentinel-escaped" 'MUSECSX6162Z and `x` end' "${got}"
+got="$(printf '```html\n<p>`x`</p>\n```\na*B*c end' | strip_intraword_markers)"
+assert_eq "intraword-fence-preserved" "$(printf '```html\n<p>`x`</p>\n```\naBc end')" "${got}"
+got="$(printf '%s' 'see <https://docs.github.com/en/actions> and <a@b.com> and <b>bold</b>' | strip_html_tags)"
+assert_eq "html-autolinks-kept" 'see https://docs.github.com/en/actions and a@b.com and  [HTML removed] bold [HTML removed] ' "${got}"
 
 # --- trunc_bytes_marked ---
 got="$(printf 'abcdefghij' | trunc_bytes_marked 10)"
