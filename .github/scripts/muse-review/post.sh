@@ -120,9 +120,16 @@ render_summary() {
 # Scrub secrets from the review body before posting (prompt is partly
 # attacker-controlled; see lib.sh redact). Redact BEFORE sanitizing and
 # budget checks (both can defeat the full-block match or add characters).
+# One full presentation-sanitizing pass over a model-text fragment.
+# Truncation can cut a restored code span open and reactivate the
+# markup inside it, so callers run this again after truncating.
+sanitize_fragment() {
+  protect_code_spans | strip_images | strip_empty_links | strip_markdown_escapes | strip_invisible_chars | strip_intraword_markers | canonicalize_links | strip_intraword_markers | strip_html_comments | strip_html_tags | neutralize_html_entities | sanitize_mentions | restore_code_spans
+}
+
 sanitize_review() {
   review="$(redact "${review}")"
-  review="$(printf '%s' "${review}" | protect_code_spans | strip_images | strip_empty_links | strip_markdown_escapes | strip_invisible_chars | strip_intraword_markers | canonicalize_links | strip_intraword_markers | strip_html_comments | strip_html_tags | neutralize_html_entities | sanitize_mentions | restore_code_spans)"
+  review="$(printf '%s' "${review}" | sanitize_fragment)"
   # Redact again after the byte-removing filters: deleting an image
   # token can rejoin a secret the first pass saw only in split form.
   # The run step already checks stripped forms against the live key;
@@ -278,11 +285,11 @@ Re-run the workflow, or inspect the logs."
     # the image/mention filters, which can rejoin a split secret by
     # deleting the token between its halves.
     f_title="$(redact "${f_title}")"
-    f_title="$(redact "$(printf '%s' "${f_title}" | protect_code_spans | strip_images | strip_empty_links | strip_markdown_escapes | strip_invisible_chars | strip_intraword_markers | canonicalize_links | strip_intraword_markers | strip_html_comments | strip_html_tags | neutralize_html_entities | sanitize_mentions | restore_code_spans | trunc_bytes 300 | sanitize_mentions)")"
+    f_title="$(redact "$(printf '%s' "${f_title}" | sanitize_fragment | trunc_bytes 300 | sanitize_fragment)")"
     # Sanitize the model body BEFORE composing the thread: the composed
     # text carries our own <sub> footer, which the tag stripper would
     # otherwise eat along with model-supplied tags.
-    f_body="$(redact "$(printf '%s' "${f_body}" | protect_code_spans | strip_images | strip_empty_links | strip_markdown_escapes | strip_invisible_chars | strip_intraword_markers | canonicalize_links | strip_intraword_markers | strip_html_comments | strip_html_tags | neutralize_html_entities | sanitize_mentions | restore_code_spans | trunc_bytes_marked 6000 | sanitize_mentions)")"
+    f_body="$(redact "$(printf '%s' "${f_body}" | sanitize_fragment | trunc_bytes_marked 6000 | sanitize_fragment)")"
     thread_body="$(printf '**[%s] %s**\n\n%s\n\n<sub>Useful? React with 👍 / 👎.</sub>' "${f_sev}" "${f_title}" "${f_body}")"
     thread_body="$(redact "${thread_body}")"
     jq -n --arg path "${f_path}" --argjson line "${f_line}" --arg body "${thread_body}" \
@@ -477,7 +484,7 @@ if ! gh api --method POST \
     # keeps the jq-only body and still attempts the retry.
     filter_retry_body() {
       if jq -r '.body' "${payload_file}.summary" 2>/dev/null \
-        | protect_code_spans | strip_images | strip_empty_links | strip_markdown_escapes | strip_invisible_chars | strip_intraword_markers | canonicalize_links | strip_intraword_markers | strip_html_comments | strip_html_tags | neutralize_html_entities | sanitize_mentions | restore_code_spans > "${RUNNER_TEMP}/muse-retry-body.txt" \
+        | sanitize_fragment > "${RUNNER_TEMP}/muse-retry-body.txt" \
         && jq --rawfile body "${RUNNER_TEMP}/muse-retry-body.txt" '.body = $body' \
           "${payload_file}.summary" > "${payload_file}.summary.clean" 2>/dev/null; then
         mv "${payload_file}.summary.clean" "${payload_file}.summary"

@@ -364,6 +364,11 @@ EOF
 got="$(META_API_KEY='leftAright' redact_json_key < "${jfix}" | jq -r '.a')"
 assert_eq "redactjson-image-composed-redacted" "[REDACTED]" "${got}"
 cat > "${jfix}" <<'EOF'
+{"a":"left[]()[*A*]right"}
+EOF
+got="$(META_API_KEY='leftAright' redact_json_key < "${jfix}" | jq -r '.a')"
+assert_eq "redactjson-emptylink-composed-redacted" "[REDACTED]" "${got}"
+cat > "${jfix}" <<'EOF'
 {"a":"left![[]()](u)[*A*]right"}
 EOF
 got="$(META_API_KEY='leftAright' redact_json_key < "${jfix}" | jq -r '.a')"
@@ -554,6 +559,8 @@ got="$(printf '%s' 'nested [a [b] c](https://e.example/u(1)) tail' | canonicaliz
 assert_eq "links-nested" 'nested a [b] c (https://e.example/u(1)) tail' "${got}"
 got="$(printf 'left[A]right see [docs] here\n\n[A]: https://e.example/x' | canonicalize_links)"
 assert_eq "links-shortcut-defined" "$(printf 'leftAright see [docs] here\n')" "${got}"
+got="$(printf 'see [my label] here\n\n[my label]: https://e.example/x' | canonicalize_links)"
+assert_eq "links-shortcut-multiword" "$(printf 'see my label here\n')" "${got}"
 got="$(printf 'see [setting] here\n\n```\n[setting]: dangerous-value\n```\n' | canonicalize_links)"
 assert_eq "links-fenced-def-preserved" "$(printf 'see [setting] here\n\n```\n[setting]: dangerous-value\n```\n')" "${got}"
 got="$(printf 'ex ` A ` y\n\n```\n[setting]: dangerous-value\n```\n' | strip_code_spans | canonicalize_links)"
@@ -1450,7 +1457,7 @@ case "$(cat "${hdir}/capture.json" 2>/dev/null)" in *"<!-- hidden -->"*) got_h="
 assert_eq "post-html-comment-removed" "removed" "${got_h}"
 case "$(cat "${hdir}/capture.json" 2>/dev/null)" in *"ghp_abcd"*) got_h="rejoined";; *) got_h="clean";; esac
 assert_eq "post-entity-split-not-rejoined" "clean" "${got_h}"
-case "$(cat "${hdir}/capture.json" 2>/dev/null)" in *"&amp;#99;"*) got_h="neutralized";; *) got_h="raw";; esac
+case "$(cat "${hdir}/capture.json" 2>/dev/null)" in *"&amp;amp;#99;"*) got_h="neutralized";; *) got_h="raw";; esac
 assert_eq "post-entity-neutralized" "neutralized" "${got_h}"
 case "$(cat "${hdir}/capture.json" 2>/dev/null)" in *"ghp_xyzw"*) got_h="rejoined";; *) got_h="clean";; esac
 assert_eq "post-tag-split-not-rejoined" "clean" "${got_h}"
@@ -1667,6 +1674,49 @@ RUNNER_TEMP="${tdir}/tmp" SCRIPT_DIR="${SCRIPT_DIR}" \
 case "$(cat "${tdir}/capture.json" 2>/dev/null)" in *"@"$'\xe2\x80\x8b'"octocat"*) got_t="broken";; *) got_t="active";; esac
 assert_eq "post-trunc-mention-broken" "broken" "${got_t}"
 rm -rf "${tdir}"
+
+# --- post.sh truncation re-sanitizes exposed images (script level) ---
+# Same cut-open span shape, image payload: the full sanitizer rerun
+# after truncation must remove the reactivated image syntax.
+wdir="$(mktemp -d)"
+mkdir -p "${wdir}/tmp" "${wdir}/bin"
+cat > "${wdir}/bin/gh" <<'STUB'
+#!/usr/bin/env bash
+args=" $* "
+case "${args}" in
+  *" --method POST "*)
+    prev=""
+    for a in "$@"; do
+      if [[ "${prev}" == "--input" ]]; then cp "${a}" "${GH_STUB_CAPTURE}"; fi
+      prev="${a}"
+    done
+    printf '{}\n'
+    ;;
+  *"/reviews"*) printf '[]\n' ;;
+  *) printf '%s\t%s\tfalse\topen\t%s\t%s\n' "${GH_STUB_HEAD}" "${GH_STUB_BASE}" "${GH_STUB_BASEREF:-main}" "${GH_STUB_DEFAULT:-main}" ;;
+esac
+STUB
+chmod +x "${wdir}/bin/gh"
+wsha="efefefefefefefefefefefefefefefefefefefef"
+wbsha="1212121212121212121212121212121212121212"
+printf 'diff --git a/a.ts b/a.ts\n--- a/a.ts\n+++ b/a.ts\n@@ -1 +1,50 @@\n+x\n' > "${wdir}/tmp/muse.diff"
+printf '[{"filename":"a.ts"}]' > "${wdir}/tmp/muse-files.json"
+python3 -c "
+import json
+body = '\`![](https://attacker.example/pixel)' + 'x' * 6100 + '\`'
+json.dump({'verdict': 'v', 'findings': [{'path': 'a.ts', 'line': 1, 'severity': 'low', 'title': 't', 'body': body}], 'next_steps': []}, open('${wdir}/tmp/review.json', 'w'))
+"
+GH_STUB_CAPTURE="${wdir}/capture.json" GH_STUB_HEAD="${wsha}" GH_STUB_BASE="${wbsha}" \
+PATH="${wdir}/bin:${PATH}" \
+GH_TOKEN="fake" GITHUB_REPOSITORY="t/t" PR_NUMBER="1" \
+HEAD_SHA="${wsha}" BASE_SHA="${wbsha}" HEAD_SHA_EVENT="${wsha}" BASE_SHA_EVENT="${wbsha}" \
+MUSE_OUTCOME="success" DIFF_FAILED="false" DIFF_OUTCOME="success" \
+REVIEW_FILE="${wdir}/tmp/review.json" RUN_URL="https://example.invalid/run" \
+RUNNER_TEMP="${wdir}/tmp" SCRIPT_DIR="${SCRIPT_DIR}" \
+  bash "${post_script}" >/dev/null 2>&1
+case "$(cat "${wdir}/capture.json" 2>/dev/null)" in *"attacker.example/pixel"*) got_w="leaked";; *) got_w="clean";; esac
+assert_eq "post-trunc-image-removed" "clean" "${got_w}"
+rm -rf "${wdir}"
 
 # --- collect.sh live default-base eligibility (script level) ---
 # A rerun after a base retarget keeps the event-time job gate fooled; the

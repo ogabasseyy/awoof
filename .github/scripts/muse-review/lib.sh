@@ -351,7 +351,7 @@ canonicalize_links() {
     $s = $out;
     $s =~ s{\[((?:[^\[\]\\]++|\\.|\[(?:[^\[\]\\]++|\\.|\[(?:[^\[\]\\]++|\\.)*\])*\])*)\]\(((?:[^()\\]++|\\.|\((?:[^()\\]++|\\.|\((?:[^()\\]++|\\.)*\))*\))*)\)}{$1 ($2)}g;
     $s =~ s{\[((?:[^\[\]\\]++|\\.|\[(?:[^\[\]\\]++|\\.|\[(?:[^\[\]\\]++|\\.)*\])*\])*)\]\[((?:[^\[\]\\]++|\\.|\[(?:[^\[\]\\]++|\\.|\[(?:[^\[\]\\]++|\\.)*\])*\])*)\]}{$1 ($2)}g;
-    $s =~ s{\[((?:[^\[\]\\]++|\\.|\[(?:[^\[\]\\]++|\\.|\[(?:[^\[\]\\]++|\\.)*\])*\])*)\](?![(\[])}{ my $l = lc $1; $l =~ s/\s+/ /g; $l =~ s/^\s+//; $l =~ s/\s+$//; exists $def{$l} ? $1 : "[$1]" }ge;
+    $s =~ s{\[((?:[^\[\]\\]++|\\.|\[(?:[^\[\]\\]++|\\.|\[(?:[^\[\]\\]++|\\.)*\])*\])*)\](?![(\[])}{ my $t = $1; my $l = lc $t; $l =~ s/\s+/ /g; $l =~ s/^\s+//; $l =~ s/\s+$//; exists $def{$l} ? $t : "[$t]" }ge;
     print $s;
   '
 }
@@ -841,11 +841,12 @@ redact_json_key() {
     def _codestrip: gsub("(?<t>`+)(?<c>[\\s\\S]*?)\\k<t>"; "\(.c | if (startswith(" ") and endswith(" ") and ((gsub(" "; "") | length) > 0)) then .[1:-1] else . end)");
     def _dezero: gsub("[\u00ad\u180e\u200b-\u200f\u2060-\u2069\ufeff]"; "");
     def _fmtstrip: gsub("[*`_~]+"; "");
+    def _emptylink: gsub("\\[\\]\\([^)]*\\)"; "") | gsub("\\[\\]\\[[^\\]]*\\]"; "");
     def _denul: split("\u0000") | join("");
     def _decr: split("\r") | join("");
     def _img1: gsub("!\\[(?:[^\\[\\]\\\\]|\\\\.|\\[(?:[^\\[\\]\\\\]|\\\\.)*\\])*\\]\\((?:[^()\\\\]|\\\\.|\\((?:[^()\\\\]|\\\\.)*\\))*\\)"; "") | gsub("</?(img|IMG)[^>]*>"; "");
     def _imgstrip: (_img1 as $once | if $once == . then . else ($once | _imgstrip) end);
-    def _canon: ((_imgstrip | _codestrip | _linkstrip | _fmtstrip | _codestrip | _mdesc) as $n | if $n == . then . else ($n | _canon) end);
+    def _canon: ((_imgstrip | _emptylink | _codestrip | _linkstrip | _fmtstrip | _codestrip | _mdesc) as $n | if $n == . then . else ($n | _canon) end);
     walk(if type == "string" then
       ((. | _denul | _decr | _dezero) as $s
        | if ($s | contains($k)) then ($s | split($k) | join("[REDACTED]"))
