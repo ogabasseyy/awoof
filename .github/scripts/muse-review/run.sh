@@ -146,7 +146,9 @@ fi
 # reason: GFM renders inline raw HTML, so `left<span></span>right`
 # displays as the joined credential even though every redaction pass
 # saw only halves (the post step repeats this as presentation defense).
-if strip_html_tags < "${review_file}" > "${review_file}.notags" 2>/dev/null; then
+if strip_html_tags_json < "${review_file}" > "${review_file}.notags" 2>/dev/null; then
+  mv "${review_file}.notags" "${review_file}"
+elif strip_html_tags < "${review_file}" > "${review_file}.notags" 2>/dev/null; then
   mv "${review_file}.notags" "${review_file}"
 else
   rm -f "${review_file}.notags"

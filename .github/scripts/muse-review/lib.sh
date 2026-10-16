@@ -98,7 +98,7 @@ sanitize_mentions() {
   # citation so it no longer resolves. URL scanning balances
   # parentheses (GFM link destinations may contain balanced pairs), so
   # a path segment after `(...)` stays inside the protected token.
-  perl -pe 'my $url = qr/(?:https?:\/\/|www\.)(?:[^\s()\[\]]|(\((?:[^\s()\[\]]|(?1))*\)))+/; my $s = $_; my $out = ""; my $pos = 0; while ($s =~ /$url/g) { my $pre = substr($s, $pos, $-[0] - $pos); $pre =~ s/(?<![A-Za-z0-9_])@([A-Za-z0-9_])/\@\xE2\x80\x8B$1/g; $out .= $pre . substr($s, $-[0], $+[0] - $-[0]); $pos = $+[0] } my $tail = substr($s, $pos); $tail =~ s/(?<![A-Za-z0-9_])@([A-Za-z0-9_])/\@\xE2\x80\x8B$1/g; $_ = $out . $tail'
+  perl -pe 'my $url = qr/(?<![A-Za-z0-9._@-])(?:https?:\/\/(?:[^\s()\[\]]|(\((?:[^\s()\[\]]|(?1))*\)))+|www\.(?:[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?\.)+[A-Za-z]{2,}(?:[^\s()\[\]]|(\((?:[^\s()\[\]]|(?2))*\)))*)/; my $s = $_; my $out = ""; my $pos = 0; while ($s =~ /$url/g) { my $beg = $-[0]; my $end = $+[0]; my $pre = substr($s, $pos, $beg - $pos); $pre =~ s/(?<![A-Za-z0-9_])@([A-Za-z0-9_])/\@\xE2\x80\x8B$1/g; $out .= $pre . substr($s, $beg, $end - $beg); $pos = $end } my $tail = substr($s, $pos); $tail =~ s/(?<![A-Za-z0-9_])@([A-Za-z0-9_])/\@\xE2\x80\x8B$1/g; $_ = $out . $tail'
 }
 
 # Strip image embeds from review text posted as github-actions[bot]: a
@@ -160,6 +160,23 @@ neutralize_html_entities() {
 # literal text in GFM, so it is left alone.
 strip_html_tags() {
   perl -0777 -pe 's{<(https?://[^>\s]+)>}{$1}g; s{<([A-Za-z0-9.+\-]+@[A-Za-z0-9\-]+(?:\.[A-Za-z0-9\-]+)+)>}{$1}g; s{<!\[CDATA\[.*?\]\]>}{ [HTML removed] }gs; s{<\?.*?\?>}{ [HTML removed] }gs; s{</?[A-Za-z][^>]*>|<![^>]*>}{ [HTML removed] }g'
+}
+
+# JSON-scoped variant for run.sh: apply the same tag replacements inside
+# each decoded string value, never across string boundaries. A slurp
+# filter over serialized JSON can join an unterminated `<span` in one
+# field to a `>` in a later field and corrupt the whole document.
+# Returns nonzero for non-JSON input; the caller then falls back to the
+# raw filter for non-JSON output.
+strip_html_tags_json() {
+  jq '
+    def _tags:
+      (gsub("<(https?://[^>\\s]+)>"; "\\1")
+       | gsub("<([A-Za-z0-9.+\\-]+@[A-Za-z0-9\\-]+(?:\\.[A-Za-z0-9\\-]+)+)>"; "\\1")
+       | gsub("<!\\[CDATA\\[.*?\\]\\]>"; " [HTML removed] ")
+       | gsub("<\\?.*?\\?>"; " [HTML removed] ")
+       | gsub("</?[A-Za-z][^>]*>|<![^>]*>"; " [HTML removed] "));
+    walk(if type == "string" then _tags else . end)'
 }
 
 # Normalize Markdown code spans to their rendered text: GFM drops the
@@ -341,7 +358,11 @@ protect_code_spans() {
         while (@liststack and $mind < $liststack[-1]) { pop @liststack }
         push @liststack, ($mind + length($2) + 1);
       } elsif ($ln !~ /^\s*$/) {
-        while (@liststack and $ind < $liststack[-1]) { pop @liststack }
+        my $aligned = 0;
+        for my $v (@liststack) { $aligned = 1 if $v == $ind }
+        if ($prevblank or $aligned) {
+          while (@liststack and $ind < $liststack[-1]) { pop @liststack }
+        }
       }
       $buf .= $ln;
       $prevblank = ($ln =~ /^\s*$/) ? 1 : 0;
@@ -390,7 +411,9 @@ canonicalize_links() {
   # [text] renders literally with brackets and cannot join a split. A
   # definition requires a destination after the colon: a bare
   # `[label]:` line is literal text in GFM, so it neither defines a
-  # shortcut nor is removed.
+  # shortcut nor is removed. Destinations and titles may also sit on
+  # following lines, as GFM permits; those consumed lines are dropped
+  # with the definition rather than left as orphaned text.
   perl -0777 -e '
     local $/; my $s = <STDIN>; $s = "" unless defined $s;
     # Definition collection/removal is fence-aware: a [label]: line
@@ -399,21 +422,59 @@ canonicalize_links() {
     # indented 4+ spaces is indented code, already excluded by the
     # {0,3} indent bound.)
     my @lines = split /(?<=\n)/, $s;
-    my %def; my $fence = ""; my $flen = 0;
-    for my $ln (@lines) {
+    my %def; my %drop; my $fence = ""; my $flen = 0;
+    # Parse a complete definition, whose destination may sit on the
+    # line after the label and whose title may sit after the
+    # destination (same line or the next line). Returns 0 when no
+    # valid destination follows, 1 for a valid definition with a
+    # title, and 2 for a valid definition without one.
+    my $def_tail = sub {
+      my ($txt) = @_;
+      return 0 unless $txt =~ /\A[ \t]*(?:<[^>\n]*>|[^ \t\n\x22\x27][^ \t\n]*)/g;
+      my $rest = substr($txt, pos($txt));
+      return 2 if $rest =~ /\A[ \t]*\n?\z/;
+      return 1 if $rest =~ /\A(?:[ \t]+|[ \t]*\n[ \t]*)(?:\x22[^\x22\n]*\x22|\x27[^\x27\n]*\x27|\([^()\n]*\))[ \t]*\n?\z/;
+      return 0;
+    };
+    my $collect_def = sub {
+      my ($start) = @_;
+      return undef unless $lines[$start] =~ /^[ \t]{0,3}\[([^\]]+)\]:[ \t]*(.*)$/;
+      my $label = $1; my $candidate = $2; my $end = $start;
+      my $state = $def_tail->($candidate);
+      if ($state == 0 and $candidate =~ /\A[ \t]*\n?\z/ and $end + 1 < @lines) {
+        my $next = $lines[$end + 1];
+        if ($next !~ /^\s*$/ and $next !~ /^ {0,3}(`{3,}|~{3,})/) {
+          $end++; $candidate .= $next; $state = $def_tail->($candidate);
+        }
+      }
+      return undef if $state == 0;
+      if ($state == 2 and $end + 1 < @lines
+          and $lines[$end + 1] =~ /^[ \t]*(?:\x22[^\x22\n]*\x22|\x27[^\x27\n]*\x27|\([^()\n]*\))[ \t]*$/) {
+        $end++;
+      }
+      my $l = lc $label; $l =~ s/\s+/ /g; $l =~ s/^\s+//; $l =~ s/\s+$//;
+      return [$l, $end];
+    };
+    for (my $i = 0; $i < @lines; $i++) {
+      my $ln = $lines[$i];
       if ($fence eq "" and $ln =~ /^ {0,3}(`{3,}|~{3,})([^\n]*)/ and !(substr($1, 0, 1) eq "`" and index($2, "`") >= 0)) { $fence = substr($1, 0, 1); $flen = length($1); next }
       if ($fence ne "" and $ln =~ /^ {0,3}(\Q$fence\E{3,})[ \t]*$/ and length($1) >= $flen) { $fence = ""; next }
-      if ($fence eq "" and $ln =~ /^[ \t]{0,3}\[([^\]]+)\]:[ \t]*(?:<[^>\n]*>|[^ \t\n"\x27][^ \t\n]*)(?:[ \t]+(?:"[^"\n]*"|\x27[^\x27\n]*\x27|\([^()\n]*\)))?[ \t]*$/) {
-        my $l = lc $1; $l =~ s/\s+/ /g; $l =~ s/^\s+//; $l =~ s/\s+$//;
-        $def{$l} = 1;
+      if ($fence eq "") {
+        my $parsed = $collect_def->($i);
+        if ($parsed) {
+          $def{$parsed->[0]} = 1;
+          $drop{$_} = 1 for $i .. $parsed->[1];
+          $i = $parsed->[1];
+        }
       }
     }
     $fence = ""; $flen = 0;
     my $out = "";
-    for my $ln (@lines) {
+    for (my $i = 0; $i < @lines; $i++) {
+      my $ln = $lines[$i];
       if ($fence eq "" and $ln =~ /^ {0,3}(`{3,}|~{3,})([^\n]*)/ and !(substr($1, 0, 1) eq "`" and index($2, "`") >= 0)) { $fence = substr($1, 0, 1); $flen = length($1); $out .= $ln; next }
       if ($fence ne "" and $ln =~ /^ {0,3}(\Q$fence\E{3,})[ \t]*$/ and length($1) >= $flen) { $fence = ""; $out .= $ln; next }
-      next if $fence eq "" and $ln =~ /^[ \t]{0,3}\[[^\]]+\]:[ \t]*(?:<[^>\n]*>|[^ \t\n"\x27][^ \t\n]*)(?:[ \t]+(?:"[^"\n]*"|\x27[^\x27\n]*\x27|\([^()\n]*\)))?[ \t]*$/;
+      next if $fence eq "" and $drop{$i};
       $out .= $ln;
     }
     $s = $out;

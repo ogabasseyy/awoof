@@ -85,6 +85,8 @@ got="$(printf '%s' 'docs (https://example.test/foo(bar)/@scope/pkg) and ping @us
 assert_eq "mentions-balanced-paren-url" "docs (https://example.test/foo(bar)/@scope/pkg) and ping @${zwsp}user" "${got}"
 got="$(printf '%s' 'docs (https://example.test/foo(((bar)))/@scope/pkg) and ping @user' | sanitize_mentions)"
 assert_eq "mentions-three-level-paren-url" "docs (https://example.test/foo(((bar)))/@scope/pkg) and ping @${zwsp}user" "${got}"
+got="$(printf '%s' 'www.@octocat and www.example.com/@octocat and ping @user' | sanitize_mentions)"
+assert_eq "mentions-invalid-www-not-url" "www.@${zwsp}octocat and www.example.com/@octocat and ping @${zwsp}user" "${got}"
 got="$(printf '%s' 'see https://www.npmjs.com/package/@scope/pkg and ping @user' | sanitize_mentions)"
 assert_eq "mentions-url-kept" "see https://www.npmjs.com/package/@scope/pkg and ping @${zwsp}user" "${got}"
 got="$(printf '%s' '@lead starts here' | sanitize_mentions)"
@@ -542,6 +544,10 @@ assert_eq "entities-bare-amp-kept" 'plain &notaref text &; end' "${got}"
 # --- strip_html_tags ---
 got="$(printf '%s' 'left<span></span>right <b class="x">bold</b> a < b' | strip_html_tags)"
 assert_eq "html-tags-replaced" 'left [HTML removed]  [HTML removed] right  [HTML removed] bold [HTML removed]  a < b' "${got}"
+got="$(printf '%s' '{"verdict":"literal <span","next_steps":["x > y"]}' | strip_html_tags_json | jq -c '{v:.verdict,n:.next_steps[0]}')"
+assert_eq "html-json-no-cross-string" '{"v":"literal <span","n":"x > y"}' "${got}"
+got="$(printf '%s' '{"a":"left<span></span>right"}' | strip_html_tags_json | jq -r '.a')"
+assert_eq "html-json-within-string" 'left [HTML removed]  [HTML removed] right' "${got}"
 
 # --- strip_ansi ---
 got="$(printf 'left\033[31mright\033[0m end\033[1K!' | strip_ansi)"
@@ -612,6 +618,10 @@ got="$(printf 'see [setting] here\n\n[setting]: /url "title" trailing\n' | canon
 assert_eq "links-junk-def-preserved" "$(printf 'see [setting] here\n\n[setting]: /url "title" trailing\n')" "${got}"
 got="$(printf 'see [setting] here\n\n[setting]: /url "title"\n' | canonicalize_links)"
 assert_eq "links-titled-def-removed" "$(printf 'see setting here\n\n')" "${got}"
+got="$(printf 'see [setting] here\n\n[setting]:\n/url "title"\n' | canonicalize_links)"
+assert_eq "links-multiline-def-removed" "$(printf 'see setting here\n\n')" "${got}"
+got="$(printf 'see [setting] here\n\n[setting]:\n/url "title" trailing\n' | canonicalize_links)"
+assert_eq "links-multiline-junk-def-preserved" "$(printf 'see [setting] here\n\n[setting]:\n/url "title" trailing\n')" "${got}"
 got="$(printf 'ex ` A ` y\n\n```\n[setting]: dangerous-value\n```\n' | strip_code_spans | canonicalize_links)"
 assert_eq "pipeline-fenced-def-preserved" "$(printf 'ex A y\n\n```\n[setting]: dangerous-value\n```\n')" "${got}"
 got="$(printf '````\n```\n[setting]: dangerous-value\n````\nsee [setting]\n' | strip_code_spans | canonicalize_links)"
@@ -667,6 +677,8 @@ got="$(printf '%b' '-\n  text\n\n    ![](https://e.example/pixel)\n\nafter' | pr
 assert_eq "list-blank-start-image-not-code" "$(printf '%b' '-\n  text\n\n    \n\nafter')" "${got}"
 got="$(printf '%b' '-\n  text\n\n      ![a](https://e.example/x) code\n\nafter' | protect_code_spans | strip_images | restore_code_spans)"
 assert_eq "list-blank-start-code-protected" "$(printf '%b' '-\n  text\n\n      ![a](https://e.example/x) code\n\nafter')" "${got}"
+got="$(printf '%b' '- item\nlazy line\n\n    ![](https://e.example/pixel)\n\nafter' | protect_code_spans | strip_images | restore_code_spans)"
+assert_eq "list-lazy-image-not-code" "$(printf '%b' '- item\nlazy line\n\n    \n\nafter')" "${got}"
 got="$(printf '%s' 'see <https://docs.github.com/en/actions> and <a@b.com> and <b>bold</b>' | strip_html_tags)"
 assert_eq "html-autolinks-kept" 'see https://docs.github.com/en/actions and a@b.com and  [HTML removed] bold [HTML removed] ' "${got}"
 
@@ -843,6 +855,8 @@ if grep -q 'redact "\$(redact' "${SCRIPT_DIR}/run.sh" 2>/dev/null; then got_doc=
 assert_eq "run-redact-after-neutralize" "yes" "${got_doc}"
 if grep -q 'strip_ansi < "${stderr_clean}" 2>/dev/null | strip_invisible_chars | strip_markdown_escapes' "${SCRIPT_DIR}/run.sh" 2>/dev/null; then got_doc="yes"; else got_doc="no"; fi
 assert_eq "run-stderr-invisible-stripped" "yes" "${got_doc}"
+if grep -q 'strip_html_tags_json < "${review_file}"' "${SCRIPT_DIR}/run.sh" 2>/dev/null; then got_doc="yes"; else got_doc="no"; fi
+assert_eq "run-html-json-scoped" "yes" "${got_doc}"
 trust_path="${SCRIPT_DIR}/../../../docs/public-trust-pages.md"
 if grep -q "non-Contributor-mode model" "${trust_path}" 2>/dev/null && grep -q "not a Contributor-mode variant" "${trust_path}" 2>/dev/null; then got_doc="yes"; else got_doc="no"; fi
 assert_eq "docs-paygo-noncontributor" "yes" "${got_doc}"
