@@ -98,7 +98,7 @@ sanitize_mentions() {
   # citation so it no longer resolves. URL scanning balances
   # parentheses (GFM link destinations may contain balanced pairs), so
   # a path segment after `(...)` stays inside the protected token.
-  perl -pe 'my @p = split /((?:https?:\/\/|www\.)(?:[^\s()\[\]]|\((?:[^\s()\[\]]|\([^\s()\[\]]*\))*\))+)/; for (my $i = 0; $i < @p; $i += 2) { $p[$i] =~ s/(?<![A-Za-z0-9_])@([A-Za-z0-9_])/\@\xE2\x80\x8B$1/g } $_ = join "", @p'
+  perl -pe 'my $url = qr/(?:https?:\/\/|www\.)(?:[^\s()\[\]]|(\((?:[^\s()\[\]]|(?1))*\)))+/; my $s = $_; my $out = ""; my $pos = 0; while ($s =~ /$url/g) { my $pre = substr($s, $pos, $-[0] - $pos); $pre =~ s/(?<![A-Za-z0-9_])@([A-Za-z0-9_])/\@\xE2\x80\x8B$1/g; $out .= $pre . substr($s, $-[0], $+[0] - $-[0]); $pos = $+[0] } my $tail = substr($s, $pos); $tail =~ s/(?<![A-Za-z0-9_])@([A-Za-z0-9_])/\@\xE2\x80\x8B$1/g; $_ = $out . $tail'
 }
 
 # Strip image embeds from review text posted as github-actions[bot]: a
@@ -305,8 +305,10 @@ protect_code_spans() {
     # paragraph stays ordinary text, matching GFM. Inside a list item
     # the chunk must clear the item content indent by 4 more spaces:
     # list structure takes precedence, so a 4-space line after
-    # `- item` is item paragraph text, not code.
-    my $icode = 0; my $prevblank = 1; my $icodereq = 4; my $listindent = -1;
+    # `- item` is item paragraph text, not code. A stack of container
+    # indents is retained so returning from a nested item restores the
+    # parent item requirement instead of dropping to the top level.
+    my $icode = 0; my $prevblank = 1; my $icodereq = 4; my @liststack = ();
     my $indent_of = sub {
       my ($l) = @_; my ($ws) = $l =~ /^([ \t]*)/; my $n = 0;
       for my $ch (split //, $ws) { $n += ($ch eq "\t") ? 4 - ($n % 4) : 1 }
@@ -325,16 +327,18 @@ protect_code_spans() {
         if ($ln =~ /^ {0,3}(\Q$fence\E{3,})[ \t]*$/ and length($1) >= $flen) { $emit_fence->(); $fence = ""; $prevblank = 1 }
         next;
       }
+      my $req = @liststack ? $liststack[-1] + 4 : 4;
+      if ($prevblank and $ind >= $req) { $flush->(); $icode = 1; $icodereq = $req; $fbuf = $ln; next }
       if ($ln =~ /^([ \t]*)([-*+]|[0-9]{1,9}[.)])([ \t]+)(?=\S)/) {
-        my $markend = $indent_of->($1) + length($2);
+        my $mind = $indent_of->($1);
+        my $markend = $mind + length($2);
         my $col = $markend;
         for my $ch (split //, $3) { $col += ($ch eq "\t") ? 4 - ($col % 4) : 1 }
-        $listindent = ($col - $markend > 4) ? $markend + 1 : $col;
-      } elsif ($listindent >= 0 and $ln !~ /^\s*$/ and $ind < $listindent) {
-        $listindent = -1;
+        while (@liststack and $mind < $liststack[-1]) { pop @liststack }
+        push @liststack, (($col - $markend > 4) ? $markend + 1 : $col);
+      } elsif ($ln !~ /^\s*$/) {
+        while (@liststack and $ind < $liststack[-1]) { pop @liststack }
       }
-      my $req = $listindent >= 0 ? $listindent + 4 : 4;
-      if ($prevblank and $ind >= $req) { $flush->(); $icode = 1; $icodereq = $req; $fbuf = $ln; next }
       $buf .= $ln;
       $prevblank = ($ln =~ /^\s*$/) ? 1 : 0;
     }
