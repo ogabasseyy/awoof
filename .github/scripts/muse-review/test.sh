@@ -81,6 +81,8 @@ assert_eq "capfile-missing-rc" "1" "${got_rc}"
 zwsp=$'\xe2\x80\x8b'
 got="$(printf '%s' 'hi @octocat, ping @a-b and mail a@b.com' | sanitize_mentions)"
 assert_eq "mentions-zwsp" "hi @${zwsp}octocat, ping @${zwsp}a-b and mail a@b.com" "${got}"
+got="$(printf '%s' 'docs (https://example.test/foo(bar)/@scope/pkg) and ping @user' | sanitize_mentions)"
+assert_eq "mentions-balanced-paren-url" "docs (https://example.test/foo(bar)/@scope/pkg) and ping @${zwsp}user" "${got}"
 got="$(printf '%s' 'see https://www.npmjs.com/package/@scope/pkg and ping @user' | sanitize_mentions)"
 assert_eq "mentions-url-kept" "see https://www.npmjs.com/package/@scope/pkg and ping @${zwsp}user" "${got}"
 got="$(printf '%s' '@lead starts here' | sanitize_mentions)"
@@ -651,6 +653,10 @@ got="$(printf '%b' '- item\n\n    ![](https://e.example/pixel)\n\nafter' | prote
 assert_eq "list-indented-image-not-code" "$(printf '%b' '- item\n\n    \n\nafter')" "${got}"
 got="$(printf '%b' '- item\n\n      ![a](https://e.example/x) code\n\nafter' | protect_code_spans | strip_images | restore_code_spans)"
 assert_eq "list-indented-code-protected" "$(printf '%b' '- item\n\n      ![a](https://e.example/x) code\n\nafter')" "${got}"
+got="$(printf '%b' '- \titem\n\n       ![](https://e.example/pixel)\n\nafter' | protect_code_spans | strip_images | restore_code_spans)"
+assert_eq "list-tab-indent-image-not-code" "$(printf '%b' '- \titem\n\n       \n\nafter')" "${got}"
+got="$(printf '%b' '- \titem\n\n        ![a](https://e.example/x) code\n\nafter' | protect_code_spans | strip_images | restore_code_spans)"
+assert_eq "list-tab-indent-code-protected" "$(printf '%b' '- \titem\n\n        ![a](https://e.example/x) code\n\nafter')" "${got}"
 got="$(printf '%s' 'see <https://docs.github.com/en/actions> and <a@b.com> and <b>bold</b>' | strip_html_tags)"
 assert_eq "html-autolinks-kept" 'see https://docs.github.com/en/actions and a@b.com and  [HTML removed] bold [HTML removed] ' "${got}"
 
@@ -1354,6 +1360,16 @@ case "$(cat "${xdir}/tmp/out.txt")" in *"diff_failed=true"*) got_x="failed";; *)
 assert_eq "diff-budget-fails-closed" "failed" "${got_x}"
 case "$(cat "${xdir}/tmp/muse.diff" 2>/dev/null)" in *"Diff collection failed"*) got_x="fallback";; *) got_x="partial";; esac
 assert_eq "diff-budget-fallback-note" "fallback" "${got_x}"
+python3 -c "
+import sys
+sys.stdout.buffer.write(b'diff --git a/f.txt b/f.txt\n--- a/f.txt\n+++ b/f.txt\n@@ -1 +1 @@\n')
+for i in range(2000):
+    sys.stdout.buffer.write(b'+' + b'\xff' * 9 + b'\n')
+" > "${xdir}/escaped.diff"
+: > "${xdir}/tmp/out.txt"
+(cd "${xdir}/repo" && GH_STUB_DIFF="${xdir}/escaped.diff" PATH="${xdir}/bin:${PATH}" GH_TOKEN="fake" GITHUB_REPOSITORY="t/t" HEAD_SHA_EVENT="aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" GITHUB_OUTPUT="${xdir}/tmp/out.txt" RUNNER_TEMP="${xdir}/tmp" SCRIPT_DIR="${SCRIPT_DIR}" bash "${diff_script}") >/dev/null 2>&1
+case "$(cat "${xdir}/tmp/out.txt")" in *"diff_failed=true"*) got_x="failed";; *) got_x="ok";; esac
+assert_eq "diff-budget-escaped-fails-closed" "failed" "${got_x}"
 rm -rf "${xdir}"
 
 # --- post.sh over-budget fallback drops inline threads (script level) ---

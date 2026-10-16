@@ -74,10 +74,17 @@ fi
 # cutoff leaves no trace in the removed-lines supplement either), yet
 # a partial review would still post the success marker for a change it
 # could not cite lines from. Route to the explicit fallback instead.
+# The budget is measured on the ENCODED evidence prompt.sh will emit:
+# escape_invalid_utf8 expands an invalid byte to a four-byte \xHH
+# sequence (and doubles backslashes), so a raw byte count would let an
+# invalid-byte-heavy diff blow far past the prompt budget unchecked.
 budget=60000
-if [[ "${diff_failed}" != "true" ]] && (( $(wc -c < "${diff_file}") > budget )); then
-  echo "complete diff exceeds the ${budget}-byte prompt budget; routing to the fallback instead of reviewing a truncated diff" > "${RUNNER_TEMP}/muse-ghdiff.err"
-  diff_failed=true
+if [[ "${diff_failed}" != "true" ]]; then
+  enc_len="$(escape_invalid_utf8 < "${diff_file}" | neutralize_tags | wc -c)"
+  if (( enc_len > budget )); then
+    echo "encoded diff evidence exceeds the ${budget}-byte prompt budget (${enc_len} bytes after UTF-8 escaping); routing to the fallback instead of reviewing a truncated diff" > "${RUNNER_TEMP}/muse-ghdiff.err"
+    diff_failed=true
+  fi
 fi
 echo "diff_failed=${diff_failed}" >> "${GITHUB_OUTPUT}"
 

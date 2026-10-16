@@ -95,8 +95,10 @@ sanitize_mentions() {
   # URL tokens are split out first and left untouched: an @ inside a
   # cited URL (scoped-package paths like /package/@scope/pkg) is part of
   # the address, and inserting the zero-width space there corrupts the
-  # citation so it no longer resolves.
-  perl -pe 'my @p = split /(https?:\/\/[^\s)\]]+|www\.[^\s)\]]+)/; for (my $i = 0; $i < @p; $i += 2) { $p[$i] =~ s/(?<![A-Za-z0-9_])@([A-Za-z0-9_])/\@\xE2\x80\x8B$1/g } $_ = join "", @p'
+  # citation so it no longer resolves. URL scanning balances
+  # parentheses (GFM link destinations may contain balanced pairs), so
+  # a path segment after `(...)` stays inside the protected token.
+  perl -pe 'my @p = split /((?:https?:\/\/|www\.)(?:[^\s()\[\]]|\((?:[^\s()\[\]]|\([^\s()\[\]]*\))*\))+)/; for (my $i = 0; $i < @p; $i += 2) { $p[$i] =~ s/(?<![A-Za-z0-9_])@([A-Za-z0-9_])/\@\xE2\x80\x8B$1/g } $_ = join "", @p'
 }
 
 # Strip image embeds from review text posted as github-actions[bot]: a
@@ -323,9 +325,11 @@ protect_code_spans() {
         if ($ln =~ /^ {0,3}(\Q$fence\E{3,})[ \t]*$/ and length($1) >= $flen) { $emit_fence->(); $fence = ""; $prevblank = 1 }
         next;
       }
-      if ($ln =~ /^([ ]*)([-*+]|[0-9]{1,9}[.)])([ \t]+)(?=\S)/) {
-        my $sp = length($3); $sp = 1 if $sp > 4;
-        $listindent = length($1) + length($2) + $sp;
+      if ($ln =~ /^([ \t]*)([-*+]|[0-9]{1,9}[.)])([ \t]+)(?=\S)/) {
+        my $markend = $indent_of->($1) + length($2);
+        my $col = $markend;
+        for my $ch (split //, $3) { $col += ($ch eq "\t") ? 4 - ($col % 4) : 1 }
+        $listindent = ($col - $markend > 4) ? $markend + 1 : $col;
       } elsif ($listindent >= 0 and $ln !~ /^\s*$/ and $ind < $listindent) {
         $listindent = -1;
       }
