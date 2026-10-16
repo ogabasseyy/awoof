@@ -336,6 +336,10 @@ protect_code_spans() {
         for my $ch (split //, $3) { $col += ($ch eq "\t") ? 4 - ($col % 4) : 1 }
         while (@liststack and $mind < $liststack[-1]) { pop @liststack }
         push @liststack, (($col - $markend > 4) ? $markend + 1 : $col);
+      } elsif ($ln =~ /^([ \t]*)([-*+]|[0-9]{1,9}[.)])[ \t]*$/) {
+        my $mind = $indent_of->($1);
+        while (@liststack and $mind < $liststack[-1]) { pop @liststack }
+        push @liststack, ($mind + length($2) + 1);
       } elsif ($ln !~ /^\s*$/) {
         while (@liststack and $ind < $liststack[-1]) { pop @liststack }
       }

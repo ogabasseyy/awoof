@@ -663,6 +663,10 @@ got="$(printf '%b' '- outer\n  - inner\n  back outer\n\n    ![](https://e.exampl
 assert_eq "list-nested-unwind-image-not-code" "$(printf '%b' '- outer\n  - inner\n  back outer\n\n    \n\nafter')" "${got}"
 got="$(printf '%b' '- outer\n  - inner\n  back outer\n\n      ![a](https://e.example/x) code\n\nafter' | protect_code_spans | strip_images | restore_code_spans)"
 assert_eq "list-nested-unwind-code-protected" "$(printf '%b' '- outer\n  - inner\n  back outer\n\n      ![a](https://e.example/x) code\n\nafter')" "${got}"
+got="$(printf '%b' '-\n  text\n\n    ![](https://e.example/pixel)\n\nafter' | protect_code_spans | strip_images | restore_code_spans)"
+assert_eq "list-blank-start-image-not-code" "$(printf '%b' '-\n  text\n\n    \n\nafter')" "${got}"
+got="$(printf '%b' '-\n  text\n\n      ![a](https://e.example/x) code\n\nafter' | protect_code_spans | strip_images | restore_code_spans)"
+assert_eq "list-blank-start-code-protected" "$(printf '%b' '-\n  text\n\n      ![a](https://e.example/x) code\n\nafter')" "${got}"
 got="$(printf '%s' 'see <https://docs.github.com/en/actions> and <a@b.com> and <b>bold</b>' | strip_html_tags)"
 assert_eq "html-autolinks-kept" 'see https://docs.github.com/en/actions and a@b.com and  [HTML removed] bold [HTML removed] ' "${got}"
 
