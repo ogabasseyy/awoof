@@ -52,8 +52,10 @@ import {
     type ParsedAcademicProfileInput,
     type ProfileFieldState,
     type PurgeResult,
+    type ErasureResult,
     type VerificationRequirement,
 } from './academic-profile.types.js';
+import { recordAcademicProfileErasure } from './academic-profile-ledger.service.js';
 
 export const ACADEMIC_PROFILE_REVISION_CONFLICT = 'ACADEMIC_PROFILE_REVISION_CONFLICT';
 export const ACADEMIC_PROFILE_INSTITUTION_CHANGED = 'ACADEMIC_PROFILE_INSTITUTION_CHANGED';
@@ -185,6 +187,7 @@ export type StoredAcademicProfile = {
     canonicalInstitutionId: string | null;
     observedIdentityVersion: number;
     fields: AcademicProfileFields;
+    generationId?: string | null | undefined;
 };
 
 export type AcademicProfileRow = {
@@ -193,6 +196,7 @@ export type AcademicProfileRow = {
     canonical_institution_id: string | null;
     observed_identity_version: number;
     revision: number;
+    generation_id?: string | null | undefined;
     claimed_institution_state: string;
     claimed_institution_name: string | null;
     claimed_institution_country: string | null;
@@ -252,6 +256,7 @@ function rowToStoredProfile(row: AcademicProfileRow): StoredAcademicProfile {
         revision: row.revision,
         canonicalInstitutionId: row.canonical_institution_id,
         observedIdentityVersion: row.observed_identity_version,
+        generationId: row.generation_id ?? null,
         fields: {
             claimedInstitution: claimedState === 'supplied'
                 ? {
@@ -719,6 +724,7 @@ const PROFILE_COLUMNS = [
     'canonical_institution_id',
     'observed_identity_version',
     'revision',
+    'generation_id',
     'claimed_institution_state',
     'claimed_institution_name',
     'claimed_institution_country',
@@ -827,7 +833,7 @@ ON CONFLICT (user_id) DO UPDATE SET
     estimate_basis_source_version = EXCLUDED.estimate_basis_source_version,
     estimate_stale = EXCLUDED.estimate_stale,
     updated_at = clock_timestamp()
-RETURNING revision`;
+RETURNING revision, generation_id`;
 
 const INVALIDATE_SQL = `UPDATE student_academic_profiles
 SET canonical_institution_id = $1,
@@ -893,6 +899,7 @@ async function buildProjection(input: {
     listVerificationMethods: (tx: PoolClient, universityId: string | null) => Promise<VerificationMethodInfo[]>;
     matricParsers: readonly MatricParser[];
     currentYear: number;
+    generationId?: string | null | undefined;
 }): Promise<AcademicProfileProjection> {
     const { ctx, reference } = input;
     const binding: AcademicProfileInstitution['binding'] = ctx.universityId !== null
@@ -991,6 +998,7 @@ async function buildProjection(input: {
             attentionFields,
             verificationContinuationAvailable,
         }),
+        generationId: input.generationId ?? null,
     };
 }
 
@@ -1056,6 +1064,7 @@ export async function readAcademicProfile(
             listVerificationMethods: resolved.listVerificationMethods,
             matricParsers: resolved.matricParsers,
             currentYear: resolved.currentYear,
+            generationId: stored.generationId,
         });
         await client.query('COMMIT');
         return projection;
@@ -1161,7 +1170,8 @@ export async function saveAcademicProfile(
             expectedCountryCode: boundInstitutionCountryCode(ctx.universityId, ctx.institutionCountry),
         });
         const revision = stored.revision + 1;
-        await client.query(UPSERT_SQL, upsertParams(ctx, revision, merged));
+        const upsertResult = await client.query<{ revision: number; generation_id?: string }>(UPSERT_SQL, upsertParams(ctx, revision, merged));
+        const generationId = upsertResult.rows[0]?.generation_id ?? stored.generationId;
         const projection = await buildProjection({
             tx: client,
             ctx,
@@ -1173,6 +1183,7 @@ export async function saveAcademicProfile(
             listVerificationMethods: resolved.listVerificationMethods,
             matricParsers: resolved.matricParsers,
             currentYear: resolved.currentYear,
+            generationId,
         });
         await client.query('COMMIT');
         return projection;
@@ -1189,7 +1200,68 @@ export async function saveAcademicProfile(
  * regardless of the collection gate; records only whether a row was removed,
  * never the deleted values.
  */
-export async function purgeAcademicProfileForUser(tx: PoolClient, userId: string): Promise<PurgeResult> {
+export async function purgeAcademicProfileForUser(
+    tx: PoolClient,
+    userId: string,
+    scope: 'profile_only' | 'account_closure' = 'account_closure',
+    ledgerFilePath?: string | undefined,
+): Promise<PurgeResult> {
+    const profileResult = await tx.query<{ generation_id: string }>(
+        `SELECT generation_id FROM student_academic_profiles WHERE user_id = $1 FOR UPDATE`,
+        [userId],
+    );
+    const row = profileResult.rows[0];
+    if (!row) {
+        return { deleted: false, generationId: null };
+    }
+    const generationId = row.generation_id;
+    if (generationId) {
+        await recordAcademicProfileErasure(tx, {
+            userId,
+            generationId,
+            scope,
+            ledgerFilePath,
+        });
+    }
     const deleted = await tx.query(`DELETE FROM student_academic_profiles WHERE user_id = $1`, [userId]);
-    return { deleted: (deleted.rowCount ?? 0) > 0 };
+    return { deleted: (deleted.rowCount ?? 0) > 0, generationId: generationId ?? null };
+}
+
+/**
+ * Voluntary profile-only erasure requested by an authenticated student.
+ * Removes academic details and records in the deletion ledger while
+ * leaving the user account and enrollment eligibility untouched.
+ * Available even when collection is disabled.
+ */
+export async function eraseAcademicProfileForUser(
+    pool: Pick<Pool, 'connect'>,
+    userId: string,
+    ledgerFilePath?: string | undefined,
+): Promise<ErasureResult> {
+    const client = await pool.connect();
+    try {
+        await client.query('BEGIN');
+        const userResult = await client.query<{ id: string; role: string; deleted_at: Date | null }>(
+            `SELECT id, role, deleted_at FROM users WHERE id = $1 FOR UPDATE`,
+            [userId],
+        );
+        const user = userResult.rows[0];
+        if (!user || user.deleted_at !== null) {
+            await client.query('ROLLBACK');
+            throw new NotFoundError('Student user not found');
+        }
+        if (user.role !== 'student') {
+            await client.query('ROLLBACK');
+            throw new ForbiddenError('Academic profiles are available to student accounts only');
+        }
+
+        const purge = await purgeAcademicProfileForUser(client, userId, 'profile_only', ledgerFilePath);
+        await client.query('COMMIT');
+        return { erased: purge.deleted, generationId: purge.generationId ?? null };
+    } catch (error) {
+        await client.query('ROLLBACK').catch(() => undefined);
+        throw error;
+    } finally {
+        client.release();
+    }
 }

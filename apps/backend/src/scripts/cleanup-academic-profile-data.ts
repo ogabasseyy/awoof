@@ -13,6 +13,7 @@
 import pg from 'pg';
 import dotenv from 'dotenv';
 import {
+    ACADEMIC_PROFILE_PURGE_LOCK_ID,
     ACADEMIC_PROFILE_RETENTION_ENV_VAR,
     purgeSoftDeletedAcademicProfiles,
     resolveAcademicProfileRetentionDays,
@@ -47,9 +48,21 @@ async function main(): Promise<void> {
         process.exitCode = 1;
     };
     try {
+        const args = process.argv.slice(2);
+        const isDryRun = args.includes('--dry-run');
+        let batchSize = 500;
+        const batchSizeIdx = args.indexOf('--batch-size');
+        const nextArg = batchSizeIdx !== -1 ? args[batchSizeIdx + 1] : undefined;
+        if (nextArg !== undefined) {
+            const parsed = parseInt(nextArg, 10);
+            if (!Number.isNaN(parsed) && parsed > 0) {
+                batchSize = parsed;
+            }
+        }
+
         let retentionDays: number;
         try {
-            retentionDays = resolveAcademicProfileRetentionDays(process.env[ACADEMIC_PROFILE_RETENTION_ENV_VAR]);
+            retentionDays = resolveAcademicProfileRetentionDays(process.env[ACADEMIC_PROFILE_RETENTION_ENV_VAR] ?? null);
         } catch {
             fail('academic profile purge refused: retention window is not set to an approved positive value');
             return;
@@ -58,9 +71,28 @@ async function main(): Promise<void> {
         // pg can surface an idle client error outside a query promise. Never
         // forward that object because it may include a connection URL/value.
         pool.on('error', () => fail('academic profile purge failed'));
-        const summary = await purgeSoftDeletedAcademicProfiles(pool, retentionDays);
+        const summary = await purgeSoftDeletedAcademicProfiles(pool, retentionDays, {
+            dryRun: isDryRun,
+            batchSize,
+            useAdvisoryLock: true,
+        });
+
+        if (summary.skippedDueToLock) {
+            process.stdout.write(
+                `academic profile purge skipped: another purge process holds advisory lock ${ACADEMIC_PROFILE_PURGE_LOCK_ID}\n`,
+            );
+            return;
+        }
+
+        if (summary.dryRun) {
+            process.stdout.write(
+                `academic profile purge dry-run complete: eligibleProfiles=${summary.scannedProfiles ?? 0} cutoff=${summary.cutoff}\n`,
+            );
+            return;
+        }
+
         process.stdout.write(
-            `academic profile purge complete: deletedProfiles=${summary.deletedProfiles} cutoff=${summary.cutoff}\n`,
+            `academic profile purge complete: deletedProfiles=${summary.deletedProfiles} cutoff=${summary.cutoff} batchesProcessed=${summary.batchesProcessed ?? 1}\n`,
         );
     } catch {
         fail('academic profile purge failed');

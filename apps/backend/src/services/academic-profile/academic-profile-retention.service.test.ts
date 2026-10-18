@@ -116,3 +116,92 @@ test('purge summaries and statements never carry deleted values', async () => {
     const statement = pool.statements.find((candidate) => candidate.text.startsWith('DELETE'));
     assert.ok(!/RETURNING/.test(statement?.text ?? ''), 'purge must not read back deleted values');
 });
+
+test('dryRun counts candidate profiles without issuing DELETE', async () => {
+    const statements: Array<{ text: string; params: unknown[] }> = [];
+    const client = {
+        query: async (text: string, params: unknown[] = []): Promise<unknown> => {
+            const normalized = text.replace(/\s+/g, ' ').trim();
+            statements.push({ text: normalized, params });
+            if (normalized.includes('clock_timestamp()')) {
+                return { rows: [{ now: NOW }], rowCount: 1 };
+            }
+            if (normalized.startsWith('SELECT COUNT(*)')) {
+                return { rows: [{ count: '7' }], rowCount: 1 };
+            }
+            return { rows: [], rowCount: 0 };
+        },
+        release: (): void => undefined,
+    };
+    const pool = { connect: async () => client };
+    const summary = await purgeSoftDeletedAcademicProfiles(pool, 90, { dryRun: true });
+    assert.deepEqual(summary, {
+        deletedProfiles: 0,
+        scannedProfiles: 7,
+        cutoff: new Date(NOW.getTime() - 90 * DAY_MS).toISOString(),
+        dryRun: true,
+        batchesProcessed: 0,
+    });
+    assert.ok(statements.every((s) => !s.text.startsWith('DELETE')));
+});
+
+test('advisory lock contention skips purge safely', async () => {
+    const statements: Array<{ text: string; params: unknown[] }> = [];
+    const client = {
+        query: async (text: string, params: unknown[] = []): Promise<unknown> => {
+            const normalized = text.replace(/\s+/g, ' ').trim();
+            statements.push({ text: normalized, params });
+            if (normalized.includes('pg_try_advisory_lock')) {
+                return { rows: [{ locked: false }], rowCount: 1 };
+            }
+            return { rows: [], rowCount: 0 };
+        },
+        release: (): void => undefined,
+    };
+    const pool = { connect: async () => client };
+    const summary = await purgeSoftDeletedAcademicProfiles(pool, 90, { useAdvisoryLock: true });
+    assert.equal(summary.deletedProfiles, 0);
+    assert.equal(summary.skippedDueToLock, true);
+    assert.ok(statements.every((s) => !s.text.startsWith('DELETE')));
+});
+
+test('batching processes candidates and records in deletion ledger', async () => {
+    const statements: Array<{ text: string; params: unknown[] }> = [];
+    let selectBatchCalled = false;
+    const client = {
+        query: async (text: string, params: unknown[] = []): Promise<unknown> => {
+            const normalized = text.replace(/\s+/g, ' ').trim();
+            statements.push({ text: normalized, params });
+            if (normalized.includes('clock_timestamp()')) {
+                return { rows: [{ now: NOW }], rowCount: 1 };
+            }
+            if (normalized.startsWith('SELECT sap.user_id')) {
+                if (!selectBatchCalled) {
+                    selectBatchCalled = true;
+                    return {
+                        rows: [
+                            { user_id: '00000000-0000-4000-8000-000000000001', generation_id: '11111111-1111-4111-8111-111111111111' },
+                        ],
+                        rowCount: 1,
+                    };
+                }
+                return { rows: [], rowCount: 0 };
+            }
+            if (normalized.includes('academic_profile_deletion_ledger')) {
+                return { rows: [{ id: 'ledger-entry-1', erased_at: new Date(NOW) }], rowCount: 1 };
+            }
+            if (normalized.startsWith('DELETE FROM student_academic_profiles')) {
+                return { rows: [], rowCount: 1 };
+            }
+            return { rows: [], rowCount: 0 };
+        },
+        release: (): void => undefined,
+    };
+    const pool = { connect: async () => client };
+    const summary = await purgeSoftDeletedAcademicProfiles(pool, 90, { batchSize: 10, ledgerFilePath: 'backups/test-ledger.jsonl' });
+    assert.equal(summary.deletedProfiles, 1);
+    assert.equal(summary.batchesProcessed, 1);
+    assert.ok(statements.some((s) => s.text.includes('academic_profile_deletion_ledger')));
+    assert.ok(statements.some((s) => s.text.startsWith('DELETE FROM student_academic_profiles WHERE user_id = ANY')));
+});
+

@@ -24,6 +24,7 @@ import {
     computeOptionalUnansweredFields,
     computePromptDecision,
     effectiveEstimateCountryCode,
+    eraseAcademicProfileForUser,
     isAcademicProfileCollectionEnabled,
     isEstimateStale,
     labelFromArtifact,
@@ -105,6 +106,7 @@ function profileRow(overrides: Record<string, unknown> = {}): Record<string, unk
     return {
         user_id: USER_ID,
         student_id: STUDENT_ID,
+        generation_id: '00000000-0000-4000-8000-000000000001',
         canonical_institution_id: null,
         observed_identity_version: 1,
         revision: 1,
@@ -223,9 +225,10 @@ function createFakePool(state: FakeState): { connect: () => Promise<unknown> } {
             }
             if (normalized.startsWith('DELETE FROM student_academic_profiles')) {
                 const deleted = state.profile !== null;
+                const genId = state.profile ? (state.profile['generation_id'] ?? null) : null;
                 state.profile = null;
                 state.writes.push({ text: normalized, params });
-                return { rows: [], rowCount: deleted ? 1 : 0 };
+                return { rows: deleted ? [{ generation_id: genId }] : [], rowCount: deleted ? 1 : 0 };
             }
             if (normalized.includes('FROM student_academic_profiles')) {
                 const observed = state.profile ? [state.profile] : [];
@@ -238,6 +241,13 @@ function createFakePool(state: FakeState): { connect: () => Promise<unknown> } {
                     hook();
                 }
                 return { rows: observed, rowCount: observed.length };
+            }
+            if (normalized === 'BEGIN' || normalized === 'COMMIT' || normalized === 'ROLLBACK') {
+                return { rows: [], rowCount: 0 };
+            }
+            if (normalized.includes('academic_profile_deletion_ledger')) {
+                state.writes.push({ text: normalized, params });
+                return { rows: [{ id: 'ledger-0001', erased_at: new Date(NOW) }], rowCount: 1 };
             }
             if (normalized.includes('FROM users')) {
                 state.readUserIds.push(params[0]);
@@ -1866,8 +1876,17 @@ test('purge deletes the academic row and reports whether anything was removed', 
     const pool = createFakePool(state);
     const client = (await pool.connect()) as { query: (text: string, params?: unknown[]) => Promise<unknown> };
     const first = await purgeAcademicProfileForUser(client as never, USER_ID);
-    assert.deepEqual(first, { deleted: true });
+    assert.deepEqual(first, { deleted: true, generationId: '00000000-0000-4000-8000-000000000001' });
     assert.equal(state.profile, null);
     const second = await purgeAcademicProfileForUser(client as never, USER_ID);
-    assert.deepEqual(second, { deleted: false });
+    assert.deepEqual(second, { deleted: false, generationId: null });
+});
+
+test('eraseAcademicProfileForUser purges profile, records erasure, and returns summary', async () => {
+    const state = fakeState({ profile: profileRow() });
+    const pool = createFakePool(state);
+    const result = await eraseAcademicProfileForUser(pool as never, USER_ID);
+    assert.equal(result.erased, true);
+    assert.equal(result.generationId, '00000000-0000-4000-8000-000000000001');
+    assert.equal(state.profile, null);
 });

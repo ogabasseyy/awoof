@@ -117,6 +117,10 @@ test('academic profile routes reject unauthenticated requests', async () => {
             body: JSON.stringify({ expectedRevision: 0 }),
         });
         assert.equal(putResponse.status, 401);
+        const deleteResponse = await fetch(`${baseUrl}/academic-profile`, {
+            method: 'DELETE',
+        });
+        assert.equal(deleteResponse.status, 401);
     });
 });
 
@@ -124,12 +128,18 @@ test('academic profile routes reject non-student roles', async () => {
     const controller = new StudentAcademicProfileController({
         readAcademicProfile: async () => fixtureProjection(),
         saveAcademicProfile: async () => fixtureProjection(),
+        eraseAcademicProfile: async () => ({ erased: true, userId: ACTOR_ID, generationId: null, erasedAt: new Date().toISOString(), remainingAccountActive: true }),
     });
     await withServer(createStudentAcademicProfileRouter(controller), async (baseUrl) => {
         const response = await fetch(`${baseUrl}/academic-profile`, {
             headers: { authorization: `Bearer ${studentToken('vendor')}` },
         });
         assert.equal(response.status, 401);
+        const deleteResponse = await fetch(`${baseUrl}/academic-profile`, {
+            method: 'DELETE',
+            headers: { authorization: `Bearer ${studentToken('vendor')}` },
+        });
+        assert.equal(deleteResponse.status, 401);
     });
 });
 
@@ -251,8 +261,50 @@ test('generated OpenAPI includes the academic profile contract', () => {
     const path = spec.paths?.['/api/students/academic-profile'] as Record<string, unknown>;
     assert.ok(path['get'], 'OpenAPI must document the academic profile read');
     assert.ok(path['put'], 'OpenAPI must document the academic profile write');
+    assert.ok(path['delete'], 'OpenAPI must document the academic profile erasure');
     assert.ok(spec.components?.schemas?.['AcademicProfileProjection'], 'OpenAPI must define the projection schema');
     assert.ok(spec.components?.schemas?.['AcademicProfileInput'], 'OpenAPI must define the input schema');
+    assert.ok(spec.components?.schemas?.['AcademicProfileErasureResponse'], 'OpenAPI must define the erasure response schema');
+});
+
+test('DELETE academic profile binds the erasure to the authenticated student and sets no-store', async () => {
+    const seen: string[] = [];
+    const controller = new StudentAcademicProfileController({
+        eraseAcademicProfile: async (userId) => {
+            seen.push(userId);
+            return {
+                erased: true,
+                userId,
+                generationId: '11111111-1111-4111-8111-111111111111',
+                erasedAt: '2026-10-18T12:00:00.000Z',
+                remainingAccountActive: true,
+            };
+        },
+    });
+    await withServer(createStudentAcademicProfileRouter(controller), async (baseUrl) => {
+        const response = await fetch(`${baseUrl}/academic-profile`, {
+            method: 'DELETE',
+            headers: { authorization: `Bearer ${studentToken()}` },
+        });
+        assert.equal(response.status, 200);
+        assert.equal(response.headers.get('cache-control'), 'no-store');
+        const body = (await response.json()) as {
+            success: boolean;
+            data: {
+                erased: boolean;
+                userId: string;
+                generationId: string;
+                erasedAt: string;
+                remainingAccountActive: boolean;
+            };
+        };
+        assert.equal(body.success, true);
+        assert.equal(body.data.erased, true);
+        assert.equal(body.data.userId, ACTOR_ID);
+        assert.equal(body.data.generationId, '11111111-1111-4111-8111-111111111111');
+        assert.equal(body.data.remainingAccountActive, true);
+        assert.deepEqual(seen, [ACTOR_ID]);
+    });
 });
 
 test('catalogue and estimate endpoints reject unauthenticated requests', async () => {

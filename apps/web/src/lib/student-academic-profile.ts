@@ -863,3 +863,35 @@ export async function requestGraduationEstimate(input: EstimateInput): Promise<E
     if (!parsed) throw new Error('The estimate response was not recognized. Please try again.');
     return parsed;
 }
+
+export type AcademicProfileErasureResult = {
+    erased: boolean;
+    userId: string;
+    generationId: string | null;
+    erasedAt: string;
+    remainingAccountActive: boolean;
+};
+
+export function parseAcademicProfileErasureResult(value: unknown): AcademicProfileErasureResult | null {
+    const data = asRecord(unwrapData(value));
+    if (!data) return null;
+    if (typeof data.erased !== 'boolean' || typeof data.userId !== 'string') return null;
+    return {
+        erased: data.erased,
+        userId: data.userId,
+        generationId: typeof data.generationId === 'string' ? data.generationId : null,
+        erasedAt: typeof data.erasedAt === 'string' ? data.erasedAt : new Date().toISOString(),
+        remainingAccountActive: typeof data.remainingAccountActive === 'boolean' ? data.remainingAccountActive : true,
+    };
+}
+
+/**
+ * Erase the student's optional academic profile.
+ * Does not close, suspend, or disrupt the primary student account or eligibility.
+ */
+export async function eraseAcademicProfile(): Promise<AcademicProfileErasureResult> {
+    const response = await apiClient.delete('/students/academic-profile');
+    const parsed = parseAcademicProfileErasureResult(response.data);
+    if (!parsed) throw new Error('The profile erasure response was not recognized. Please reload this page.');
+    return parsed;
+}

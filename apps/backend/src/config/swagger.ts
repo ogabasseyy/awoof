@@ -652,6 +652,25 @@ Access tokens expire in 15 minutes. Use the refresh token endpoint to get a new 
                         data: { $ref: '#/components/schemas/AcademicProfileProjection' },
                     },
                 },
+                AcademicProfileErasureResponse: {
+                    type: 'object',
+                    required: ['success', 'data', 'message'],
+                    properties: {
+                        success: { type: 'boolean', enum: [true] },
+                        message: { type: 'string' },
+                        data: {
+                            type: 'object',
+                            required: ['erased', 'userId', 'generationId', 'erasedAt', 'remainingAccountActive'],
+                            properties: {
+                                erased: { type: 'boolean' },
+                                userId: { type: 'string', format: 'uuid' },
+                                generationId: { type: 'string', format: 'uuid', nullable: true },
+                                erasedAt: { type: 'string', format: 'date-time' },
+                                remainingAccountActive: { type: 'boolean' },
+                            },
+                        },
+                    },
+                },
                 AcademicProfileEntryYearSuggestion: {
                     nullable: true,
                     oneOf: [
