@@ -1876,10 +1876,12 @@ test('purge deletes the academic row and reports whether anything was removed', 
     const pool = createFakePool(state);
     const client = (await pool.connect()) as { query: (text: string, params?: unknown[]) => Promise<unknown> };
     const first = await purgeAcademicProfileForUser(client as never, USER_ID);
-    assert.deepEqual(first, { deleted: true, generationId: '00000000-0000-4000-8000-000000000001' });
+    assert.equal(first.deleted, true);
+    assert.equal(first.generationId, '00000000-0000-4000-8000-000000000001');
     assert.equal(state.profile, null);
     const second = await purgeAcademicProfileForUser(client as never, USER_ID);
-    assert.deepEqual(second, { deleted: false, generationId: null });
+    assert.equal(second.deleted, false);
+    assert.equal(second.generationId, null);
 });
 
 test('eraseAcademicProfileForUser purges profile, records erasure, and returns summary', async () => {
@@ -1887,6 +1889,9 @@ test('eraseAcademicProfileForUser purges profile, records erasure, and returns s
     const pool = createFakePool(state);
     const result = await eraseAcademicProfileForUser(pool as never, USER_ID);
     assert.equal(result.erased, true);
+    assert.equal(result.userId, USER_ID);
     assert.equal(result.generationId, '00000000-0000-4000-8000-000000000001');
+    assert.equal(result.remainingAccountActive, true);
+    assert.ok(typeof result.erasedAt === 'string');
     assert.equal(state.profile, null);
 });

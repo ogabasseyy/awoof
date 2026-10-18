@@ -13,8 +13,8 @@ Every location where academic-profile personal data or its derivatives exist mus
 | Store / Component | Technology | Exact Fields Present | Retention & Disposal Mechanism |
 |---|---|---|---|
 | **Primary Store** | PostgreSQL 16 table `student_academic_profiles` | `user_id`, `student_id`, `canonical_institution_id`, `claimed_institution_name`, `claimed_institution_country`, `programme_id`, `course_label`, `entry_year`, `entry_route`, `expected_graduation_year`, `graduation_year_origin`, `estimate_basis_*`, `generation_id`, `revision` | Hard physical deletion via `DELETE` (triggered by soft-delete purge or profile-only erasure API). |
-| **Deletion Ledger (DB)** | PostgreSQL 16 table `academic_profile_deletion_ledger` | `id`, `user_id`, `generation_id`, `scope`, `erased_at`, `reconciled_at` (NO answers, NO names, NO emails) | Retained for 90 days (exceeding all active backup lifetimes) to support restore reconciliation, then purged. |
-| **Durable Ledger (Host)** | Append-only JSONL file on VPS host filesystem (`backups/academic-profile-deletion-ledger.jsonl`) | `userId`, `generationId`, `scope`, `erasedAt`, `checksum` | Appended atomically during erasure; preserved independently of PostgreSQL dumps; purged after 90 days. |
+| **Deletion Ledger (DB)** | PostgreSQL 16 table `academic_profile_deletion_ledger` | `id`, `user_id`, `generation_id`, `scope`, `erased_at`, `reconciled_at` (NO answers, NO names, NO emails) | Retained as append-only reconciliation log exceeding backup lifespans. (90-day disposal policy is planned for future implementation upon authorization). |
+| **Durable Ledger (Host)** | Append-only JSONL file on VPS host filesystem (`backups/academic-profile-deletion-ledger.jsonl`) | `userId`, `generationId`, `scope`, `erasedAt` | Appended atomically during erasure; preserved independently of PostgreSQL dumps. (90-day disposal is not yet implemented; ledger remains append-only). |
 | **In-Memory Projections** | Node.js backend runtime | Transient `AcademicProfileProjection` objects | Cleared on request completion; garbage collected by V8 engine. |
 | **Client Local Storage** | Browser `localStorage` | `awoof.profile.defer-prompt.v1.<browserSessionId>` containing only `userId` | Evicted on logout, session switch, or explicit browser cache clearance. |
 | **Operational Logs** | Winston / stdout logs | Counts-only metrics (`deletedProfiles=N`, `outcome=success`) | Zero personal data or identifiers emitted to logs. |
@@ -43,7 +43,7 @@ Every location where academic-profile personal data or its derivatives exist mus
 ┌───────────────────────────────┐ ┌──────────────────────┐ ┌───────────────────────────┐
 │     Profile-Only Erased       │ │ Profile Updated      │ │     Soft-Deleted Account  │
 │ (Row deleted, ledger logged,  │ │ (New answers saved,  │ │ (Row kept during 30d      │
-│  prompt suppressed)           │ │  revision + 1)       │ │  retention window)        │
+│  profile resets unanswered)   │ │  revision + 1)       │ │  retention window)        │
 └───────────────┬───────────────┘ └──────────────────────┘ └─────────────┬─────────────┘
                 │                                                        │
                 │ Legitimate voluntary                                   │ 30-day cutoff reached

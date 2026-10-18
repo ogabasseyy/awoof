@@ -33,6 +33,7 @@ services:
     # uploads are lost when the container is recreated. Entrypoint ensures dir is writable by app.
     volumes:
       - backend_uploads:/usr/src/app/uploads
+      - backend_backups:/usr/src/app/backups
     environment:
       NODE_ENV: production
       PORT: 5000
@@ -132,3 +133,5 @@ volumes:
   redis_data:
   backend_uploads:
     name: ${AWOOF_UPLOADS_VOLUME:-awoof_backend_uploads}
+  backend_backups:
+    name: ${AWOOF_BACKUPS_VOLUME:-awoof_backend_backups}

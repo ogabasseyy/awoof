@@ -52,7 +52,7 @@ You can review, edit, or update your course, entry year, admission route, or exp
 You have the explicit right to erase your optional academic profile without closing your Awoof account. 
 - You can submit an erasure request directly through your student profile settings or by contacting `support@awoof.tech`.
 - Profile-only erasure deletes your institution claim, programme selection, entry year, admission route, graduation estimate, and calculation basis from active database systems immediately upon confirmation.
-- Following erasure, your account remains fully active, your student status remains unchanged, and you will not be repeatedly prompted to re-enter academic details.
+- Following erasure, your account remains fully active, your student verification and discount eligibility remain unchanged, and your academic profile resets to an uncompleted state.
 
 ---
 

@@ -15,7 +15,7 @@
  */
 
 import type { Pool } from 'pg';
-import { recordAcademicProfileErasure } from './academic-profile-ledger.service.js';
+import { recordDeletionInDatabase, appendDurableLedgerEntry } from './academic-profile-ledger.service.js';
 
 export const ACADEMIC_PROFILE_RETENTION_ENV_VAR = 'ACADEMIC_PROFILE_RETENTION_DAYS';
 export const ACADEMIC_PROFILE_PURGE_LOCK_ID = 2026101801;
@@ -135,31 +135,46 @@ export async function purgeSoftDeletedAcademicProfiles(
             };
         }
 
-        if (options?.batchSize && options.batchSize > 0) {
-            const batchSize = Math.max(1, Math.min(options.batchSize, 5000));
-            let totalDeleted = 0;
-            let batchesProcessed = 0;
-            while (true) {
-                const batch = await client.query<{ user_id: string; generation_id: string }>(
-                    `SELECT sap.user_id, sap.generation_id
-                     FROM student_academic_profiles sap
-                     JOIN users u ON u.id = sap.user_id
-                     WHERE u.deleted_at IS NOT NULL AND u.deleted_at <= $1::timestamptz
-                     ORDER BY sap.user_id
-                     LIMIT $2`,
-                    [cutoff, batchSize],
-                );
-                if (batch.rows.length === 0) {
-                    break;
-                }
-                batchesProcessed += 1;
+        const batchSize = options?.batchSize && options.batchSize > 0
+            ? Math.min(options.batchSize, 5000)
+            : 500;
+        let totalDeleted = 0;
+        let batchesProcessed = 0;
+        while (true) {
+            const batch = await client.query<{ user_id: string; generation_id: string }>(
+                `SELECT sap.user_id, sap.generation_id
+                 FROM student_academic_profiles sap
+                 JOIN users u ON u.id = sap.user_id
+                 WHERE u.deleted_at IS NOT NULL AND u.deleted_at <= $1::timestamptz
+                 ORDER BY sap.user_id
+                 LIMIT $2`,
+                [cutoff, batchSize],
+            );
+            if (batch.rows.length === 0) {
+                break;
+            }
+            batchesProcessed += 1;
+            const toAppend: Array<() => void> = [];
+            await client.query('BEGIN');
+            try {
                 for (const row of batch.rows) {
                     if (row.generation_id) {
-                        await recordAcademicProfileErasure(client, {
+                        const dbRecord = await recordDeletionInDatabase(client, {
                             userId: row.user_id,
                             generationId: row.generation_id,
                             scope: 'account_closure',
-                            ledgerFilePath: options.ledgerFilePath,
+                        });
+                        const erasedAtIso = dbRecord.erasedAt.toISOString();
+                        toAppend.push(() => {
+                            appendDurableLedgerEntry(
+                                {
+                                    userId: row.user_id,
+                                    generationId: row.generation_id,
+                                    scope: 'account_closure',
+                                    erasedAt: erasedAtIso,
+                                },
+                                options?.ledgerFilePath,
+                            );
                         });
                     }
                 }
@@ -169,25 +184,27 @@ export async function purgeSoftDeletedAcademicProfiles(
                     [userIds],
                 );
                 totalDeleted += deleted.rowCount ?? 0;
-                if (batch.rows.length < batchSize) {
-                    break;
+                await client.query('COMMIT');
+                // Publish to durable host ledger only after DB transaction commits
+                for (const append of toAppend) {
+                    append();
                 }
+            } catch (err) {
+                await client.query('ROLLBACK').catch(() => undefined);
+                throw err;
             }
-            return {
-                deletedProfiles: totalDeleted,
-                cutoff: cutoff.toISOString(),
-                batchesProcessed,
-            };
+            if (batch.rows.length < batchSize) {
+                break;
+            }
         }
-
-        const deleted = await client.query(
-            `DELETE FROM student_academic_profiles
-             WHERE user_id IN (
-                 SELECT id FROM users WHERE deleted_at IS NOT NULL AND deleted_at <= $1::timestamptz
-             )`,
-            [cutoff],
-        );
-        return { deletedProfiles: deleted.rowCount ?? 0, cutoff: cutoff.toISOString() };
+        const result: PurgeSummary = {
+            deletedProfiles: totalDeleted,
+            cutoff: cutoff.toISOString(),
+        };
+        if (options?.batchSize !== undefined) {
+            result.batchesProcessed = batchesProcessed;
+        }
+        return result;
     } finally {
         if (acquiredLock) {
             await client.query('SELECT pg_advisory_unlock($1)', [ACADEMIC_PROFILE_PURGE_LOCK_ID]).catch(() => undefined);

@@ -56,8 +56,9 @@ export async function reconcileRestoredAcademicProfiles(
         }
         acquiredLock = locked === true;
 
+        const requireLedger = options.requireLedgerFile ?? true;
         const entries: AcademicProfileLedgerEntry[] = readDurableLedgerEntries(options.ledgerFilePath);
-        if (options.requireLedgerFile && entries.length === 0) {
+        if (requireLedger && entries.length === 0) {
             throw new Error('Durable deletion ledger contains no entries or file is missing');
         }
 

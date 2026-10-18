@@ -1,19 +1,17 @@
 import assert from 'node:assert/strict';
-import { mkdirSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import test, { beforeEach, afterEach } from 'node:test';
 import {
     reconcileRestoredAcademicProfiles,
-    ACADEMIC_PROFILE_RECONCILIATION_LOCK_ID,
 } from './academic-profile-reconciliation.service.js';
 
 let testDir: string;
 let ledgerPath: string;
 
 beforeEach(() => {
-    testDir = join(tmpdir(), `awoof-reconcile-test-${Date.now()}-${Math.random().toString(36).slice(2)}`);
-    mkdirSync(testDir, { recursive: true });
+    testDir = mkdtempSync(join(tmpdir(), 'awoof-reconcile-test-'));
     ledgerPath = join(testDir, 'test-ledger.jsonl');
 });
 

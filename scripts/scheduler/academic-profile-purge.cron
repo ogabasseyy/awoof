@@ -14,13 +14,14 @@
 # 4. Host directory /var/backups/awoof or repo-relative backups/ exists with 0700 permissions.
 #
 # HOSTINGER VPS INSTALLATION INSTRUCTIONS:
-# Option A (crontab for deploy/node user):
+# Option A (Recommended - Container execution via crontab for deploy user):
 #   crontab -e
 #   Add the line below (uncommented):
-#   30 3 * * * /usr/bin/node /home/deploy/awoof/apps/backend/dist/scripts/cleanup-academic-profile-data.js --batch-size 500 >> /var/log/awoof/academic-profile-purge.log 2>&1
+#   30 3 * * * docker exec -i awoof-backend node dist/scripts/cleanup-academic-profile-data.js --batch-size 500 >> /var/log/awoof/academic-profile-purge.log 2>&1
 #
-# Option B (/etc/cron.d/awoof-academic-profile-purge):
-#   30 3 * * * deploy cd /home/deploy/awoof/apps/backend && /usr/bin/node dist/scripts/cleanup-academic-profile-data.js --batch-size 500 >> /var/log/awoof/academic-profile-purge.log 2>&1
+# Option B (Host execution via /etc/cron.d/awoof-academic-profile-purge):
+#   Requires host-side build (npm run build:artifact in apps/backend).
+#   30 3 * * * deploy cd /home/deploy/awoof/apps/backend && ACADEMIC_PROFILE_DELETION_LEDGER_FILE=/home/deploy/awoof/backups/academic-profile-deletion-ledger.jsonl /usr/bin/node dist/scripts/cleanup-academic-profile-data.js --batch-size 500 >> /var/log/awoof/academic-profile-purge.log 2>&1
 #
 # CONCURRENCY AND RESILIENCE:
 # - Script acquires PostgreSQL session advisory lock (2026101801) on a dedicated connection.
@@ -28,5 +29,5 @@
 # - Deletions are processed in batches (default 500) and recorded in the dual deletion ledger.
 # - Outputs counts/outcomes only; never logs PII, emails, or personal identifiers.
 #
-# # TEMPLATE LINE (Uncomment and set correct paths upon activation):
-# 30 3 * * * cd /var/www/awoof/apps/backend && npm run academic-profile:purge:prod -- --batch-size 500 >> /var/log/awoof/academic-profile-purge.log 2>&1
+# TEMPLATE LINE (Uncomment and set correct paths upon activation):
+# 30 3 * * * docker exec -i awoof-backend node dist/scripts/cleanup-academic-profile-data.js --batch-size 500 >> /var/log/awoof/academic-profile-purge.log 2>&1

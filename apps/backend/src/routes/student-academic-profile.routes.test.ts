@@ -302,6 +302,7 @@ test('DELETE academic profile binds the erasure to the authenticated student and
         assert.equal(body.data.erased, true);
         assert.equal(body.data.userId, ACTOR_ID);
         assert.equal(body.data.generationId, '11111111-1111-4111-8111-111111111111');
+        assert.equal(body.data.erasedAt, '2026-10-18T12:00:00.000Z');
         assert.equal(body.data.remainingAccountActive, true);
         assert.deepEqual(seen, [ACTOR_ID]);
     });

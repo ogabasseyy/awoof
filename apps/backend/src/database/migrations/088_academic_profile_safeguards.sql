@@ -8,7 +8,23 @@
 -- scope, erased_at) and NEVER stores academic answers, names, emails, or PII.
 
 ALTER TABLE student_academic_profiles
-    ADD COLUMN IF NOT EXISTS generation_id UUID NOT NULL DEFAULT gen_random_uuid();
+    ADD COLUMN IF NOT EXISTS generation_id UUID;
+
+-- Backfill deterministic UUID for existing rows (e.g. when restoring pre-088 backups)
+-- so that generation identity is reproducible across pre-migration restores and matches durable tombstones.
+UPDATE student_academic_profiles
+SET generation_id = CAST(
+    substr(md5('awoof_academic_profile_epoch1:' || user_id::text), 1, 8) || '-' ||
+    substr(md5('awoof_academic_profile_epoch1:' || user_id::text), 9, 4) || '-4' ||
+    substr(md5('awoof_academic_profile_epoch1:' || user_id::text), 14, 3) || '-a' ||
+    substr(md5('awoof_academic_profile_epoch1:' || user_id::text), 18, 3) || '-' ||
+    substr(md5('awoof_academic_profile_epoch1:' || user_id::text), 21, 12) AS UUID
+)
+WHERE generation_id IS NULL;
+
+ALTER TABLE student_academic_profiles
+    ALTER COLUMN generation_id SET NOT NULL,
+    ALTER COLUMN generation_id SET DEFAULT gen_random_uuid();
 
 CREATE TABLE IF NOT EXISTS academic_profile_deletion_ledger (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),

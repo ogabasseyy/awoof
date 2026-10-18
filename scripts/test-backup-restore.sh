@@ -21,7 +21,7 @@ REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 # Ensure postgres binaries
 export PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:${PATH}"
 
-for bin in initdb pg_ctl createdb dropdb pg_dump pg_restore; do
+for bin in initdb pg_ctl createdb dropdb pg_dump pg_restore psql; do
     if ! command -v "$bin" >/dev/null 2>&1; then
         echo "ERROR: Required PostgreSQL binary '$bin' not found." >&2
         exit 1
@@ -99,15 +99,23 @@ cat <<EOF > "${DUMP_FILE}.manifest.json"
 }
 EOF
 
-echo "=== Step 5: Student A erases profile after backup (recorded in dual ledger) ==="
-psql -h 127.0.0.1 -p "$PORT" -U awoof_test -d awoof_drill -v ON_ERROR_STOP=1 <<EOF
-INSERT INTO academic_profile_deletion_ledger (user_id, generation_id, scope, erased_at) VALUES ('$USER_A', '$GEN_A', 'profile_only', clock_timestamp());
-DELETE FROM student_academic_profiles WHERE user_id = '$USER_A';
-EOF
+echo "=== Step 5: Student A erases profile after backup (exercising service dual ledger recording) ==="
+(cd "${REPO_ROOT}/apps/backend" && ACADEMIC_PROFILE_DELETION_LEDGER_FILE="$LEDGER_FILE" npx tsx --input-type=module -e "
+import { eraseAcademicProfileForUser } from './src/services/academic-profile/academic-profile.service.js';
+import { db, getPool } from './src/config/database.js';
 
-cat <<EOF >> "$LEDGER_FILE"
-{"userId": "$USER_A", "generationId": "$GEN_A", "scope": "profile_only", "erasedAt": "2026-10-18T12:00:00.000Z"}
-EOF
+async function main() {
+    const result = await eraseAcademicProfileForUser(getPool(), '$USER_A');
+    if (!result.erased) {
+        throw new Error('Erasure failed');
+    }
+    await db.close();
+}
+main().catch((err) => {
+    console.error(err);
+    process.exit(1);
+});
+")
 
 echo "=== Step 6: Restoring historical backup into quarantined database ==="
 dropdb -h 127.0.0.1 -p "$PORT" -U awoof_test awoof_drill

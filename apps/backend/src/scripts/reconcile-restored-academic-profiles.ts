@@ -42,12 +42,17 @@ async function main(): Promise<void> {
     let pool: pg.Pool | undefined;
     const args = process.argv.slice(2);
     const isDryRun = args.includes('--dry-run');
-    const requireLedger = args.includes('--require-ledger');
+    const allowMissingLedger = args.includes('--allow-missing-ledger');
+    const requireLedger = !allowMissingLedger;
     let ledgerFilePath: string | undefined;
 
     const fileArgIdx = args.indexOf('--ledger-file');
-    if (fileArgIdx !== -1 && args[fileArgIdx + 1]) {
-        ledgerFilePath = args[fileArgIdx + 1];
+    if (fileArgIdx !== -1) {
+        const nextArg = args[fileArgIdx + 1];
+        if (!nextArg || nextArg.startsWith('--')) {
+            throw new Error('--ledger-file requires a non-empty file path argument');
+        }
+        ledgerFilePath = nextArg;
     }
 
     try {

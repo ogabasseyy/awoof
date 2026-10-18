@@ -97,12 +97,15 @@ def scan_backups(backup_dir: Path, verify_checksum: bool = False) -> Tuple[List[
             size_bytes = data.get("sizeBytes", entry.stat().st_size)
 
             if verify_checksum:
+                if not sha256_hash or not isinstance(sha256_hash, str) or not sha256_hash.strip():
+                    warnings.append(f"Missing or empty sha256 in manifest: {manifest_path.name}")
+                    continue
                 hasher = hashlib.sha256()
                 with open(entry, "rb") as bf:
                     for chunk in iter(lambda: bf.read(65536), b""):
                         hasher.update(chunk)
                 computed = hasher.hexdigest()
-                if computed != sha256_hash:
+                if computed.lower() != sha256_hash.strip().lower():
                     warnings.append(f"Checksum mismatch for {entry.name}: expected {sha256_hash}, got {computed}")
                     continue
 
@@ -129,8 +132,10 @@ def expire_backups(
     if now is None:
         now = datetime.now(timezone.utc)
 
+    # In apply mode, always verify checksums to ensure corrupted dumps cannot displace valid backups
+    effective_verify_checksum = verify_checksum or (not dry_run)
     cutoff = now - timedelta(days=retention_days)
-    valid_items, warnings = scan_backups(backup_dir, verify_checksum=verify_checksum)
+    valid_items, warnings = scan_backups(backup_dir, verify_checksum=effective_verify_checksum)
 
     to_expire: List[BackupItem] = []
     to_keep: List[BackupItem] = []
@@ -184,8 +189,9 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Expire old PostgreSQL backups using trusted manifest timestamps.")
     parser.add_argument("--backup-dir", default=os.environ.get("AWOOF_BACKUP_DIR", "./backups"), help="Directory containing backups")
     parser.add_argument("--retention-days", type=int, default=int(os.environ.get("AWOOF_BACKUP_RETENTION_DAYS", "30")), help="Days of retention")
-    parser.add_argument("--dry-run", action="store_true", default=False, help="Inspect without deleting files")
+    parser.add_argument("--dry-run", dest="dry_run", action="store_true", help="Inspect without deleting files (default)")
     parser.add_argument("--apply", dest="dry_run", action="store_false", help="Perform actual deletion")
+    parser.set_defaults(dry_run=True)
     parser.add_argument("--verify-checksum", action="store_true", default=False, help="Verify sha256 checksum before evaluating")
 
     args = parser.parse_args()
@@ -210,6 +216,12 @@ def main() -> None:
         )
         # Exit with status 2 to signal retention conflict to orchestrator/monitoring
         sys.exit(2)
+
+    if result["warnings"]:
+        sys.stderr.write(
+            f"WARNING: {len(result['warnings'])} backup warnings require operator attention.\n"
+        )
+        sys.exit(3)
 
 
 if __name__ == "__main__":

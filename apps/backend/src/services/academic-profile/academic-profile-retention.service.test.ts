@@ -41,6 +41,7 @@ function createPurgePool(options: { rowCount: number | null; failTimes?: number;
     const statements: Array<{ text: string; params: unknown[] }> = [];
     let failures = options.failTimes ?? 0;
     const clock = options.clock === undefined ? NOW : options.clock;
+    let pendingRows = options.rowCount ?? 0;
     const client = {
         query: async (text: string, params: unknown[] = []): Promise<{ rows: unknown[]; rowCount: number | null }> => {
             const normalized = text.replace(/\s+/g, ' ').trim();
@@ -51,6 +52,19 @@ function createPurgePool(options: { rowCount: number | null; failTimes?: number;
             statements.push({ text: normalized, params });
             if (normalized.includes('clock_timestamp()')) {
                 return { rows: clock === null ? [] : [{ now: clock }], rowCount: 1 };
+            }
+            if (normalized.startsWith('SELECT sap.user_id, sap.generation_id')) {
+                if (pendingRows <= 0) return { rows: [], rowCount: 0 };
+                const count = pendingRows;
+                pendingRows = 0;
+                const rows = Array.from({ length: count }, (_, i) => ({
+                    user_id: `22222222-2222-4222-8222-${String(i + 1).padStart(12, '0')}`,
+                    generation_id: `33333333-3333-4333-8333-${String(i + 1).padStart(12, '0')}`,
+                }));
+                return { rows, rowCount: count };
+            }
+            if (normalized.startsWith('INSERT INTO academic_profile_deletion_ledger')) {
+                return { rows: [{ id: '00000000-0000-4000-8000-000000000099', erased_at: NOW }], rowCount: 1 };
             }
             return { rows: [], rowCount: options.rowCount };
         },
@@ -64,14 +78,14 @@ test('purge derives the cutoff from the database clock, not the scheduler host',
     const summary = await purgeSoftDeletedAcademicProfiles(pool, 90);
     assert.deepEqual(summary, { deletedProfiles: 2, cutoff: new Date(NOW.getTime() - 90 * DAY_MS).toISOString() });
     assert.deepEqual(Object.keys(summary).sort(), ['cutoff', 'deletedProfiles']);
-    assert.equal(pool.statements.length, 2);
     assert.ok(pool.statements[0]?.text.includes('clock_timestamp()'), 'cutoff must derive from the database clock');
-    const statement = pool.statements[1];
-    assert.ok(statement?.text.startsWith('DELETE FROM student_academic_profiles'));
-    assert.ok(statement?.text.includes('deleted_at IS NOT NULL'));
-    assert.ok(statement?.text.includes('deleted_at <= $1'), 'cutoff must be a bound param');
-    assert.ok(!statement?.text.includes('2026'), 'statement text must not interpolate the cutoff');
-    assert.deepEqual(statement?.params, [new Date(NOW.getTime() - 90 * DAY_MS)]);
+    const selectStatement = pool.statements.find((s) => s.text.startsWith('SELECT sap.user_id'));
+    assert.ok(selectStatement?.text.includes('deleted_at IS NOT NULL'));
+    assert.ok(selectStatement?.text.includes('deleted_at <= $1'), 'cutoff must be a bound param');
+    assert.ok(!selectStatement?.text.includes('2026'), 'statement text must not interpolate the cutoff');
+    assert.deepEqual(selectStatement?.params[0], new Date(NOW.getTime() - 90 * DAY_MS));
+    const deleteStatement = pool.statements.find((s) => s.text.startsWith('DELETE FROM student_academic_profiles'));
+    assert.ok(deleteStatement);
 });
 
 test('purge reports zero when nothing is due without touching other rows', async () => {

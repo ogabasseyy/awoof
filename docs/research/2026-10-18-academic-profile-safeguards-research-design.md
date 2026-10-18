@@ -3,7 +3,7 @@
 **Date:** 2026-10-18  
 **Author:** Codex Safeguards Engineering  
 **Scope:** Privacy, retention, deletion semantics, restore-safe reconciliation, backup lifecycle, and NUC licensing for Awoof's optional academic-profile completion feature.  
-**Repository:** `/Users/mac/Downloads/Awoof/.worktrees/academic-profile-safeguards` (`ogabasseyy/awoof`)  
+**Repository:** `ogabasseyy/awoof` (academic-profile-safeguards worktree)  
 **Status:** Research and design note; proposals pending owner/legal approval. Production collection remains **disabled** (`ACADEMIC_PROFILE_ENABLED=false`).
 
 ---
@@ -20,7 +20,7 @@
 | **N01** | NUC Core Curriculum and Minimum Academic Standards (CCMAS) | https://www.nuc.edu.ng/ccmas/ | Live NUC curriculum portal; 17 discipline standards | Official statutory regulator curriculum publications |
 | **N02** | NUC CCMAS Arts (2023) | https://www.nuc.edu.ng/wp-content/uploads/2026/03/Arts-CCMAS-2023-FINAL.pdf | Copyright page: "Creative Commons Attribution-ShareAlike 3.0 IGO (CC BY-SA 3.0 IGO)" | Primary licensing statement on NUC published standard |
 | **N03** | Creative Commons CC BY-SA 3.0 IGO Legal Code | https://creativecommons.org/licenses/by-sa/3.0/igo/legalcode | Section 3 (License Grant), Section 4 (Restrictions) | Binding public copyright licence terms |
-| **A01** | Awoof Deployed Hostinger VPS & Docker Infrastructure | Hostinger VPS `82.29.190.219`, `docker-compose.hostinger.yml`, `scripts/backup-awoof-postgres.sh` | Container `awoof-postgres` (Postgres 16-alpine), `db_data` volume, `./backups` | Verified repository deployment configuration |
+| **A01** | Awoof Deployed Hostinger VPS & Docker Infrastructure | Production VPS (see ops inventory), `docker-compose.hostinger.yml`, `scripts/backup-awoof-postgres.sh` | Container `awoof-postgres` (Postgres 16-alpine), `db_data` volume, `./backups` | Verified repository deployment configuration |
 
 ---
 
@@ -95,7 +95,7 @@
 - **Selected Approach (Alternative 3: Dual-Write Ledger — DB Table + Host Append-Only JSONL):**
   - Deletions are recorded in a PostgreSQL table (`academic_profile_deletion_ledger`) inside the transaction AND atomically appended to a durable host file outside the PostgreSQL volume (`backups/academic-profile-deletion-ledger.jsonl`).
   - The ledger contains only minimal, privacy-safe metadata: `userId` (UUID), `generationId` (UUID), `scope` (`profile_only` | `account_closure`), `erasedAt` (timestamp). Zero academic answers, emails, names, or cleartext PII are logged.
-  - Upon restore, a dedicated reconciliation script (`scripts/reconcile-restored-academic-profiles.ts`) reads the host ledger, identifies all erasures occurring after the backup's `created_at` timestamp, and purges matching stale rows from the quarantined database before traffic is unblocked.
+  - Upon restore, a dedicated reconciliation script (`scripts/reconcile-restored-academic-profiles.ts`) reads the host ledger, processes all recorded tombstone entries, purges matching stale generations from the quarantined database, and preserves legitimate re-creations before traffic is unblocked.
 
 ### 5.2 Re-creation vs. Restore Safety: Generation Semantics
 - If a user erases their profile on Day 15, and on Day 20 legitimately returns to `/student/profile/complete` and saves new details, how do we distinguish their legitimate new profile from a stale profile restored from an old Day 10 backup?

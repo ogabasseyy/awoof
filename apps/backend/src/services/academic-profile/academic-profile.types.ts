@@ -109,11 +109,20 @@ export type AcademicProfileProjection = {
     /** True when the requesting actor may save: collection enabled and the student record active. */
     writeAvailable: boolean;
     promptDecision: 'complete_profile' | 'continue';
-    generationId?: string | null | undefined;
 };
 
-export type PurgeResult = { deleted: boolean; generationId?: string | null | undefined };
-export type ErasureResult = { erased: boolean; generationId?: string | null | undefined };
+export type PurgeResult = {
+    deleted: boolean;
+    generationId?: string | null | undefined;
+    appendDurableRecord?: (() => void) | undefined;
+};
+export type ErasureResult = {
+    erased: boolean;
+    userId: string;
+    generationId: string | null;
+    erasedAt: string;
+    remainingAccountActive: boolean;
+};
 
 function fieldUpdateSchema<T extends z.ZodTypeAny>(valueSchema: T): z.ZodUnion<
     [z.ZodObject<{ state: z.ZodLiteral<'supplied'>; value: T }, 'strict'>,

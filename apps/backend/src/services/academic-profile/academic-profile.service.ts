@@ -55,7 +55,7 @@ import {
     type ErasureResult,
     type VerificationRequirement,
 } from './academic-profile.types.js';
-import { recordAcademicProfileErasure } from './academic-profile-ledger.service.js';
+import { recordDeletionInDatabase, appendDurableLedgerEntry } from './academic-profile-ledger.service.js';
 
 export const ACADEMIC_PROFILE_REVISION_CONFLICT = 'ACADEMIC_PROFILE_REVISION_CONFLICT';
 export const ACADEMIC_PROFILE_INSTITUTION_CHANGED = 'ACADEMIC_PROFILE_INSTITUTION_CHANGED';
@@ -899,7 +899,6 @@ async function buildProjection(input: {
     listVerificationMethods: (tx: PoolClient, universityId: string | null) => Promise<VerificationMethodInfo[]>;
     matricParsers: readonly MatricParser[];
     currentYear: number;
-    generationId?: string | null | undefined;
 }): Promise<AcademicProfileProjection> {
     const { ctx, reference } = input;
     const binding: AcademicProfileInstitution['binding'] = ctx.universityId !== null
@@ -998,7 +997,6 @@ async function buildProjection(input: {
             attentionFields,
             verificationContinuationAvailable,
         }),
-        generationId: input.generationId ?? null,
     };
 }
 
@@ -1064,7 +1062,6 @@ export async function readAcademicProfile(
             listVerificationMethods: resolved.listVerificationMethods,
             matricParsers: resolved.matricParsers,
             currentYear: resolved.currentYear,
-            generationId: stored.generationId,
         });
         await client.query('COMMIT');
         return projection;
@@ -1170,8 +1167,7 @@ export async function saveAcademicProfile(
             expectedCountryCode: boundInstitutionCountryCode(ctx.universityId, ctx.institutionCountry),
         });
         const revision = stored.revision + 1;
-        const upsertResult = await client.query<{ revision: number; generation_id?: string }>(UPSERT_SQL, upsertParams(ctx, revision, merged));
-        const generationId = upsertResult.rows[0]?.generation_id ?? stored.generationId;
+        await client.query<{ revision: number; generation_id?: string }>(UPSERT_SQL, upsertParams(ctx, revision, merged));
         const projection = await buildProjection({
             tx: client,
             ctx,
@@ -1183,7 +1179,6 @@ export async function saveAcademicProfile(
             listVerificationMethods: resolved.listVerificationMethods,
             matricParsers: resolved.matricParsers,
             currentYear: resolved.currentYear,
-            generationId,
         });
         await client.query('COMMIT');
         return projection;
@@ -1215,16 +1210,32 @@ export async function purgeAcademicProfileForUser(
         return { deleted: false, generationId: null };
     }
     const generationId = row.generation_id;
+    let appendDurableRecord: (() => void) | undefined;
     if (generationId) {
-        await recordAcademicProfileErasure(tx, {
+        const dbRecord = await recordDeletionInDatabase(tx, {
             userId,
             generationId,
             scope,
-            ledgerFilePath,
         });
+        const erasedAtIso = dbRecord.erasedAt.toISOString();
+        appendDurableRecord = () => {
+            appendDurableLedgerEntry(
+                {
+                    userId,
+                    generationId,
+                    scope,
+                    erasedAt: erasedAtIso,
+                },
+                ledgerFilePath,
+            );
+        };
     }
     const deleted = await tx.query(`DELETE FROM student_academic_profiles WHERE user_id = $1`, [userId]);
-    return { deleted: (deleted.rowCount ?? 0) > 0, generationId: generationId ?? null };
+    return {
+        deleted: (deleted.rowCount ?? 0) > 0,
+        generationId: generationId ?? null,
+        appendDurableRecord,
+    };
 }
 
 /**
@@ -1257,7 +1268,15 @@ export async function eraseAcademicProfileForUser(
 
         const purge = await purgeAcademicProfileForUser(client, userId, 'profile_only', ledgerFilePath);
         await client.query('COMMIT');
-        return { erased: purge.deleted, generationId: purge.generationId ?? null };
+        // Only append to durable host JSONL after database transaction has committed!
+        purge.appendDurableRecord?.();
+        return {
+            erased: purge.deleted,
+            userId,
+            generationId: purge.generationId ?? null,
+            erasedAt: new Date().toISOString(),
+            remainingAccountActive: true,
+        };
     } catch (error) {
         await client.query('ROLLBACK').catch(() => undefined);
         throw error;
