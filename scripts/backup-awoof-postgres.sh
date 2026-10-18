@@ -49,13 +49,37 @@ chmod 600 "$temporary"
 mv "$temporary" "$target"
 trap - EXIT HUP INT TERM
 
-checksum="$(sha256sum "$target" | awk '{print $1}')"
+if command -v sha256sum >/dev/null 2>&1; then
+    checksum="$(sha256sum "$target" | awk '{print $1}')"
+else
+    checksum="$(shasum -a 256 "$target" | awk '{print $1}')"
+fi
+size_bytes="$(wc -c < "$target" | tr -d ' ')"
+created_at="$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
+target_basename="$(basename "$target")"
+manifest_temp="${target}.manifest.tmp"
+manifest_target="${target}.manifest.json"
+
+cat <<EOF > "$manifest_temp"
+{
+  "schemaVersion": 1,
+  "backupFile": "$target_basename",
+  "sha256": "$checksum",
+  "sizeBytes": $size_bytes,
+  "format": "custom",
+  "createdAt": "$created_at"
+}
+EOF
+chmod 600 "$manifest_temp"
+mv "$manifest_temp" "$manifest_target"
+
 echo "Verified database backup: $target"
 echo "SHA-256: $checksum"
+echo "Manifest: $manifest_target"
 
 while [ "$(find "$backup_dir" -maxdepth 1 -type f -name 'awoof-*.dump' | wc -l | tr -d ' ')" -gt "$max_files" ]; do
     oldest="$(find "$backup_dir" -maxdepth 1 -type f -name 'awoof-*.dump' | sort | head -n 1)"
     [ -n "$oldest" ] || break
-    rm -f "$oldest"
+    rm -f "$oldest" "${oldest}.manifest.json"
     echo "Rotated old database backup: $oldest"
 done

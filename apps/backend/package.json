@@ -32,6 +32,8 @@
     "sso:cleanup:prod": "node dist/scripts/cleanup-student-sso.js",
     "academic-profile:purge": "./node_modules/.bin/tsx scripts/cleanup-academic-profile-data.ts",
     "academic-profile:purge:prod": "node dist/scripts/cleanup-academic-profile-data.js",
+    "academic-profile:reconcile": "./node_modules/.bin/tsx scripts/reconcile-restored-academic-profiles.ts",
+    "academic-profile:reconcile:prod": "node dist/scripts/reconcile-restored-academic-profiles.js",
     "admin:create": "tsx src/scripts/create-admin.ts",
     "admin:set-password": "tsx src/scripts/set-admin-password.ts"
   },
