@@ -87,8 +87,31 @@ echo "Verified database backup: $target"
 echo "SHA-256: $checksum"
 echo "Manifest: $manifest_target"
 
-while [ "$(find "$backup_dir" -maxdepth 1 -type f -name 'awoof-*.dump' | wc -l | tr -d ' ')" -gt "$max_files" ]; do
-    oldest="$(find "$backup_dir" -maxdepth 1 -type f -name 'awoof-*.dump' | sort | head -n 1)"
+# Rotate only manifest-backed dump pairs. An unmanifested dump can
+# survive an uncatchable KILL between the dump rename and manifest
+# publication; counting it here would silently evict usable recovery
+# copies while the expiry tool rejects the orphan. Orphans are left
+# for operator inspection (and are reported by the expiry dry-run).
+manifest_backed_count() {
+    count=0
+    for dump in "$backup_dir"/awoof-*.dump; do
+        [ -f "$dump" ] || continue
+        if [ -f "${dump}.manifest.json" ]; then
+            count=$((count + 1))
+        fi
+    done
+    echo "$count"
+}
+
+while [ "$(manifest_backed_count)" -gt "$max_files" ]; do
+    oldest=""
+    for dump in "$backup_dir"/awoof-*.dump; do
+        [ -f "$dump" ] || continue
+        if [ -f "${dump}.manifest.json" ]; then
+            oldest="$dump"
+            break
+        fi
+    done
     [ -n "$oldest" ] || break
     rm -f "$oldest" "${oldest}.manifest.json"
     echo "Rotated old database backup: $oldest"
