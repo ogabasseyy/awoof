@@ -439,6 +439,26 @@ export class App {
         await runMigrations();
       }
 
+      // Restore gate: when a durable deletion ledger exists on this
+      // host, reconcile any restored academic-profile rows against it
+      // before accepting traffic. A restored backup can resurrect
+      // profiles erased after the backup was taken; starting without
+      // this check would serve them until an operator remembered the
+      // manual CLI. Failure (including a corrupt ledger) aborts
+      // startup via the catch below instead of listening.
+      {
+        const { existsSync } = await import('node:fs');
+        const { getDurableLedgerFilePath } = await import('./services/academic-profile/academic-profile-ledger.service.js');
+        const ledgerPath = getDurableLedgerFilePath();
+        if (existsSync(ledgerPath)) {
+          const { reconcileRestoredAcademicProfiles } = await import('./services/academic-profile/academic-profile-reconciliation.service.js');
+          const summary = await reconcileRestoredAcademicProfiles(db.getPool(), { ledgerFilePath: ledgerPath });
+          appLogger.info(
+            `Academic profile restore reconciliation complete: entriesRead=${summary.ledgerEntriesRead} stalePurged=${summary.staleGenerationsPurged} recreatedPreserved=${summary.recreatedGenerationsPreserved} dbLedgerRestored=${summary.dbLedgerEntriesRestored}`,
+          );
+        }
+      }
+
       // Initialize Redis
       redis.initialize();
 

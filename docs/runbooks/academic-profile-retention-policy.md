@@ -42,11 +42,11 @@ Every location where academic-profile personal data or its derivatives exist mus
                          ▼                    ▼                    ▼
 ┌───────────────────────────────┐ ┌──────────────────────┐ ┌───────────────────────────┐
 │     Profile-Only Erased       │ │ Profile Updated      │ │     Soft-Deleted Account  │
-│ (Row deleted, ledger logged,  │ │ (New answers saved,  │ │ (Row kept during 30d      │
+│ (Row deleted, ledger logged,  │ │ (New answers saved,  │ │ (Row kept during the      │
 │  profile resets unanswered)   │ │  revision + 1)       │ │  retention window)        │
 └───────────────┬───────────────┘ └──────────────────────┘ └─────────────┬─────────────┘
                 │                                                        │
-                │ Legitimate voluntary                                   │ 30-day cutoff reached
+                │ Legitimate voluntary                                   │ Retention cutoff reached
                 │ recreation                                             │ (Purge job executes)
                 ▼                                                        ▼
 ┌───────────────────────────────┐                          ┌───────────────────────────┐
@@ -63,10 +63,10 @@ Every location where academic-profile personal data or its derivatives exist mus
 | **T1: Profile-only erasure** | Authenticated Student (session `userId`) | `DELETE /api/students/academic-profile` | Row in `student_academic_profiles` for user | Immediate (< 1 second) | Transactional rollback on error; client retries with backoff | DB row deleted; ledger record inserted; durable host ledger appended; response `200 { erased: true }` |
 | **T2: Profile correction / update** | Authenticated Student (session `userId`) | `PUT /api/students/academic-profile` | Fields in `student_academic_profiles` | Immediate (< 1 second) | Optimistic concurrency check (`expectedRevision`); 409 Conflict on revision drift | `revision` incremented; `updated_at` refreshed from DB clock; recalculated projection returned |
 | **T3: Account closure (Soft delete)** | Authenticated User or Admin | Account closure / deletion workflow | `users.deleted_at` timestamp set | Immediate | Database update transaction | `users.deleted_at IS NOT NULL`; academic profile inaccessible via API |
-| **T4: Account restoration (within 30d)** | Authenticated User / Admin | Account recovery before 30-day cutoff | `users.deleted_at` cleared to NULL | Immediate | Transactional clear | `users.deleted_at IS NULL`; existing academic profile restored without data loss |
-| **T5: Retention purge (post-closure)** | System Scheduler / CLI operator | Scheduled daily purge job (`cleanup-academic-profile-data`) | All `student_academic_profiles` where account `deleted_at <= now - 30 days` | Next scheduled run after 30-day cutoff | Advisory lock prevents overlap; bounded batches; retried on next schedule run | Sanitized counts logged; rows removed; ledger records written; DB clock cutoff verified |
+| **T4: Account restoration (within the retention window)** | Authenticated User / Admin | Account recovery before the retention cutoff | `users.deleted_at` cleared to NULL | Immediate | Transactional clear | `users.deleted_at IS NULL`; existing academic profile restored without data loss |
+| **T5: Retention purge (post-closure)** | System Scheduler / CLI operator | Scheduled daily purge job (`cleanup-academic-profile-data`) | All `student_academic_profiles` where account `deleted_at <= now - ACADEMIC_PROFILE_RETENTION_DAYS` (approved value; the runtime has no default) | Next scheduled run after the retention cutoff | Advisory lock prevents overlap; bounded batches; retried on next schedule run | Sanitized counts logged; rows removed; ledger records written; DB clock cutoff verified |
 | **T6: Legitimate profile recreation** | Authenticated Student (session `userId`) | Voluntary navigation to `/student/profile/complete` and save | New row in `student_academic_profiles` with fresh `generation_id` | Immediate | Standard save concurrency | New `generation_id != old_generation_id`; revision starts at 1 |
-| **T7: Backup restoration & quarantine** | Disaster Recovery Operator | Restoring `awoof-*.dump` following system outage or test drill | Entire database snapshot | Prior to releasing traffic | Fail-closed: application must not start until reconciliation succeeds | `reconcile-restored-academic-profiles` output; stale restored rows purged; recreated generations preserved |
+| **T7: Backup restoration & quarantine** | Disaster Recovery Operator | Restoring `awoof-*.dump` following system outage or test drill | Entire database snapshot | Prior to releasing traffic | Fail-closed: application must not start until reconciliation succeeds — enforced in backend startup, which runs reconciliation before listening whenever the durable ledger exists on the host and aborts startup on failure (the CLI remains available for quarantined manual runs) | `reconcile-restored-academic-profiles` output; startup reconciliation log line; stale restored rows purged; recreated generations preserved |
 
 ---
 
@@ -97,13 +97,14 @@ Under NDPA 2023 § 24(1)(e), the existence of an active account alone does not j
 ## 5. Dual Deletion Timelines (Live vs. Backup)
 
 Public statements must never promise immediate physical eradication across all disaster-recovery media. The timeline consists of two independent phases:
-1. **Phase 1: Live System Deletion (0 to 30 days):**
+No academic-profile retention duration is approved yet: `ACADEMIC_PROFILE_RETENTION_DAYS` has no default and the purge fails closed until an authorized value is configured. Durations below that mention a number of days for the academic-profile window are the pending proposal used as an example, not an active policy commitment.
+1. **Phase 1: Live System Deletion (0 to the approved retention window):**
    - Profile-only erasure: **Immediate** (real-time transaction).
-   - Account closure: **30 days** grace retention window, followed by daily scheduled purge.
-2. **Phase 2: Backup Expiry (up to 30 days):**
-   - Database backups are rotated on a rolling 30-day schedule.
-   - A backup created on Day 29 containing an active account expires on Day 59.
-3. **Total Maximum Retention Window:** Up to **60 days** from account closure until personal data is overwritten on backup media.
+   - Account closure: grace retention window of the approved `ACADEMIC_PROFILE_RETENTION_DAYS` (30 days in the pending proposal), followed by daily scheduled purge.
+2. **Phase 2: Backup Expiry (up to the configured backup retention):**
+   - Database backups are rotated on a rolling schedule (`AWOOF_BACKUP_RETENTION_DAYS`, default 30 days in `expire-awoof-backups`).
+   - A backup created on the last day of its rotation containing an active account expires one rotation later.
+3. **Total Maximum Retention Window:** The approved academic-profile window plus the configured backup rotation (60 days only in the example where both are 30 days); no total is committed until the academic-profile value is approved.
 
 ---
 

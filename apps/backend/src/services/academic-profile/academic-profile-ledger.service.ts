@@ -78,7 +78,18 @@ export function appendDurableLedgerEntry(
     }) + '\n';
     const fd = openSync(targetPath, 'a', 0o600);
     try {
-        writeSync(fd, payload, null, 'utf8');
+        // Loop until the whole payload is on the descriptor: a short
+        // write fsynced as-is would persist a truncated JSON record and
+        // fail every later reconciliation closed, with no retry signal.
+        const buffer = Buffer.from(payload, 'utf8');
+        let written = 0;
+        while (written < buffer.length) {
+            const count = writeSync(fd, buffer, written, buffer.length - written);
+            if (count <= 0) {
+                throw new Error(`Short write appending to durable ledger at ${targetPath}: wrote ${written} of ${buffer.length} bytes`);
+            }
+            written += count;
+        }
         fsyncSync(fd);
     } finally {
         closeSync(fd);
