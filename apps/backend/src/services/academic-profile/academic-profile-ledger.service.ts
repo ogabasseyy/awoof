@@ -62,7 +62,7 @@ export function assertDurableLedgerAvailableForStartup(options: {
         // A nonempty ledger whose tail marker is missing or stale has
         // lost history (for example an in-place tail truncation) and
         // must fail closed rather than reconcile a partial history.
-        if (existsSync(join(parentDir, LEDGER_EVER_WRITTEN_MARKER)) && !ledgerTailMatches(targetPath)) {
+        if (!existsSync(join(parentDir, LEDGER_EVER_WRITTEN_MARKER)) || !ledgerTailMatches(targetPath)) {
             throw new Error(
                 `Durable deletion ledger at ${targetPath} fails tail-integrity verification; refusing to start against a possibly restored database. Restore the ledger file or republish the full history deliberately.`,
             );
@@ -171,14 +171,31 @@ function appendDurableLedgerPayloadWithLock(
     cursor: string,
     payload: string,
     assertOwned: () => void,
+    skipTailVerification = false,
 ): void {
     // Persist the ever-written marker BEFORE the first payload: a
     // crash between payload fsync and marker creation would
     // otherwise leave an ambiguous initialized-but-empty state
     // that startup cannot distinguish from a fresh deployment.
     ensureLedgerEverWrittenMarker(parentDir);
+    const sizeBefore = existsSync(targetPath) ? statSync(targetPath).size : 0;
+    const tailBefore = readLedgerTailMarker(targetPath);
+    if (!skipTailVerification && sizeBefore > 0 && (!tailBefore || tailBefore.bytes !== sizeBefore)) {
+        throw new Error(`Durable deletion ledger at ${targetPath} fails tail-integrity verification; refusing to append. Restore the ledger file or republish the full history deliberately.`);
+    }
     appendDurableLedgerPayload(targetPath, parentDir, createdDirs, cursor, payload, assertOwned);
-    updateLedgerTailMarker(targetPath);
+    if (skipTailVerification) {
+        // Deliberate full-history rebuild: recompute the tail from the
+        // repaired file instead of trusting the stale marker.
+        updateLedgerTailMarker(targetPath);
+        return;
+    }
+    const parsed = JSON.parse(payload) as AcademicProfileLedgerEntry;
+    writeLedgerTailMarker(targetPath, {
+        count: (tailBefore?.count ?? 0) + 1,
+        lastKey: ledgerEntryKey(parsed),
+        bytes: sizeBefore + Buffer.byteLength(payload, 'utf8'),
+    });
 }
 
 const LEDGER_LOCK_TIMEOUT_MS = 10_000;
@@ -271,34 +288,58 @@ function processStartTicks(pid: number): string | null {
 
 const LEDGER_TAIL_MARKER = '.academic-profile-ledger-tail.json';
 
-function ledgerTailState(targetPath: string): { count: number; lastKey: string | null } {
+function ledgerTailState(targetPath: string): { count: number; lastKey: string | null; bytes: number } {
     const entries = readDurableLedgerEntries(targetPath);
     return {
         count: entries.length,
         lastKey: entries.length > 0 ? ledgerEntryKey(entries[entries.length - 1]!) : null,
+        bytes: existsSync(targetPath) ? statSync(targetPath).size : 0,
     };
 }
 
-function updateLedgerTailMarker(targetPath: string): void {
+function readLedgerTailMarker(targetPath: string): { count: number; lastKey: string | null; bytes: number } | null {
+    try {
+        const recorded = JSON.parse(readFileSync(join(dirname(targetPath), LEDGER_TAIL_MARKER), 'utf8')) as { count?: unknown; lastKey?: unknown; bytes?: unknown };
+        if (typeof recorded.count !== 'number' || typeof recorded.bytes !== 'number' || (recorded.lastKey !== null && typeof recorded.lastKey !== 'string')) return null;
+        return { count: recorded.count, lastKey: recorded.lastKey, bytes: recorded.bytes };
+    } catch {
+        return null;
+    }
+}
+
+function writeLedgerTailMarker(targetPath: string, state: { count: number; lastKey: string | null; bytes: number }): void {
     const parentDir = dirname(targetPath);
-    const state = ledgerTailState(targetPath);
     const tailPath = join(parentDir, LEDGER_TAIL_MARKER);
     const fd = openSync(tailPath, 'w', 0o600);
     try {
-        writeSync(fd, `${JSON.stringify(state)}\n`);
+        const buffer = Buffer.from(`${JSON.stringify(state)}\n`, 'utf8');
+        let written = 0;
+        while (written < buffer.length) {
+            const count = writeSync(fd, buffer, written, buffer.length - written);
+            if (count <= 0) throw new Error(`Short write publishing durable ledger tail marker at ${tailPath}`);
+            written += count;
+        }
         fsyncSync(fd);
-    } finally {
-        closeSync(fd);
+    } catch (error) {
+        try { closeSync(fd); } catch { /* already closed */ }
+        try { unlinkSync(tailPath); } catch { /* already removed */ }
+        throw error;
     }
+    closeSync(fd);
     const dfd = openSync(parentDir, 'r');
     try { fsyncSync(dfd); } finally { closeSync(dfd); }
 }
 
+function updateLedgerTailMarker(targetPath: string): void {
+    writeLedgerTailMarker(targetPath, ledgerTailState(targetPath));
+}
+
 function ledgerTailMatches(targetPath: string): boolean {
+    const recorded = readLedgerTailMarker(targetPath);
+    if (!recorded) return false;
     try {
-        const recorded = JSON.parse(readFileSync(join(dirname(targetPath), LEDGER_TAIL_MARKER), 'utf8')) as { count?: unknown; lastKey?: unknown };
         const actual = ledgerTailState(targetPath);
-        return recorded.count === actual.count && recorded.lastKey === actual.lastKey;
+        return recorded.count === actual.count && recorded.lastKey === actual.lastKey && recorded.bytes === actual.bytes;
     } catch {
         return false;
     }
@@ -538,15 +579,30 @@ export async function republishMissingDurableLedgerEntries(
     client: PoolClient,
     options?: { userId?: string | undefined; ledgerFilePath?: string | undefined },
 ): Promise<{ republished: number; latest: AcademicProfileLedgerEntry | null }> {
-    const dbEntries = await readDatabaseLedgerEntries(client, options?.userId, { onlyUnpublished: true });
+    const targetPathForLock = options?.ledgerFilePath ? resolve(options.ledgerFilePath) : getDurableLedgerFilePath();
+    let dbEntries = await readDatabaseLedgerEntries(client, options?.userId, { onlyUnpublished: true });
     if (dbEntries.length === 0) {
-        return { republished: 0, latest: null };
+        // Repair volume markers even in the healthy empty-outbox state:
+        // otherwise a lost ever-written marker is never restored and a
+        // later ledger loss can masquerade as a fresh deployment.
+        if (existsSync(targetPathForLock) && statSync(targetPathForLock).size > 0) {
+            ensureLedgerEverWrittenMarker(dirname(targetPathForLock));
+            if (!readLedgerTailMarker(targetPathForLock)) {
+                updateLedgerTailMarker(targetPathForLock);
+                return { republished: 0, latest: null };
+            }
+            if (ledgerTailMatches(targetPathForLock)) {
+                return { republished: 0, latest: null };
+            }
+            dbEntries = await readDatabaseLedgerEntries(client);
+        } else {
+            return { republished: 0, latest: null };
+        }
     }
     // Fence the host read and appends under the append lock: a record
     // observed while holding the lock comes from a writer that already
     // completed its fsync, so marking its outbox row published cannot
     // strand a merely-visible-but-undurable tombstone.
-    const targetPathForLock = options?.ledgerFilePath ? resolve(options.ledgerFilePath) : getDurableLedgerFilePath();
     // If the host file was lost after tombstones were written, a
     // recreation must republish the COMPLETE committed history, not
     // just the currently unpublished rows; detect that state before
@@ -558,24 +614,35 @@ export async function republishMissingDurableLedgerEntries(
         appendEntries = await readDatabaseLedgerEntries(client);
     }
     const lock = acquireLedgerAppendLock(targetPathForLock);
-    let hostEntries: AcademicProfileLedgerEntry[];
     let republished = 0;
+    let markIds: string[] = [];
     try {
-        hostEntries = readDurableLedgerEntries(options?.ledgerFilePath);
-        republished = await republishUnderLock(client, appendEntries, hostEntries, options, lock.assertOwned);
+        const hostEntries = readDurableLedgerEntries(options?.ledgerFilePath);
+        ({ republished, markIds } = republishUnderLock(appendEntries, hostEntries, options, lock.assertOwned, ledgerLost));
     } finally {
         lock.release();
+    }
+    // The filesystem lock is released before any database await: every
+    // marked row was observed or appended (fsync-complete) under the
+    // lock, so publication can be recorded without holding it.
+    for (const id of markIds) {
+        await client.query(
+            `UPDATE academic_profile_deletion_ledger
+             SET host_published_at = clock_timestamp()
+             WHERE id = $1 AND host_published_at IS NULL`,
+            [id],
+        );
     }
     return { republished, latest: dbEntries[dbEntries.length - 1] ?? null };
 }
 
-async function republishUnderLock(
-    client: PoolClient,
+function republishUnderLock(
     dbEntries: AcademicProfileLedgerEntry[],
     hostEntries: AcademicProfileLedgerEntry[],
     options: { userId?: string | undefined; ledgerFilePath?: string | undefined } | undefined,
     assertOwned: () => void,
-): Promise<number> {
+    allowRecreateAfterLoss = false,
+): { republished: number; markIds: string[] } {
     if (hostEntries.length > 0) {
         // Repair a missing ever-written marker (for example when the
         // first append wrote its payload but failed before creating
@@ -589,30 +656,20 @@ async function republishUnderLock(
     // ledger file: it recreates the file from the complete committed
     // history rather than only the newest tombstone.
     const targetPath = options?.ledgerFilePath ? resolve(options.ledgerFilePath) : getDurableLedgerFilePath();
-    const allowRecreateAfterLoss = hostEntries.length === 0
-        && existsSync(join(dirname(targetPath), LEDGER_EVER_WRITTEN_MARKER));
+    const allowRecreate = allowRecreateAfterLoss || (hostEntries.length === 0
+        && existsSync(join(dirname(targetPath), LEDGER_EVER_WRITTEN_MARKER)));
     let republished = 0;
     const markIds: string[] = [];
     for (const entry of dbEntries) {
         if (!hostKeys.has(ledgerEntryKey(entry))) {
-            const prepared = prepareLedgerAppend(entry, options?.ledgerFilePath, { allowRecreateAfterLoss });
-            appendDurableLedgerPayloadWithLock(prepared.targetPath, prepared.parentDir, prepared.createdDirs, prepared.cursor, prepared.payload, assertOwned);
+            const prepared = prepareLedgerAppend(entry, options?.ledgerFilePath, { allowRecreateAfterLoss: allowRecreate });
+            appendDurableLedgerPayloadWithLock(prepared.targetPath, prepared.parentDir, prepared.createdDirs, prepared.cursor, prepared.payload, assertOwned, allowRecreate);
             hostKeys.add(ledgerEntryKey(entry));
             republished += 1;
         }
         if (entry.dbLedgerId) markIds.push(entry.dbLedgerId);
     }
-    // Every marked row was observed or appended under the append lock,
-    // so its host record is fsync-durable before this update runs.
-    for (const id of markIds) {
-        await client.query(
-            `UPDATE academic_profile_deletion_ledger
-             SET host_published_at = clock_timestamp()
-             WHERE id = $1 AND host_published_at IS NULL`,
-            [id],
-        );
-    }
-    return republished;
+    return { republished, markIds };
 }
 
 const UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
