@@ -18,3 +18,10 @@ updates:
     cooldown:
       default-days: 7
     open-pull-requests-limit: 10
+    # One combined PR for all action bumps: a single CI pass, and
+    # multi-component actions (e.g. CodeQL init/analyze/autobuild)
+    # stay on the same version instead of skewing across PRs.
+    groups:
+      github-actions:
+        patterns:
+          - "*"
