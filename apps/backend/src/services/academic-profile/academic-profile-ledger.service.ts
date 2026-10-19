@@ -505,7 +505,9 @@ export async function republishMissingDurableLedgerEntries(
     // just the currently unpublished rows; detect that state before
     // locking and load the full history for the append pass.
     let appendEntries = dbEntries;
-    if (!existsSync(targetPathForLock) && existsSync(join(dirname(targetPathForLock), LEDGER_EVER_WRITTEN_MARKER))) {
+    const ledgerLost = (!existsSync(targetPathForLock) || statSync(targetPathForLock).size === 0)
+        && existsSync(join(dirname(targetPathForLock), LEDGER_EVER_WRITTEN_MARKER));
+    if (ledgerLost) {
         appendEntries = await readDatabaseLedgerEntries(client);
     }
     const lock = acquireLedgerAppendLock(targetPathForLock);
