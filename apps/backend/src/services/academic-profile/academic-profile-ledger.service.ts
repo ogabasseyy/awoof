@@ -18,7 +18,7 @@
  * It NEVER stores names, emails, academic answers, or PII.
  */
 
-import { closeSync, existsSync, fsyncSync, mkdirSync, openSync, readFileSync, statSync, unlinkSync, writeFileSync, writeSync } from 'node:fs';
+import { closeSync, existsSync, fstatSync, fsyncSync, ftruncateSync, mkdirSync, openSync, readFileSync, statSync, unlinkSync, writeFileSync, writeSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import type { Pool, PoolClient } from 'pg';
 
@@ -292,16 +292,29 @@ function appendDurableLedgerPayload(
         // write fsynced as-is would persist a truncated JSON record and
         // fail every later reconciliation closed, with no retry signal.
         const buffer = Buffer.from(payload, 'utf8');
+        const originalSize = fstatSync(fd).size;
         let written = 0;
-        while (written < buffer.length) {
-            assertOwned();
-            const count = writeSync(fd, buffer, written, buffer.length - written);
-            if (count <= 0) {
-                throw new Error(`Short write appending to durable ledger at ${targetPath}: wrote ${written} of ${buffer.length} bytes`);
+        try {
+            while (written < buffer.length) {
+                assertOwned();
+                const count = writeSync(fd, buffer, written, buffer.length - written);
+                if (count <= 0) {
+                    throw new Error(`Short write appending to durable ledger at ${targetPath}: wrote ${written} of ${buffer.length} bytes`);
+                }
+                written += count;
             }
-            written += count;
+            fsyncSync(fd);
+        } catch (error) {
+            // Roll the file back to its pre-append offset under the
+            // append lock: leaving a partial JSON prefix behind would
+            // make every later read fail closed even after the volume
+            // recovers, permanently stranding the database outbox.
+            try {
+                ftruncateSync(fd, originalSize);
+                fsyncSync(fd);
+            } catch { /* the original append error is the signal */ }
+            throw error;
         }
-        fsyncSync(fd);
     } finally {
         closeSync(fd);
     }

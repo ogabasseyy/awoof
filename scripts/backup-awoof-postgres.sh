@@ -99,6 +99,8 @@ manifest_valid() {
     manifest="$1"
     dump="$2"
     [ -f "$manifest" ] || return 1
+    grep -Eq '"schemaVersion"[[:space:]]*:[[:space:]]*1([^0-9]|$)' "$manifest" || return 1
+    grep -Eq '"createdAt"[[:space:]]*:[[:space:]]*"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}' "$manifest" || return 1
     recorded="$(sed -n 's/.*"sha256"[[:space:]]*:[[:space:]]*"\([0-9a-fA-F]*\)".*/\1/p' "$manifest" | head -n 1)"
     [ -n "$recorded" ] || return 1
     if command -v sha256sum >/dev/null 2>&1; then

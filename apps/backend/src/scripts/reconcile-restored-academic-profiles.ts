@@ -68,6 +68,15 @@ async function main(): Promise<void> {
     const requireLedger = !allowMissingLedger;
 
     try {
+        // A quarantined manual run can target a dump restored from
+        // before the academic-profile migrations (088/089); run pending
+        // migrations first, exactly as application startup does, so the
+        // reconciliation queries see the current schema.
+        const { db } = await import('../config/database.js');
+        db.initialize();
+        const { runMigrations } = await import('../database/migrations/run.js');
+        await runMigrations();
+
         pool = createPool();
         pool.on('error', () => {
             process.stderr.write('academic profile reconciliation: database error\n');
