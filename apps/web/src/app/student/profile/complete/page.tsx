@@ -1034,8 +1034,9 @@ function CompletionForm() {
             ) : (
                 <>
                     <p className="mt-2 text-sm text-slate-600">
-                        This permanently deletes the academic details you saved here. Your student account,
-                        verification, and marketplace access are not affected.
+                        This deletes the academic details you saved here from your live profile. Copies already
+                        captured in routine backups are removed as those backups expire and are never restored
+                        into service. Your student account, verification, and marketplace access are not affected.
                     </p>
                     {eraseError && (
                         <p role="alert" className="mt-3 rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-800">{eraseError}</p>

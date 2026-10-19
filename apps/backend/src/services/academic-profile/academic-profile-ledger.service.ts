@@ -587,11 +587,16 @@ export async function republishMissingDurableLedgerEntries(
         // later ledger loss can masquerade as a fresh deployment.
         if (existsSync(targetPathForLock) && statSync(targetPathForLock).size > 0) {
             ensureLedgerEverWrittenMarker(dirname(targetPathForLock));
-            if (!readLedgerTailMarker(targetPathForLock)) {
-                updateLedgerTailMarker(targetPathForLock);
+            const tail = readLedgerTailMarker(targetPathForLock);
+            // Healthy steady state is O(1): the recorded byte length
+            // still matches the file, so no history scan is needed.
+            if (tail && tail.bytes === statSync(targetPathForLock).size) {
                 return { republished: 0, latest: null };
             }
-            if (ledgerTailMatches(targetPathForLock)) {
+            // Anomaly (missing/stale marker): recover only when the
+            // ledger set exactly matches committed history; otherwise
+            // fall through to the full-history rebuild below.
+            if (await recoverLedgerTailIfPossible({ connect: async () => client }, targetPathForLock)) {
                 return { republished: 0, latest: null };
             }
             dbEntries = await readDatabaseLedgerEntries(client);
@@ -709,6 +714,39 @@ export function readDurableLedgerEntries(customPath?: string | undefined): Acade
         }
     }
     return entries;
+}
+
+
+/**
+ * Crash recovery for an interrupted tail-marker update. If the host
+ * ledger parses cleanly and its tombstone set exactly matches the
+ * complete committed database history, the ledger itself is intact -
+ * only the marker is stale - so the marker can be advanced safely.
+ * Any other mismatch is genuine history loss and returns false.
+ */
+export async function recoverLedgerTailIfPossible(
+    pool: Pick<Pool, 'connect'>,
+    ledgerFilePath?: string | undefined,
+): Promise<boolean> {
+    const targetPath = ledgerFilePath ? resolve(ledgerFilePath) : getDurableLedgerFilePath();
+    let client: PoolClient | undefined;
+    try {
+        client = await pool.connect();
+        const hostEntries = readDurableLedgerEntries(targetPath);
+        const dbEntries = await readDatabaseLedgerEntries(client);
+        const hostKeys = new Set(hostEntries.map(ledgerEntryKey));
+        const dbKeys = new Set(dbEntries.map(ledgerEntryKey));
+        if (hostKeys.size !== dbKeys.size) return false;
+        for (const key of dbKeys) {
+            if (!hostKeys.has(key)) return false;
+        }
+        updateLedgerTailMarker(targetPath);
+        return true;
+    } catch {
+        return false;
+    } finally {
+        client?.release();
+    }
 }
 
 /**

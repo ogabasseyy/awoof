@@ -7,6 +7,7 @@ import {
     appendDurableLedgerEntry,
     assertDurableLedgerAvailableForStartup,
     dispatchMissingDurableLedgerEntries,
+    recoverLedgerTailIfPossible,
     readDurableLedgerEntries,
     republishMissingDurableLedgerEntries,
     type AcademicProfileLedgerEntry,
@@ -363,6 +364,39 @@ test('startup gate detects a tail-truncated ledger and republish rebuilds it', a
         };
         await republishMissingDurableLedgerEntries(client as never, { ledgerFilePath: ledgerFile });
         assert.equal(readDurableLedgerEntries(ledgerFile).length, 2);
+        assertDurableLedgerAvailableForStartup({ ledgerFilePath: ledgerFile });
+    } finally {
+        rmSync(dir, { recursive: true, force: true });
+    }
+});
+
+test('tail recovery advances a stale marker only when ledger and history sets match', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'ledger-recover-'));
+    const ledgerFile = join(dir, 'test-ledger.jsonl');
+    const entry: AcademicProfileLedgerEntry = {
+        userId: '11111111-1111-4111-8111-111111111111',
+        generationId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+        scope: 'profile_only',
+        erasedAt: '2026-10-18T12:00:00.000Z',
+    };
+    try {
+        appendDurableLedgerEntry(entry, ledgerFile);
+        // Simulate a crash after the payload fsync but before the tail
+        // marker update: remove the marker entirely.
+        rmSync(join(dir, '.academic-profile-ledger-tail.json'));
+        const client = {
+            query: async () => ({
+                rows: [{
+                    user_id: entry.userId,
+                    generation_id: entry.generationId,
+                    scope: entry.scope,
+                    erased_at: new Date(entry.erasedAt),
+                }],
+            }),
+            release: () => undefined,
+        };
+        const pool = { connect: async () => client };
+        assert.equal(await recoverLedgerTailIfPossible(pool as never, ledgerFile), true);
         assertDurableLedgerAvailableForStartup({ ledgerFilePath: ledgerFile });
     } finally {
         rmSync(dir, { recursive: true, force: true });

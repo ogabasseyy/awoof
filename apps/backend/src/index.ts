@@ -453,15 +453,28 @@ export class App {
           getDurableLedgerFilePath,
         } = await import('./services/academic-profile/academic-profile-ledger.service.js');
         const ledgerPath = getDurableLedgerFilePath();
-        assertDurableLedgerAvailableForStartup({
-          ledgerFilePath: ledgerPath,
-          freshDeployment: process.env.ACADEMIC_PROFILE_FRESH_DEPLOYMENT === 'true'
-            // Development-only convenience: a fresh local checkout has
-            // no ledger volume or marker yet. Production never takes
-            // this path (NODE_ENV=production) and needs the explicit
-            // one-time rollout flag instead.
-            || config.isDevelopment,
-        });
+        try {
+          assertDurableLedgerAvailableForStartup({
+            ledgerFilePath: ledgerPath,
+            freshDeployment: process.env.ACADEMIC_PROFILE_FRESH_DEPLOYMENT === 'true'
+              // Development-only convenience: a fresh local checkout has
+              // no ledger volume or marker yet. Production never takes
+              // this path (NODE_ENV=production) and needs the explicit
+              // one-time rollout flag instead.
+              || config.isDevelopment,
+          });
+        } catch (gateError) {
+          // A crash between the durable payload fsync and the tail
+          // marker update leaves a complete ledger with a stale
+          // marker. Recover by validating the ledger set against the
+          // complete committed database history; genuine loss still
+          // fails closed with the original gate error.
+          const { recoverLedgerTailIfPossible } = await import('./services/academic-profile/academic-profile-ledger.service.js');
+          const recovered = await recoverLedgerTailIfPossible(db.getPool(), ledgerPath).catch(() => false);
+          if (!recovered) throw gateError;
+          appLogger.info('Academic profile ledger tail marker recovered after interrupted update');
+          assertDurableLedgerAvailableForStartup({ ledgerFilePath: ledgerPath, freshDeployment: false });
+        }
         if (existsSync(ledgerPath)) {
           const { reconcileRestoredAcademicProfiles } = await import('./services/academic-profile/academic-profile-reconciliation.service.js');
           const summary = await reconcileRestoredAcademicProfiles(db.getPool(), { ledgerFilePath: ledgerPath });
