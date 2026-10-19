@@ -57,8 +57,14 @@ export function assertDurableLedgerAvailableForStartup(options: {
     freshDeployment?: boolean | undefined;
 }): void {
     const targetPath = resolve(options.ledgerFilePath);
-    if (existsSync(targetPath)) return;
     const parentDir = dirname(targetPath);
+    if (existsSync(targetPath) && statSync(targetPath).size > 0) return;
+    if (existsSync(targetPath) && existsSync(join(parentDir, LEDGER_EVER_WRITTEN_MARKER))) {
+        throw new Error(
+            `Durable deletion ledger is empty at ${targetPath} but tombstones were previously written; refusing to start against a possibly restored database. Restore the ledger file from the backups volume.`,
+        );
+    }
+    if (existsSync(targetPath)) return;
     // Once any tombstone has been appended, the ever-written marker
     // persists on the volume; losing only the ledger file afterwards
     // must fail closed, because reconciliation would be skipped.
@@ -122,8 +128,9 @@ function prepareLedgerAppend(
     // drop the lost history and let a later restore resurrect profiles
     // covered only by the omitted entries. Fail closed so the full
     // history is restored or republished deliberately.
-    if (options?.allowRecreateAfterLoss !== true && !existsSync(targetPath) && existsSync(join(parentDir, LEDGER_EVER_WRITTEN_MARKER))) {
-        throw new Error(`Durable deletion ledger is missing at ${targetPath} but tombstones were previously written; refusing to recreate it. Restore the ledger file or republish the full history deliberately.`);
+    if (options?.allowRecreateAfterLoss !== true && existsSync(join(parentDir, LEDGER_EVER_WRITTEN_MARKER))
+        && (!existsSync(targetPath) || statSync(targetPath).size === 0)) {
+        throw new Error(`Durable deletion ledger is missing or empty at ${targetPath} but tombstones were previously written; refusing to recreate it. Restore the ledger file or republish the full history deliberately.`);
     }
     // Collect directories this call is about to create: fsyncing the file
     // persists its contents, but a newly created directory entry (and the
@@ -220,6 +227,13 @@ function acquireLedgerAppendLock(targetPath: string): { release: () => void; ass
                     continue;
                 }
             } catch {
+                // A persistent inspection/removal failure (for example a
+                // root-owned stale lock) must not spin the event loop:
+                // honor the same deadline and pacing as the wait path.
+                if (Date.now() > deadline) {
+                    throw new Error(`Timed out acquiring durable ledger append lock at ${lockPath}`);
+                }
+                Atomics.wait(spin, 0, 0, 10);
                 continue;
             }
             if (Date.now() > deadline) {

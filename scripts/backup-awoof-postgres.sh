@@ -100,7 +100,22 @@ manifest_valid() {
     dump="$2"
     [ -f "$manifest" ] || return 1
     grep -Eq '"schemaVersion"[[:space:]]*:[[:space:]]*1([^0-9]|$)' "$manifest" || return 1
-    grep -Eq '"createdAt"[[:space:]]*:[[:space:]]*"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}' "$manifest" || return 1
+    if command -v python3 >/dev/null 2>&1; then
+        python3 - "$manifest" <<'PYEOF' >/dev/null 2>&1 || return 1
+import json, sys
+from datetime import datetime
+with open(sys.argv[1], encoding="utf-8") as fh:
+    data = json.load(fh)
+if data.get("schemaVersion") != 1:
+    raise SystemExit(1)
+created = data.get("createdAt")
+if not isinstance(created, str) or not created:
+    raise SystemExit(1)
+datetime.fromisoformat(created[:-1] + "+00:00" if created.endswith("Z") else created)
+PYEOF
+    else
+        grep -Eq '"createdAt"[[:space:]]*:[[:space:]]*"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}' "$manifest" || return 1
+    fi
     recorded="$(sed -n 's/.*"sha256"[[:space:]]*:[[:space:]]*"\([0-9a-fA-F]*\)".*/\1/p' "$manifest" | head -n 1)"
     [ -n "$recorded" ] || return 1
     if command -v sha256sum >/dev/null 2>&1; then

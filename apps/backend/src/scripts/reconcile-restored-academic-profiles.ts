@@ -100,6 +100,10 @@ async function main(): Promise<void> {
         if (pool) {
             try { await pool.end(); } catch { /* ignore */ }
         }
+        try {
+            const { db } = await import('../config/database.js');
+            await db.close();
+        } catch { /* ignore */ }
     }
 }
 
