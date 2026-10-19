@@ -52,8 +52,10 @@ import {
     type ParsedAcademicProfileInput,
     type ProfileFieldState,
     type PurgeResult,
+    type ErasureResult,
     type VerificationRequirement,
 } from './academic-profile.types.js';
+import { recordDeletionInDatabase, appendDurableLedgerEntry, republishMissingDurableLedgerEntries } from './academic-profile-ledger.service.js';
 
 export const ACADEMIC_PROFILE_REVISION_CONFLICT = 'ACADEMIC_PROFILE_REVISION_CONFLICT';
 export const ACADEMIC_PROFILE_INSTITUTION_CHANGED = 'ACADEMIC_PROFILE_INSTITUTION_CHANGED';
@@ -185,6 +187,7 @@ export type StoredAcademicProfile = {
     canonicalInstitutionId: string | null;
     observedIdentityVersion: number;
     fields: AcademicProfileFields;
+    generationId?: string | null | undefined;
 };
 
 export type AcademicProfileRow = {
@@ -193,6 +196,7 @@ export type AcademicProfileRow = {
     canonical_institution_id: string | null;
     observed_identity_version: number;
     revision: number;
+    generation_id?: string | null | undefined;
     claimed_institution_state: string;
     claimed_institution_name: string | null;
     claimed_institution_country: string | null;
@@ -252,6 +256,7 @@ function rowToStoredProfile(row: AcademicProfileRow): StoredAcademicProfile {
         revision: row.revision,
         canonicalInstitutionId: row.canonical_institution_id,
         observedIdentityVersion: row.observed_identity_version,
+        generationId: row.generation_id ?? null,
         fields: {
             claimedInstitution: claimedState === 'supplied'
                 ? {
@@ -719,6 +724,7 @@ const PROFILE_COLUMNS = [
     'canonical_institution_id',
     'observed_identity_version',
     'revision',
+    'generation_id',
     'claimed_institution_state',
     'claimed_institution_name',
     'claimed_institution_country',
@@ -827,7 +833,7 @@ ON CONFLICT (user_id) DO UPDATE SET
     estimate_basis_source_version = EXCLUDED.estimate_basis_source_version,
     estimate_stale = EXCLUDED.estimate_stale,
     updated_at = clock_timestamp()
-RETURNING revision`;
+RETURNING revision, generation_id`;
 
 const INVALIDATE_SQL = `UPDATE student_academic_profiles
 SET canonical_institution_id = $1,
@@ -1161,7 +1167,7 @@ export async function saveAcademicProfile(
             expectedCountryCode: boundInstitutionCountryCode(ctx.universityId, ctx.institutionCountry),
         });
         const revision = stored.revision + 1;
-        await client.query(UPSERT_SQL, upsertParams(ctx, revision, merged));
+        await client.query<{ revision: number; generation_id?: string }>(UPSERT_SQL, upsertParams(ctx, revision, merged));
         const projection = await buildProjection({
             tx: client,
             ctx,
@@ -1189,7 +1195,112 @@ export async function saveAcademicProfile(
  * regardless of the collection gate; records only whether a row was removed,
  * never the deleted values.
  */
-export async function purgeAcademicProfileForUser(tx: PoolClient, userId: string): Promise<PurgeResult> {
+export async function purgeAcademicProfileForUser(
+    tx: PoolClient,
+    userId: string,
+    scope: 'profile_only' | 'account_closure' = 'account_closure',
+    ledgerFilePath?: string | undefined,
+): Promise<PurgeResult> {
+    const profileResult = await tx.query<{ generation_id: string }>(
+        `SELECT generation_id FROM student_academic_profiles WHERE user_id = $1 FOR UPDATE`,
+        [userId],
+    );
+    const row = profileResult.rows[0];
+    if (!row) {
+        return { deleted: false, generationId: null };
+    }
+    const generationId = row.generation_id;
+    let appendDurableRecord: (() => void) | undefined;
+    if (generationId) {
+        const dbRecord = await recordDeletionInDatabase(tx, {
+            userId,
+            generationId,
+            scope,
+        });
+        const erasedAtIso = dbRecord.erasedAt.toISOString();
+        appendDurableRecord = () => {
+            appendDurableLedgerEntry(
+                {
+                    userId,
+                    generationId,
+                    scope,
+                    erasedAt: erasedAtIso,
+                },
+                ledgerFilePath,
+            );
+        };
+    }
     const deleted = await tx.query(`DELETE FROM student_academic_profiles WHERE user_id = $1`, [userId]);
-    return { deleted: (deleted.rowCount ?? 0) > 0 };
+    return {
+        deleted: (deleted.rowCount ?? 0) > 0,
+        generationId: generationId ?? null,
+        appendDurableRecord,
+    };
+}
+
+/**
+ * Voluntary profile-only erasure requested by an authenticated student.
+ * Removes academic details and records in the deletion ledger while
+ * leaving the user account and enrollment eligibility untouched.
+ * Available even when collection is disabled.
+ */
+export async function eraseAcademicProfileForUser(
+    pool: Pick<Pool, 'connect'>,
+    userId: string,
+    ledgerFilePath?: string | undefined,
+): Promise<ErasureResult> {
+    const client = await pool.connect();
+    try {
+        await client.query('BEGIN');
+        const userResult = await client.query<{ id: string; role: string; deleted_at: Date | null }>(
+            `SELECT id, role, deleted_at FROM users WHERE id = $1 FOR UPDATE`,
+            [userId],
+        );
+        const user = userResult.rows[0];
+        if (!user || user.deleted_at !== null) {
+            await client.query('ROLLBACK');
+            throw new NotFoundError('Student user not found');
+        }
+        if (user.role !== 'student') {
+            await client.query('ROLLBACK');
+            throw new ForbiddenError('Academic profiles are available to student accounts only');
+        }
+
+        const purge = await purgeAcademicProfileForUser(client, userId, 'profile_only', ledgerFilePath);
+        let erased = purge.deleted;
+        let generationId = purge.generationId ?? null;
+        let erasedAt = new Date().toISOString();
+        if (!purge.appendDurableRecord) {
+            // Retry after a post-commit tombstone failure: the profile
+            // is already gone, but the committed database-ledger row
+            // from the original erasure is the outbox record. Republish
+            // any of this user's committed erasures that never reached
+            // the host file so the retry converges instead of reporting
+            // success while the tombstone stays missing.
+            const republished = await republishMissingDurableLedgerEntries(client, {
+                userId,
+                ledgerFilePath,
+            });
+            if (republished.latest) {
+                erased = true;
+                generationId = republished.latest.generationId;
+                erasedAt = republished.latest.erasedAt;
+            }
+        }
+        await client.query('COMMIT');
+        // Only append to durable host JSONL after database transaction has committed!
+        purge.appendDurableRecord?.();
+        return {
+            erased,
+            userId,
+            generationId,
+            erasedAt,
+            remainingAccountActive: true,
+        };
+    } catch (error) {
+        await client.query('ROLLBACK').catch(() => undefined);
+        throw error;
+    } finally {
+        client.release();
+    }
 }

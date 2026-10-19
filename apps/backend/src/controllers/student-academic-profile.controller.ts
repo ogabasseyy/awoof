@@ -14,11 +14,12 @@ import { ForbiddenError, UnauthorizedError } from '../common/errors/AppError.js'
 import { success } from '../common/utils/response.js';
 import type { AuthRequest } from '../middleware/auth.middleware.js';
 import {
+    eraseAcademicProfileForUser,
     isAcademicProfileCollectionEnabled,
     readAcademicProfile,
     saveAcademicProfile,
 } from '../services/academic-profile/academic-profile.service.js';
-import type { AcademicProfileProjection } from '../services/academic-profile/academic-profile.types.js';
+import type { AcademicProfileProjection, ErasureResult } from '../services/academic-profile/academic-profile.types.js';
 import {
     estimateGraduationYearForStudent,
     searchInstitutionsForStudent,
@@ -32,6 +33,7 @@ import {
 export class StudentAcademicProfileController {
     private readonly readProfile: (userId: string) => Promise<AcademicProfileProjection>;
     private readonly saveProfile: (userId: string, body: unknown) => Promise<AcademicProfileProjection>;
+    private readonly eraseProfile: (userId: string) => Promise<ErasureResult>;
     private readonly searchInstitutions: (userId: string, query: unknown) => Promise<CataloguePage<InstitutionCatalogueItem>>;
     private readonly searchProgrammes: (userId: string, query: unknown) => Promise<CataloguePage<ProgrammeCatalogueItem>>;
     private readonly estimateYear: (userId: string, body: unknown) => Promise<EstimateResult>;
@@ -40,6 +42,7 @@ export class StudentAcademicProfileController {
     constructor(dependencies: {
         readAcademicProfile?: (userId: string) => Promise<AcademicProfileProjection>;
         saveAcademicProfile?: (userId: string, body: unknown) => Promise<AcademicProfileProjection>;
+        eraseAcademicProfile?: (userId: string) => Promise<ErasureResult>;
         searchInstitutions?: (userId: string, query: unknown) => Promise<CataloguePage<InstitutionCatalogueItem>>;
         searchProgrammes?: (userId: string, query: unknown) => Promise<CataloguePage<ProgrammeCatalogueItem>>;
         estimateGraduationYear?: (userId: string, body: unknown) => Promise<EstimateResult>;
@@ -51,6 +54,8 @@ export class StudentAcademicProfileController {
             ?? ((userId: string) => readAcademicProfile(db.getPool(), userId));
         this.saveProfile = dependencies.saveAcademicProfile
             ?? ((userId: string, body: unknown) => saveAcademicProfile(db.getPool(), userId, body));
+        this.eraseProfile = dependencies.eraseAcademicProfile
+            ?? ((userId: string) => eraseAcademicProfileForUser(db.getPool(), userId));
         this.searchInstitutions = dependencies.searchInstitutions
             ?? ((userId: string, query: unknown) => searchInstitutionsForStudent(db.getPool(), userId, query));
         this.searchProgrammes = dependencies.searchProgrammes
@@ -89,6 +94,24 @@ export class StudentAcademicProfileController {
         success(res, {
             message: 'Academic profile saved successfully',
             data: projection,
+        });
+    }
+
+    /**
+     * Erase the authenticated student's academic profile.
+     * Profile-only erasure is available regardless of whether collection
+     * is currently enabled, so students can always remove saved profile data.
+     * Does not disrupt or close the primary student account or eligibility.
+     */
+    public async deleteAcademicProfile(req: AuthRequest, res: Response): Promise<void> {
+        if (!req.user) {
+            throw new UnauthorizedError('User not authenticated');
+        }
+        const result = await this.eraseProfile(req.user.userId);
+        res.setHeader('Cache-Control', 'no-store');
+        success(res, {
+            message: 'Academic profile erased successfully',
+            data: result,
         });
     }
 

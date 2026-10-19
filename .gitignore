@@ -12,6 +12,8 @@ node_modules
 coverage/
 *.log
 backups/
+__pycache__/
+*.pyc
 
 # Environment variables
 .env

@@ -1,0 +1,41 @@
+# Awoof Academic Profile Retention Purge Cron Template
+# ------------------------------------------------------------------------------
+# STATUS: DISABLED PENDING OWNER/LEGAL APPROVAL AND RETENTION WINDOW AUTHORIZATION
+#
+# PURPOSE:
+# Daily scheduled execution of the academic profile data cleanup script to purge
+# academic profiles belonging to soft-deleted accounts whose deletion occurred
+# at or before the approved retention cutoff (ACADEMIC_PROFILE_RETENTION_DAYS).
+#
+# PREREQUISITES BEFORE ACTIVATION:
+# 1. Legal and management authorization of ACADEMIC_PROFILE_RETENTION_DAYS (e.g. 30).
+# 2. ACADEMIC_PROFILE_RETENTION_DAYS set in production environment (.env / systemd).
+# 3. Migration 088 applied (providing academic_profile_deletion_ledger and generation_id).
+# 4. The backend container's backups volume (backend_backups, mounted at /usr/src/app/backups) is provisioned so tombstones land in the same durable ledger the API appends to.
+#
+# HOSTINGER VPS INSTALLATION INSTRUCTIONS:
+# Supported form (Container execution via crontab for deploy user):
+#   crontab -e
+#   Add the line below (uncommented):
+#   30 3 * * * docker exec -i -u nodejs awoof-backend node dist/scripts/cleanup-academic-profile-data.js --batch-size 500 >> /var/log/awoof/academic-profile-purge.log 2>&1
+#
+# Host-side execution is intentionally not offered: under
+# docker-compose.hostinger.yml the database publishes no host port (its
+# DB_HOST name only resolves inside the Compose network), and the durable
+# deletion ledger lives in the backend container's backups volume
+# (/usr/src/app/backups). A host process could neither reach Postgres nor
+# write the ledger that backend startup reconciliation reads, so erased
+# profiles could be resurrected by a later restore.
+#
+# CONCURRENCY AND RESILIENCE:
+# - The docker exec form must run as the nodejs user (-u nodejs): the image
+#   has no USER instruction, so exec would otherwise run as root and could
+#   create the mode-0600 ledger file root-owned, after which API erasures
+#   running as nodejs could no longer append their tombstones.
+# - Script acquires PostgreSQL session advisory lock (2026101801) on a dedicated connection.
+#   If a prior run is still in progress, the overlapping run exits cleanly without error.
+# - Deletions are processed in batches (default 500) and recorded in the dual deletion ledger.
+# - Outputs counts/outcomes only; never logs PII, emails, or personal identifiers.
+#
+# TEMPLATE LINE (Uncomment and set correct paths upon activation):
+# 30 3 * * * docker exec -i -u nodejs awoof-backend node dist/scripts/cleanup-academic-profile-data.js --batch-size 500 >> /var/log/awoof/academic-profile-purge.log 2>&1

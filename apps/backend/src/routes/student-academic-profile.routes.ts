@@ -139,6 +139,18 @@ export function createStudentAcademicProfileRouter(
     );
 
     /**
+     * @route   DELETE /api/students/academic-profile
+     * @desc    Erase the authenticated student's academic profile
+     * @access  Private (Student only)
+     */
+    router.delete(
+        '/academic-profile',
+        authenticate,
+        requireRole('student'),
+        asyncHandler(controller.deleteAcademicProfile.bind(controller)),
+    );
+
+    /**
      * @route   GET /api/students/academic-profile/institutions
      * @desc    Search the institution catalogue scoped to the authenticated student
      * @access  Private (Student only)
@@ -225,6 +237,18 @@ export default createStudentAcademicProfileRouter();
  *         description: Stale revision, institution drift, or a changed school claim; reload and reconfirm before retrying
  *         content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } }
  *       422: { $ref: '#/components/responses/BadRequest' }
+ *   delete:
+ *     summary: Erase the authenticated student's academic profile
+ *     description: Immediately purges the student's optional academic profile row and records an entry in the deletion ledger. Does not delete or disrupt the primary student account, email, or eligibility. Available even while academic profile collection is disabled.
+ *     tags: [Students]
+ *     security: [{ bearerAuth: [] }]
+ *     responses:
+ *       200:
+ *         description: Academic profile erased successfully
+ *         content: { application/json: { schema: { $ref: '#/components/schemas/AcademicProfileErasureResponse' } } }
+ *       401: { $ref: '#/components/responses/Unauthorized' }
+ *       403: { $ref: '#/components/responses/Forbidden' }
+ *       404: { $ref: '#/components/responses/NotFound' }
  * /api/students/academic-profile/institutions:
  *   get:
  *     summary: Search the institution catalogue for the authenticated student

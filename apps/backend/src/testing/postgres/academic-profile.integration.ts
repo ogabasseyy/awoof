@@ -205,7 +205,8 @@ test('soft-deleted accounts lose academic visibility while purge stays available
                 owned.release();
             }
         });
-        assert.deepEqual(purged, { deleted: true });
+        assert.equal(purged.deleted, true);
+        assert.ok(typeof purged.generationId === 'string' && purged.generationId.length > 0);
         assert.equal(await profileRowCount(client, fixture.userId), 0);
     });
 });
@@ -359,7 +360,8 @@ test('feature-off rejects writes while reads and purge stay available', async ()
         const owned = await pool.connect();
         try {
             const purged = await purgeAcademicProfileForUser(owned, fixture.userId);
-            assert.deepEqual(purged, { deleted: true });
+            assert.equal(purged.deleted, true);
+            assert.ok(typeof purged.generationId === 'string' && purged.generationId.length > 0);
         } finally {
             owned.release();
         }

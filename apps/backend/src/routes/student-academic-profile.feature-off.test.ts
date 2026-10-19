@@ -206,3 +206,33 @@ test('authenticated self-read stays available while collection is disabled', asy
         assert.equal(body.data.promptDecision, 'continue');
     });
 });
+
+test('authenticated self-erasure stays available while collection is disabled', async () => {
+    let erasedUserId: string | null = null;
+    const controller = new StudentAcademicProfileController({
+        isCollectionEnabled: () => false,
+        eraseAcademicProfile: async (userId) => {
+            erasedUserId = userId;
+            return {
+                erased: true,
+                userId,
+                generationId: '00000000-0000-4000-8000-000000000001',
+                erasedAt: new Date().toISOString(),
+                remainingAccountActive: true,
+            };
+        },
+    });
+    await withServer(createStudentAcademicProfileRouter(controller), async (baseUrl) => {
+        const response = await fetch(`${baseUrl}/academic-profile`, {
+            method: 'DELETE',
+            headers: { authorization: `Bearer ${studentToken()}` },
+        });
+        assert.equal(response.status, 200);
+        assert.equal(response.headers.get('cache-control'), 'no-store');
+        const body = (await response.json()) as { success: boolean; data: { erased: boolean; userId: string; remainingAccountActive: boolean } };
+        assert.equal(body.success, true);
+        assert.equal(body.data.erased, true);
+        assert.equal(body.data.remainingAccountActive, true);
+        assert.equal(erasedUserId, ACTOR_ID);
+    });
+});

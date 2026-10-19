@@ -111,7 +111,18 @@ export type AcademicProfileProjection = {
     promptDecision: 'complete_profile' | 'continue';
 };
 
-export type PurgeResult = { deleted: boolean };
+export type PurgeResult = {
+    deleted: boolean;
+    generationId?: string | null | undefined;
+    appendDurableRecord?: (() => void) | undefined;
+};
+export type ErasureResult = {
+    erased: boolean;
+    userId: string;
+    generationId: string | null;
+    erasedAt: string;
+    remainingAccountActive: boolean;
+};
 
 function fieldUpdateSchema<T extends z.ZodTypeAny>(valueSchema: T): z.ZodUnion<
     [z.ZodObject<{ state: z.ZodLiteral<'supplied'>; value: T }, 'strict'>,

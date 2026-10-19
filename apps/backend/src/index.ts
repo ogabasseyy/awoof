@@ -439,6 +439,75 @@ export class App {
         await runMigrations();
       }
 
+      // Restore gate: when a durable deletion ledger exists on this
+      // host, reconcile any restored academic-profile rows against it
+      // before accepting traffic. A restored backup can resurrect
+      // profiles erased after the backup was taken; starting without
+      // this check would serve them until an operator remembered the
+      // manual CLI. Failure (including a corrupt ledger) aborts
+      // startup via the catch below instead of listening.
+      {
+        const { existsSync } = await import('node:fs');
+        const {
+          assertDurableLedgerAvailableForStartup,
+          getDurableLedgerFilePath,
+        } = await import('./services/academic-profile/academic-profile-ledger.service.js');
+        const ledgerPath = getDurableLedgerFilePath();
+        try {
+          assertDurableLedgerAvailableForStartup({
+            ledgerFilePath: ledgerPath,
+            freshDeployment: process.env.ACADEMIC_PROFILE_FRESH_DEPLOYMENT === 'true'
+              // Development-only convenience: a fresh local checkout has
+              // no ledger volume or marker yet. Production never takes
+              // this path (NODE_ENV=production) and needs the explicit
+              // one-time rollout flag instead.
+              || config.isDevelopment,
+          });
+        } catch (gateError) {
+          // A crash between the durable payload fsync and the tail
+          // marker update leaves a complete ledger with a stale
+          // marker. Recover by validating the ledger set against the
+          // complete committed database history; genuine loss still
+          // fails closed with the original gate error.
+          const { recoverLedgerTailIfPossible } = await import('./services/academic-profile/academic-profile-ledger.service.js');
+          let recovered = await recoverLedgerTailIfPossible(db.getPool(), ledgerPath).catch(() => false);
+          if (!recovered) {
+            // Marker-only first tombstone: the ever-written marker was
+            // fsynced but the crash hit before the first payload, and
+            // no tail marker exists yet. Only that exact state (no
+            // ledger, no tail marker) may be rebuilt from the
+            // committed outbox; any later loss still fails closed.
+            const { existsSync, statSync } = await import('node:fs');
+            const { dirname, join } = await import('node:path');
+            const ledgerMissing = !existsSync(ledgerPath) || statSync(ledgerPath).size === 0;
+            const tailAbsent = !existsSync(join(dirname(ledgerPath), '.academic-profile-ledger-tail.json'));
+            if (ledgerMissing && tailAbsent) {
+              const { createAcademicProfileLedgerDispatcher } = await import('./services/academic-profile/academic-profile-ledger.service.js');
+              await createAcademicProfileLedgerDispatcher(() => db.getPool(), ledgerPath).dispatchOnce();
+              recovered = true;
+            }
+          }
+          if (!recovered) throw gateError;
+          appLogger.info('Academic profile ledger tail marker recovered after interrupted update');
+          assertDurableLedgerAvailableForStartup({ ledgerFilePath: ledgerPath, freshDeployment: false });
+        }
+        if (existsSync(ledgerPath)) {
+          const { reconcileRestoredAcademicProfiles } = await import('./services/academic-profile/academic-profile-reconciliation.service.js');
+          const summary = await reconcileRestoredAcademicProfiles(db.getPool(), { ledgerFilePath: ledgerPath });
+          appLogger.info(
+            `Academic profile restore reconciliation complete: entriesRead=${summary.ledgerEntriesRead} stalePurged=${summary.staleGenerationsPurged} recreatedPreserved=${summary.recreatedGenerationsPreserved} dbLedgerRestored=${summary.dbLedgerEntriesRestored}`,
+          );
+        }
+      }
+
+      // Drain the deletion-ledger outbox continuously: committed
+      // erasures whose host append failed are republished automatically
+      // without waiting for a student retry or the (disabled) purge.
+      {
+        const { startAcademicProfileLedgerDispatcher } = await import('./services/academic-profile/academic-profile-ledger.service.js');
+        startAcademicProfileLedgerDispatcher(() => db.getPool());
+      }
+
       // Initialize Redis
       redis.initialize();
 

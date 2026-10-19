@@ -253,15 +253,18 @@ test('shows the voluntary experience when fresh assurance reports verified', asy
 });
 
 for (const status of ['expired', 'denied', 'revoked']) {
-    test(`returns to verification when fresh assurance reports ${status}`, async ({ page }) => {
+    test(`offers verification while keeping erasure reachable when fresh assurance reports ${status}`, async ({ page }) => {
         await installSyntheticApi(page);
         await installAcademicApi(page, projection({ assurance: { ...pendingAssurance(), studentStatus: status } }));
         await mockCurrentUser(page);
         await mockQuietVerification(page, status);
         await seedSession(page, 'student');
         await page.goto(COMPLETE_PATH);
-        await expect(page).toHaveURL(/\/student\/verification/, { timeout: 30000 });
-        await expect(page.getByRole('heading', { name: 'Student verification' })).toBeVisible();
+        // The blocked state stays on this page: it links to verification
+        // and keeps the erase action reachable for saved academic data.
+        await expect(page).toHaveURL(/\/student\/profile\/complete/);
+        await expect(page.getByRole('link', { name: 'Continue verification' })).toBeVisible();
+        await expect(page.getByRole('heading', { name: 'Erase your academic profile' })).toBeVisible();
     });
 }
 
