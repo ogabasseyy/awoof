@@ -11,7 +11,6 @@
 
 import { useEffect, useId, useRef, useState, useSyncExternalStore, type MouseEvent as ReactMouseEvent, type ReactNode } from 'react';
 import Link from 'next/link';
-import { useRouter } from 'next/navigation';
 import axios from 'axios';
 import Logo from '@/app/components/logo';
 import ProtectedRoute from '@/components/ProtectedRoute';
@@ -345,7 +344,6 @@ function MarkButtons({ field, marked, onMark }: MarkButtonsProps) {
 }
 
 function CompletionForm() {
-    const router = useRouter();
     const { user: currentUser } = useAuth();
     const [view, setView] = useState<AcademicProfileView | null>(null);
     const [loadState, setLoadState] = useState<'loading' | 'ready' | 'error'>('loading');
