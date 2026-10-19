@@ -92,11 +92,28 @@ echo "Manifest: $manifest_target"
 # publication; counting it here would silently evict usable recovery
 # copies while the expiry tool rejects the orphan. Orphans are left
 # for operator inspection (and are reported by the expiry dry-run).
+manifest_valid() {
+    # A pair counts as a usable recovery copy only when its manifest
+    # parses and its recorded checksum matches the dump; malformed or
+    # mismatched pairs are excluded from rotation exactly like orphans.
+    manifest="$1"
+    dump="$2"
+    [ -f "$manifest" ] || return 1
+    recorded="$(sed -n 's/.*"sha256"[[:space:]]*:[[:space:]]*"\([0-9a-fA-F]*\)".*/\1/p' "$manifest" | head -n 1)"
+    [ -n "$recorded" ] || return 1
+    if command -v sha256sum >/dev/null 2>&1; then
+        actual="$(sha256sum "$dump" | awk '{print $1}')"
+    else
+        actual="$(shasum -a 256 "$dump" | awk '{print $1}')"
+    fi
+    [ "$recorded" = "$actual" ]
+}
+
 manifest_backed_count() {
     count=0
     for dump in "$backup_dir"/awoof-*.dump; do
         [ -f "$dump" ] || continue
-        if [ -f "${dump}.manifest.json" ]; then
+        if manifest_valid "${dump}.manifest.json" "$dump"; then
             count=$((count + 1))
         fi
     done
@@ -107,7 +124,7 @@ while [ "$(manifest_backed_count)" -gt "$max_files" ]; do
     oldest=""
     for dump in "$backup_dir"/awoof-*.dump; do
         [ -f "$dump" ] || continue
-        if [ -f "${dump}.manifest.json" ]; then
+        if manifest_valid "${dump}.manifest.json" "$dump"; then
             oldest="$dump"
             break
         fi

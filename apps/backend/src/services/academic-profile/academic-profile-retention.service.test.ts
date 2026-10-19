@@ -1,4 +1,7 @@
 import assert from 'node:assert/strict';
+import { mkdtempSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import test from 'node:test';
 import {
     purgeSoftDeletedAcademicProfiles,
@@ -223,7 +226,7 @@ test('batching processes candidates and records in deletion ledger', async () =>
         release: (): void => undefined,
     };
     const pool = { connect: async () => client };
-    const summary = await purgeSoftDeletedAcademicProfiles(pool, 90, { batchSize: 10, ledgerFilePath: 'backups/test-ledger.jsonl' });
+    const summary = await purgeSoftDeletedAcademicProfiles(pool, 90, { batchSize: 10, ledgerFilePath: join(mkdtempSync(join(tmpdir(), 'retention-ledger-')), 'test-ledger.jsonl') });
     assert.equal(summary.deletedProfiles, 1);
     assert.equal(summary.batchesProcessed, 1);
     assert.ok(statements.some((s) => s.text.includes('academic_profile_deletion_ledger')));
