@@ -448,8 +448,15 @@ export class App {
       // startup via the catch below instead of listening.
       {
         const { existsSync } = await import('node:fs');
-        const { getDurableLedgerFilePath } = await import('./services/academic-profile/academic-profile-ledger.service.js');
+        const {
+          assertDurableLedgerAvailableForStartup,
+          getDurableLedgerFilePath,
+        } = await import('./services/academic-profile/academic-profile-ledger.service.js');
         const ledgerPath = getDurableLedgerFilePath();
+        assertDurableLedgerAvailableForStartup({
+          ledgerFilePath: ledgerPath,
+          freshDeployment: process.env.ACADEMIC_PROFILE_FRESH_DEPLOYMENT === 'true',
+        });
         if (existsSync(ledgerPath)) {
           const { reconcileRestoredAcademicProfiles } = await import('./services/academic-profile/academic-profile-reconciliation.service.js');
           const summary = await reconcileRestoredAcademicProfiles(db.getPool(), { ledgerFilePath: ledgerPath });

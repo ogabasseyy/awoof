@@ -1249,7 +1249,10 @@ function CompletionForm() {
                         <p className="mt-2 text-sm text-slate-600">No academic details saved yet.</p>
                     )}
                 </section>
-                {(hasSaved || eraseState === 'erased') && renderEraseSection()}
+                {/* Always render: after a failed post-commit erase the reload
+                    shows no saved profile, but DELETE still republishes the
+                    committed ledger outbox record. */}
+                {renderEraseSection()}
                 <button
                     type="button"
                     onClick={handleCompleteLater}

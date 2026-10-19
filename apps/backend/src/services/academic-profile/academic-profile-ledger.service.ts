@@ -43,6 +43,28 @@ export function getDurableLedgerFilePath(): string {
 }
 
 /**
+ * Startup availability gate for the durable deletion ledger. A missing
+ * LEDGER FILE with an existing parent directory means no tombstone has
+ * been written yet on this host. A missing parent directory means the
+ * backups volume or configured path is unavailable (for example after
+ * host-volume loss) exactly when reconciliation matters most, so
+ * startup fails unless the operator explicitly marks this as a fresh
+ * deployment with ACADEMIC_PROFILE_FRESH_DEPLOYMENT=true.
+ */
+export function assertDurableLedgerAvailableForStartup(options: {
+    ledgerFilePath: string;
+    freshDeployment?: boolean | undefined;
+}): void {
+    const targetPath = resolve(options.ledgerFilePath);
+    if (existsSync(targetPath)) return;
+    if (existsSync(dirname(targetPath))) return;
+    if (options.freshDeployment === true) return;
+    throw new Error(
+        `Durable deletion ledger directory is unavailable at ${dirname(targetPath)}; refusing to start against a possibly restored database. Mount the backups volume or set ACADEMIC_PROFILE_FRESH_DEPLOYMENT=true only for a genuinely fresh deployment.`,
+    );
+}
+
+/**
  * Append a deletion record to the durable host-level JSONL ledger file.
  * Creates parent directory if missing. The append is flushed to stable
  * storage (write + fsync on an append-mode descriptor, plus an fsync of
@@ -79,29 +101,52 @@ export function appendDurableLedgerEntry(
     // Serialize appends across processes: with the complete-write loop,
     // a short write followed by another process's record could otherwise
     // interleave fragments into malformed JSONL lines. The lock file is
-    // reclaimed when stale so a crashed appender cannot wedge retries.
-    const releaseLock = acquireLedgerAppendLock(targetPath);
+    // fenced with a random owner token so a reclaimed stale lock cannot
+    // be released by its old owner.
+    const lock = acquireLedgerAppendLock(targetPath);
     try {
-        appendDurableLedgerPayload(targetPath, parentDir, createdDirs, cursor, payload);
+        appendDurableLedgerPayload(targetPath, parentDir, createdDirs, cursor, payload, lock.assertOwned);
     } finally {
-        releaseLock();
+        lock.release();
     }
 }
 
 const LEDGER_LOCK_TIMEOUT_MS = 10_000;
 const LEDGER_LOCK_STALE_MS = 30_000;
 
-function acquireLedgerAppendLock(targetPath: string): () => void {
+function acquireLedgerAppendLock(targetPath: string): { release: () => void; assertOwned: () => void } {
     const lockPath = `${targetPath}.lock`;
+    const owner = `${process.pid}:${Date.now().toString(36)}:${Math.random().toString(36).slice(2)}${Math.random().toString(36).slice(2)}`;
     const deadline = Date.now() + LEDGER_LOCK_TIMEOUT_MS;
     const spin = new Int32Array(new SharedArrayBuffer(4));
+    const assertOwned = (): void => {
+        let current = '';
+        try {
+            current = readFileSync(lockPath, 'utf8').trim();
+        } catch {
+            current = '';
+        }
+        if (current !== owner) {
+            throw new Error(`Lost durable ledger append lock at ${lockPath}`);
+        }
+    };
     for (;;) {
         try {
             const fd = openSync(lockPath, 'wx', 0o600);
-            writeSync(fd, `${process.pid}\n`);
-            return () => {
-                try { closeSync(fd); } catch { /* already closed */ }
-                try { unlinkSync(lockPath); } catch { /* already removed */ }
+            writeSync(fd, `${owner}\n`);
+            return {
+                assertOwned,
+                release: () => {
+                    try { closeSync(fd); } catch { /* already closed */ }
+                    // Fencing: unlink only the lock we still own. If our
+                    // stale lock was reclaimed and replaced, leave the
+                    // replacement owner's lock untouched.
+                    try {
+                        if (readFileSync(lockPath, 'utf8').trim() === owner) {
+                            unlinkSync(lockPath);
+                        }
+                    } catch { /* already removed or replaced */ }
+                },
             };
         } catch (error) {
             if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error;
@@ -127,6 +172,7 @@ function appendDurableLedgerPayload(
     createdDirs: string[],
     existingAncestor: string,
     payload: string,
+    assertOwned: () => void,
 ): void {
     const fd = openSync(targetPath, 'a', 0o600);
     try {
@@ -136,6 +182,7 @@ function appendDurableLedgerPayload(
         const buffer = Buffer.from(payload, 'utf8');
         let written = 0;
         while (written < buffer.length) {
+            assertOwned();
             const count = writeSync(fd, buffer, written, buffer.length - written);
             if (count <= 0) {
                 throw new Error(`Short write appending to durable ledger at ${targetPath}: wrote ${written} of ${buffer.length} bytes`);

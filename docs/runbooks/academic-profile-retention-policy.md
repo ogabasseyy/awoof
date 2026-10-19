@@ -86,9 +86,11 @@ To prevent restored backups from resurrecting erased personal data without accid
 
 ## 4. Active-Account Retention and Continuing Necessity
 
+**Status: PLANNED — not implemented.** No backend job, service, or UI currently performs the reconfirmation or retirement described in this section; active-account academic profiles persist until this control is implemented and approved. Nothing in this section is an operational control today.
+
 Under NDPA 2023 § 24(1)(e), the existence of an active account alone does not justify the indefinite retention of personal data.
 1. **Continuing Necessity Rule:** Academic profile answers (programme, admission route, entry year, expected graduation year) remain necessary only while the student is actively enrolled or in their graduation transition.
-2. **Scheduled Review & Retirement:**
+2. **Scheduled Review & Retirement (proposed, gated on implementation and owner approval):**
    - Once a student's `expected_graduation_year` has passed by **more than 1 calendar year** (e.g. current year $\ge$ expected graduation year + 2), the data is deemed past its primary advisory necessity.
    - The platform will either present a reconfirmation prompt ("Are you still enrolled in this programme?") or schedule the optional fields for retirement, returning the profile to an uncompleted state without affecting account login or general discount access.
 
@@ -102,7 +104,7 @@ No academic-profile retention duration is approved yet: `ACADEMIC_PROFILE_RETENT
    - Profile-only erasure: **Immediate** (real-time transaction).
    - Account closure: grace retention window of the approved `ACADEMIC_PROFILE_RETENTION_DAYS` (30 days in the pending proposal), followed by daily scheduled purge.
 2. **Phase 2: Backup Expiry (up to the configured backup retention):**
-   - Database backups are rotated on a rolling schedule (`AWOOF_BACKUP_RETENTION_DAYS`, default 30 days in `expire-awoof-backups`).
+   - Database backups are rotated on a rolling schedule (`AWOOF_BACKUP_RETENTION_DAYS`, default 30 days in `expire-awoof-backups`). The expiry `--apply` job is **not scheduled yet**: `scripts/scheduler/awoof-backup-expiry.cron` is a disabled template, so until the owner activates it, backups can outlive the 30-day window (deploy-time count rotation in `backup-awoof-postgres.sh` is the only live expiry).
    - A backup created on the last day of its rotation containing an active account expires one rotation later.
 3. **Total Maximum Retention Window:** The approved academic-profile window plus the configured backup rotation (60 days only in the example where both are 30 days); no total is committed until the academic-profile value is approved.
 

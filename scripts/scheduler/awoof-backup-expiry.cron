@@ -1,0 +1,20 @@
+# Awoof Postgres backup expiry (academic-profile retention, Phase 2)
+# ------------------------------------------------------------------
+# STATUS: DISABLED TEMPLATE - NOT INSTALLED. This file is reviewed
+# configuration only. Scheduling the --apply job is an activation
+# decision that belongs to the retention-policy owner; do not install
+# it until the retention values and backup policy are approved.
+#
+# When activated on the production host, install one line (adjust the
+# deploy home and backup directory to the host layout used by
+# scripts/backup-awoof-postgres.sh, whose AWOOF_BACKUP_DIR defaults to
+# ./backups relative to its working directory):
+#
+# Daily at 04:15 UTC: expire verified backups past the retention window.
+#   15 4 * * * deploy /usr/bin/python3 /home/deploy/awoof/scripts/expire-awoof-backups.py --backup-dir /home/deploy/awoof/backups --apply >> /home/deploy/awoof/logs/backup-expiry.log 2>&1
+#
+# The default retention is AWOOF_BACKUP_RETENTION_DAYS (30 days). Only
+# backups with a valid SHA-256 manifest are expiry candidates; the
+# newest verified backup is always kept, and future-dated manifests are
+# rejected as a clock-integrity signal. Without --apply the script is a
+# dry run and deletes nothing.

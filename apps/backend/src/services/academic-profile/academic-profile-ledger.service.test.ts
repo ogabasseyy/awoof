@@ -1,10 +1,11 @@
 import assert from 'node:assert/strict';
-import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, rmSync, utimesSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
 import {
     appendDurableLedgerEntry,
+    assertDurableLedgerAvailableForStartup,
     readDurableLedgerEntries,
     republishMissingDurableLedgerEntries,
     type AcademicProfileLedgerEntry,
@@ -125,6 +126,47 @@ test('durable ledger fails closed on invalid schema / missing UUID', () => {
             () => readDurableLedgerEntries(ledgerFile),
             /Invalid ledger entry structure/,
         );
+    } finally {
+        rmSync(dir, { recursive: true, force: true });
+    }
+});
+
+test('startup ledger gate fails closed when the backups directory is unavailable', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'ledger-gate-'));
+    try {
+        const missing = join(dir, 'no-volume', 'ledger.jsonl');
+        assert.throws(
+            () => assertDurableLedgerAvailableForStartup({ ledgerFilePath: missing }),
+            /refusing to start/,
+        );
+        // An explicit fresh deployment passes without a ledger.
+        assertDurableLedgerAvailableForStartup({ ledgerFilePath: missing, freshDeployment: true });
+        // An existing parent directory with no file yet also passes.
+        assertDurableLedgerAvailableForStartup({ ledgerFilePath: join(dir, 'ledger.jsonl') });
+    } finally {
+        rmSync(dir, { recursive: true, force: true });
+    }
+});
+
+test('stale lock release does not unlink a replacement owner lock', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'ledger-lock-'));
+    const ledgerFile = join(dir, 'test-ledger.jsonl');
+    const lockFile = `${ledgerFile}.lock`;
+    const entry: AcademicProfileLedgerEntry = {
+        userId: '11111111-1111-4111-8111-111111111111',
+        generationId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+        scope: 'profile_only',
+        erasedAt: '2026-10-18T12:00:00.000Z',
+    };
+    try {
+        // A stale lock older than the reclaim window gets replaced by a
+        // real append and is gone afterwards.
+        writeFileSync(lockFile, 'stale-owner\n');
+        const stale = new Date(Date.now() - 60_000);
+        utimesSync(lockFile, stale, stale);
+        appendDurableLedgerEntry(entry, ledgerFile);
+        assert.equal(existsSync(lockFile), false);
+        assert.equal(readDurableLedgerEntries(ledgerFile).length, 1);
     } finally {
         rmSync(dir, { recursive: true, force: true });
     }
