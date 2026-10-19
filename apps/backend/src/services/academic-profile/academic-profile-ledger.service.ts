@@ -155,7 +155,19 @@ function acquireLedgerAppendLock(targetPath: string): { release: () => void; ass
     for (;;) {
         try {
             const fd = openSync(lockPath, 'wx', 0o600);
-            writeSync(fd, `${owner}\n`);
+            try {
+                const tokenBuffer = Buffer.from(`${owner}\n`, 'utf8');
+                let tokenWritten = 0;
+                while (tokenWritten < tokenBuffer.length) {
+                    const count = writeSync(fd, tokenBuffer, tokenWritten, tokenBuffer.length - tokenWritten);
+                    if (count <= 0) throw new Error(`Short write creating durable ledger lock at ${lockPath}`);
+                    tokenWritten += count;
+                }
+            } catch (error) {
+                try { closeSync(fd); } catch { /* already closed */ }
+                try { unlinkSync(lockPath); } catch { /* already removed */ }
+                throw error;
+            }
             return {
                 assertOwned,
                 release: () => {
@@ -513,6 +525,10 @@ export function createAcademicProfileLedgerDispatcher(
                 return { republished: 0 };
             }
             const hostKeys = new Set(readDurableLedgerEntries(ledgerFilePath).map(ledgerEntryKey));
+            if (hostKeys.size > 0) {
+                const targetPath = ledgerFilePath ? resolve(ledgerFilePath) : getDurableLedgerFilePath();
+                ensureLedgerEverWrittenMarker(dirname(targetPath));
+            }
             let republished = 0;
             for (const entry of candidates) {
                 if (!hostKeys.has(ledgerEntryKey(entry))) {
