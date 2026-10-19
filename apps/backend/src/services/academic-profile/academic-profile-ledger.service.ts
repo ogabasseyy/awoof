@@ -20,7 +20,7 @@
 
 import { closeSync, existsSync, fsyncSync, mkdirSync, openSync, readFileSync, statSync, unlinkSync, writeFileSync, writeSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
-import type { PoolClient } from 'pg';
+import type { Pool, PoolClient } from 'pg';
 
 export type AcademicProfileDeletionScope = 'profile_only' | 'account_closure';
 
@@ -464,4 +464,44 @@ export function readDurableLedgerEntries(customPath?: string | undefined): Acade
         }
     }
     return entries;
+}
+
+/**
+ * Drain the deletion-ledger outbox: republish every committed database
+ * erasure that is missing from the durable host file. This runs
+ * independently of the retention purge (whose schedule stays disabled
+ * until a retention value is approved), so a post-commit append failure
+ * is retried automatically instead of waiting for the student to repeat
+ * DELETE or for a restore to resurrect the erased profile.
+ */
+export async function dispatchMissingDurableLedgerEntries(
+    pool: Pick<Pool, 'connect'>,
+): Promise<{ republished: number }> {
+    const client = await pool.connect();
+    try {
+        const result = await republishMissingDurableLedgerEntries(client);
+        return { republished: result.republished };
+    } finally {
+        client.release();
+    }
+}
+
+export function startAcademicProfileLedgerDispatcher(poolProvider: () => Pick<Pool, 'connect'>): void {
+    let running = false;
+    const run = async () => {
+        if (running) return;
+        running = true;
+        try {
+            const { republished } = await dispatchMissingDurableLedgerEntries(poolProvider());
+            if (republished > 0) {
+                console.info(`Academic profile ledger dispatcher republished ${republished} tombstone(s)`);
+            }
+        } catch (error) {
+            console.error('Academic profile ledger dispatch failed', error);
+        } finally {
+            running = false;
+        }
+    };
+    void run();
+    setInterval(() => void run(), 60_000).unref();
 }

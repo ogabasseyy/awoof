@@ -6,6 +6,7 @@ import test from 'node:test';
 import {
     appendDurableLedgerEntry,
     assertDurableLedgerAvailableForStartup,
+    dispatchMissingDurableLedgerEntries,
     readDurableLedgerEntries,
     republishMissingDurableLedgerEntries,
     type AcademicProfileLedgerEntry,
@@ -225,6 +226,43 @@ test('republish repairs a missing ever-written marker when the payload is alread
         assert.equal(result.republished, 0);
         assert.equal(existsSync(join(dir, '.academic-profile-ledger-ever-written')), true);
     } finally {
+        rmSync(dir, { recursive: true, force: true });
+    }
+});
+
+test('ledger dispatcher republishes committed erasures without a second DELETE', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'ledger-dispatch-'));
+    const ledgerFile = join(dir, 'test-ledger.jsonl');
+    const previous = process.env.ACADEMIC_PROFILE_DELETION_LEDGER_FILE;
+    process.env.ACADEMIC_PROFILE_DELETION_LEDGER_FILE = ledgerFile;
+    try {
+        const entry: AcademicProfileLedgerEntry = {
+            userId: '11111111-1111-4111-8111-111111111111',
+            generationId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+            scope: 'profile_only',
+            erasedAt: '2026-10-18T12:00:00.000Z',
+        };
+        const client = {
+            query: async () => ({
+                rows: [{
+                    user_id: entry.userId,
+                    generation_id: entry.generationId,
+                    scope: entry.scope,
+                    erased_at: new Date(entry.erasedAt),
+                }],
+            }),
+            release: () => undefined,
+        };
+        const pool = { connect: async () => client };
+        const result = await dispatchMissingDurableLedgerEntries(pool as never);
+        assert.equal(result.republished, 1);
+        assert.deepEqual(readDurableLedgerEntries(ledgerFile), [entry]);
+        // A second drain is a no-op once the tombstone is published.
+        const again = await dispatchMissingDurableLedgerEntries(pool as never);
+        assert.equal(again.republished, 0);
+    } finally {
+        if (previous === undefined) delete process.env.ACADEMIC_PROFILE_DELETION_LEDGER_FILE;
+        else process.env.ACADEMIC_PROFILE_DELETION_LEDGER_FILE = previous;
         rmSync(dir, { recursive: true, force: true });
     }
 });

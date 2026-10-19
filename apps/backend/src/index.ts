@@ -471,6 +471,14 @@ export class App {
         }
       }
 
+      // Drain the deletion-ledger outbox continuously: committed
+      // erasures whose host append failed are republished automatically
+      // without waiting for a student retry or the (disabled) purge.
+      {
+        const { startAcademicProfileLedgerDispatcher } = await import('./services/academic-profile/academic-profile-ledger.service.js');
+        startAcademicProfileLedgerDispatcher(() => db.getPool());
+      }
+
       // Initialize Redis
       redis.initialize();
 
