@@ -99,15 +99,23 @@ cat <<EOF > "${DUMP_FILE}.manifest.json"
 }
 EOF
 
-echo "=== Step 5: Student A erases profile after backup (exercising service dual ledger recording) ==="
+echo "=== Step 5: Students A and B erase profiles after backup (exercising service dual ledger recording) ==="
+# Student B's erasure leaves a GEN_B1 tombstone in both ledgers. After the
+# restore, B recreates with GEN_B2, so reconciliation must actively compare
+# the tombstoned B1 generation against the live B2 generation and preserve
+# it — without that tombstone the preservation branch would never execute.
 (cd "${REPO_ROOT}/apps/backend" && ACADEMIC_PROFILE_DELETION_LEDGER_FILE="$LEDGER_FILE" npx tsx --input-type=module -e "
 import { eraseAcademicProfileForUser } from './src/services/academic-profile/academic-profile.service.js';
 import { db, getPool } from './src/config/database.js';
 
 async function main() {
-    const result = await eraseAcademicProfileForUser(getPool(), '$USER_A');
-    if (!result.erased) {
-        throw new Error('Erasure failed');
+    const resultA = await eraseAcademicProfileForUser(getPool(), '$USER_A');
+    if (!resultA.erased) {
+        throw new Error('Erasure failed for Student A');
+    }
+    const resultB = await eraseAcademicProfileForUser(getPool(), '$USER_B');
+    if (!resultB.erased) {
+        throw new Error('Erasure failed for Student B');
     }
     await db.close();
 }
@@ -147,7 +155,16 @@ fi
 echo "Verified: Stale restored profile for Student A is present in quarantine prior to reconciliation."
 
 echo "=== Step 7: Running restore reconciliation from host deletion ledger ==="
-(cd "${REPO_ROOT}/apps/backend" && npx tsx src/scripts/reconcile-restored-academic-profiles.ts --ledger-file "$LEDGER_FILE")
+RECONCILE_OUTPUT=$(cd "${REPO_ROOT}/apps/backend" && npx tsx src/scripts/reconcile-restored-academic-profiles.ts --ledger-file "$LEDGER_FILE")
+echo "$RECONCILE_OUTPUT"
+case "$RECONCILE_OUTPUT" in
+    *"recreatedPreserved=1"*) ;;
+    *)
+        echo "ERROR: Reconciliation did not report preserving the recreated generation (expected recreatedPreserved=1)." >&2
+        exit 1
+        ;;
+esac
+echo "Verified: Reconciliation compared the GEN_B1 tombstone against live GEN_B2 and preserved the recreated profile."
 
 echo "=== Step 8: Verifying post-reconciliation state ==="
 # 1. Student A's erased profile must be ABSENT
@@ -174,6 +191,14 @@ fi
 LEDGER_COUNT=$(psql -h 127.0.0.1 -p "$PORT" -U awoof_test -d awoof_drill -t -A -c "SELECT COUNT(*) FROM academic_profile_deletion_ledger WHERE user_id = '$USER_A' AND generation_id = '$GEN_A'")
 if [ "$LEDGER_COUNT" -ne 1 ]; then
     echo "ERROR: Database deletion ledger missing tombstone for Student A!" >&2
+    exit 1
+fi
+
+# 4. Database ledger must also contain the Student B GEN_B1 tombstone that
+# reconciliation compared against (and preserved) the live GEN_B2 profile
+LEDGER_COUNT_B=$(psql -h 127.0.0.1 -p "$PORT" -U awoof_test -d awoof_drill -t -A -c "SELECT COUNT(*) FROM academic_profile_deletion_ledger WHERE user_id = '$USER_B' AND generation_id = '$GEN_B1'")
+if [ "$LEDGER_COUNT_B" -ne 1 ]; then
+    echo "ERROR: Database deletion ledger missing tombstone for Student B GEN_B1!" >&2
     exit 1
 fi
 
