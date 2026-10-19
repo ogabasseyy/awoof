@@ -29,8 +29,17 @@ fi
 temporary="$(mktemp "${backup_dir}/awoof-${timestamp}.XXXXXX.tmp")"
 target="${temporary%.tmp}.dump"
 
+manifest_temp=""
+published=0
 cleanup() {
     rm -f "$temporary"
+    [ -z "$manifest_temp" ] || rm -f "$manifest_temp"
+    # Keep the renamed dump under cleanup until its manifest is also
+    # published: an unmanifested dump would otherwise survive as an
+    # orphan that rotation counts but the expiry tool rejects.
+    if [ "$published" != "1" ]; then
+        rm -f "$target"
+    fi
 }
 trap cleanup EXIT HUP INT TERM
 
@@ -47,7 +56,6 @@ fi
 docker exec -i "$container" pg_restore --list < "$temporary" >/dev/null
 chmod 600 "$temporary"
 mv "$temporary" "$target"
-trap - EXIT HUP INT TERM
 
 if command -v sha256sum >/dev/null 2>&1; then
     checksum="$(sha256sum "$target" | awk '{print $1}')"
@@ -72,6 +80,8 @@ cat <<EOF > "$manifest_temp"
 EOF
 chmod 600 "$manifest_temp"
 mv "$manifest_temp" "$manifest_target"
+published=1
+trap - EXIT HUP INT TERM
 
 echo "Verified database backup: $target"
 echo "SHA-256: $checksum"

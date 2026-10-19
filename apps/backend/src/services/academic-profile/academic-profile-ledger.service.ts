@@ -349,7 +349,9 @@ export async function recordAcademicProfileErasure(
 export async function readDatabaseLedgerEntries(
     client: PoolClient,
     userId?: string | undefined,
+    options?: { since?: string | undefined },
 ): Promise<AcademicProfileLedgerEntry[]> {
+    const since = options?.since;
     const result = userId
         ? await client.query<{ user_id: string; generation_id: string; scope: string; erased_at: Date | string }>(
             `SELECT user_id, generation_id, scope, erased_at
@@ -358,11 +360,19 @@ export async function readDatabaseLedgerEntries(
              ORDER BY erased_at ASC`,
             [userId],
         )
-        : await client.query<{ user_id: string; generation_id: string; scope: string; erased_at: Date | string }>(
-            `SELECT user_id, generation_id, scope, erased_at
-             FROM academic_profile_deletion_ledger
-             ORDER BY erased_at ASC`,
-        );
+        : since
+            ? await client.query<{ user_id: string; generation_id: string; scope: string; erased_at: Date | string }>(
+                `SELECT user_id, generation_id, scope, erased_at
+                 FROM academic_profile_deletion_ledger
+                 WHERE erased_at >= $1
+                 ORDER BY erased_at ASC`,
+                [since],
+            )
+            : await client.query<{ user_id: string; generation_id: string; scope: string; erased_at: Date | string }>(
+                `SELECT user_id, generation_id, scope, erased_at
+                 FROM academic_profile_deletion_ledger
+                 ORDER BY erased_at ASC`,
+            );
     const entries: AcademicProfileLedgerEntry[] = [];
     for (const row of result.rows) {
         if (
@@ -473,26 +483,67 @@ export function readDurableLedgerEntries(customPath?: string | undefined): Acade
  * until a retention value is approved), so a post-commit append failure
  * is retried automatically instead of waiting for the student to repeat
  * DELETE or for a restore to resurrect the erased profile.
+ *
+ * The first drain performs the full-history reconciliation; later
+ * drains are incremental - they query only erasures near the
+ * high-water mark and consult the host file only when a genuinely new
+ * candidate appears - so steady-state ticks do not rescan the entire
+ * deletion history on the API process.
  */
+export function createAcademicProfileLedgerDispatcher(
+    poolProvider: () => Pick<Pool, 'connect'>,
+    ledgerFilePath?: string | undefined,
+): { dispatchOnce: () => Promise<{ republished: number }> } {
+    let publishedKeys: Set<string> | null = null;
+    let highWaterMs = 0;
+    const dispatchOnce = async (): Promise<{ republished: number }> => {
+        const client = await poolProvider().connect();
+        try {
+            if (publishedKeys === null) {
+                const result = await republishMissingDurableLedgerEntries(client, { ledgerFilePath });
+                const all = await readDatabaseLedgerEntries(client);
+                publishedKeys = new Set(all.map(ledgerEntryKey));
+                highWaterMs = all.reduce((max, entry) => Math.max(max, Date.parse(entry.erasedAt) || 0), 0);
+                return { republished: result.republished };
+            }
+            const since = new Date(Math.max(0, highWaterMs - 5 * 60_000)).toISOString();
+            const recent = await readDatabaseLedgerEntries(client, undefined, { since });
+            const candidates = recent.filter((entry) => !publishedKeys!.has(ledgerEntryKey(entry)));
+            if (candidates.length === 0) {
+                return { republished: 0 };
+            }
+            const hostKeys = new Set(readDurableLedgerEntries(ledgerFilePath).map(ledgerEntryKey));
+            let republished = 0;
+            for (const entry of candidates) {
+                if (!hostKeys.has(ledgerEntryKey(entry))) {
+                    appendDurableLedgerEntry(entry, ledgerFilePath);
+                    republished += 1;
+                }
+                publishedKeys.add(ledgerEntryKey(entry));
+                highWaterMs = Math.max(highWaterMs, Date.parse(entry.erasedAt) || 0);
+            }
+            return { republished };
+        } finally {
+            client.release();
+        }
+    };
+    return { dispatchOnce };
+}
+
 export async function dispatchMissingDurableLedgerEntries(
     pool: Pick<Pool, 'connect'>,
 ): Promise<{ republished: number }> {
-    const client = await pool.connect();
-    try {
-        const result = await republishMissingDurableLedgerEntries(client);
-        return { republished: result.republished };
-    } finally {
-        client.release();
-    }
+    return createAcademicProfileLedgerDispatcher(() => pool).dispatchOnce();
 }
 
 export function startAcademicProfileLedgerDispatcher(poolProvider: () => Pick<Pool, 'connect'>): void {
+    const dispatcher = createAcademicProfileLedgerDispatcher(poolProvider);
     let running = false;
     const run = async () => {
         if (running) return;
         running = true;
         try {
-            const { republished } = await dispatchMissingDurableLedgerEntries(poolProvider());
+            const { republished } = await dispatcher.dispatchOnce();
             if (republished > 0) {
                 console.info(`Academic profile ledger dispatcher republished ${republished} tombstone(s)`);
             }

@@ -1,8 +1,8 @@
 # [DRAFT — UNPUBLISHED] Proposed Privacy Policy Amendments: Optional Academic Profile
 
-> **IMPORTANT NOTICE:**  
-> **Status:** UNPUBLISHED DRAFT ONLY.  
-> **Legal Notice:** This document is internal preparatory material for owner and legal review. It has NOT been approved by legal counsel or the business owner, has NOT been published to any public route (`/privacy`), is NOT indexed by search engines, and must NOT be cited as effective public privacy terms.  
+> **IMPORTANT NOTICE:**
+> **Status:** UNPUBLISHED DRAFT ONLY.
+> **Legal Notice:** This document is internal preparatory material for owner and legal review. It has NOT been approved by legal counsel or the business owner, has NOT been published to any public route (`/privacy`), is NOT indexed by search engines, and must NOT be cited as effective public privacy terms.
 > **Effective Policy:** The effective public Privacy Notice remains version 1.1 at `/privacy` with archived version 1.0 at `/privacy/v1-0`.
 
 ---
@@ -22,7 +22,7 @@ When an authenticated student chooses to complete their optional academic profil
 - **Graduation year and estimate:** Your expected graduation year, which may be suggested based on reviewed standard programme durations or self-reported by you, and whether you confirmed or adjusted that estimate.
 - **Form choices:** Explicit indications if you choose "Not sure" or "Skip this detail" for any optional question, which are recorded to prevent repeated prompts.
 
-**What we do NOT collect in this form:**  
+**What we do NOT collect in this form:**
 We do not collect academic transcripts, grades, grade point averages (GPA), class of degree, disciplinary records, tuition fee receipts, or government identity numbers (NIN, BVN) through this profile screen.
 
 ---
@@ -31,7 +31,7 @@ We do not collect academic transcripts, grades, grade point averages (GPA), clas
 
 ### Proposed Purpose & Lawful Basis
 - **Purpose:** Displaying your academic details on your personal student profile hub and calculating an advisory estimated graduation year for your convenience and personal planning.
-- **Lawful Basis (NDPA 2023 § 25(1)(a) & § 25(1)(b)):** 
+- **Lawful Basis (NDPA 2023 § 25(1)(a) & § 25(1)(b)):**
   - **Consent / Performance of a requested service:** Providing this information is entirely voluntary. You provide these details voluntarily to receive an automated graduation estimate and personalize your account view.
   - **Withdrawal of Consent:** Under NDPA § 35, you have the right to withdraw your consent at any time without penalty or detriment. Withdrawing consent or erasing your academic profile does not affect your student discount eligibility, active verified student status, or general account access.
 
@@ -49,7 +49,7 @@ We do not collect academic transcripts, grades, grade point averages (GPA), clas
 You can review, edit, or update your course, entry year, admission route, or expected graduation year at any time by navigating to `/student/profile/complete`. Updating your details immediately recalculates your advisory estimate.
 
 ### Right to profile-only erasure (NDPA § 34(1)(d))
-You have the explicit right to erase your optional academic profile without closing your Awoof account. 
+You have the explicit right to erase your optional academic profile without closing your Awoof account.
 - You can submit an erasure request directly through your student profile settings or by contacting `support@awoof.tech`.
 - Profile-only erasure deletes your institution claim, programme selection, entry year, admission route, graduation estimate, and calculation basis from active database systems immediately upon confirmation.
 - Following erasure, your account remains fully active, your student verification and discount eligibility remain unchanged, and your academic profile resets to an uncompleted state.
@@ -67,6 +67,6 @@ You have the explicit right to erase your optional academic profile without clos
 
 ### Backup archives and final disposal
 - Production database backups are created for business continuity and disaster recovery.
-- Backups are maintained in encrypted, access-restricted storage and expire on a rolling **30-day** schedule.
-- **Total Combined Timeline:** Personal academic data may persist in encrypted backup dumps for up to 30 days after deletion from live systems (up to **60 days total** following account closure). 
+- Backups are maintained in access-restricted storage (filesystem permissions only; no backup encryption is currently implemented) and expire on a rolling **30-day** schedule once the pending expiry job is scheduled.
+- **Total Combined Timeline:** Personal academic data may persist in backup dumps for up to 30 days after deletion from live systems (up to **60 days total** following account closure).
 - If a database restore drill or disaster recovery occurs, our restore-safe reconciliation system automatically reapplies post-backup erasures before production traffic is re-established, ensuring that erased records are not resurrected.
