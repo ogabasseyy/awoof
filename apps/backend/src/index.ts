@@ -470,7 +470,23 @@ export class App {
           // complete committed database history; genuine loss still
           // fails closed with the original gate error.
           const { recoverLedgerTailIfPossible } = await import('./services/academic-profile/academic-profile-ledger.service.js');
-          const recovered = await recoverLedgerTailIfPossible(db.getPool(), ledgerPath).catch(() => false);
+          let recovered = await recoverLedgerTailIfPossible(db.getPool(), ledgerPath).catch(() => false);
+          if (!recovered) {
+            // Marker-only first tombstone: the ever-written marker was
+            // fsynced but the crash hit before the first payload, and
+            // no tail marker exists yet. Only that exact state (no
+            // ledger, no tail marker) may be rebuilt from the
+            // committed outbox; any later loss still fails closed.
+            const { existsSync, statSync } = await import('node:fs');
+            const { dirname, join } = await import('node:path');
+            const ledgerMissing = !existsSync(ledgerPath) || statSync(ledgerPath).size === 0;
+            const tailAbsent = !existsSync(join(dirname(ledgerPath), '.academic-profile-ledger-tail.json'));
+            if (ledgerMissing && tailAbsent) {
+              const { createAcademicProfileLedgerDispatcher } = await import('./services/academic-profile/academic-profile-ledger.service.js');
+              await createAcademicProfileLedgerDispatcher(() => db.getPool(), ledgerPath).dispatchOnce();
+              recovered = true;
+            }
+          }
           if (!recovered) throw gateError;
           appLogger.info('Academic profile ledger tail marker recovered after interrupted update');
           assertDurableLedgerAvailableForStartup({ ledgerFilePath: ledgerPath, freshDeployment: false });

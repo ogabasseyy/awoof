@@ -9,6 +9,10 @@
  * This service identifies and re-purges those stale restored generations
  * while preserving legitimate newly recreated profiles that carry a distinct
  * generation_id.
+ *
+ * All database work is set-based: one profile lookup, one ledger lookup,
+ * one batched delete, and one batched insert for the whole ledger, so
+ * startup cost does not grow per-tombstone query round-trips.
  */
 
 import type { Pool } from 'pg';
@@ -33,6 +37,10 @@ export type ReconciliationSummary = {
     dryRun: boolean;
     reconciledAt: string;
 };
+
+function entryKey(entry: AcademicProfileLedgerEntry): string {
+    return `${entry.userId}|${entry.generationId}`;
+}
 
 /**
  * Reconcile restored database data against the authoritative host deletion ledger.
@@ -62,56 +70,55 @@ export async function reconcileRestoredAcademicProfiles(
             throw new Error('Durable deletion ledger contains no entries or file is missing');
         }
 
-        let staleGenerationsPurged = 0;
-        let recreatedGenerationsPreserved = 0;
-        let dbLedgerEntriesRestored = 0;
-
-        for (const entry of entries) {
-            const profileRes = await client.query<{ generation_id: string }>(
-                `SELECT generation_id FROM student_academic_profiles WHERE user_id = $1 FOR UPDATE`,
-                [entry.userId],
+        const userIds = [...new Set(entries.map((entry) => entry.userId))];
+        const profileRes = userIds.length === 0
+            ? { rows: [] as Array<{ user_id: string; generation_id: string }> }
+            : await client.query<{ user_id: string; generation_id: string }>(
+                `SELECT user_id, generation_id FROM student_academic_profiles WHERE user_id = ANY($1::uuid[]) FOR UPDATE`,
+                [userIds],
             );
-            const liveProfile = profileRes.rows[0];
+        const liveByUser = new Map(profileRes.rows.map((row) => [row.user_id, row.generation_id]));
 
-            if (liveProfile) {
-                if (liveProfile.generation_id === entry.generationId) {
-                    // Stale generation restored from backup: must be purged.
-                    if (!options.dryRun) {
-                        await client.query(
-                            `DELETE FROM student_academic_profiles WHERE user_id = $1 AND generation_id = $2`,
-                            [entry.userId, entry.generationId],
-                        );
-                    }
-                    staleGenerationsPurged += 1;
-                } else {
-                    // Legitimate new recreation carrying a distinct generation_id: preserved.
-                    recreatedGenerationsPreserved += 1;
-                }
-            }
-
-            // Ensure database ledger table also reflects the erasure tombstone
-            const dbLedgerRes = await client.query<{ id: string }>(
-                `SELECT id FROM academic_profile_deletion_ledger WHERE user_id = $1 AND generation_id = $2 LIMIT 1`,
-                [entry.userId, entry.generationId],
+        const dbLedgerRes = userIds.length === 0
+            ? { rows: [] as Array<{ user_id: string; generation_id: string }> }
+            : await client.query<{ user_id: string; generation_id: string }>(
+                `SELECT user_id, generation_id FROM academic_profile_deletion_ledger WHERE user_id = ANY($1::uuid[])`,
+                [userIds],
             );
+        const dbKeys = new Set(dbLedgerRes.rows.map((row) => `${row.user_id}|${row.generation_id}`));
 
-            if (dbLedgerRes.rows.length === 0) {
-                if (!options.dryRun) {
-                    await client.query(
-                        `INSERT INTO academic_profile_deletion_ledger (user_id, generation_id, scope, erased_at)
-                         VALUES ($1, $2, $3, $4::timestamptz)`,
-                        [entry.userId, entry.generationId, entry.scope, entry.erasedAt],
-                    );
-                }
-                dbLedgerEntriesRestored += 1;
-            }
+        const stale = entries.filter((entry) => liveByUser.get(entry.userId) === entry.generationId);
+        const recreatedGenerationsPreserved = entries.filter(
+            (entry) => liveByUser.has(entry.userId) && liveByUser.get(entry.userId) !== entry.generationId,
+        ).length;
+        const missingDb = entries.filter((entry) => !dbKeys.has(entryKey(entry)));
+
+        if (!options.dryRun && stale.length > 0) {
+            await client.query(
+                `DELETE FROM student_academic_profiles sap
+                 USING (SELECT UNNEST($1::uuid[]) AS user_id, UNNEST($2::uuid[]) AS generation_id) AS stale
+                 WHERE sap.user_id = stale.user_id AND sap.generation_id = stale.generation_id`,
+                [stale.map((entry) => entry.userId), stale.map((entry) => entry.generationId)],
+            );
+        }
+        if (!options.dryRun && missingDb.length > 0) {
+            await client.query(
+                `INSERT INTO academic_profile_deletion_ledger (user_id, generation_id, scope, erased_at)
+                 SELECT UNNEST($1::uuid[]), UNNEST($2::uuid[]), UNNEST($3::text[]), UNNEST($4::timestamptz[])`,
+                [
+                    missingDb.map((entry) => entry.userId),
+                    missingDb.map((entry) => entry.generationId),
+                    missingDb.map((entry) => entry.scope),
+                    missingDb.map((entry) => entry.erasedAt),
+                ],
+            );
         }
 
         return {
             ledgerEntriesRead: entries.length,
-            staleGenerationsPurged,
+            staleGenerationsPurged: stale.length,
             recreatedGenerationsPreserved,
-            dbLedgerEntriesRestored,
+            dbLedgerEntriesRestored: missingDb.length,
             dryRun: options.dryRun ?? false,
             reconciledAt: new Date().toISOString(),
         };

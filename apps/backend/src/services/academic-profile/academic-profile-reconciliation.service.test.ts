@@ -36,10 +36,10 @@ test('reconcileRestoredAcademicProfiles purges stale generation and restores db 
             if (normalized.includes('pg_try_advisory_lock')) {
                 return { rows: [{ locked: true }], rowCount: 1 };
             }
-            if (normalized.startsWith('SELECT generation_id FROM student_academic_profiles')) {
-                return { rows: [{ generation_id: entry.generationId }], rowCount: 1 };
+            if (normalized.startsWith('SELECT user_id, generation_id FROM student_academic_profiles')) {
+                return { rows: [{ user_id: entry.userId, generation_id: entry.generationId }], rowCount: 1 };
             }
-            if (normalized.startsWith('SELECT id FROM academic_profile_deletion_ledger')) {
+            if (normalized.startsWith('SELECT user_id, generation_id FROM academic_profile_deletion_ledger')) {
                 return { rows: [], rowCount: 0 };
             }
             if (normalized.startsWith('DELETE FROM student_academic_profiles')) {
@@ -61,7 +61,7 @@ test('reconcileRestoredAcademicProfiles purges stale generation and restores db 
     assert.equal(summary.dbLedgerEntriesRestored, 1);
     assert.equal(summary.dryRun, false);
 
-    assert.ok(statements.some((s) => s.text.startsWith('DELETE FROM student_academic_profiles WHERE user_id = $1 AND generation_id = $2')));
+    assert.ok(statements.some((s) => s.text.startsWith('DELETE FROM student_academic_profiles')));
     assert.ok(statements.some((s) => s.text.startsWith('INSERT INTO academic_profile_deletion_ledger')));
     assert.ok(statements.some((s) => s.text.includes('pg_advisory_unlock')));
 });
@@ -83,12 +83,12 @@ test('reconcileRestoredAcademicProfiles preserves legitimate newly recreated gen
             if (normalized.includes('pg_try_advisory_lock')) {
                 return { rows: [{ locked: true }], rowCount: 1 };
             }
-            if (normalized.startsWith('SELECT generation_id FROM student_academic_profiles')) {
+            if (normalized.startsWith('SELECT user_id, generation_id FROM student_academic_profiles')) {
                 // Different generation ID: legitimate recreation!
-                return { rows: [{ generation_id: '22222222-2222-4222-8222-222222222222' }], rowCount: 1 };
+                return { rows: [{ user_id: entry.userId, generation_id: '22222222-2222-4222-8222-222222222222' }], rowCount: 1 };
             }
-            if (normalized.startsWith('SELECT id FROM academic_profile_deletion_ledger')) {
-                return { rows: [{ id: 'existing-id' }], rowCount: 1 };
+            if (normalized.startsWith('SELECT user_id, generation_id FROM academic_profile_deletion_ledger')) {
+                return { rows: [{ user_id: entry.userId, generation_id: entry.generationId }], rowCount: 1 };
             }
             return { rows: [], rowCount: 0 };
         },
@@ -123,10 +123,10 @@ test('reconcileRestoredAcademicProfiles dry-run reports counts without mutating 
             if (normalized.includes('pg_try_advisory_lock')) {
                 return { rows: [{ locked: true }], rowCount: 1 };
             }
-            if (normalized.startsWith('SELECT generation_id FROM student_academic_profiles')) {
-                return { rows: [{ generation_id: entry.generationId }], rowCount: 1 };
+            if (normalized.startsWith('SELECT user_id, generation_id FROM student_academic_profiles')) {
+                return { rows: [{ user_id: entry.userId, generation_id: entry.generationId }], rowCount: 1 };
             }
-            if (normalized.startsWith('SELECT id FROM academic_profile_deletion_ledger')) {
+            if (normalized.startsWith('SELECT user_id, generation_id FROM academic_profile_deletion_ledger')) {
                 return { rows: [], rowCount: 0 };
             }
             return { rows: [], rowCount: 0 };
