@@ -100,6 +100,20 @@ export function appendDurableLedgerEntry(
     customPath?: string | undefined,
     options?: { allowRecreateAfterLoss?: boolean | undefined },
 ): void {
+    const prepared = prepareLedgerAppend(entry, customPath, options);
+    const lock = acquireLedgerAppendLock(prepared.targetPath);
+    try {
+        appendDurableLedgerPayloadWithLock(prepared.targetPath, prepared.parentDir, prepared.createdDirs, prepared.cursor, prepared.payload, lock.assertOwned);
+    } finally {
+        lock.release();
+    }
+}
+
+function prepareLedgerAppend(
+    entry: AcademicProfileLedgerEntry,
+    customPath?: string | undefined,
+    options?: { allowRecreateAfterLoss?: boolean | undefined },
+): { targetPath: string; parentDir: string; createdDirs: string[]; cursor: string; payload: string } {
     const targetPath = customPath ? resolve(customPath) : getDurableLedgerFilePath();
     const parentDir = dirname(targetPath);
     // Refuse to silently recreate a lost ledger: if tombstones were
@@ -130,22 +144,23 @@ export function appendDurableLedgerEntry(
         scope: entry.scope,
         erasedAt: entry.erasedAt,
     }) + '\n';
-    // Serialize appends across processes: with the complete-write loop,
-    // a short write followed by another process's record could otherwise
-    // interleave fragments into malformed JSONL lines. The lock file is
-    // fenced with a random owner token so a reclaimed stale lock cannot
-    // be released by its old owner.
-    const lock = acquireLedgerAppendLock(targetPath);
-    try {
-        // Persist the ever-written marker BEFORE the first payload: a
-        // crash between payload fsync and marker creation would
-        // otherwise leave an ambiguous initialized-but-empty state
-        // that startup cannot distinguish from a fresh deployment.
-        ensureLedgerEverWrittenMarker(parentDir);
-        appendDurableLedgerPayload(targetPath, parentDir, createdDirs, cursor, payload, lock.assertOwned);
-    } finally {
-        lock.release();
-    }
+    return { targetPath, parentDir, createdDirs, cursor, payload };
+}
+
+function appendDurableLedgerPayloadWithLock(
+    targetPath: string,
+    parentDir: string,
+    createdDirs: string[],
+    cursor: string,
+    payload: string,
+    assertOwned: () => void,
+): void {
+    // Persist the ever-written marker BEFORE the first payload: a
+    // crash between payload fsync and marker creation would
+    // otherwise leave an ambiguous initialized-but-empty state
+    // that startup cannot distinguish from a fresh deployment.
+    ensureLedgerEverWrittenMarker(parentDir);
+    appendDurableLedgerPayload(targetPath, parentDir, createdDirs, cursor, payload, assertOwned);
 }
 
 const LEDGER_LOCK_TIMEOUT_MS = 10_000;
@@ -453,7 +468,30 @@ export async function republishMissingDurableLedgerEntries(
     if (dbEntries.length === 0) {
         return { republished: 0, latest: null };
     }
-    const hostEntries = readDurableLedgerEntries(options?.ledgerFilePath);
+    // Fence the host read and appends under the append lock: a record
+    // observed while holding the lock comes from a writer that already
+    // completed its fsync, so marking its outbox row published cannot
+    // strand a merely-visible-but-undurable tombstone.
+    const targetPathForLock = options?.ledgerFilePath ? resolve(options.ledgerFilePath) : getDurableLedgerFilePath();
+    const lock = acquireLedgerAppendLock(targetPathForLock);
+    let hostEntries: AcademicProfileLedgerEntry[];
+    let republished = 0;
+    try {
+        hostEntries = readDurableLedgerEntries(options?.ledgerFilePath);
+        republished = await republishUnderLock(client, dbEntries, hostEntries, options, lock.assertOwned);
+    } finally {
+        lock.release();
+    }
+    return { republished, latest: dbEntries[dbEntries.length - 1] ?? null };
+}
+
+async function republishUnderLock(
+    client: PoolClient,
+    dbEntries: AcademicProfileLedgerEntry[],
+    hostEntries: AcademicProfileLedgerEntry[],
+    options: { userId?: string | undefined; ledgerFilePath?: string | undefined } | undefined,
+    assertOwned: () => void,
+): Promise<number> {
     if (hostEntries.length > 0) {
         // Repair a missing ever-written marker (for example when the
         // first append wrote its payload but failed before creating
@@ -470,22 +508,27 @@ export async function republishMissingDurableLedgerEntries(
     const allowRecreateAfterLoss = hostEntries.length === 0
         && existsSync(join(dirname(targetPath), LEDGER_EVER_WRITTEN_MARKER));
     let republished = 0;
+    const markIds: string[] = [];
     for (const entry of dbEntries) {
         if (!hostKeys.has(ledgerEntryKey(entry))) {
-            appendDurableLedgerEntry(entry, options?.ledgerFilePath, { allowRecreateAfterLoss });
+            const prepared = prepareLedgerAppend(entry, options?.ledgerFilePath, { allowRecreateAfterLoss });
+            appendDurableLedgerPayloadWithLock(prepared.targetPath, prepared.parentDir, prepared.createdDirs, prepared.cursor, prepared.payload, assertOwned);
             hostKeys.add(ledgerEntryKey(entry));
             republished += 1;
         }
-        if (entry.dbLedgerId) {
-            await client.query(
-                `UPDATE academic_profile_deletion_ledger
-                 SET host_published_at = clock_timestamp()
-                 WHERE id = $1 AND host_published_at IS NULL`,
-                [entry.dbLedgerId],
-            );
-        }
+        if (entry.dbLedgerId) markIds.push(entry.dbLedgerId);
     }
-    return { republished, latest: dbEntries[dbEntries.length - 1] ?? null };
+    // Every marked row was observed or appended under the append lock,
+    // so its host record is fsync-durable before this update runs.
+    for (const id of markIds) {
+        await client.query(
+            `UPDATE academic_profile_deletion_ledger
+             SET host_published_at = clock_timestamp()
+             WHERE id = $1 AND host_published_at IS NULL`,
+            [id],
+        );
+    }
+    return republished;
 }
 
 const UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
