@@ -143,17 +143,11 @@ if digest.hexdigest() != recorded:
     raise SystemExit(1)
 PYEOF
         return 0
-    else
-        grep -Eq '"createdAt"[[:space:]]*:[[:space:]]*"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}' "$manifest" || return 1
     fi
-    recorded="$(sed -n 's/.*"sha256"[[:space:]]*:[[:space:]]*"\([0-9a-fA-F]*\)".*/\1/p' "$manifest" | head -n 1)"
-    [ -n "$recorded" ] || return 1
-    if command -v sha256sum >/dev/null 2>&1; then
-        actual="$(sha256sum "$dump" | awk '{print $1}')"
-    else
-        actual="$(shasum -a 256 "$dump" | awk '{print $1}')"
-    fi
-    [ "$recorded" = "$actual" ]
+    # Without python3 there is no trustworthy way to parse the top-level
+    # manifest fields in shell; reject the pair rather than weakly
+    # matching nested values or impossible timestamps.
+    return 1
 }
 
 manifest_backed_count() {

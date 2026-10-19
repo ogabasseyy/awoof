@@ -345,6 +345,14 @@ function ledgerTailMatches(targetPath: string): boolean {
     }
 }
 
+
+function fsyncLedgerFileAndDirectory(targetPath: string): void {
+    const fd = openSync(targetPath, 'r');
+    try { fsyncSync(fd); } finally { closeSync(fd); }
+    const dfd = openSync(dirname(targetPath), 'r');
+    try { fsyncSync(dfd); } finally { closeSync(dfd); }
+}
+
 function ensureLedgerEverWrittenMarker(parentDir: string): void {
     // Record on the volume that tombstones now exist, so a later loss
     // of only the ledger file fails the startup gate closed instead of
@@ -663,6 +671,13 @@ function republishUnderLock(
     const targetPath = options?.ledgerFilePath ? resolve(options.ledgerFilePath) : getDurableLedgerFilePath();
     const allowRecreate = allowRecreateAfterLoss || (hostEntries.length === 0
         && existsSync(join(dirname(targetPath), LEDGER_EVER_WRITTEN_MARKER)));
+    // Entries already visible on the host are re-fsynced (file and
+    // directory) before they can be marked published: a prior append
+    // may have left a visible record whose directory fsync failed, and
+    // only a successful re-sync makes that record crash-durable.
+    if (dbEntries.some((entry) => hostKeys.has(ledgerEntryKey(entry)))) {
+        fsyncLedgerFileAndDirectory(targetPath);
+    }
     let republished = 0;
     const markIds: string[] = [];
     for (const entry of dbEntries) {
