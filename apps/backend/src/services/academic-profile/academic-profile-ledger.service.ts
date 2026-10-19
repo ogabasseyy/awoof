@@ -97,9 +97,19 @@ const LEDGER_EVER_WRITTEN_MARKER = '.academic-profile-ledger-ever-written';
 export function appendDurableLedgerEntry(
     entry: AcademicProfileLedgerEntry,
     customPath?: string | undefined,
+    options?: { allowRecreateAfterLoss?: boolean | undefined },
 ): void {
     const targetPath = customPath ? resolve(customPath) : getDurableLedgerFilePath();
     const parentDir = dirname(targetPath);
+    // Refuse to silently recreate a lost ledger: if tombstones were
+    // previously written (ever-written marker present) but the JSONL
+    // file is gone, recreating it with only the newest tombstone would
+    // drop the lost history and let a later restore resurrect profiles
+    // covered only by the omitted entries. Fail closed so the full
+    // history is restored or republished deliberately.
+    if (options?.allowRecreateAfterLoss !== true && !existsSync(targetPath) && existsSync(join(parentDir, LEDGER_EVER_WRITTEN_MARKER))) {
+        throw new Error(`Durable deletion ledger is missing at ${targetPath} but tombstones were previously written; refusing to recreate it. Restore the ledger file or republish the full history deliberately.`);
+    }
     // Collect directories this call is about to create: fsyncing the file
     // persists its contents, but a newly created directory entry (and the
     // entries of any newly created ancestors) also need a directory fsync
@@ -438,10 +448,16 @@ export async function republishMissingDurableLedgerEntries(
         ensureLedgerEverWrittenMarker(dirname(targetPath));
     }
     const hostKeys = new Set(hostEntries.map(ledgerEntryKey));
+    // A deliberate full republish is the sanctioned recovery for a lost
+    // ledger file: it recreates the file from the complete committed
+    // history rather than only the newest tombstone.
+    const targetPath = options?.ledgerFilePath ? resolve(options.ledgerFilePath) : getDurableLedgerFilePath();
+    const allowRecreateAfterLoss = hostEntries.length === 0
+        && existsSync(join(dirname(targetPath), LEDGER_EVER_WRITTEN_MARKER));
     let republished = 0;
     for (const entry of dbEntries) {
         if (!hostKeys.has(ledgerEntryKey(entry))) {
-            appendDurableLedgerEntry(entry, options?.ledgerFilePath);
+            appendDurableLedgerEntry(entry, options?.ledgerFilePath, { allowRecreateAfterLoss });
             hostKeys.add(ledgerEntryKey(entry));
             republished += 1;
         }

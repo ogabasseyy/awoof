@@ -266,3 +266,22 @@ test('ledger dispatcher republishes committed erasures without a second DELETE',
         rmSync(dir, { recursive: true, force: true });
     }
 });
+
+test('append refuses to silently recreate a lost durable ledger', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'ledger-lost-'));
+    const ledgerFile = join(dir, 'test-ledger.jsonl');
+    const entry: AcademicProfileLedgerEntry = {
+        userId: '11111111-1111-4111-8111-111111111111',
+        generationId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+        scope: 'profile_only',
+        erasedAt: '2026-10-18T12:00:00.000Z',
+    };
+    try {
+        appendDurableLedgerEntry(entry, ledgerFile);
+        rmSync(ledgerFile);
+        assert.throws(() => appendDurableLedgerEntry(entry, ledgerFile), /refusing to recreate/);
+        assert.equal(existsSync(ledgerFile), false);
+    } finally {
+        rmSync(dir, { recursive: true, force: true });
+    }
+});
