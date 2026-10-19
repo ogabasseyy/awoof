@@ -58,6 +58,14 @@ export function assertDurableLedgerAvailableForStartup(options: {
     const targetPath = resolve(options.ledgerFilePath);
     if (existsSync(targetPath)) return;
     const parentDir = dirname(targetPath);
+    // Once any tombstone has been appended, the ever-written marker
+    // persists on the volume; losing only the ledger file afterwards
+    // must fail closed, because reconciliation would be skipped.
+    if (existsSync(join(parentDir, LEDGER_EVER_WRITTEN_MARKER))) {
+        throw new Error(
+            `Durable deletion ledger is missing at ${targetPath} but tombstones were previously written; refusing to start against a possibly restored database. Restore the ledger file from the backups volume.`,
+        );
+    }
     // An initialized marker records the explicit fresh-deployment
     // decision on the ledger volume itself, so a later restart with no
     // tombstones yet does not need the flag again - and an empty,
@@ -75,6 +83,7 @@ export function assertDurableLedgerAvailableForStartup(options: {
 }
 
 const LEDGER_INITIALIZED_MARKER = '.academic-profile-ledger-initialized';
+const LEDGER_EVER_WRITTEN_MARKER = '.academic-profile-ledger-ever-written';
 
 /**
  * Append a deletion record to the durable host-level JSONL ledger file.
@@ -118,6 +127,19 @@ export function appendDurableLedgerEntry(
     const lock = acquireLedgerAppendLock(targetPath);
     try {
         appendDurableLedgerPayload(targetPath, parentDir, createdDirs, cursor, payload, lock.assertOwned);
+        // Record on the volume that tombstones now exist, so a later
+        // loss of only the ledger file fails the startup gate closed
+        // instead of silently skipping reconciliation.
+        const everWrittenPath = join(parentDir, LEDGER_EVER_WRITTEN_MARKER);
+        if (!existsSync(everWrittenPath)) {
+            try {
+                writeFileSync(everWrittenPath, `${new Date().toISOString()}\n`, { flag: 'wx', mode: 0o600 });
+            } catch (error) {
+                if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error;
+            }
+            const dfd = openSync(parentDir, 'r');
+            try { fsyncSync(dfd); } finally { closeSync(dfd); }
+        }
     } finally {
         lock.release();
     }
@@ -128,7 +150,7 @@ const LEDGER_LOCK_STALE_MS = 30_000;
 
 function acquireLedgerAppendLock(targetPath: string): { release: () => void; assertOwned: () => void } {
     const lockPath = `${targetPath}.lock`;
-    const owner = `${process.pid}:${Date.now().toString(36)}:${Math.random().toString(36).slice(2)}${Math.random().toString(36).slice(2)}`;
+    const owner = `${process.pid}:${processStartTicks(process.pid) ?? 'na'}:${Math.random().toString(36).slice(2)}${Math.random().toString(36).slice(2)}`;
     const deadline = Date.now() + LEDGER_LOCK_TIMEOUT_MS;
     const spin = new Int32Array(new SharedArrayBuffer(4));
     const assertOwned = (): void => {
@@ -178,16 +200,34 @@ function acquireLedgerAppendLock(targetPath: string): { release: () => void; ass
     }
 }
 
+function processStartTicks(pid: number): string | null {
+    // Linux process-instance identity: PID alone is reused (notably
+    // PID 1 across container restarts), while the start-time ticks in
+    // /proc/<pid>/stat distinguish the former owner from the new one.
+    try {
+        const stat = readFileSync(`/proc/${pid}/stat`, 'utf8');
+        const afterComm = stat.slice(stat.lastIndexOf(')') + 2).split(' ');
+        return afterComm[19] ?? null;
+    } catch {
+        return null;
+    }
+}
+
 function ledgerLockOwnerAlive(lockPath: string): boolean {
     try {
-        const pid = Number(readFileSync(lockPath, 'utf8').split(':', 1)[0]);
+        const [pidText, startTicks] = readFileSync(lockPath, 'utf8').trim().split(':');
+        const pid = Number(pidText);
         if (!Number.isInteger(pid) || pid <= 0) return false;
         try {
             process.kill(pid, 0);
-            return true;
         } catch (error) {
             return (error as NodeJS.ErrnoException).code === 'EPERM';
         }
+        if (startTicks && startTicks !== 'na') {
+            const currentTicks = processStartTicks(pid);
+            if (currentTicks !== null && currentTicks !== startTicks) return false;
+        }
+        return true;
     } catch {
         return false;
     }

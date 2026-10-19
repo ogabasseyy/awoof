@@ -177,3 +177,24 @@ test('stale lock release does not unlink a replacement owner lock', () => {
         rmSync(dir, { recursive: true, force: true });
     }
 });
+
+test('startup gate fails closed when the ledger disappears after tombstones were written', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'ledger-ever-written-'));
+    const ledgerFile = join(dir, 'test-ledger.jsonl');
+    try {
+        assertDurableLedgerAvailableForStartup({ ledgerFilePath: ledgerFile, freshDeployment: true });
+        appendDurableLedgerEntry({
+            userId: '11111111-1111-4111-8111-111111111111',
+            generationId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+            scope: 'profile_only',
+            erasedAt: '2026-10-18T12:00:00.000Z',
+        }, ledgerFile);
+        rmSync(ledgerFile);
+        assert.throws(
+            () => assertDurableLedgerAvailableForStartup({ ledgerFilePath: ledgerFile }),
+            /tombstones were previously written/,
+        );
+    } finally {
+        rmSync(dir, { recursive: true, force: true });
+    }
+});
