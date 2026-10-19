@@ -198,3 +198,33 @@ test('startup gate fails closed when the ledger disappears after tombstones were
         rmSync(dir, { recursive: true, force: true });
     }
 });
+
+test('republish repairs a missing ever-written marker when the payload is already present', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'ledger-marker-repair-'));
+    const ledgerFile = join(dir, 'test-ledger.jsonl');
+    try {
+        const entry: AcademicProfileLedgerEntry = {
+            userId: '11111111-1111-4111-8111-111111111111',
+            generationId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+            scope: 'profile_only',
+            erasedAt: '2026-10-18T12:00:00.000Z',
+        };
+        appendDurableLedgerEntry(entry, ledgerFile);
+        rmSync(join(dir, '.academic-profile-ledger-ever-written'));
+        const client = {
+            query: async () => ({
+                rows: [{
+                    user_id: entry.userId,
+                    generation_id: entry.generationId,
+                    scope: entry.scope,
+                    erased_at: new Date(entry.erasedAt),
+                }],
+            }),
+        };
+        const result = await republishMissingDurableLedgerEntries(client as never, { ledgerFilePath: ledgerFile });
+        assert.equal(result.republished, 0);
+        assert.equal(existsSync(join(dir, '.academic-profile-ledger-ever-written')), true);
+    } finally {
+        rmSync(dir, { recursive: true, force: true });
+    }
+});

@@ -127,19 +127,7 @@ export function appendDurableLedgerEntry(
     const lock = acquireLedgerAppendLock(targetPath);
     try {
         appendDurableLedgerPayload(targetPath, parentDir, createdDirs, cursor, payload, lock.assertOwned);
-        // Record on the volume that tombstones now exist, so a later
-        // loss of only the ledger file fails the startup gate closed
-        // instead of silently skipping reconciliation.
-        const everWrittenPath = join(parentDir, LEDGER_EVER_WRITTEN_MARKER);
-        if (!existsSync(everWrittenPath)) {
-            try {
-                writeFileSync(everWrittenPath, `${new Date().toISOString()}\n`, { flag: 'wx', mode: 0o600 });
-            } catch (error) {
-                if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error;
-            }
-            const dfd = openSync(parentDir, 'r');
-            try { fsyncSync(dfd); } finally { closeSync(dfd); }
-        }
+        ensureLedgerEverWrittenMarker(parentDir);
     } finally {
         lock.release();
     }
@@ -211,6 +199,21 @@ function processStartTicks(pid: number): string | null {
     } catch {
         return null;
     }
+}
+
+function ensureLedgerEverWrittenMarker(parentDir: string): void {
+    // Record on the volume that tombstones now exist, so a later loss
+    // of only the ledger file fails the startup gate closed instead of
+    // silently skipping reconciliation.
+    const everWrittenPath = join(parentDir, LEDGER_EVER_WRITTEN_MARKER);
+    if (existsSync(everWrittenPath)) return;
+    try {
+        writeFileSync(everWrittenPath, `${new Date().toISOString()}\n`, { flag: 'wx', mode: 0o600 });
+    } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error;
+    }
+    const dfd = openSync(parentDir, 'r');
+    try { fsyncSync(dfd); } finally { closeSync(dfd); }
 }
 
 function ledgerLockOwnerAlive(lockPath: string): boolean {
@@ -404,6 +407,14 @@ export async function republishMissingDurableLedgerEntries(
         return { republished: 0, latest: null };
     }
     const hostEntries = readDurableLedgerEntries(options?.ledgerFilePath);
+    if (hostEntries.length > 0) {
+        // Repair a missing ever-written marker (for example when the
+        // first append wrote its payload but failed before creating
+        // the marker): retries must not skip this just because the
+        // payload key is already present.
+        const targetPath = options?.ledgerFilePath ? resolve(options.ledgerFilePath) : getDurableLedgerFilePath();
+        ensureLedgerEverWrittenMarker(dirname(targetPath));
+    }
     const hostKeys = new Set(hostEntries.map(ledgerEntryKey));
     let republished = 0;
     for (const entry of dbEntries) {

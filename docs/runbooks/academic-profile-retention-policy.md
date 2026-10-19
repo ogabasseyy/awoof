@@ -18,7 +18,7 @@ Every location where academic-profile personal data or its derivatives exist mus
 | **In-Memory Projections** | Node.js backend runtime | Transient `AcademicProfileProjection` objects | Cleared on request completion; garbage collected by V8 engine. |
 | **Client Local Storage** | Browser `localStorage` | `awoof.profile.defer-prompt.v1.<browserSessionId>` containing only `userId` | Evicted on logout, session switch, or explicit browser cache clearance. |
 | **Operational Logs** | Winston / stdout logs | Counts-only metrics (`deletedProfiles=N`, `outcome=success`) | Zero personal data or identifiers emitted to logs. |
-| **Backup Dumps** | PostgreSQL custom-format dumps (`awoof-*.dump`) | Complete snapshot of `student_academic_profiles` table at dump time | Expired and unlinked after 30 days by `expire-awoof-backups`. On restore, purged by reconciliation before traffic release. |
+| **Backup Dumps** | PostgreSQL custom-format dumps (`awoof-*.dump`) | Complete snapshot of `student_academic_profiles` table at dump time | Time-based expiry after 30 days is PENDING: the `expire-awoof-backups --apply` job is not scheduled yet (disabled cron template in `scripts/scheduler/`), so only deploy-time count rotation currently expires backups. On restore, purged by reconciliation before traffic release. |
 
 ---
 
