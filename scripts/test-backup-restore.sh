@@ -122,6 +122,17 @@ dropdb -h 127.0.0.1 -p "$PORT" -U awoof_test awoof_drill
 createdb -h 127.0.0.1 -p "$PORT" -U awoof_test awoof_drill
 pg_restore -h 127.0.0.1 -p "$PORT" -U awoof_test -d awoof_drill "$DUMP_FILE"
 
+# Capture the original restored generation BEFORE recreating it: the
+# preservation check below is only meaningful with trajectory evidence
+# that the backup actually resurrected B1 and the profile was then
+# recreated as B2, rather than accepting the final B2 row at face value.
+RESTORED_B_GEN=$(psql -h 127.0.0.1 -p "$PORT" -U awoof_test -d awoof_drill -t -A -c "SELECT generation_id FROM student_academic_profiles WHERE user_id = '$USER_B'")
+if [ "$RESTORED_B_GEN" != "$GEN_B1" ]; then
+    echo "ERROR: Expected backup restore to resurrect Student B original generation $GEN_B1, got $RESTORED_B_GEN" >&2
+    exit 1
+fi
+echo "Verified: Backup restore resurrected Student B original generation ${RESTORED_B_GEN}; now recreating it as ${GEN_B2}."
+
 # Now Student B legitimately recreates their profile with a new Generation ID B2
 psql -h 127.0.0.1 -p "$PORT" -U awoof_test -d awoof_drill -v ON_ERROR_STOP=1 <<EOF
 UPDATE student_academic_profiles SET generation_id = '$GEN_B2', entry_year = 2024 WHERE user_id = '$USER_B';
@@ -147,9 +158,15 @@ if [ "$A_COUNT" -ne 0 ]; then
 fi
 
 # 2. Student B's legitimate recreated profile (Gen B2) must be PRESERVED
+# (trajectory proven above: restore resurrected $GEN_B1, recreation set B2)
 B_GEN=$(psql -h 127.0.0.1 -p "$PORT" -U awoof_test -d awoof_drill -t -A -c "SELECT generation_id FROM student_academic_profiles WHERE user_id = '$USER_B'")
 if [ "$B_GEN" != "$GEN_B2" ]; then
     echo "ERROR: Student B profile generation mismatch: expected $GEN_B2, got $B_GEN" >&2
+    exit 1
+fi
+B_YEAR=$(psql -h 127.0.0.1 -p "$PORT" -U awoof_test -d awoof_drill -t -A -c "SELECT entry_year FROM student_academic_profiles WHERE user_id = '$USER_B'")
+if [ "$B_YEAR" != "2024" ]; then
+    echo "ERROR: Student B preserved profile is not the recreated one: expected entry_year 2024, got $B_YEAR" >&2
     exit 1
 fi
 

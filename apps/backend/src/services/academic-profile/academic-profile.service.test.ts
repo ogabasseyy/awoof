@@ -1,4 +1,7 @@
 import assert from 'node:assert/strict';
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import test from 'node:test';
 import { ZodError } from 'zod';
 import { BadRequestError, ConflictError, ForbiddenError, NotFoundError } from '../../common/errors/AppError.js';
@@ -1894,4 +1897,42 @@ test('eraseAcademicProfileForUser purges profile, records erasure, and returns s
     assert.equal(result.remainingAccountActive, true);
     assert.ok(typeof result.erasedAt === 'string');
     assert.equal(state.profile, null);
+});
+
+test('erase retry republishes a committed tombstone that never reached the host file', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'erase-retry-'));
+    const ledgerFile = join(dir, 'ledger.jsonl');
+    const generationId = '00000000-0000-4000-8000-000000000001';
+    try {
+        const client = {
+            query: async (text: string): Promise<{ rows: unknown[]; rowCount: number }> => {
+                const normalized = text.replace(/\s+/g, ' ').trim();
+                if (normalized === 'BEGIN' || normalized === 'COMMIT' || normalized === 'ROLLBACK') {
+                    return { rows: [], rowCount: 0 };
+                }
+                if (normalized.includes('FROM users')) {
+                    return { rows: [{ id: USER_ID, role: 'student', deleted_at: null }], rowCount: 1 };
+                }
+                if (normalized.includes('FROM student_academic_profiles')) {
+                    return { rows: [], rowCount: 0 };
+                }
+                if (normalized.includes('FROM academic_profile_deletion_ledger')) {
+                    return {
+                        rows: [{ user_id: USER_ID, generation_id: generationId, scope: 'profile_only', erased_at: new Date(NOW) }],
+                        rowCount: 1,
+                    };
+                }
+                throw new Error(`Unexpected query: ${normalized}`);
+            },
+            release: (): void => undefined,
+        };
+        const pool = { connect: async () => client };
+        const result = await eraseAcademicProfileForUser(pool as never, USER_ID, ledgerFile);
+        assert.equal(result.erased, true);
+        assert.equal(result.generationId, generationId);
+        const published = readFileSync(ledgerFile, 'utf8');
+        assert.ok(published.includes(generationId), 'retry must publish the missing tombstone');
+    } finally {
+        rmSync(dir, { recursive: true, force: true });
+    }
 });

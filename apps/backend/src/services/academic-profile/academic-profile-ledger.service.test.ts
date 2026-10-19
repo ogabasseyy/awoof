@@ -6,6 +6,7 @@ import test from 'node:test';
 import {
     appendDurableLedgerEntry,
     readDurableLedgerEntries,
+    republishMissingDurableLedgerEntries,
     type AcademicProfileLedgerEntry,
 } from './academic-profile-ledger.service.js';
 
@@ -33,6 +34,45 @@ test('durable ledger appends entries and reads back valid JSONL', () => {
         assert.equal(loaded.length, 2);
         assert.deepEqual(loaded[0], entry1);
         assert.deepEqual(loaded[1], entry2);
+    } finally {
+        rmSync(dir, { recursive: true, force: true });
+    }
+});
+
+test('republish appends committed database erasures missing from the host file', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'ledger-republish-'));
+    const ledgerFile = join(dir, 'test-ledger.jsonl');
+    try {
+        const present: AcademicProfileLedgerEntry = {
+            userId: '11111111-1111-4111-8111-111111111111',
+            generationId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+            scope: 'profile_only',
+            erasedAt: '2026-10-18T12:00:00.000Z',
+        };
+        const missing: AcademicProfileLedgerEntry = {
+            userId: '22222222-2222-4222-8222-222222222222',
+            generationId: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',
+            scope: 'account_closure',
+            erasedAt: '2026-10-18T13:00:00.000Z',
+        };
+        appendDurableLedgerEntry(present, ledgerFile);
+        const client = {
+            query: async () => ({
+                rows: [present, missing].map((e) => ({
+                    user_id: e.userId,
+                    generation_id: e.generationId,
+                    scope: e.scope,
+                    erased_at: new Date(e.erasedAt),
+                })),
+                rowCount: 2,
+            }),
+        };
+        const result = await republishMissingDurableLedgerEntries(client as never, { ledgerFilePath: ledgerFile });
+        assert.equal(result.republished, 1);
+        assert.deepEqual(result.latest, missing);
+        assert.deepEqual(readDurableLedgerEntries(ledgerFile), [present, missing]);
+        const again = await republishMissingDurableLedgerEntries(client as never, { ledgerFilePath: ledgerFile });
+        assert.equal(again.republished, 0);
     } finally {
         rmSync(dir, { recursive: true, force: true });
     }

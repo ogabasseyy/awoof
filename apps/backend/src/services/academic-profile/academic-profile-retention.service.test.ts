@@ -88,6 +88,17 @@ test('purge derives the cutoff from the database clock, not the scheduler host',
     assert.ok(deleteStatement);
 });
 
+test('purge rechecks eligibility inside the transaction with row locks', async () => {
+    const pool = createPurgePool({ rowCount: 1 });
+    await purgeSoftDeletedAcademicProfiles(pool, 90);
+    const texts = pool.statements.map((s) => s.text);
+    const beginIndex = texts.indexOf('BEGIN');
+    const selectIndex = texts.findIndex((t) => t.startsWith('SELECT sap.user_id'));
+    assert.ok(beginIndex >= 0, 'batch work must run in a transaction');
+    assert.ok(selectIndex > beginIndex, 'candidate selection must be inside the transaction');
+    assert.ok(texts[selectIndex]?.includes('FOR UPDATE OF sap, u'), 'selection must lock user and profile rows');
+});
+
 test('purge reports zero when nothing is due without touching other rows', async () => {
     const empty = createPurgePool({ rowCount: 0 });
     assert.deepEqual(await purgeSoftDeletedAcademicProfiles(empty, 90), {

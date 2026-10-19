@@ -55,7 +55,7 @@ import {
     type ErasureResult,
     type VerificationRequirement,
 } from './academic-profile.types.js';
-import { recordDeletionInDatabase, appendDurableLedgerEntry } from './academic-profile-ledger.service.js';
+import { recordDeletionInDatabase, appendDurableLedgerEntry, republishMissingDurableLedgerEntries } from './academic-profile-ledger.service.js';
 
 export const ACADEMIC_PROFILE_REVISION_CONFLICT = 'ACADEMIC_PROFILE_REVISION_CONFLICT';
 export const ACADEMIC_PROFILE_INSTITUTION_CHANGED = 'ACADEMIC_PROFILE_INSTITUTION_CHANGED';
@@ -1267,14 +1267,34 @@ export async function eraseAcademicProfileForUser(
         }
 
         const purge = await purgeAcademicProfileForUser(client, userId, 'profile_only', ledgerFilePath);
+        let erased = purge.deleted;
+        let generationId = purge.generationId ?? null;
+        let erasedAt = new Date().toISOString();
+        if (!purge.appendDurableRecord) {
+            // Retry after a post-commit tombstone failure: the profile
+            // is already gone, but the committed database-ledger row
+            // from the original erasure is the outbox record. Republish
+            // any of this user's committed erasures that never reached
+            // the host file so the retry converges instead of reporting
+            // success while the tombstone stays missing.
+            const republished = await republishMissingDurableLedgerEntries(client, {
+                userId,
+                ledgerFilePath,
+            });
+            if (republished.latest) {
+                erased = true;
+                generationId = republished.latest.generationId;
+                erasedAt = republished.latest.erasedAt;
+            }
+        }
         await client.query('COMMIT');
         // Only append to durable host JSONL after database transaction has committed!
         purge.appendDurableRecord?.();
         return {
-            erased: purge.deleted,
+            erased,
             userId,
-            generationId: purge.generationId ?? null,
-            erasedAt: new Date().toISOString(),
+            generationId,
+            erasedAt,
             remainingAccountActive: true,
         };
     } catch (error) {

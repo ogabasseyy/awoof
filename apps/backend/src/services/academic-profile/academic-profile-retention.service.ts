@@ -15,7 +15,7 @@
  */
 
 import type { Pool } from 'pg';
-import { recordDeletionInDatabase, appendDurableLedgerEntry } from './academic-profile-ledger.service.js';
+import { recordDeletionInDatabase, appendDurableLedgerEntry, republishMissingDurableLedgerEntries } from './academic-profile-ledger.service.js';
 
 export const ACADEMIC_PROFILE_RETENTION_ENV_VAR = 'ACADEMIC_PROFILE_RETENTION_DAYS';
 export const ACADEMIC_PROFILE_PURGE_LOCK_ID = 2026101801;
@@ -135,28 +135,45 @@ export async function purgeSoftDeletedAcademicProfiles(
             };
         }
 
+        // Recover tombstones whose post-commit host append failed in an
+        // earlier run before selecting new work: the committed database
+        // ledger is the outbox, so a rerun republishes what is missing
+        // instead of skipping profiles that are already deleted.
+        await republishMissingDurableLedgerEntries(client, {
+            ledgerFilePath: options?.ledgerFilePath,
+        });
+
         const batchSize = options?.batchSize && options.batchSize > 0
             ? Math.min(options.batchSize, 5000)
             : 500;
         let totalDeleted = 0;
         let batchesProcessed = 0;
+        let batchCount = 0;
         while (true) {
-            const batch = await client.query<{ user_id: string; generation_id: string }>(
-                `SELECT sap.user_id, sap.generation_id
-                 FROM student_academic_profiles sap
-                 JOIN users u ON u.id = sap.user_id
-                 WHERE u.deleted_at IS NOT NULL AND u.deleted_at <= $1::timestamptz
-                 ORDER BY sap.user_id
-                 LIMIT $2`,
-                [cutoff, batchSize],
-            );
-            if (batch.rows.length === 0) {
-                break;
-            }
-            batchesProcessed += 1;
             const toAppend: Array<() => void> = [];
             await client.query('BEGIN');
             try {
+                // Eligibility is re-evaluated inside the transaction with
+                // the user and profile rows locked: an account restored
+                // (deleted_at cleared) after an earlier unlocked scan can
+                // no longer be purged by this batch, and the restore
+                // itself blocks until this batch commits.
+                const batch = await client.query<{ user_id: string; generation_id: string }>(
+                    `SELECT sap.user_id, sap.generation_id
+                     FROM student_academic_profiles sap
+                     JOIN users u ON u.id = sap.user_id
+                     WHERE u.deleted_at IS NOT NULL AND u.deleted_at <= $1::timestamptz
+                     ORDER BY sap.user_id
+                     LIMIT $2
+                     FOR UPDATE OF sap, u`,
+                    [cutoff, batchSize],
+                );
+                if (batch.rows.length === 0) {
+                    await client.query('COMMIT');
+                    break;
+                }
+                batchCount = batch.rows.length;
+                batchesProcessed += 1;
                 for (const row of batch.rows) {
                     if (row.generation_id) {
                         const dbRecord = await recordDeletionInDatabase(client, {
@@ -193,7 +210,7 @@ export async function purgeSoftDeletedAcademicProfiles(
                 await client.query('ROLLBACK').catch(() => undefined);
                 throw err;
             }
-            if (batch.rows.length < batchSize) {
+            if (batchCount < batchSize) {
                 break;
             }
         }

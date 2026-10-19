@@ -17,17 +17,21 @@
 # Option A (Recommended - Container execution via crontab for deploy user):
 #   crontab -e
 #   Add the line below (uncommented):
-#   30 3 * * * docker exec -i awoof-backend node dist/scripts/cleanup-academic-profile-data.js --batch-size 500 >> /var/log/awoof/academic-profile-purge.log 2>&1
+#   30 3 * * * docker exec -i -u nodejs awoof-backend node dist/scripts/cleanup-academic-profile-data.js --batch-size 500 >> /var/log/awoof/academic-profile-purge.log 2>&1
 #
 # Option B (Host execution via /etc/cron.d/awoof-academic-profile-purge):
 #   Requires host-side build (npm run build:artifact in apps/backend).
 #   30 3 * * * deploy cd /home/deploy/awoof/apps/backend && ACADEMIC_PROFILE_DELETION_LEDGER_FILE=/home/deploy/awoof/backups/academic-profile-deletion-ledger.jsonl /usr/bin/node dist/scripts/cleanup-academic-profile-data.js --batch-size 500 >> /var/log/awoof/academic-profile-purge.log 2>&1
 #
 # CONCURRENCY AND RESILIENCE:
+# - The docker exec form must run as the nodejs user (-u nodejs): the image
+#   has no USER instruction, so exec would otherwise run as root and could
+#   create the mode-0600 ledger file root-owned, after which API erasures
+#   running as nodejs could no longer append their tombstones.
 # - Script acquires PostgreSQL session advisory lock (2026101801) on a dedicated connection.
 #   If a prior run is still in progress, the overlapping run exits cleanly without error.
 # - Deletions are processed in batches (default 500) and recorded in the dual deletion ledger.
 # - Outputs counts/outcomes only; never logs PII, emails, or personal identifiers.
 #
 # TEMPLATE LINE (Uncomment and set correct paths upon activation):
-# 30 3 * * * docker exec -i awoof-backend node dist/scripts/cleanup-academic-profile-data.js --batch-size 500 >> /var/log/awoof/academic-profile-purge.log 2>&1
+# 30 3 * * * docker exec -i -u nodejs awoof-backend node dist/scripts/cleanup-academic-profile-data.js --batch-size 500 >> /var/log/awoof/academic-profile-purge.log 2>&1

@@ -18,7 +18,7 @@
  * It NEVER stores names, emails, academic answers, or PII.
  */
 
-import { appendFileSync, existsSync, mkdirSync, readFileSync } from 'node:fs';
+import { closeSync, existsSync, fsyncSync, mkdirSync, openSync, readFileSync, writeSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import type { PoolClient } from 'pg';
 
@@ -44,7 +44,11 @@ export function getDurableLedgerFilePath(): string {
 
 /**
  * Append a deletion record to the durable host-level JSONL ledger file.
- * Creates parent directory if missing.
+ * Creates parent directory if missing. The append is flushed to stable
+ * storage (write + fsync on an append-mode descriptor) before it is
+ * treated as durable: the host file is the recovery authority after a
+ * database-volume failure, so an acknowledged tombstone must survive a
+ * host crash, including when this append creates the file.
  */
 export function appendDurableLedgerEntry(
     entry: AcademicProfileLedgerEntry,
@@ -58,7 +62,13 @@ export function appendDurableLedgerEntry(
         scope: entry.scope,
         erasedAt: entry.erasedAt,
     }) + '\n';
-    appendFileSync(targetPath, payload, { encoding: 'utf8', mode: 0o600 });
+    const fd = openSync(targetPath, 'a', 0o600);
+    try {
+        writeSync(fd, payload, null, 'utf8');
+        fsyncSync(fd);
+    } finally {
+        closeSync(fd);
+    }
 }
 
 /**
@@ -118,6 +128,86 @@ export async function recordAcademicProfileErasure(
         entry.ledgerFilePath,
     );
     return { dbLedgerId: dbRecord.id, erasedAt: erasedAtIso };
+}
+
+/**
+ * Read committed erasure records from the database ledger table. The
+ * database insert commits atomically with the profile deletion, so
+ * these rows are the transactional outbox for the host tombstone file:
+ * a post-commit host append failure leaves a committed row that a
+ * later retry can republish instead of a permanently missing tombstone.
+ */
+export async function readDatabaseLedgerEntries(
+    client: PoolClient,
+    userId?: string | undefined,
+): Promise<AcademicProfileLedgerEntry[]> {
+    const result = userId
+        ? await client.query<{ user_id: string; generation_id: string; scope: string; erased_at: Date | string }>(
+            `SELECT user_id, generation_id, scope, erased_at
+             FROM academic_profile_deletion_ledger
+             WHERE user_id = $1
+             ORDER BY erased_at ASC`,
+            [userId],
+        )
+        : await client.query<{ user_id: string; generation_id: string; scope: string; erased_at: Date | string }>(
+            `SELECT user_id, generation_id, scope, erased_at
+             FROM academic_profile_deletion_ledger
+             ORDER BY erased_at ASC`,
+        );
+    const entries: AcademicProfileLedgerEntry[] = [];
+    for (const row of result.rows) {
+        if (
+            typeof row.user_id !== 'string' ||
+            typeof row.generation_id !== 'string' ||
+            (row.scope !== 'profile_only' && row.scope !== 'account_closure')
+        ) {
+            continue;
+        }
+        const erasedAt = row.erased_at instanceof Date ? row.erased_at : new Date(row.erased_at);
+        if (Number.isNaN(erasedAt.getTime())) {
+            continue;
+        }
+        entries.push({
+            userId: row.user_id,
+            generationId: row.generation_id,
+            scope: row.scope,
+            erasedAt: erasedAt.toISOString(),
+        });
+    }
+    return entries;
+}
+
+function ledgerEntryKey(entry: AcademicProfileLedgerEntry): string {
+    return `${entry.userId}|${entry.generationId}|${entry.scope}|${entry.erasedAt}`;
+}
+
+/**
+ * Republish committed database-ledger erasures that are missing from
+ * the durable host file. This is the retry half of the erasure
+ * protocol: the initial erase publishes after COMMIT on a best-effort
+ * one-shot basis, and any failure (full/read-only/unavailable volume)
+ * is recovered by calling this again from an erase retry or the
+ * retention purge instead of losing the tombstone permanently.
+ */
+export async function republishMissingDurableLedgerEntries(
+    client: PoolClient,
+    options?: { userId?: string | undefined; ledgerFilePath?: string | undefined },
+): Promise<{ republished: number; latest: AcademicProfileLedgerEntry | null }> {
+    const dbEntries = await readDatabaseLedgerEntries(client, options?.userId);
+    if (dbEntries.length === 0) {
+        return { republished: 0, latest: null };
+    }
+    const hostEntries = readDurableLedgerEntries(options?.ledgerFilePath);
+    const hostKeys = new Set(hostEntries.map(ledgerEntryKey));
+    let republished = 0;
+    for (const entry of dbEntries) {
+        if (!hostKeys.has(ledgerEntryKey(entry))) {
+            appendDurableLedgerEntry(entry, options?.ledgerFilePath);
+            hostKeys.add(ledgerEntryKey(entry));
+            republished += 1;
+        }
+    }
+    return { republished, latest: dbEntries[dbEntries.length - 1] ?? null };
 }
 
 const UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
