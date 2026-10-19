@@ -473,12 +473,20 @@ export async function republishMissingDurableLedgerEntries(
     // completed its fsync, so marking its outbox row published cannot
     // strand a merely-visible-but-undurable tombstone.
     const targetPathForLock = options?.ledgerFilePath ? resolve(options.ledgerFilePath) : getDurableLedgerFilePath();
+    // If the host file was lost after tombstones were written, a
+    // recreation must republish the COMPLETE committed history, not
+    // just the currently unpublished rows; detect that state before
+    // locking and load the full history for the append pass.
+    let appendEntries = dbEntries;
+    if (!existsSync(targetPathForLock) && existsSync(join(dirname(targetPathForLock), LEDGER_EVER_WRITTEN_MARKER))) {
+        appendEntries = await readDatabaseLedgerEntries(client);
+    }
     const lock = acquireLedgerAppendLock(targetPathForLock);
     let hostEntries: AcademicProfileLedgerEntry[];
     let republished = 0;
     try {
         hostEntries = readDurableLedgerEntries(options?.ledgerFilePath);
-        republished = await republishUnderLock(client, dbEntries, hostEntries, options, lock.assertOwned);
+        republished = await republishUnderLock(client, appendEntries, hostEntries, options, lock.assertOwned);
     } finally {
         lock.release();
     }

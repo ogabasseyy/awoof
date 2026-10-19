@@ -285,3 +285,41 @@ test('append refuses to silently recreate a lost durable ledger', () => {
         rmSync(dir, { recursive: true, force: true });
     }
 });
+
+test('republish after ledger loss recreates the complete history, not only unpublished rows', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'ledger-full-recreate-'));
+    const ledgerFile = join(dir, 'test-ledger.jsonl');
+    const entries: AcademicProfileLedgerEntry[] = [
+        {
+            userId: '11111111-1111-4111-8111-111111111111',
+            generationId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+            scope: 'profile_only',
+            erasedAt: '2026-10-18T12:00:00.000Z',
+        },
+        {
+            userId: '22222222-2222-4222-8222-222222222222',
+            generationId: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',
+            scope: 'account_closure',
+            erasedAt: '2026-10-18T13:00:00.000Z',
+        },
+    ];
+    try {
+        for (const entry of entries) appendDurableLedgerEntry(entry, ledgerFile);
+        rmSync(ledgerFile);
+        const client = {
+            query: async () => ({
+                rows: entries.map((entry) => ({
+                    user_id: entry.userId,
+                    generation_id: entry.generationId,
+                    scope: entry.scope,
+                    erased_at: new Date(entry.erasedAt),
+                })),
+            }),
+        };
+        const result = await republishMissingDurableLedgerEntries(client as never, { ledgerFilePath: ledgerFile });
+        assert.equal(result.republished, 2);
+        assert.deepEqual(readDurableLedgerEntries(ledgerFile), entries);
+    } finally {
+        rmSync(dir, { recursive: true, force: true });
+    }
+});
