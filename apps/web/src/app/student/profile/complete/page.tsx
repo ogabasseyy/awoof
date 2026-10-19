@@ -11,7 +11,6 @@
 
 import { useEffect, useId, useRef, useState, useSyncExternalStore, type MouseEvent as ReactMouseEvent, type ReactNode } from 'react';
 import Link from 'next/link';
-import { useRouter } from 'next/navigation';
 import axios from 'axios';
 import Logo from '@/app/components/logo';
 import ProtectedRoute from '@/components/ProtectedRoute';
@@ -27,6 +26,7 @@ import {
     draftClaimScopeForEstimate,
     entryRouteLabel,
     estimateUnavailableMessage,
+    eraseAcademicProfile,
     fetchAcademicProfile,
     parseClaimChangedConflict,
     parseInstitutionChangedConflict,
@@ -344,7 +344,6 @@ function MarkButtons({ field, marked, onMark }: MarkButtonsProps) {
 }
 
 function CompletionForm() {
-    const router = useRouter();
     const { user: currentUser } = useAuth();
     const [view, setView] = useState<AcademicProfileView | null>(null);
     const [loadState, setLoadState] = useState<'loading' | 'ready' | 'error'>('loading');
@@ -355,6 +354,8 @@ function CompletionForm() {
     const [conflict, setConflict] = useState<string | null>(null);
     const [claimReconfirm, setClaimReconfirm] = useState<ClaimReconfirmRequest | null>(null);
     const [saveOutcome, setSaveOutcome] = useState<'saved' | null>(null);
+    const [eraseState, setEraseState] = useState<'idle' | 'confirming' | 'erasing' | 'erased' | 'noop'>('idle');
+    const [eraseError, setEraseError] = useState<string | null>(null);
     const [navFailed, setNavFailed] = useState(false);
     const [leaveDialog, setLeaveDialog] = useState(false);
     const [pendingLeave, setPendingLeave] = useState<PendingLeave | null>(null);
@@ -558,9 +559,9 @@ function CompletionForm() {
     const mustVerify = assuranceStatus === 'expired' || assuranceStatus === 'denied' || assuranceStatus === 'revoked';
     const isVerified = assuranceStatus === 'verified';
 
-    useEffect(() => {
-        if (loadState === 'ready' && mustVerify) router.replace('/student/verification');
-    }, [loadState, mustVerify, router]);
+    // No automatic redirect from the verification-blocked state: the
+    // branch below offers the verification link while keeping profile
+    // erasure reachable for students who may still have saved answers.
 
     const institutionSearch = useCatalogueSearch<InstitutionCatalogueItem>(
         searchAcademicInstitutions, institutionName, editableInstitution && view?.featureEnabled === true,
@@ -1004,6 +1005,81 @@ function CompletionForm() {
         requestLeave(null, true);
     };
 
+    const handleEraseProfile = async () => {
+        const snapshot = getSessionSnapshot();
+        setEraseState('erasing');
+        setEraseError(null);
+        try {
+            const result = await eraseAcademicProfile();
+            if (!isCurrentSession(snapshot)) return;
+            setEraseState(result.erased ? 'erased' : 'noop');
+            setAnnounce(result.erased
+                ? 'Your academic profile was erased.'
+                : 'No academic profile was saved, so there was nothing to erase.');
+            await loadProfile(false);
+        } catch (error: unknown) {
+            if (!isCurrentSession(snapshot)) return;
+            setEraseState('confirming');
+            setEraseError(serverMessage(error) ?? 'We could not erase your academic profile. Please try again.');
+        }
+    };
+
+    const renderEraseSection = () => (
+        <section aria-label="Erase your academic profile" className="mt-6 rounded-2xl border border-slate-200 bg-white p-4">
+            <h2 className="text-lg font-semibold text-slate-900">Erase your academic profile</h2>
+            {eraseState === 'erased' ? (
+                <p className="mt-2 text-sm text-slate-700">
+                    Your saved academic details have been erased. Your student account stays active and you can keep browsing.
+                </p>
+            ) : eraseState === 'noop' ? (
+                <p className="mt-2 text-sm text-slate-700">
+                    No academic profile was saved, so there was nothing to erase. Your student account stays active and you can keep browsing.
+                </p>
+            ) : (
+                <>
+                    <p className="mt-2 text-sm text-slate-600">
+                        This deletes the academic details you saved here from your live profile. Copies already
+                        captured in routine backups stay under the backup retention policy - which may keep the
+                        newest backup as a last-resort recovery copy - and are never restored into service.
+                        Your student account, verification, and marketplace access are not affected.
+                    </p>
+                    {eraseError && (
+                        <p role="alert" className="mt-3 rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-800">{eraseError}</p>
+                    )}
+                    {eraseState === 'confirming' || eraseState === 'erasing' ? (
+                        <div className="mt-4 flex flex-col gap-3 sm:flex-row">
+                            <button
+                                type="button"
+                                onClick={handleEraseProfile}
+                                disabled={eraseState === 'erasing' || saving}
+                                className="inline-flex min-h-[44px] items-center justify-center rounded-full bg-red-600 px-5 text-sm font-bold text-white hover:bg-red-700 disabled:opacity-50"
+                            >
+                                {eraseState === 'erasing' ? 'Erasing…' : 'Confirm erasure'}
+                            </button>
+                            <button
+                                type="button"
+                                onClick={() => { setEraseState('idle'); setEraseError(null); }}
+                                disabled={eraseState === 'erasing'}
+                                className="inline-flex min-h-[44px] items-center justify-center rounded-full border border-slate-300 px-5 text-sm font-bold text-slate-700 hover:bg-slate-50 disabled:opacity-50"
+                            >
+                                Cancel
+                            </button>
+                        </div>
+                    ) : (
+                        <button
+                            type="button"
+                            onClick={() => { setEraseState('confirming'); setEraseError(null); }}
+                            disabled={saving}
+                            className="mt-4 inline-flex min-h-[44px] items-center justify-center rounded-full border border-red-300 px-5 text-sm font-bold text-red-700 hover:bg-red-50 disabled:opacity-50"
+                        >
+                            Erase my academic profile
+                        </button>
+                    )}
+                </>
+            )}
+        </section>
+    );
+
     const handleGetEstimate = async () => {
         const programmeAnswered = programmeMarked === null && programmeText.trim() !== '';
         const entryYearAnswered = entryYearMarked === null && parsedEntryYearText !== null;
@@ -1104,6 +1180,7 @@ function CompletionForm() {
                 <Link href="/student/verification" className="mt-4 inline-flex min-h-[44px] items-center rounded-full bg-[#1D4ED8] px-5 text-sm font-bold text-white hover:bg-[#1E40AF]">
                     Continue verification
                 </Link>
+                {renderEraseSection()}
             </Shell>
         );
     }
@@ -1177,6 +1254,10 @@ function CompletionForm() {
                         <p className="mt-2 text-sm text-slate-600">No academic details saved yet.</p>
                     )}
                 </section>
+                {/* Always render: after a failed post-commit erase the reload
+                    shows no saved profile, but DELETE still republishes the
+                    committed ledger outbox record. */}
+                {renderEraseSection()}
                 <button
                     type="button"
                     onClick={handleCompleteLater}
@@ -1763,6 +1844,8 @@ function CompletionForm() {
                     </div>
                 </fieldset>
             </form>
+
+            {renderEraseSection()}
 
             {leaveDialog && (
                 <div

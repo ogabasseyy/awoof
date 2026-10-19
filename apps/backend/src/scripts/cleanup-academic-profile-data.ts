@@ -13,6 +13,7 @@
 import pg from 'pg';
 import dotenv from 'dotenv';
 import {
+    ACADEMIC_PROFILE_PURGE_LOCK_ID,
     ACADEMIC_PROFILE_RETENTION_ENV_VAR,
     purgeSoftDeletedAcademicProfiles,
     resolveAcademicProfileRetentionDays,
@@ -47,9 +48,37 @@ async function main(): Promise<void> {
         process.exitCode = 1;
     };
     try {
+        // Strict argument validation before any database work: an
+        // unrecognized flag must never fall through to the destructive
+        // default path (a typo like --dryrun previously ran the purge).
+        const args = process.argv.slice(2);
+        let isDryRun = false;
+        let batchSize = 500;
+        try {
+            for (let i = 0; i < args.length; i += 1) {
+                const arg = args[i] as string;
+                if (arg === '--dry-run') {
+                    if (isDryRun) throw new Error('duplicate --dry-run argument');
+                    isDryRun = true;
+                } else if (arg === '--batch-size') {
+                    const nextArg = args[i + 1];
+                    if (nextArg === undefined || !/^[0-9]+$/.test(nextArg)) throw new Error('--batch-size requires a positive integer value');
+                    const parsed = Number(nextArg);
+                    if (!Number.isSafeInteger(parsed) || parsed <= 0) throw new Error('--batch-size requires a positive integer value');
+                    batchSize = parsed;
+                    i += 1;
+                } else {
+                    throw new Error(`unrecognized argument: ${arg}`);
+                }
+            }
+        } catch {
+            fail('academic profile purge refused: unrecognized or malformed arguments (expected --dry-run and/or --batch-size <positive integer>)');
+            return;
+        }
+
         let retentionDays: number;
         try {
-            retentionDays = resolveAcademicProfileRetentionDays(process.env[ACADEMIC_PROFILE_RETENTION_ENV_VAR]);
+            retentionDays = resolveAcademicProfileRetentionDays(process.env[ACADEMIC_PROFILE_RETENTION_ENV_VAR] ?? null);
         } catch {
             fail('academic profile purge refused: retention window is not set to an approved positive value');
             return;
@@ -58,9 +87,28 @@ async function main(): Promise<void> {
         // pg can surface an idle client error outside a query promise. Never
         // forward that object because it may include a connection URL/value.
         pool.on('error', () => fail('academic profile purge failed'));
-        const summary = await purgeSoftDeletedAcademicProfiles(pool, retentionDays);
+        const summary = await purgeSoftDeletedAcademicProfiles(pool, retentionDays, {
+            dryRun: isDryRun,
+            batchSize,
+            useAdvisoryLock: true,
+        });
+
+        if (summary.skippedDueToLock) {
+            process.stdout.write(
+                `academic profile purge skipped: another purge process holds advisory lock ${ACADEMIC_PROFILE_PURGE_LOCK_ID}\n`,
+            );
+            return;
+        }
+
+        if (summary.dryRun) {
+            process.stdout.write(
+                `academic profile purge dry-run complete: eligibleProfiles=${summary.scannedProfiles ?? 0} cutoff=${summary.cutoff}\n`,
+            );
+            return;
+        }
+
         process.stdout.write(
-            `academic profile purge complete: deletedProfiles=${summary.deletedProfiles} cutoff=${summary.cutoff}\n`,
+            `academic profile purge complete: deletedProfiles=${summary.deletedProfiles} cutoff=${summary.cutoff} batchesProcessed=${summary.batchesProcessed ?? 1}\n`,
         );
     } catch {
         fail('academic profile purge failed');
