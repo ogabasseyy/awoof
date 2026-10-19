@@ -189,7 +189,7 @@ jobs:
         # fallback window (see budget above).
         continue-on-error: true
         timeout-minutes: 5
-        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
           # Check out the PR head so the agent reads full files from the
@@ -270,7 +270,7 @@ jobs:
         # still passes with the miss logged.
         continue-on-error: true
         timeout-minutes: 5
-        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
           # Scripts run with GH_TOKEN, so their ref comes from the resolve
