@@ -18,8 +18,8 @@
  * It NEVER stores names, emails, academic answers, or PII.
  */
 
-import { closeSync, existsSync, fsyncSync, mkdirSync, openSync, readFileSync, statSync, unlinkSync, writeSync } from 'node:fs';
-import { dirname, resolve } from 'node:path';
+import { closeSync, existsSync, fsyncSync, mkdirSync, openSync, readFileSync, statSync, unlinkSync, writeFileSync, writeSync } from 'node:fs';
+import { dirname, join, resolve } from 'node:path';
 import type { PoolClient } from 'pg';
 
 export type AcademicProfileDeletionScope = 'profile_only' | 'account_closure';
@@ -57,12 +57,24 @@ export function assertDurableLedgerAvailableForStartup(options: {
 }): void {
     const targetPath = resolve(options.ledgerFilePath);
     if (existsSync(targetPath)) return;
-    if (existsSync(dirname(targetPath))) return;
-    if (options.freshDeployment === true) return;
+    const parentDir = dirname(targetPath);
+    // An initialized marker records the explicit fresh-deployment
+    // decision on the ledger volume itself, so a later restart with no
+    // tombstones yet does not need the flag again - and an empty,
+    // freshly recreated volume (which has neither ledger nor marker)
+    // can never masquerade as that state.
+    if (existsSync(join(parentDir, LEDGER_INITIALIZED_MARKER))) return;
+    if (options.freshDeployment === true) {
+        mkdirSync(parentDir, { recursive: true });
+        writeFileSync(join(parentDir, LEDGER_INITIALIZED_MARKER), `${new Date().toISOString()}\n`, { flag: 'wx' });
+        return;
+    }
     throw new Error(
-        `Durable deletion ledger directory is unavailable at ${dirname(targetPath)}; refusing to start against a possibly restored database. Mount the backups volume or set ACADEMIC_PROFILE_FRESH_DEPLOYMENT=true only for a genuinely fresh deployment.`,
+        `Durable deletion ledger is absent at ${targetPath} and no initialized marker exists; refusing to start against a possibly restored database. Mount the backups volume or set ACADEMIC_PROFILE_FRESH_DEPLOYMENT=true only for a genuinely fresh deployment.`,
     );
 }
+
+const LEDGER_INITIALIZED_MARKER = '.academic-profile-ledger-initialized';
 
 /**
  * Append a deletion record to the durable host-level JSONL ledger file.
@@ -151,7 +163,7 @@ function acquireLedgerAppendLock(targetPath: string): { release: () => void; ass
         } catch (error) {
             if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error;
             try {
-                if (Date.now() - statSync(lockPath).mtimeMs > LEDGER_LOCK_STALE_MS) {
+                if (Date.now() - statSync(lockPath).mtimeMs > LEDGER_LOCK_STALE_MS && !ledgerLockOwnerAlive(lockPath)) {
                     unlinkSync(lockPath);
                     continue;
                 }
@@ -163,6 +175,21 @@ function acquireLedgerAppendLock(targetPath: string): { release: () => void; ass
             }
             Atomics.wait(spin, 0, 0, 10);
         }
+    }
+}
+
+function ledgerLockOwnerAlive(lockPath: string): boolean {
+    try {
+        const pid = Number(readFileSync(lockPath, 'utf8').split(':', 1)[0]);
+        if (!Number.isInteger(pid) || pid <= 0) return false;
+        try {
+            process.kill(pid, 0);
+            return true;
+        } catch (error) {
+            return (error as NodeJS.ErrnoException).code === 'EPERM';
+        }
+    } catch {
+        return false;
     }
 }
 

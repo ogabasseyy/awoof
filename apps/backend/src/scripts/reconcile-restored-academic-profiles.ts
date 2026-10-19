@@ -41,19 +41,30 @@ function createPool(): pg.Pool {
 async function main(): Promise<void> {
     let pool: pg.Pool | undefined;
     const args = process.argv.slice(2);
-    const isDryRun = args.includes('--dry-run');
-    const allowMissingLedger = args.includes('--allow-missing-ledger');
-    const requireLedger = !allowMissingLedger;
+    // Validate the entire argument list before opening the database: an
+    // unrecognized flag such as `--dryrun` must refuse here instead of
+    // silently falling through to the destructive reconciliation path.
+    let isDryRun = false;
+    let allowMissingLedger = false;
     let ledgerFilePath: string | undefined;
-
-    const fileArgIdx = args.indexOf('--ledger-file');
-    if (fileArgIdx !== -1) {
-        const nextArg = args[fileArgIdx + 1];
-        if (!nextArg || nextArg.startsWith('--')) {
-            throw new Error('--ledger-file requires a non-empty file path argument');
+    for (let i = 0; i < args.length; i += 1) {
+        const arg = args[i] ?? '';
+        if (arg === '--dry-run' && !isDryRun) {
+            isDryRun = true;
+        } else if (arg === '--allow-missing-ledger' && !allowMissingLedger) {
+            allowMissingLedger = true;
+        } else if (arg === '--ledger-file' && ledgerFilePath === undefined) {
+            const nextArg = args[i + 1];
+            if (!nextArg || nextArg.startsWith('--')) {
+                throw new Error('--ledger-file requires a non-empty file path argument');
+            }
+            ledgerFilePath = nextArg;
+            i += 1;
+        } else {
+            throw new Error(`Unrecognized or duplicate argument: ${arg}`);
         }
-        ledgerFilePath = nextArg;
     }
+    const requireLedger = !allowMissingLedger;
 
     try {
         pool = createPool();

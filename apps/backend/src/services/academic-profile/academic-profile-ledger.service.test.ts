@@ -139,10 +139,16 @@ test('startup ledger gate fails closed when the backups directory is unavailable
             () => assertDurableLedgerAvailableForStartup({ ledgerFilePath: missing }),
             /refusing to start/,
         );
-        // An explicit fresh deployment passes without a ledger.
+        // An explicit fresh deployment passes and records an initialized
+        // marker, so later restarts pass without the flag.
         assertDurableLedgerAvailableForStartup({ ledgerFilePath: missing, freshDeployment: true });
-        // An existing parent directory with no file yet also passes.
-        assertDurableLedgerAvailableForStartup({ ledgerFilePath: join(dir, 'ledger.jsonl') });
+        assertDurableLedgerAvailableForStartup({ ledgerFilePath: missing });
+        // An existing parent directory with neither ledger nor marker
+        // (an empty recreated volume) still fails closed.
+        assert.throws(
+            () => assertDurableLedgerAvailableForStartup({ ledgerFilePath: join(dir, 'ledger.jsonl') }),
+            /refusing to start/,
+        );
     } finally {
         rmSync(dir, { recursive: true, force: true });
     }
