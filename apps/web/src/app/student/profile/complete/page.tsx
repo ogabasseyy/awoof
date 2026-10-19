@@ -561,9 +561,9 @@ function CompletionForm() {
     const mustVerify = assuranceStatus === 'expired' || assuranceStatus === 'denied' || assuranceStatus === 'revoked';
     const isVerified = assuranceStatus === 'verified';
 
-    useEffect(() => {
-        if (loadState === 'ready' && mustVerify) router.replace('/student/verification');
-    }, [loadState, mustVerify, router]);
+    // No automatic redirect from the verification-blocked state: the
+    // branch below offers the verification link while keeping profile
+    // erasure reachable for students who may still have saved answers.
 
     const institutionSearch = useCatalogueSearch<InstitutionCatalogueItem>(
         searchAcademicInstitutions, institutionName, editableInstitution && view?.featureEnabled === true,
@@ -1176,6 +1176,7 @@ function CompletionForm() {
                 <Link href="/student/verification" className="mt-4 inline-flex min-h-[44px] items-center rounded-full bg-[#1D4ED8] px-5 text-sm font-bold text-white hover:bg-[#1E40AF]">
                     Continue verification
                 </Link>
+                {renderEraseSection()}
             </Shell>
         );
     }

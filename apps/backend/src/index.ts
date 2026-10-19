@@ -455,7 +455,12 @@ export class App {
         const ledgerPath = getDurableLedgerFilePath();
         assertDurableLedgerAvailableForStartup({
           ledgerFilePath: ledgerPath,
-          freshDeployment: process.env.ACADEMIC_PROFILE_FRESH_DEPLOYMENT === 'true',
+          freshDeployment: process.env.ACADEMIC_PROFILE_FRESH_DEPLOYMENT === 'true'
+            // Development-only convenience: a fresh local checkout has
+            // no ledger volume or marker yet. Production never takes
+            // this path (NODE_ENV=production) and needs the explicit
+            // one-time rollout flag instead.
+            || config.isDevelopment,
         });
         if (existsSync(ledgerPath)) {
           const { reconcileRestoredAcademicProfiles } = await import('./services/academic-profile/academic-profile-reconciliation.service.js');
