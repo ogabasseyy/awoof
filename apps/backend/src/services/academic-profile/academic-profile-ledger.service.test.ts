@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { existsSync, mkdtempSync, rmSync, utimesSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
@@ -319,6 +319,51 @@ test('republish after ledger loss recreates the complete history, not only unpub
         const result = await republishMissingDurableLedgerEntries(client as never, { ledgerFilePath: ledgerFile });
         assert.equal(result.republished, 2);
         assert.deepEqual(readDurableLedgerEntries(ledgerFile), entries);
+    } finally {
+        rmSync(dir, { recursive: true, force: true });
+    }
+});
+
+test('startup gate detects a tail-truncated ledger and republish rebuilds it', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'ledger-tail-'));
+    const ledgerFile = join(dir, 'test-ledger.jsonl');
+    const entries: AcademicProfileLedgerEntry[] = [
+        {
+            userId: '11111111-1111-4111-8111-111111111111',
+            generationId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+            scope: 'profile_only',
+            erasedAt: '2026-10-18T12:00:00.000Z',
+        },
+        {
+            userId: '22222222-2222-4222-8222-222222222222',
+            generationId: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',
+            scope: 'account_closure',
+            erasedAt: '2026-10-18T13:00:00.000Z',
+        },
+    ];
+    try {
+        for (const entry of entries) appendDurableLedgerEntry(entry, ledgerFile);
+        assertDurableLedgerAvailableForStartup({ ledgerFilePath: ledgerFile });
+        // Truncate to a syntactically valid prefix (first line only).
+        const lines = readFileSync(ledgerFile, 'utf8').split('\n');
+        writeFileSync(ledgerFile, `${lines[0]}\n`);
+        assert.throws(
+            () => assertDurableLedgerAvailableForStartup({ ledgerFilePath: ledgerFile }),
+            /tail-integrity/,
+        );
+        const client = {
+            query: async () => ({
+                rows: entries.map((entry) => ({
+                    user_id: entry.userId,
+                    generation_id: entry.generationId,
+                    scope: entry.scope,
+                    erased_at: new Date(entry.erasedAt),
+                })),
+            }),
+        };
+        await republishMissingDurableLedgerEntries(client as never, { ledgerFilePath: ledgerFile });
+        assert.equal(readDurableLedgerEntries(ledgerFile).length, 2);
+        assertDurableLedgerAvailableForStartup({ ledgerFilePath: ledgerFile });
     } finally {
         rmSync(dir, { recursive: true, force: true });
     }

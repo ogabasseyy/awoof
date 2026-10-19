@@ -58,7 +58,17 @@ export function assertDurableLedgerAvailableForStartup(options: {
 }): void {
     const targetPath = resolve(options.ledgerFilePath);
     const parentDir = dirname(targetPath);
-    if (existsSync(targetPath) && statSync(targetPath).size > 0) return;
+    if (existsSync(targetPath) && statSync(targetPath).size > 0) {
+        // A nonempty ledger whose tail marker is missing or stale has
+        // lost history (for example an in-place tail truncation) and
+        // must fail closed rather than reconcile a partial history.
+        if (existsSync(join(parentDir, LEDGER_EVER_WRITTEN_MARKER)) && !ledgerTailMatches(targetPath)) {
+            throw new Error(
+                `Durable deletion ledger at ${targetPath} fails tail-integrity verification; refusing to start against a possibly restored database. Restore the ledger file or republish the full history deliberately.`,
+            );
+        }
+        return;
+    }
     if (existsSync(targetPath) && existsSync(join(parentDir, LEDGER_EVER_WRITTEN_MARKER))) {
         throw new Error(
             `Durable deletion ledger is empty at ${targetPath} but tombstones were previously written; refusing to start against a possibly restored database. Restore the ledger file from the backups volume.`,
@@ -168,6 +178,7 @@ function appendDurableLedgerPayloadWithLock(
     // that startup cannot distinguish from a fresh deployment.
     ensureLedgerEverWrittenMarker(parentDir);
     appendDurableLedgerPayload(targetPath, parentDir, createdDirs, cursor, payload, assertOwned);
+    updateLedgerTailMarker(targetPath);
 }
 
 const LEDGER_LOCK_TIMEOUT_MS = 10_000;
@@ -257,16 +268,52 @@ function processStartTicks(pid: number): string | null {
     }
 }
 
+
+const LEDGER_TAIL_MARKER = '.academic-profile-ledger-tail.json';
+
+function ledgerTailState(targetPath: string): { count: number; lastKey: string | null } {
+    const entries = readDurableLedgerEntries(targetPath);
+    return {
+        count: entries.length,
+        lastKey: entries.length > 0 ? ledgerEntryKey(entries[entries.length - 1]!) : null,
+    };
+}
+
+function updateLedgerTailMarker(targetPath: string): void {
+    const parentDir = dirname(targetPath);
+    const state = ledgerTailState(targetPath);
+    const tailPath = join(parentDir, LEDGER_TAIL_MARKER);
+    const fd = openSync(tailPath, 'w', 0o600);
+    try {
+        writeSync(fd, `${JSON.stringify(state)}\n`);
+        fsyncSync(fd);
+    } finally {
+        closeSync(fd);
+    }
+    const dfd = openSync(parentDir, 'r');
+    try { fsyncSync(dfd); } finally { closeSync(dfd); }
+}
+
+function ledgerTailMatches(targetPath: string): boolean {
+    try {
+        const recorded = JSON.parse(readFileSync(join(dirname(targetPath), LEDGER_TAIL_MARKER), 'utf8')) as { count?: unknown; lastKey?: unknown };
+        const actual = ledgerTailState(targetPath);
+        return recorded.count === actual.count && recorded.lastKey === actual.lastKey;
+    } catch {
+        return false;
+    }
+}
+
 function ensureLedgerEverWrittenMarker(parentDir: string): void {
     // Record on the volume that tombstones now exist, so a later loss
     // of only the ledger file fails the startup gate closed instead of
     // silently skipping reconciliation.
     const everWrittenPath = join(parentDir, LEDGER_EVER_WRITTEN_MARKER);
-    if (existsSync(everWrittenPath)) return;
     try {
         writeFileSync(everWrittenPath, `${new Date().toISOString()}\n`, { flag: 'wx', mode: 0o600 });
     } catch (error) {
-        if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error;
+        if ((error as NodeJS.ErrnoException).code === 'EEXIST') return;
+        throw error;
     }
     const dfd = openSync(parentDir, 'r');
     try { fsyncSync(dfd); } finally { closeSync(dfd); }
@@ -505,8 +552,8 @@ export async function republishMissingDurableLedgerEntries(
     // just the currently unpublished rows; detect that state before
     // locking and load the full history for the append pass.
     let appendEntries = dbEntries;
-    const ledgerLost = (!existsSync(targetPathForLock) || statSync(targetPathForLock).size === 0)
-        && existsSync(join(dirname(targetPathForLock), LEDGER_EVER_WRITTEN_MARKER));
+    const ledgerLost = existsSync(join(dirname(targetPathForLock), LEDGER_EVER_WRITTEN_MARKER))
+        && (!existsSync(targetPathForLock) || statSync(targetPathForLock).size === 0 || !ledgerTailMatches(targetPathForLock));
     if (ledgerLost) {
         appendEntries = await readDatabaseLedgerEntries(client);
     }
