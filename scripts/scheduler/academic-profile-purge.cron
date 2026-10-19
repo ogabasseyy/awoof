@@ -11,17 +11,21 @@
 # 1. Legal and management authorization of ACADEMIC_PROFILE_RETENTION_DAYS (e.g. 30).
 # 2. ACADEMIC_PROFILE_RETENTION_DAYS set in production environment (.env / systemd).
 # 3. Migration 088 applied (providing academic_profile_deletion_ledger and generation_id).
-# 4. Host directory /var/backups/awoof or repo-relative backups/ exists with 0700 permissions.
+# 4. The backend container's backups volume (backend_backups, mounted at /usr/src/app/backups) is provisioned so tombstones land in the same durable ledger the API appends to.
 #
 # HOSTINGER VPS INSTALLATION INSTRUCTIONS:
-# Option A (Recommended - Container execution via crontab for deploy user):
+# Supported form (Container execution via crontab for deploy user):
 #   crontab -e
 #   Add the line below (uncommented):
 #   30 3 * * * docker exec -i -u nodejs awoof-backend node dist/scripts/cleanup-academic-profile-data.js --batch-size 500 >> /var/log/awoof/academic-profile-purge.log 2>&1
 #
-# Option B (Host execution via /etc/cron.d/awoof-academic-profile-purge):
-#   Requires host-side build (npm run build:artifact in apps/backend).
-#   30 3 * * * deploy cd /home/deploy/awoof/apps/backend && ACADEMIC_PROFILE_DELETION_LEDGER_FILE=/home/deploy/awoof/backups/academic-profile-deletion-ledger.jsonl /usr/bin/node dist/scripts/cleanup-academic-profile-data.js --batch-size 500 >> /var/log/awoof/academic-profile-purge.log 2>&1
+# Host-side execution is intentionally not offered: under
+# docker-compose.hostinger.yml the database publishes no host port (its
+# DB_HOST name only resolves inside the Compose network), and the durable
+# deletion ledger lives in the backend container's backups volume
+# (/usr/src/app/backups). A host process could neither reach Postgres nor
+# write the ledger that backend startup reconciliation reads, so erased
+# profiles could be resurrected by a later restore.
 #
 # CONCURRENCY AND RESILIENCE:
 # - The docker exec form must run as the nodejs user (-u nodejs): the image

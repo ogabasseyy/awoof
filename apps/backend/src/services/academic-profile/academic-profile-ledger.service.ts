@@ -18,7 +18,7 @@
  * It NEVER stores names, emails, academic answers, or PII.
  */
 
-import { closeSync, existsSync, fsyncSync, mkdirSync, openSync, readFileSync, writeSync } from 'node:fs';
+import { closeSync, existsSync, fsyncSync, mkdirSync, openSync, readFileSync, statSync, unlinkSync, writeSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import type { PoolClient } from 'pg';
 
@@ -76,6 +76,58 @@ export function appendDurableLedgerEntry(
         scope: entry.scope,
         erasedAt: entry.erasedAt,
     }) + '\n';
+    // Serialize appends across processes: with the complete-write loop,
+    // a short write followed by another process's record could otherwise
+    // interleave fragments into malformed JSONL lines. The lock file is
+    // reclaimed when stale so a crashed appender cannot wedge retries.
+    const releaseLock = acquireLedgerAppendLock(targetPath);
+    try {
+        appendDurableLedgerPayload(targetPath, parentDir, createdDirs, cursor, payload);
+    } finally {
+        releaseLock();
+    }
+}
+
+const LEDGER_LOCK_TIMEOUT_MS = 10_000;
+const LEDGER_LOCK_STALE_MS = 30_000;
+
+function acquireLedgerAppendLock(targetPath: string): () => void {
+    const lockPath = `${targetPath}.lock`;
+    const deadline = Date.now() + LEDGER_LOCK_TIMEOUT_MS;
+    const spin = new Int32Array(new SharedArrayBuffer(4));
+    for (;;) {
+        try {
+            const fd = openSync(lockPath, 'wx', 0o600);
+            writeSync(fd, `${process.pid}\n`);
+            return () => {
+                try { closeSync(fd); } catch { /* already closed */ }
+                try { unlinkSync(lockPath); } catch { /* already removed */ }
+            };
+        } catch (error) {
+            if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error;
+            try {
+                if (Date.now() - statSync(lockPath).mtimeMs > LEDGER_LOCK_STALE_MS) {
+                    unlinkSync(lockPath);
+                    continue;
+                }
+            } catch {
+                continue;
+            }
+            if (Date.now() > deadline) {
+                throw new Error(`Timed out acquiring durable ledger append lock at ${lockPath}`);
+            }
+            Atomics.wait(spin, 0, 0, 10);
+        }
+    }
+}
+
+function appendDurableLedgerPayload(
+    targetPath: string,
+    parentDir: string,
+    createdDirs: string[],
+    existingAncestor: string,
+    payload: string,
+): void {
     const fd = openSync(targetPath, 'a', 0o600);
     try {
         // Loop until the whole payload is on the descriptor: a short
@@ -105,7 +157,7 @@ export function appendDurableLedgerEntry(
     if (createdDirs.length === 0) {
         syncDir(parentDir);
     } else {
-        for (const dir of [...createdDirs, cursor]) {
+        for (const dir of [...createdDirs, existingAncestor]) {
             syncDir(dir);
         }
     }

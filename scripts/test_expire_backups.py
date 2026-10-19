@@ -161,6 +161,21 @@ class BackupExpiryTests(unittest.TestCase):
         self.assertEqual(result["preservedLastResort"], older.name)
         self.assertTrue(older.is_file())
 
+    def test_future_dated_manifest_is_rejected(self):
+        future = self.create_backup("awoof-20270101T120000Z.dump", self.now + timedelta(days=30))
+        valid_items, warnings = expire_module.scan_backups(self.backup_dir, verify_checksum=True)
+        self.assertEqual(len(valid_items), 0)
+        self.assertTrue(any("future-dated manifest rejected" in w.lower() for w in warnings))
+        # And it must not shield genuine backups in apply mode either
+        result = expire_module.expire_backups(self.backup_dir, retention_days=30, dry_run=False, now=self.now)
+        self.assertEqual(result["totalFound"], 0)
+        self.assertTrue(future.is_file())
+
+    def test_slightly_future_manifest_within_skew_is_accepted(self):
+        self.create_backup("awoof-skew.dump", self.now + timedelta(minutes=2))
+        valid_items, warnings = expire_module.scan_backups(self.backup_dir)
+        self.assertEqual(len(valid_items), 1)
+
     def test_cli_defaults_to_dry_run(self):
         old = self.create_backup("awoof-20260908T120000Z.dump", self.now - timedelta(days=40))
         recent = self.create_backup("awoof-20261015T120000Z.dump", self.now - timedelta(days=3))

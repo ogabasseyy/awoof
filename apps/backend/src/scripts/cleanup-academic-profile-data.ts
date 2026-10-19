@@ -48,16 +48,32 @@ async function main(): Promise<void> {
         process.exitCode = 1;
     };
     try {
+        // Strict argument validation before any database work: an
+        // unrecognized flag must never fall through to the destructive
+        // default path (a typo like --dryrun previously ran the purge).
         const args = process.argv.slice(2);
-        const isDryRun = args.includes('--dry-run');
+        let isDryRun = false;
         let batchSize = 500;
-        const batchSizeIdx = args.indexOf('--batch-size');
-        const nextArg = batchSizeIdx !== -1 ? args[batchSizeIdx + 1] : undefined;
-        if (nextArg !== undefined) {
-            const parsed = parseInt(nextArg, 10);
-            if (!Number.isNaN(parsed) && parsed > 0) {
-                batchSize = parsed;
+        try {
+            for (let i = 0; i < args.length; i += 1) {
+                const arg = args[i] as string;
+                if (arg === '--dry-run') {
+                    if (isDryRun) throw new Error('duplicate --dry-run argument');
+                    isDryRun = true;
+                } else if (arg === '--batch-size') {
+                    const nextArg = args[i + 1];
+                    if (nextArg === undefined || !/^[0-9]+$/.test(nextArg)) throw new Error('--batch-size requires a positive integer value');
+                    const parsed = Number(nextArg);
+                    if (!Number.isSafeInteger(parsed) || parsed <= 0) throw new Error('--batch-size requires a positive integer value');
+                    batchSize = parsed;
+                    i += 1;
+                } else {
+                    throw new Error(`unrecognized argument: ${arg}`);
+                }
             }
+        } catch {
+            fail('academic profile purge refused: unrecognized or malformed arguments (expected --dry-run and/or --batch-size <positive integer>)');
+            return;
         }
 
         let retentionDays: number;

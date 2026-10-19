@@ -44,11 +44,16 @@ class BackupItem:
         return (now - self.created_at).total_seconds() / 86400.0
 
 
-def scan_backups(backup_dir: Path, verify_checksum: bool = False) -> Tuple[List[BackupItem], List[str]]:
+CLOCK_SKEW_TOLERANCE = timedelta(minutes=5)
+
+
+def scan_backups(backup_dir: Path, verify_checksum: bool = False, now: Optional[datetime] = None) -> Tuple[List[BackupItem], List[str]]:
     """
     Scans the backup directory for valid, manifest-backed dumps.
     Returns (valid_items, warnings).
     """
+    if now is None:
+        now = datetime.now(timezone.utc)
     valid_items: List[BackupItem] = []
     warnings: List[str] = []
 
@@ -93,6 +98,14 @@ def scan_backups(backup_dir: Path, verify_checksum: bool = False) -> Tuple[List[
             if created_at.tzinfo is None:
                 created_at = created_at.replace(tzinfo=timezone.utc)
 
+            # A future-dated manifest is a clock or provenance error, not
+            # a fresh backup: accepting it would give the misdated dump a
+            # negative age, let apply mode expire genuine older backups
+            # around it, and shield it for its future date plus retention.
+            if created_at > now + CLOCK_SKEW_TOLERANCE:
+                warnings.append(f"Future-dated manifest rejected: {manifest_path.name} createdAt {created_at.isoformat()} is later than host time {now.isoformat()}")
+                continue
+
             sha256_hash = data.get("sha256", "")
             size_bytes = data.get("sizeBytes", entry.stat().st_size)
 
@@ -135,7 +148,7 @@ def expire_backups(
     # In apply mode, always verify checksums to ensure corrupted dumps cannot displace valid backups
     effective_verify_checksum = verify_checksum or (not dry_run)
     cutoff = now - timedelta(days=retention_days)
-    valid_items, warnings = scan_backups(backup_dir, verify_checksum=effective_verify_checksum)
+    valid_items, warnings = scan_backups(backup_dir, verify_checksum=effective_verify_checksum, now=now)
 
     to_expire: List[BackupItem] = []
     to_keep: List[BackupItem] = []
