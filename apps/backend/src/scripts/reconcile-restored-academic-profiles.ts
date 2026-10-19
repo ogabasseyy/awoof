@@ -6,7 +6,8 @@
  * against the authoritative host deletion ledger.
  *
  * Usage:
- *   npx tsx src/scripts/reconcile-restored-academic-profiles.ts [--dry-run] [--ledger-file <path>] [--require-ledger]
+ *   npx tsx src/scripts/reconcile-restored-academic-profiles.ts [--dry-run] [--ledger-file <path>] [--allow-missing-ledger]
+ * A ledger file is required by default; --allow-missing-ledger opts out explicitly.
  */
 
 import pg from 'pg';

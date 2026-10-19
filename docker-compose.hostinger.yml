@@ -49,6 +49,13 @@ services:
       JWT_REFRESH_SECRET: ${JWT_REFRESH_SECRET:?Set JWT_REFRESH_SECRET}
       CORS_ORIGIN: ${CORS_ORIGIN:?Set CORS_ORIGIN to the public HTTPS web origin}
       FRONTEND_URL: ${FRONTEND_URL:?Set FRONTEND_URL to the public HTTPS web origin}
+      # ONE-TIME ROLLOUT ONLY: the first deployment of the durable
+      # deletion ledger finds a genuinely empty backend_backups volume
+      # (no tombstone could exist before this code shipped), so this
+      # authorizes writing the initialized marker once. Remove this line
+      # after the first healthy deploy; leaving it set would let an
+      # emptied volume masquerade as a fresh deployment.
+      ACADEMIC_PROFILE_FRESH_DEPLOYMENT: ${ACADEMIC_PROFILE_FRESH_DEPLOYMENT:-false}
     ports:
       - "127.0.0.1:5001:5000"
     depends_on:

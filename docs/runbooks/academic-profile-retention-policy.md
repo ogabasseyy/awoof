@@ -68,6 +68,9 @@ Every location where academic-profile personal data or its derivatives exist mus
 | **T6: Legitimate profile recreation** | Authenticated Student (session `userId`) | Voluntary navigation to `/student/profile/complete` and save | New row in `student_academic_profiles` with fresh `generation_id` | Immediate | Standard save concurrency | New `generation_id != old_generation_id`; revision starts at 1 |
 | **T7: Backup restoration & quarantine** | Disaster Recovery Operator | Restoring `awoof-*.dump` following system outage or test drill | Entire database snapshot | Prior to releasing traffic | Fail-closed: application must not start until reconciliation succeeds — enforced in backend startup, which runs reconciliation before listening whenever the durable ledger exists on the host and aborts startup on failure (the CLI remains available for quarantined manual runs) | `reconcile-restored-academic-profiles` output; startup reconciliation log line; stale restored rows purged; recreated generations preserved |
 
+**Rollout (first deployment of the ledger gate):** the first deploy finds a genuinely empty `backend_backups` volume, because no tombstone could exist before this code shipped. For that one deploy, set `ACADEMIC_PROFILE_FRESH_DEPLOYMENT=true` in the VPS `.env` (wired through `docker-compose.hostinger.yml`); startup writes `.academic-profile-ledger-initialized` into the volume and later restarts no longer need the flag. Remove the flag from `.env` after the first healthy deploy — leaving it set would let an emptied volume masquerade as a fresh deployment. Never set it on a host that has ever recorded an erasure unless the ledger volume is intact.
+
+
 ---
 
 ## 3. Server-Generated Generation Semantics
