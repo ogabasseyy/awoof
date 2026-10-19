@@ -62,7 +62,8 @@ export function assertDurableLedgerAvailableForStartup(options: {
         // A nonempty ledger whose tail marker is missing or stale has
         // lost history (for example an in-place tail truncation) and
         // must fail closed rather than reconcile a partial history.
-        if (!existsSync(join(parentDir, LEDGER_EVER_WRITTEN_MARKER)) || !ledgerTailMatches(targetPath)) {
+        if (!existsSync(join(parentDir, LEDGER_INITIALIZED_MARKER))
+            || !existsSync(join(parentDir, LEDGER_EVER_WRITTEN_MARKER)) || !ledgerTailMatches(targetPath)) {
             throw new Error(
                 `Durable deletion ledger at ${targetPath} fails tail-integrity verification; refusing to start against a possibly restored database. Restore the ledger file or republish the full history deliberately.`,
             );
@@ -138,6 +139,9 @@ function prepareLedgerAppend(
     // drop the lost history and let a later restore resurrect profiles
     // covered only by the omitted entries. Fail closed so the full
     // history is restored or republished deliberately.
+    if (existsSync(join(parentDir, LEDGER_EVER_WRITTEN_MARKER)) && !existsSync(join(parentDir, LEDGER_INITIALIZED_MARKER))) {
+        throw new Error(`Durable deletion ledger volume at ${parentDir} has lost its initialized marker; refusing to append. Restore the volume markers or follow the fresh-deployment rollout procedure.`);
+    }
     if (options?.allowRecreateAfterLoss !== true && existsSync(join(parentDir, LEDGER_EVER_WRITTEN_MARKER))
         && (!existsSync(targetPath) || statSync(targetPath).size === 0)) {
         throw new Error(`Durable deletion ledger is missing or empty at ${targetPath} but tombstones were previously written; refusing to recreate it. Restore the ledger file or republish the full history deliberately.`);
@@ -178,6 +182,15 @@ function appendDurableLedgerPayloadWithLock(
     // otherwise leave an ambiguous initialized-but-empty state
     // that startup cannot distinguish from a fresh deployment.
     ensureLedgerEverWrittenMarker(parentDir);
+    // Volume birth: the first-ever append on a gate-uninitialized path
+    // also records initialization, so later appends can distinguish a
+    // born volume from one whose initialized marker was lost (the
+    // guard in prepareLedgerAppend rejects the latter).
+    try {
+        writeFileSync(join(parentDir, LEDGER_INITIALIZED_MARKER), `${new Date().toISOString()}\n`, { flag: 'wx' });
+    } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error;
+    }
     const sizeBefore = existsSync(targetPath) ? statSync(targetPath).size : 0;
     const tailBefore = readLedgerTailMarker(targetPath);
     if (!skipTailVerification && sizeBefore > 0 && (!tailBefore || tailBefore.bytes !== sizeBefore)) {

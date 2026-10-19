@@ -16,6 +16,7 @@ import {
 test('durable ledger appends entries and reads back valid JSONL', () => {
     const dir = mkdtempSync(join(tmpdir(), 'ledger-test-'));
     const ledgerFile = join(dir, 'test-ledger.jsonl');
+        writeFileSync(join(dir, '.academic-profile-ledger-initialized'), 'test\n');
     try {
         const entry1: AcademicProfileLedgerEntry = {
             userId: '11111111-1111-4111-8111-111111111111',
@@ -45,6 +46,7 @@ test('durable ledger appends entries and reads back valid JSONL', () => {
 test('republish appends committed database erasures missing from the host file', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'ledger-republish-'));
     const ledgerFile = join(dir, 'test-ledger.jsonl');
+        writeFileSync(join(dir, '.academic-profile-ledger-initialized'), 'test\n');
     try {
         const present: AcademicProfileLedgerEntry = {
             userId: '11111111-1111-4111-8111-111111111111',
@@ -159,6 +161,7 @@ test('startup ledger gate fails closed when the backups directory is unavailable
 test('stale lock release does not unlink a replacement owner lock', () => {
     const dir = mkdtempSync(join(tmpdir(), 'ledger-lock-'));
     const ledgerFile = join(dir, 'test-ledger.jsonl');
+        writeFileSync(join(dir, '.academic-profile-ledger-initialized'), 'test\n');
     const lockFile = `${ledgerFile}.lock`;
     const entry: AcademicProfileLedgerEntry = {
         userId: '11111111-1111-4111-8111-111111111111',
@@ -183,6 +186,7 @@ test('stale lock release does not unlink a replacement owner lock', () => {
 test('startup gate fails closed when the ledger disappears after tombstones were written', () => {
     const dir = mkdtempSync(join(tmpdir(), 'ledger-ever-written-'));
     const ledgerFile = join(dir, 'test-ledger.jsonl');
+        writeFileSync(join(dir, '.academic-profile-ledger-initialized'), 'test\n');
     try {
         assertDurableLedgerAvailableForStartup({ ledgerFilePath: ledgerFile, freshDeployment: true });
         appendDurableLedgerEntry({
@@ -204,6 +208,7 @@ test('startup gate fails closed when the ledger disappears after tombstones were
 test('republish repairs a missing ever-written marker when the payload is already present', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'ledger-marker-repair-'));
     const ledgerFile = join(dir, 'test-ledger.jsonl');
+        writeFileSync(join(dir, '.academic-profile-ledger-initialized'), 'test\n');
     try {
         const entry: AcademicProfileLedgerEntry = {
             userId: '11111111-1111-4111-8111-111111111111',
@@ -234,6 +239,7 @@ test('republish repairs a missing ever-written marker when the payload is alread
 test('ledger dispatcher republishes committed erasures without a second DELETE', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'ledger-dispatch-'));
     const ledgerFile = join(dir, 'test-ledger.jsonl');
+        writeFileSync(join(dir, '.academic-profile-ledger-initialized'), 'test\n');
     const previous = process.env.ACADEMIC_PROFILE_DELETION_LEDGER_FILE;
     process.env.ACADEMIC_PROFILE_DELETION_LEDGER_FILE = ledgerFile;
     try {
@@ -271,6 +277,7 @@ test('ledger dispatcher republishes committed erasures without a second DELETE',
 test('append refuses to silently recreate a lost durable ledger', () => {
     const dir = mkdtempSync(join(tmpdir(), 'ledger-lost-'));
     const ledgerFile = join(dir, 'test-ledger.jsonl');
+        writeFileSync(join(dir, '.academic-profile-ledger-initialized'), 'test\n');
     const entry: AcademicProfileLedgerEntry = {
         userId: '11111111-1111-4111-8111-111111111111',
         generationId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
@@ -290,6 +297,7 @@ test('append refuses to silently recreate a lost durable ledger', () => {
 test('republish after ledger loss recreates the complete history, not only unpublished rows', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'ledger-full-recreate-'));
     const ledgerFile = join(dir, 'test-ledger.jsonl');
+        writeFileSync(join(dir, '.academic-profile-ledger-initialized'), 'test\n');
     const entries: AcademicProfileLedgerEntry[] = [
         {
             userId: '11111111-1111-4111-8111-111111111111',
@@ -328,6 +336,7 @@ test('republish after ledger loss recreates the complete history, not only unpub
 test('startup gate detects a tail-truncated ledger and republish rebuilds it', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'ledger-tail-'));
     const ledgerFile = join(dir, 'test-ledger.jsonl');
+        writeFileSync(join(dir, '.academic-profile-ledger-initialized'), 'test\n');
     const entries: AcademicProfileLedgerEntry[] = [
         {
             userId: '11111111-1111-4111-8111-111111111111',
@@ -373,6 +382,7 @@ test('startup gate detects a tail-truncated ledger and republish rebuilds it', a
 test('tail recovery advances a stale marker only when ledger and history sets match', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'ledger-recover-'));
     const ledgerFile = join(dir, 'test-ledger.jsonl');
+        writeFileSync(join(dir, '.academic-profile-ledger-initialized'), 'test\n');
     const entry: AcademicProfileLedgerEntry = {
         userId: '11111111-1111-4111-8111-111111111111',
         generationId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',

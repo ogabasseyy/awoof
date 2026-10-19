@@ -354,7 +354,7 @@ function CompletionForm() {
     const [conflict, setConflict] = useState<string | null>(null);
     const [claimReconfirm, setClaimReconfirm] = useState<ClaimReconfirmRequest | null>(null);
     const [saveOutcome, setSaveOutcome] = useState<'saved' | null>(null);
-    const [eraseState, setEraseState] = useState<'idle' | 'confirming' | 'erasing' | 'erased'>('idle');
+    const [eraseState, setEraseState] = useState<'idle' | 'confirming' | 'erasing' | 'erased' | 'noop'>('idle');
     const [eraseError, setEraseError] = useState<string | null>(null);
     const [navFailed, setNavFailed] = useState(false);
     const [leaveDialog, setLeaveDialog] = useState(false);
@@ -1012,7 +1012,7 @@ function CompletionForm() {
         try {
             const result = await eraseAcademicProfile();
             if (!isCurrentSession(snapshot)) return;
-            setEraseState('erased');
+            setEraseState(result.erased ? 'erased' : 'noop');
             setAnnounce(result.erased
                 ? 'Your academic profile was erased.'
                 : 'No academic profile was saved, so there was nothing to erase.');
@@ -1030,6 +1030,10 @@ function CompletionForm() {
             {eraseState === 'erased' ? (
                 <p className="mt-2 text-sm text-slate-700">
                     Your saved academic details have been erased. Your student account stays active and you can keep browsing.
+                </p>
+            ) : eraseState === 'noop' ? (
+                <p className="mt-2 text-sm text-slate-700">
+                    No academic profile was saved, so there was nothing to erase. Your student account stays active and you can keep browsing.
                 </p>
             ) : (
                 <>

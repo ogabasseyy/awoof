@@ -123,7 +123,7 @@ manifest_valid() {
     if command -v python3 >/dev/null 2>&1; then
         python3 - "$manifest" "$dump" <<'PYEOF' >/dev/null 2>&1 || return 1
 import hashlib, json, sys
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 with open(sys.argv[1], encoding="utf-8") as fh:
     data = json.load(fh)
 if data.get("schemaVersion") != 1:
@@ -131,7 +131,11 @@ if data.get("schemaVersion") != 1:
 created = data.get("createdAt")
 if not isinstance(created, str) or not created:
     raise SystemExit(1)
-datetime.fromisoformat(created[:-1] + "+00:00" if created.endswith("Z") else created)
+parsed_created = datetime.fromisoformat(created[:-1] + "+00:00" if created.endswith("Z") else created)
+if parsed_created.tzinfo is None:
+    parsed_created = parsed_created.replace(tzinfo=timezone.utc)
+if parsed_created > datetime.now(timezone.utc) + timedelta(minutes=5):
+    raise SystemExit(1)
 recorded = data.get("sha256")
 if not isinstance(recorded, str) or not recorded:
     raise SystemExit(1)
