@@ -62,6 +62,7 @@ You have the explicit right to erase your optional academic profile without clos
 - Academic profile answers are retained while your account remains active and you continue your studies. If you complete or leave your programme, or if your expected graduation year has passed by more than one calendar year, Awoof may invite you to confirm the continued relevance of your data or automatically schedule the optional details for retirement.
 
 ### Account closure and soft-deletion
+- **PROPOSED - not yet in effect:** Account closure is not yet implemented in the application, no retention duration has been approved, and the automated purge is not scheduled. The statements in this section describe the intended policy and must not be published or relied on until the lifecycle is implemented and activated.
 - If you request account closure or delete your account, your account is soft-deleted. Academic profile records are retained for a grace period of **30 days** following account closure to allow for accidental deletion recovery.
 - Upon the expiration of the 30-day retention window, an automated background purge permanently erases the academic profile row from live production databases.
 

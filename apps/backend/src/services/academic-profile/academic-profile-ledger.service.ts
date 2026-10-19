@@ -136,8 +136,12 @@ export function appendDurableLedgerEntry(
     // be released by its old owner.
     const lock = acquireLedgerAppendLock(targetPath);
     try {
-        appendDurableLedgerPayload(targetPath, parentDir, createdDirs, cursor, payload, lock.assertOwned);
+        // Persist the ever-written marker BEFORE the first payload: a
+        // crash between payload fsync and marker creation would
+        // otherwise leave an ambiguous initialized-but-empty state
+        // that startup cannot distinguish from a fresh deployment.
         ensureLedgerEverWrittenMarker(parentDir);
+        appendDurableLedgerPayload(targetPath, parentDir, createdDirs, cursor, payload, lock.assertOwned);
     } finally {
         lock.release();
     }
