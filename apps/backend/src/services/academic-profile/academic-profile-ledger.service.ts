@@ -45,17 +45,31 @@ export function getDurableLedgerFilePath(): string {
 /**
  * Append a deletion record to the durable host-level JSONL ledger file.
  * Creates parent directory if missing. The append is flushed to stable
- * storage (write + fsync on an append-mode descriptor) before it is
- * treated as durable: the host file is the recovery authority after a
- * database-volume failure, so an acknowledged tombstone must survive a
- * host crash, including when this append creates the file.
+ * storage (write + fsync on an append-mode descriptor, plus an fsync of
+ * the containing directory and any ancestors this call created) before
+ * it is treated as durable: the host file is the recovery authority
+ * after a database-volume failure, so an acknowledged tombstone must
+ * survive a host crash, including when this append creates the file.
  */
 export function appendDurableLedgerEntry(
     entry: AcademicProfileLedgerEntry,
     customPath?: string | undefined,
 ): void {
     const targetPath = customPath ? resolve(customPath) : getDurableLedgerFilePath();
-    mkdirSync(dirname(targetPath), { recursive: true });
+    const parentDir = dirname(targetPath);
+    // Collect directories this call is about to create: fsyncing the file
+    // persists its contents, but a newly created directory entry (and the
+    // entries of any newly created ancestors) also need a directory fsync
+    // or a host power loss can still drop the acknowledged tombstone.
+    const createdDirs: string[] = [];
+    let cursor = parentDir;
+    while (!existsSync(cursor)) {
+        createdDirs.push(cursor);
+        const parent = dirname(cursor);
+        if (parent === cursor) break;
+        cursor = parent;
+    }
+    mkdirSync(parentDir, { recursive: true });
     const payload = JSON.stringify({
         userId: entry.userId,
         generationId: entry.generationId,
@@ -68,6 +82,21 @@ export function appendDurableLedgerEntry(
         fsyncSync(fd);
     } finally {
         closeSync(fd);
+    }
+    const syncDir = (dir: string): void => {
+        const dfd = openSync(dir, 'r');
+        try {
+            fsyncSync(dfd);
+        } finally {
+            closeSync(dfd);
+        }
+    };
+    if (createdDirs.length === 0) {
+        syncDir(parentDir);
+    } else {
+        for (const dir of [...createdDirs, cursor]) {
+            syncDir(dir);
+        }
     }
 }
 

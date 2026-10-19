@@ -78,6 +78,23 @@ test('republish appends committed database erasures missing from the host file',
     }
 });
 
+test('durable ledger append creates nested parent directories', () => {
+    const nestedEntry: AcademicProfileLedgerEntry = {
+        userId: '11111111-1111-4111-8111-111111111111',
+        generationId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+        scope: 'profile_only',
+        erasedAt: '2026-10-18T12:00:00.000Z',
+    };
+    const dir = mkdtempSync(join(tmpdir(), 'ledger-nested-'));
+    const ledgerFile = join(dir, 'a', 'b', 'ledger.jsonl');
+    try {
+        appendDurableLedgerEntry(nestedEntry, ledgerFile);
+        assert.deepEqual(readDurableLedgerEntries(ledgerFile), [nestedEntry]);
+    } finally {
+        rmSync(dir, { recursive: true, force: true });
+    }
+});
+
 test('durable ledger returns empty array when file does not exist', () => {
     const nonExistent = join(tmpdir(), 'non-existent-ledger-' + Date.now() + '.jsonl');
     const loaded = readDurableLedgerEntries(nonExistent);
