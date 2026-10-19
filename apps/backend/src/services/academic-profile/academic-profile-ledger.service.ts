@@ -520,7 +520,7 @@ export async function readDatabaseLedgerEntries(
         )
         : userId
         ? await client.query<{ user_id: string; generation_id: string; scope: string; erased_at: Date | string }>(
-            `SELECT user_id, generation_id, scope, erased_at
+            `SELECT id, user_id, generation_id, scope, erased_at
              FROM academic_profile_deletion_ledger
              WHERE user_id = $1
              ORDER BY erased_at ASC`,
@@ -528,14 +528,14 @@ export async function readDatabaseLedgerEntries(
         )
         : since
             ? await client.query<{ user_id: string; generation_id: string; scope: string; erased_at: Date | string }>(
-                `SELECT user_id, generation_id, scope, erased_at
+                `SELECT id, user_id, generation_id, scope, erased_at
                  FROM academic_profile_deletion_ledger
                  WHERE erased_at >= $1
                  ORDER BY erased_at ASC`,
                 [since],
             )
             : await client.query<{ user_id: string; generation_id: string; scope: string; erased_at: Date | string }>(
-                `SELECT user_id, generation_id, scope, erased_at
+                `SELECT id, user_id, generation_id, scope, erased_at
                  FROM academic_profile_deletion_ledger
                  ORDER BY erased_at ASC`,
             );
@@ -596,7 +596,7 @@ export async function republishMissingDurableLedgerEntries(
             // Anomaly (missing/stale marker): recover only when the
             // ledger set exactly matches committed history; otherwise
             // fall through to the full-history rebuild below.
-            if (await recoverLedgerTailIfPossible({ connect: async () => client }, targetPathForLock)) {
+            if (await recoverLedgerTailWithClient(client, targetPathForLock)) {
                 return { republished: 0, latest: null };
             }
             dbEntries = await readDatabaseLedgerEntries(client);
@@ -728,10 +728,23 @@ export async function recoverLedgerTailIfPossible(
     pool: Pick<Pool, 'connect'>,
     ledgerFilePath?: string | undefined,
 ): Promise<boolean> {
-    const targetPath = ledgerFilePath ? resolve(ledgerFilePath) : getDurableLedgerFilePath();
     let client: PoolClient | undefined;
     try {
         client = await pool.connect();
+        return await recoverLedgerTailWithClient(client, ledgerFilePath);
+    } catch {
+        return false;
+    } finally {
+        client?.release();
+    }
+}
+
+export async function recoverLedgerTailWithClient(
+    client: PoolClient,
+    ledgerFilePath?: string | undefined,
+): Promise<boolean> {
+    const targetPath = ledgerFilePath ? resolve(ledgerFilePath) : getDurableLedgerFilePath();
+    try {
         const hostEntries = readDurableLedgerEntries(targetPath);
         const dbEntries = await readDatabaseLedgerEntries(client);
         const hostKeys = new Set(hostEntries.map(ledgerEntryKey));
@@ -744,8 +757,6 @@ export async function recoverLedgerTailIfPossible(
         return true;
     } catch {
         return false;
-    } finally {
-        client?.release();
     }
 }
 

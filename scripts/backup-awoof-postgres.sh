@@ -80,6 +80,26 @@ cat <<EOF > "$manifest_temp"
 EOF
 chmod 600 "$manifest_temp"
 mv "$manifest_temp" "$manifest_target"
+# Durably flush the dump, manifest, and directory entries before the
+# pair counts as published and rotation may delete older copies.
+if command -v python3 >/dev/null 2>&1; then
+    python3 - "$target" "$manifest_target" "$backup_dir" <<'PYEOF'
+import os, sys
+for path in sys.argv[1:3]:
+    fd = os.open(path, os.O_RDONLY)
+    try:
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+dfd = os.open(sys.argv[3], os.O_RDONLY)
+try:
+    os.fsync(dfd)
+finally:
+    os.close(dfd)
+PYEOF
+else
+    sync
+fi
 published=1
 trap - EXIT HUP INT TERM
 
@@ -101,8 +121,8 @@ manifest_valid() {
     [ -f "$manifest" ] || return 1
     grep -Eq '"schemaVersion"[[:space:]]*:[[:space:]]*1([^0-9]|$)' "$manifest" || return 1
     if command -v python3 >/dev/null 2>&1; then
-        python3 - "$manifest" <<'PYEOF' >/dev/null 2>&1 || return 1
-import json, sys
+        python3 - "$manifest" "$dump" <<'PYEOF' >/dev/null 2>&1 || return 1
+import hashlib, json, sys
 from datetime import datetime
 with open(sys.argv[1], encoding="utf-8") as fh:
     data = json.load(fh)
@@ -112,7 +132,17 @@ created = data.get("createdAt")
 if not isinstance(created, str) or not created:
     raise SystemExit(1)
 datetime.fromisoformat(created[:-1] + "+00:00" if created.endswith("Z") else created)
+recorded = data.get("sha256")
+if not isinstance(recorded, str) or not recorded:
+    raise SystemExit(1)
+digest = hashlib.sha256()
+with open(sys.argv[2], "rb") as fh:
+    for chunk in iter(lambda: fh.read(1024 * 1024), b""):
+        digest.update(chunk)
+if digest.hexdigest() != recorded:
+    raise SystemExit(1)
 PYEOF
+        return 0
     else
         grep -Eq '"createdAt"[[:space:]]*:[[:space:]]*"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}' "$manifest" || return 1
     fi
