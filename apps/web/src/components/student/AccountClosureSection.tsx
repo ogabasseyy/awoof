@@ -112,11 +112,26 @@ export default function AccountClosureSection({ userId }: { userId: string }) {
             try {
                 await refreshSessionAccessToken();
             } catch {
-                if (isCurrentSession(captured.snapshot)) {
-                    setError('We could not confirm whether your account was closed. Sign in again to check its state.');
+                // A completed closure revokes the refresh credential, so a
+                // failed refresh cannot distinguish "closed" from "stale":
+                // check the account with the access token already held.
+                if (!isCurrentSession(captured.snapshot)) { resetForm(); return; }
+                try {
+                    await passwordProofApiClient.get('/students/profile');
+                    setError('Account closure failed. Check your password (or type CLOSE MY ACCOUNT exactly) and try again.');
                     setBusy(false);
-                } else {
-                    resetForm();
+                } catch (checkError) {
+                    const checkStatus = axios.isAxiosError(checkError) ? checkError.response?.status : undefined;
+                    if (checkStatus === 401) {
+                        clearTokens();
+                        // eslint-disable-next-line @next/next/no-location-assign-relative-destination
+                        window.location.assign('/auth/student/login');
+                    } else if (isCurrentSession(captured.snapshot)) {
+                        setError('We could not confirm whether your account was closed. Sign in again to check its state.');
+                        setBusy(false);
+                    } else {
+                        resetForm();
+                    }
                 }
                 return;
             }
