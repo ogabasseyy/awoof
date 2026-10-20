@@ -93,6 +93,9 @@ export async function closeOwnAccount(
             throw new ServiceUnavailableError('Account closure is unavailable until the retention window is configured');
         }
 
+        // codeql[js/user-controlled-bypass]: re-verifying the account's own
+        // password (bcrypt comparison against the stored hash) is the
+        // credential check for this destructive action, not a bypass of one.
         if (row.password_hash !== null) {
             if (!input.password || !(await verifyPassword(input.password, row.password_hash))) {
                 throw new UnauthorizedError('Password confirmation failed');
