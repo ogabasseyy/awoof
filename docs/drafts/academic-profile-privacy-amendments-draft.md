@@ -38,7 +38,7 @@ We do not collect academic transcripts, grades, grade point averages (GPA), clas
 ### Strict purpose limitation and prohibitions
 - **No eligibility gating:** Optional academic details are **never** used to determine, grant, extend, restrict, or revoke student discount eligibility. An empty, partial, skipped, or erased academic profile has zero negative impact on your ability to verify enrollment or redeem discounts.
 - **Advisory estimates only:** A calculated graduation year is an automated advisory estimate based on standard curriculum lengths. It is **not** institutional proof of current active enrollment, and is never represented as an authoritative academic certificate.
-- **No merchant disclosure:** Merchants and partner vendors **never** receive your course, entry year, admission route, or graduation year in standard discount verification responses or merchant receipts. Receipts disclose only an opaque student pseudonym and an eligibility boolean (`eligible: true/false`).
+- **No merchant disclosure:** Merchants and partner vendors **never** receive your course, entry year, admission route, or graduation year in standard discount verification responses or merchant receipts. Merchant receipts never include academic-profile fields; the full receipt contents are described in the published notice's "What merchants receive" section.
 - **No automated behavioral marketing:** Academic fields are not used to build advertising profiles, credit scores, or sell to third-party data brokers.
 
 ---
@@ -68,6 +68,6 @@ You have the explicit right to erase your optional academic profile without clos
 
 ### Backup archives and final disposal
 - Production database backups are created for business continuity and disaster recovery.
-- Backups are maintained in access-restricted storage (filesystem permissions only; no backup encryption is currently implemented) and expire on a rolling **30-day** schedule under the enabled expiry job. If no backup remains within that window, the newest verified backup may be retained longer solely as a last-resort recovery copy.
+- Backups are maintained in access-restricted storage (filesystem permissions only; no backup encryption is currently implemented) and expire on a rolling **30-day** schedule under the enabled expiry job. If no backup remains within that window, the newest verified backup may be retained longer solely as a last-resort recovery copy. A backup that cannot be verified against its integrity manifest is never restored, stays access-restricted, and is removed through backup maintenance review, so it can also persist beyond 30 days until removed.
 - **Total Combined Timeline:** Personal academic data normally persists in backup dumps for up to 30 days after deletion from live systems (up to **60 days total** following account closure), subject to that last-resort exception.
 - If a database restore drill or disaster recovery occurs, our restore-safe reconciliation system automatically reapplies post-backup erasures before production traffic is re-established, ensuring that erased records are not resurrected.

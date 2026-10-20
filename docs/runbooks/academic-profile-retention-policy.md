@@ -107,9 +107,9 @@ The owner approved a 30-day academic-profile retention window on 2026-10-19: `AC
    - Profile-only erasure: **Immediate** (real-time transaction).
    - Account closure: grace retention window of the approved `ACADEMIC_PROFILE_RETENTION_DAYS` (30 days), followed by daily scheduled purge.
 2. **Phase 2: Backup Expiry (up to the configured backup retention):**
-   - Database backups are rotated on a rolling schedule (`AWOOF_BACKUP_RETENTION_DAYS`, default 30 days in `expire-awoof-backups`). The expiry `--apply` job has been scheduled since 2026-10-19 (see Activation record below); deploy-time count rotation in `backup-awoof-postgres.sh` also applies. The newest verified backup is always kept as a last-resort recovery copy, so a backup copy can outlive the 30-day window only in that case.
+   - Database backups are rotated on a rolling schedule (`AWOOF_BACKUP_RETENTION_DAYS`, default 30 days in `expire-awoof-backups`). The expiry `--apply` job has been scheduled since 2026-10-19 (see Activation record below); deploy-time count rotation in `backup-awoof-postgres.sh` also applies. The newest verified backup is always kept as a last-resort recovery copy, so a backup copy can outlive the 30-day window in that case, or where a backup cannot be verified against its integrity manifest and awaits removal through backup maintenance review (never restored, access-restricted).
    - A backup created on the last day of its rotation containing an active account expires one rotation later.
-3. **Total Maximum Retention Window:** The approved academic-profile window plus the configured backup rotation (60 days where both are 30 days), subject to the last-resort newest-backup exception above.
+3. **Total Maximum Retention Window:** The approved academic-profile window plus the configured backup rotation (60 days where both are 30 days), subject to the last-resort newest-backup and unverifiable-backup exceptions above.
 
 ### Activation record (2026-10-19)
 
