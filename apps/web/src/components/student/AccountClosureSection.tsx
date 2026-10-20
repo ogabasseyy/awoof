@@ -65,8 +65,20 @@ export default function AccountClosureSection({ userId }: { userId: string }) {
         try {
             // Fresh access token for the proof request; the DELETE itself
             // stays on the non-refreshing client so a wrong password is an
-            // inline error, never a session-clearing 401 retry.
-            await refreshSessionAccessToken().catch(() => undefined);
+            // inline error, never a session-clearing 401 retry. A failed
+            // refresh is retryable: submitting with stale credentials
+            // would misreport the outcome (and its reconciliation).
+            try {
+                await refreshSessionAccessToken();
+            } catch {
+                if (isCurrentSession(captured.snapshot)) {
+                    setError('Your session could not be refreshed. Sign in again and retry.');
+                    setBusy(false);
+                } else {
+                    resetForm();
+                }
+                return;
+            }
             if (!isCurrentSession(captured.snapshot)) { resetForm(); return; }
             await passwordProofApiClient.delete('/students/account', {
                 data: {
@@ -97,7 +109,17 @@ export default function AccountClosureSection({ userId }: { userId: string }) {
             // closure) is reconciled against the live account state before
             // anything is reported: a closed account rejects the profile
             // read, an active one still serves it.
-            await refreshSessionAccessToken().catch(() => undefined);
+            try {
+                await refreshSessionAccessToken();
+            } catch {
+                if (isCurrentSession(captured.snapshot)) {
+                    setError('We could not confirm whether your account was closed. Sign in again to check its state.');
+                    setBusy(false);
+                } else {
+                    resetForm();
+                }
+                return;
+            }
             if (!isCurrentSession(captured.snapshot)) { resetForm(); return; }
             try {
                 await passwordProofApiClient.get('/students/profile');

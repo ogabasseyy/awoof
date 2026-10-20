@@ -97,12 +97,12 @@ export async function closeOwnAccount(
         // password (bcrypt comparison against the stored hash) is the
         // credential check for this destructive action, not a bypass of one.
         if (row.password_hash !== null) {
-            const passwordMatches = input.password
-                ? await verifyPassword(input.password, row.password_hash)
-                : false;
             // codeql[js/user-controlled-bypass]: comparing the supplied
             // password against the stored bcrypt hash is the credential
             // verification itself; it does not bypass any check.
+            const passwordMatches = input.password
+                ? await verifyPassword(input.password, row.password_hash)
+                : false;
             if (!passwordMatches) {
                 throw new UnauthorizedError('Password confirmation failed');
             }
@@ -126,6 +126,7 @@ export async function closeOwnAccount(
                  active_session_auth_identity_id = NULL,
              password_reset_otp = NULL,
              password_reset_otp_expires_at = NULL,
+             student_sso_attempts_not_before = clock_timestamp(),
                  credential_generation = credential_generation + 1,
              recovery_session_binding_required = true
              WHERE id = $1 AND deleted_at IS NULL
