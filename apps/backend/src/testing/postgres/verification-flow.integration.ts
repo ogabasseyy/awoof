@@ -1208,8 +1208,10 @@ test('actual authenticated routes bind student actions to the live subject and n
             assert.equal(JSON.stringify(initiatedBody).toLowerCase().includes('token'), false);
 
             const deniedRequestBodies = [
-                { id: vendorId, email: 'vendor@example.invalid', role: 'vendor' as const },
-                { id: deletedId, email: 'deleted@example.invalid', role: 'student' as const },
+                { id: vendorId, email: 'vendor@example.invalid', role: 'vendor' as const, expectedStatus: 400 },
+                // Closed accounts are rejected at authentication (401), not by
+                // the verification layer's live-authority check (400).
+                { id: deletedId, email: 'deleted@example.invalid', role: 'student' as const, expectedStatus: 401 },
             ];
             for (const deniedActor of deniedRequestBodies) {
                 const deniedRequest = await fetch(`${baseUrl}/email/request`, {
@@ -1220,7 +1222,7 @@ test('actual authenticated routes bind student actions to the live subject and n
                     },
                     body: JSON.stringify({ processingGrantId: initiatedBody.data.processingGrantId }),
                 });
-                assert.equal(deniedRequest.status, 400);
+                assert.equal(deniedRequest.status, deniedActor.expectedStatus);
             }
 
             const requested = await fetch(`${baseUrl}/email/request`, {
