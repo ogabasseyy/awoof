@@ -77,6 +77,21 @@ test('rejects a stale session rotated after authentication', async () => {
     assert.ok(ok.closedAt);
 });
 
+test('refuses closure when the retention window differs from the approved 30 days', async () => {
+    const previous = process.env['ACADEMIC_PROFILE_RETENTION_DAYS'];
+    process.env['ACADEMIC_PROFILE_RETENTION_DAYS'] = '90';
+    try {
+        const pool = fakePool(student);
+        await assert.rejects(
+            closeOwnAccount(pool as never, 'user-1', { password: 'correct' }, async () => true),
+            /approved 30-day retention window/,
+        );
+        assert.equal(pool.calls.some((call) => call.sql.startsWith('UPDATE users')), false);
+    } finally {
+        if (previous !== undefined) process.env['ACADEMIC_PROFILE_RETENTION_DAYS'] = previous;
+    }
+});
+
 test('refuses closure when the retention window is not configured', async () => {
     const previous = process.env['ACADEMIC_PROFILE_RETENTION_DAYS'];
     delete process.env['ACADEMIC_PROFILE_RETENTION_DAYS'];

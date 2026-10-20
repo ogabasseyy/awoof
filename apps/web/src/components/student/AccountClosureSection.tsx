@@ -196,7 +196,7 @@ export default function AccountClosureSection({ userId }: { userId: string }) {
                     </label>
                     {error ? <p role="alert" className="text-sm text-red-600">{error}</p> : null}
                     <Button type="button" variant="destructive" onClick={() => void submit()} disabled={busy || (!password && confirmation !== 'CLOSE MY ACCOUNT')} className="w-full rounded-full">
-                        {busy ? 'Closing…' : 'Permanently close my account'}
+                        {busy ? 'Closing…' : 'Close my account'}
                     </Button>
                     <Button type="button" variant="ghost" onClick={resetForm} disabled={busy} className="w-full rounded-full">
                         Keep my account

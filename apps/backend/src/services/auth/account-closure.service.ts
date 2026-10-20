@@ -30,6 +30,9 @@ import {
     resolveAcademicProfileRetentionDays,
 } from '../academic-profile/academic-profile-retention.service.js';
 
+/** The owner-approved retention window the published notices promise. */
+export const APPROVED_RETENTION_DAYS = 30;
+
 export type CloseOwnAccountResult = {
     closedAt: Date;
     /** Retention days before the academic profile purge applies. */
@@ -91,6 +94,12 @@ export async function closeOwnAccount(
             retentionDays = resolveAcademicProfileRetentionDays(process.env[ACADEMIC_PROFILE_RETENTION_ENV_VAR] ?? null);
         } catch {
             throw new ServiceUnavailableError('Account closure is unavailable until the retention window is configured');
+        }
+        // The published promise is specifically 30 days; any other value
+        // would make the UI and privacy notice false, so closure refuses
+        // until the approved value is configured.
+        if (retentionDays !== APPROVED_RETENTION_DAYS) {
+            throw new ServiceUnavailableError('Account closure is unavailable until the approved 30-day retention window is configured');
         }
 
         // codeql[js/user-controlled-bypass]: re-verifying the account's own
