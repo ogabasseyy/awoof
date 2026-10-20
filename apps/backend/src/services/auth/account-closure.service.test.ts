@@ -42,6 +42,7 @@ test('closes a password account after password verification and revokes sessions
     assert.match(update.sql, /refresh_token_hash = NULL/);
     assert.match(update.sql, /active_session_id = NULL/);
     assert.match(update.sql, /credential_generation = credential_generation \+ 1/);
+    assert.match(update.sql, /recovery_session_binding_required = true/);
 });
 
 test('rejects a wrong password without updating', async () => {

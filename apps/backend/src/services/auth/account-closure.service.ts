@@ -9,7 +9,11 @@
  * Sessions are revoked in the same statement: refresh credentials are
  * cleared, the active session binding is dropped, and
  * `credential_generation` is bumped so outstanding access tokens that
- * carry a session id can never match a future session.
+ * carry a session id can never match a future session, and
+ * `recovery_session_binding_required` is set permanently so legacy
+ * sid-less tokens stay rejected even if support later restores the
+ * account (restoration clears only `deleted_at`; the student signs in
+ * fresh and that login is session-bound like a recovered account).
  *
  * Closure is student-only: vendor accounts carry live business records
  * (products, orders, payouts) and admin accounts are operational, so
@@ -99,7 +103,8 @@ export async function closeOwnAccount(
                  active_session_id = NULL,
                  active_session_issued_at = NULL,
                  active_session_auth_identity_id = NULL,
-                 credential_generation = credential_generation + 1
+                 credential_generation = credential_generation + 1,
+             recovery_session_binding_required = true
              WHERE id = $1 AND deleted_at IS NULL
              RETURNING deleted_at`,
             [userId],
