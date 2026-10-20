@@ -127,7 +127,7 @@ export function ruleFromArtifact(
 export function loadAcademicProgrammeReference(): AcademicProgrammeReference {
     try {
         const raw = readFileSync(
-            new URL('../../data/academic-programmes/nuc-v2.normalized.json', import.meta.url),
+            new URL('../../data/academic-programmes/awoof-v1.normalized.json', import.meta.url),
             'utf8',
         );
         const parsed: unknown = JSON.parse(raw);

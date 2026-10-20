@@ -13,6 +13,59 @@
 
 /**
  * @swagger
+ * /api/students/account:
+ *   delete:
+ *     summary: Close the caller's own student account (soft delete)
+ *     description: >
+ *       Marks the student account deleted, revokes every session
+ *       immediately, and schedules the optional academic profile for
+ *       purge after the approved retention window. Password accounts
+ *       must re-enter their current password; passwordless accounts
+ *       must send the confirmation phrase CLOSE MY ACCOUNT.
+ *     tags: [Students]
+ *     security:
+ *       - bearerAuth: []
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             properties:
+ *               password:
+ *                 type: string
+ *                 format: password
+ *               confirmation:
+ *                 type: string
+ *                 enum: [CLOSE MY ACCOUNT]
+ *     responses:
+ *       200:
+ *         description: Account closed and all sessions revoked
+ *         content:
+ *           application/json:
+ *             schema:
+ *               allOf:
+ *                 - $ref: '#/components/schemas/SuccessResponse'
+ *                 - type: object
+ *                   properties:
+ *                     data:
+ *                       type: object
+ *                       properties:
+ *                         closedAt:
+ *                           type: string
+ *                           format: date-time
+ *                         retentionDays:
+ *                           type: integer
+ *                           nullable: true
+ *       401:
+ *         $ref: '#/components/responses/Unauthorized'
+ *       409:
+ *         description: Account already closed, or the account type cannot be closed from settings
+ *       429:
+ *         description: Too many failed closure proofs for this account; wait for the rate-limit window (see RateLimit headers) before retrying
+ *       503:
+ *         description: Closure unavailable — either student session validation is temporarily unavailable, or the approved retention window (ACADEMIC_PROFILE_RETENTION_DAYS) is not configured, in which case closure refuses before any proof is checked
+ *
  * /api/students/profile:
  *   get:
  *     summary: Get current student profile

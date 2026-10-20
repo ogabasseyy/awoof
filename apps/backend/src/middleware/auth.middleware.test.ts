@@ -124,3 +124,17 @@ test('student session lookup outages surface 503 and optional authentication doe
     assert.ok(optional instanceof ServiceUnavailableError);
     assert.equal(optionalRequest.user, undefined);
 });
+
+test('closed student account rejects outstanding access tokens immediately', async (t) => {
+    const userId = '11111111-1111-4111-8111-111111111111';
+    const liveSid = '22222222-2222-4222-8222-222222222222';
+    const token = jwtService.generateAccessToken({ userId, email: 'student@example.invalid', role: 'student', sid: liveSid });
+    t.mock.method(db, 'getPool', () => ({ query: async () => ({ rows: [{
+        password_setup_requires_recovery_code: false, recovery_reenrollment_requires_password: false,
+        recovery_session_binding_required: false, active_session_id: liveSid, deleted_at: new Date(),
+    }], rowCount: 1 }) }) as never);
+    const error = await new Promise<unknown>((resolve) => {
+        authenticate({ headers: { authorization: `Bearer ${token}` } } as Request, {} as Response, resolve);
+    });
+    assert.ok(error instanceof UnauthorizedError);
+});

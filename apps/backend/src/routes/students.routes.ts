@@ -5,8 +5,9 @@
  */
 
 import { Router } from 'express';
+import rateLimit from 'express-rate-limit';
 import { asyncHandler } from '../common/middleware/errorHandler.js';
-import { authenticate, requireRole } from '../middleware/auth.middleware.js';
+import { authenticate, requireRole, type AuthRequest } from '../middleware/auth.middleware.js';
 import { StudentController } from '../controllers/student.controller.js';
 
 const router = Router();
@@ -34,6 +35,39 @@ router.put(
     authenticate,
     requireRole('student'),
     asyncHandler(studentController.updateProfile.bind(studentController))
+);
+
+/**
+ * @route   DELETE /api/students/account
+ * @desc    Close the caller's own student account (soft delete; sessions revoked)
+ * @access  Private (Student only)
+ */
+// Failed closure proofs are budgeted per account, not per IP: a stolen
+// access token must not turn this endpoint into an unbounded offline
+// password oracle (each attempt also pays a bcrypt comparison under the
+// user row lock). Successful closures do not consume the budget.
+const accountClosureProofLimiter = rateLimit({
+    windowMs: 10 * 60 * 1000,
+    max: 10,
+    standardHeaders: true,
+    legacyHeaders: false,
+    skipSuccessfulRequests: true,
+    // Only an actual proof failure (401) consumes the budget: retention
+    // outages (503), already-closed conflicts (409), and limiter responses
+    // must not burn a student's attempts.
+    requestWasSuccessful: (_req, res) => res.statusCode !== 401,
+    keyGenerator: (req) => {
+        const userId = (req as AuthRequest).user?.userId;
+        return userId ? `account:${userId}` : `ip:${req.ip ?? 'unknown'}`;
+    },
+});
+
+router.delete(
+    '/account',
+    authenticate,
+    requireRole('student'),
+    accountClosureProofLimiter,
+    asyncHandler(studentController.closeAccount.bind(studentController))
 );
 
 /**

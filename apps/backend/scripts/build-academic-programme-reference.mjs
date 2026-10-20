@@ -581,6 +581,7 @@ function verifyArtifactUniqueness(artifact, label) {
  */
 const TRUSTED_REFERENCE_DIGESTS = {
     'nuc-v2.normalized.json': '68df62beff526d4c6218d78c4d9ba5c790b53926ce8fd342d055b0a100518732',
+    'awoof-v1.normalized.json': 'fb5ac76e5268cce3da012276d7a0bb3c7ac79ffe056d67e4e14802074ce10dbe',
 };
 
 /**

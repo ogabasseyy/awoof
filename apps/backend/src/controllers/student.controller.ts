@@ -12,6 +12,7 @@ import {
     BadRequestError,
     UnauthorizedError,
 } from '../common/errors/AppError.js';
+import { closeOwnAccount } from '../services/auth/account-closure.service.js';
 import { readStudentAssuranceOrNull } from '../services/verification/student-assurance.service.js';
 import type { StudentAssurance } from '../services/verification/student-assurance.types.js';
 import { success } from '../common/utils/response.js';
@@ -409,6 +410,29 @@ export class StudentController {
                     totalValue: Number(stats.unknown_savings_count) > 0 ? null : parseFloat(stats.total_value),
                 },
                 byCategory: categoryStats,
+            },
+        });
+    }
+
+    /**
+     * Close the caller's own student account (soft delete). Sessions are
+     * revoked by the service, so the client must sign the user out locally.
+     */
+    public async closeAccount(req: AuthRequest, res: Response): Promise<void> {
+        if (!req.user) {
+            throw new UnauthorizedError('User not authenticated');
+        }
+        const body = (req.body ?? {}) as { password?: unknown; confirmation?: unknown };
+        const result = await closeOwnAccount(db.getPool(), req.user.userId, {
+            password: typeof body.password === 'string' ? body.password : null,
+            confirmation: typeof body.confirmation === 'string' ? body.confirmation : null,
+            sessionId: typeof req.user.sid === 'string' ? req.user.sid : null,
+        });
+        success(res, {
+            message: 'Account closed. You have been signed out on all devices.',
+            data: {
+                closedAt: result.closedAt,
+                retentionDays: result.retentionDays,
             },
         });
     }

@@ -1,0 +1,1422 @@
+{
+  "artifactVersion": 1,
+  "sourceVersion": "awoof-owned-v1",
+  "sourceChecksumSha256": "b7043ef465c0bf489530cfa505539dc4a1740e441572e00e101275e593f550fe",
+  "redistributionAllowed": true,
+  "calculationsEnabled": true,
+  "programmes": [
+    {
+      "programmeId": "awf-acct",
+      "sourceId": "AWF-ACCT",
+      "label": "Accounting",
+      "award": "B.Sc.",
+      "aliases": [],
+      "discipline": null,
+      "locator": {
+        "sheet": "Awoof-owned v1",
+        "row": 2,
+        "sourceRef": null,
+        "pages": null
+      },
+      "evidence": "G",
+      "routes": {
+        "utme": {
+          "durationYears": 4,
+          "reviewed": true,
+          "applicable": true,
+          "pending": false,
+          "estimable": true
+        },
+        "de_200": {
+          "durationYears": 3,
+          "reviewed": true,
+          "applicable": true,
+          "pending": false,
+          "estimable": true
+        },
+        "de_300": {
+          "durationYears": 2,
+          "reviewed": true,
+          "applicable": true,
+          "pending": false,
+          "estimable": true
+        }
+      },
+      "exceptionNotes": null
+    },
+    {
+      "programmeId": "awf-agric",
+      "sourceId": "AWF-AGRIC",
+      "label": "Agriculture",
+      "award": "B.Agric.",
+      "aliases": [],
+      "discipline": null,
+      "locator": {
+        "sheet": "Awoof-owned v1",
+        "row": 34,
+        "sourceRef": null,
+        "pages": null
+      },
+      "evidence": "G",
+      "routes": {
+        "utme": {
+          "durationYears": 5,
+          "reviewed": true,
+          "applicable": true,
+          "pending": false,
+          "estimable": true
+        },
+        "de_200": {
+          "durationYears": 4,
+          "reviewed": true,
+          "applicable": true,
+          "pending": false,
+          "estimable": true
+        },
+        "de_300": {
+          "durationYears": 3,
+          "reviewed": true,
+          "applicable": true,
+          "pending": false,
+          "estimable": true
+        }
+      },
+      "exceptionNotes": null
+    },
+    {
+      "programmeId": "awf-arch",
+      "sourceId": "AWF-ARCH",
+      "label": "Architecture",
+      "award": "B.Sc.",
+      "aliases": [],
+      "discipline": null,
+      "locator": {
+        "sheet": "Awoof-owned v1",
+        "row": 16,
+        "sourceRef": null,
+        "pages": null
+      },
+      "evidence": "G",
+      "routes": {
+        "utme": {
+          "durationYears": 4,
+          "reviewed": true,
+          "applicable": true,
+          "pending": false,
+          "estimable": true
+        },
+        "de_200": {
+          "durationYears": 3,
+          "reviewed": true,
+          "applicable": true,
+          "pending": false,
+          "estimable": true
+        },
+        "de_300": {
+          "durationYears": 2,
+          "reviewed": true,
+          "applicable": true,
+          "pending": false,
+          "estimable": true
+        }
+      },
+      "exceptionNotes": null
+    },
+    {
+      "programmeId": "awf-biochem",
+      "sourceId": "AWF-BIOCHEM",
+      "label": "Biochemistry",
+      "award": "B.Sc.",
+      "aliases": [],
+      "discipline": null,
+      "locator": {
+        "sheet": "Awoof-owned v1",
+        "row": 21,
+        "sourceRef": null,
+        "pages": null
+      },
+      "evidence": "G",
+      "routes": {
+        "utme": {
+          "durationYears": 4,
+          "reviewed": true,
+          "applicable": true,
+          "pending": false,
+          "estimable": true
+        },
+        "de_200": {
+          "durationYears": 3,
+          "reviewed": true,
+          "applicable": true,
+          "pending": false,
+          "estimable": true
+        },
+        "de_300": {
+          "durationYears": 2,
+          "reviewed": true,
+          "applicable": true,
+          "pending": false,
+          "estimable": true
+        }
+      },
+      "exceptionNotes": null
+    },
+    {
+      "programmeId": "awf-build",
+      "sourceId": "AWF-BUILD",
+      "label": "Building",
+      "award": "B.Sc.",
+      "aliases": [],
+      "discipline": null,
+      "locator": {
+        "sheet": "Awoof-owned v1",
+        "row": 37,
+        "sourceRef": null,
+        "pages": null
+      },
+      "evidence": "G",
+      "routes": {
+        "utme": {
+          "durationYears": 5,
+          "reviewed": true,
+          "applicable": true,
+          "pending": false,
+          "estimable": true
+        },
+        "de_200": {
+          "durationYears": 4,
+          "reviewed": true,
+          "applicable": true,
+          "pending": false,
+          "estimable": true
+        },
+        "de_300": {
+          "durationYears": 3,
+          "reviewed": true,
+          "applicable": true,
+          "pending": false,
+          "estimable": true
+        }
+      },
+      "exceptionNotes": null
+    },
+    {
+      "programmeId": "awf-busadm",
+      "sourceId": "AWF-BUSADM",
+      "label": "Business Administration",
+      "award": "B.Sc.",
+      "aliases": [],
+      "discipline": null,
+      "locator": {
+        "sheet": "Awoof-owned v1",
+        "row": 3,
+        "sourceRef": null,
+        "pages": null
+      },
+      "evidence": "G",
+      "routes": {
+        "utme": {
+          "durationYears": 4,
+          "reviewed": true,
+          "applicable": true,
+          "pending": false,
+          "estimable": true
+        },
+        "de_200": {
+          "durationYears": 3,
+          "reviewed": true,
+          "applicable": true,
+          "pending": false,
+          "estimable": true
+        },
+        "de_300": {
+          "durationYears": 2,
+          "reviewed": true,
+          "applicable": true,
+          "pending": false,
+          "estimable": true
+        }
+      },
+      "exceptionNotes": null
+    },
+    {
+      "programmeId": "awf-chemeng",
+      "sourceId": "AWF-CHEMENG",
+      "label": "Chemical Engineering",
+      "award": "B.Eng.",
+      "aliases": [],
+      "discipline": null,
+      "locator": {
+        "sheet": "Awoof-owned v1",
+        "row": 14,
+        "sourceRef": null,
+        "pages": null
+      },
+      "evidence": "G",
+      "routes": {
+        "utme": {
+          "durationYears": 5,
+          "reviewed": true,
+          "applicable": true,
+          "pending": false,
+          "estimable": true
+        },
+        "de_200": {
+          "durationYears": 4,
+          "reviewed": true,
+          "applicable": true,
+          "pending": false,
+          "estimable": true
+        },
+        "de_300": {
+          "durationYears": 3,
+          "reviewed": true,
+          "applicable": true,
+          "pending": false,
+          "estimable": true
+        }
+      },
+      "exceptionNotes": null
+    },
+    {
+      "programmeId": "awf-civil",
+      "sourceId": "AWF-CIVIL",
+      "label": "Civil Engineering",
+      "award": "B.Eng.",
+      "aliases": [],
+      "discipline": null,
+      "locator": {
+        "sheet": "Awoof-owned v1",
+        "row": 11,
+        "sourceRef": null,
+        "pages": null
+      },
+      "evidence": "G",
+      "routes": {
+        "utme": {
+          "durationYears": 5,
+          "reviewed": true,
+          "applicable": true,
+          "pending": false,
+          "estimable": true
+        },
+        "de_200": {
+          "durationYears": 4,
+          "reviewed": true,
+          "applicable": true,
+          "pending": false,
+          "estimable": true
+        },
+        "de_300": {
+          "durationYears": 3,
+          "reviewed": true,
+          "applicable": true,
+          "pending": false,
+          "estimable": true
+        }
+      },
+      "exceptionNotes": null
+    },
+    {
+      "programmeId": "awf-compeng",
+      "sourceId": "AWF-COMPENG",
+      "label": "Computer Engineering",
+      "award": "B.Eng.",
+      "aliases": [],
+      "discipline": null,
+      "locator": {
+        "sheet": "Awoof-owned v1",
+        "row": 15,
+        "sourceRef": null,
+        "pages": null
+      },
+      "evidence": "G",
+      "routes": {
+        "utme": {
+          "durationYears": 5,
+          "reviewed": true,
+          "applicable": true,
+          "pending": false,
+          "estimable": true
+        },
+        "de_200": {
+          "durationYears": 4,
+          "reviewed": true,
+          "applicable": true,
+          "pending": false,
+          "estimable": true
+        },
+        "de_300": {
+          "durationYears": 3,
+          "reviewed": true,
+          "applicable": true,
+          "pending": false,
+          "estimable": true
+        }
+      },
+      "exceptionNotes": null
+    },
+    {
+      "programmeId": "awf-compsci",
+      "sourceId": "AWF-COMPSCI",
+      "label": "Computer Science",
+      "award": "B.Sc.",
+      "aliases": [],
+      "discipline": null,
+      "locator": {
+        "sheet": "Awoof-owned v1",
+        "row": 17,
+        "sourceRef": null,
+        "pages": null
+      },
+      "evidence": "G",
+      "routes": {
+        "utme": {
+          "durationYears": 4,
+          "reviewed": true,
+          "applicable": true,
+          "pending": false,
+          "estimable": true
+        },
+        "de_200": {
+          "durationYears": 3,
+          "reviewed": true,
+          "applicable": true,
+          "pending": false,
+          "estimable": true
+        },
+        "de_300": {
+          "durationYears": 2,
+          "reviewed": true,
+          "applicable": true,
+          "pending": false,
+          "estimable": true
+        }
+      },
+      "exceptionNotes": null
+    },
+    {
+      "programmeId": "awf-dent",
+      "sourceId": "AWF-DENT",
+      "label": "Dentistry",
+      "award": "BDS",
+      "aliases": [],
+      "discipline": null,
+      "locator": {
+        "sheet": "Awoof-owned v1",
+        "row": 27,
+        "sourceRef": null,
+        "pages": null
+      },
+      "evidence": "G",
+      "routes": {
+        "utme": {
+          "durationYears": 6,
+          "reviewed": true,
+          "applicable": true,
+          "pending": false,
+          "estimable": true
+        },
+        "de_200": {
+          "durationYears": 5,
+          "reviewed": true,
+          "applicable": true,
+          "pending": false,
+          "estimable": true
+        },
+        "de_300": {
+          "durationYears": 4,
+          "reviewed": true,
+          "applicable": true,
+          "pending": false,
+          "estimable": true
+        }
+      },
+      "exceptionNotes": null
+    },
+    {
+      "programmeId": "awf-econ",
+      "sourceId": "AWF-ECON",
+      "label": "Economics",
+      "award": "B.Sc.",
+      "aliases": [],
+      "discipline": null,
+      "locator": {
+        "sheet": "Awoof-owned v1",
+        "row": 4,
+        "sourceRef": null,
+        "pages": null
+      },
+      "evidence": "G",
+      "routes": {
+        "utme": {
+          "durationYears": 4,
+          "reviewed": true,
+          "applicable": true,
+          "pending": false,
+          "estimable": true
+        },
+        "de_200": {
+          "durationYears": 3,
+          "reviewed": true,
+          "applicable": true,
+          "pending": false,
+          "estimable": true
+        },
+        "de_300": {
+          "durationYears": 2,
+          "reviewed": true,
+          "applicable": true,
+          "pending": false,
+          "estimable": true
+        }
+      },
+      "exceptionNotes": null
+    },
+    {
+      "programmeId": "awf-elec",
+      "sourceId": "AWF-ELEC",
+      "label": "Electrical and Electronics Engineering",
+      "award": "B.Eng.",
+      "aliases": [],
+      "discipline": null,
+      "locator": {
+        "sheet": "Awoof-owned v1",
+        "row": 13,
+        "sourceRef": null,
+        "pages": null
+      },
+      "evidence": "G",
+      "routes": {
+        "utme": {
+          "durationYears": 5,
+          "reviewed": true,
+          "applicable": true,
+          "pending": false,
+          "estimable": true
+        },
+        "de_200": {
+          "durationYears": 4,
+          "reviewed": true,
+          "applicable": true,
+          "pending": false,
+          "estimable": true
+        },
+        "de_300": {
+          "durationYears": 3,
+          "reviewed": true,
+          "applicable": true,
+          "pending": false,
+          "estimable": true
+        }
+      },
+      "exceptionNotes": null
+    },
+    {
+      "programmeId": "awf-englang",
+      "sourceId": "AWF-ENGLANG",
+      "label": "English Language",
+      "award": "B.A.",
+      "aliases": [],
+      "discipline": null,
+      "locator": {
+        "sheet": "Awoof-owned v1",
+        "row": 9,
+        "sourceRef": null,
+        "pages": null
+      },
+      "evidence": "G",
+      "routes": {
+        "utme": {
+          "durationYears": 4,
+          "reviewed": true,
+          "applicable": true,
+          "pending": false,
+          "estimable": true
+        },
+        "de_200": {
+          "durationYears": 3,
+          "reviewed": true,
+          "applicable": true,
+          "pending": false,
+          "estimable": true
+        },
+        "de_300": {
+          "durationYears": 2,
+          "reviewed": true,
+          "applicable": true,
+          "pending": false,
+          "estimable": true
+        }
+      },
+      "exceptionNotes": null
+    },
+    {
+      "programmeId": "awf-estate",
+      "sourceId": "AWF-ESTATE",
+      "label": "Estate Management",
+      "award": "B.Sc.",
+      "aliases": [],
+      "discipline": null,
+      "locator": {
+        "sheet": "Awoof-owned v1",
+        "row": 35,
+        "sourceRef": null,
+        "pages": null
+      },
+      "evidence": "G",
+      "routes": {
+        "utme": {
+          "durationYears": 5,
+          "reviewed": true,
+          "applicable": true,
+          "pending": false,
+          "estimable": true
+        },
+        "de_200": {
+          "durationYears": 4,
+          "reviewed": true,
+          "applicable": true,
+          "pending": false,
+          "estimable": true
+        },
+        "de_300": {
+          "durationYears": 3,
+          "reviewed": true,
+          "applicable": true,
+          "pending": false,
+          "estimable": true
+        }
+      },
+      "exceptionNotes": null
+    },
+    {
+      "programmeId": "awf-indchem",
+      "sourceId": "AWF-INDCHEM",
+      "label": "Industrial Chemistry",
+      "award": "B.Sc.",
+      "aliases": [],
+      "discipline": null,
+      "locator": {
+        "sheet": "Awoof-owned v1",
+        "row": 22,
+        "sourceRef": null,
+        "pages": null
+      },
+      "evidence": "G",
+      "routes": {
+        "utme": {
+          "durationYears": 4,
+          "reviewed": true,
+          "applicable": true,
+          "pending": false,
+          "estimable": true
+        },
+        "de_200": {
+          "durationYears": 3,
+          "reviewed": true,
+          "applicable": true,
+          "pending": false,
+          "estimable": true
+        },
+        "de_300": {
+          "durationYears": 2,
+          "reviewed": true,
+          "applicable": true,
+          "pending": false,
+          "estimable": true
+        }
+      },
+      "exceptionNotes": null
+    },
+    {
+      "programmeId": "awf-infotech",
+      "sourceId": "AWF-INFOTECH",
+      "label": "Information Technology",
+      "award": "B.Sc.",
+      "aliases": [],
+      "discipline": null,
+      "locator": {
+        "sheet": "Awoof-owned v1",
+        "row": 19,
+        "sourceRef": null,
+        "pages": null
+      },
+      "evidence": "G",
+      "routes": {
+        "utme": {
+          "durationYears": 4,
+          "reviewed": true,
+          "applicable": true,
+          "pending": false,
+          "estimable": true
+        },
+        "de_200": {
+          "durationYears": 3,
+          "reviewed": true,
+          "applicable": true,
+          "pending": false,
+          "estimable": true
+        },
+        "de_300": {
+          "durationYears": 2,
+          "reviewed": true,
+          "applicable": true,
+          "pending": false,
+          "estimable": true
+        }
+      },
+      "exceptionNotes": null
+    },
+    {
+      "programmeId": "awf-law",
+      "sourceId": "AWF-LAW",
+      "label": "Law",
+      "award": "LL.B.",
+      "aliases": [],
+      "discipline": null,
+      "locator": {
+        "sheet": "Awoof-owned v1",
+        "row": 10,
+        "sourceRef": null,
+        "pages": null
+      },
+      "evidence": "G",
+      "routes": {
+        "utme": {
+          "durationYears": 5,
+          "reviewed": true,
+          "applicable": true,
+          "pending": false,
+          "estimable": true
+        },
+        "de_200": {
+          "durationYears": 4,
+          "reviewed": true,
+          "applicable": true,
+          "pending": false,
+          "estimable": true
+        },
+        "de_300": {
+          "durationYears": 3,
+          "reviewed": true,
+          "applicable": true,
+          "pending": false,
+          "estimable": true
+        }
+      },
+      "exceptionNotes": null
+    },
+    {
+      "programmeId": "awf-masscom",
+      "sourceId": "AWF-MASSCOM",
+      "label": "Mass Communication",
+      "award": "B.Sc.",
+      "aliases": [],
+      "discipline": null,
+      "locator": {
+        "sheet": "Awoof-owned v1",
+        "row": 5,
+        "sourceRef": null,
+        "pages": null
+      },
+      "evidence": "G",
+      "routes": {
+        "utme": {
+          "durationYears": 4,
+          "reviewed": true,
+          "applicable": true,
+          "pending": false,
+          "estimable": true
+        },
+        "de_200": {
+          "durationYears": 3,
+          "reviewed": true,
+          "applicable": true,
+          "pending": false,
+          "estimable": true
+        },
+        "de_300": {
+          "durationYears": 2,
+          "reviewed": true,
+          "applicable": true,
+          "pending": false,
+          "estimable": true
+        }
+      },
+      "exceptionNotes": null
+    },
+    {
+      "programmeId": "awf-math",
+      "sourceId": "AWF-MATH",
+      "label": "Mathematics",
+      "award": "B.Sc.",
+      "aliases": [],
+      "discipline": null,
+      "locator": {
+        "sheet": "Awoof-owned v1",
+        "row": 23,
+        "sourceRef": null,
+        "pages": null
+      },
+      "evidence": "G",
+      "routes": {
+        "utme": {
+          "durationYears": 4,
+          "reviewed": true,
+          "applicable": true,
+          "pending": false,
+          "estimable": true
+        },
+        "de_200": {
+          "durationYears": 3,
+          "reviewed": true,
+          "applicable": true,
+          "pending": false,
+          "estimable": true
+        },
+        "de_300": {
+          "durationYears": 2,
+          "reviewed": true,
+          "applicable": true,
+          "pending": false,
+          "estimable": true
+        }
+      },
+      "exceptionNotes": null
+    },
+    {
+      "programmeId": "awf-mech",
+      "sourceId": "AWF-MECH",
+      "label": "Mechanical Engineering",
+      "award": "B.Eng.",
+      "aliases": [],
+      "discipline": null,
+      "locator": {
+        "sheet": "Awoof-owned v1",
+        "row": 12,
+        "sourceRef": null,
+        "pages": null
+      },
+      "evidence": "G",
+      "routes": {
+        "utme": {
+          "durationYears": 5,
+          "reviewed": true,
+          "applicable": true,
+          "pending": false,
+          "estimable": true
+        },
+        "de_200": {
+          "durationYears": 4,
+          "reviewed": true,
+          "applicable": true,
+          "pending": false,
+          "estimable": true
+        },
+        "de_300": {
+          "durationYears": 3,
+          "reviewed": true,
+          "applicable": true,
+          "pending": false,
+          "estimable": true
+        }
+      },
+      "exceptionNotes": null
+    },
+    {
+      "programmeId": "awf-med",
+      "sourceId": "AWF-MED",
+      "label": "Medicine and Surgery",
+      "award": "MBBS",
+      "aliases": [],
+      "discipline": null,
+      "locator": {
+        "sheet": "Awoof-owned v1",
+        "row": 26,
+        "sourceRef": null,
+        "pages": null
+      },
+      "evidence": "G",
+      "routes": {
+        "utme": {
+          "durationYears": 6,
+          "reviewed": true,
+          "applicable": true,
+          "pending": false,
+          "estimable": true
+        },
+        "de_200": {
+          "durationYears": 5,
+          "reviewed": true,
+          "applicable": true,
+          "pending": false,
+          "estimable": true
+        },
+        "de_300": {
+          "durationYears": 4,
+          "reviewed": true,
+          "applicable": true,
+          "pending": false,
+          "estimable": true
+        }
+      },
+      "exceptionNotes": null
+    },
+    {
+      "programmeId": "awf-medlab",
+      "sourceId": "AWF-MEDLAB",
+      "label": "Medical Laboratory Science",
+      "award": "B.MLS",
+      "aliases": [],
+      "discipline": null,
+      "locator": {
+        "sheet": "Awoof-owned v1",
+        "row": 30,
+        "sourceRef": null,
+        "pages": null
+      },
+      "evidence": "G",
+      "routes": {
+        "utme": {
+          "durationYears": 5,
+          "reviewed": true,
+          "applicable": true,
+          "pending": false,
+          "estimable": true
+        },
+        "de_200": {
+          "durationYears": 4,
+          "reviewed": true,
+          "applicable": true,
+          "pending": false,
+          "estimable": true
+        },
+        "de_300": {
+          "durationYears": 3,
+          "reviewed": true,
+          "applicable": true,
+          "pending": false,
+          "estimable": true
+        }
+      },
+      "exceptionNotes": null
+    },
+    {
+      "programmeId": "awf-microbio",
+      "sourceId": "AWF-MICROBIO",
+      "label": "Microbiology",
+      "award": "B.Sc.",
+      "aliases": [],
+      "discipline": null,
+      "locator": {
+        "sheet": "Awoof-owned v1",
+        "row": 20,
+        "sourceRef": null,
+        "pages": null
+      },
+      "evidence": "G",
+      "routes": {
+        "utme": {
+          "durationYears": 4,
+          "reviewed": true,
+          "applicable": true,
+          "pending": false,
+          "estimable": true
+        },
+        "de_200": {
+          "durationYears": 3,
+          "reviewed": true,
+          "applicable": true,
+          "pending": false,
+          "estimable": true
+        },
+        "de_300": {
+          "durationYears": 2,
+          "reviewed": true,
+          "applicable": true,
+          "pending": false,
+          "estimable": true
+        }
+      },
+      "exceptionNotes": null
+    },
+    {
+      "programmeId": "awf-nurs",
+      "sourceId": "AWF-NURS",
+      "label": "Nursing Science",
+      "award": "B.NSc.",
+      "aliases": [],
+      "discipline": null,
+      "locator": {
+        "sheet": "Awoof-owned v1",
+        "row": 28,
+        "sourceRef": null,
+        "pages": null
+      },
+      "evidence": "G",
+      "routes": {
+        "utme": {
+          "durationYears": 5,
+          "reviewed": true,
+          "applicable": true,
+          "pending": false,
+          "estimable": true
+        },
+        "de_200": {
+          "durationYears": 4,
+          "reviewed": true,
+          "applicable": true,
+          "pending": false,
+          "estimable": true
+        },
+        "de_300": {
+          "durationYears": 3,
+          "reviewed": true,
+          "applicable": true,
+          "pending": false,
+          "estimable": true
+        }
+      },
+      "exceptionNotes": null
+    },
+    {
+      "programmeId": "awf-pharm",
+      "sourceId": "AWF-PHARM",
+      "label": "Pharmacy",
+      "award": "B.Pharm.",
+      "aliases": [],
+      "discipline": null,
+      "locator": {
+        "sheet": "Awoof-owned v1",
+        "row": 29,
+        "sourceRef": null,
+        "pages": null
+      },
+      "evidence": "G",
+      "routes": {
+        "utme": {
+          "durationYears": 5,
+          "reviewed": true,
+          "applicable": true,
+          "pending": false,
+          "estimable": true
+        },
+        "de_200": {
+          "durationYears": 4,
+          "reviewed": true,
+          "applicable": true,
+          "pending": false,
+          "estimable": true
+        },
+        "de_300": {
+          "durationYears": 3,
+          "reviewed": true,
+          "applicable": true,
+          "pending": false,
+          "estimable": true
+        }
+      },
+      "exceptionNotes": null
+    },
+    {
+      "programmeId": "awf-phys",
+      "sourceId": "AWF-PHYS",
+      "label": "Physics",
+      "award": "B.Sc.",
+      "aliases": [],
+      "discipline": null,
+      "locator": {
+        "sheet": "Awoof-owned v1",
+        "row": 25,
+        "sourceRef": null,
+        "pages": null
+      },
+      "evidence": "G",
+      "routes": {
+        "utme": {
+          "durationYears": 4,
+          "reviewed": true,
+          "applicable": true,
+          "pending": false,
+          "estimable": true
+        },
+        "de_200": {
+          "durationYears": 3,
+          "reviewed": true,
+          "applicable": true,
+          "pending": false,
+          "estimable": true
+        },
+        "de_300": {
+          "durationYears": 2,
+          "reviewed": true,
+          "applicable": true,
+          "pending": false,
+          "estimable": true
+        }
+      },
+      "exceptionNotes": null
+    },
+    {
+      "programmeId": "awf-physio",
+      "sourceId": "AWF-PHYSIO",
+      "label": "Physiotherapy",
+      "award": "B.PT",
+      "aliases": [],
+      "discipline": null,
+      "locator": {
+        "sheet": "Awoof-owned v1",
+        "row": 31,
+        "sourceRef": null,
+        "pages": null
+      },
+      "evidence": "G",
+      "routes": {
+        "utme": {
+          "durationYears": 5,
+          "reviewed": true,
+          "applicable": true,
+          "pending": false,
+          "estimable": true
+        },
+        "de_200": {
+          "durationYears": 4,
+          "reviewed": true,
+          "applicable": true,
+          "pending": false,
+          "estimable": true
+        },
+        "de_300": {
+          "durationYears": 3,
+          "reviewed": true,
+          "applicable": true,
+          "pending": false,
+          "estimable": true
+        }
+      },
+      "exceptionNotes": null
+    },
+    {
+      "programmeId": "awf-polsci",
+      "sourceId": "AWF-POLSCI",
+      "label": "Political Science",
+      "award": "B.Sc.",
+      "aliases": [],
+      "discipline": null,
+      "locator": {
+        "sheet": "Awoof-owned v1",
+        "row": 6,
+        "sourceRef": null,
+        "pages": null
+      },
+      "evidence": "G",
+      "routes": {
+        "utme": {
+          "durationYears": 4,
+          "reviewed": true,
+          "applicable": true,
+          "pending": false,
+          "estimable": true
+        },
+        "de_200": {
+          "durationYears": 3,
+          "reviewed": true,
+          "applicable": true,
+          "pending": false,
+          "estimable": true
+        },
+        "de_300": {
+          "durationYears": 2,
+          "reviewed": true,
+          "applicable": true,
+          "pending": false,
+          "estimable": true
+        }
+      },
+      "exceptionNotes": null
+    },
+    {
+      "programmeId": "awf-psych",
+      "sourceId": "AWF-PSYCH",
+      "label": "Psychology",
+      "award": "B.Sc.",
+      "aliases": [],
+      "discipline": null,
+      "locator": {
+        "sheet": "Awoof-owned v1",
+        "row": 7,
+        "sourceRef": null,
+        "pages": null
+      },
+      "evidence": "G",
+      "routes": {
+        "utme": {
+          "durationYears": 4,
+          "reviewed": true,
+          "applicable": true,
+          "pending": false,
+          "estimable": true
+        },
+        "de_200": {
+          "durationYears": 3,
+          "reviewed": true,
+          "applicable": true,
+          "pending": false,
+          "estimable": true
+        },
+        "de_300": {
+          "durationYears": 2,
+          "reviewed": true,
+          "applicable": true,
+          "pending": false,
+          "estimable": true
+        }
+      },
+      "exceptionNotes": null
+    },
+    {
+      "programmeId": "awf-quansurv",
+      "sourceId": "AWF-QUANSURV",
+      "label": "Quantity Surveying",
+      "award": "B.Sc.",
+      "aliases": [],
+      "discipline": null,
+      "locator": {
+        "sheet": "Awoof-owned v1",
+        "row": 36,
+        "sourceRef": null,
+        "pages": null
+      },
+      "evidence": "G",
+      "routes": {
+        "utme": {
+          "durationYears": 5,
+          "reviewed": true,
+          "applicable": true,
+          "pending": false,
+          "estimable": true
+        },
+        "de_200": {
+          "durationYears": 4,
+          "reviewed": true,
+          "applicable": true,
+          "pending": false,
+          "estimable": true
+        },
+        "de_300": {
+          "durationYears": 3,
+          "reviewed": true,
+          "applicable": true,
+          "pending": false,
+          "estimable": true
+        }
+      },
+      "exceptionNotes": null
+    },
+    {
+      "programmeId": "awf-radiog",
+      "sourceId": "AWF-RADIOG",
+      "label": "Radiography",
+      "award": "B.Sc.",
+      "aliases": [],
+      "discipline": null,
+      "locator": {
+        "sheet": "Awoof-owned v1",
+        "row": 32,
+        "sourceRef": null,
+        "pages": null
+      },
+      "evidence": "G",
+      "routes": {
+        "utme": {
+          "durationYears": 5,
+          "reviewed": true,
+          "applicable": true,
+          "pending": false,
+          "estimable": true
+        },
+        "de_200": {
+          "durationYears": 4,
+          "reviewed": true,
+          "applicable": true,
+          "pending": false,
+          "estimable": true
+        },
+        "de_300": {
+          "durationYears": 3,
+          "reviewed": true,
+          "applicable": true,
+          "pending": false,
+          "estimable": true
+        }
+      },
+      "exceptionNotes": null
+    },
+    {
+      "programmeId": "awf-socio",
+      "sourceId": "AWF-SOCIO",
+      "label": "Sociology",
+      "award": "B.Sc.",
+      "aliases": [],
+      "discipline": null,
+      "locator": {
+        "sheet": "Awoof-owned v1",
+        "row": 8,
+        "sourceRef": null,
+        "pages": null
+      },
+      "evidence": "G",
+      "routes": {
+        "utme": {
+          "durationYears": 4,
+          "reviewed": true,
+          "applicable": true,
+          "pending": false,
+          "estimable": true
+        },
+        "de_200": {
+          "durationYears": 3,
+          "reviewed": true,
+          "applicable": true,
+          "pending": false,
+          "estimable": true
+        },
+        "de_300": {
+          "durationYears": 2,
+          "reviewed": true,
+          "applicable": true,
+          "pending": false,
+          "estimable": true
+        }
+      },
+      "exceptionNotes": null
+    },
+    {
+      "programmeId": "awf-softeng",
+      "sourceId": "AWF-SOFTENG",
+      "label": "Software Engineering",
+      "award": "B.Sc.",
+      "aliases": [],
+      "discipline": null,
+      "locator": {
+        "sheet": "Awoof-owned v1",
+        "row": 18,
+        "sourceRef": null,
+        "pages": null
+      },
+      "evidence": "G",
+      "routes": {
+        "utme": {
+          "durationYears": 4,
+          "reviewed": true,
+          "applicable": true,
+          "pending": false,
+          "estimable": true
+        },
+        "de_200": {
+          "durationYears": 3,
+          "reviewed": true,
+          "applicable": true,
+          "pending": false,
+          "estimable": true
+        },
+        "de_300": {
+          "durationYears": 2,
+          "reviewed": true,
+          "applicable": true,
+          "pending": false,
+          "estimable": true
+        }
+      },
+      "exceptionNotes": null
+    },
+    {
+      "programmeId": "awf-stat",
+      "sourceId": "AWF-STAT",
+      "label": "Statistics",
+      "award": "B.Sc.",
+      "aliases": [],
+      "discipline": null,
+      "locator": {
+        "sheet": "Awoof-owned v1",
+        "row": 24,
+        "sourceRef": null,
+        "pages": null
+      },
+      "evidence": "G",
+      "routes": {
+        "utme": {
+          "durationYears": 4,
+          "reviewed": true,
+          "applicable": true,
+          "pending": false,
+          "estimable": true
+        },
+        "de_200": {
+          "durationYears": 3,
+          "reviewed": true,
+          "applicable": true,
+          "pending": false,
+          "estimable": true
+        },
+        "de_300": {
+          "durationYears": 2,
+          "reviewed": true,
+          "applicable": true,
+          "pending": false,
+          "estimable": true
+        }
+      },
+      "exceptionNotes": null
+    },
+    {
+      "programmeId": "awf-vet",
+      "sourceId": "AWF-VET",
+      "label": "Veterinary Medicine",
+      "award": "DVM",
+      "aliases": [],
+      "discipline": null,
+      "locator": {
+        "sheet": "Awoof-owned v1",
+        "row": 33,
+        "sourceRef": null,
+        "pages": null
+      },
+      "evidence": "G",
+      "routes": {
+        "utme": {
+          "durationYears": 6,
+          "reviewed": true,
+          "applicable": true,
+          "pending": false,
+          "estimable": true
+        },
+        "de_200": {
+          "durationYears": 5,
+          "reviewed": true,
+          "applicable": true,
+          "pending": false,
+          "estimable": true
+        },
+        "de_300": {
+          "durationYears": 4,
+          "reviewed": true,
+          "applicable": true,
+          "pending": false,
+          "estimable": true
+        }
+      },
+      "exceptionNotes": null
+    }
+  ],
+  "excluded": [],
+  "blocked": [],
+  "counts": {
+    "total": 36,
+    "included": 36,
+    "excluded": 0,
+    "blocked": 0
+  },
+  "checksum": "fb5ac76e5268cce3da012276d7a0bb3c7ac79ffe056d67e4e14802074ce10dbe"
+}
