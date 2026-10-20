@@ -100,9 +100,7 @@ export async function closeOwnAccount(
             // codeql[js/user-controlled-bypass]: comparing the supplied
             // password against the stored bcrypt hash is the credential
             // verification itself; it does not bypass any check.
-            const passwordMatches = input.password
-                ? await verifyPassword(input.password, row.password_hash)
-                : false;
+            const passwordMatches = await verifyPassword(input.password ?? '', row.password_hash);
             if (!passwordMatches) {
                 throw new UnauthorizedError('Password confirmation failed');
             }
