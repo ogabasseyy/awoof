@@ -101,7 +101,13 @@ export default function AccountClosureSection({ userId }: { userId: string }) {
             if (!isCurrentSession(captured.snapshot)) { resetForm(); return; }
             try {
                 await passwordProofApiClient.get('/students/profile');
-                setError('Account closure failed. Check your password (or type CLOSE MY ACCOUNT exactly) and try again.');
+                // The account is still open, so the original operational
+                // status (not a proof failure) is what the student needs.
+                setError(status === 503
+                    ? 'Account closure is temporarily unavailable. Please try again later.'
+                    : status === 429
+                        ? 'Too many closure attempts. Wait a few minutes before trying again.'
+                        : 'Account closure failed. Check your password (or type CLOSE MY ACCOUNT exactly) and try again.');
                 setBusy(false);
             } catch (reconcileError) {
                 const reconcileStatus = axios.isAxiosError(reconcileError) ? reconcileError.response?.status : undefined;

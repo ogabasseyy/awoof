@@ -61,6 +61,8 @@
  *         $ref: '#/components/responses/Unauthorized'
  *       409:
  *         description: Account already closed, or the account type cannot be closed from settings
+ *       429:
+ *         description: Too many failed closure proofs for this account; wait for the rate-limit window (see RateLimit headers) before retrying
  *       503:
  *         $ref: '#/components/responses/SessionValidationUnavailable'
  *
