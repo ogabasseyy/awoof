@@ -7,9 +7,13 @@ for (const route of draftRoutes) {
     const response = await page.goto(route);
     expect(response?.status()).toBe(200);
     await expect(page.locator('main h1')).toHaveCount(1);
-    const version = ['/privacy', '/terms'].includes(route)
-      ? 'Version 1.1 · Effective 24 September 2026'
-      : 'Version 1.0 · Effective 23 September 2026';
+    const version = route === '/privacy'
+      ? 'Version 1.2 · Effective 19 October 2026'
+      : route === '/cookies'
+        ? 'Version 1.1 · Effective 19 October 2026'
+        : ['/terms'].includes(route)
+          ? 'Version 1.1 · Effective 24 September 2026'
+          : 'Version 1.0 · Effective 23 September 2026';
     await expect(page.locator('main')).toContainText(version);
     await expect(page.locator('main')).not.toContainText('working draft');
     await expect(page.locator('main')).not.toContainText('Decisions requiring counsel');
@@ -110,15 +114,15 @@ test('archived notice keeps the version 1.0 collection and retention text', asyn
   await expect(page.locator('#information')).toContainText('self-declaration that you are 18 or older');
 });
 
-test('current notice and legal index link the version 1.0 privacy archive', async ({ page }) => {
+test('current notice and legal index link the version 1.1 privacy archive', async ({ page }) => {
   await page.goto('/privacy');
-  await expect(page.getByRole('navigation', { name: 'Legal documents', exact: true }).locator('a[href="/privacy/v1-0"]')).toHaveCount(1);
-  await expect(page.locator('main')).toContainText('archived version 1.0 notice is linked above');
+  await expect(page.getByRole('navigation', { name: 'Legal documents', exact: true }).locator('a[href="/privacy/v1-1"]')).toHaveCount(1);
+  await expect(page.locator('main')).toContainText('archived version 1.1 notice is linked above');
   await page.goto('/legal');
   await expect(page.getByRole('navigation', { name: 'Legal documents', exact: true }).locator('a[href="/privacy/v1-0"]')).toHaveCount(1);
   const sitemap = await page.request.get('/sitemap.xml');
   expect(sitemap.ok()).toBe(true);
-  expect(await sitemap.text()).toContain('/privacy/v1-0</loc>');
+  expect(await sitemap.text()).toContain('/privacy/v1-1</loc>');
 });
 
 test('privacy draft separates account, school-account and enrollment checks', async ({ page }) => {
@@ -167,6 +171,8 @@ test('terms draft does not promise discounts or universal school support', async
 test('cookies notice discloses the homepage first-visit preference', async ({ page }) => {
   await page.goto('/cookies');
   await expect(page.locator('#essential')).toContainText('first-visit preference in local storage');
+  await expect(page.locator('#essential')).toContainText('prompt-deferral marker in local storage');
+  await expect(page.locator('#essential')).toContainText('contains only your Awoof account ID');
 });
 
 test('merchant-order and schedule-annex conditions stay on partner legal pages', async ({ page }) => {
