@@ -19,7 +19,7 @@
  * other state is destroyed at closure time.
  */
 import type { Pool } from 'pg';
-import { ConflictError, NotFoundError, UnauthorizedError } from '../../common/errors/AppError.js';
+import { ConflictError, NotFoundError, ServiceUnavailableError, UnauthorizedError } from '../../common/errors/AppError.js';
 import { passwordService } from './password.service.js';
 import {
     ACADEMIC_PROFILE_RETENTION_ENV_VAR,
@@ -28,8 +28,8 @@ import {
 
 export type CloseOwnAccountResult = {
     closedAt: Date;
-    /** Retention days before the academic profile purge applies, when configured. */
-    retentionDays: number | null;
+    /** Retention days before the academic profile purge applies. */
+    retentionDays: number;
 };
 
 type ClosurePool = Pick<Pool, 'connect'>;
@@ -55,6 +55,7 @@ export async function closeOwnAccount(
     // change path uses the same compare-and-swap discipline).
     const client = await pool.connect();
     let committedClosedAt: Date;
+    let retentionDays = 0;
     try {
         await client.query('BEGIN');
         const account = await client.query<{ role: string; password_hash: string | null; deleted_at: Date | null }>(
@@ -66,6 +67,15 @@ export async function closeOwnAccount(
         if (row.deleted_at !== null) throw new ConflictError('Account is already closed');
         if (row.role !== 'student') {
             throw new ConflictError('This account type cannot be closed from settings; contact support@awoof.tech');
+        }
+
+        // The public promise is purge after the retention window; without
+        // a validated window the purge cannot run, so closure must refuse
+        // rather than commit an account the schedule can never purge.
+        try {
+            retentionDays = resolveAcademicProfileRetentionDays(process.env[ACADEMIC_PROFILE_RETENTION_ENV_VAR] ?? null);
+        } catch {
+            throw new ServiceUnavailableError('Account closure is unavailable until the retention window is configured');
         }
 
         if (row.password_hash !== null) {
@@ -106,11 +116,5 @@ export async function closeOwnAccount(
     }
     const closedAt = committedClosedAt;
 
-    let retentionDays: number | null = null;
-    try {
-        retentionDays = resolveAcademicProfileRetentionDays(process.env[ACADEMIC_PROFILE_RETENTION_ENV_VAR] ?? null);
-    } catch {
-        retentionDays = null;
-    }
     return { closedAt, retentionDays };
 }

@@ -2,6 +2,8 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { closeOwnAccount } from './account-closure.service.js';
 
+process.env['ACADEMIC_PROFILE_RETENTION_DAYS'] = '30';
+
 type Row = { role: string; password_hash: string | null; deleted_at: Date | null };
 
 function fakePool(row: Row | null) {
@@ -59,6 +61,21 @@ test('passwordless accounts require the exact confirmation phrase', async () => 
     );
     const ok = await closeOwnAccount(pool as never, 'user-1', { confirmation: 'CLOSE MY ACCOUNT' });
     assert.ok(ok.closedAt);
+});
+
+test('refuses closure when the retention window is not configured', async () => {
+    const previous = process.env['ACADEMIC_PROFILE_RETENTION_DAYS'];
+    delete process.env['ACADEMIC_PROFILE_RETENTION_DAYS'];
+    try {
+        const pool = fakePool(student);
+        await assert.rejects(
+            closeOwnAccount(pool as never, 'user-1', { password: 'correct' }, async () => true),
+            /retention window is configured/,
+        );
+        assert.equal(pool.calls.some((call) => call.sql.startsWith('UPDATE users')), false);
+    } finally {
+        if (previous !== undefined) process.env['ACADEMIC_PROFILE_RETENTION_DAYS'] = previous;
+    }
 });
 
 test('rejects missing, already-closed, and non-student accounts', async () => {

@@ -468,6 +468,6 @@ export default function StudentSecurityPage() {
                 <Button type="button" variant="outline" onClick={() => void beginLink()} disabled={linkBusy} className="mt-3 w-full rounded-full">Link a school sign-in</Button>
             </div>}
         </div>
-        <AccountClosureSection />
+        {user?.role === 'student' ? <AccountClosureSection userId={user.id} /> : null}
     </AuthShell>;
 }
