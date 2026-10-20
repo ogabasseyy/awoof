@@ -101,8 +101,8 @@ async function requireCurrentStudentSession(decoded: { userId: string; role: str
         throw new ServiceUnavailableError('Student session validation is temporarily unavailable');
     }
     const account = result.rows[0];
-    // Preserve downstream live-identity semantics for absent and ordinary
-    // deleted accounts. Credential-policy accounts stay bound even without
+    // Preserve downstream live-identity semantics for absent accounts.
+    // Credential-policy accounts stay bound even without
     // a token session id, because recovery must invalidate their access
     // JWTs; every other sid-carrying token must match the live session.
     if (!account) return;
@@ -111,7 +111,13 @@ async function requireCurrentStudentSession(decoded: { userId: string; role: str
     // so a legacy sid-less token can never resurrect after re-enrollment.
     const sessionBound = account.password_setup_requires_recovery_code || account.recovery_reenrollment_requires_password
         || account.recovery_session_binding_required;
-    if (account.deleted_at !== null && !sessionBound) return;
+    // A closed (soft-deleted) account rejects every outstanding access
+    // token immediately, not just at login: closure promises sign-out on
+    // all devices, and controllers that only filter by user_id would
+    // otherwise keep serving a deleted account until token expiry.
+    if (account.deleted_at !== null) {
+        throw new UnauthorizedError('Authentication failed');
+    }
     if ((!decoded.sid && sessionBound) || (decoded.sid && account.active_session_id !== decoded.sid)) {
         throw new UnauthorizedError('Authentication failed');
     }

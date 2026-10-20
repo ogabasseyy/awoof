@@ -6,8 +6,8 @@ type Row = { role: string; password_hash: string | null; deleted_at: Date | null
 
 function fakePool(row: Row | null) {
     const calls: { sql: string; params: unknown[] }[] = [];
-    return {
-        calls,
+    const client = {
+        release() { /* fake */ },
         async query(sql: string, params: unknown[]) {
             calls.push({ sql, params });
             if (sql.startsWith('SELECT role, password_hash')) {
@@ -16,8 +16,15 @@ function fakePool(row: Row | null) {
             if (sql.startsWith('UPDATE users')) {
                 return { rows: [{ deleted_at: new Date('2026-10-20T00:00:00Z') }], rowCount: 1 };
             }
+            if (sql === 'BEGIN' || sql === 'COMMIT' || sql === 'ROLLBACK') {
+                return { rows: [], rowCount: 0 };
+            }
             throw new Error(`unexpected query: ${sql}`);
         },
+    };
+    return {
+        calls,
+        async connect() { return client; },
     };
 }
 

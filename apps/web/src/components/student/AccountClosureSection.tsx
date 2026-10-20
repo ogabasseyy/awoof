@@ -3,7 +3,7 @@
 import { useState } from 'react';
 import { Button } from '@/components/ui/button';
 import { clearTokens } from '@/lib/auth';
-import { studentSsoSessionApiClient } from '@/lib/api-client';
+import apiClient from '@/lib/api-client';
 
 /**
  * Danger zone for self-service student account closure. The backend
@@ -24,7 +24,7 @@ export default function AccountClosureSection() {
         setBusy(true);
         setError(null);
         try {
-            await studentSsoSessionApiClient.delete('/students/account', {
+            await apiClient.delete('/students/account', {
                 data: {
                     ...(password ? { password } : {}),
                     ...(confirmation ? { confirmation } : {}),

@@ -462,14 +462,14 @@ test('programme search over the Awoof-owned production reference advertises revi
     assert.equal(reference.calculationsEnabled, true);
     assert.equal(reference.sourceVersion, 'awoof-owned-v1');
     const scoped = searchProgrammes(reference, { q: 'computer science', cursor: null, limit: 20, countryCode: 'NG' });
-    assert.deepEqual(scoped.items.map((item) => item.programmeId), ['AWF-COMPSCI']);
+    assert.deepEqual(scoped.items.map((item) => item.programmeId), ['awf-compsci']);
     assert.deepEqual(
         estimateGraduationYear(
-            { programmeId: 'AWF-COMPSCI', entryYear: CURRENT_YEAR - 1, entryRoute: 'utme' },
+            { programmeId: 'awf-compsci', entryYear: CURRENT_YEAR - 1, entryRoute: 'utme' },
             reference,
             { currentYear: CURRENT_YEAR, expectedCountryCode: 'NG' },
         ),
-        { state: 'available', year: CURRENT_YEAR - 1 + 4, ruleId: 'AWF-COMPSCI:utme', sourceVersion: 'awoof-owned-v1' },
+        { state: 'available', year: CURRENT_YEAR - 1 + 4, ruleId: 'awf-compsci:utme', sourceVersion: 'awoof-owned-v1' },
     );
 });
 

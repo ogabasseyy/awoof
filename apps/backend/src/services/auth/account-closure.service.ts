@@ -32,7 +32,7 @@ export type CloseOwnAccountResult = {
     retentionDays: number | null;
 };
 
-type ClosurePool = Pick<Pool, 'query'>;
+type ClosurePool = Pick<Pool, 'connect'>;
 
 type VerifyPassword = (plainPassword: string, hashedPassword: string) => Promise<boolean>;
 
@@ -49,40 +49,57 @@ export async function closeOwnAccount(
     input: { password?: string | null; confirmation?: string | null },
     verifyPassword: VerifyPassword = (plain, hashed) => passwordService.comparePassword(plain, hashed),
 ): Promise<CloseOwnAccountResult> {
-    const account = await pool.query<{ role: string; password_hash: string | null; deleted_at: Date | null }>(
-        'SELECT role, password_hash, deleted_at FROM users WHERE id = $1 FOR UPDATE',
-        [userId],
-    );
-    const row = account.rows[0];
-    if (!row) throw new NotFoundError('Account not found');
-    if (row.deleted_at !== null) throw new ConflictError('Account is already closed');
-    if (row.role !== 'student') {
-        throw new ConflictError('This account type cannot be closed from settings; contact support@awoof.tech');
-    }
-
-    if (row.password_hash !== null) {
-        if (!input.password || !(await verifyPassword(input.password, row.password_hash))) {
-            throw new UnauthorizedError('Password confirmation failed');
+    // One transaction holds the row lock from credential verification
+    // through the update: a password change landing in between must not
+    // leave this request acting on a stale verified hash (the password
+    // change path uses the same compare-and-swap discipline).
+    const client = await pool.connect();
+    let committedClosedAt: Date;
+    try {
+        await client.query('BEGIN');
+        const account = await client.query<{ role: string; password_hash: string | null; deleted_at: Date | null }>(
+            'SELECT role, password_hash, deleted_at FROM users WHERE id = $1 FOR UPDATE',
+            [userId],
+        );
+        const row = account.rows[0];
+        if (!row) throw new NotFoundError('Account not found');
+        if (row.deleted_at !== null) throw new ConflictError('Account is already closed');
+        if (row.role !== 'student') {
+            throw new ConflictError('This account type cannot be closed from settings; contact support@awoof.tech');
         }
-    } else if (input.confirmation !== 'CLOSE MY ACCOUNT') {
-        throw new UnauthorizedError('Type CLOSE MY ACCOUNT to confirm account closure');
-    }
 
-    const closed = await pool.query<{ deleted_at: Date }>(
-        `UPDATE users
-         SET deleted_at = CURRENT_TIMESTAMP,
-             refresh_token_hash = NULL,
-             refresh_token_expires_at = NULL,
-             active_session_id = NULL,
-             active_session_issued_at = NULL,
-             active_session_auth_identity_id = NULL,
-             credential_generation = credential_generation + 1
-         WHERE id = $1 AND deleted_at IS NULL
-         RETURNING deleted_at`,
-        [userId],
-    );
-    const closedAt = closed.rows[0]?.deleted_at;
-    if (!closedAt) throw new ConflictError('Account is already closed');
+        if (row.password_hash !== null) {
+            if (!input.password || !(await verifyPassword(input.password, row.password_hash))) {
+                throw new UnauthorizedError('Password confirmation failed');
+            }
+        } else if (input.confirmation !== 'CLOSE MY ACCOUNT') {
+            throw new UnauthorizedError('Type CLOSE MY ACCOUNT to confirm account closure');
+        }
+
+        const closed = await client.query<{ deleted_at: Date }>(
+            `UPDATE users
+             SET deleted_at = CURRENT_TIMESTAMP,
+                 refresh_token_hash = NULL,
+                 refresh_token_expires_at = NULL,
+                 active_session_id = NULL,
+                 active_session_issued_at = NULL,
+                 active_session_auth_identity_id = NULL,
+                 credential_generation = credential_generation + 1
+             WHERE id = $1 AND deleted_at IS NULL
+             RETURNING deleted_at`,
+            [userId],
+        );
+        const closedAt = closed.rows[0]?.deleted_at;
+        if (!closedAt) throw new ConflictError('Account is already closed');
+        await client.query('COMMIT');
+        committedClosedAt = closedAt;
+    } catch (error) {
+        await client.query('ROLLBACK').catch(() => undefined);
+        throw error;
+    } finally {
+        client.release();
+    }
+    const closedAt = committedClosedAt;
 
     let retentionDays: number | null = null;
     try {
