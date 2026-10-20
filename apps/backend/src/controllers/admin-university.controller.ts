@@ -238,6 +238,7 @@ export class AdminUniversityController {
             SELECT u.segment, COUNT(DISTINCT u.id) AS university_count, COUNT(DISTINCT s.id) AS student_count
             FROM universities u
             LEFT JOIN students s ON s.university_id = u.id AND s.status = 'active'
+                AND EXISTS (SELECT 1 FROM users usr WHERE usr.id = s.user_id AND usr.deleted_at IS NULL)
             WHERE u.segment IS NOT NULL
             GROUP BY u.segment
         `);

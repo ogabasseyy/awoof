@@ -38,6 +38,22 @@ export const microsoftVerificationApiClient: AxiosInstance = axios.create({
     withCredentials: true,
 });
 
+/**
+ * Authenticated password-proof requests (for example account closure):
+ * carries the current access token, but a 401 means the proof failed,
+ * not that the session expired, so it never refreshes, clears, or
+ * navigates. Callers surface the failure inline.
+ */
+export const passwordProofApiClient: AxiosInstance = axios.create({
+    baseURL: API_BASE_URL,
+    headers: { 'Content-Type': 'application/json' },
+});
+passwordProofApiClient.interceptors.request.use((config) => {
+    const snapshot = getSessionSnapshot();
+    if (snapshot.accessToken) config.headers.Authorization = `Bearer ${snapshot.accessToken}`;
+    return config;
+});
+
 /** Public/auth-start requests never refresh, clear, or navigate globally. */
 export const publicApiClient: AxiosInstance = axios.create({
     baseURL: API_BASE_URL,

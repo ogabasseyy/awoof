@@ -3,7 +3,7 @@
 import { useState } from 'react';
 import { Button } from '@/components/ui/button';
 import { clearTokens } from '@/lib/auth';
-import apiClient from '@/lib/api-client';
+import { passwordProofApiClient } from '@/lib/api-client';
 
 /**
  * Danger zone for self-service student account closure. The backend
@@ -24,7 +24,7 @@ export default function AccountClosureSection() {
         setBusy(true);
         setError(null);
         try {
-            await apiClient.delete('/students/account', {
+            await passwordProofApiClient.delete('/students/account', {
                 data: {
                     ...(password ? { password } : {}),
                     ...(confirmation ? { confirmation } : {}),
@@ -44,8 +44,9 @@ export default function AccountClosureSection() {
             <h2 className="text-base font-semibold text-red-700">Close account</h2>
             <p className="mt-1 text-sm text-slate-600">
                 Closing your account signs you out everywhere and stops sign-in immediately. Your optional
-                academic profile is permanently purged after 30 days. Contact support within 30 days if you
-                closed your account by mistake.
+                academic profile is deleted from live systems after 30 days; backup copies expire on the
+                schedule described in the privacy notice. Contact support within 30 days if you closed your
+                account by mistake.
             </p>
             {open ? (
                 <div className="mt-3 space-y-3">

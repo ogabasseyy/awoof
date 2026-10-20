@@ -2,7 +2,7 @@
 
 **Date:** 2026-10-20
 **Status:** Reviewed and enabled (`awoof-owned-v1`)
-**Artifact:** `apps/backend/src/data/academic-programmes/awoof-v1.normalized.json`
+**Artifact:** `apps/backend/src/data/academic-programmes/awoof-v1.normalized.json`, generated deterministically by `apps/backend/scripts/build-academic-programme-reference.mjs` from the checked-in extract `apps/backend/scripts/fixtures/awoof-v1.extract.json` (`--redistribution allowed`); the artifact checksum is pinned in the builder's `TRUSTED_REFERENCE_DIGESTS` so staging rejects hand-edited durations.
 
 ## Why this exists
 
