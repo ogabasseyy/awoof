@@ -1,0 +1,1167 @@
+{
+  "artifactVersion": 1,
+  "sourceVersion": "awoof-owned-v1",
+  "countryCode": "NG",
+  "redistributionAllowed": true,
+  "calculationsEnabled": true,
+  "programmes": [
+    {
+      "programmeId": "AWF-ACCT",
+      "label": "Accounting",
+      "award": "B.Sc.",
+      "aliases": [],
+      "routes": {
+        "utme": {
+          "durationYears": 4,
+          "reviewed": true,
+          "applicable": true,
+          "estimable": true
+        },
+        "de_200": {
+          "durationYears": 3,
+          "reviewed": true,
+          "applicable": true,
+          "estimable": true
+        },
+        "de_300": {
+          "durationYears": 2,
+          "reviewed": true,
+          "applicable": true,
+          "estimable": true
+        },
+        "transfer_other": {
+          "durationYears": null,
+          "reviewed": true,
+          "applicable": true,
+          "estimable": false
+        }
+      }
+    },
+    {
+      "programmeId": "AWF-BUSADM",
+      "label": "Business Administration",
+      "award": "B.Sc.",
+      "aliases": [],
+      "routes": {
+        "utme": {
+          "durationYears": 4,
+          "reviewed": true,
+          "applicable": true,
+          "estimable": true
+        },
+        "de_200": {
+          "durationYears": 3,
+          "reviewed": true,
+          "applicable": true,
+          "estimable": true
+        },
+        "de_300": {
+          "durationYears": 2,
+          "reviewed": true,
+          "applicable": true,
+          "estimable": true
+        },
+        "transfer_other": {
+          "durationYears": null,
+          "reviewed": true,
+          "applicable": true,
+          "estimable": false
+        }
+      }
+    },
+    {
+      "programmeId": "AWF-ECON",
+      "label": "Economics",
+      "award": "B.Sc.",
+      "aliases": [],
+      "routes": {
+        "utme": {
+          "durationYears": 4,
+          "reviewed": true,
+          "applicable": true,
+          "estimable": true
+        },
+        "de_200": {
+          "durationYears": 3,
+          "reviewed": true,
+          "applicable": true,
+          "estimable": true
+        },
+        "de_300": {
+          "durationYears": 2,
+          "reviewed": true,
+          "applicable": true,
+          "estimable": true
+        },
+        "transfer_other": {
+          "durationYears": null,
+          "reviewed": true,
+          "applicable": true,
+          "estimable": false
+        }
+      }
+    },
+    {
+      "programmeId": "AWF-MASSCOM",
+      "label": "Mass Communication",
+      "award": "B.Sc.",
+      "aliases": [],
+      "routes": {
+        "utme": {
+          "durationYears": 4,
+          "reviewed": true,
+          "applicable": true,
+          "estimable": true
+        },
+        "de_200": {
+          "durationYears": 3,
+          "reviewed": true,
+          "applicable": true,
+          "estimable": true
+        },
+        "de_300": {
+          "durationYears": 2,
+          "reviewed": true,
+          "applicable": true,
+          "estimable": true
+        },
+        "transfer_other": {
+          "durationYears": null,
+          "reviewed": true,
+          "applicable": true,
+          "estimable": false
+        }
+      }
+    },
+    {
+      "programmeId": "AWF-POLSCI",
+      "label": "Political Science",
+      "award": "B.Sc.",
+      "aliases": [],
+      "routes": {
+        "utme": {
+          "durationYears": 4,
+          "reviewed": true,
+          "applicable": true,
+          "estimable": true
+        },
+        "de_200": {
+          "durationYears": 3,
+          "reviewed": true,
+          "applicable": true,
+          "estimable": true
+        },
+        "de_300": {
+          "durationYears": 2,
+          "reviewed": true,
+          "applicable": true,
+          "estimable": true
+        },
+        "transfer_other": {
+          "durationYears": null,
+          "reviewed": true,
+          "applicable": true,
+          "estimable": false
+        }
+      }
+    },
+    {
+      "programmeId": "AWF-PSYCH",
+      "label": "Psychology",
+      "award": "B.Sc.",
+      "aliases": [],
+      "routes": {
+        "utme": {
+          "durationYears": 4,
+          "reviewed": true,
+          "applicable": true,
+          "estimable": true
+        },
+        "de_200": {
+          "durationYears": 3,
+          "reviewed": true,
+          "applicable": true,
+          "estimable": true
+        },
+        "de_300": {
+          "durationYears": 2,
+          "reviewed": true,
+          "applicable": true,
+          "estimable": true
+        },
+        "transfer_other": {
+          "durationYears": null,
+          "reviewed": true,
+          "applicable": true,
+          "estimable": false
+        }
+      }
+    },
+    {
+      "programmeId": "AWF-SOCIO",
+      "label": "Sociology",
+      "award": "B.Sc.",
+      "aliases": [],
+      "routes": {
+        "utme": {
+          "durationYears": 4,
+          "reviewed": true,
+          "applicable": true,
+          "estimable": true
+        },
+        "de_200": {
+          "durationYears": 3,
+          "reviewed": true,
+          "applicable": true,
+          "estimable": true
+        },
+        "de_300": {
+          "durationYears": 2,
+          "reviewed": true,
+          "applicable": true,
+          "estimable": true
+        },
+        "transfer_other": {
+          "durationYears": null,
+          "reviewed": true,
+          "applicable": true,
+          "estimable": false
+        }
+      }
+    },
+    {
+      "programmeId": "AWF-ENGLANG",
+      "label": "English Language",
+      "award": "B.A.",
+      "aliases": [],
+      "routes": {
+        "utme": {
+          "durationYears": 4,
+          "reviewed": true,
+          "applicable": true,
+          "estimable": true
+        },
+        "de_200": {
+          "durationYears": 3,
+          "reviewed": true,
+          "applicable": true,
+          "estimable": true
+        },
+        "de_300": {
+          "durationYears": 2,
+          "reviewed": true,
+          "applicable": true,
+          "estimable": true
+        },
+        "transfer_other": {
+          "durationYears": null,
+          "reviewed": true,
+          "applicable": true,
+          "estimable": false
+        }
+      }
+    },
+    {
+      "programmeId": "AWF-LAW",
+      "label": "Law",
+      "award": "LL.B.",
+      "aliases": [],
+      "routes": {
+        "utme": {
+          "durationYears": 5,
+          "reviewed": true,
+          "applicable": true,
+          "estimable": true
+        },
+        "de_200": {
+          "durationYears": 4,
+          "reviewed": true,
+          "applicable": true,
+          "estimable": true
+        },
+        "de_300": {
+          "durationYears": 3,
+          "reviewed": true,
+          "applicable": true,
+          "estimable": true
+        },
+        "transfer_other": {
+          "durationYears": null,
+          "reviewed": true,
+          "applicable": true,
+          "estimable": false
+        }
+      }
+    },
+    {
+      "programmeId": "AWF-CIVIL",
+      "label": "Civil Engineering",
+      "award": "B.Eng.",
+      "aliases": [],
+      "routes": {
+        "utme": {
+          "durationYears": 5,
+          "reviewed": true,
+          "applicable": true,
+          "estimable": true
+        },
+        "de_200": {
+          "durationYears": 4,
+          "reviewed": true,
+          "applicable": true,
+          "estimable": true
+        },
+        "de_300": {
+          "durationYears": 3,
+          "reviewed": true,
+          "applicable": true,
+          "estimable": true
+        },
+        "transfer_other": {
+          "durationYears": null,
+          "reviewed": true,
+          "applicable": true,
+          "estimable": false
+        }
+      }
+    },
+    {
+      "programmeId": "AWF-MECH",
+      "label": "Mechanical Engineering",
+      "award": "B.Eng.",
+      "aliases": [],
+      "routes": {
+        "utme": {
+          "durationYears": 5,
+          "reviewed": true,
+          "applicable": true,
+          "estimable": true
+        },
+        "de_200": {
+          "durationYears": 4,
+          "reviewed": true,
+          "applicable": true,
+          "estimable": true
+        },
+        "de_300": {
+          "durationYears": 3,
+          "reviewed": true,
+          "applicable": true,
+          "estimable": true
+        },
+        "transfer_other": {
+          "durationYears": null,
+          "reviewed": true,
+          "applicable": true,
+          "estimable": false
+        }
+      }
+    },
+    {
+      "programmeId": "AWF-ELEC",
+      "label": "Electrical and Electronics Engineering",
+      "award": "B.Eng.",
+      "aliases": [],
+      "routes": {
+        "utme": {
+          "durationYears": 5,
+          "reviewed": true,
+          "applicable": true,
+          "estimable": true
+        },
+        "de_200": {
+          "durationYears": 4,
+          "reviewed": true,
+          "applicable": true,
+          "estimable": true
+        },
+        "de_300": {
+          "durationYears": 3,
+          "reviewed": true,
+          "applicable": true,
+          "estimable": true
+        },
+        "transfer_other": {
+          "durationYears": null,
+          "reviewed": true,
+          "applicable": true,
+          "estimable": false
+        }
+      }
+    },
+    {
+      "programmeId": "AWF-CHEMENG",
+      "label": "Chemical Engineering",
+      "award": "B.Eng.",
+      "aliases": [],
+      "routes": {
+        "utme": {
+          "durationYears": 5,
+          "reviewed": true,
+          "applicable": true,
+          "estimable": true
+        },
+        "de_200": {
+          "durationYears": 4,
+          "reviewed": true,
+          "applicable": true,
+          "estimable": true
+        },
+        "de_300": {
+          "durationYears": 3,
+          "reviewed": true,
+          "applicable": true,
+          "estimable": true
+        },
+        "transfer_other": {
+          "durationYears": null,
+          "reviewed": true,
+          "applicable": true,
+          "estimable": false
+        }
+      }
+    },
+    {
+      "programmeId": "AWF-COMPENG",
+      "label": "Computer Engineering",
+      "award": "B.Eng.",
+      "aliases": [],
+      "routes": {
+        "utme": {
+          "durationYears": 5,
+          "reviewed": true,
+          "applicable": true,
+          "estimable": true
+        },
+        "de_200": {
+          "durationYears": 4,
+          "reviewed": true,
+          "applicable": true,
+          "estimable": true
+        },
+        "de_300": {
+          "durationYears": 3,
+          "reviewed": true,
+          "applicable": true,
+          "estimable": true
+        },
+        "transfer_other": {
+          "durationYears": null,
+          "reviewed": true,
+          "applicable": true,
+          "estimable": false
+        }
+      }
+    },
+    {
+      "programmeId": "AWF-ARCH",
+      "label": "Architecture",
+      "award": "B.Sc.",
+      "aliases": [],
+      "routes": {
+        "utme": {
+          "durationYears": 4,
+          "reviewed": true,
+          "applicable": true,
+          "estimable": true
+        },
+        "de_200": {
+          "durationYears": 3,
+          "reviewed": true,
+          "applicable": true,
+          "estimable": true
+        },
+        "de_300": {
+          "durationYears": 2,
+          "reviewed": true,
+          "applicable": true,
+          "estimable": true
+        },
+        "transfer_other": {
+          "durationYears": null,
+          "reviewed": true,
+          "applicable": true,
+          "estimable": false
+        }
+      }
+    },
+    {
+      "programmeId": "AWF-COMPSCI",
+      "label": "Computer Science",
+      "award": "B.Sc.",
+      "aliases": [],
+      "routes": {
+        "utme": {
+          "durationYears": 4,
+          "reviewed": true,
+          "applicable": true,
+          "estimable": true
+        },
+        "de_200": {
+          "durationYears": 3,
+          "reviewed": true,
+          "applicable": true,
+          "estimable": true
+        },
+        "de_300": {
+          "durationYears": 2,
+          "reviewed": true,
+          "applicable": true,
+          "estimable": true
+        },
+        "transfer_other": {
+          "durationYears": null,
+          "reviewed": true,
+          "applicable": true,
+          "estimable": false
+        }
+      }
+    },
+    {
+      "programmeId": "AWF-SOFTENG",
+      "label": "Software Engineering",
+      "award": "B.Sc.",
+      "aliases": [],
+      "routes": {
+        "utme": {
+          "durationYears": 4,
+          "reviewed": true,
+          "applicable": true,
+          "estimable": true
+        },
+        "de_200": {
+          "durationYears": 3,
+          "reviewed": true,
+          "applicable": true,
+          "estimable": true
+        },
+        "de_300": {
+          "durationYears": 2,
+          "reviewed": true,
+          "applicable": true,
+          "estimable": true
+        },
+        "transfer_other": {
+          "durationYears": null,
+          "reviewed": true,
+          "applicable": true,
+          "estimable": false
+        }
+      }
+    },
+    {
+      "programmeId": "AWF-INFOTECH",
+      "label": "Information Technology",
+      "award": "B.Sc.",
+      "aliases": [],
+      "routes": {
+        "utme": {
+          "durationYears": 4,
+          "reviewed": true,
+          "applicable": true,
+          "estimable": true
+        },
+        "de_200": {
+          "durationYears": 3,
+          "reviewed": true,
+          "applicable": true,
+          "estimable": true
+        },
+        "de_300": {
+          "durationYears": 2,
+          "reviewed": true,
+          "applicable": true,
+          "estimable": true
+        },
+        "transfer_other": {
+          "durationYears": null,
+          "reviewed": true,
+          "applicable": true,
+          "estimable": false
+        }
+      }
+    },
+    {
+      "programmeId": "AWF-MICROBIO",
+      "label": "Microbiology",
+      "award": "B.Sc.",
+      "aliases": [],
+      "routes": {
+        "utme": {
+          "durationYears": 4,
+          "reviewed": true,
+          "applicable": true,
+          "estimable": true
+        },
+        "de_200": {
+          "durationYears": 3,
+          "reviewed": true,
+          "applicable": true,
+          "estimable": true
+        },
+        "de_300": {
+          "durationYears": 2,
+          "reviewed": true,
+          "applicable": true,
+          "estimable": true
+        },
+        "transfer_other": {
+          "durationYears": null,
+          "reviewed": true,
+          "applicable": true,
+          "estimable": false
+        }
+      }
+    },
+    {
+      "programmeId": "AWF-BIOCHEM",
+      "label": "Biochemistry",
+      "award": "B.Sc.",
+      "aliases": [],
+      "routes": {
+        "utme": {
+          "durationYears": 4,
+          "reviewed": true,
+          "applicable": true,
+          "estimable": true
+        },
+        "de_200": {
+          "durationYears": 3,
+          "reviewed": true,
+          "applicable": true,
+          "estimable": true
+        },
+        "de_300": {
+          "durationYears": 2,
+          "reviewed": true,
+          "applicable": true,
+          "estimable": true
+        },
+        "transfer_other": {
+          "durationYears": null,
+          "reviewed": true,
+          "applicable": true,
+          "estimable": false
+        }
+      }
+    },
+    {
+      "programmeId": "AWF-INDCHEM",
+      "label": "Industrial Chemistry",
+      "award": "B.Sc.",
+      "aliases": [],
+      "routes": {
+        "utme": {
+          "durationYears": 4,
+          "reviewed": true,
+          "applicable": true,
+          "estimable": true
+        },
+        "de_200": {
+          "durationYears": 3,
+          "reviewed": true,
+          "applicable": true,
+          "estimable": true
+        },
+        "de_300": {
+          "durationYears": 2,
+          "reviewed": true,
+          "applicable": true,
+          "estimable": true
+        },
+        "transfer_other": {
+          "durationYears": null,
+          "reviewed": true,
+          "applicable": true,
+          "estimable": false
+        }
+      }
+    },
+    {
+      "programmeId": "AWF-MATH",
+      "label": "Mathematics",
+      "award": "B.Sc.",
+      "aliases": [],
+      "routes": {
+        "utme": {
+          "durationYears": 4,
+          "reviewed": true,
+          "applicable": true,
+          "estimable": true
+        },
+        "de_200": {
+          "durationYears": 3,
+          "reviewed": true,
+          "applicable": true,
+          "estimable": true
+        },
+        "de_300": {
+          "durationYears": 2,
+          "reviewed": true,
+          "applicable": true,
+          "estimable": true
+        },
+        "transfer_other": {
+          "durationYears": null,
+          "reviewed": true,
+          "applicable": true,
+          "estimable": false
+        }
+      }
+    },
+    {
+      "programmeId": "AWF-STAT",
+      "label": "Statistics",
+      "award": "B.Sc.",
+      "aliases": [],
+      "routes": {
+        "utme": {
+          "durationYears": 4,
+          "reviewed": true,
+          "applicable": true,
+          "estimable": true
+        },
+        "de_200": {
+          "durationYears": 3,
+          "reviewed": true,
+          "applicable": true,
+          "estimable": true
+        },
+        "de_300": {
+          "durationYears": 2,
+          "reviewed": true,
+          "applicable": true,
+          "estimable": true
+        },
+        "transfer_other": {
+          "durationYears": null,
+          "reviewed": true,
+          "applicable": true,
+          "estimable": false
+        }
+      }
+    },
+    {
+      "programmeId": "AWF-PHYS",
+      "label": "Physics",
+      "award": "B.Sc.",
+      "aliases": [],
+      "routes": {
+        "utme": {
+          "durationYears": 4,
+          "reviewed": true,
+          "applicable": true,
+          "estimable": true
+        },
+        "de_200": {
+          "durationYears": 3,
+          "reviewed": true,
+          "applicable": true,
+          "estimable": true
+        },
+        "de_300": {
+          "durationYears": 2,
+          "reviewed": true,
+          "applicable": true,
+          "estimable": true
+        },
+        "transfer_other": {
+          "durationYears": null,
+          "reviewed": true,
+          "applicable": true,
+          "estimable": false
+        }
+      }
+    },
+    {
+      "programmeId": "AWF-MED",
+      "label": "Medicine and Surgery",
+      "award": "MBBS",
+      "aliases": [],
+      "routes": {
+        "utme": {
+          "durationYears": 6,
+          "reviewed": true,
+          "applicable": true,
+          "estimable": true
+        },
+        "de_200": {
+          "durationYears": 5,
+          "reviewed": true,
+          "applicable": true,
+          "estimable": true
+        },
+        "de_300": {
+          "durationYears": 4,
+          "reviewed": true,
+          "applicable": true,
+          "estimable": true
+        },
+        "transfer_other": {
+          "durationYears": null,
+          "reviewed": true,
+          "applicable": true,
+          "estimable": false
+        }
+      }
+    },
+    {
+      "programmeId": "AWF-DENT",
+      "label": "Dentistry",
+      "award": "BDS",
+      "aliases": [],
+      "routes": {
+        "utme": {
+          "durationYears": 6,
+          "reviewed": true,
+          "applicable": true,
+          "estimable": true
+        },
+        "de_200": {
+          "durationYears": 5,
+          "reviewed": true,
+          "applicable": true,
+          "estimable": true
+        },
+        "de_300": {
+          "durationYears": 4,
+          "reviewed": true,
+          "applicable": true,
+          "estimable": true
+        },
+        "transfer_other": {
+          "durationYears": null,
+          "reviewed": true,
+          "applicable": true,
+          "estimable": false
+        }
+      }
+    },
+    {
+      "programmeId": "AWF-NURS",
+      "label": "Nursing Science",
+      "award": "B.NSc.",
+      "aliases": [],
+      "routes": {
+        "utme": {
+          "durationYears": 5,
+          "reviewed": true,
+          "applicable": true,
+          "estimable": true
+        },
+        "de_200": {
+          "durationYears": 4,
+          "reviewed": true,
+          "applicable": true,
+          "estimable": true
+        },
+        "de_300": {
+          "durationYears": 3,
+          "reviewed": true,
+          "applicable": true,
+          "estimable": true
+        },
+        "transfer_other": {
+          "durationYears": null,
+          "reviewed": true,
+          "applicable": true,
+          "estimable": false
+        }
+      }
+    },
+    {
+      "programmeId": "AWF-PHARM",
+      "label": "Pharmacy",
+      "award": "B.Pharm.",
+      "aliases": [],
+      "routes": {
+        "utme": {
+          "durationYears": 5,
+          "reviewed": true,
+          "applicable": true,
+          "estimable": true
+        },
+        "de_200": {
+          "durationYears": 4,
+          "reviewed": true,
+          "applicable": true,
+          "estimable": true
+        },
+        "de_300": {
+          "durationYears": 3,
+          "reviewed": true,
+          "applicable": true,
+          "estimable": true
+        },
+        "transfer_other": {
+          "durationYears": null,
+          "reviewed": true,
+          "applicable": true,
+          "estimable": false
+        }
+      }
+    },
+    {
+      "programmeId": "AWF-MEDLAB",
+      "label": "Medical Laboratory Science",
+      "award": "B.MLS",
+      "aliases": [],
+      "routes": {
+        "utme": {
+          "durationYears": 5,
+          "reviewed": true,
+          "applicable": true,
+          "estimable": true
+        },
+        "de_200": {
+          "durationYears": 4,
+          "reviewed": true,
+          "applicable": true,
+          "estimable": true
+        },
+        "de_300": {
+          "durationYears": 3,
+          "reviewed": true,
+          "applicable": true,
+          "estimable": true
+        },
+        "transfer_other": {
+          "durationYears": null,
+          "reviewed": true,
+          "applicable": true,
+          "estimable": false
+        }
+      }
+    },
+    {
+      "programmeId": "AWF-PHYSIO",
+      "label": "Physiotherapy",
+      "award": "B.PT",
+      "aliases": [],
+      "routes": {
+        "utme": {
+          "durationYears": 5,
+          "reviewed": true,
+          "applicable": true,
+          "estimable": true
+        },
+        "de_200": {
+          "durationYears": 4,
+          "reviewed": true,
+          "applicable": true,
+          "estimable": true
+        },
+        "de_300": {
+          "durationYears": 3,
+          "reviewed": true,
+          "applicable": true,
+          "estimable": true
+        },
+        "transfer_other": {
+          "durationYears": null,
+          "reviewed": true,
+          "applicable": true,
+          "estimable": false
+        }
+      }
+    },
+    {
+      "programmeId": "AWF-RADIOG",
+      "label": "Radiography",
+      "award": "B.Sc.",
+      "aliases": [],
+      "routes": {
+        "utme": {
+          "durationYears": 5,
+          "reviewed": true,
+          "applicable": true,
+          "estimable": true
+        },
+        "de_200": {
+          "durationYears": 4,
+          "reviewed": true,
+          "applicable": true,
+          "estimable": true
+        },
+        "de_300": {
+          "durationYears": 3,
+          "reviewed": true,
+          "applicable": true,
+          "estimable": true
+        },
+        "transfer_other": {
+          "durationYears": null,
+          "reviewed": true,
+          "applicable": true,
+          "estimable": false
+        }
+      }
+    },
+    {
+      "programmeId": "AWF-VET",
+      "label": "Veterinary Medicine",
+      "award": "DVM",
+      "aliases": [],
+      "routes": {
+        "utme": {
+          "durationYears": 6,
+          "reviewed": true,
+          "applicable": true,
+          "estimable": true
+        },
+        "de_200": {
+          "durationYears": 5,
+          "reviewed": true,
+          "applicable": true,
+          "estimable": true
+        },
+        "de_300": {
+          "durationYears": 4,
+          "reviewed": true,
+          "applicable": true,
+          "estimable": true
+        },
+        "transfer_other": {
+          "durationYears": null,
+          "reviewed": true,
+          "applicable": true,
+          "estimable": false
+        }
+      }
+    },
+    {
+      "programmeId": "AWF-AGRIC",
+      "label": "Agriculture",
+      "award": "B.Agric.",
+      "aliases": [],
+      "routes": {
+        "utme": {
+          "durationYears": 5,
+          "reviewed": true,
+          "applicable": true,
+          "estimable": true
+        },
+        "de_200": {
+          "durationYears": 4,
+          "reviewed": true,
+          "applicable": true,
+          "estimable": true
+        },
+        "de_300": {
+          "durationYears": 3,
+          "reviewed": true,
+          "applicable": true,
+          "estimable": true
+        },
+        "transfer_other": {
+          "durationYears": null,
+          "reviewed": true,
+          "applicable": true,
+          "estimable": false
+        }
+      }
+    },
+    {
+      "programmeId": "AWF-ESTATE",
+      "label": "Estate Management",
+      "award": "B.Sc.",
+      "aliases": [],
+      "routes": {
+        "utme": {
+          "durationYears": 5,
+          "reviewed": true,
+          "applicable": true,
+          "estimable": true
+        },
+        "de_200": {
+          "durationYears": 4,
+          "reviewed": true,
+          "applicable": true,
+          "estimable": true
+        },
+        "de_300": {
+          "durationYears": 3,
+          "reviewed": true,
+          "applicable": true,
+          "estimable": true
+        },
+        "transfer_other": {
+          "durationYears": null,
+          "reviewed": true,
+          "applicable": true,
+          "estimable": false
+        }
+      }
+    },
+    {
+      "programmeId": "AWF-QUANSURV",
+      "label": "Quantity Surveying",
+      "award": "B.Sc.",
+      "aliases": [],
+      "routes": {
+        "utme": {
+          "durationYears": 5,
+          "reviewed": true,
+          "applicable": true,
+          "estimable": true
+        },
+        "de_200": {
+          "durationYears": 4,
+          "reviewed": true,
+          "applicable": true,
+          "estimable": true
+        },
+        "de_300": {
+          "durationYears": 3,
+          "reviewed": true,
+          "applicable": true,
+          "estimable": true
+        },
+        "transfer_other": {
+          "durationYears": null,
+          "reviewed": true,
+          "applicable": true,
+          "estimable": false
+        }
+      }
+    },
+    {
+      "programmeId": "AWF-BUILD",
+      "label": "Building",
+      "award": "B.Sc.",
+      "aliases": [],
+      "routes": {
+        "utme": {
+          "durationYears": 5,
+          "reviewed": true,
+          "applicable": true,
+          "estimable": true
+        },
+        "de_200": {
+          "durationYears": 4,
+          "reviewed": true,
+          "applicable": true,
+          "estimable": true
+        },
+        "de_300": {
+          "durationYears": 3,
+          "reviewed": true,
+          "applicable": true,
+          "estimable": true
+        },
+        "transfer_other": {
+          "durationYears": null,
+          "reviewed": true,
+          "applicable": true,
+          "estimable": false
+        }
+      }
+    }
+  ],
+  "counts": {
+    "total": 36,
+    "included": 36,
+    "excluded": 0,
+    "blocked": 0
+  }
+}

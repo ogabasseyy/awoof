@@ -37,6 +37,18 @@ router.put(
 );
 
 /**
+ * @route   DELETE /api/students/account
+ * @desc    Close the caller's own student account (soft delete; sessions revoked)
+ * @access  Private (Student only)
+ */
+router.delete(
+    '/account',
+    authenticate,
+    requireRole('student'),
+    asyncHandler(studentController.closeAccount.bind(studentController))
+);
+
+/**
  * @route   GET /api/students/purchases
  * @desc    Get student purchase history
  * @access  Private (Student only)

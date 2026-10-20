@@ -457,13 +457,19 @@ test('programme search scopes bound students to their national reference', () =>
     assert.equal(unbound.items.length, 5);
 });
 
-test('programme search over the blocked production reference advertises nothing', () => {
+test('programme search over the Awoof-owned production reference advertises reviewed rules', () => {
     const reference = loadProgrammeReference();
-    assert.equal(reference.calculationsEnabled, false);
-    assert.deepEqual(searchProgrammes(reference, { q: '', cursor: null, limit: 20 }), { items: [], nextCursor: null });
+    assert.equal(reference.calculationsEnabled, true);
+    assert.equal(reference.sourceVersion, 'awoof-owned-v1');
+    const scoped = searchProgrammes(reference, { q: 'computer science', cursor: null, limit: 20, countryCode: 'NG' });
+    assert.deepEqual(scoped.items.map((item) => item.programmeId), ['AWF-COMPSCI']);
     assert.deepEqual(
-        estimateGraduationYear(input(), reference, { currentYear: CURRENT_YEAR }),
-        { state: 'unavailable', reason: 'unreviewed_rule' },
+        estimateGraduationYear(
+            { programmeId: 'AWF-COMPSCI', entryYear: CURRENT_YEAR - 1, entryRoute: 'utme' },
+            reference,
+            { currentYear: CURRENT_YEAR, expectedCountryCode: 'NG' },
+        ),
+        { state: 'available', year: CURRENT_YEAR - 1 + 4, ruleId: 'AWF-COMPSCI:utme', sourceVersion: 'awoof-owned-v1' },
     );
 });
 

@@ -115,6 +115,7 @@ The owner approved a 30-day academic-profile retention window on 2026-10-19: `AC
 
 - `ACADEMIC_PROFILE_ENABLED=true` and `ACADEMIC_PROFILE_RETENTION_DAYS=30` set in the production VPS environment; backend restarted and verified healthy, with the enabled route answering 401 (auth-gated) rather than 403. On 2026-10-20 collection was paused (`ACADEMIC_PROFILE_ENABLED=false`, retention left at 30) until the v1.2 disclosure is deployed; re-enabling immediately after that deploy is the final activation step.
 - Purge schedule installed in the production crontab: daily 03:30 UTC, `cleanup-academic-profile-data.js --batch-size 500`, logging to the host log directory; a manual run completed with `deletedProfiles=0`.
+- Account closure (the soft-delete trigger for this purge) is implemented as self-service `DELETE /api/students/account`: it sets `users.deleted_at`, revokes all sessions in the same statement, and is student-only; restoration within the retention window is support-mediated by clearing `deleted_at`.
 - Backup-expiry schedule installed in the production crontab: daily 04:15 UTC, `expire-awoof-backups.py --backup-dir <production backups> --apply`; a manual dry run completed. Host paths differ from the templates in `scripts/scheduler/` (no system python3 on the host, so the job runs via a pinned `python:3.13-slim` container); the templates remain the reviewed configuration source.
 
 ---

@@ -8,6 +8,7 @@ import { Button } from '@/components/ui/button';
 import { useAuth } from '@/contexts/AuthContext';
 import { clearTokens, getSessionSnapshot } from '@/lib/auth';
 import { refreshSessionAccessToken, studentSsoApiClient, studentSsoSessionApiClient } from '@/lib/api-client';
+import AccountClosureSection from '@/components/student/AccountClosureSection';
 import { serverSkewSince } from '@/lib/student-login-flow';
 
 type RecoveryStatus = 'loading' | 'unconfigured' | 'pending' | 'active' | 'unavailable';
@@ -467,5 +468,6 @@ export default function StudentSecurityPage() {
                 <Button type="button" variant="outline" onClick={() => void beginLink()} disabled={linkBusy} className="mt-3 w-full rounded-full">Link a school sign-in</Button>
             </div>}
         </div>
+        <AccountClosureSection />
     </AuthShell>;
 }

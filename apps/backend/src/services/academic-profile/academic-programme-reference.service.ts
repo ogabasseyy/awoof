@@ -213,7 +213,7 @@ export function loadProgrammeReference(...args: [] | [unknown]): ProgrammeRefere
     if (args.length === 0) {
         try {
             const raw = readFileSync(
-                new URL('../../data/academic-programmes/nuc-v2.normalized.json', import.meta.url),
+                new URL('../../data/academic-programmes/awoof-v1.normalized.json', import.meta.url),
                 'utf8',
             );
             return parseProgrammeReferenceArtifact(JSON.parse(raw) as unknown);
