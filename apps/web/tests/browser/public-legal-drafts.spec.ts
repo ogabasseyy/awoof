@@ -9,9 +9,11 @@ for (const route of draftRoutes) {
     await expect(page.locator('main h1')).toHaveCount(1);
     const version = route === '/privacy'
       ? 'Version 1.2 · Effective 19 October 2026'
-      : ['/terms'].includes(route)
-        ? 'Version 1.1 · Effective 24 September 2026'
-        : 'Version 1.0 · Effective 23 September 2026';
+      : route === '/cookies'
+        ? 'Version 1.1 · Effective 19 October 2026'
+        : ['/terms'].includes(route)
+          ? 'Version 1.1 · Effective 24 September 2026'
+          : 'Version 1.0 · Effective 23 September 2026';
     await expect(page.locator('main')).toContainText(version);
     await expect(page.locator('main')).not.toContainText('working draft');
     await expect(page.locator('main')).not.toContainText('Decisions requiring counsel');

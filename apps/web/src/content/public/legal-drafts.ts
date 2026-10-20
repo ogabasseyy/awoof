@@ -8,3 +8,4 @@ export { termsV1_0Archive, termsV1_0VersionLabel } from './terms-v1-0-archive';
 export { merchantDraft } from './merchant-legal-draft';
 export { dataProtectionDraft } from './data-protection-draft';
 export { cookiesDraft } from './cookies-draft';
+export { cookiesV1_0Archive, cookiesV1_0VersionLabel } from './cookies-v1-0-archive';

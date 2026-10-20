@@ -3,7 +3,7 @@ import { test } from 'node:test';
 import sitemap from '../../src/app/sitemap';
 import { publicPageMetadata } from '../../src/content/public/page-metadata';
 
-const ALLOWLIST = ['/', '/marketplace', '/trust', '/help', '/contact', '/partner', '/developers', '/legal', '/privacy', '/privacy/v1-0', '/privacy/v1-1', '/terms', '/terms/v1-0', '/cookies', '/legal/merchant-terms', '/legal/data-protection'];
+const ALLOWLIST = ['/', '/marketplace', '/trust', '/help', '/contact', '/partner', '/developers', '/legal', '/privacy', '/privacy/v1-0', '/privacy/v1-1', '/terms', '/terms/v1-0', '/cookies', '/cookies/v1-0', '/legal/merchant-terms', '/legal/data-protection'];
 
 test('legal sitemap dates distinguish updated and unchanged reading copies', () => {
   const dates = new Map(sitemap().map((entry) => [new URL(entry.url).pathname, entry.lastModified]));
@@ -14,6 +14,7 @@ test('legal sitemap dates distinguish updated and unchanged reading copies', () 
     assert.equal(dates.get(path), '2026-10-19', path);
   }
   assert.equal(dates.get('/cookies'), '2026-10-19', '/cookies');
+  assert.equal(dates.get('/cookies/v1-0'), '2026-10-19', '/cookies/v1-0');
   for (const path of ['/legal/merchant-terms', '/legal/data-protection']) {
     assert.equal(dates.get(path), '2026-09-23', path);
   }

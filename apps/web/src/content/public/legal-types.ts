@@ -11,6 +11,7 @@ export const legalAddress = '2 Olaide Tomori Street, Ikeja, Lagos, Nigeria';
 export const legalDraftVersion = 'Version 1.0 · Effective 23 September 2026';
 export const studentPolicyVersion = 'Version 1.1 · Effective 24 September 2026';
 export const privacyPolicyVersion = 'Version 1.2 · Effective 19 October 2026';
+export const cookiesPolicyVersion = 'Version 1.1 · Effective 19 October 2026';
 
 export const legalDocuments = [
   { href: '/privacy', label: 'Privacy notice' },
@@ -19,6 +20,7 @@ export const legalDocuments = [
   { href: '/terms', label: 'Student and website terms' },
   { href: '/terms/v1-0', label: 'Archived student terms (v1.0)' },
   { href: '/cookies', label: 'Cookies and browser storage' },
+  { href: '/cookies/v1-0', label: 'Archived cookies notice (v1.0)' },
   { href: '/legal/merchant-terms', label: 'Merchant partnership terms' },
   { href: '/legal/data-protection', label: 'Partner data-protection schedule' },
 ] as const;
