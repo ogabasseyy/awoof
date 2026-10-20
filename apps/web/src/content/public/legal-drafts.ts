@@ -2,6 +2,7 @@ export { legalOperator, legalAddress, legalDraftVersion, legalDocuments } from '
 export type { LegalDraftSection } from './legal-types';
 export { privacyDraft } from './privacy-draft';
 export { privacyV1_0Archive, privacyV1_0VersionLabel } from './privacy-v1-0-archive';
+export { privacyV1_1Archive, privacyV1_1VersionLabel } from './privacy-v1-1-archive';
 export { termsDraft } from './terms-draft';
 export { termsV1_0Archive, termsV1_0VersionLabel } from './terms-v1-0-archive';
 export { merchantDraft } from './merchant-legal-draft';

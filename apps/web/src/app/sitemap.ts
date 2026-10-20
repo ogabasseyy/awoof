@@ -14,8 +14,9 @@ export default function sitemap(): MetadataRoute.Sitemap {
     { url: `${baseUrl}/developers`, lastModified: launched, changeFrequency: 'monthly', priority: 0.6 },
     ...[
       { path: '/legal', lastModified: '2026-09-24' },
-      { path: '/privacy', lastModified: '2026-09-24' },
+      { path: '/privacy', lastModified: '2026-10-19' },
       { path: '/privacy/v1-0', lastModified: '2026-09-24' },
+      { path: '/privacy/v1-1', lastModified: '2026-10-19' },
       { path: '/terms', lastModified: '2026-09-24' },
       { path: '/terms/v1-0', lastModified: '2026-09-24' },
       { path: '/cookies', lastModified: '2026-09-23' },

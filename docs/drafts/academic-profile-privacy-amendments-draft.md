@@ -1,7 +1,7 @@
 # [DRAFT — UNPUBLISHED] Proposed Privacy Policy Amendments: Optional Academic Profile
 
 > **IMPORTANT NOTICE:**
-> **Status:** UNPUBLISHED DRAFT ONLY.
+> **Status:** PUBLISHED as Privacy Policy version 1.2 (effective 19 October 2026) following owner approval of the 30-day retention window and scheduled purge/expiry. This draft remains the drafting record.
 > **Legal Notice:** This document is internal preparatory material for owner and legal review. It has NOT been approved by legal counsel or the business owner, has NOT been published to any public route (`/privacy`), is NOT indexed by search engines, and must NOT be cited as effective public privacy terms.
 > **Effective Policy:** The effective public Privacy Notice remains version 1.1 at `/privacy` with archived version 1.0 at `/privacy/v1-0`.
 
