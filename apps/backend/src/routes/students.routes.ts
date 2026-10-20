@@ -52,6 +52,10 @@ const accountClosureProofLimiter = rateLimit({
     standardHeaders: true,
     legacyHeaders: false,
     skipSuccessfulRequests: true,
+    // Only an actual proof failure (401) consumes the budget: retention
+    // outages (503), already-closed conflicts (409), and limiter responses
+    // must not burn a student's attempts.
+    requestWasSuccessful: (_req, res) => res.statusCode !== 401,
     keyGenerator: (req) => {
         const userId = (req as AuthRequest).user?.userId;
         return userId ? `account:${userId}` : `ip:${req.ip ?? 'unknown'}`;

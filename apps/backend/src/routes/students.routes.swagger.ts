@@ -64,7 +64,7 @@
  *       429:
  *         description: Too many failed closure proofs for this account; wait for the rate-limit window (see RateLimit headers) before retrying
  *       503:
- *         $ref: '#/components/responses/SessionValidationUnavailable'
+ *         description: Closure unavailable — either student session validation is temporarily unavailable, or the approved retention window (ACADEMIC_PROFILE_RETENTION_DAYS) is not configured, in which case closure refuses before any proof is checked
  *
  * /api/students/profile:
  *   get:
