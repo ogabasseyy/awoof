@@ -19,7 +19,7 @@ export default function sitemap(): MetadataRoute.Sitemap {
       { path: '/privacy/v1-1', lastModified: '2026-10-19' },
       { path: '/terms', lastModified: '2026-09-24' },
       { path: '/terms/v1-0', lastModified: '2026-09-24' },
-      { path: '/cookies', lastModified: '2026-09-23' },
+      { path: '/cookies', lastModified: '2026-10-19' },
       { path: '/legal/merchant-terms', lastModified: '2026-09-23' },
       { path: '/legal/data-protection', lastModified: '2026-09-23' },
     ].map(({ path, lastModified }) => ({

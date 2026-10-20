@@ -13,7 +13,8 @@ test('legal sitemap dates distinguish updated and unchanged reading copies', () 
   for (const path of ['/privacy', '/privacy/v1-1']) {
     assert.equal(dates.get(path), '2026-10-19', path);
   }
-  for (const path of ['/cookies', '/legal/merchant-terms', '/legal/data-protection']) {
+  assert.equal(dates.get('/cookies'), '2026-10-19', '/cookies');
+  for (const path of ['/legal/merchant-terms', '/legal/data-protection']) {
     assert.equal(dates.get(path), '2026-09-23', path);
   }
 });

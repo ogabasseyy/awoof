@@ -71,7 +71,7 @@ export const privacyDraft: readonly LegalDraftSection[] = [
     'Available consent controls let signed-in students inspect and withdraw applicable grants. Withdrawal does not invalidate earlier lawful processing, but can make the relevant verification or benefit unavailable. Account closure and consent withdrawal are not interchangeable.',
   ] },
   { id: 'academic-profile', heading: 'Optional academic profile', paragraphs: [
-    'If you are a student, you may choose to complete an optional academic profile. Providing these details is entirely voluntary, and declining, skipping or erasing them never affects your student verification, discount eligibility or general account access.',
+    'If you are a student and this optional feature is offered on your account, you may choose to complete an optional academic profile. Providing these details is entirely voluntary, and declining, skipping or erasing them never affects your student verification, discount eligibility or general account access.',
   ], points: [
     'What we collect in this form: your institution name and country (selected from the approved catalogue or self-reported), your course or programme of study, the calendar year you entered your programme, your admission route (UTME/100-level, Direct Entry 200-level, Direct Entry 300-level, or Transfer/Other), your expected graduation year and whether you confirmed or adjusted a suggested estimate, and any explicit "Not sure" or "Skip this detail" choices, which we record so we do not keep asking.',
     'What we do not collect in this form: academic transcripts, grades or GPA, class of degree, disciplinary records, tuition receipts, or government identity numbers (NIN, BVN).',

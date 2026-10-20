@@ -169,6 +169,8 @@ test('terms draft does not promise discounts or universal school support', async
 test('cookies notice discloses the homepage first-visit preference', async ({ page }) => {
   await page.goto('/cookies');
   await expect(page.locator('#essential')).toContainText('first-visit preference in local storage');
+  await expect(page.locator('#essential')).toContainText('prompt-deferral marker in local storage');
+  await expect(page.locator('#essential')).toContainText('contains only your Awoof account ID');
 });
 
 test('merchant-order and schedule-annex conditions stay on partner legal pages', async ({ page }) => {

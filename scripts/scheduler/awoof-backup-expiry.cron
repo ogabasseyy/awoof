@@ -1,9 +1,9 @@
 # Awoof Postgres backup expiry (academic-profile retention, Phase 2)
 # ------------------------------------------------------------------
-# STATUS: DISABLED TEMPLATE - NOT INSTALLED. This file is reviewed
-# configuration only. Scheduling the --apply job is an activation
-# decision that belongs to the retention-policy owner; do not install
-# it until the retention values and backup policy are approved.
+# STATUS: INSTALLED ON PRODUCTION 2026-10-19 (owner-approved). This file
+# remains the reviewed template; the installed crontab line uses the
+# production host's backup/log directories and runs via a pinned
+# python:3.13-slim container because the host has no system python3.
 #
 # When activated on the production host, install one line (adjust the
 # deploy home and backup directory to the host layout used by

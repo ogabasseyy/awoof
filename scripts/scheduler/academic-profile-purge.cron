@@ -1,6 +1,8 @@
 # Awoof Academic Profile Retention Purge Cron Template
 # ------------------------------------------------------------------------------
-# STATUS: DISABLED PENDING OWNER/LEGAL APPROVAL AND RETENTION WINDOW AUTHORIZATION
+# STATUS: INSTALLED ON PRODUCTION 2026-10-19 (owner-approved 30-day window).
+# This file remains the reviewed template; the installed crontab line uses
+# the production host's log directory (/home/bassey/awoof-logs).
 #
 # PURPOSE:
 # Daily scheduled execution of the academic profile data cleanup script to purge

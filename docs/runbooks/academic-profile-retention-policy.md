@@ -18,7 +18,7 @@ Every location where academic-profile personal data or its derivatives exist mus
 | **In-Memory Projections** | Node.js backend runtime | Transient `AcademicProfileProjection` objects | Cleared on request completion; garbage collected by V8 engine. |
 | **Client Local Storage** | Browser `localStorage` | `awoof.profile.defer-prompt.v1.<browserSessionId>` containing only `userId` | Evicted on logout, session switch, or explicit browser cache clearance. |
 | **Operational Logs** | Winston / stdout logs | Counts-only metrics (`deletedProfiles=N`, `outcome=success`) | Zero personal data or identifiers emitted to logs. |
-| **Backup Dumps** | PostgreSQL custom-format dumps (`awoof-*.dump`) | Complete snapshot of `student_academic_profiles` table at dump time | Time-based expiry after 30 days is PENDING: the `expire-awoof-backups --apply` job is not scheduled yet (disabled cron template in `scripts/scheduler/`), so only deploy-time count rotation currently expires backups. On restore, purged by reconciliation before traffic release. |
+| **Backup Dumps** | PostgreSQL custom-format dumps (`awoof-*.dump`) | Complete snapshot of `student_academic_profiles` table at dump time | Time-based expiry after 30 days is ACTIVE since 2026-10-19: the `expire-awoof-backups --apply` job is installed on the production VPS (see Activation record below); deploy-time count rotation also applies. On restore, purged by reconciliation before traffic release. |
 
 ---
 
@@ -102,14 +102,20 @@ Under NDPA 2023 § 24(1)(e), the existence of an active account alone does not j
 ## 5. Dual Deletion Timelines (Live vs. Backup)
 
 Public statements must never promise immediate physical eradication across all disaster-recovery media. The timeline consists of two independent phases:
-No academic-profile retention duration is approved yet: `ACADEMIC_PROFILE_RETENTION_DAYS` has no default and the purge fails closed until an authorized value is configured. Durations below that mention a number of days for the academic-profile window are the pending proposal used as an example, not an active policy commitment.
+The owner approved a 30-day academic-profile retention window on 2026-10-19: `ACADEMIC_PROFILE_RETENTION_DAYS=30` is configured in production and the purge fails closed if an authorized value is ever removed. Durations below are the active policy.
 1. **Phase 1: Live System Deletion (0 to the approved retention window):**
    - Profile-only erasure: **Immediate** (real-time transaction).
-   - Account closure: grace retention window of the approved `ACADEMIC_PROFILE_RETENTION_DAYS` (30 days in the pending proposal), followed by daily scheduled purge.
+   - Account closure: grace retention window of the approved `ACADEMIC_PROFILE_RETENTION_DAYS` (30 days), followed by daily scheduled purge.
 2. **Phase 2: Backup Expiry (up to the configured backup retention):**
-   - Database backups are rotated on a rolling schedule (`AWOOF_BACKUP_RETENTION_DAYS`, default 30 days in `expire-awoof-backups`). The expiry `--apply` job is **not scheduled yet**: `scripts/scheduler/awoof-backup-expiry.cron` is a disabled template, so until the owner activates it, backups can outlive the 30-day window (deploy-time count rotation in `backup-awoof-postgres.sh` is the only live expiry).
+   - Database backups are rotated on a rolling schedule (`AWOOF_BACKUP_RETENTION_DAYS`, default 30 days in `expire-awoof-backups`). The expiry `--apply` job has been scheduled since 2026-10-19 (see Activation record below); deploy-time count rotation in `backup-awoof-postgres.sh` also applies. The newest verified backup is always kept as a last-resort recovery copy, so a backup copy can outlive the 30-day window only in that case.
    - A backup created on the last day of its rotation containing an active account expires one rotation later.
-3. **Total Maximum Retention Window:** The approved academic-profile window plus the configured backup rotation (60 days only in the example where both are 30 days); no total is committed until the academic-profile value is approved.
+3. **Total Maximum Retention Window:** The approved academic-profile window plus the configured backup rotation (60 days where both are 30 days), subject to the last-resort newest-backup exception above.
+
+### Activation record (2026-10-19)
+
+- `ACADEMIC_PROFILE_ENABLED=true` and `ACADEMIC_PROFILE_RETENTION_DAYS=30` set in the production VPS environment; backend restarted and verified healthy, with the enabled route answering 401 (auth-gated) rather than 403.
+- Purge schedule installed in the production crontab: daily 03:30 UTC, `cleanup-academic-profile-data.js --batch-size 500`, logging to the host log directory; a manual run completed with `deletedProfiles=0`.
+- Backup-expiry schedule installed in the production crontab: daily 04:15 UTC, `expire-awoof-backups.py --backup-dir <production backups> --apply`; a manual dry run completed. Host paths differ from the templates in `scripts/scheduler/` (no system python3 on the host, so the job runs via a pinned `python:3.13-slim` container); the templates remain the reviewed configuration source.
 
 ---
 
