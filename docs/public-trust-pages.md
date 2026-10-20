@@ -9,10 +9,11 @@ The owner reported lawyer approval of the five-document package and authorized i
 | Route | Published purpose | Standing condition |
 | --- | --- | --- |
 | `/legal` | Reader-facing legal directory | Version 1.0; no internal review notes |
-| `/privacy` | Privacy notice: purposes, lawful bases, recipients, automated decisions, rights | Repository source v1.1 discloses the self-declared age field and server-recorded acceptance; production version unverified |
+| `/privacy` | Privacy notice: purposes, lawful bases, recipients, automated decisions, rights | Repository source v1.2 adds the optional academic profile disclosures (owner-approved 2026-10-19); earlier v1.1 source disclosed the self-declared age field and server-recorded acceptance; production version unverified |
 | `/terms` | Student/website terms, checkout responsibilities, IP, restrictions, liability and disputes | Repository source v1.1 requires self-declared age 18+ and acceptance for student signup; production version unverified |
 | `/terms/v1-0` | Frozen public archive of the version 1.0 student/website terms | Byte-identical to the v1.0 release; linked from `/terms` and `/legal`, in sitemap |
 | `/privacy/v1-0` | Frozen public archive of the version 1.0 privacy notice | Byte-identical to the v1.0 release; linked from `/privacy` and `/legal`, in sitemap |
+| `/privacy/v1-1` | Frozen public archive of the version 1.1 privacy notice | Frozen at the v1.2 publication; linked from `/privacy` and `/legal`, in sitemap |
 | `/cookies` | Cookies/browser-storage notice | Version 1.0 |
 | `/legal/merchant-terms` | Business terms requiring an accepted order form/payment schedule | Terms alone execute no agreement |
 | `/legal/data-protection` | Controller-sharing/processor modules and integration annex | Personal-data exchange requires completed annexes |

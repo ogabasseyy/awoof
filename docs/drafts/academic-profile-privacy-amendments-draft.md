@@ -1,9 +1,9 @@
-# [DRAFT — UNPUBLISHED] Proposed Privacy Policy Amendments: Optional Academic Profile
+# Privacy Policy Amendments: Optional Academic Profile (drafting record for v1.2)
 
 > **IMPORTANT NOTICE:**
-> **Status:** PUBLISHED as Privacy Policy version 1.2 (effective 19 October 2026) following owner approval of the 30-day retention window and scheduled purge/expiry. This draft remains the drafting record.
-> **Legal Notice:** This document is internal preparatory material for owner and legal review. It has NOT been approved by legal counsel or the business owner, has NOT been published to any public route (`/privacy`), is NOT indexed by search engines, and must NOT be cited as effective public privacy terms.
-> **Effective Policy:** The effective public Privacy Notice remains version 1.1 at `/privacy` with archived version 1.0 at `/privacy/v1-0`.
+> **Status:** PUBLISHED as Privacy Policy version 1.2 (effective 19 October 2026) following owner approval of the 30-day retention window and scheduled purge/expiry. This document remains the drafting record for that publication.
+> **Legal Notice:** The amendments below were approved by the business owner for publication; they were not separately approved by external legal counsel. The published text is maintained in `apps/web/src/content/public/privacy-draft.ts`.
+> **Effective Policy:** The effective public Privacy Notice is version 1.2 at `/privacy`, with archived version 1.1 at `/privacy/v1-1` and version 1.0 at `/privacy/v1-0`.
 
 ---
 
@@ -62,12 +62,12 @@ You have the explicit right to erase your optional academic profile without clos
 - Academic profile answers are retained while your account remains active and you continue your studies. If you complete or leave your programme, or if your expected graduation year has passed by more than one calendar year, Awoof may invite you to confirm the continued relevance of your data or automatically schedule the optional details for retirement.
 
 ### Account closure and soft-deletion
-- **PROPOSED - not yet in effect:** Account closure is not yet implemented in the application, no retention duration has been approved, and the automated purge is not scheduled. The statements in this section describe the intended policy and must not be published or relied on until the lifecycle is implemented and activated.
+- **Status:** The 30-day retention window was owner-approved and the automated purge and backup-expiry schedules were enabled on 2026-10-19. Account closure itself is not yet implemented in the application, so the soft-deletion trigger below takes effect when that lifecycle ships; profile-only erasure (section 4) is available now.
 - If you request account closure or delete your account, your account is soft-deleted. Academic profile records are retained for a grace period of **30 days** following account closure to allow for accidental deletion recovery.
 - Upon the expiration of the 30-day retention window, an automated background purge permanently erases the academic profile row from live production databases.
 
 ### Backup archives and final disposal
 - Production database backups are created for business continuity and disaster recovery.
-- Backups are maintained in access-restricted storage (filesystem permissions only; no backup encryption is currently implemented) and expire on a rolling **30-day** schedule once the pending expiry job is scheduled.
-- **Total Combined Timeline:** Personal academic data may persist in backup dumps for up to 30 days after deletion from live systems (up to **60 days total** following account closure).
+- Backups are maintained in access-restricted storage (filesystem permissions only; no backup encryption is currently implemented) and expire on a rolling **30-day** schedule under the enabled expiry job. If no backup remains within that window, the newest verified backup may be retained longer solely as a last-resort recovery copy.
+- **Total Combined Timeline:** Personal academic data normally persists in backup dumps for up to 30 days after deletion from live systems (up to **60 days total** following account closure), subject to that last-resort exception.
 - If a database restore drill or disaster recovery occurs, our restore-safe reconciliation system automatically reapplies post-backup erasures before production traffic is re-established, ensuring that erased records are not resurrected.
