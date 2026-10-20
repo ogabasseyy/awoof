@@ -1,10 +1,10 @@
 # Public trust and partner pages
 
-Research/repository review: 2026-09-20, inventory refreshed 2026-09-29. Status: first-batch pages shipped; repository records legal release v1.0 as published and owner-authorized v1.1 Terms/privacy source updates as merged in PR #47. The current production publication/version could not be verified on 2026-09-29. This file is internal planning, not public security assurance.
+Research/repository review: 2026-09-20, inventory refreshed 2026-09-29, privacy record updated 2026-10-20. Status: first-batch pages shipped; repository records legal release v1.0 as published, owner-authorized v1.1 Terms/privacy source updates as merged in PR #47, and the owner-approved privacy v1.2 / cookies v1.1 source updates in the academic-profile publication change. The current production publication/version could not be verified on 2026-09-29 and remains unverified for v1.2 until its deploy is checked. This file is internal planning, not public security assurance.
 
-## Repository release record: v1.0 publication; v1.1 source update merged, rollout unverified
+## Repository release record: v1.0 publication; v1.1 source update merged; v1.2 privacy source update, rollout unverified
 
-The owner reported lawyer approval of the five-document package and authorized its publication ([authorization record](legal-publication-approval.md)). PR #47 merged the v1.1 Terms and privacy source update under the owner's 18+ student-account authorization; the live published package/version was not independently verified for this inventory refresh. After rollout, routes remain indexed (`index, follow`), linked from the public footer, auth navigation and sitemap:
+The owner reported lawyer approval of the five-document package and authorized its publication ([authorization record](legal-publication-approval.md)). PR #47 merged the v1.1 Terms and privacy source update under the owner's 18+ student-account authorization; the academic-profile publication change adds privacy v1.2 and cookies v1.1 on owner approval (no separate external counsel approval). The live published package/version was not independently verified for this inventory refresh. After rollout, routes remain indexed (`index, follow`), linked from the public footer, auth navigation and sitemap:
 
 | Route | Published purpose | Standing condition |
 | --- | --- | --- |
