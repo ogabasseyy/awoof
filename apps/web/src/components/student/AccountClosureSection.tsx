@@ -14,6 +14,13 @@ import { passwordProofApiClient, refreshSessionAccessToken } from '@/lib/api-cli
 
 type CapturedSession = { snapshot: SessionSnapshot; userId: string };
 
+/** Map a failed closure attempt to the message that matches its cause. */
+function closureFailureMessage(status: number | undefined): string {
+    if (status === 503) return 'Account closure is temporarily unavailable. Please try again later.';
+    if (status === 429) return 'Too many closure attempts. Wait a few minutes before trying again.';
+    return 'Account closure failed. Check your password (or type CLOSE MY ACCOUNT exactly) and try again.';
+}
+
 /**
  * Danger zone for self-service student account closure. The backend
  * soft-deletes the account (`users.deleted_at`), revokes every session,
@@ -118,7 +125,7 @@ export default function AccountClosureSection({ userId }: { userId: string }) {
                 if (!isCurrentSession(captured.snapshot)) { resetForm(); return; }
                 try {
                     await passwordProofApiClient.get('/students/profile');
-                    setError('Account closure failed. Check your password (or type CLOSE MY ACCOUNT exactly) and try again.');
+                    setError(closureFailureMessage(status));
                     setBusy(false);
                 } catch (checkError) {
                     const checkStatus = axios.isAxiosError(checkError) ? checkError.response?.status : undefined;
@@ -140,11 +147,7 @@ export default function AccountClosureSection({ userId }: { userId: string }) {
                 await passwordProofApiClient.get('/students/profile');
                 // The account is still open, so the original operational
                 // status (not a proof failure) is what the student needs.
-                setError(status === 503
-                    ? 'Account closure is temporarily unavailable. Please try again later.'
-                    : status === 429
-                        ? 'Too many closure attempts. Wait a few minutes before trying again.'
-                        : 'Account closure failed. Check your password (or type CLOSE MY ACCOUNT exactly) and try again.');
+                setError(closureFailureMessage(status));
                 setBusy(false);
             } catch (reconcileError) {
                 const reconcileStatus = axios.isAxiosError(reconcileError) ? reconcileError.response?.status : undefined;
