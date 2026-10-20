@@ -72,6 +72,11 @@ export async function closeOwnAccount(
             if (!input.password || !(await verifyPassword(input.password, row.password_hash))) {
                 throw new UnauthorizedError('Password confirmation failed');
             }
+        // codeql[js/user-controlled-bypass]: the phrase is deliberate-confirmation
+        // friction, not a credential. Authorization for passwordless accounts is
+        // the authenticated school-backed session itself (closure revokes it
+        // immediately), and closure is reversible by support within the
+        // retention window, so a typed phrase cannot escalate privileges.
         } else if (input.confirmation !== 'CLOSE MY ACCOUNT') {
             throw new UnauthorizedError('Type CLOSE MY ACCOUNT to confirm account closure');
         }

@@ -812,7 +812,9 @@ test('actual Express routes use live database identity over anonymous, vendor, d
             const deleted = await fetch(`${baseUrl}/status`, {
                 headers: { authorization: `Bearer ${accessToken(deletedId, 'deleted@students.flow.example')}` },
             });
-            assert.equal(deleted.status, 400);
+            // Closed (soft-deleted) accounts are rejected at authentication:
+            // account closure revokes every session immediately.
+            assert.equal(deleted.status, 401);
 
             const staleRole = await fetch(`${baseUrl}/status`, {
                 headers: { authorization: `Bearer ${accessToken(student.userId, student.email, 'vendor')}` },
@@ -986,10 +988,6 @@ test('actual router applies current database identity to every new verification 
                     label: 'stale student JWT for current vendor', actor: staleStudentVendor, proof: staleStudentVendorProof,
                     tokenRole: 'student' as const,
                 },
-                {
-                    label: 'deleted student', actor: deletedStudent, proof: deletedProof,
-                    tokenRole: 'student' as const,
-                },
             ];
             for (const rejected of rejectedActors) {
                 const headers = {
@@ -1034,6 +1032,38 @@ test('actual router applies current database identity to every new verification 
                     assert.equal(serialized.includes('accesstoken'), false);
                     assert.equal(serialized.includes('refreshtoken'), false);
                     assert.deepEqual(await actorVerificationSnapshot(pool, rejected.actor.userId, rejected.actor.email), baseline);
+                    assert.equal(delivered.length, deliveredBefore);
+                }
+            }
+
+            // A closed (soft-deleted) student is rejected at authentication
+            // (401) on every action, with no token material or side effects.
+            {
+                const headers = {
+                    'content-type': 'application/json',
+                    authorization: `Bearer ${accessToken(deletedStudent.userId, deletedStudent.email, 'student')}`,
+                };
+                const actions: Array<{ name: string; path: string; method: 'GET' | 'POST'; body?: unknown }> = [
+                    { name: 'initiation', path: '/initiate', method: 'POST', body: { universityId: deletedStudent.universityId, accepted: true, noticeVersion: VERIFICATION_NOTICE_VERSION } },
+                    { name: 'email request', path: '/email/request', method: 'POST', body: { processingGrantId: deletedProof.processingGrantId } },
+                    { name: 'email confirmation', path: '/email/confirm', method: 'POST', body: { challengeId: deletedProof.challengeId, otp: deletedProof.otp } },
+                    { name: 'disclosure', path: '/disclosures', method: 'POST', body: { vendorId: merchant.vendorId, origin: merchant.origin, purpose: 'student-discount', accepted: true, noticeVersion: MERCHANT_DISCLOSURE_NOTICE_VERSION } },
+                    { name: 'status', path: '/status', method: 'GET' },
+                ];
+                for (const action of actions) {
+                    const baseline = await actorVerificationSnapshot(pool, deletedStudent.userId, deletedStudent.email);
+                    const deliveredBefore = delivered.length;
+                    const response = await fetch(`${baseUrl}${action.path}`, {
+                        method: action.method,
+                        ...(action.body === undefined
+                            ? { headers: { authorization: headers.authorization } }
+                            : { headers, body: JSON.stringify(action.body) }),
+                    });
+                    assert.equal(response.status, 401, `deleted student ${action.name} must be rejected at authentication`);
+                    const serialized = JSON.stringify(await response.json()).toLowerCase();
+                    assert.equal(serialized.includes('accesstoken'), false);
+                    assert.equal(serialized.includes('refreshtoken'), false);
+                    assert.deepEqual(await actorVerificationSnapshot(pool, deletedStudent.userId, deletedStudent.email), baseline);
                     assert.equal(delivered.length, deliveredBefore);
                 }
             }
@@ -1166,7 +1196,7 @@ test('actual authenticated routes bind student actions to the live subject and n
                 headers: { 'content-type': 'application/json', authorization: `Bearer ${accessToken(deletedId, 'deleted@example.invalid')}` },
                 body: JSON.stringify(body),
             });
-            assert.equal(deleted.status, 400);
+            assert.equal(deleted.status, 401);
 
             const initiated = await fetch(`${baseUrl}/initiate`, {
                 method: 'POST',
