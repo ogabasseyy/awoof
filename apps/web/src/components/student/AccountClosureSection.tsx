@@ -1,6 +1,7 @@
 'use client';
 
 import { useEffect, useRef, useState } from 'react';
+import axios from 'axios';
 import { Button } from '@/components/ui/button';
 import {
     clearTokens,
@@ -80,12 +81,38 @@ export default function AccountClosureSection({ userId }: { userId: string }) {
             } else {
                 resetForm();
             }
-        } catch {
-            if (isCurrentSession(captured.snapshot)) {
+        } catch (error) {
+            if (!isCurrentSession(captured.snapshot)) { resetForm(); return; }
+            const status = axios.isAxiosError(error) ? error.response?.status : undefined;
+            if (status === 409) {
+                // Already closed (for example by an earlier attempt whose
+                // response never arrived): finish the sign-out locally.
+                clearTokens();
+                // eslint-disable-next-line @next/next/no-location-assign-relative-destination
+                window.location.assign('/auth/student/login');
+                return;
+            }
+            // An ambiguous failure (lost response, transport error, 5xx, or
+            // a 401 that could mean either a bad proof or a completed
+            // closure) is reconciled against the live account state before
+            // anything is reported: a closed account rejects the profile
+            // read, an active one still serves it.
+            await refreshSessionAccessToken().catch(() => undefined);
+            if (!isCurrentSession(captured.snapshot)) { resetForm(); return; }
+            try {
+                await passwordProofApiClient.get('/students/profile');
                 setError('Account closure failed. Check your password (or type CLOSE MY ACCOUNT exactly) and try again.');
                 setBusy(false);
-            } else {
-                resetForm();
+            } catch (reconcileError) {
+                const reconcileStatus = axios.isAxiosError(reconcileError) ? reconcileError.response?.status : undefined;
+                if (reconcileStatus === 401) {
+                    clearTokens();
+                    // eslint-disable-next-line @next/next/no-location-assign-relative-destination
+                    window.location.assign('/auth/student/login');
+                } else {
+                    setError('We could not confirm whether your account was closed. Sign in again to check its state.');
+                    setBusy(false);
+                }
             }
         }
     };
