@@ -50,7 +50,7 @@ type VerifyPassword = (plainPassword: string, hashedPassword: string) => Promise
 export async function closeOwnAccount(
     pool: ClosurePool,
     userId: string,
-    input: { password?: string | null; confirmation?: string | null },
+    input: { password?: string | null; confirmation?: string | null; sessionId?: string | null },
     verifyPassword: VerifyPassword = (plain, hashed) => passwordService.comparePassword(plain, hashed),
 ): Promise<CloseOwnAccountResult> {
     // One transaction holds the row lock from credential verification
@@ -62,8 +62,8 @@ export async function closeOwnAccount(
     let retentionDays = 0;
     try {
         await client.query('BEGIN');
-        const account = await client.query<{ role: string; password_hash: string | null; deleted_at: Date | null }>(
-            'SELECT role, password_hash, deleted_at FROM users WHERE id = $1 FOR UPDATE',
+        const account = await client.query<{ role: string; password_hash: string | null; deleted_at: Date | null; active_session_id: string | null }>(
+            'SELECT role, password_hash, deleted_at, active_session_id FROM users WHERE id = $1 FOR UPDATE',
             [userId],
         );
         const row = account.rows[0];
@@ -71,6 +71,17 @@ export async function closeOwnAccount(
         if (row.deleted_at !== null) throw new ConflictError('Account is already closed');
         if (row.role !== 'student') {
             throw new ConflictError('This account type cannot be closed from settings; contact support@awoof.tech');
+        }
+        // Recheck the authenticated session under the row lock: a newer
+        // sign-in may have rotated the active session after `authenticate`
+        // validated this token, and a stale request must not close the
+        // account out from under it. Legacy sid-less tokens (no server
+        // session recorded either) keep their existing semantics.
+        if (row.active_session_id !== null && input.sessionId !== row.active_session_id) {
+            throw new UnauthorizedError('Session is no longer current; sign in again');
+        }
+        if (row.active_session_id === null && input.sessionId) {
+            throw new UnauthorizedError('Session is no longer current; sign in again');
         }
 
         // The public promise is purge after the retention window; without
@@ -86,12 +97,13 @@ export async function closeOwnAccount(
             if (!input.password || !(await verifyPassword(input.password, row.password_hash))) {
                 throw new UnauthorizedError('Password confirmation failed');
             }
+        }
         // codeql[js/user-controlled-bypass]: the phrase is deliberate-confirmation
         // friction, not a credential. Authorization for passwordless accounts is
         // the authenticated school-backed session itself (closure revokes it
         // immediately), and closure is reversible by support within the
         // retention window, so a typed phrase cannot escalate privileges.
-        } else if (input.confirmation !== 'CLOSE MY ACCOUNT') {
+        else if (input.confirmation !== 'CLOSE MY ACCOUNT') {
             throw new UnauthorizedError('Type CLOSE MY ACCOUNT to confirm account closure');
         }
 
@@ -103,6 +115,8 @@ export async function closeOwnAccount(
                  active_session_id = NULL,
                  active_session_issued_at = NULL,
                  active_session_auth_identity_id = NULL,
+             password_reset_otp = NULL,
+             password_reset_otp_expires_at = NULL,
                  credential_generation = credential_generation + 1,
              recovery_session_binding_required = true
              WHERE id = $1 AND deleted_at IS NULL

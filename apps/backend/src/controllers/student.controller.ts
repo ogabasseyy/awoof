@@ -426,6 +426,7 @@ export class StudentController {
         const result = await closeOwnAccount(db.getPool(), req.user.userId, {
             password: typeof body.password === 'string' ? body.password : null,
             confirmation: typeof body.confirmation === 'string' ? body.confirmation : null,
+            sessionId: typeof req.user.sid === 'string' ? req.user.sid : null,
         });
         success(res, {
             message: 'Account closed. You have been signed out on all devices.',

@@ -4,7 +4,7 @@ import { closeOwnAccount } from './account-closure.service.js';
 
 process.env['ACADEMIC_PROFILE_RETENTION_DAYS'] = '30';
 
-type Row = { role: string; password_hash: string | null; deleted_at: Date | null };
+type Row = { role: string; password_hash: string | null; deleted_at: Date | null; active_session_id?: string | null };
 
 function fakePool(row: Row | null) {
     const calls: { sql: string; params: unknown[] }[] = [];
@@ -61,6 +61,17 @@ test('passwordless accounts require the exact confirmation phrase', async () => 
         /CLOSE MY ACCOUNT/,
     );
     const ok = await closeOwnAccount(pool as never, 'user-1', { confirmation: 'CLOSE MY ACCOUNT' });
+    assert.ok(ok.closedAt);
+});
+
+test('rejects a stale session rotated after authentication', async () => {
+    const pool = fakePool({ ...student, active_session_id: 'session-new' });
+    await assert.rejects(
+        closeOwnAccount(pool as never, 'user-1', { password: 'correct', sessionId: 'session-old' }, async () => true),
+        /Session is no longer current/,
+    );
+    assert.equal(pool.calls.some((call) => call.sql.startsWith('UPDATE users')), false);
+    const ok = await closeOwnAccount(pool as never, 'user-1', { password: 'correct', sessionId: 'session-new' }, async () => true);
     assert.ok(ok.closedAt);
 });
 
