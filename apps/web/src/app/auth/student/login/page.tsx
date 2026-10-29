@@ -85,6 +85,7 @@ function StudentLoginInner() {
     const [flow, setFlow] = useState<LoginState>(initialLoginState);
     const flowRef = useRef(flow);
     const noticeRef = useRef<HTMLDivElement>(null);
+    const startControllerRef = useRef<AbortController | null>(null);
     const noticeCode = parseLoginErrorCode(search.get('error'));
 
     useEffect(() => {
@@ -112,7 +113,8 @@ function StudentLoginInner() {
 
     const returnPathFor = (): string => resolveStudentReturn(search.get('redirect'), window.location.origin);
 
-    const discover = async (): Promise<void> => {
+    /** Discover approved providers for the entered address and start an unambiguous provider. */
+    const discover = async (redirectSingleProvider = true): Promise<void> => {
         const email = getValues('email').trim();
         if (!z.string().email().safeParse(email).success) {
             setFieldError('email', { type: 'manual', message: 'Enter your email first to find school sign-in options.' });
@@ -138,7 +140,7 @@ function StudentLoginInner() {
             if (resolved === flowRef.current) return;
             flowRef.current = resolved;
             setFlow(resolved);
-            if (resolved.step === 'methods' && resolved.providers.length === 1) {
+            if (redirectSingleProvider && resolved.step === 'methods' && resolved.providers.length === 1) {
                 await startProvider(resolved.providers[0]);
             }
         } catch (cause: unknown) {
@@ -157,12 +159,15 @@ function StudentLoginInner() {
         if (redirecting.step !== 'redirecting') return;
         flowRef.current = redirecting;
         setFlow(redirecting);
+        const controller = new AbortController();
+        startControllerRef.current = controller;
         try {
             const response = await studentSsoApiClient.post(`/auth/student/sso/${provider}/start`, {
                 email: redirecting.email,
                 rememberMe,
                 returnPath: returnPathFor(),
-            });
+            }, { signal: controller.signal, timeout: 15000 });
+            if (startControllerRef.current !== controller) return;
             const started = response.status === 201 ? parseSsoStart(response.data) : null;
             if (!started) {
                 setFlow((previous) => startFailed(previous, START_UNAVAILABLE));
@@ -182,12 +187,21 @@ function StudentLoginInner() {
             }
             window.location.href = started.authorizationUrl;
         } catch (cause: unknown) {
+            if (startControllerRef.current !== controller) return;
             const status = axios.isAxiosError(cause) ? cause.response?.status : undefined;
             setFlow((previous) => startFailed(
                 previous,
                 status === 429 ? DISCOVERY_RATE_LIMITED : START_UNAVAILABLE,
             ));
         }
+    };
+
+    const cancelProvider = (): void => {
+        startControllerRef.current?.abort();
+        startControllerRef.current = null;
+        const next = startFailed(flowRef.current, START_UNAVAILABLE);
+        flowRef.current = next;
+        setFlow(next);
     };
 
     const useDifferentEmail = (): void => {
@@ -198,6 +212,11 @@ function StudentLoginInner() {
 
     const usePassword = (): void => {
         const current = flowRef.current;
+        if (current.step === 'email' && !z.string().email().safeParse(getValues('email').trim()).success) {
+            setFieldError('email', { type: 'manual', message: 'Enter a valid email address.' });
+            document.getElementById('email')?.focus();
+            return;
+        }
         const next = current.step === 'email'
             ? { ...current, step: 'password' as const, email: getValues('email').trim(), error: null }
             : choosePassword(current);
@@ -237,6 +256,7 @@ function StudentLoginInner() {
                             Vendor login
                         </Link>
                     </p>
+                    {recoveryAvailable !== true && <p className="mt-2 text-center text-sm text-slate-600"><Link href="/help#section-4" className="text-slate-500 hover:underline">Account recovery help</Link></p>}
                     {recoveryAvailable === true && <p className="mt-2 text-center text-sm text-slate-600">
                         Lost access to school sign-in?{' '}
                         <Link href="/auth/student/recovery" className="text-slate-500 hover:text-[#1D4ED8] hover:underline font-medium">
@@ -278,7 +298,7 @@ function StudentLoginInner() {
                         placeholder="Enter your email"
                         {...register('email')}
                         disabled={!isReady || isLoading}
-                        readOnly={flow.step === 'methods' || flow.step === 'password' || flow.step === 'redirecting'}
+                        readOnly={flow.step === 'loading_methods' || flow.step === 'methods' || flow.step === 'password' || flow.step === 'redirecting'}
                         aria-invalid={errors.email ? 'true' : 'false'}
                         aria-describedby={errors.email ? 'student-login-email-error' : undefined}
                         className="w-full"
@@ -327,6 +347,7 @@ function StudentLoginInner() {
                 {(flow.step === 'email' || flow.step === 'error') && <Button type="submit" className="w-full rounded-full h-11 font-semibold" disabled={!isReady || isLoading}>
                     {flow.step === 'error' ? 'Try again' : 'Continue'}
                 </Button>}
+                {flow.step === 'email' && <button type="button" className="w-full text-sm text-[#1D4ED8] hover:underline font-medium" onClick={() => void discover(false)}>Find account recovery options</button>}
                 {flow.step === 'email' && <button type="button" className="w-full text-sm text-[#1D4ED8] hover:underline font-medium" onClick={usePassword}>
                     Use an Awoof password instead
                 </button>}
@@ -372,6 +393,7 @@ function StudentLoginInner() {
                             Redirecting to your school sign-in…
                         </Button>
                         <p role="status" className="text-left text-sm text-slate-600">Redirecting to your school sign-in…</p>
+                        <button type="button" className="w-full text-sm text-[#1D4ED8] hover:underline font-medium" onClick={cancelProvider}>Cancel school sign-in</button>
                     </div>
                 )}
             </form>
