@@ -127,7 +127,7 @@ test('the student login starts with only email, then offers the discovered schoo
     await page.route(`${apiOrigin}/api/auth/student/login-options`, (route) => {
         discoveryCalls += 1;
         return route.fulfill({
-            json: { success: true, data: { password: true, providers: ['microsoft'], registration: true, recovery: true } },
+            json: { success: true, data: { password: true, providers: ['microsoft', 'google'], registration: true, recovery: true } },
             headers: { 'access-control-allow-origin': '*' },
         });
     });
@@ -153,6 +153,14 @@ test('the student login starts with only email, then offers the discovered schoo
     await expect(password).toBeVisible();
     await expect(password).toHaveAttribute('autocomplete', 'current-password');
     expect(discoveryCalls).toBe(1);
+});
+
+test('password sign-in can be chosen before provider discovery', async ({ page }) => {
+    await installSyntheticApi(page);
+    await page.goto('/auth/student/login');
+    await page.getByLabel('Email', { exact: true }).fill('student@school.example');
+    await page.getByRole('button', { name: 'Use an Awoof password instead' }).click();
+    await expect(page.getByLabel('Password', { exact: true })).toBeVisible();
 });
 
 test('school sign-in options appear only after an explicit continue', async ({ page }) => {
@@ -229,7 +237,6 @@ test('starting SSO stores only the tab attempt and redirects to the school provi
         await page.goto('/auth/student/login?redirect=%2Fmarketplace%3Ffrom%3Dsso-test');
         await page.getByLabel('Email', { exact: true }).fill('student@school.example');
         await page.getByRole('button', { name: 'Continue', exact: true }).click();
-        await page.getByRole('button', { name: 'Continue with Microsoft' }).click();
         await page.waitForURL(`${stub.baseUrl}/**`);
         expect(stub.hits.length).toBeGreaterThan(0);
         expect(startBodies).toEqual([{ email: 'student@school.example', rememberMe: false, returnPath: '/marketplace?from=sso-test' }]);

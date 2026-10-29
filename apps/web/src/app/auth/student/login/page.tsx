@@ -134,7 +134,13 @@ function StudentLoginInner() {
             }
             const data = (response.data as { data?: { recovery?: unknown } }).data;
             setRecoveryAvailable(data?.recovery === true);
-            setFlow((previous) => methodsResolved(previous, next.requestId, options.providers));
+            const resolved = methodsResolved(flowRef.current, next.requestId, options.providers);
+            if (resolved === flowRef.current) return;
+            flowRef.current = resolved;
+            setFlow(resolved);
+            if (resolved.step === 'methods' && resolved.providers.length === 1) {
+                await startProvider(resolved.providers[0]);
+            }
         } catch (cause: unknown) {
             setRecoveryAvailable(null);
             const status = axios.isAxiosError(cause) ? cause.response?.status : undefined;
@@ -191,7 +197,12 @@ function StudentLoginInner() {
     };
 
     const usePassword = (): void => {
-        setFlow((previous) => choosePassword(previous));
+        const current = flowRef.current;
+        const next = current.step === 'email'
+            ? { ...current, step: 'password' as const, email: getValues('email').trim(), error: null }
+            : choosePassword(current);
+        flowRef.current = next;
+        setFlow(next);
         requestAnimationFrame(() => document.getElementById('password')?.focus());
     };
 
@@ -294,7 +305,7 @@ function StudentLoginInner() {
                     )}
                 </div>}
 
-                {(flow.step === 'password' || flow.step === 'methods') && <div className="flex items-center justify-between">
+                {(flow.step === 'email' || flow.step === 'password' || flow.step === 'methods') && <div className="flex items-center justify-between">
                     <label className="flex items-center cursor-pointer">
                         <input
                             type="checkbox"
@@ -316,6 +327,9 @@ function StudentLoginInner() {
                 {(flow.step === 'email' || flow.step === 'error') && <Button type="submit" className="w-full rounded-full h-11 font-semibold" disabled={!isReady || isLoading}>
                     {flow.step === 'error' ? 'Try again' : 'Continue'}
                 </Button>}
+                {flow.step === 'email' && <button type="button" className="w-full text-sm text-[#1D4ED8] hover:underline font-medium" onClick={usePassword}>
+                    Use an Awoof password instead
+                </button>}
                 {flow.step === 'loading_methods' && (
                     <p role="status" className="text-left text-sm text-slate-600">Checking sign-in options…</p>
                 )}
