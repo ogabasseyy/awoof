@@ -193,7 +193,7 @@ test('pending discovery locks the email and stalled SSO can be cancelled without
     });
     await page.route(`${apiOrigin}/api/auth/student/sso/microsoft/start`, async (route) => {
         await startGate;
-        await route.fulfill({ status: 201, json: { success: true, data: { attemptId: ATTEMPT_ID, authorizationUrl: 'https://login.microsoftonline.com/test', finishSecret: 'synthetic-finish-secret', expiresAt: liveExpiry(), serverNow: new Date().toISOString() } }, headers: ssoHeaders }).catch(() => undefined);
+        await route.fulfill({ status: 201, json: { success: true, data: { attemptId: ATTEMPT_ID, authorizationUrl: 'https://login.microsoftonline.com/', finishSecret: 'synthetic-finish-secret', expiresAt: liveExpiry(), serverNow: new Date().toISOString() } }, headers: ssoHeaders }).catch(() => undefined);
     });
     await page.goto('/auth/student/login');
     await expect(page.getByRole('link', { name: 'Account recovery help' })).toBeVisible();
