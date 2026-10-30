@@ -127,7 +127,7 @@ test('the student login starts with only email, then offers the discovered schoo
     await page.route(`${apiOrigin}/api/auth/student/login-options`, (route) => {
         discoveryCalls += 1;
         return route.fulfill({
-            json: { success: true, data: { password: true, providers: ['microsoft'], registration: true, recovery: true } },
+            json: { success: true, data: { password: true, providers: ['microsoft', 'google'], registration: true, recovery: true } },
             headers: { 'access-control-allow-origin': '*' },
         });
     });
@@ -153,6 +153,59 @@ test('the student login starts with only email, then offers the discovered schoo
     await expect(password).toBeVisible();
     await expect(password).toHaveAttribute('autocomplete', 'current-password');
     expect(discoveryCalls).toBe(1);
+});
+
+test('password sign-in can be chosen before provider discovery', async ({ page }) => {
+    await installSyntheticApi(page);
+    await page.goto('/auth/student/login');
+    await page.getByLabel('Email', { exact: true }).fill('student@school.example');
+    await page.getByRole('button', { name: 'Use an Awoof password instead' }).click();
+    await expect(page.getByLabel('Password', { exact: true })).toBeVisible();
+});
+
+test('password choice validates email before locking the field', async ({ page }) => {
+    await installSyntheticApi(page);
+    await page.goto('/auth/student/login');
+    await page.getByRole('button', { name: 'Use an Awoof password instead' }).click();
+    await expect(page.getByLabel('Email', { exact: true })).toBeEditable();
+    await expect(page.getByLabel('Password', { exact: true })).toHaveCount(0);
+});
+
+test('recovery options remain reachable without starting school sign-in', async ({ page }) => {
+    await installSyntheticApi(page);
+    await page.route(`${apiOrigin}/api/auth/student/login-options`, (route) => route.fulfill({ json: { success: true, data: { password: true, providers: ['microsoft'], registration: true, recovery: true } }, headers: ssoHeaders }));
+    await page.goto('/auth/student/login');
+    await page.getByLabel('Email', { exact: true }).fill('student@school.example');
+    await page.getByRole('button', { name: 'Find account recovery options' }).click();
+    await expect(page.getByRole('link', { name: 'Recover your account' })).toBeVisible();
+    await expect(page).toHaveURL(/\/auth\/student\/login/);
+});
+
+test('pending discovery locks the email and stalled SSO can be cancelled without a late redirect', async ({ page }) => {
+    await installSyntheticApi(page);
+    let releaseStart!: () => void;
+    const startGate = new Promise<void>((resolve) => { releaseStart = resolve; });
+    let releaseDiscovery!: () => void;
+    const discoveryGate = new Promise<void>((resolve) => { releaseDiscovery = resolve; });
+    await page.route(`${apiOrigin}/api/auth/student/login-options`, async (route) => {
+        await discoveryGate;
+        await route.fulfill({ json: { success: true, data: { password: true, providers: ['microsoft'], registration: true, recovery: true } }, headers: ssoHeaders });
+    });
+    await page.route(`${apiOrigin}/api/auth/student/sso/microsoft/start`, async (route) => {
+        await startGate;
+        await route.fulfill({ status: 201, json: { success: true, data: { attemptId: ATTEMPT_ID, authorizationUrl: 'https://login.microsoftonline.com/', finishSecret: 'synthetic-finish-secret', expiresAt: liveExpiry(), serverNow: new Date().toISOString() } }, headers: ssoHeaders }).catch(() => undefined);
+    });
+    await page.goto('/auth/student/login');
+    await expect(page.getByRole('link', { name: 'Account recovery help' })).toBeVisible();
+    await page.getByLabel('Email', { exact: true }).fill('student@school.example');
+    await page.getByRole('button', { name: 'Continue', exact: true }).click();
+    await expect(page.getByLabel('Email', { exact: true })).toHaveAttribute('readonly');
+    releaseDiscovery();
+    await expect(page.getByRole('link', { name: 'Recover your account' })).toBeVisible();
+    await page.getByRole('button', { name: 'Cancel school sign-in' }).click();
+    await expect(page.getByRole('button', { name: 'Use password instead' })).toBeVisible();
+    releaseStart();
+    await expect(page).toHaveURL(/\/auth\/student\/login/);
 });
 
 test('school sign-in options appear only after an explicit continue', async ({ page }) => {
@@ -229,7 +282,6 @@ test('starting SSO stores only the tab attempt and redirects to the school provi
         await page.goto('/auth/student/login?redirect=%2Fmarketplace%3Ffrom%3Dsso-test');
         await page.getByLabel('Email', { exact: true }).fill('student@school.example');
         await page.getByRole('button', { name: 'Continue', exact: true }).click();
-        await page.getByRole('button', { name: 'Continue with Microsoft' }).click();
         await page.waitForURL(`${stub.baseUrl}/**`);
         expect(stub.hits.length).toBeGreaterThan(0);
         expect(startBodies).toEqual([{ email: 'student@school.example', rememberMe: false, returnPath: '/marketplace?from=sso-test' }]);
