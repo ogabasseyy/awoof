@@ -44,6 +44,7 @@ function VerificationForm() {
     const [nextCursor, setNextCursor] = useState<string | null>(null);
     const [status, setStatus] = useState<VerificationStatus | null>(null);
     const [methods, setMethods] = useState<Array<{ methodType: string; isAvailable: boolean; reason?: string }> | null>(null);
+    const [methodsError, setMethodsError] = useState(false);
     const [accepted, setAccepted] = useState(false);
     const [mailboxConfirmed, setMailboxConfirmed] = useState(false);
     const [grant, setGrant] = useState('');
@@ -86,11 +87,12 @@ function VerificationForm() {
             if (!isLatest()) return;
             setStatus(response.data.data);
             setMailboxConfirmed(response.data.data.mailboxConfirmed === true);
-            setMethods(null);
+            setMethods(null); setMethodsError(false);
             if (response.data.data.universityId) {
                 const available = await currentRequest(() => apiClient.get(`/verification/methods/${response.data.data.universityId}`)).catch(() => null);
                 if (!isLatest()) return;
-                setMethods(available?.data.data.methods ?? []);
+                if (!available || !Array.isArray(available.data?.data?.methods)) { setMethodsError(true); return; }
+                setMethods(available.data.data.methods);
             }
         } catch (cause) {
             if (isLatest()) throw cause;
@@ -139,6 +141,7 @@ function VerificationForm() {
     const registrationAvailable = methods?.some((method) => method.methodType === 'registration' && method.isAvailable) === true;
     const microsoftAvailable = methods?.some((method) => method.methodType === 'microsoft' && method.isAvailable) === true;
     const assurance = status ? parseStudentAssurance(status.studentAssurance) : null;
+    const enrollmentUnavailable = methods !== null && !registrationAvailable && !microsoftAvailable;
     async function retryStatus() {
         await run(async () => {
             await loadStatus();
@@ -148,6 +151,7 @@ function VerificationForm() {
     return <main data-completion-cta={completionCta === null ? 'loading' : completionCta ? 'visible' : 'hidden'} className="mx-auto max-w-lg space-y-5 p-6">
         <Link href="/student/profile" className="underline">Back to profile</Link>
         <h1 className="text-2xl font-semibold">Student verification</h1>
+        <p className="text-sm text-slate-600">School-account access and current student enrollment are checked separately.</p>
         {completionCta === true && <>
             <p><Link href="/student/profile/complete?redirect=%2Fstudent%2Fverification" className="underline">Complete your student profile (optional)</Link></p>
             <p>Optional details never change your verification status.</p>
@@ -166,15 +170,18 @@ function VerificationForm() {
                     <p>Verification details are temporarily unavailable.</p>
                     <button type="button" className="underline" onClick={() => void retryStatus()}>Retry status</button>
                 </div>}
+            {assurance?.schoolAccountStatus === 'verified' && <p className="mt-3 text-sm text-slate-700">Your school account is verified. This confirms your access to the account.</p>}
+            {!status.eligibility.eligible && enrollmentUnavailable && <p className="mt-2 text-sm text-slate-700">Student status is separate. Your school does not currently offer an enrollment check on Awoof.</p>}
+            {methodsError && <p role="alert" className="mt-2 text-sm text-slate-700">Verification options could not be loaded. <button type="button" className="underline" onClick={() => void retryStatus()}>Try again</button>.</p>}
             {status.eligibility.eligible
                 ? <p className="mt-1 text-sm text-slate-700">State: eligible — no action needed.</p>
-                : <p className="mt-1 text-sm text-slate-700">State: action needed — complete the steps below or <Link href="/help" className="underline">Get verification help</Link>.</p>}
+                : methodsError ? null : methods === null ? <p className="mt-2 text-sm text-slate-700">Checking available verification options.</p> : enrollmentUnavailable ? <p className="mt-2 text-sm text-slate-700">Student discounts require a current enrollment check. <Link href="/help" className="underline">Get verification help</Link>.</p> : <p className="mt-1 text-sm text-slate-700">State: action needed — review the available steps below or <Link href="/help" className="underline">Get verification help</Link>.</p>}
         </section>}
         {!status ? <p>Loading verification…</p> : status.eligibility.eligible ? <>
             <p role="status">Your student eligibility is current.</p>
             <Link href="/marketplace" className="underline">Browse student offers</Link>
         </> : !status.universityId ? <p>Your school profile is incomplete. Contact support to update your school before verifying.</p> : <>
-            <p>Confirm your school email to prove you control the mailbox. Student discounts need a separate current-enrollment check below.</p>
+            <p>{assurance?.schoolAccountStatus === 'verified' ? 'You can also confirm your school email below. This is a separate mailbox check and does not confirm enrollment.' : 'Confirm your school email to prove you control the mailbox. Student discounts need a separate current-enrollment check below.'}</p>
             <p className="break-words">{status.email}</p>
             <label className="flex gap-3"><input type="checkbox" checked={accepted} disabled={busy || Boolean(grant)} onChange={(event) => setAccepted(event.target.checked)} />{status.notices.verification.text}</label>
             <button type="button" className="rounded bg-blue-700 px-4 py-2 text-white disabled:opacity-50" disabled={busy || !accepted || !emailAvailable} onClick={() => void run(async () => {
@@ -202,14 +209,14 @@ function VerificationForm() {
                 <h2 className="font-semibold">Enrollment check</h2>
                 <label className="block">Registration number<input className="block rounded border p-2" value={registration} maxLength={100} required onChange={(event) => setRegistration(event.target.value)} /></label>
                 <button disabled={busy || !accepted || !registration.trim()} className="inline-flex min-h-[44px] items-center underline">Check enrollment</button>
-            </form> : <p>{registrationAvailable ? 'Confirm your school email above before checking enrollment.' : 'Enrollment verification is not currently available for your school.'}</p>}
+            </form> : methods !== null && <p>{registrationAvailable ? 'Confirm your school email above before checking enrollment.' : 'Enrollment verification is not currently available for your school.'}</p>}
             {methods !== null && assurance && assurance.studentStatus !== 'verified' && assurance.studentStatus !== 'inactive'
                 && !registrationAvailable && !microsoftAvailable
                 && <p>The school connection is not yet available for your school — confirming your school email proves mailbox control but cannot unlock discounts.</p>}
         </>}
         <MicrosoftVerificationCard
             available={methods?.some((method) => method.methodType === 'microsoft' && method.isAvailable) === true}
-            unavailableReason={methods?.find((method) => method.methodType === 'microsoft')?.reason}
+            unavailableReason={methodsError ? 'Microsoft verification options could not be loaded. Try again.' : methods === null ? 'Checking Microsoft verification options…' : methods.find((method) => method.methodType === 'microsoft')?.reason}
             parentAccepted={accepted}
             setParentAccepted={setAccepted}
             processingGrant={processingGrant}
