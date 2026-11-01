@@ -15,7 +15,7 @@ export function buildArtifact({ root = backendRoot, spawn = spawnSync } = {}) {
     // regenerated below (compiled output, staged migrations, rendered
     // OpenAPI, manifest), so start from an empty directory.
     rmSync(resolve(root, 'dist'), { recursive: true, force: true });
-    const compilation = spawn('./node_modules/.bin/tsc', [], { cwd: root, encoding: 'utf8', timeout: 120_000 });
+    const compilation = spawn('./node_modules/.bin/tsc', [], { cwd: root, encoding: 'utf8', timeout: 600_000 });
     if (compilation.status !== 0 || compilation.error) {
         const detail = [compilation.error?.message, compilation.stdout, compilation.stderr].filter(Boolean).join('\n').slice(0, 8_000);
         throw new Error(`TypeScript artifact build failed: ${detail}`);

@@ -70,6 +70,27 @@ test('verification action-needed state links help explicitly', async ({ page }) 
   await expect(page.getByRole('link', { name: 'Get verification help' })).toHaveAttribute('href', '/help');
 });
 
+test('verified school account and unavailable enrollment show a clear next step', async ({ page }) => {
+  await installSyntheticApi(page);
+  await seedSession(page, 'student');
+  await stubVerificationWithAssurance(page, { current: false });
+  await page.goto('/student/verification');
+  await expect(page.getByText('Your school account is verified. This confirms your access to the account.')).toBeVisible();
+  await expect(page.getByText('Student status is separate. Your school does not currently offer an enrollment check on Awoof.')).toBeVisible();
+  await expect(page.getByText('State: action needed', { exact: false })).toHaveCount(0);
+});
+
+test('failed methods lookup does not claim the school lacks enrollment verification', async ({ page }) => {
+  await installSyntheticApi(page);
+  await seedSession(page, 'student');
+  await stubVerificationWithAssurance(page, { current: false });
+  await page.route(`${apiOrigin}/api/verification/methods/**`, (route) => route.fulfill({ status: 503, headers, json: { error: { message: 'unavailable' } } }));
+  await page.goto('/student/verification');
+  await expect(page.getByRole('alert').filter({ hasText: 'Verification options could not be loaded.' })).toBeVisible();
+  await expect(page.getByText('Student status is separate. Your school does not currently offer an enrollment check on Awoof.')).toHaveCount(0);
+  await expect(page.getByText('Enrollment verification is not currently available for your school.')).toHaveCount(0);
+});
+
 test('verification load failure shows an error without fake states', async ({ page }) => {
   await installSyntheticApi(page);
   await seedSession(page, 'student');
